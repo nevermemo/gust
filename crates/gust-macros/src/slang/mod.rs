@@ -840,6 +840,19 @@ pub(crate) fn emit_kernel_in(
     kernel: &syn::ItemFn,
     options: KernelOptions,
 ) -> syn::Result<EmittedKernel> {
+    // A trait path call is emitted as the method call it stands for (slice m9.g1); the copy keeps the kernel's name.
+    let desugared = crate::validate::traits::desugar(module)?;
+    let module = desugared.as_ref().unwrap_or(module);
+    let kernel = desugared
+        .as_ref()
+        .and_then(|copy| copy.content.as_ref())
+        .and_then(|(_, items)| {
+            items.iter().find_map(|item| match item {
+                syn::Item::Fn(function) if function.sig.ident == kernel.sig.ident => Some(function),
+                _ => None,
+            })
+        })
+        .unwrap_or(kernel); // no trait: the caller's kernel is the module's own
     let rules = stage.binding_rules();
     let (_, items) = module.content.as_ref().expect("validated inline module");
     let lowering = module_lowering(module);
@@ -1004,6 +1017,20 @@ pub(crate) fn emit_kernel_in(
                 }
             }
             emit_struct(&mut output, &mut table, item, &methods)?;
+        }
+    }
+    // The interfaces of the traits, then the extensions that conform to them (slice m9.g1): after the structs and enums
+    // whose names they mention, before the helpers and the kernel that call through them.
+    for item in items {
+        if let syn::Item::Trait(item) = item {
+            emit_interface(&mut output, &mut table, item)?;
+        }
+    }
+    for item in items {
+        if let syn::Item::Impl(block) = item
+            && block.trait_.is_some()
+        {
+            emit_extension(&mut output, &mut table, block)?;
         }
     }
 
@@ -1591,6 +1618,120 @@ fn emit_struct(
     }
     table.finish_at_next(output, record);
     writeln!(output, "}};\n").unwrap();
+    Ok(())
+}
+
+thread_local! {
+    /// Whether the interface of a trait is being emitted: `Self` is then Slang's `This` (slice m9.g1), the type of the
+    /// implementing struct that the interface cannot name.
+    static IN_INTERFACE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Sets [`IN_INTERFACE`] for a scope and restores the previous value when dropped.
+struct InterfaceScope(bool);
+
+impl InterfaceScope {
+    fn enter() -> Self {
+        Self(IN_INTERFACE.with(|flag| flag.replace(true)))
+    }
+}
+
+impl Drop for InterfaceScope {
+    fn drop(&mut self) {
+        IN_INTERFACE.with(|flag| flag.set(self.0));
+    }
+}
+
+/// `trait T { fn m(&self, a: A) -> R; fn n(self) -> Self; fn k(&mut self); }` as a Slang interface (slice m9.g1):
+/// `interface T { R m(A a); This n(); [mutating] void k(); }`. `self` and `&self` are the non-mutating requirement,
+/// `&mut self` is `[mutating]`; `Self` is `This`. The conformance is `extension S : T` ([`emit_extension`]).
+fn emit_interface(
+    output: &mut String,
+    table: &mut LineTable,
+    item: &syn::ItemTrait,
+) -> syn::Result<()> {
+    let record = table.begin(output, item.ident.span());
+    writeln!(output, "interface {}", emit_ident(&item.ident)).unwrap();
+    writeln!(output, "{{").unwrap();
+    let _interface = InterfaceScope::enter();
+    for inner in &item.items {
+        let syn::TraitItem::Fn(method) = inner else {
+            continue;
+        };
+        let signature = &method.sig;
+        let qualifier = match signature.inputs.first() {
+            Some(syn::FnArg::Receiver(receiver))
+                if receiver.reference.is_some() && receiver.mutability.is_some() =>
+            {
+                "[mutating] "
+            }
+            _ => "",
+        };
+        let return_type = match &signature.output {
+            syn::ReturnType::Default => "void".to_owned(),
+            syn::ReturnType::Type(_, ty) => emit_value_type(ty)?,
+        };
+        let mut parameters = Vec::new();
+        for argument in &signature.inputs {
+            if matches!(argument, syn::FnArg::Receiver(_)) {
+                continue;
+            }
+            let (name, ty) = typed_argument(argument)?;
+            parameters.push(format!("{} {}", emit_value_type(ty)?, emit_ident(name)));
+        }
+        writeln!(
+            output,
+            "    {qualifier}{return_type} {}({});",
+            emit_ident(&signature.ident),
+            parameters.join(", ")
+        )
+        .unwrap();
+    }
+    table.finish_at_next(output, record);
+    writeln!(output, "}}\n").unwrap();
+    Ok(())
+}
+
+/// `impl T for S { .. }` as `extension S : T { .. }` (slice m9.g1, spike m9.g0 P5 and P15): the methods are written as the
+/// members of an inherent `impl` are (`this`, `[mutating]`), the conformance is a separate declaration, and it serves a
+/// unit enum as well as a struct. The closures of the methods are hoisted before it, as for a struct.
+fn emit_extension(
+    output: &mut String,
+    table: &mut LineTable,
+    block: &syn::ItemImpl,
+) -> syn::Result<()> {
+    let owner = crate::validate::impl_self_name(block).expect("validated trait impl");
+    let (_, path, _) = block.trait_.as_ref().expect("a trait impl");
+    let trait_name = crate::validate::traits::trait_path_name(path).expect("validated trait impl");
+    let _self_scope = SelfScope::enter(&owner);
+    let methods: Vec<&syn::ImplItemFn> = block
+        .items
+        .iter()
+        .filter_map(|inner| match inner {
+            syn::ImplItem::Fn(method) => Some(method),
+            _ => None,
+        })
+        .collect();
+    for method in &methods {
+        emit_hoisted_closures(output, table, &method.block)?;
+    }
+    let record = table.begin(output, block.impl_token.span);
+    writeln!(
+        output,
+        "extension {} : {}",
+        collisions::emit_name(&owner),
+        collisions::emit_name(&trait_name)
+    )
+    .unwrap();
+    writeln!(output, "{{").unwrap();
+    for (position, method) in methods.iter().enumerate() {
+        if position > 0 {
+            writeln!(output).unwrap();
+        }
+        emit_function(output, table, 1, &method.sig, &method.block)?;
+    }
+    table.finish_at_next(output, record);
+    writeln!(output, "}}\n").unwrap();
     Ok(())
 }
 
@@ -3247,6 +3388,8 @@ fn emit_type(ty: &syn::Type) -> syn::Result<String> {
         "SV_DispatchThreadID" | "LocalId" | "GroupId" | "SV_GroupThreadID" | "SV_GroupID" => {
             "uint3".to_owned()
         }
+        // `Self` in the declaration of a trait is the implementing type, Slang's `This` (slice m9.g1).
+        "Self" if IN_INTERFACE.with(std::cell::Cell::get) => "This".to_owned(),
         // `Self` in an `impl` block is the struct of the block (slice m9.a2).
         "Self" if self_struct().is_some() => {
             collisions::emit_name(&self_struct().expect("guarded by the match arm")).into_owned()

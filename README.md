@@ -1148,6 +1148,12 @@ The direct syntax translator currently supports:
   a method. A closure captures nothing (it uses its parameters, its own locals, the helpers and the methods of the
   module), is not a value (it is not passed, returned or stored) and holds no closure; each one becomes a hoisted Slang
   function. GUST-E0329 to E0332 in [DIAGNOSTICS](docs/DIAGNOSTICS.md); see [SEMANTICS](docs/SEMANTICS.md) section 12;
+- traits with static dispatch (M9, m9.g1, D170): `trait T { fn m(&self) -> R; fn n(self) -> Self; fn k(&mut self, ..); }`
+  (methods with a receiver and no body) and `impl T for S` of a struct or field-less enum of the module. A trait becomes
+  a Slang `interface` and each impl an `extension S : T`; a call is the call of the concrete method, by method syntax or
+  by the path forms `T::m(&s, a)`, `T::m(s, a)` and `<S as T>::m(&s, a)` on a place. No `dyn`, no `impl Trait`, no default
+  bodies, associated items, supertraits or generics (generics and bounds are slice m9.g2). GUST-E0124, E0126 and E0218
+  in [DIAGNOSTICS](docs/DIAGNOSTICS.md); see [SEMANTICS](docs/SEMANTICS.md) section 13;
 - `Option<T>` and `Result<T, T>` as local and helper values, including `if let` and
   a statement-only `match` with `Ok(x)`/`Err(e)` block arms (D14);
 - the vector and matrix types of `gust::math` (`Vec2` to `Vec4`, `IVec2` to `IVec4`, `UVec2` to `UVec4`, `Mat2` to

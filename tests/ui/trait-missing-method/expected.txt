@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: E0046
+file: trait-missing-method/src/main.rs
+line: 15
+message: not all trait items implemented, missing: `perimeter`

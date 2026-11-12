@@ -1,11 +1,14 @@
 //! The conservative call graph of a GPU module (M9 plan 1 item 3, D162; slice m9.a2).
 //!
-//! **Nodes** are the functions that have a body: every helper, every kernel, and every function of an inherent `impl`
-//! block (a method or an associated function), one node per function and impl. **Edges** are drawn from every call in a
-//! body to every node the call could resolve to, with no type inference beyond what the dialect already knows:
+//! **Nodes** are the functions that have a body: every helper, every kernel, and every function of an `impl` block,
+//! inherent or a trait impl (a method or an associated function), one node per function and impl. A `trait` declaration
+//! has no body and no node (slice m9.g1): a call of a trait method is a call of the methods of that name in the impls.
+//! **Edges** are drawn from every call in a body to every node the call could resolve to, with no type inference beyond
+//! what the dialect already knows:
 //!
 //! - `f(..)` is an edge to the helper `f` (a kernel is not callable, so no edge goes to one);
-//! - `x.m(..)` is an edge to **every** method named `m` of every `impl` block, whatever the type of `x` is;
+//! - `x.m(..)` is an edge to **every** method named `m` of every `impl` block, trait impls included, whatever the type
+//!   of `x` is (a trait path call `T::m(&x)` is the same call, written `x.m(..)` before the graph runs);
 //! - `S::f(..)` and `Self::f(..)` are edges to every function `f` of the `impl` blocks of `S` (`Self` is the struct of the
 //!   enclosing `impl`).
 //!
@@ -74,7 +77,7 @@ pub(super) fn check(items: &[syn::Item]) -> syn::Result<()> {
                     block: &function.block,
                 });
             }
-            syn::Item::Impl(block) if block.trait_.is_none() => {
+            syn::Item::Impl(block) => {
                 let Some(owner) = impl_self_name(block) else {
                     continue;
                 };

@@ -150,9 +150,9 @@ Decision: D02.
 
 ### GUST-E0102 unsupported module item
 
-A GPU module holds functions, plain structs, field-less enums (GUST-E0122) and the inherent `impl` blocks of its structs (several blocks for one struct are allowed).
+A GPU module holds functions, plain structs, field-less enums (GUST-E0122), the inherent `impl` blocks of its structs (several blocks for one struct are allowed) and, since slice m9.g1, traits of the module (GUST-E0124) with their impls.
 Reached through `#[gpu]`.
-Rejected: `const`, `static`, `trait`, `use`, nested `mod`, type aliases; an `impl` that is an `unsafe impl`, a trait impl (`impl Clone for S`), an associated `const` or an associated type, a `Self` anywhere but inside an `impl` block (inside one it is the struct of the block, in a type, a struct literal or a path such as `Self::make()`). A path call of a function that has a receiver (`S::area(c)`; write `c.area()`) or of an associated function that no struct has (`S::nowhere()`) is GUST-E0302, not this code. Methods and associated functions are accepted since M9 slices m9.a1 and m9.a2.
+Rejected: `const`, `static`, `use`, nested `mod`, type aliases; an `impl` that is an `unsafe impl`, a trait impl of a trait the module does not declare (`impl Clone for S`), a negative impl, an associated `const` or an associated type, a `Self` anywhere but inside an `impl` block (inside one it is the struct of the block, in a type, a struct literal or a path such as `Self::make()`). A path call of a function that has a receiver (`S::area(c)`; write `c.area()`) or of an associated function that no struct has (`S::nowhere()`) is GUST-E0302, not this code. Methods and associated functions are accepted since M9 slices m9.a1 and m9.a2.
 Write instead: pass constants as uniform or value parameters, or write them inline.
 Decision: D02, D133 (methods), D154.
 
@@ -258,7 +258,7 @@ Decision: D02.
 
 An attribute with no proven Rust-to-Slang meaning cannot be silently dropped.
 Allowed attributes: `doc`, `allow`, `warn`, `deny`, `forbid`, `derive` (on structs),
-and `kernel`.
+and `kernel`. A `trait` takes `doc`, `allow`, `warn`, `deny` and `forbid` only (slice m9.g1).
 Reached through `#[gpu]`.
 Rejected: `#[cfg(..)]`, `#[inline]`, `#[must_use]` and every other attribute. On an `impl` block only `doc`, `allow`, `warn`, `deny` and `forbid` are accepted (`#[derive(..)]` and `#[kernel]` are errors in rustc there, `#[cfg(..)]` would let the Slang and the twin disagree about the methods).
 Write instead: remove the attribute.
@@ -299,7 +299,7 @@ Decision: D42 (M7 plan 4.2 rule 4, slice m7.g1).
 
 ### GUST-E0120 recursive call
 
-Recursion has no GPU lowering, and the dialect keeps its call graph acyclic. The check builds a conservative graph of the module from names alone, without types: a call `f(..)` is an edge to the helper `f`, a call `x.m(..)` is an edge to every method named `m` of every `impl` block, and a path call `S::f(..)` or `Self::f(..)` is an edge to the function `f` of the blocks of `S`. A cycle is reported at the call that closes it, with the chain (`a -> b -> a`). Because the receiver's type is not known, a method that calls another struct's method of the same name is a cycle too (the message says so); rename one of them. The graph carries no uniformity: every callee is validated as a helper (value parameters only, no barrier, subgroup operation, atomic or buffer access), which keeps D154 closed.
+Recursion has no GPU lowering, and the dialect keeps its call graph acyclic. The check builds a conservative graph of the module from names alone, without types: a call `f(..)` is an edge to the helper `f`, a call `x.m(..)` is an edge to every method named `m` of every `impl` block, and a path call `S::f(..)` or `Self::f(..)` is an edge to the function `f` of the blocks of `S`. The methods of trait impls are nodes like the methods of inherent blocks, and a trait path call `T::m(&x)` is the call `x.m()` (slice m9.g1), so a trait method that calls itself, or a wrapper whose `area` calls `inner.area()` (the same name, by name), is a cycle. A cycle is reported at the call that closes it, with the chain (`a -> b -> a`). Because the receiver's type is not known, a method that calls another struct's method of the same name is a cycle too (the message says so); rename one of them. The graph carries no uniformity: every callee is validated as a helper (value parameters only, no barrier, subgroup operation, atomic or buffer access), which keeps D154 closed.
 Reached through `#[gpu]`.
 Rejected: `fn f(n: u32) -> u32 { f(n - 1u32) }`, `fn a() { b() } fn b() { a() }`, `impl S { fn go(&self) { self.go() } }`, and a helper that calls a method that calls the helper.
 Write instead: a `for` loop with a fixed trip count that does the same work.
@@ -308,14 +308,14 @@ Decision: D162 (M9 plan 1 item 3, slice m9.a2).
 
 ### GUST-E0121 `impl` for a type the module does not define
 
-An `impl` block of a GPU module must be an inherent block (`impl S { .. }`) of a struct declared in the same module, so that the methods become members of the generated Slang struct. A trait impl with a blanket form (`impl<T> Anything for T`), an impl for a type that is not a struct of the module (a built-in vector or matrix, a tuple, a path to another module, an undeclared name) is rejected with this code. Several inherent blocks for one struct are accepted (slice m9.a2), and so is the path form `impl self::S`; an attribute on an `impl` block (`#[cfg(..)]`, `#[inline]`) is GUST-E0115, and a trait impl for a module struct is GUST-E0102. A generic impl or method is GUST-E0114.
+An `impl` block of a GPU module must be an inherent block (`impl S { .. }`) of a struct declared in the same module, so that the methods become members of the generated Slang struct; a trait impl (`impl T for S { .. }`, slice m9.g1) has the same rule for its type, a struct or a field-less enum of the module. A blanket impl (`impl<T> Anything for T`), an impl for a type that is not a struct or enum of the module (a built-in scalar, vector or matrix, a tuple, a path to another module, an undeclared name) is rejected with this code. Several inherent blocks for one struct are accepted (slice m9.a2), and so is the path form `impl self::S`; an attribute on an `impl` block (`#[cfg(..)]`, `#[inline]`) is GUST-E0115. A generic impl or method is GUST-E0114.
 Reached through `#[gpu]`.
-Rejected: `impl Elsewhere { .. }`, `impl Mat4 { .. }`, `impl<T> Anything for T { }`, `impl (u32, u32) { }`.
+Rejected: `impl Elsewhere { .. }`, `impl Mat4 { .. }`, `impl<T> Anything for T { }`, `impl (u32, u32) { }`, `impl Shape for u32 { .. }`.
 Write instead: declare the struct in the same `#[gpu]` module and put the methods in its `impl` block.
-Fixture: `tests/ui/method-impl-foreign` (`cargo xtask check-ui`, `code: none` plus the message).
+Fixture: `tests/ui/method-impl-foreign`, `tests/ui/trait-foreign-impl` and `tests/ui/trait-blanket-impl` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D154 (M9 plan 2.1, slice m9.a1).
 
-An `impl` block for an enum of the module (`impl Mode { .. }`) is this code too, with the message "methods on an enum are not supported": enums have no methods in M9 (slice m9.e1); write a free function that takes the enum.
+An `impl` block for an enum of the module (`impl Mode { .. }`) is this code too, with the message "methods on an enum are not supported": an inherent `impl` is for a struct (slice m9.e1); write a free function that takes the enum, or implement a trait of the module for it (slice m9.g1).
 
 ### GUST-E0122 enum shape outside the contract
 
@@ -326,6 +326,24 @@ Write instead: the shape above; for a value with data, use a struct and an integ
 Name collisions (not checked by the macro, loud in slangc, and the same for a struct): an enum named like a Slang modifier that the emitter does not rename, or like a function of the module, gives a slangc error at the declaration or a use, not a silent change; rename the enum. Names that every identifier shares (`class`, `new` ..) are renamed by the emitter and are no clash.
 Fixture: `tests/ui/enum-data-variant`, `tests/ui/enum-discriminant`, `tests/ui/enum-no-partialeq` and `tests/ui/enum-cast-type` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D157 (M9 plan 2.2, slice m9.e1).
+
+### GUST-E0124 trait form outside the contract
+
+A `#[gpu]` module accepts a trait that declares methods with a receiver (`&self`, `&mut self` or `self`) and no body, and `impl Trait for S` of a struct or field-less enum of the module (slice m9.g1, D170). The trait lowers to a Slang `interface`, each impl to an `extension S : Trait`, and a call to the concrete method: dispatch is static. A `&mut self` method becomes `[mutating]`; `Self` in a signature is `This`. Everything else about a trait is refused with this code: an `unsafe` or `auto` trait, a default method body, an associated type, constant or function without a receiver, a supertrait (`trait B: A`), a generic trait or method, an `async`, `const`, `unsafe`, `extern` or variadic method, and in an impl any item that is not a method (an associated `const` or type). A `&mut self` method in the impl of an enum is this code too: an enum is a value of the module with no fields to write, and that form is not part of this slice. Bounds and generics are slice m9.g2.
+Reached through `#[gpu]`.
+Rejected: `trait T { fn m(&self) -> u32 { 1u32 } }`, `trait T { type X; }`, `trait T { const N: u32; }`, `trait B: A { .. }`, `trait T<A> { .. }`, `trait T { fn m<A>(&self); }`, `trait T { fn make() -> u32; }`, `impl T for E { fn bump(&mut self) { .. } }` for an enum `E`.
+Write instead: declare the method without a body and implement it in each impl; share code with a helper function.
+Fixture: `tests/ui/trait-default-body`, `tests/ui/trait-assoc-type`, `tests/ui/trait-supertrait` and `tests/ui/trait-generic` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D170 (M9 plan 2.6, slice m9.g1).
+
+### GUST-E0126 trait path call without a place receiver
+
+A trait method may be called as a path, `T::m(&s, a)`, `T::m(s, a)` or `<S as T>::m(&s, a)` (also `<S as self::T>::m(..)`), and the call lowers to `s.m(a)` (slice m9.g1). The first argument is the receiver and must be a place: a local, a parameter, a field or an element of one, optionally under one `&` or `&mut`. `T::m(s, a)` is by-value `self` when `m` takes `self`, and `T::m(&s, a)` is `&self`. The rewrite runs on the copy that validation and Slang emission read; the CPU twin and the typecheck item keep the path call as written, so rustc checks it. A receiver that is a call, a literal or any other expression, and a call with no argument, is this code. The spelling `self::T::m(&s)` is not recognised and is GUST-E0302 (write `T::m(&s)`).
+Reached through `#[gpu]`.
+Rejected: `T::get(&make())`, `T::get(make())`, `T::get()`.
+Write instead: bind the value to a local first, `let s = make(); T::get(&s)`.
+Fixture: `tests/ui/trait-path-receiver` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D170 (M9 plan 2.6, slice m9.g1).
 
 ## E02xx: types
 
@@ -475,6 +493,15 @@ Rejected: `[[u32; 2]; 2]`, `[(u32, u32); 2]`, `[Option<u32>; 2]`, `[&u32; 2]`, `
 Write instead: a struct with a field per column, or one array per row.
 Fixture: `tests/ui/array-nested` and `tests/ui/array-in-field` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D159 (M9 plan 2.4, slice m9.r1).
+
+### GUST-E0218 trait used as a type
+
+A trait of the module is not a type: dispatch is static (slice m9.g1, D170), so there is no trait object and no `impl Trait` argument or result. A `dyn Trait`, an `impl Trait` in any type position, and a module trait named as a type (a parameter, a field, a local annotation) are this code. Generic bounds (`fn f<A: T>(a: A)`) are slice m9.g2.
+Reached through `#[gpu]`.
+Rejected: `fn f(x: &dyn Shape)`, `fn f(x: impl Shape)`, `fn f() -> impl Shape`, `struct H { t: Shape }`, `let a: Shape = ..;`.
+Write instead: the concrete struct or enum, `fn f(x: Rect)`; for several shapes, one function per type or a helper both call.
+Fixture: `tests/ui/trait-dyn` and `tests/ui/trait-impl-arg` (`cargo xtask check-ui`, `code: none` plus the message). A trait-typed field or local has no UI fixture, because rustc adds its own E0782 beside the macro's error and a fixture holds exactly one; the unit test `each_trait_refusal_carries_its_code` covers both.
+Decision: D170 (M9 plan 2.6, slice m9.g1).
 
 ## E03xx: expressions and calls
 
@@ -751,6 +778,11 @@ Write instead: another name, `length`, `radius_value`, `get_v`.
 Fixture: `tests/ui/method-name-clash` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D154 (M9 plan 2.1, slice m9.a1).
 
+A trait method follows the same rule (slice m9.g1, the P18 ruling of spike m9.g0): its name must not be a name of the dialect or a reserved one, must not be a field of an implementing struct, and must not be the name of an inherent method of an implementing type, because slangc accepts an inherent method and an extension method of one name silently and the call would pick one of them. Two traits that declare one method name must not be implemented by the same type, for the same reason.
+Rejected (trait): `trait T { fn len(&self) -> u32; }`, `impl S { fn area(&self) -> u32 { .. } }` next to `impl Shape for S { fn area(&self) -> u32 { .. } }`, `trait A { fn go(&self); } trait B { fn go(&self); }` both implemented for `S`.
+Write instead (trait): another name for the inherent method, or one trait method.
+Fixture (trait): `tests/ui/trait-inherent-clash` and `tests/ui/trait-reserved-name` (`cargo xtask check-ui`, `code: none` plus the message).
+
 A closure binding follows the same rule (slice m9.c): the name of a closure (`let f = |x: f32| -> f32 { .. };`) must not be a helper, a method, a name of the dialect (`Some`, `Ok`, `Err`, `None`, the barrier, the subgroup and atomic operations) or any other binding of its function (a parameter, a local, a loop variable, a pattern binding or another closure), so that a call `f(..)` has one meaning. Two closures of the same name in two different functions are fine. A Slang keyword is no clash: the closure is hoisted under a generated name and its own name is never emitted.
 Rejected (closure): `let helper = |x: f32| -> f32 { x };` next to `fn helper`, `let x = 1.0f32; let x = |a: f32| -> f32 { a };`, two closures `f` in one function.
 Write instead (closure): a name that only this closure has.
@@ -799,7 +831,8 @@ A method that takes `&mut self` or `self` would write through its receiver. On a
 Reached through `#[gpu]`.
 Rejected: `out[0].bump()` and `out[i].bump()` for a storage parameter `out`, `u.bump()` for a uniform, `scratch[l].bump()` for a workgroup array, when a method `bump` takes `&mut self`; `lid.bump()` and `gid.bump()` (invocation ids) too. A texture receiver (`tex.bump()`) is GUST-E0735 instead, because the texture methods are checked first.
 Write instead: copy the element to a local, call the method on the local and store the result, `let mut c = out[i]; c.bump(); out[i] = c;`.
-Fixture: `tests/ui/method-mut-on-storage` (`cargo xtask check-ui`, `code: none` plus the message).
+A `&mut self` or `self` method of a trait impl counts like an inherent one (slice m9.g1), and so does a trait path call, which is the method call before the check runs: `Shape::grow(&mut bufs[i], 1u32)` is this code.
+Fixture: `tests/ui/method-mut-on-storage` and `tests/ui/trait-mut-on-storage` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D154 (M9 plan 2.1, X1 of spike M9.s0, slice m9.a1).
 
 ### GUST-E0334 `usize` outside an index

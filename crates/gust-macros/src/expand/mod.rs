@@ -455,7 +455,10 @@ fn expand_validated_with(
     plan: &variant::VariantPlan,
     request: &routing::Request<'_>,
 ) -> syn::Result<TokenStream> {
-    let original_module = module.clone();
+    // What the classifier and the emitter read: the module with every trait path call written as the method call it
+    // lowers to (slice m9.g1). The twin and the typecheck item keep the tokens as the user wrote them.
+    let original_module =
+        crate::validate::traits::desugar(&module)?.unwrap_or_else(|| module.clone());
     let module_name = module.ident.to_string();
     let manifest_dir = environment.manifest_dir.as_deref();
     // The crate's declarations (`[package.metadata.gust]`): read in every build, a CPU build included, because the

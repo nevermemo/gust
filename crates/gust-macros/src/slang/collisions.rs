@@ -212,14 +212,75 @@ pub const COLLISIONS: &[Collision] = &[
     hard("while", &[Struct, Global]),
 ];
 
-/// Whether `text` (already without a raw prefix) is in the table.
+/// The interfaces the standard module of the pinned slangc declares (slice m9.g1), read from the interface declarations
+/// embedded in `bin/slang-compiler.dll` of slangc 2026.21 (`grep -a -o -E "interface +(I[A-Z][A-Za-z0-9]+|__[A-Za-z0-9_]+)"`;
+/// `IFoo` is a doc comment's example and is left out). A user `trait IFloat` becomes `interface IFloat` next to the
+/// standard module's own. Measured on 2026.21 (WGSL, slice m9.g1): a user interface of each of nine of these names
+/// (`IFloat`, `IInteger`, `IComparable`, `IArithmetic`, `ILogical`, `IDefaultInitializable`, `IFunc`, `IArray`,
+/// `IRWArray`) with a struct and an enum conforming still compiles, the user's declaration shadowing the standard one,
+/// so none is a class-1 failure; they are renamed like the table's names so that no later use of a bound (`T : IFloat`
+/// of a generic helper) can reach the standard interface, and a slangc message names the Rust spelling again after
+/// `strip_rename_prefix`. Sorted by byte and without duplicates, as the table is (a test pins both). Not class 1 or 2:
+/// the Slangc-tier table tests do not read this list.
+pub const STDLIB_INTERFACES: &[&str] = &[
+    "IArithmetic",
+    "IArithmeticAtomicable",
+    "IArray",
+    "IAtomicable",
+    "IBackwardDifferentiable",
+    "IBitAtomicable",
+    "IBufferDataLayout",
+    "IBwdCallable",
+    "IComparable",
+    "ICoopElement",
+    "IDefaultInitializable",
+    "IDiffTensorWrapper",
+    "IDifferentiable",
+    "IDifferentiableArithmetic",
+    "IDifferentiableFunc",
+    "IDifferentiableMutatingFunc",
+    "IDifferentiablePtrType",
+    "IFloat",
+    "IFloatingPointCoopElement",
+    "IForwardDifferentiable",
+    "IFunc",
+    "IInteger",
+    "ILogical",
+    "IMutatingFunc",
+    "IOpaqueDescriptor",
+    "IPhysicalBuffer",
+    "IRWArray",
+    "IRWPhysicalBuffer",
+    "IRangedValue",
+    "ITexelElement",
+    "__BuiltinArithmeticType",
+    "__BuiltinFloatingPointType",
+    "__BuiltinInt32Type",
+    "__BuiltinInt64Type",
+    "__BuiltinIntegerType",
+    "__BuiltinLogicalType",
+    "__BuiltinRealType",
+    "__BuiltinSamplerFeedbackType",
+    "__BuiltinScalarType",
+    "__BuiltinSignedArithmeticType",
+    "__BuiltinType",
+    "__EnumType",
+    "__IDynamicResourceCastable",
+    "__IMinMax",
+    "__ITextureShape",
+    "__ITextureShape1D2D3D",
+];
+
+/// Whether `text` (already without a raw prefix) is in the table or names an interface of Slang's standard module.
 pub fn collides(text: &str) -> bool {
     COLLISIONS
         .binary_search_by(|entry| entry.name.cmp(text))
         .is_ok()
+        || STDLIB_INTERFACES.binary_search(&text).is_ok()
 }
 
-/// The Slang spelling of a user name: the name itself, or `__gust_r_<name>` when it is in the table.
+/// The Slang spelling of a user name: the name itself, or `__gust_r_<name>` when it is in the table or names an interface
+/// of the standard module.
 ///
 /// A pure function of the text, so every site agrees without scope analysis. It is injective because user names that
 /// start with `__gust_` are rejected (E0901), and the inverse is "delete the prefix where an emitted name starts" (`strip_rename_prefix` in `crates/gust/src/slang/mod.rs`).

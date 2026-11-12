@@ -155,6 +155,17 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   kernels shaped like the investigations' programs and expects the defect's wrong values on the RTX 5090 (Vulkan) and
   Rust's values on other non-NVIDIA adapters, so a driver or toolchain change that makes these programs compute Rust's
   values fails the test, the cue to re-measure.
+- Traits with static dispatch (M9, slice g1, D170). `trait T { fn m(&self) -> R; fn n(self) -> Self; fn k(&mut self, ..); }`
+  with methods that have a receiver and no body, and `impl T for S` for a struct or a field-less enum of the module. A
+  trait lowers to a Slang `interface` and each impl to an `extension S : T`; a call is the concrete method, by method
+  syntax or by `T::m(&s, a)`, `T::m(s, a)` and `<S as T>::m(&s, a)` on a place (the path forms are rewritten to
+  `s.m(a)` for validation and Slang only; the CPU twin keeps the call as written). New: `GUST-E0124` (a trait form
+  outside the contract: a default body, an associated item, a supertrait, a generic trait or method, `&mut self` on an
+  enum), `GUST-E0126` (a path call whose receiver is not a place) and `GUST-E0218` (`dyn`, `impl Trait`, a trait used
+  as a type). `GUST-E0121` also covers a trait impl for a foreign type and a blanket impl; `GUST-E0328` also covers a
+  trait method named like an inherent method of an implementing type, or declared by two traits one type implements.
+  A trait impl was `GUST-E0102` or `GUST-E0121` before. The Slang names of the stdlib interfaces (`IFloat`, `IInteger`,
+  ..) are renamed in a user trait. Generics and bounds are slice g2.
 - Fixed (m9.f1): a method call with a `<` comparison argument before another argument, such as `s.m(a < b, c)`, failed in slangc with an undefined `__gust_keep`, because the scan that defines that helper did not visit method calls.
 - Fixed (m9.shift): a constant shift amount outside 0..32 (`x << 34u32`, `v >>= 32`) is refused with `GUST-E0335`;
   rustc refuses it when building, and naga used to reject the generated WGSL with an error that was not a GUST

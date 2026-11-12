@@ -13,6 +13,7 @@ mod barrier;
 mod callgraph;
 pub(crate) mod classify;
 pub(crate) mod limits;
+pub(crate) mod traits;
 
 pub(crate) use barrier::{is_barrier_call, subgroup_operation, workgroup_array};
 
@@ -568,15 +569,23 @@ pub(crate) fn validate_module_in(
     stage: &dyn StageProfile,
     module: &syn::ItemMod,
 ) -> syn::Result<()> {
-    let Some((_, items)) = &module.content else {
+    if module.content.is_none() {
         return Err(diagnostics::error(
             Code::InlineModuleRequired,
             module,
             "#[gpu] requires an inline module; use `#[gpu] mod name { ... }`",
         ));
-    };
+    }
+    // A trait path call (`T::m(&s, a)`, `<S as T>::m(&s, a)`) is judged as the method call it lowers to (slice m9.g1);
+    // a module without a trait is judged as written.
+    let desugared = traits::desugar(module)?;
+    let module = desugared.as_ref().unwrap_or(module);
+    let (_, items) = module.content.as_ref().expect("checked above");
 
     let function_names = helper_names(module);
+    let trait_table = traits::trait_table(items);
+    // `dyn`, `impl Trait` and a trait as a type come before every other check of a type (GUST-E0218).
+    traits::check_type_uses(items, &trait_table)?;
     let methods = method_table(items);
     let struct_fields: HashMap<String, HashSet<String>> = items
         .iter()
@@ -608,6 +617,14 @@ pub(crate) fn validate_module_in(
     check_tuple_layout(stage, items)?;
     check_array_layout(stage, items)?;
 
+    let context = ImplContext {
+        function_names: &function_names,
+        result_helpers: &result_helpers,
+        methods: &methods,
+        struct_fields: &struct_fields,
+        traits: &trait_table,
+        items,
+    };
     for item in items {
         match item {
             syn::Item::Fn(function) => {
@@ -634,22 +651,14 @@ pub(crate) fn validate_module_in(
                 )?
             }
             syn::Item::Struct(item) => validate_struct(item)?,
-            syn::Item::Impl(item) => validate_impl(
-                stage,
-                item,
-                &ImplContext {
-                    function_names: &function_names,
-                    result_helpers: &result_helpers,
-                    methods: &methods,
-                    struct_fields: &struct_fields,
-                },
-            )?,
+            syn::Item::Impl(item) => validate_impl(stage, item, &context)?,
+            syn::Item::Trait(item) => validate_trait(stage, item, &context)?,
             syn::Item::Enum(item) => validate_enum(item)?,
             _ => {
                 return Err(diagnostics::error(
                     Code::UnsupportedModuleItem,
                     item,
-                    "GPU modules may currently contain only functions, plain structs, field-less enums and `impl` blocks of those structs; traits, constants, `use` items and type aliases are not accepted",
+                    "GPU modules may currently contain only functions, plain structs, field-less enums, traits with methods only and `impl` blocks of those structs and enums; constants, `use` items and type aliases are not accepted",
                 ));
             }
         }
@@ -1028,6 +1037,10 @@ struct ImplContext<'a> {
     result_helpers: &'a HashSet<String>,
     methods: &'a MethodTable,
     struct_fields: &'a HashMap<String, HashSet<String>>,
+    /// The traits of the module with their method names (slice m9.g1).
+    traits: &'a traits::Traits,
+    /// The items of the module, for the checks of a trait impl that look at the other `impl` blocks.
+    items: &'a [syn::Item],
 }
 
 /// The struct an `impl` block is for, while its methods are validated: `Self` is its name, and its fields are the
@@ -1062,23 +1075,38 @@ fn validate_impl(
             ));
         }
     }
-    if let Some((_, path, _)) = &item.trait_ {
+    // `impl T for S` of a trait the module declares (slice m9.g1); any other trait impl is refused here.
+    let mut implemented = None;
+    if let Some((negation, path, _)) = &item.trait_ {
         let blanket = item.generics.type_params().any(|parameter| {
             matches!(item.self_ty.as_ref(), syn::Type::Path(own) if own.qself.is_none() && own.path.is_ident(&parameter.ident))
         });
-        return Err(if blanket {
-            diagnostics::error(
+        if blanket {
+            return Err(diagnostics::error(
                 Code::ImplForeignType,
                 item,
-                "a blanket `impl` is not part of the dialect: implement methods for a struct of this module",
-            )
-        } else {
-            diagnostics::error(
-                Code::UnsupportedModuleItem,
-                path,
-                "trait impls are not accepted yet: write the methods in an inherent `impl S { .. }`",
-            )
-        });
+                "a blanket `impl` is not part of the dialect: implement a trait for a struct or a unit enum of this module",
+            ));
+        }
+        let declared =
+            traits::trait_path_name(path).filter(|name| context.traits.contains_key(name));
+        match declared {
+            Some(_) if negation.is_some() => {
+                return Err(diagnostics::error(
+                    Code::UnsupportedModuleItem,
+                    item,
+                    "a negative impl (`impl !T for S`) is not part of the dialect",
+                ));
+            }
+            Some(name) => implemented = Some(name),
+            None => {
+                return Err(diagnostics::error(
+                    Code::UnsupportedModuleItem,
+                    path,
+                    "a trait impl is for a trait declared in this `#[gpu]` module (`trait T { fn m(&self); }`); other traits (`Clone`, `Default`, operators) have no GPU lowering: write the methods in an inherent `impl S { .. }`",
+                ));
+            }
+        }
     }
     if !item.generics.params.is_empty() || item.generics.where_clause.is_some() {
         return Err(diagnostics::error(
@@ -1088,26 +1116,41 @@ fn validate_impl(
         ));
     }
     let name = impl_self_name(item).unwrap_or_default();
-    let Some(fields) = context.struct_fields.get(&name) else {
-        let message = if context.methods.enums.contains_key(&name) {
-            "methods on an enum are not supported: an `impl` is for a struct defined in this `#[gpu]` module; write a free function that takes the enum"
-        } else {
-            "an `impl` is for a struct defined in this `#[gpu]` module; a type from elsewhere has no Slang definition to hold the methods"
-        };
-        return Err(diagnostics::error(
-            Code::ImplForeignType,
-            &item.self_ty,
-            message,
-        ));
+    let no_fields = HashSet::new();
+    let fields = match context.struct_fields.get(&name) {
+        Some(fields) => fields,
+        // A unit enum has no fields, and a trait is implemented for it (g0 P15); an inherent `impl` of an enum is not.
+        None if implemented.is_some() && context.methods.enums.contains_key(&name) => &no_fields,
+        None => {
+            let message = if implemented.is_some() {
+                "a trait impl is for a struct or a unit enum defined in this `#[gpu]` module; a type from elsewhere has no Slang definition to hold the methods"
+            } else if context.methods.enums.contains_key(&name) {
+                "methods on an enum are not supported: an inherent `impl` is for a struct defined in this `#[gpu]` module; write a free function that takes the enum, or implement a trait of the module for it"
+            } else {
+                "an `impl` is for a struct defined in this `#[gpu]` module; a type from elsewhere has no Slang definition to hold the methods"
+            };
+            return Err(diagnostics::error(
+                Code::ImplForeignType,
+                &item.self_ty,
+                message,
+            ));
+        }
     };
     let owner = Owner {
         name: &name,
         fields,
     };
+    if let Some(trait_name) = &implemented {
+        check_trait_impl(item, trait_name, &name, context)?;
+    }
     for inner in &item.items {
         let syn::ImplItem::Fn(method) = inner else {
             return Err(diagnostics::error(
-                Code::UnsupportedModuleItem,
+                if implemented.is_some() {
+                    Code::TraitFeature
+                } else {
+                    Code::UnsupportedModuleItem
+                },
                 inner,
                 "an `impl` of a GPU module holds methods only: associated constants, types and macros are not accepted",
             ));
@@ -1115,6 +1158,263 @@ fn validate_impl(
         validate_method(stage, method, &owner, context)?;
     }
     Ok(())
+}
+
+/// The checks of an `impl Trait for S` that look at the whole module (slice m9.g1): the shape of its functions, the
+/// P18 rule and the shared names. `owner_type` is the struct or enum `S`.
+fn check_trait_impl(
+    item: &syn::ItemImpl,
+    trait_name: &str,
+    owner_type: &str,
+    context: &ImplContext<'_>,
+) -> syn::Result<()> {
+    let is_enum = context.methods.enums.contains_key(owner_type);
+    // Every member of an inherent `impl` of the type, method or associated function: Slang has one namespace for them
+    // (g0 P18: the same name in the struct and in an `extension` is accepted silently, and `s.m()` then reaches the
+    // inherent one where Rust's `Trait::m(&s)` names the trait's; the same signature inside the struct is slangc E30201).
+    let inherent: HashSet<String> = context
+        .items
+        .iter()
+        .filter_map(|other| match other {
+            syn::Item::Impl(block)
+                if block.trait_.is_none()
+                    && impl_self_name(block).is_some_and(|name| name == owner_type) =>
+            {
+                Some(block)
+            }
+            _ => None,
+        })
+        .flat_map(|block| &block.items)
+        .filter_map(|inner| match inner {
+            syn::ImplItem::Fn(method) => Some(method.sig.ident.unraw().to_string()),
+            _ => None,
+        })
+        .collect();
+    for inner in &item.items {
+        let syn::ImplItem::Fn(method) = inner else {
+            continue;
+        };
+        let name = method.sig.ident.unraw().to_string();
+        let Some(receiver) = receiver_of(&method.sig) else {
+            return Err(diagnostics::error(
+                Code::TraitFeature,
+                &method.sig,
+                format!(
+                    "`{name}` has no receiver: the functions of a trait impl are methods (`&self`, `&mut self` or `self`); an associated function belongs in an inherent `impl`"
+                ),
+            ));
+        };
+        if is_enum && receiver_is_ref_mut(receiver) {
+            return Err(diagnostics::error(
+                Code::TraitFeature,
+                receiver,
+                format!(
+                    "`{name}` takes `&mut self` and `{owner_type}` is an enum: a method cannot assign its receiver (`*self = ..` has no lowering), so a `&mut self` method is for a struct; take `self` and return the new value"
+                ),
+            ));
+        }
+        if inherent.contains(&name) {
+            return Err(diagnostics::error(
+                Code::MethodNameClash,
+                &method.sig.ident,
+                format!(
+                    "`{name}` is a method of the trait `{trait_name}` and also a member of an inherent `impl {owner_type}`: Rust's `{trait_name}::{name}(&value)` names the trait's method, but the lowering to `value.{name}()` would reach the inherent one in Slang; rename one of them"
+                ),
+            ));
+        }
+    }
+    // Two traits that declare one method name, implemented by one type: the same reason.
+    for other in context.items {
+        let syn::Item::Impl(block) = other else {
+            continue;
+        };
+        let Some((_, path, _)) = &block.trait_ else {
+            continue;
+        };
+        if std::ptr::eq(block, item) || impl_self_name(block).is_none_or(|name| name != owner_type)
+        {
+            continue;
+        }
+        let Some(other_trait) = traits::trait_path_name(path) else {
+            continue;
+        };
+        if other_trait == trait_name {
+            continue;
+        }
+        if let Some((method, other)) =
+            traits::shared_name_problem(context.traits, trait_name, &other_trait)
+        {
+            return Err(diagnostics::error(
+                Code::MethodNameClash,
+                path,
+                format!(
+                    "`{owner_type}` implements the traits `{trait_name}` and `{other}`, which both declare a method `{method}`: a call `{trait_name}::{method}(&value)` names one of them in Rust, and `value.{method}()` in Slang could not; rename the method in one trait"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Checks one `trait` item (slice m9.g1): methods only, without a body, no supertraits, no generics, no associated
+/// items; every method has a receiver, a name the dialect does not use, and a signature judged as a helper's.
+fn validate_trait(
+    stage: &dyn StageProfile,
+    item: &syn::ItemTrait,
+    context: &ImplContext<'_>,
+) -> syn::Result<()> {
+    let name = item.ident.unraw().to_string();
+    if item.unsafety.is_some() || item.auto_token.is_some() || item.restriction.is_some() {
+        return Err(diagnostics::error(
+            Code::TraitFeature,
+            item,
+            "a trait of a GPU module is a plain `trait T { .. }`: not `unsafe`, not `auto`",
+        ));
+    }
+    for attribute in &item.attrs {
+        if let Some(message) = impl_attribute_refusal(attribute) {
+            return Err(diagnostics::error(
+                Code::UnsupportedAttribute,
+                attribute,
+                message,
+            ));
+        }
+    }
+    if math_types::is_reserved_type_name(&name) {
+        return Err(diagnostics::error(
+            Code::ReservedTypeName,
+            &item.ident,
+            format!(
+                "`{name}` is a type the dialect maps to a Slang type itself, so a trait cannot be named that; choose another name"
+            ),
+        ));
+    }
+    if !item.generics.params.is_empty() || item.generics.where_clause.is_some() {
+        return Err(diagnostics::error(
+            Code::TraitFeature,
+            &item.generics,
+            "a generic trait (`trait T<X>`, a lifetime, a `where` clause) is not part of the dialect: a trait is a plain list of methods",
+        ));
+    }
+    if !item.supertraits.is_empty() {
+        return Err(diagnostics::error(
+            Code::TraitFeature,
+            &item.supertraits,
+            "a supertrait (`trait T: U`) is not part of the dialect: declare the methods of both in one trait, or keep two traits",
+        ));
+    }
+    for inner in &item.items {
+        let syn::TraitItem::Fn(method) = inner else {
+            return Err(diagnostics::error(
+                Code::TraitFeature,
+                inner,
+                "a trait of a GPU module declares methods only: an associated type or constant is not part of the dialect",
+            ));
+        };
+        if let Some(default) = &method.default {
+            return Err(diagnostics::error(
+                Code::TraitFeature,
+                default,
+                "a default method body is not part of the dialect: write the body in each `impl Trait for S`",
+            ));
+        }
+        if let Some(attribute) = method.attrs.iter().find(|attribute| {
+            attribute.path().is_ident("kernel")
+                || attribute.path().is_ident("variant")
+                || is_gpu_attribute(attribute)
+        }) {
+            return Err(diagnostics::error(
+                Code::UnsupportedAttribute,
+                attribute,
+                "a method cannot be a kernel or a variant: kernels are free functions of the module",
+            ));
+        }
+        let signature = &method.sig;
+        let method_name = signature.ident.unraw().to_string();
+        if !signature.generics.params.is_empty() || signature.generics.where_clause.is_some() {
+            return Err(diagnostics::error(
+                Code::TraitFeature,
+                &signature.generics,
+                "a generic trait method is not part of the dialect yet (generic helpers and methods are a later slice)",
+            ));
+        }
+        if signature.asyncness.is_some()
+            || signature.constness.is_some()
+            || signature.unsafety.is_some()
+            || signature.abi.is_some()
+            || signature.variadic.is_some()
+        {
+            return Err(diagnostics::error(
+                Code::TraitFeature,
+                signature,
+                "a trait method is a plain `fn m(&self, ..)`: not `async`, `const`, `unsafe` or `extern`",
+            ));
+        }
+        let Some(receiver) = receiver_of(signature) else {
+            return Err(diagnostics::error(
+                Code::TraitFeature,
+                signature,
+                format!(
+                    "`{method_name}` has no receiver: a trait of a GPU module declares methods (`&self`, `&mut self` or `self`); an associated function belongs in an inherent `impl`"
+                ),
+            ));
+        };
+        if receiver.colon_token.is_some() {
+            return Err(diagnostics::error(
+                Code::SelfParameter,
+                receiver,
+                "write the receiver as `self`, `&self` or `&mut self`: a typed `self: Type` receiver is not accepted",
+            ));
+        }
+        if receiver.reference.is_none() && receiver.mutability.is_some() {
+            return Err(diagnostics::error(
+                Code::SelfParameter,
+                receiver,
+                "`mut self` is not accepted: a method that changes its receiver takes `&mut self`, and a method that takes `self` by value reads its copy only",
+            ));
+        }
+        if let Some(message) = method_name_clash(&method_name, &HashSet::new()) {
+            return Err(diagnostics::error(
+                Code::MethodNameClash,
+                &signature.ident,
+                message,
+            ));
+        }
+        // The signature as a helper's, without a body: the parameter and result types of the dialect.
+        let stub = syn::ItemFn {
+            attrs: method.attrs.clone(),
+            vis: syn::Visibility::Inherited,
+            sig: method_as_function_signature(signature),
+            block: Box::new(syn::Block {
+                brace_token: syn::token::Brace::default(),
+                stmts: Vec::new(),
+            }),
+        };
+        validate_function(
+            stage,
+            &stub,
+            context.function_names,
+            context.result_helpers,
+            context.methods,
+            Some(&Owner {
+                name: "Self",
+                fields: &HashSet::new(),
+            }),
+            false,
+        )?;
+    }
+    Ok(())
+}
+
+/// The signature of a method without its receiver.
+fn method_as_function_signature(signature: &syn::Signature) -> syn::Signature {
+    let mut signature = signature.clone();
+    signature.inputs = signature
+        .inputs
+        .into_iter()
+        .filter(|argument| matches!(argument, syn::FnArg::Typed(_)))
+        .collect();
+    signature
 }
 
 /// Checks one method or associated function: the name (E0328), the receiver, the attributes, then the body and

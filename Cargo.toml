@@ -42,7 +42,7 @@ gust-wgpu = { package = "gust-compute-wgpu", version = "=0.2.0-dev", path = "cra
 pollster = "0.4"
 proc-macro2 = { version = "1.0", features = ["span-locations"] }
 quote = "1.0"
-syn = { version = "2.0", features = ["full", "extra-traits", "visit"] }
+syn = { version = "2.0", features = ["full", "extra-traits", "visit", "visit-mut"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "vulkan", "wgsl"] }
 
 # `cfg(gust_dual)` is set by `cargo xtask check-dual` through CARGO_ENCODED_RUSTFLAGS (D26), not by cargo, so rustc's

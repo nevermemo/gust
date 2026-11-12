@@ -616,3 +616,25 @@ fn hoisted_closure_names_are_unique_and_a_closure_named_like_a_slang_symbol_is_n
         Code::ReservedPrefix,
     );
 }
+
+/// The interfaces of Slang's standard module (slice m9.g1): sorted, without duplicates, and renamed like the table's names.
+#[test]
+fn the_stdlib_interface_list_is_sorted_unique_and_renamed() {
+    use super::collisions::STDLIB_INTERFACES;
+    assert!(
+        STDLIB_INTERFACES.windows(2).all(|pair| pair[0] < pair[1]),
+        "STDLIB_INTERFACES must be sorted by byte, without duplicates"
+    );
+    for name in STDLIB_INTERFACES {
+        assert!(collides(name), "{name}");
+        assert_eq!(emit_name(name), format!("{PREFIX}{name}"), "{name}");
+    }
+    // None of them is also a row of the table (that would rename twice in the table's tests).
+    for name in STDLIB_INTERFACES {
+        assert!(
+            COLLISIONS.iter().all(|entry| entry.name != *name),
+            "{name} is in COLLISIONS"
+        );
+    }
+    assert!(!collides("Shape"));
+}

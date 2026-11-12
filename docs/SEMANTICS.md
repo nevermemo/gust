@@ -1535,3 +1535,57 @@ resource). Tests: `crates/gust-wgpu/tests/m9_closures.rs` (GPU and CPU twin at 1
 values written by hand), the macro tests in `crates/gust-macros/src/tests/regression.rs`, the fixture
 `tests/fixtures/closures.rs` and its golden, and the UI fixtures `closure-*`, `x4-closure-calls-closure` and
 `for-bound-closure`.
+
+## 13. Traits with static dispatch (M9, D170)
+
+A `#[gpu]` module may declare `trait T { fn m(&self, ..) -> R; fn n(self, ..) -> Self; fn k(&mut self, ..); }`: methods with
+a receiver and no body (`GUST-E0124` for anything else: a default body, an associated item, a supertrait, a generic trait
+or method). `impl T for S` is accepted for a struct or a field-less enum of the module (`GUST-E0121` for a foreign type
+or a blanket impl; `GUST-E0124` for `&mut self` on an enum). A trait is not a type (`GUST-E0218`: `dyn`, `impl Trait`, a
+trait-typed local, field or parameter). Dispatch is static: a call names the method of the concrete type of its receiver.
+
+**Lowering.** `interface T { R m(A a); This n(..); [mutating] void k(..); }` and, for each impl,
+`extension S : T { .. }` (the same spelling for a struct and an enum; spike m9.g0 P5, P11, P15). `Self` in a trait
+signature is `This`. The interfaces and extensions are emitted after the structs and before the helpers; the closures of a
+trait-impl method are hoisted before the extension. A call `s.m(a)` is the Slang call `s.m(a)`; the call graph (D162) has
+a node for each trait-impl method, and `x.m(..)` reaches every method named `m`, so the by-name rule of recursion covers
+traits (a wrapper whose `area` calls `inner.area()` is a cycle, `GUST-E0120`, until one is renamed).
+
+**Method resolution.** By name, as for inherent methods (D156): a method call is a call of the methods of that name, and
+Slang resolves it by the type of the receiver. One name has one meaning in a module (`GUST-E0328`, the P18 ruling of spike
+m9.g0, where slangc accepted an inherent method and an extension method of one name silently): a trait method may not be
+named like an inherent method or a field of an implementing type, a reserved name or a name of the dialect, and two traits
+that declare one method name may not be implemented by one type.
+
+**Path calls.** `T::m(&s, a)`, `T::m(s, a)`, `<S as T>::m(&s, a)` and `<S as self::T>::m(&s, a)` are rewritten to `s.m(a)`
+when the first argument is a place (a local, a parameter, a field or an element, optionally under one `&` or `&mut`);
+any other first argument is `GUST-E0126`. `T::m(s, a)` is by-value `self` and `T::m(&s, a)` is `&self`; rustc still
+checks the spelling the user wrote, because only the copy of the module that validation and Slang emission read is
+rewritten; the CPU twin and the typecheck item keep the tokens as written (test
+`the_cpu_twin_and_the_typecheck_item_keep_the_trait_path_call_as_written`). The rewrite also reaches the bodies of
+closures. Everything downstream sees a method call, so `GUST-E0333` (a `&mut self` trait method on storage, uniform or
+workgroup places), the order rules of `GUST-E0421` and the barrier, subgroup and atomic refusals of D154 apply to a trait
+method as to an inherent one. A trait method is validated as a helper: it may call helpers and inherent methods.
+
+**Order of evaluation.** Measured with rustc (through the CPU twin) and with slangc 2026.21 (the pinned one) on the RTX 5090:
+the arguments of a call run left to right, and a by-value `self` receiver is copied before the arguments run. For a counter
+`d` with `d.n = x`: `d.plus(d.bump())` with `plus(self, k) = self.n * 100 + k` is `101x + 1` (the receiver is read before
+`bump`), by method syntax and by `Plus::plus(d, d.bump())`. For a trait method with two arguments,
+`s.mix(c.bump(), c.bump())` and `Mix::mix(&s, c2.bump(), c2.bump())` with `mix(&self, a, b) = side * 1000 + a * 10 + b`
+give `side * 1000 + 12`: the first `bump` is the first argument. The GPU test `m9_traits` pins all four, on the GPU and
+on the twin, with hand-written expectations (`order_self`, `order_self_path`, `order_args`, `order_args_path`).
+
+**Shapes in signatures and calls.** A trait method may take an array (`fn sum2(&self, v: [u32; 2])`, Slang `uint[2]`)
+and return a tuple (`-> (u32, u32)`, Slang `Tuple<uint, uint>`); the GPU test runs both (`pack_sum`, `pack_both`). `Self`
+inside a tuple or array (`-> (Self, u32)`) needs `Self: Sized` in Rust, which a trait of this dialect cannot say (a
+supertrait and a `where` clause are `GUST-E0124`), so rustc refuses it with E0277 (UI fixture `trait-self-in-tuple`). An
+inherent method may call trait methods (`Rect::score` calls `self.area()` and `self.tag()`; it is emitted inside the
+struct, above the extensions that declare the callee, and slangc accepts it: `method_score`).
+
+**Edge cases.** The arithmetic in a trait method has the contract of section 3, as in a helper. Slang's standard module
+declares interfaces (`IFloat`, `IInteger`, ..); a user trait of such a name is renamed `__gust_r_<name>`
+(`STDLIB_INTERFACES`, measured: the user's interface shadows the standard one on slangc 2026.21, so this is hygiene, not a
+class-1 failure). A missing impl method is rustc's E0046 on the twin, not a Slang error. Generics and bounds are slice
+m9.g2. Tests: `crates/gust-wgpu/tests/m9_traits.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations), the macro
+tests in `crates/gust-macros/src/tests/regression.rs`, the fixture `tests/fixtures/traits.rs` and its golden, and the UI
+fixtures `trait-*`.

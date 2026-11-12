@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: trait-recursion/src/main.rs
+line: 15
+message: [GUST-E0120] `Node::depth` calls itself (Node::depth -> Node::depth)

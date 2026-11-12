@@ -344,6 +344,40 @@ pub(crate) fn is_literal_zero(expression: &syn::Expr) -> bool {
     }
 }
 
+/// The value of a constant shift amount: an integer literal (any suffix or none), through parentheses, groups, unary
+/// `-` and `as` casts to `u32`/`uint` or `i32`/`int` (the cast wraps as in Rust), or `None` for anything else. A literal
+/// too large for `i128` saturates, so it is refused. No arithmetic is folded: a sum of literals, a local bound to a
+/// literal or a float literal cast passes the macro (a known gap): Slang folds it to a constant, naga rejects the
+/// WGSL, and rustc refuses it when building (`arithmetic_overflow`, not under `cargo check`). Only an amount Slang
+/// cannot fold (from a buffer, a parameter, a loop variable) is run-time, and only that kind masks on the GPU (KM-04).
+fn constant_shift_amount(expression: &syn::Expr) -> Option<i128> {
+    match expression {
+        syn::Expr::Lit(literal) => match &literal.lit {
+            syn::Lit::Int(value) => Some(value.base10_parse::<i128>().unwrap_or(i128::MAX)),
+            _ => None,
+        },
+        syn::Expr::Paren(paren) => constant_shift_amount(&paren.expr),
+        syn::Expr::Group(group) => constant_shift_amount(&group.expr),
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
+            constant_shift_amount(&unary.expr).map(|value| value.saturating_neg())
+        }
+        syn::Expr::Cast(cast) => {
+            let value = constant_shift_amount(&cast.expr)?;
+            let syn::Type::Path(target) = strip_type_parens(&cast.ty) else {
+                return None;
+            };
+            if target.path.is_ident("u32") || target.path.is_ident("uint") {
+                Some(i128::from(value as u32))
+            } else if target.path.is_ident("i32") || target.path.is_ident("int") {
+                Some(i128::from(value as i32))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// A loop bound that is a bare integer literal (through parentheses and unary
 /// minus) without a type suffix. Slang would type it `int` while rustc may infer
 /// `u32` from the other bound, so the counter types would silently diverge.
@@ -4601,6 +4635,36 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_expr_binary(&mut self, binary: &'ast syn::ExprBinary) {
+        // A constant shift amount of the bit width (32, every integer of the dialect is 32 bits) or more: rustc refuses
+        // it (deny-by-default `arithmetic_overflow`), and naga rejects the WGSL, so the macro refuses it. A run-time
+        // amount stays and masks on the GPU (KM-04).
+        if matches!(
+            binary.op,
+            syn::BinOp::Shl(_)
+                | syn::BinOp::Shr(_)
+                | syn::BinOp::ShlAssign(_)
+                | syn::BinOp::ShrAssign(_)
+        ) && let Some(amount) = constant_shift_amount(&binary.right)
+            && !(0..32).contains(&amount)
+        {
+            let operator = match binary.op {
+                syn::BinOp::Shl(_) | syn::BinOp::ShlAssign(_) => "<<",
+                _ => ">>",
+            };
+            let shown = if amount == i128::MAX {
+                "larger than any integer".to_string()
+            } else {
+                amount.to_string()
+            };
+            self.reject(
+                Code::ShiftAmountOutOfRange,
+                &binary.right,
+                &format!(
+                    "the constant shift amount {shown} is outside 0..32, the width of a 32-bit integer: rustc refuses it (`arithmetic_overflow`) and WGSL refuses it (a constant shift amount must be below the width); use an amount in 0..32, or write the mask yourself (`x {operator} (amount & 31)`) if wrapping is wanted"
+                ),
+            );
+            return;
+        }
         // Comparing tuples is a scope choice of slice m9.t, not a limit of Slang (review m9.t S1: slangc lowers `==` and
         // the orderings of a `Tuple` with Rust's semantics, NaN included): a comparison of a visible tuple is refused
         // until a later slice admits it with GPU cases. A tuple behind an unseen name is judged by slangc.

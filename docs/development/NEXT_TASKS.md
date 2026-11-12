@@ -549,7 +549,10 @@ test module; do not mix that mechanical move with behavior changes.
   pin counts any compound set, not only the tuple element shape; builders overwrote failing logs (keep
   `.failN.log`).
 - Order audit follow-ups: `&&` and `||` short circuit has no named compiler test (the difftest covers it); the
-  storage-place order shape belongs to m9.d1d.
+  storage-place order shape belongs to m9.d1d. `out[atomic_add(&mut ctr[0], 1u32) as usize] =
+  atomic_add(&mut ctr[0], 10u32)` on the same cell: Slang takes the index's atomic first, Rust the value's;
+  E0421's mutating-call search sees module methods only, not atomics (contrived and racy across invocations;
+  refuse an atomic in both the index and the value, or record it).
 - m9.r2a review S4: kernels with a stored array do not build through the precompiled path; `cargo gust build`'s
   fill rejects the `array` layout kind and `layout_at` returns no layout for an array. Add the array kind to the
   record and fill (cargo-gust) with a precompiled test.

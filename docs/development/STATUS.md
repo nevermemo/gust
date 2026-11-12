@@ -242,6 +242,18 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   and a copy); the investigation widened it (D169) and the generator's guard now covers every local array of every
   length. Wide run seeds 1-64: 1024 programs, 0 mismatches in dev and dev+subgroups. 31 main gates green (the
   pixel shape added), ending 01:39Z on 2026-11-12. With m9.d1e every phase-1 lowering has difftest coverage.
+- Phase-1 checkpoint (m9.k), 2026-11-12. Plan Revision 1.3 (coordinator; Fable review ADOPT WITH CHANGES, all
+  findings applied) records phase 1 against the plan and details phase 2. Merged: methods (a1, a2), enums (e1,
+  e2), tuples (t), arrays (r1, r2h, r2b, r2a), closures (c), plus m9.0, h1, f1 and r1m. Each lowering has its own
+  difftest format (8 to 12, D166), each wide run 0 mismatches after the D168/D169 guard. Since `89f02c5`: Slang
+  goldens 22 to 30, UI fixtures 134 to 212, SPIR-V golden sets 13 to 21, eight m9 GPU test files, GPU pin 441/45,
+  main gates 27 to 31 steps. The d1 kill rule fired twice (D168, D169): an NVIDIA driver defect, recorded as a
+  limitation; a user's correct program can still compute wrong values on the RTX 5090 through the WGSL route.
+  Open GUST defects, none a phase-2 premise: the constant over-wide shift (m9.shift building), stored arrays
+  through the precompiled path, an atomic-index order form, review nits. Phase 2's premise (P5, P6, P7 = A on the
+  current pins) stands; phase 2 is g0 (probes P11 to P18), g1 (traits, E0126 new), g2 (generics), d2 (format
+  13), x. Not measured: the Radeon 890M and lavapipe for most slices, a browser check, usage per slice. The
+  go/no-go (D170) is the owner's call.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

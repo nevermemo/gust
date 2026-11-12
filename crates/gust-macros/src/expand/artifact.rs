@@ -1348,13 +1348,19 @@ pub(super) mod tests {
             a: V2,
             q: [M2; 2],
         }
+        #[repr(C)]
+        struct Tail {
+            v: V4,
+            a: [u32; 3],
+        }
         let _ = (V2([0; 2]).0, V4([0; 4]).0, M2([0.0; 4]).0, M4([0.0; 16]).0);
 
         let source = "struct After { n: u32, items: [u32; 4] } \
                       struct Wide { a: u32, b: u32, c: u32, d: u32, m: [Mat4; 1] } \
                       struct Vecs { a: UVec2, w: [IVec2; 3], q: [Vec4; 2] } \
                       struct Mats { a: Vec2, q: [Mat2; 2] } \
-                      struct Padded { a: u32, b: u32, q: [UVec4; 1] }";
+                      struct Padded { a: u32, b: u32, q: [UVec4; 1] } \
+                      struct Tail { v: Vec4, a: [u32; 3] }";
         let check = |name: &str, size: usize, alignment: usize, offsets: &[(&str, usize)]| {
             let layout = layout_of(source, name).unwrap_or_else(|| panic!("{name} has no layout"));
             assert_eq!(
@@ -1440,6 +1446,10 @@ pub(super) mod tests {
         );
         // A struct that would need padding before its array has no layout (the assertions refuse it at rustc time).
         assert!(layout_of(source, "Padded").is_none());
+        // Tail padding after an array: Rust makes `Tail` 32 bytes (the alignment of `Vec4`), the fields sum to 28, so
+        // the described struct would not be padding free and has no layout either.
+        assert_eq!(size_of::<Tail>(), 32);
+        assert!(layout_of(source, "Tail").is_none());
     }
 
     #[test]

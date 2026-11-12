@@ -6,6 +6,10 @@
 //! are what the macro wrote for it (`GUST_EXPORT_DIR`, `testdata/array/<key>.kernel.json`), the WGSL and the
 //! reflection JSON what the native helper wrote, so the cross-check that runs here is gust's own and no helper is
 //! needed. The record is compared with the reflection, and a record whose layouts are all `null` is filled from it.
+//!
+//! The records are pinned by key and by their layouts (against the descriptors of `pre_arrays.rs`), not byte for byte:
+//! a field of a record that the cross-check does not read would drift unseen, and `check-precompiled` does not
+//! regenerate these records.
 
 use gust::{ResourceLayout, ShaderLayoutRules, artifact::verify_artifact};
 
@@ -261,9 +265,9 @@ fn null_array_buffers_are_listed_in_export_unchecked_and_macro_layouts_list_noth
 fn a_tampered_array_layout_in_the_record_is_caught_at_export() {
     type Edit = fn(&mut Record);
     // (what, stored kernel, edit of the record, text the error must contain)
-    let cases: [(&str, &Stored, Edit, &str); 3] = [
+    let cases: [(&str, &Stored, Edit, &str); 5] = [
         (
-            "the array count changed",
+            "the array count changed alone: the record disagrees with itself",
             &ELEMENT,
             |record| {
                 let layout = layout_of(record, "quads");
@@ -275,7 +279,7 @@ fn a_tampered_array_layout_in_the_record_is_caught_at_export() {
             "host layout is not StorageV1",
         ),
         (
-            "an array field is a scalar in the record",
+            "an array field is a scalar: the record disagrees with itself",
             &FIELD,
             |record| {
                 let LayoutKindRecord::Struct(fields) = &mut layout_of(record, "bags").element.kind
@@ -291,6 +295,42 @@ fn a_tampered_array_layout_in_the_record_is_caught_at_export() {
             &SHAPES,
             |record| layout_of(record, "pairs").rules = ShaderLayoutRules::StorageV1,
             "host layout is not StorageV1",
+        ),
+        (
+            "a self-consistent array of 3: size, strides and count agree, the reflection says 4",
+            &ELEMENT,
+            |record| {
+                let layout = layout_of(record, "quads");
+                layout.element_stride = 12;
+                layout.element.size = 12;
+                layout.element.stride = 12;
+                let LayoutKindRecord::Array { count, .. } = &mut layout.element.kind else {
+                    panic!("quads is an array");
+                };
+                *count = 3;
+            },
+            "quads.size: host 12, compiler 16",
+        ),
+        (
+            "a struct inside an array: Pt.y is a u32 at the same offset and size, the reflection says f32",
+            &SHAPES,
+            |record| {
+                let LayoutKindRecord::Struct(fields) = &mut layout_of(record, "polys").element.kind
+                else {
+                    panic!("Poly is a struct");
+                };
+                let pts = fields.iter_mut().find(|field| field.name == "pts").unwrap();
+                let LayoutKindRecord::Array { element, .. } = &mut pts.ty.kind else {
+                    panic!("pts is an array");
+                };
+                let LayoutKindRecord::Struct(points) = &mut element.kind else {
+                    panic!("Pt is a struct");
+                };
+                let y = points.iter_mut().find(|field| field.name == "y").unwrap();
+                y.ty.kind = LayoutKindRecord::Scalar(gust::ScalarKind::U32);
+                y.ty.name = "u32".to_owned();
+            },
+            ".pts[].y: type or field count differs",
         ),
     ];
     for (what, stored, edit, expected) in cases {

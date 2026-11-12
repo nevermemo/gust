@@ -253,7 +253,7 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   through the precompiled path, an atomic-index order form, review nits. Phase 2's premise (P5, P6, P7 = A on the
   current pins) stands; phase 2 is g0 (probes P11 to P18), g1 (traits, E0126 new), g2 (generics), d2 (format
   13), x. Not measured: the Radeon 890M and lavapipe for most slices, a browser check, usage per slice. The
-  go/no-go (D170) is the owner's call.
+  go/no-go (D170) is the owner's call. The owner chose Go with a driver lane (D170, 2026-11-12).
 - m9.shift (merge `bedb1de`; Opus review MERGE AFTER FIXES 1/2/5, re-check MERGE with three nits): GUST-E0335
   refuses a constant shift amount outside 0..32 (`x << 34u32`, `x >>= 40`, through parentheses, unary minus and
   `as u32`/`i32`/`uint`/`int` casts), as rustc's `arithmetic_overflow` does when building; before, the macro

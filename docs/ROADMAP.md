@@ -74,7 +74,9 @@ closed what M8's last sanity pass filed: E0751's product cannot overflow, the ro
 that is not a profile, and the web-server test no longer depends on its port staying free. Phase 1 adds methods,
 field-less enums with `match`, tuples, fixed-size arrays and non-capturing closures, each lowered to Slang with
 the macro still the only authority on uniformity (D154: new callees take values and hold no cross-invocation
-construct). A recorded checkpoint (m9.k) decides phase 2, traits as Slang interfaces and generics. M9 lands as
+construct). Phase 1 is done and checkpointed (m9.k); phase 2, traits as Slang interfaces and generics, goes
+ahead with a driver lane beside it (D170): the D168/D169 sentinel and a spike of slangc's own SPIR-V as the
+Vulkan route. M9 lands as
 0.2.0-dev on main (D155); the 0.2.0 publish stays the owner's act (D148).
 
 **Deferred: MR, the first public release** (plan adopted, D106 to D115). Every slice is merged, the last mr.f

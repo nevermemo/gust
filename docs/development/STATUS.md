@@ -271,6 +271,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   defect's with a note to record the result; every other adapter expects Rust's values. Measured: RTX 5090
   (610.88) defect values on all three, Radeon 890M and lavapipe (CI) Rust's values. 31 main gates green, ending
   12:14Z on 2026-11-12 (pin 442/46).
+- m9.pa (merge `28eaf73`; Opus review MERGE AFTER FIXES 0/3/4, re-check MERGE AFTER FIXES 1/1/2, coordinator
+  re-check MERGE): kernels whose buffer element is or holds a fixed-size array build through `cargo gust build`
+  and run from their precompiled artifact, closing m9.r2a's S4. The record gains an `array` layout kind, the fill
+  reads it from the reflection (a nested array or a stride other than the element size is refused), and record
+  schema 1 stands (D171). Evidence: four GPU tests on precompiled fixtures with hand-written values; export
+  cross-check tests on three macro-written array records, a null record filled from reflection and five tampered
+  layouts; the macro's array layouts checked against Rust's `size_of`/`align_of`/`offset_of!`. The re-check
+  caught `testdata/array` without `* -text` (a CRLF checkout would have broken the stored hashes); fixed. 31
+  main gates green, ending 17:52Z on 2026-11-12 (pin 446/46).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

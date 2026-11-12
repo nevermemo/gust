@@ -1,0 +1,61 @@
+{
+  "entry_point": "gpu_pre_arrays_element",
+  "key": "54bb2958cc5fe568",
+  "module": "pre_arrays",
+  "name": "element",
+  "parameters": [
+    {
+      "access": "not_applicable",
+      "binding": null,
+      "kind": "invocation",
+      "layout": null,
+      "name": "id",
+      "rust_type": "SV_DispatchThreadID"
+    },
+    {
+      "access": "read_write",
+      "binding": {
+        "binding": 0,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 4,
+          "count": 4,
+          "element": {
+            "alignment": 4,
+            "kind": "scalar",
+            "name": "u32",
+            "scalar": "u32",
+            "size": 4,
+            "stride": 4
+          },
+          "kind": "array",
+          "name": "array",
+          "size": 16,
+          "stride": 16
+        },
+        "element_stride": 16,
+        "rules": "storage_v1"
+      },
+      "name": "quads",
+      "rust_type": "RWStructuredBuffer < [u32; 4] >"
+    }
+  ],
+  "schema": 1,
+  "source": {
+    "file": "kernels/src/lib.rs",
+    "lines": [
+      [3, 7, 3],
+      [9, 13, 8],
+      [15, 21, 13],
+      [33, 33, 22],
+      [34, 39, 23],
+      [36, 36, 24],
+      [37, 37, 25],
+      [38, 38, 26]
+    ]
+  },
+  "workgroup_size": [64, 1, 1]
+}

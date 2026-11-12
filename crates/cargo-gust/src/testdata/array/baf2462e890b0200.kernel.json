@@ -1,0 +1,178 @@
+{
+  "entry_point": "gpu_pre_arrays_shapes",
+  "key": "baf2462e890b0200",
+  "module": "pre_arrays",
+  "name": "shapes",
+  "parameters": [
+    {
+      "access": "not_applicable",
+      "binding": null,
+      "kind": "invocation",
+      "layout": null,
+      "name": "id",
+      "rust_type": "SV_DispatchThreadID"
+    },
+    {
+      "access": "read_write",
+      "binding": {
+        "binding": 0,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 8,
+          "count": 2,
+          "element": {
+            "alignment": 8,
+            "count": 2,
+            "kind": "vector",
+            "name": "Vec2",
+            "scalar": "f32",
+            "size": 8,
+            "stride": 8
+          },
+          "kind": "array",
+          "name": "array",
+          "size": 16,
+          "stride": 16
+        },
+        "element_stride": 16,
+        "rules": "storage_v2"
+      },
+      "name": "pairs",
+      "rust_type": "RWStructuredBuffer < [Vec2; 2] >"
+    },
+    {
+      "access": "read_write",
+      "binding": {
+        "binding": 1,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 8,
+          "fields": [
+            {
+              "name": "pts",
+              "offset": 0,
+              "type": {
+                "alignment": 4,
+                "count": 2,
+                "element": {
+                  "alignment": 4,
+                  "fields": [
+                    {
+                      "name": "x",
+                      "offset": 0,
+                      "type": {
+                        "alignment": 4,
+                        "kind": "scalar",
+                        "name": "u32",
+                        "scalar": "u32",
+                        "size": 4,
+                        "stride": 4
+                      }
+                    },
+                    {
+                      "name": "y",
+                      "offset": 4,
+                      "type": {
+                        "alignment": 4,
+                        "kind": "scalar",
+                        "name": "f32",
+                        "scalar": "f32",
+                        "size": 4,
+                        "stride": 4
+                      }
+                    }
+                  ],
+                  "kind": "struct",
+                  "name": "Pt",
+                  "size": 8,
+                  "stride": 8
+                },
+                "kind": "array",
+                "name": "array",
+                "size": 16,
+                "stride": 16
+              }
+            },
+            {
+              "name": "tip",
+              "offset": 16,
+              "type": {
+                "alignment": 8,
+                "count": 2,
+                "element": {
+                  "alignment": 8,
+                  "count": 2,
+                  "kind": "vector",
+                  "name": "Vec2",
+                  "scalar": "f32",
+                  "size": 8,
+                  "stride": 8
+                },
+                "kind": "array",
+                "name": "array",
+                "size": 16,
+                "stride": 16
+              }
+            },
+            {
+              "name": "n",
+              "offset": 32,
+              "type": {
+                "alignment": 4,
+                "kind": "scalar",
+                "name": "u32",
+                "scalar": "u32",
+                "size": 4,
+                "stride": 4
+              }
+            },
+            {
+              "name": "pad",
+              "offset": 36,
+              "type": {
+                "alignment": 4,
+                "kind": "scalar",
+                "name": "u32",
+                "scalar": "u32",
+                "size": 4,
+                "stride": 4
+              }
+            }
+          ],
+          "kind": "struct",
+          "name": "Poly",
+          "size": 40,
+          "stride": 40
+        },
+        "element_stride": 40,
+        "rules": "storage_v2"
+      },
+      "name": "polys",
+      "rust_type": "RWStructuredBuffer < Poly >"
+    }
+  ],
+  "schema": 1,
+  "source": {
+    "file": "kernels/src/lib.rs",
+    "lines": [
+      [3, 7, 3],
+      [9, 13, 8],
+      [15, 21, 13],
+      [37, 37, 45],
+      [38, 46, 46],
+      [40, 40, 47],
+      [41, 41, 48],
+      [42, 42, 49],
+      [43, 43, 50],
+      [44, 44, 51],
+      [45, 45, 52]
+    ]
+  },
+  "workgroup_size": [64, 1, 1]
+}

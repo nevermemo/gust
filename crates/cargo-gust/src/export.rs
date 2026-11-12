@@ -909,6 +909,10 @@ pub(crate) mod tests {
 }
 
 #[cfg(test)]
+#[path = "export_array_tests.rs"]
+mod array_tests;
+
+#[cfg(test)]
 #[path = "export_unchecked_tests.rs"]
 mod unchecked_tests;
 

@@ -1308,6 +1308,140 @@ pub(super) mod tests {
         assert!(std140_layout_at(&syn::parse_quote! { [u32; 4] }, &structs, 0).is_none());
     }
 
+    /// Array fields after smaller fields and arrays of 8- and 16-aligned elements (m9.pa review S2). The expected
+    /// numbers are read from `#[repr(C)]` mirrors of the structs (`size_of`, `align_of`, `offset_of!`), whose
+    /// vector and matrix types carry the alignment `gust::math` documents (`Vec2` 8, `Vec4` 16, `Mat2` 8, `Mat4` 16).
+    #[test]
+    #[allow(dead_code)]
+    fn array_fields_sit_where_rust_puts_them() {
+        use std::mem::{align_of, offset_of, size_of};
+
+        #[repr(C, align(8))]
+        struct V2([u32; 2]);
+        #[repr(C, align(16))]
+        struct V4([u32; 4]);
+        #[repr(C, align(8))]
+        struct M2([f32; 4]);
+        #[repr(C, align(16))]
+        struct M4([f32; 16]);
+        #[repr(C)]
+        struct After {
+            n: u32,
+            items: [u32; 4],
+        }
+        #[repr(C)]
+        struct Wide {
+            a: u32,
+            b: u32,
+            c: u32,
+            d: u32,
+            m: [M4; 1],
+        }
+        #[repr(C)]
+        struct Vecs {
+            a: V2,
+            w: [V2; 3],
+            q: [V4; 2],
+        }
+        #[repr(C)]
+        struct Mats {
+            a: V2,
+            q: [M2; 2],
+        }
+        let _ = (V2([0; 2]).0, V4([0; 4]).0, M2([0.0; 4]).0, M4([0.0; 16]).0);
+
+        let source = "struct After { n: u32, items: [u32; 4] } \
+                      struct Wide { a: u32, b: u32, c: u32, d: u32, m: [Mat4; 1] } \
+                      struct Vecs { a: UVec2, w: [IVec2; 3], q: [Vec4; 2] } \
+                      struct Mats { a: Vec2, q: [Mat2; 2] } \
+                      struct Padded { a: u32, b: u32, q: [UVec4; 1] }";
+        let check = |name: &str, size: usize, alignment: usize, offsets: &[(&str, usize)]| {
+            let layout = layout_of(source, name).unwrap_or_else(|| panic!("{name} has no layout"));
+            assert_eq!(
+                (layout.size as usize, layout.alignment as usize),
+                (size, alignment),
+                "{name}"
+            );
+            let LayoutKind::Struct(fields) = &layout.kind else {
+                panic!("{name} is a struct");
+            };
+            let seen: Vec<(&str, usize)> = fields
+                .iter()
+                .map(|field| (field.name.as_str(), field.offset as usize))
+                .collect();
+            assert_eq!(seen, offsets, "{name}");
+        };
+        check(
+            "After",
+            size_of::<After>(),
+            align_of::<After>(),
+            &[
+                ("n", offset_of!(After, n)),
+                ("items", offset_of!(After, items)),
+            ],
+        );
+        assert_eq!(offset_of!(After, items), 4);
+        check(
+            "Wide",
+            size_of::<Wide>(),
+            align_of::<Wide>(),
+            &[
+                ("a", offset_of!(Wide, a)),
+                ("b", offset_of!(Wide, b)),
+                ("c", offset_of!(Wide, c)),
+                ("d", offset_of!(Wide, d)),
+                ("m", offset_of!(Wide, m)),
+            ],
+        );
+        assert_eq!((offset_of!(Wide, m), size_of::<Wide>()), (16, 80));
+        check(
+            "Vecs",
+            size_of::<Vecs>(),
+            align_of::<Vecs>(),
+            &[
+                ("a", offset_of!(Vecs, a)),
+                ("w", offset_of!(Vecs, w)),
+                ("q", offset_of!(Vecs, q)),
+            ],
+        );
+        check(
+            "Mats",
+            size_of::<Mats>(),
+            align_of::<Mats>(),
+            &[("a", offset_of!(Mats, a)), ("q", offset_of!(Mats, q))],
+        );
+        // The array itself, per element kind: `N` elements end to end at the element's alignment.
+        let arrays: [(syn::Type, u32, u32); 7] = [
+            (syn::parse_quote! { [Vec4; 3] }, 48, 16),
+            (syn::parse_quote! { [Mat2; 2] }, 32, 8),
+            (syn::parse_quote! { [Mat4; 2] }, 128, 16),
+            (syn::parse_quote! { [IVec2; 5] }, 40, 8),
+            (syn::parse_quote! { [IVec4; 2] }, 32, 16),
+            (syn::parse_quote! { [UVec2; 3] }, 24, 8),
+            (syn::parse_quote! { [UVec4; 4] }, 64, 16),
+        ];
+        for (ty, size, alignment) in arrays {
+            let layout = element_layout(&ty, &HashMap::new()).unwrap();
+            assert_eq!(
+                (layout.size, layout.alignment),
+                (size, alignment),
+                "{}",
+                quote::quote!(#ty)
+            );
+            assert!(layout.holds_math_type());
+        }
+        assert_eq!(
+            (
+                size_of::<[V4; 3]>(),
+                size_of::<[M2; 2]>(),
+                size_of::<[M4; 2]>()
+            ),
+            (48, 32, 128)
+        );
+        // A struct that would need padding before its array has no layout (the assertions refuse it at rustc time).
+        assert!(layout_of(source, "Padded").is_none());
+    }
+
     #[test]
     fn the_key_separates_the_entry_point_from_the_text_with_a_nul() {
         assert_ne!(content_key("ab", "c"), content_key("a", "bc"));

@@ -260,6 +260,12 @@ enum LayoutKind {
         cols: u32,
         column_stride: u32,
     },
+    /// `[T; count]`: `count` elements end to end (the element's stride is its size), with the alignment of the element
+    /// (m9.pa). The element is never an array (GUST-E0217 refuses it before any layout is written).
+    Array {
+        element: Box<Layout>,
+        count: u32,
+    },
     Struct(Vec<LayoutField>),
 }
 
@@ -454,6 +460,23 @@ fn layout_at(
     if depth > MAX_NESTING {
         return None;
     }
+    if let syn::Type::Array(array) = ty {
+        let count = crate::slang::array_length_literal(&array.len)?;
+        let element = layout_at(&array.elem, structs, depth + 1)?;
+        // An array of arrays is no element of a `GpuPod` array (E0217); no layout is written, so the record says null.
+        if matches!(element.kind, LayoutKind::Array { .. }) || element.alignment == 0 {
+            return None;
+        }
+        return Some(Layout {
+            name: "array".to_owned(),
+            size: element.size.checked_mul(count)?,
+            alignment: element.alignment,
+            kind: LayoutKind::Array {
+                element: Box::new(element),
+                count,
+            },
+        });
+    }
     let name = bare_name(ty)?;
     if let Some(leaf) = leaf_layout(&name) {
         return Some(leaf);
@@ -544,6 +567,7 @@ impl Layout {
         match &self.kind {
             LayoutKind::Scalar(_) => false,
             LayoutKind::Vector { .. } | LayoutKind::Matrix { .. } => true,
+            LayoutKind::Array { element, .. } => element.holds_math_type(),
             LayoutKind::Struct(fields) => fields.iter().any(|field| field.layout.holds_math_type()),
         }
     }
@@ -576,6 +600,11 @@ impl Layout {
                 members.push(("rows", Json::Number((*rows).into())));
                 members.push(("cols", Json::Number((*cols).into())));
                 members.push(("column_stride", Json::Number((*column_stride).into())));
+            }
+            LayoutKind::Array { element, count } => {
+                members.push(("kind", Json::string("array")));
+                members.push(("count", Json::Number((*count).into())));
+                members.push(("element", element.json()));
             }
             LayoutKind::Struct(fields) => {
                 members.push(("kind", Json::string("struct")));
@@ -1222,6 +1251,63 @@ pub(super) mod tests {
         );
     }
 
+    /// Arrays in the record (m9.pa): the numbers are those of `GpuPod for [T; N]` (`N` elements end to end, the
+    /// alignment of the element), and `StorageV2` follows a vector or matrix inside the array.
+    #[test]
+    fn arrays_have_a_layout_and_arrays_of_arrays_have_none() {
+        let pt: syn::ItemStruct = syn::parse_quote! { struct Pt { x: u32, y: f32 } };
+        let bag: syn::ItemStruct =
+            syn::parse_quote! { struct Bag { items: [u32; 4], pts: [Pt; 2], n: u32, m: u32 } };
+        let structs: HashMap<String, &syn::ItemStruct> =
+            HashMap::from([("Pt".to_owned(), &pt), ("Bag".to_owned(), &bag)]);
+        let layout = |ty: syn::Type| element_layout(&ty, &structs);
+        let quad = layout(syn::parse_quote! { [u32; 4] }).unwrap();
+        assert_eq!((quad.size, quad.alignment), (16, 4));
+        assert!(!quad.holds_math_type());
+        let LayoutKind::Array { element, count } = &quad.kind else {
+            panic!("{quad:?}");
+        };
+        assert_eq!((element.size, *count), (4, 4));
+        // Sorted keys, two-space indentation: the array's own members, then its element nested under `element`.
+        let mut text = String::new();
+        quad.json().write(&mut text, 0);
+        let expected = "{\n  \"alignment\": 4,\n  \"count\": 4,\n  \"element\": {\n    \"alignment\": 4,\n    \"kind\": \
+                        \"scalar\",\n    \"name\": \"u32\",\n    \"scalar\": \"u32\",\n    \"size\": 4,\n    \"stride\": 4\n  },\n  \
+                        \"kind\": \"array\",\n  \"name\": \"array\",\n  \"size\": 16,\n  \"stride\": 16\n}";
+        assert_eq!(text, expected);
+
+        let pairs = layout(syn::parse_quote! { [Vec2; 2] }).unwrap();
+        assert_eq!((pairs.size, pairs.alignment), (16, 8));
+        assert!(pairs.holds_math_type());
+
+        // A struct with array fields: `pts` is 16 bytes at 16, `n` and `m` end the 40-byte struct.
+        let bag = layout(syn::parse_quote! { Bag }).unwrap();
+        assert_eq!((bag.size, bag.alignment), (40, 4));
+        let LayoutKind::Struct(fields) = &bag.kind else {
+            panic!("{bag:?}");
+        };
+        let seen: Vec<(&str, u32, u32)> = fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.offset, field.layout.size))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("items", 0, 16),
+                ("pts", 16, 16),
+                ("n", 32, 4),
+                ("m", 36, 4)
+            ]
+        );
+
+        // An array of arrays, a non-literal length and an unknown element describe nothing: the record says null.
+        assert!(layout(syn::parse_quote! { [[u32; 2]; 2] }).is_none());
+        assert!(layout(syn::parse_quote! { [u32; N] }).is_none());
+        assert!(layout(syn::parse_quote! { [Unknown; 2] }).is_none());
+        // A uniform holds no array (D159): the std140 layout is still none.
+        assert!(std140_layout_at(&syn::parse_quote! { [u32; 4] }, &structs, 0).is_none());
+    }
+
     #[test]
     fn the_key_separates_the_entry_point_from_the_text_with_a_nul() {
         assert_ne!(content_key("ab", "c"), content_key("a", "bc"));
@@ -1685,7 +1771,7 @@ pub(super) mod tests {
 
     #[test]
     fn types_the_macro_cannot_describe_have_no_layout() {
-        let source = "struct Bad { a: uint, b: [f32; 4] } struct Loop { a: Loop } struct Gen { a: Vec<u32> } struct Empty {} struct Tuple(u32);";
+        let source = "struct Bad { a: uint, b: [[f32; 2]; 2] } struct Loop { a: Loop } struct Gen { a: Vec<u32> } struct Empty {} struct Tuple(u32);";
         for element in [
             "Bad",
             "Loop",

@@ -212,6 +212,11 @@ pub(crate) enum LayoutKindRecord {
         cols: u32,
         column_stride: u32,
     },
+    /// `count` elements of `element`, end to end (m9.pa); the element is never an array.
+    Array {
+        element: Box<LayoutRecord>,
+        count: u32,
+    },
     Struct(Vec<FieldRecord>),
 }
 
@@ -221,6 +226,7 @@ impl LayoutRecord {
         match &self.kind {
             LayoutKindRecord::Scalar(_) => false,
             LayoutKindRecord::Vector { .. } | LayoutKindRecord::Matrix { .. } => true,
+            LayoutKindRecord::Array { element, .. } => element.holds_math_type(),
             LayoutKindRecord::Struct(fields) => {
                 fields.iter().any(|field| field.ty.holds_math_type())
             }
@@ -648,6 +654,10 @@ impl LayoutRecord {
                     cols: *cols,
                     column_stride: *column_stride,
                 },
+                LayoutKindRecord::Array { element, count } => TypeLayoutKind::Array {
+                    element: Box::leak(Box::new(element.type_layout())),
+                    count: *count,
+                },
                 LayoutKindRecord::Struct(fields) => {
                     let fields: Vec<StructFieldLayout> = fields
                         .iter()
@@ -855,6 +865,19 @@ fn parse_layout(value: &Json, context: &str) -> Result<LayoutRecord, String> {
             cols: number(value, "cols", context)?,
             column_stride: number(value, "column_stride", context)?,
         },
+        "array" => {
+            let at = format!("{context}.element");
+            let element = parse_layout(value.field("element", context)?, &at)?;
+            if matches!(element.kind, LayoutKindRecord::Array { .. }) {
+                return Err(format!(
+                    "{at}: an array of arrays is no layout (the element of an array is never an array)"
+                ));
+            }
+            LayoutKindRecord::Array {
+                element: Box::new(element),
+                count: number(value, "count", context)?,
+            }
+        }
         "struct" => LayoutKindRecord::Struct(
             array(value, "fields", context)?
                 .iter()

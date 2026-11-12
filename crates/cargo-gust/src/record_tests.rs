@@ -1239,3 +1239,62 @@ fn a_directory_of_the_bodies_of_a_kernel_reads_every_one() {
             .all(|record| record.qualified_name() == "demo::run")
     );
 }
+
+const U32_JSON: &str = concat!(
+    "{\"alignment\": 4, \"kind\": \"scalar\", \"name\": \"u32\", \"scalar\": \"u32\", \"size\": 4, ",
+    "\"stride\": 4}"
+);
+
+/// The macro's JSON of `[T; count]` around an element object (m9.pa).
+fn array_json(element: &str, count: u32, size: u32, alignment: u32) -> String {
+    format!(
+        "{{\"alignment\": {alignment}, \"count\": {count}, \"element\": {element}, \"kind\": \"array\", \
+         \"name\": \"array\", \"size\": {size}, \"stride\": {size}}}"
+    )
+}
+
+#[test]
+fn an_array_layout_is_read_and_rebuilt_as_the_gust_type_layout() {
+    let quad = array_json(U32_JSON, 4, 16, 4);
+    let record = Record::parse(&with_out_layout(&quad, 16, "storage_v1"), SAMPLE_SLANG).unwrap();
+    let layout = record.parameters[2].layout.as_ref().unwrap();
+    assert_eq!(
+        (layout.rules, layout.element_stride),
+        (ShaderLayoutRules::StorageV1, 16)
+    );
+    let LayoutKindRecord::Array { element, count } = &layout.element.kind else {
+        panic!("{:?}", layout.element.kind);
+    };
+    assert_eq!((*count, element.name.as_str(), element.size), (4, "u32", 4));
+    assert!(!layout.element.holds_math_type());
+    static U32: TypeLayout = TypeLayout::scalar("u32", ScalarKind::U32);
+    assert_eq!(
+        record.descriptor().parameters[2].resource_layout.unwrap(),
+        ResourceLayout::storage_v1(TypeLayout::array(&U32, 4))
+    );
+
+    // An array of vectors holds a math type: the rules are the caller's (`storage_v2`), and the flag says so.
+    let vec2 = "{\"alignment\": 8, \"count\": 2, \"kind\": \"vector\", \"name\": \"Vec2\", \"scalar\": \"f32\", \
+                \"size\": 8, \"stride\": 8}";
+    let pairs = array_json(vec2, 2, 16, 8);
+    let record = Record::parse(&with_out_layout(&pairs, 16, "storage_v2"), SAMPLE_SLANG).unwrap();
+    assert!(
+        record.parameters[2]
+            .layout
+            .as_ref()
+            .unwrap()
+            .element
+            .holds_math_type()
+    );
+}
+
+#[test]
+fn an_array_of_arrays_in_a_record_is_refused_by_path() {
+    let inner = array_json(U32_JSON, 2, 8, 4);
+    let nested = array_json(&inner, 2, 16, 4);
+    let error = error_of(&with_out_layout(&nested, 16, "storage_v1"));
+    assert!(
+        error.contains("layout.element.element: an array of arrays"),
+        "{error}"
+    );
+}

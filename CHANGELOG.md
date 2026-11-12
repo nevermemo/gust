@@ -151,8 +151,9 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   On the RTX 5090 the fixture runs equal to hand-written tables on the GPU and the CPU twin, including the order of the
   arguments of a closure call.
 - Added (m9.sen): the GPU test `driver_sentinel` for the NVIDIA array defect (D168, D169). It runs three `#[gpu]`
-  kernels shaped like the shrunk programs and expects the defect's wrong values on an NVIDIA adapter and Rust's values
-  on any other, so a driver update that fixes it fails the test and is noticed.
+  kernels shaped like the investigations' programs and expects the defect's wrong values on the RTX 5090 (Vulkan) and
+  Rust's values on other non-NVIDIA adapters, so a driver or toolchain change that makes these programs compute Rust's
+  values fails the test, the cue to re-measure.
 - Fixed (m9.f1): a method call with a `<` comparison argument before another argument, such as `s.m(a < b, c)`, failed in slangc with an undefined `__gust_keep`, because the scan that defines that helper did not visit method calls.
 - Fixed (m9.shift): a constant shift amount outside 0..32 (`x << 34u32`, `v >>= 32`) is refused with `GUST-E0335`;
   rustc refuses it when building, and naga used to reject the generated WGSL with an error that was not a GUST

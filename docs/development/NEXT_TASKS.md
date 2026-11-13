@@ -561,6 +561,13 @@ test module; do not mix that mechanical move with behavior changes.
 - A check that every committed compiler tag (`compiler`, `slang` fields of the reflection documents and manifests)
   equals `SLANG_PIN`; m9.p's regeneration script does it by hand (examples/subgroup-reduce was missed: check-artifacts
   skips example artifacts).
+- m9.d2 nits: DIFFTEST.md says the probes "always include" one helper with two types (it is the program, not the
+  probes); "a generic method returning `T`" is refused by the harness's `Program::check`, not the compiler: move it
+  to "accepted but not generated"; the shape "arguments call the receiver's root" counts calls whose arguments
+  change the enclosing method's `self`: rename it and its doc; thin floors (mut-through-T 1 of 3 executing,
+  self-root 2 of 5); DIFFTEST.md should name the five vector forms newly lost to the slot cut; the harness `fmt` gate
+  rewrites files: run it with `--check`. A lowering that reverses only impl-call arguments may pass G5 and be caught
+  only by the wide run.
 - m9.rt2 nits: `spirv_route.rs` header still calls the feature-off build an empty test target; `check-difftest`
   ignores a failed delete of an old route log (`let _ = fs::remove_file`), so stale lines could pass the all-SPIR-V
   check: fail instead; the DX12 fallback test always returns early because the workspace builds wgpu with Vulkan

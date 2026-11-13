@@ -321,6 +321,18 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   route-only goldens for reduce, scan and compact; a non-blocking CI job. The default route's Slang, WGSL and
   goldens are unchanged. 37 lane gates (31 plus 6 route-on) green on 2026.22 ending 18:24Z on 2026-11-13
   (pin 452/49); the merge adds only main's records docs, and docs-check, lint and check-arch passed on it.
+- m9.d2 (merge `6e6d79c`; Opus review MERGE AFTER FIXES 3/5/6, re-check MERGE): difftest format 13, traits and
+  generic helpers. The generator writes module traits with two impls on struct and enum receivers, `&mut self` on
+  structs, path and qualified calls, `-> Self`, one- and two-bound generics (inline and `where`), and generic
+  `&self` and `&mut self` methods on structs; every trait program calls one generic helper with two implementing
+  types, both executed. Evaluation-order shapes are counted only when written and executed and can change the
+  result; on the 128 trait programs of seeds 1-64 every shape executes in at least 3 programs, with floors pinned.
+  The interpreter's dispatch, `T` binding and order come from the Rust Reference (D42). Mutants wrong-impl, generic
+  reuse and right-to-left trait arguments are caught by 28, 26 and 50 of the 128 programs (3, 2 and 3 of G5's 8).
+  The trait slots come from the float and vector spaces (the vector batch writes 62 of 72 forms, was 67); enum and
+  value coverage is unchanged and no shape row lost programs. Wide run 1-64: 1024 of 1024, 0 mismatches. 33 lane
+  gates green on 2026.22 ending 19:19Z on 2026-11-13 on the tree rebased onto m9.rt2, which equals this merge
+  apart from main's records docs, including format 13 through the SPIR-V route (128/128 SPIR-V, 0 mismatches).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

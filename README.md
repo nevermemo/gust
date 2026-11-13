@@ -103,32 +103,32 @@ build, hold no process-spawning compiler. A `[dev-dependencies]` entry with the 
 examples, but never `cargo run` of a binary. Check that state with
 `cargo check -p gust-compute -p gust-compute-wgpu --no-default-features --lib` (the Unit suite runs it).
 
-The SPIR-V route is the opt-in feature `spirv-route` of `gust-compute-wgpu` (off by default, Vulkan only): compute
-and pixel kernels are built from slangc's own SPIR-V and fall back to WGSL where the backend, the device or the kernel
-cannot take it. It adds index, division and workgroup-zeroing guards to the generated Slang (`docs/SEMANTICS.md`,
-section 15). Cargo unifies features: one crate of the build that enables it changes the Slang of every kernel in that
-build, and with it the content keys of precompiled artifacts, so build the artifacts and the program with the same
-features.
+The SPIR-V route is the opt-in feature `spirv-route` of `gust-compute-wgpu` (off by default, Vulkan only): compute and
+pixel kernels are built from slangc's own SPIR-V and fall back to WGSL where the backend, the device or the kernel
+cannot take it. It works with run-time compilation only (a build with `slang-runtime`, which `native` and `web` refuse):
+those builds, and a kernel with a precompiled artifact, stay on WGSL, so enabling it does not change what a shipped
+binary runs. It adds index, division and workgroup-zeroing guards to the generated Slang (`docs/SEMANTICS.md`, section
+15). Cargo unifies features: one crate of the build that enables it changes the Slang of every kernel in that build, and
+with it the content keys of precompiled artifacts, so build the artifacts and the program with the same features.
 
-Build profiles (D44, D51): the environment variable `GUST_PROFILE` is `dev`, `native`, `web` or `cpu`, and
-`gust`'s build script reads it (any other value, including an empty one, fails the build). `native` and `web` are strict:
-every `#[gpu]` kernel must have a precompiled artifact, or the build fails with a compile error at the kernel, and the
-`slang-runtime` feature is refused, so the build holds no run-time Slang bridge (wgpu and the driver still compile
-the shipped WGSL or SPIR-V when the pipeline is created). `dev` has neither rule. A release
-build is strict even without the variable: with `GUST_PROFILE` unset, `cargo build --release` of a crate with
-`#[gpu]` kernels is treated as `web` for `wasm32` and `native` for every other target, and prints
-`warning: gust-compute@<version>: gust: release build without GUST_PROFILE treated as native` (or `web`;
-cargo shows a build script's warning only for path and workspace packages, or with `-vv`). The one exception is the
-internal `cargo-gust-bridge` feature (D108, D117): where `cargo-gust` is in the graph (`cargo install cargo-gust`, a
-workspace that has it as a member, or a mistaken `cargo-gust` entry under `[dependencies]`), a release build without
-the variable is `dev` and warns `gust: cargo-gust-bridge treats a release build without GUST_PROFILE as dev`, which
-cargo shows only for path and workspace builds. A release build that
-wants the run-time bridge, such as the benchmark examples below, sets `GUST_PROFILE=dev` explicitly
-(`GUST_PROFILE=dev cargo run --release -p polynomial`; in PowerShell `$env:GUST_PROFILE = "dev"` first). The
-repository's `cargo xtask` commands run their cargo children under `GUST_PROFILE=dev`, whatever the parent
-environment holds (a different value is logged and overridden), which covers `check-full`'s release tests. A strict
-build needs the artifacts of its kernels, committed in `gust-artifacts/` (written by `cargo gust build` and re-checked
-by `cargo gust check`, D45); without them the build fails at the kernel by design.
+Build profiles (D44, D51): the environment variable `GUST_PROFILE` is `dev`, `native`, `web` or `cpu`, and `gust`'s
+build script reads it (any other value, including an empty one, fails the build). `native` and `web` are strict: every
+`#[gpu]` kernel must have a precompiled artifact, or the build fails with a compile error at the kernel, and the
+`slang-runtime` feature is refused, so the build holds no run-time Slang bridge (wgpu and the driver still compile the
+shipped WGSL or SPIR-V when the pipeline is created). `dev` has neither rule. A release build is strict even without the
+variable: with `GUST_PROFILE` unset, `cargo build --release` of a crate with `#[gpu]` kernels is treated as `web` for
+`wasm32` and `native` for every other target, and prints
+`warning: gust-compute@<version>: gust: release build without GUST_PROFILE treated as native` (or `web`; cargo shows a
+build script's warning only for path and workspace packages, or with `-vv`). The one exception is the internal
+`cargo-gust-bridge` feature (D108, D117): where `cargo-gust` is in the graph (`cargo install cargo-gust`, a workspace
+that has it as a member, or a mistaken `cargo-gust` entry under `[dependencies]`), a release build without the variable
+is `dev` and warns `gust: cargo-gust-bridge treats a release build without GUST_PROFILE as dev`, which cargo shows only
+for path and workspace builds. A release build that wants the run-time bridge, such as the benchmark examples below,
+sets `GUST_PROFILE=dev` explicitly (`GUST_PROFILE=dev cargo run --release -p polynomial`; in PowerShell
+`$env:GUST_PROFILE = "dev"` first). The repository's `cargo xtask` commands run their cargo children under
+`GUST_PROFILE=dev`, whatever the parent environment holds (a different value is logged and overridden), which covers
+`check-full`'s release tests. A strict build needs the artifacts of its kernels, committed in `gust-artifacts/` (written
+by `cargo gust build` and re-checked by `cargo gust check`, D45); without them the build fails at the kernel by design.
 
 The `cpu` profile (D21, D51) is the production CPU target. It is never inferred: a release build without the variable
 stays `native`, so choosing the CPU is always explicit (`GUST_PROFILE=cpu cargo build --release`). The `#[gpu]` macro
@@ -472,8 +472,9 @@ case is `Cpu` evidence.
   `PATH`; the runtime executes the WGSL by default. The opt-in `spirv-route` feature (the paragraph near the top, D172
   and D174) builds Vulkan compute and pixel pipelines from slangc's own SPIR-V instead (wgpu passthrough) and falls back
   to WGSL, recording the reason in `HeadlessDevice::route_events`, on any other backend, on a device without passthrough
-  shaders, for a precompiled WGSL artifact and for a module with push constants. The measurements of the route name the
-  RTX 5090 and the Radeon 890M ([SEMANTICS](docs/SEMANTICS.md) section 15); another adapter is not measured.
+  shaders, for a precompiled WGSL artifact (so a `native` or `web` build, which has no run-time compiler, never takes
+  the route) and for a module with push constants. The measurements of the route name the RTX 5090 and the Radeon 890M
+  ([SEMANTICS](docs/SEMANTICS.md) section 15); another adapter is not measured.
 
 ## Stability
 
@@ -498,7 +499,7 @@ The promise covers:
   `gust::target::GpuKernel` with the line that a hand-written `Kernel` adds (below);
 - the additions of M9: `gust::routed` (`RoutedDevice` and its buffers, D165), the `spirv-route` feature with `Route`,
   `RouteEvent`, `HeadlessDevice::route_events` and `SPIRV_ROUTE` (D172, D174), and the array layout kinds
-  (`TypeLayoutKind::Array`, `TypeLayout::array`, D159);
+  (`TypeLayoutKind::Array`, `ReflectedTypeKind::Array`, `TypeLayout::array`, D159);
 - the diagnostic codes, `GUST-E....` ([DIAGNOSTICS](docs/DIAGNOSTICS.md)): a code keeps its meaning, the message text
   may be reworded.
 
@@ -536,10 +537,12 @@ and B4, more renamed names. The rest of M8 and M9 only adds ([CHANGELOG](CHANGEL
   every method named `m`, `S::f(..)`), is an error wherever the module is validated, also in a module routed to the CPU
   and in a helper that was never dispatched, which 0.1.0 let through. Rewrite the recursion as a `for` loop with a fixed
   trip count, and rename a method that calls another struct's method of the same name.
-- **B4: more names are renamed in the Slang text.** `Tuple`, `makeTuple`, `this` and the 47 names of Slang's standard
+- **B4: more names are renamed in the Slang text.** `Tuple`, `makeTuple`, `this` and the 46 names of Slang's standard
   interfaces (`IFloat`, `IInteger`, `__BuiltinType` and so on) are emitted as `__gust_r_<name>`, like the other reserved
-  names (D81). Source needs no change, but a module that uses one gets another Slang text and so another content key:
-  run `cargo gust build` again and commit `gust-artifacts/`.- **A route flip is a call-site change (documented, not a
+  names (D81), wherever a user name has that spelling (a struct, field, local, helper or parameter). Source needs no
+  change, but such a module gets another Slang text and so another content key: run `cargo gust build` again and
+  commit `gust-artifacts/` (`cargo gust check` fails for the stale artifacts until you do).
+- **A route flip is a call-site change (documented, not a
   break).** Routing sends a kernel to the CPU or the GPU for a whole build (see "Routing kernels to the CPU or the GPU
   at build time"), and a typed call names its device. A kernel routed to the CPU has no `GpuKernel` impl, so its
   `HeadlessDevice` calls stop compiling (E0277) and its `CpuDevice` calls start to; flipping the route back reverses
@@ -1172,16 +1175,17 @@ The direct syntax translator currently supports:
 - methods and `impl` blocks (M9, m9.a1 and m9.a2, D154): `impl S { .. }` of a struct of the module, any number of
   blocks, with `&self`, `&mut self` and `self` methods and associated functions without a receiver (`S::make(..)`,
   `Self::make(..)`). A method is a member of the Slang struct (`[mutating]` for `&mut self`, `static` for an associated
-  function). A `&mut self` method is callable on a `let mut` local (or a field or element of one) only: a storage,
-  uniform or workgroup place is GUST-E0333. No `impl` for an enum, a type outside the module, or with generics
-  (GUST-E0121, E0114), no `mut self` or typed receiver (GUST-E0116), a method name that clashes with a built-in
-  (GUST-E0328), and no `&mut self` call whose order of evaluation on the GPU would differ from Rust's (GUST-E0421); see
-  [SEMANTICS](docs/SEMANTICS.md) sections 14 and 16;
+  function). A `&mut self` or `self` method is callable on a `let mut` local (or a field or element of one) only: a
+  storage, uniform, workgroup or invocation-id place is GUST-E0333. No inherent `impl` for an enum, a type outside the
+  module, or with generics (GUST-E0121, E0114), no `mut self` or typed receiver (GUST-E0116), a method name that clashes
+  with a built-in (GUST-E0328), and no `&mut self` call whose order of evaluation on the GPU would differ from Rust's
+  (GUST-E0421); see [SEMANTICS](docs/SEMANTICS.md) sections 14 and 16;
 - field-less enums and `match` (M9, m9.e1 and m9.e2, D157): `enum E { A, B = 3 }` (a `u32` or `#[repr(i32)]` repr, the
   user derives `PartialEq`), compared with `==` and `!=`, cast with `as` to the repr type, and matched as a Slang
   `switch`: a statement `match` on an enum or an integer, and a value `match` as the initializer of a typed `let`. No
-  enum with data, no enum in a struct field, buffer, uniform or `Option` (GUST-E0211), no guard, and no `break` or
-  `continue` in an arm (GUST-E0417 to E0419, GUST-E0122); see [SEMANTICS](docs/SEMANTICS.md) section 9;
+  enum with data or a discriminant that is not a literal (GUST-E0122), no enum in a struct field, buffer, uniform or
+  `Option` (GUST-E0211), no guard (GUST-E0418), no `break` or `continue` in an arm (GUST-E0417), and no value `match`
+  outside a typed `let` (GUST-E0419); see [SEMANTICS](docs/SEMANTICS.md) section 9;
 - tuples (M9, m9.t, D158): `(a, b)` of two to eight elements (scalars, vectors, matrices, structs, enums, tuples) as a
   local, a parameter or a result of a helper or method, with `t.0` and destructuring `let (a, b) = ..;`. Not stored in a
   struct field, buffer, uniform or workgroup memory (GUST-E0212), no tuple comparison (GUST-E0213); see

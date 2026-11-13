@@ -102,8 +102,8 @@ stamp. The codes of the pin and the classifier are GUST-E0721 to E0728 (E0729 is
 retired), and the texture rules of the macro are GUST-E0731 to E0736 (`slang/texture.rs`, the one table of the dialect's
 texture types, methods and lowering). A kernel never changes shape by itself: the pin or `grid`.
 
-M9 (D154 to D162, D170) added four pieces to the macro, all in the same place in the pipeline, between the per-item
-checks and the emitter, and none of them a second representation of the program:
+M9 (D154 to D162, D170) added four pieces to the macro, none of them a second representation of the program (the call
+graph runs after the per-item checks, the trait desugaring before validation, the collision table in the emitter):
 
 - The call graph (`validate/callgraph.rs`, D162). It runs after every item has been validated. Its nodes are the
   functions that have a body (helpers, kernels, and every function of an `impl` block, inherent or trait); its edges
@@ -120,7 +120,7 @@ checks and the emitter, and none of them a second representation of the program:
   specialises it per instantiation. The CPU twin keeps the generic as Rust. A type parameter named like an item of the
   module is GUST-E0328 (`name_problem`).
 - Name collisions (`slang/collisions.rs`, D81). The table of reserved Slang names, now with `Tuple`, `makeTuple`,
-  `this` and the 47 interface names of Slang's standard module, renames a colliding user name to `__gust_r_<name>`.
+  `this` and the 46 interface names of Slang's standard module, renames a colliding user name to `__gust_r_<name>`.
 
 The SPIR-V route has a macro half and a runtime half (D172, D174). `slang/guards.rs` makes the emitter write the guards
 that naga adds on the WGSL route (array index clamp, `__gust_div` and `__gust_rem` for a zero divisor and signed
@@ -382,25 +382,24 @@ The opt-in `spirv-route` feature (m9.rt2, D172, D174) is the one exception, on V
 SPIR-V that slangc produced (`scan`), checks its entry point and resource bindings against the pipeline layout
 (`check_bindings`: set 0, the layout's binding numbers and kinds), renumbers the bindings the way wgpu-hal numbers the
 layout (`densify_bindings`) and hands the module to `Device::create_shader_module_passthrough`, which skips naga. The
-guards naga would add come from the macro (`slang/guards.rs`, above). A kernel that cannot take the route keeps the
-WGSL path and `HeadlessDevice::route_events` says why (`Route`, `RouteEvent`): the feature is off, no
+guards naga would add come from the macro (`slang/guards.rs`, above). A kernel that cannot take the route keeps the WGSL
+path and `HeadlessDevice::route_events` says why (`Route`, `RouteEvent`; with the feature off nothing is recorded): no
 `slang-runtime`, a precompiled WGSL artifact, a backend other than Vulkan, a device without `PASSTHROUGH_SHADERS`, a
-SPIR-V compile error, a push-constant block, or a failed binding check. Section 15 of SEMANTICS has the differences
-that remain and the measurements.
-`GpuVec<T>` (slice m7.a0, D84; `crates/gust-wgpu/src/vec.rs`) is a typed vector that stays on a device. It is built from
-a slice (`from_slice`, `from_slice_on`) or zeroed (`zeroed`, `zeroed_on`), reads back with `to_vec`, is a `Resource` (so
-it binds to a generated call and to a map as a `Resident` argument), and carries the id of its device, so `check_device`
-and a map refuse another device's vector with `Error::MixedDevices`. Its storage comes from the device's `BufferPool`
-(`pool.rs`) and goes back to it on drop. The pool keeps idle buffers in size classes, exact up to 64 KiB
-(`EXACT_CLASS_BYTES`) and a power of two above that, capped at the device's `max_buffer_size`. It drops the least
-recently returned idle buffers past an idle cap of 1 GiB by default. A pooled buffer may be larger than the vector, and
-every binding exposes the logical bytes only. A recycled buffer is cleared in a submission of its own before it is
-handed out as zeroed, and a buffer with a mapping pending is never put back. `PoolStats` reports the hand-outs, the
-returns and the idle bytes. `DeviceHandle` is the shared handle that `default_device()` returns, opened with
-`DeviceOptions` (`#[non_exhaustive]`; `DeviceOptions::default()` and `with_backends`, `with_adapter`, `with_limits`
-and `with_features`; `features` asks for `float32-filterable` when the adapter
-offers it on native and for nothing on `wasm32`; slice mx.t2); `set_default_options` applies to the first
-`default_device()` and is `Error::DefaultDeviceOpened` after that.
+SPIR-V compile error, a push-constant block, or a failed binding check. Section 15 of SEMANTICS has the differences that
+remain and the measurements. `GpuVec<T>` (slice m7.a0, D84; `crates/gust-wgpu/src/vec.rs`) is a typed vector that stays
+on a device. It is built from a slice (`from_slice`, `from_slice_on`) or zeroed (`zeroed`, `zeroed_on`), reads back with
+`to_vec`, is a `Resource` (so it binds to a generated call and to a map as a `Resident` argument), and carries the id of
+its device, so `check_device` and a map refuse another device's vector with `Error::MixedDevices`. Its storage comes
+from the device's `BufferPool` (`pool.rs`) and goes back to it on drop. The pool keeps idle buffers in size classes,
+exact up to 64 KiB (`EXACT_CLASS_BYTES`) and a power of two above that, capped at the device's `max_buffer_size`. It
+drops the least recently returned idle buffers past an idle cap of 1 GiB by default. A pooled buffer may be larger than
+the vector, and every binding exposes the logical bytes only. A recycled buffer is cleared in a submission of its own
+before it is handed out as zeroed, and a buffer with a mapping pending is never put back. `PoolStats` reports the
+hand-outs, the returns and the idle bytes. `DeviceHandle` is the shared handle that `default_device()` returns, opened
+with `DeviceOptions` (`#[non_exhaustive]`; `DeviceOptions::default()` and `with_backends`, `with_adapter`, `with_limits`
+and `with_features`; `features` asks for `float32-filterable` when the adapter offers it on native and for nothing on
+`wasm32`; slice mx.t2); `set_default_options` applies to the first `default_device()` and is
+`Error::DefaultDeviceOpened` after that.
 
 ### `gust-algo`
 

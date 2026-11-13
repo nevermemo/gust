@@ -570,7 +570,8 @@ test module; do not mix that mechanical move with behavior changes.
   only (say so, or enable DX12 in a test-only build); route-log lines can tear across threads (a false failure,
   never a false pass: buffer each line); the comment on the `spirv-route` feature in `crates/gust-wgpu/Cargo.toml`
   says it has no effect on wasm32, which is true of the runtime and not of the macro's guards (review R5, the one
-  imprecision of the three that is in code; the SEMANTICS and long-line ones were fixed in m9.x2).
+  imprecision of the three that is in code; the SEMANTICS one was fixed in m9.x2); three code lines over 120
+  columns.
 - m9.g2 nits (the documentation ones were fixed in m9.x2). Left from round 1: `T::m(&t)` gets E0302's generic text
   (suggest `t.m()`; pin a unit case); a kernel with a `where` clause and no generics is still accepted; no fixture has a
   generic inherent method on an enum impl.
@@ -587,10 +588,11 @@ test module; do not mix that mechanical move with behavior changes.
   `crates/gust-wgpu/tests/driver_sentinel.rs`). Left: a run on the RTX 3070 (another NVIDIA architecture) to scope it,
   recorded in D168/D169's envelope; the sentinel's message names the local investigation folders (`arrbug`, `arrbug2`),
   which a reader of the public repository cannot open, so name D168/D169 instead; the NVIDIA report is the owner's call
-  (a draft can be prepared); the difftest's guard is removed when a fixed driver is measured. Settled in M9: slangc's
-  own SPIR-V, passed to Vulkan, computed the right values on the RTX 5090 where slangc's WGSL through naga did not, and
-  the opt-in `spirv-route` feature (m9.rt2, D172, D174) is that runtime route; it is off by default, so the difftest
-  guard stays.
+  (a draft can be prepared); the difftest's guard is removed when a fixed driver is measured. Partly settled in M9:
+  slangc's own SPIR-V, passed to Vulkan, computed the right values on the RTX 5090 where slangc's WGSL through naga did
+  not, and the opt-in `spirv-route` feature (m9.rt2, D172, D174) takes that route, but only with run-time compilation: a
+  shipped `native` or `web` build and a precompiled artifact stay on WGSL. Still open: a production route (SPIR-V
+  artifacts). The feature is off by default, so the difftest guard stays.
 - m9.d1e re-check nits: the `CLOSURE_INFO` registry (`tests/difftest/src/ast.rs`) is thread-local state that
   `bin_shape` and `closure_call_names` depend on silently (pass it explicitly); the high closure mutant counts come
   mostly from the fixed kernel-result probes, so measure order and by-value observation for closures bound in
@@ -612,6 +614,9 @@ test module; do not mix that mechanical move with behavior changes.
   `execute_shapes` and `Options.export_dir`; `--shrink` with `--export-dir` reuses one record directory for every
   candidate (reject the pair or discard per candidate). GUST-E0712's message says "same Slang text" when only
   the `.kernel.json` record differs (gust-macros `collision_message`).
+
+- `interface` and `extension` are emitted by M9 (traits) but are in neither `COLLISIONS` nor `STDLIB_INTERFACES`; a user
+  name of that spelling probably fails in slangc loudly (not measured).
 
 ## Deferred language/runtime breadth
 

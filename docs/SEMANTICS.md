@@ -97,29 +97,29 @@ describes the intended behaviour and is not evidence.
   `GUST_PROFILE=cpu`, and under it every kernel, tagged or not, is `Target::Cpu`. Plain cargo reads the variable of the
   tag by its exact name only: an empty value, or one that is not valid text, is unset, and a variable of an ancestor
   (`GUST_ROUTE__p__physics`) does not route `physics.broadphase`, which takes only its ancestors' `default`s. A
-  variable `gpu` under `GUST_PROFILE=cpu` is GUST-E0749, and so is a target outside the tag's set
-  (an explicit `targets`, else GPU and CPU for a kernel with a CPU form and the GPU only for one without; GUST-E0744
-  when `targets` names `cpu` for a kernel that has no CPU form). The macro tracks the variable, so changing it rebuilds
-  the crate. A CPU-routed module is expanded as under `GUST_PROFILE=cpu`: it has `Run` for `CpuDevice`, no artifact
-  lookup and no manifest check, its descriptor says `Target::Cpu`, and it has no `GpuKernel` implementation, so a call
-  on `HeadlessDevice` fails to compile (E0277). A route flip therefore changes which device the kernel's call sites
-  compile against: a kernel call names its device, so a flip is a call-site change, and only a generated element-wise
-  map (`name::map`) is the same on either target (D137, D145; a target-agnostic device handle is filed in NEXT_TASKS,
-  not built). A CPU-routed kernel is still held to the GPU portable floor: the `limits = "portable"` check
-  (GUST-E0746) and every other check that does not depend on the target run under every profile and every route, so the
-  kernel's source raises no new validation error (E07xx) when a build moves it back to the GPU. That move still needs
-  the GPU form: under a strict profile (`native` or `web`) the kernel needs its precompiled artifact (`cargo gust
-  build`), a tag whose `targets` lacks `gpu` is GUST-E0749, and every `CpuDevice` call site is then E0277. Evidence is
-  `cargo xtask check-dual` E4 (a routed kernel library and its consumer; the unrouted control is a `cargo build` of the
-  same unit, so it also fails if the variable were not tracked) and `cargo xtask check-cpu-target` E-j (the crate
-  `routed` under `native`, a CPU-routed kernel and a CPU-routed `#[gpu(route = ..)] fn` map built and run, then the
-  same `cargo build --release` flipped set, unset, set, unset in one warm directory, where each unset state must
-  recompile and fail like the control); both are `Cpu` evidence, never GPU evidence.
-  The **routing driver** (exists, m8.r2, D151) is where an application sets the variables without writing them:
-  `cargo gust build`, `check`, `run` and `test` read a `gust.toml` beside the selected package (`[routes]`, entries
-  `"<package>::<tag>" = "gpu" | "cpu"` or a table keyed by the build profile `dev`, `native`, `web`), validate it
-  against the `[package.metadata.gust.routes]` tables that `cargo metadata` reports, resolve each declared tag the way
-  the macro does (the `cpu` profile, the nearest entry, the declaring crate's defaults, the GPU), set one
+  variable `gpu` under `GUST_PROFILE=cpu` is GUST-E0749, and so is a target outside the tag's set (an explicit
+  `targets`, else GPU and CPU for a kernel with a CPU form and the GPU only for one without; GUST-E0744 when `targets`
+  names `cpu` for a kernel that has no CPU form). The macro tracks the variable, so changing it rebuilds the crate. A
+  CPU-routed module is expanded as under `GUST_PROFILE=cpu`: it has `Run` for `CpuDevice`, no artifact lookup and no
+  manifest check, its descriptor says `Target::Cpu`, and it has no `GpuKernel` implementation, so a call on
+  `HeadlessDevice` fails to compile (E0277). A route flip therefore changes which device the kernel's call sites compile
+  against: a kernel call names its device, so a flip is a call-site change, and only a generated element-wise map
+  (`name::map`) is the same on either target (D137, D145; the handle that follows the route is
+  `gust::routed::RoutedDevice`, D165). A CPU-routed kernel is still held to the GPU portable floor: the
+  `limits = "portable"` check (GUST-E0746) and every other check that does not depend on the target run under every
+  profile and every route, so the kernel's source raises no new validation error (E07xx) when a build moves it back to
+  the GPU. That move still needs the GPU form: under a strict profile (`native` or `web`) the kernel needs its
+  precompiled artifact (`cargo gust build`), a tag whose `targets` lacks `gpu` is GUST-E0749, and every `CpuDevice` call
+  site is then E0277. Evidence is `cargo xtask check-dual` E4 (a routed kernel library and its consumer; the unrouted
+  control is a `cargo build` of the same unit, so it also fails if the variable were not tracked) and
+  `cargo xtask check-cpu-target` E-j (the crate `routed` under `native`, a CPU-routed kernel and a CPU-routed
+  `#[gpu(route = ..)] fn` map built and run, then the same `cargo build --release` flipped set, unset, set, unset in one
+  warm directory, where each unset state must recompile and fail like the control); both are `Cpu` evidence, never GPU
+  evidence. The **routing driver** (exists, m8.r2, D151) is where an application sets the variables without writing
+  them: `cargo gust build`, `check`, `run` and `test` read a `gust.toml` beside the selected package (`[routes]`,
+  entries `"<package>::<tag>" = "gpu" | "cpu"` or a table keyed by the build profile `dev`, `native`, `web`), validate
+  it against the `[package.metadata.gust.routes]` tables that `cargo metadata` reports, resolve each declared tag the
+  way the macro does (the `cpu` profile, the nearest entry, the declaring crate's defaults, the GPU), set one
   `GUST_ROUTE__<package>__<tag>` variable per tag on the cargo it starts, and write the resolved table to
   `gust-artifacts/routes.json` (a build output; removed when no `gust.toml` applies). The driver resolves the profile
   from its own command line and process environment only (`--release`, `-r`, `--profile release`, `--target wasm32-..`
@@ -134,16 +134,16 @@ describes the intended behaviour and is not evidence.
   variable. Plain cargo sets no `GUST_ROUTED_PROFILE`, nothing is compared, and it behaves as before (D67); a driver run
   that applies no `gust.toml` removes a stale inherited value. A switch between plain cargo (or rust-analyzer) and
   `cargo gust` in one target directory rebuilds the routed kernel crates and the application only, as a route change
-  does (measured in m8.z: two crates in the routing fixture; with the check in `gust`'s build script it was three, `gust`
-  among them; in a real application every crate that depends on `gust` would rebuild, inferred from Cargo's rule
+  does (measured in m8.z: two crates in the routing fixture; with the check in `gust`'s build script it was three,
+  `gust` among them; in a real application every crate that depends on `gust` would rebuild, inferred from Cargo's rule
   that a rerun build script rebuilds its dependents, not measured). A routed kernel crate compiled for the host as a
   build dependency of a `wasm32` release build infers `native` where the driver resolved `web`, and is refused too; set
-  `GUST_PROFILE=web` in the environment then, so that both copies infer `web`. A change to the `gust.toml`
-  rebuilds in both directions, as `cargo xtask check-routing` measured (with the route tracking removed, the
-  unset-to-set flip fails). A route to a capability profile is refused; `--workspace`, `--all` and a workspace root's
-  default selection are refused when any selected member has a `gust.toml`; no `cargo gust` command builds a routed
-  release binary yet (NEXT_TASKS). Without `--check-only` the check also runs a GPU step that names its adapter, and
-  only that step is GPU evidence.
+  `GUST_PROFILE=web` in the environment then, so that both copies infer `web`. A change to the `gust.toml` rebuilds in
+  both directions, as `cargo xtask check-routing` measured (with the route tracking removed, the unset-to-set flip
+  fails). A route to a capability profile is refused; `--workspace`, `--all` and a workspace root's default selection
+  are refused when any selected member has a `gust.toml`; no `cargo gust` command builds a routed release binary yet
+  (NEXT_TASKS). Without `--check-only` the check also runs a GPU step that names its adapter, and only that step is GPU
+  evidence.
 - **Uniforms (exist, m6.u1 host API and m6.u2 macro).** A uniform is one value in a constant buffer, bound to a
   `Uniform<T>` (alias `ConstantBuffer<T>`) parameter through a resource of kind `gust::kind::Uniform` (`GpuUniform<T>`
   on the GPU, `CpuUniform<T>` on the twin). The generated call names `Resource::Kind` in every bound (`Storage` for a
@@ -1017,16 +1017,15 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
 - **Compare-exchange may fail spuriously.** WGSL's only compare-exchange is `atomicCompareExchangeWeak` (17.8.5):
   "The equality comparison may spuriously fail on some implementations." So even an uncontended compare-exchange
   that should succeed is not guaranteed to, and in the contended case the unchanged value (999 in the ledger case)
-  is also a spec-allowed result. The contract (D47): on the GPU the success case is set-valued, the cell ends at
-  the new value or stays unchanged (`{7, 11}` for 7 to 11, `{-5, 11}` for -5 to 11); on the twin it is exact (11).
-  The failure case (compare against a value the cell does not hold) is exact on both, because a spurious failure
-  only adds failures. The returned flag is never part of the contract: the GPU form is statement-only.
-  On the pinned Slang 2026.22, as on 2026.21 before it (the `atomics` golden is among the 131 golden entries whose WGSL
-  was identical on the two, spike SL22: the count is the `[shader(` lines of the 30 files `tests/fixtures/*.slang` (the
-  route-only `*.spirv-route.slang` files of m9.rt2 are not counted) that
-  the spike compared, and the same count gives 132 in 31 files with the traits golden, which was compared too, and 133
-  in 32 files in this tree; the generics golden of m9.g2 was written on 2026.22 and has no 2026.21 counterpart), the
-  emitted WGSL retries after a spurious failure (Slang #13918: a retry loop around
+  is also a spec-allowed result. The contract (D47): on the GPU the success case is set-valued, the cell ends at the new
+  value or stays unchanged (`{7, 11}` for 7 to 11, `{-5, 11}` for -5 to 11); on the twin it is exact (11). The failure
+  case (compare against a value the cell does not hold) is exact on both, because a spurious failure only adds failures.
+  The returned flag is never part of the contract: the GPU form is statement-only. On the pinned Slang 2026.22, as on
+  2026.21 before it, the `atomics` golden is among the 131 golden entries whose WGSL was identical on the two (spike
+  SL22). The count is the `[shader(` lines of the 30 files `tests/fixtures/*.slang` that the spike compared; the
+  route-only `*.spirv-route.slang` files of m9.rt2 are not counted. The same count gives 132 in 31 files with the traits
+  golden, which was compared too, and 133 in 32 files in this tree; the generics golden of m9.g2 was written on 2026.22
+  and has no 2026.21 counterpart. The emitted WGSL retries after a spurious failure (Slang #13918: a retry loop around
   `atomicCompareExchangeWeak`, read from the emitted text; not re-measured on a GPU), so the spurious failure that the
   contract allows is not expected there. The contract stays weak because it covers other pins and targets; the
   assertions are not tightened.
@@ -1664,7 +1663,8 @@ a compute or pixel (fragment) pipeline from slangc's own SPIR-V through wgpu's `
 instead of the WGSL that naga checks and rewrites. A kernel stays on the WGSL route, and the device records the reason
 (`HeadlessDevice::route_events`), when:
 
-- the feature is off, or the build has no `slang-runtime` (there is no SPIR-V to compile);
+- the build has no `slang-runtime` (there is no SPIR-V to compile); with the feature off none of this exists and
+  nothing is recorded;
 - the kernel is a precompiled WGSL artifact (its bytes are the contract);
 - the backend is not Vulkan ("backend is not Vulkan": DX12, Metal and GL advertise `PASSTHROUGH_SHADERS` but take no
   SPIR-V, so the device does not request the feature there);
@@ -1738,7 +1738,8 @@ What the contract says:
 
 - A `&self` method only reads its receiver (the callee gets a copy on the GPU), and a `self` method works on a copy: the
   caller's receiver does not change. A `&mut self` method writes through the receiver, and a `let mut` local (or a field
-  or an element of one) is the only receiver GUST accepts for it; a storage, uniform, workgroup or invocation-id place
+  or an element of one) is the only receiver GUST accepts for it (a `self` method called by value on a shared place is
+  GUST-E0333 too, as the validator counts it as mutating); a storage, uniform, workgroup or invocation-id place
   and a value that is not a place are GUST-E0333 (`let mut copy = out[i]; copy.bump(); out[i] = copy;`). The reason is
   that a write through a place shared by the invocations would not show in the kernel, and that Slang passes a by-value
   parameter as a read-only value.
@@ -1755,5 +1756,6 @@ What the contract says:
   and so the content key of an artifact built from such a module (CHANGELOG, 0.2.0, break B4).
 
 Evidence: the golden fixtures `methods.slang`, `methods_mut.slang`, `traits.slang`, `generics.slang` and `enums.slang`
-under `tests/fixtures` (each with a Rust source twin that the difftest and the GPU tests run), and the UI fixtures named
-in DIAGNOSTICS under E0116, E0328, E0333 and E0421. GPU runs of those fixtures are recorded in the status log, not here.
+under `tests/fixtures` (each with a Rust source twin that the `m9_*` GPU tests and the macro regression tests include),
+and the UI fixtures named in DIAGNOSTICS under E0116, E0328, E0333 and E0421. GPU runs of those fixtures are recorded in
+the status log, not here.

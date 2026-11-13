@@ -13,7 +13,7 @@ parts (the descriptor constructor and setters, and the `GpuKernel` bound), is th
 `#[non_exhaustive]` from now on. B2 is a function name in a `#[gpu]` module that is now reserved (the 21 subgroup
 operations). B3 is that recursion is refused (`GUST-E0120`). B4 is that more names are renamed in the emitted Slang,
 which changes the content key of a precompiled artifact of a module that uses one (`Tuple`, `makeTuple`, `this` and the
-47 names of Slang's standard interfaces). The public API that M9 adds is additive (D165 and the route types); the
+46 names of Slang's standard interfaces). The public API that M9 adds is additive (D165 and the route types); the
 semver tool was not run for it.
 
 ### Added
@@ -22,8 +22,9 @@ semver tool was not run for it.
   `gust-compute` builds Vulkan compute and pixel pipelines from slangc's SPIR-V (wgpu passthrough shaders) and falls
   back to WGSL, with a recorded reason (`HeadlessDevice::route_events`, `Route`, `RouteEvent`, `SPIRV_ROUTE`), when the
   device or the kernel cannot take it. With the feature on, the generated Slang clamps array indices, guards integer
-  division and remainder, and zeroes workgroup memory; the WGSL text does not change with the feature off. See SEMANTICS
-  section 15.
+  division and remainder, and zeroes workgroup memory; the WGSL text does not change with the feature off. The route
+  needs run-time compilation (a build with `slang-runtime`, which the `native` and `web` profiles refuse): precompiled
+  artifacts and those builds stay on WGSL. See SEMANTICS section 15.
 - Capabilities in the build profile. `GUST_PROFILE` takes `<target>(+<capability>)*`, and `subgroups` is the first
   capability (`dev+subgroups` is the test profile, `native+subgroups` the strict one; `web+subgroups` and a capability
   on `cpu` are refused, `f16` and `atomics64` are reserved names). `gust::capability` (`Capability`, `enabled()`) and
@@ -232,15 +233,16 @@ semver tool was not run for it.
   the Slang line table), which were rewritten to put the recursive call into the Slang text. A call `x.m(..)` also
   counts as a call of every method named `m` of another struct, so rename a method that calls another struct's method of
   the same name.
-- **B4: more names are renamed in the emitted Slang** (`Tuple`, `makeTuple`, `this`, and the 47 interface names of
+- **B4: more names are renamed in the emitted Slang** (`Tuple`, `makeTuple`, `this`, and the 46 interface names of
   Slang's standard module, `IFloat`, `IInteger`, `IComparable`, `__BuiltinType` and the rest, `STDLIB_INTERFACES` in
   `crates/gust-macros/src/slang/collisions.rs`). M9 uses `Tuple<..>` and `makeTuple` for tuples and `this` for method
   receivers, and emits a user `trait` as an `interface`, so a user name equal to one of these is emitted as
-  `__gust_r_<name>`, as the 0.1.0 names of the collision table already were (D81). A 0.1.0 module with a struct, local
-  or parameter named `Tuple`, `makeTuple` or `this`, or a struct or enum named like a standard interface, gets other
-  Slang text, hence another content key for its precompiled artifacts. Migration: run `cargo gust build` again and
-  commit `gust-artifacts/`; the source needs no change, and a slangc message shows the Rust spelling again. Not
-  measured: how many 0.1.0 modules use such a name (no example or fixture of this repository does).
+  `__gust_r_<name>`, as the 0.1.0 names of the collision table already were (D81). A 0.1.0 module with any user name of
+  one of these spellings (a struct, field, local, helper or parameter; 0.1.0 had no enums) gets other Slang text, hence
+  another content key for its precompiled artifacts. Migration: run `cargo gust build` again and commit
+  `gust-artifacts/`; the source needs no change, and a slangc message shows the Rust spelling again. Not measured: how
+  many 0.1.0 modules use such a name (no example of this repository does; the tests that use one are the renaming's
+  own).
 - `DeviceOptions::default()` and `HeadlessDevice::new()` now request `gust::capability::enabled()`. In a build with no
   capability that is the empty set, as before; in a `+subgroups` build they open a device with the feature or fail with
   `Error::MissingCapability`.

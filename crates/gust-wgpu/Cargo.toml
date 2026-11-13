@@ -28,7 +28,9 @@ slang-runtime = ["gust/slang-runtime"]
 # The opt-in SPIR-V route (m9.rt2, D172, D174): on a Vulkan device with PASSTHROUGH_SHADERS the kernel's own slangc SPIR-V
 # is handed to the driver, and the kernels are emitted with the guards that naga adds on the WGSL route. Off by default
 # (the WGSL route is the one that is tested everywhere); every other case falls back to WGSL and says so
-# (`HeadlessDevice::route_events`). Native Vulkan only; has no effect on wasm32. Needs `slang-runtime` to take effect.
+# (`HeadlessDevice::route_events`). Native Vulkan only; needs `slang-runtime` to take effect.
+# On wasm32 the runtime never takes the route (`SPIRV_ROUTE` is false), but the feature is still forwarded to `gust`, so
+# the macro's guards (`gust-macros` `slang/guards.rs`) are emitted there too.
 spirv-route = ["gust/spirv-route"]
 
 [dependencies]

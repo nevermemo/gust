@@ -49,19 +49,19 @@ The proc macro owns validation, syntax translation, binding assignment, and host
 handle generation. Translation happens directly from `syn` nodes; there is no
 intermediate instruction graph between the Rust AST and Slang text.
 
-Host handle generation includes the typed `call`, `submit` and `dispatch` functions
-of each kernel (below, under `gust`; since m6.u2 a kernel with a `Uniform<T>` or
-`ConstantBuffer<T>` parameter has them too, and every bound names its parameter's `Kind`) and const assertions, evaluated by rustc, that
-every buffer element type and struct field is a padding-free layout (StorageV1, or StorageV2 where a vector or matrix
-is involved; Std140V1 for structs a uniform reaches, which get `#[repr(C, align(16))]`) matching Rust's size and
-alignment; a failure is error E0080 that names the field
-or the parameter. The macro still does not reflect: layouts and bindings are
-assigned here and verified against Slang at run time (D17). Since m9.r2b (D159) a layout can also be an array
-(`TypeLayoutKind::Array`): `[T; N]` for the 39 lengths with a `GpuPod` impl, whose element is a non-array storage type
-with std430 stride equal to its Rust size (so no `Vec3`, `IVec3`, `UVec3` or `Mat3`), is a `StorageV1` or `StorageV2` layout of size
-`stride * N` and the element's alignment, and is never `Std140V1` (a scope choice of D159, E0215); the element rule is a
-constant evaluated after monomorphisation (`cargo build` reports it, `cargo check` may not); the macro does not emit
-arrays yet.
+Host handle generation includes the typed `call`, `submit` and `dispatch` functions of each kernel (below, under `gust`;
+since m6.u2 a kernel with a `Uniform<T>` or `ConstantBuffer<T>` parameter has them too, and every bound names its
+parameter's `Kind`) and const assertions, evaluated by rustc, that every buffer element type and struct field is a
+padding-free layout (StorageV1, or StorageV2 where a vector or matrix is involved; Std140V1 for structs a uniform
+reaches, which get `#[repr(C, align(16))]`) matching Rust's size and alignment; a failure is error E0080 that names the
+field or the parameter. The macro still does not reflect: layouts and bindings are assigned here and verified against
+Slang at run time (D17). Since m9.r2b (D159) a layout can also be an array (`TypeLayoutKind::Array`): `[T; N]` for the
+39 lengths with a `GpuPod` impl, whose element is a non-array storage type with std430 stride equal to its Rust size (so
+no `Vec3`, `IVec3`, `UVec3` or `Mat3`), is a `StorageV1` or `StorageV2` layout of size `stride * N` and the element's
+alignment, and is never `Std140V1` (a scope choice of D159, E0215); the element rule is a constant evaluated after
+monomorphisation (`cargo build` reports it, `cargo check` may not). The macro emits the layout of an array field and of
+an array buffer element into the export record (the `array` layout kind, m9.pa); an array value in a body is lowered by
+`slang/mod.rs` (`T[N]`, section 11 of SEMANTICS).
 
 The current translator emits one self-contained Slang compilation unit per
 kernel. It includes the module's struct declarations, non-kernel helper functions,
@@ -95,12 +95,39 @@ depend on `gust`; a `gust` test compares the emitted text with the constant.
 
 Which shapes a kernel can take is the classifier's job, a separate module (`validate/classify.rs`, mx.c, D94). It lives
 under `validate/` but runs in the expansion (`expand/mod.rs`), for every kernel and before the profile is chosen, on the
-signature and the body by conservative syntactic rules, gives the descriptor's
-`compatible_shapes`, and checks the `#[kernel(shape = ..)]` pin against them. Anything it does not recognise is
-`grid`-only with the span of the construct named, so a wrong guess costs a pin error and never a wrong shader. It does
-not read the map generator's `own_index` stamp. The codes of the pin and the classifier are GUST-E0721 to E0728 (E0729
-is the profile's own refusal and E0730 is retired), and the texture rules of the macro are GUST-E0731 to E0736 (`slang/texture.rs`, the one table of the
-dialect's texture types, methods and lowering). A kernel never changes shape by itself: the pin or `grid`.
+signature and the body by conservative syntactic rules, gives the descriptor's `compatible_shapes`, and checks the
+`#[kernel(shape = ..)]` pin against them. Anything it does not recognise is `grid`-only with the span of the construct
+named, so a wrong guess costs a pin error and never a wrong shader. It does not read the map generator's `own_index`
+stamp. The codes of the pin and the classifier are GUST-E0721 to E0728 (E0729 is the profile's own refusal and E0730 is
+retired), and the texture rules of the macro are GUST-E0731 to E0736 (`slang/texture.rs`, the one table of the dialect's
+texture types, methods and lowering). A kernel never changes shape by itself: the pin or `grid`.
+
+M9 (D154 to D162, D170) added four pieces to the macro, none of them a second representation of the program (the call
+graph runs after the per-item checks, the trait desugaring before validation, the collision table in the emitter):
+
+- The call graph (`validate/callgraph.rs`, D162). It runs after every item has been validated. Its nodes are the
+  functions that have a body (helpers, kernels, and every function of an `impl` block, inherent or trait); its edges
+  come from names alone: `f(..)` to the helper `f`, `x.m(..)` to every method named `m` of every `impl`, and
+  `S::f(..)` or `Self::f(..)` to the functions `f` of `S`. A cycle is GUST-E0120 at the call that closes it. It
+  over-approximates on purpose, because the macro sees no types, and it carries no uniformity (every callee is
+  validated as a helper, D154).
+- Traits (`validate/traits.rs`, D170). A `trait` has no node of its own. `desugar` rewrites the path calls
+  `T::m(&s, a)`, `T::m(s, a)` and `<S as T>::m(&s, a)` to `s.m(a)` before validation, classification and emission, so
+  every method-call rule applies to them. The emitter writes a trait as a Slang `interface` and each `impl T for S` as
+  `extension S : T`; calls are static, there is no dynamic dispatch.
+- Generics (`validate/generics.rs`, D170). A free helper or an inherent method may have type parameters bounded by
+  traits of the module (`check_signature`, GUST-E0123 and E0125); the emitter writes `T f<T : A & B>(T t)` and slangc
+  specialises it per instantiation. The CPU twin keeps the generic as Rust. A type parameter named like an item of the
+  module is GUST-E0328 (`name_problem`).
+- Name collisions (`slang/collisions.rs`, D81). The table of reserved Slang names, now with `Tuple`, `makeTuple`,
+  `this` and the 46 interface names of Slang's standard module, renames a colliding user name to `__gust_r_<name>`.
+
+The SPIR-V route has a macro half and a runtime half (D172, D174). `slang/guards.rs` makes the emitter write the guards
+that naga adds on the WGSL route (array index clamp, `__gust_div` and `__gust_rem` for a zero divisor and signed
+overflow, zeroing of workgroup memory) when the Cargo feature `spirv-route` is on; the text is shared by both routes.
+The runtime half is `crates/gust-wgpu/src/passthrough.rs` (below, under `gust-wgpu`). Cargo unifies features, so one
+crate of a build that turns the feature on changes the Slang text, and the content keys, for every kernel of that
+build.
 
 The original kernel function is renamed to a private `__gpu_typecheck_*` item in
 the expanded Rust module. In a production build it is compiled only to make rustc
@@ -305,18 +332,19 @@ keeps the older "StorageV1 representation" wording because tests pin it.
 Textures (slice mx.t2, D64, D90, D120; `crates/gust-wgpu/src/texture.rs`). `GpuTexture2d<F>` and `GpuSampler` belong to
 one `HeadlessDevice`; `create_texture_2d`, `write_texture`, `read_texture` (native) and `read_texture_async`, and
 `create_sampler`. `wgpu_format` is the one `match` from `gust::texture::Format` to `wgpu::TextureFormat`, and the size
-and sample type of a format are wgpu's own `block_copy_size` and `sample_type`, not a second table. A readback strips the
-256-byte row padding, and a texture larger than `max_buffer_size` reads back as `DeviceLimit`. The bind-group layout of
-a kernel is built per device in one of two variants from the features the device really has. With `float32-filterable`
-an `f32` sampled texture is filterable and takes a filtering sampler; without it the texture is unfilterable, and a
-linear sampler is `Error::TextureFilter` at submit while a nearest one binds either way. `FeaturesPolicy` is the knob
-(`Adapter` under `DeviceOptions::default()`, `Default` under `HeadlessDevice::new()` and on `wasm32`). The binding
-access comes from the parameter type: a `WriteTexture2D` is bound write-only (any of the nine formats) and a
-`StorageTexture2D` read-write (only the three `r32` formats), because wgpu refuses read-write for a wider one (D120). `check_kernel_limits` covers the texture counts and the
-2-D size limit of the opened device, and the typed call checks use, format and device instance (`TextureUse`, `TextureFormat`), while creation checks size
-and sampler options (`TextureSize`, `SamplerOptions`, from `create_texture_2d`, `write_texture` and `create_sampler`).
-The staged graph refuses a kernel with a texture or sampler parameter (`Error::UnsupportedParameter`); the generated
-host snippet takes a `float32_filterable: bool` when a kernel samples.
+and sample type of a format are wgpu's own `block_copy_size` and `sample_type`, not a second table. A readback strips
+the 256-byte row padding, and a texture larger than `max_buffer_size` reads back as `DeviceLimit`. The bind-group layout
+of a kernel is built per device in one of two variants from the features the device really has. With
+`float32-filterable` an `f32` sampled texture is filterable and takes a filtering sampler; without it the texture is
+unfilterable, and a linear sampler is `Error::TextureFilter` at submit while a nearest one binds either way.
+`FeaturesPolicy` is the knob (`Adapter` under `DeviceOptions::default()`, `Default` under `HeadlessDevice::new()` and on
+`wasm32`). The binding access comes from the parameter type: a `WriteTexture2D` is bound write-only (any of the nine
+formats) and a `StorageTexture2D` read-write (only the three `r32` formats), because wgpu refuses read-write for a wider
+one (D120). `check_kernel_limits` covers the texture counts and the 2-D size limit of the opened device, and the typed
+call checks use, format and device instance (`TextureUse`, `TextureFormat`), while creation checks size and sampler
+options (`TextureSize`, `SamplerOptions`, from `create_texture_2d`, `write_texture` and `create_sampler`). The staged
+graph refuses a kernel with a texture or sampler parameter (`Error::UnsupportedParameter`); the generated host snippet
+takes a `float32_filterable: bool` when a kernel samples.
 
 The `pixel` runtime (slice mx.p1b, D120 and D127; `crates/gust-wgpu/src/render.rs`). A `pixel` kernel is built into a
 render pipeline, not a compute pipeline: the vertex stage is the shared `shapes/fullscreen.wgsl` (three vertices from
@@ -350,20 +378,28 @@ instructions that the current wgpu SPIR-V frontend does not implement. SPIR-V is
 therefore exported and validated independently rather than being forced through
 that narrower frontend.
 
-`GpuVec<T>` (slice m7.a0, D84; `crates/gust-wgpu/src/vec.rs`) is a typed vector that stays on a device. It is built from
-a slice (`from_slice`, `from_slice_on`) or zeroed (`zeroed`, `zeroed_on`), reads back with `to_vec`, is a `Resource` (so
-it binds to a generated call and to a map as a `Resident` argument), and carries the id of its device, so `check_device`
-and a map refuse another device's vector with `Error::MixedDevices`. Its storage comes from the device's `BufferPool`
-(`pool.rs`) and goes back to it on drop. The pool keeps idle buffers in size classes, exact up to 64 KiB
-(`EXACT_CLASS_BYTES`) and a power of two above that, capped at the device's `max_buffer_size`. It drops the least
-recently returned idle buffers past an idle cap of 1 GiB by default. A pooled buffer may be larger than the vector, and
-every binding exposes the logical bytes only. A recycled buffer is cleared in a submission of its own before it is
-handed out as zeroed, and a buffer with a mapping pending is never put back. `PoolStats` reports the hand-outs, the
-returns and the idle bytes. `DeviceHandle` is the shared handle that `default_device()` returns, opened with
-`DeviceOptions` (`#[non_exhaustive]`; `DeviceOptions::default()` and `with_backends`, `with_adapter`, `with_limits`
-and `with_features`; `features` asks for `float32-filterable` when the adapter
-offers it on native and for nothing on `wasm32`; slice mx.t2); `set_default_options` applies to the first
-`default_device()` and is `Error::DefaultDeviceOpened` after that.
+The opt-in `spirv-route` feature (m9.rt2, D172, D174) is the one exception, on Vulkan only. `passthrough.rs` reads the
+SPIR-V that slangc produced (`scan`), checks its entry point and resource bindings against the pipeline layout
+(`check_bindings`: set 0, the layout's binding numbers and kinds), renumbers the bindings the way wgpu-hal numbers the
+layout (`densify_bindings`) and hands the module to `Device::create_shader_module_passthrough`, which skips naga. The
+guards naga would add come from the macro (`slang/guards.rs`, above). A kernel that cannot take the route keeps the WGSL
+path and `HeadlessDevice::route_events` says why (`Route`, `RouteEvent`; with the feature off nothing is recorded): no
+`slang-runtime`, a precompiled WGSL artifact, a backend other than Vulkan, a device without `PASSTHROUGH_SHADERS`, a
+SPIR-V compile error, a push-constant block, or a failed binding check. Section 15 of SEMANTICS has the differences that
+remain and the measurements. `GpuVec<T>` (slice m7.a0, D84; `crates/gust-wgpu/src/vec.rs`) is a typed vector that stays
+on a device. It is built from a slice (`from_slice`, `from_slice_on`) or zeroed (`zeroed`, `zeroed_on`), reads back with
+`to_vec`, is a `Resource` (so it binds to a generated call and to a map as a `Resident` argument), and carries the id of
+its device, so `check_device` and a map refuse another device's vector with `Error::MixedDevices`. Its storage comes
+from the device's `BufferPool` (`pool.rs`) and goes back to it on drop. The pool keeps idle buffers in size classes,
+exact up to 64 KiB (`EXACT_CLASS_BYTES`) and a power of two above that, capped at the device's `max_buffer_size`. It
+drops the least recently returned idle buffers past an idle cap of 1 GiB by default. A pooled buffer may be larger than
+the vector, and every binding exposes the logical bytes only. A recycled buffer is cleared in a submission of its own
+before it is handed out as zeroed, and a buffer with a mapping pending is never put back. `PoolStats` reports the
+hand-outs, the returns and the idle bytes. `DeviceHandle` is the shared handle that `default_device()` returns, opened
+with `DeviceOptions` (`#[non_exhaustive]`; `DeviceOptions::default()` and `with_backends`, `with_adapter`, `with_limits`
+and `with_features`; `features` asks for `float32-filterable` when the adapter offers it on native and for nothing on
+`wasm32`; slice mx.t2); `set_default_options` applies to the first `default_device()` and is
+`Error::DefaultDeviceOpened` after that.
 
 ### `gust-algo`
 
@@ -733,7 +769,8 @@ has it.
 The repository checks different failure classes at different layers. These are
 not one sequential backend path: WGSL execution and SPIR-V validation are branches.
 
-1. Macro validation rejects syntax that the direct translator does not support.
+1. Macro validation rejects syntax that the direct translator does not support, and, over the whole module, recursion
+   (the call graph), generic bounds and trait uses (GUST-E0120 to E0126).
 2. rustc checks shadow types, names, indexing, fields, and arithmetic.
 3. `slangc` checks the generated shader and produces WGSL/SPIR-V.
 4. The core SPIR-V helper checks binary structure.
@@ -743,7 +780,8 @@ not one sequential backend path: WGSL execution and SPIR-V validation are branch
    feeding it to naga is unsupported, because Slang can emit `OpCopyLogical` (a copy between aggregates of different
    layouts), which naga's SPIR-V front end refuses. `check-artifacts`, the Spirv suite, `check-full`, `spirv-val` and the
    `check-feature` areas that validate SPIR-V print an informational `OpCopyLogical` count per module (never a failure): 0 in all three golden modules and all 13 example modules (2026-11-02).
-6. wgpu validates the generated WGSL, bind-group layout, pipeline, and dispatch.
+6. wgpu validates the generated WGSL, bind-group layout, pipeline, and dispatch. On the opt-in SPIR-V route, wgpu
+   passes slangc's SPIR-V on without validation, so `passthrough::check_bindings` checks it against the layout first.
 7. Integration tests compare readback values with independent CPU references. In test
    and dual builds the same typed call also runs on the CPU twin, and its result is
    asserted next to the GPU's and the reference's, never instead of them.
@@ -844,8 +882,9 @@ saturating (NaN maps to zero); do not describe those Rust operations as undefine
 See the [Rust operator reference](https://doc.rust-lang.org/reference/expressions/operator-expr.html).
 The defined domain, the float bounds and the known-mismatch ledger are in [SEMANTICS.md](SEMANTICS.md).
 
-Primitive type names and cast targets are fail-closed at the macro boundary; tuples,
-slices, and other standard-prelude names without a proven lowering remain rejected.
+Primitive type names and cast targets are fail-closed at the macro boundary; slices
+and other standard-prelude names without a proven lowering remain rejected (tuples and fixed-size arrays have one
+since M9, SEMANTICS sections 10 and 11).
 `as` casts accept only the proven
 32-bit scalar targets (`f32`/`float`, `i32`/`int`, `u32`/`uint`); Rust primitives
 outside the four-byte subset (`u8`, `i64`, `usize`, `f64`, `char`, ...) are rejected
@@ -866,7 +905,7 @@ payload must be a supported scalar or a module struct. Option is a local/helper 
 only: it is rejected in struct fields and resource element types because it has no
 proven storage layout, and `.unwrap()`/`.expect()` are rejected because Rust panics
 there while GPU code cannot. `match` on Option, `?`, let chains, and other patterns
-remain rejected. `Result<T, T>` is also lowered deterministically as a local/helper-only
+remain rejected (a `match` on an enum or an integer has its own lowering since M9, SEMANTICS section 9). `Result<T, T>` is also lowered deterministically as a local/helper-only
 tagged `__GustResult<T>`: `Ok`/`Err`, `is_ok`/`is_err`, `unwrap_or`, `if let Ok`, and
 statement-only exhaustive `match` with `Ok(identifier)` / `Err(identifier)` block arms
 are supported. A match evaluates its scrutinee once into a generated temporary before

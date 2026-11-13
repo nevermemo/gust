@@ -31,6 +31,13 @@ split or renumbered, and each change is listed here:
   refuses a read-write output bound `Independent`. The twin has `cpu::Error::PixelExtent` and
   `cpu::Error::PixelIndependentOutput`, and a call over 2^26 elements is a `DeviceLimit` named `pixel_max_elements`.
   These are run-time errors, not macro codes.
+- M9 (0.2.0-dev): a form that was refused is either accepted now (methods, enums, `match`, tuples, arrays, closures,
+  traits and generics) or refused with a more specific code, and no code was retired or renumbered. A closure was
+  E0314, which now names only `async`, `static`, `const`, `for<..>` and attribute closures (the rest are E0329 to
+  E0332); `usize` was E0201 or E0202 and is E0334 (accepted as the cast of an index); a trait impl was E0102 or E0121
+  and is E0121, E0124 or E0218 by shape; a tuple pattern in a `let` is allowed by E0319; an array in a struct field was
+  E0813 and is accepted for the stored lengths (E0214 to E0217). New codes: E0120 to E0126, E0211 to E0218, E0328 to
+  E0335, E0417 to E0419 and E0421.
 - `f20d313`: E0602 narrowed from any wrong shape of an atomic's first argument to "not a
   reference"; the other shapes moved to the new codes E0608, E0609 and E0610.
 
@@ -310,7 +317,7 @@ Decision: D162 (M9 plan 1 item 3, slice m9.a2).
 
 ### GUST-E0121 `impl` for a type the module does not define
 
-An `impl` block of a GPU module must be an inherent block (`impl S { .. }`) of a struct declared in the same module, so that the methods become members of the generated Slang struct; a trait impl (`impl T for S { .. }`, slice m9.g1) has the same rule for its type, a struct or a field-less enum of the module. A blanket impl (`impl<T> Anything for T`), an impl for a type that is not a struct or enum of the module (a built-in scalar, vector or matrix, a tuple, a path to another module, an undeclared name) is rejected with this code. Several inherent blocks for one struct are accepted (slice m9.a2), and so is the path form `impl self::S`; an attribute on an `impl` block (`#[cfg(..)]`, `#[inline]`) is GUST-E0115. A generic impl or method is GUST-E0114.
+An `impl` block of a GPU module must be an inherent block (`impl S { .. }`) of a struct declared in the same module, so that the methods become members of the generated Slang struct; a trait impl (`impl T for S { .. }`, slice m9.g1) has the same rule for its type, a struct or a field-less enum of the module. A blanket impl (`impl<T> Anything for T`), an impl for a type that is not a struct or enum of the module (a built-in scalar, vector or matrix, a tuple, a path to another module, an undeclared name) is rejected with this code. Several inherent blocks for one struct are accepted (slice m9.a2), and so is the path form `impl self::S`; an attribute on an `impl` block (`#[cfg(..)]`, `#[inline]`) is GUST-E0115. An `impl` with generic parameters, lifetimes or a `where` clause (`impl<T> S { .. }`) is GUST-E0114; a generic method of a plain `impl S` block is accepted since slice m9.g2 when every type parameter has a trait of the module as a bound (GUST-E0123 and GUST-E0125 apply to it).
 Reached through `#[gpu]`.
 Rejected: `impl Elsewhere { .. }`, `impl Mat4 { .. }`, `impl<T> Anything for T { }`, `impl (u32, u32) { }`, `impl Shape for u32 { .. }`.
 Write instead: declare the struct in the same `#[gpu]` module and put the methods in its `impl` block.
@@ -537,11 +544,11 @@ Decision: D02.
 
 ### GUST-E0302 call to something other than a helper
 
-Only helpers declared in the same GPU module can be called.
+Only helpers declared in the same GPU module can be called, and, since slice m9.a2, `S::f(..)` or `Self::f(..)` for an associated function without a receiver of a struct of the module (a path of exactly two plain segments; the call lowers to `S.f(..)`, a `static` member). A trait path call (`T::m(&s, a)`, `<S as T>::m(&s, a)`) is rewritten to the method call before this check, and its own refusal is GUST-E0126.
 Reached through `#[gpu]`.
-Rejected: `foo(x)` where `foo` is outside the module, `(f)(x)`.
-Write instead: declare `fn foo` inside the module.
-Decision: D02.
+Rejected: `foo(x)` where `foo` is outside the module, `(f)(x)`, `S::area(c)` for a function that has a receiver (the path form is for functions without one: write `c.area()`), `S::nowhere()` when no struct has that function, `self::S::make()` and `self::T::m(&s)` (a leading `self::` is not recognised: write `S::make()`).
+Write instead: declare `fn foo` inside the module, or call the method as `value.method(..)`.
+Decision: D02, D154 (slice m9.a2).
 
 ### GUST-E0303 type arguments on a built-in
 
@@ -1213,11 +1220,11 @@ Decision: D14.
 
 ### GUST-E0518 match arm block
 
-Each arm body is a block, in a `Result` match and in a statement `match` on an enum or an integer; in a value `match` an arm is an expression or a block that ends in an expression.
+Each arm body is a block, in a `Result` match and in a statement `match` on an enum or an integer; in a value `match` an arm is an expression, or a block that ends in an expression without `;` (or in a `return`), and a value arm whose block ends any other way is this code too. A `match` that gives a value outside a typed `let` is GUST-E0419, not this code, except in the tail of a nested block or an `if`, which still reports this code (an open nit in NEXT_TASKS).
 Reached through `#[gpu]`.
-Rejected: `Ok(x) => x`.
-Write instead: `Ok(x) => { .. }`.
-Decision: D14.
+Rejected: `Ok(x) => x`, `E::A => 1u32,` in a statement `match`, and in a value `match` an arm block that ends in a statement (`E::A => { let t = 1u32; }`).
+Write instead: `Ok(x) => { .. }`, `E::A => { .. }`, and for a value arm an expression or a block that ends in one.
+Decision: D14, D157 (slices m9.e1 and m9.e2).
 
 ### GUST-E0519 match binding
 
@@ -1899,12 +1906,12 @@ Decision: D02.
 
 ### GUST-E0811 unsupported expression
 
-An expression form the emitter has no lowering for.
+An expression form the emitter has no lowering for. Since M9 a tuple literal `(1u32, 2u32)` (slice m9.t) and an array literal or repeat in the positions below (slices m9.r1 and m9.r2a) are accepted; what stays here is the rest.
 Reached through `#[gpu]`.
-Rejected: a tuple expression `(1u32, 2u32)`, an array repeat `[0u32; 4]`, `==`, `!=` and the orderings on arrays (locals, parameters, array fields and buffer elements; compare the elements), a block used as a value `{ 1u32 }`, the dereference `*x` (`*self` included: no value of the dialect is a reference, so write `self.field` or use a local copy).
-Known edge of the array comparison (slice m9.r2a): both operands must look like arrays to the macro, and a field named like a vector component (`x`, `y`, `xy`, ..) never does, so `id.x < n` is fine in a module with an array field `x`; `a.x == b.x` with two real array fields of such names is not refused and reaches slangc.
-Write instead: the supported expression forms listed in the validator codes above.
-Decision: D02.
+Rejected: an array literal or a repeat `[e; N]` where Slang cannot type it or the macro cannot keep its order: an untyped `let` (`let a = [1u32, 2u32];`, because slangc cannot infer the type of `{ .. }`), a position other than a typed `let`, an assignment, a call argument or a returned value (a literal), and a position other than the whole initializer of a typed `let`, the whole right side of an assignment statement or a returned or tail value (a repeat, so that `e` is evaluated once; a returned repeat longer than 16 elements, and a repeat as a struct field value, are refused too); a `match` as an array value (use `if`/`else` statements, or a helper that returns the array); `==`, `!=` and the orderings on arrays (locals, parameters, array fields and buffer elements; compare the elements); a block used as a value `{ 1u32 }`; the dereference `*x` (`*self` included: no value of the dialect is a reference, so write `self.field` or use a local copy).
+Known edge of the array comparison (slice m9.r2a): the macro refuses a comparison only when both operands resolve to arrays, because the test is `&&` over the two sides. An operand never resolves when it is a field whose name is one to four letters of `xyzwrgba` (the macro takes it for a vector component, so `id.x < n` is fine in a module with an array field `x`; the exemption is wider than the dialect's swizzles, which are `x`, `y`, `z` and `w`, so array fields named `a`, `b`, `ab` or `bag` are exempt too), or when its name is bound twice with different lengths or also as a non-array, or when two structs give a field name different lengths. A comparison where only one side resolves to an array, or where an array field has such a name (`a.x == b.x`), is therefore not refused by the macro and reaches slangc, which refuses every one of them (`E39999`, no overload of the operator for arrays; measured by review m9.r2a on `float[4] ==`, `float4[2] !=`, `Pt[2] ==`, `int[3] <` and `float[4] >=`, on the WGSL and SPIR-V targets). The refusal is loud, never a wrong comparison.
+Write instead: the supported expression forms listed in the validator codes above; bind an array to a typed local first.
+Decision: D02, D159.
 
 ### GUST-E0812 unsupported literal
 

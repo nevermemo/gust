@@ -519,12 +519,8 @@ test module; do not mix that mechanical move with behavior changes.
 
 - m9.r2b re-check nits: two of the mutation checks reach only the array check, two `ArrayOf::ELEMENT_OK`
   assertions have no doctest, and the stride message names `Vec3` where it means any 12-byte element.
-- m9.r2a must carry a GPU round-trip of an array in a buffer (r2b's evidence is host-side and reflection only).
 - m9.e1 re-check nits: an enum local named like the binding of an `Ok(m)` arm in a `Result` match gets a false
   E0122; a malformed enum that is also a field reports E0211 before its E0122.
-- The arrays difftest slice (m9.d1d) generates the accepted neighbours of E0421: since m9.r1, `out[c.n] = c.next()`
-  is refused (Slang 2026.21 reads the index first), so the slice writes indexed stores whose index the value cannot
-  change, with a mutant that evaluates the index first (m9.d1a review S3, m9.d1c review point 6).
 - m9.e2 re-check nits: a value `match` in the tail of a nested block or `if` is still E0518 rather than E0419; a
   `return 1u32` arm in a tail `match` gets E0419's "gives a value" wording.
 - m9.f1 re-check nits: no test has two kernels where only one wraps a list in `__gust_keep`; seed 31 (where the
@@ -543,8 +539,8 @@ test module; do not mix that mechanical move with behavior changes.
   a function-scope array (KM-11 covers buffers; a row needs `mismatch.rs`); a plain-`=` hoist of the value into a
   temporary would let E0421 accept `out[c.n] = c.next()` in Rust's order (not compound: `Vec*`/`Mat*` `op=` reads
   the place first).
-- m9.d1c follow-ups: the shrinker has no identity class for a wgpu/naga validation failure (N6, carried by m9.d1d); the mutant batch
-  pin counts any compound set, not only the tuple element shape; builders overwrote failing logs (keep
+- m9.d1c follow-ups: the shrinker has no identity class for a wgpu/naga validation failure (N6, carried by m9.d1d); the
+  mutant batch pin counts any compound set, not only the tuple element shape; builders overwrote failing logs (keep
   `.failN.log`).
 - m9.shift follow-ups: a folded constant amount (a `let` local holding a literal, a sum of literals, a float
   literal cast) passes GUST-E0335, slangc folds it and naga rejects the WGSL; mask or fold the amount in the
@@ -572,29 +568,29 @@ test module; do not mix that mechanical move with behavior changes.
   ignores a failed delete of an old route log (`let _ = fs::remove_file`), so stale lines could pass the all-SPIR-V
   check: fail instead; the DX12 fallback test always returns early because the workspace builds wgpu with Vulkan
   only (say so, or enable DX12 in a test-only build); route-log lines can tear across threads (a false failure,
-  never a false pass: buffer each line); SEMANTICS's binding sentence and two other doc imprecisions (review R5);
-  three lines over 120 columns.
-- m9.g2 nits: DIAGNOSTICS's E0121 entry still says a generic method is E0114 (a generic inherent method with a
-  receiver is accepted); README's generics row should say at least one module trait is required; SEMANTICS's E0328
-  sentence should name the id types and say a parameter named like a trait reports E0218 first; the order prose
-  should list `h.weigh(s, c2.bump(), c2.bump())`; a few edited lines in CHANGELOG and SEMANTICS run past the wrap
-  width. Left from round 1: `T::m(&t)` gets E0302's generic text (suggest `t.m()`; pin a unit case); a kernel
-  with a `where` clause and no generics is still accepted; no fixture has a generic inherent method on an enum impl.
-- m9.p nits: the licence evidence names its search strings; SEMANTICS's "131 of 131" is now 132 with traits.
+  never a false pass: buffer each line); three code lines over 120 columns (review R5's other
+  imprecisions were fixed in m9.x2).
+- m9.g2 nits (the documentation ones were fixed in m9.x2). Left from round 1: `T::m(&t)` gets E0302's generic text
+  (suggest `t.m()`; pin a unit case); a kernel with a `where` clause and no generics is still accepted; no fixture has a
+  generic inherent method on an enum impl.
+- m9.p nits: the licence evidence names its search strings. (SEMANTICS's "131 of 131" count now says how it was counted
+  and gives 133 for the current tree, m9.x2.)
 - m9.g1 nits: a garbled comment on `pack_both` in tests/fixtures/traits.rs; `tests/ui/trait-enum-mut-self/
   expected.txt` matches a prefix only. Review N4-N6 (plans/m9/review-m9g1-opus.md) left as reasoned there.
 - m9.pa nits: the array testdata records are pinned by key and layouts, not byte for byte, and `check-precompiled`
   does not regenerate them; a struct with tail padding after an array gets no macro layout (the fill supplies it).
 - m9.r2a re-check 2 nits: the component-name exemption of the E0811 array comparison takes any 1 to 4 letters of
-  `xyzwrgba` (`math_types::is_swizzle` is narrower); with `&&`, a comparison where only one side resolves to an
-  array reaches slangc (loud) and DIAGNOSTICS does not say so.
+  `xyzwrgba` (`math_types::is_swizzle` is narrower) (DIAGNOSTICS E0811 now says that with `&&` a
+  comparison where only one side resolves to an array reaches slangc, m9.x2).
 - The NVIDIA array defect (D168, D169): the expected-failure sentinel landed (m9.sen,
-  `crates/gust-wgpu/tests/driver_sentinel.rs`). Left: a run on the RTX 3070 (another NVIDIA architecture) to
-  scope it, recorded in D168/D169's envelope; the sentinel's message names the local investigation folders
-  (`arrbug`, `arrbug2`), which a reader of the public repository cannot open, so name D168/D169 instead; the NVIDIA report is the owner's call
-  (a draft can be prepared); the difftest's guard is removed when a fixed driver is measured. Owner's call: slangc's
-  own SPIR-V, passed to Vulkan, computed the right values on the RTX 5090 where slangc's WGSL through naga did not;
-  a runtime route that uses it on Vulkan would protect users' programs, not only the difftest.
+  `crates/gust-wgpu/tests/driver_sentinel.rs`). Left: a run on the RTX 3070 (another NVIDIA architecture) to scope it,
+  recorded in D168/D169's envelope; the sentinel's message names the local investigation folders (`arrbug`, `arrbug2`),
+  which a reader of the public repository cannot open, so name D168/D169 instead; the NVIDIA report is the owner's call
+  (a draft can be prepared); the difftest's guard is removed when a fixed driver is measured. Partly settled in M9:
+  slangc's own SPIR-V, passed to Vulkan, computed the right values on the RTX 5090 where slangc's WGSL through naga did
+  not, and the opt-in `spirv-route` feature (m9.rt2, D172, D174) takes that route, but only with run-time compilation: a
+  shipped `native` or `web` build and a precompiled artifact stay on WGSL. Still open: a production route (SPIR-V
+  artifacts). The feature is off by default, so the difftest guard stays.
 - m9.d1e re-check nits: the `CLOSURE_INFO` registry (`tests/difftest/src/ast.rs`) is thread-local state that
   `bin_shape` and `closure_call_names` depend on silently (pass it explicitly); the high closure mutant counts come
   mostly from the fixed kernel-result probes, so measure order and by-value observation for closures bound in
@@ -617,11 +613,14 @@ test module; do not mix that mechanical move with behavior changes.
   candidate (reject the pair or discard per candidate). GUST-E0712's message says "same Slang text" when only
   the `.kernel.json` record differs (gust-macros `collision_message`).
 
+- `interface` and `extension` are emitted by M9 (traits) but are in neither `COLLISIONS` nor `STDLIB_INTERFACES`; a user
+  name of that spelling probably fails in slangc loudly (not measured).
+
 ## Deferred language/runtime breadth
 
 Additional binding groups and
 specialized layouts each require their own reflected ABI evidence. `while`,
-inclusive ranges, general match expressions, `?`, and broader Result APIs need
+inclusive ranges, `match` beyond an enum or integer scrutinee (those exist since M9), `?`, and broader Result APIs need
 explicit semantic contracts before implementation.
 
 ### Idea (not planned): rounds of `par_for!` until a GPU-written condition

@@ -97,29 +97,29 @@ describes the intended behaviour and is not evidence.
   `GUST_PROFILE=cpu`, and under it every kernel, tagged or not, is `Target::Cpu`. Plain cargo reads the variable of the
   tag by its exact name only: an empty value, or one that is not valid text, is unset, and a variable of an ancestor
   (`GUST_ROUTE__p__physics`) does not route `physics.broadphase`, which takes only its ancestors' `default`s. A
-  variable `gpu` under `GUST_PROFILE=cpu` is GUST-E0749, and so is a target outside the tag's set
-  (an explicit `targets`, else GPU and CPU for a kernel with a CPU form and the GPU only for one without; GUST-E0744
-  when `targets` names `cpu` for a kernel that has no CPU form). The macro tracks the variable, so changing it rebuilds
-  the crate. A CPU-routed module is expanded as under `GUST_PROFILE=cpu`: it has `Run` for `CpuDevice`, no artifact
-  lookup and no manifest check, its descriptor says `Target::Cpu`, and it has no `GpuKernel` implementation, so a call
-  on `HeadlessDevice` fails to compile (E0277). A route flip therefore changes which device the kernel's call sites
-  compile against: a kernel call names its device, so a flip is a call-site change, and only a generated element-wise
-  map (`name::map`) is the same on either target (D137, D145; a target-agnostic device handle is filed in NEXT_TASKS,
-  not built). A CPU-routed kernel is still held to the GPU portable floor: the `limits = "portable"` check
-  (GUST-E0746) and every other check that does not depend on the target run under every profile and every route, so the
-  kernel's source raises no new validation error (E07xx) when a build moves it back to the GPU. That move still needs
-  the GPU form: under a strict profile (`native` or `web`) the kernel needs its precompiled artifact (`cargo gust
-  build`), a tag whose `targets` lacks `gpu` is GUST-E0749, and every `CpuDevice` call site is then E0277. Evidence is
-  `cargo xtask check-dual` E4 (a routed kernel library and its consumer; the unrouted control is a `cargo build` of the
-  same unit, so it also fails if the variable were not tracked) and `cargo xtask check-cpu-target` E-j (the crate
-  `routed` under `native`, a CPU-routed kernel and a CPU-routed `#[gpu(route = ..)] fn` map built and run, then the
-  same `cargo build --release` flipped set, unset, set, unset in one warm directory, where each unset state must
-  recompile and fail like the control); both are `Cpu` evidence, never GPU evidence.
-  The **routing driver** (exists, m8.r2, D151) is where an application sets the variables without writing them:
-  `cargo gust build`, `check`, `run` and `test` read a `gust.toml` beside the selected package (`[routes]`, entries
-  `"<package>::<tag>" = "gpu" | "cpu"` or a table keyed by the build profile `dev`, `native`, `web`), validate it
-  against the `[package.metadata.gust.routes]` tables that `cargo metadata` reports, resolve each declared tag the way
-  the macro does (the `cpu` profile, the nearest entry, the declaring crate's defaults, the GPU), set one
+  variable `gpu` under `GUST_PROFILE=cpu` is GUST-E0749, and so is a target outside the tag's set (an explicit
+  `targets`, else GPU and CPU for a kernel with a CPU form and the GPU only for one without; GUST-E0744 when `targets`
+  names `cpu` for a kernel that has no CPU form). The macro tracks the variable, so changing it rebuilds the crate. A
+  CPU-routed module is expanded as under `GUST_PROFILE=cpu`: it has `Run` for `CpuDevice`, no artifact lookup and no
+  manifest check, its descriptor says `Target::Cpu`, and it has no `GpuKernel` implementation, so a call on
+  `HeadlessDevice` fails to compile (E0277). A route flip therefore changes which device the kernel's call sites compile
+  against: a kernel call names its device, so a flip is a call-site change, and only a generated element-wise map
+  (`name::map`) is the same on either target (D137, D145; the handle that follows the route is
+  `gust::routed::RoutedDevice`, D165). A CPU-routed kernel is still held to the GPU portable floor: the
+  `limits = "portable"` check (GUST-E0746) and every other check that does not depend on the target run under every
+  profile and every route, so the kernel's source raises no new validation error (E07xx) when a build moves it back to
+  the GPU. That move still needs the GPU form: under a strict profile (`native` or `web`) the kernel needs its
+  precompiled artifact (`cargo gust build`), a tag whose `targets` lacks `gpu` is GUST-E0749, and every `CpuDevice` call
+  site is then E0277. Evidence is `cargo xtask check-dual` E4 (a routed kernel library and its consumer; the unrouted
+  control is a `cargo build` of the same unit, so it also fails if the variable were not tracked) and
+  `cargo xtask check-cpu-target` E-j (the crate `routed` under `native`, a CPU-routed kernel and a CPU-routed
+  `#[gpu(route = ..)] fn` map built and run, then the same `cargo build --release` flipped set, unset, set, unset in one
+  warm directory, where each unset state must recompile and fail like the control); both are `Cpu` evidence, never GPU
+  evidence. The **routing driver** (exists, m8.r2, D151) is where an application sets the variables without writing
+  them: `cargo gust build`, `check`, `run` and `test` read a `gust.toml` beside the selected package (`[routes]`,
+  entries `"<package>::<tag>" = "gpu" | "cpu"` or a table keyed by the build profile `dev`, `native`, `web`), validate
+  it against the `[package.metadata.gust.routes]` tables that `cargo metadata` reports, resolve each declared tag the
+  way the macro does (the `cpu` profile, the nearest entry, the declaring crate's defaults, the GPU), set one
   `GUST_ROUTE__<package>__<tag>` variable per tag on the cargo it starts, and write the resolved table to
   `gust-artifacts/routes.json` (a build output; removed when no `gust.toml` applies). The driver resolves the profile
   from its own command line and process environment only (`--release`, `-r`, `--profile release`, `--target wasm32-..`
@@ -134,16 +134,16 @@ describes the intended behaviour and is not evidence.
   variable. Plain cargo sets no `GUST_ROUTED_PROFILE`, nothing is compared, and it behaves as before (D67); a driver run
   that applies no `gust.toml` removes a stale inherited value. A switch between plain cargo (or rust-analyzer) and
   `cargo gust` in one target directory rebuilds the routed kernel crates and the application only, as a route change
-  does (measured in m8.z: two crates in the routing fixture; with the check in `gust`'s build script it was three, `gust`
-  among them; in a real application every crate that depends on `gust` would rebuild, inferred from Cargo's rule
+  does (measured in m8.z: two crates in the routing fixture; with the check in `gust`'s build script it was three,
+  `gust` among them; in a real application every crate that depends on `gust` would rebuild, inferred from Cargo's rule
   that a rerun build script rebuilds its dependents, not measured). A routed kernel crate compiled for the host as a
   build dependency of a `wasm32` release build infers `native` where the driver resolved `web`, and is refused too; set
-  `GUST_PROFILE=web` in the environment then, so that both copies infer `web`. A change to the `gust.toml`
-  rebuilds in both directions, as `cargo xtask check-routing` measured (with the route tracking removed, the
-  unset-to-set flip fails). A route to a capability profile is refused; `--workspace`, `--all` and a workspace root's
-  default selection are refused when any selected member has a `gust.toml`; no `cargo gust` command builds a routed
-  release binary yet (NEXT_TASKS). Without `--check-only` the check also runs a GPU step that names its adapter, and
-  only that step is GPU evidence.
+  `GUST_PROFILE=web` in the environment then, so that both copies infer `web`. A change to the `gust.toml` rebuilds in
+  both directions, as `cargo xtask check-routing` measured (with the route tracking removed, the unset-to-set flip
+  fails). A route to a capability profile is refused; `--workspace`, `--all` and a workspace root's default selection
+  are refused when any selected member has a `gust.toml`; no `cargo gust` command builds a routed release binary yet
+  (NEXT_TASKS). Without `--check-only` the check also runs a GPU step that names its adapter, and only that step is GPU
+  evidence.
 - **Uniforms (exist, m6.u1 host API and m6.u2 macro).** A uniform is one value in a constant buffer, bound to a
   `Uniform<T>` (alias `ConstantBuffer<T>`) parameter through a resource of kind `gust::kind::Uniform` (`GpuUniform<T>`
   on the GPU, `CpuUniform<T>` on the twin). The generated call names `Resource::Kind` in every bound (`Storage` for a
@@ -1017,12 +1017,15 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
 - **Compare-exchange may fail spuriously.** WGSL's only compare-exchange is `atomicCompareExchangeWeak` (17.8.5):
   "The equality comparison may spuriously fail on some implementations." So even an uncontended compare-exchange
   that should succeed is not guaranteed to, and in the contended case the unchanged value (999 in the ledger case)
-  is also a spec-allowed result. The contract (D47): on the GPU the success case is set-valued, the cell ends at
-  the new value or stays unchanged (`{7, 11}` for 7 to 11, `{-5, 11}` for -5 to 11); on the twin it is exact (11).
-  The failure case (compare against a value the cell does not hold) is exact on both, because a spurious failure
-  only adds failures. The returned flag is never part of the contract: the GPU form is statement-only.
-  On the pinned Slang 2026.22, as on 2026.21 before it (the `atomics` golden is among the 131 golden entries whose WGSL
-  was identical on the two, spike SL22), the emitted WGSL retries after a spurious failure (Slang #13918: a retry loop around
+  is also a spec-allowed result. The contract (D47): on the GPU the success case is set-valued, the cell ends at the new
+  value or stays unchanged (`{7, 11}` for 7 to 11, `{-5, 11}` for -5 to 11); on the twin it is exact (11). The failure
+  case (compare against a value the cell does not hold) is exact on both, because a spurious failure only adds failures.
+  The returned flag is never part of the contract: the GPU form is statement-only. On the pinned Slang 2026.22, as on
+  2026.21 before it, the `atomics` golden is among the 131 golden entries whose WGSL was identical on the two (spike
+  SL22). The count is the `[shader(` lines of the 30 files `tests/fixtures/*.slang` that the spike compared; the
+  route-only `*.spirv-route.slang` files of m9.rt2 are not counted. The same count gives 132 in 31 files with the traits
+  golden, which was compared too, and 133 in 32 files in this tree; the generics golden of m9.g2 was written on 2026.22
+  and has no 2026.21 counterpart. The emitted WGSL retries after a spurious failure (Slang #13918: a retry loop around
   `atomicCompareExchangeWeak`, read from the emitted text; not re-measured on a GPU), so the spurious failure that the
   contract allows is not expected there. The contract stays weak because it covers other pins and targets; the
   assertions are not tightened.
@@ -1038,19 +1041,19 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   (the weak compare-exchange may fail every attempt); the twin is asserted at 256 and at 1 respectively, and never
   compared with the GPU there. The returned old value of an atomic is never observable in GPU code (statement-only);
   the twin returns it and `runtime.rs` unit-tests it.
-- **Weak compare-exchange on the GPU (D47).** The compare-exchange success cases (a single invocation, 7 to 11 and
-  -5 to 11) are asserted as the set `{7, 11}` and `{-5, 11}` on the GPU, because WGSL allows a spurious failure
-  there too (17.8.5); on the twin they are asserted at 11, by definition. The RTX 5090 took the exchange branch in
-  every measured run, so the spurious branch is exercised only by the GPU-free test of the two check functions that
-  the GPU tests call, never by an adapter. On the 2026.22 pin (and on 2026.21 before it) the emitted WGSL is a retry loop (see the bullet above),
-  so the set is probably wider than that pin's WGSL produces; it stays because the contract is weak.
-  Because the unchanged value is accepted in every compare-exchange case, a GPU compare-exchange that did nothing
-  would pass all of the GPU assertions. The twin assertion catches a no-op twin; the failure case (exact, at 7, on
-  both sides) catches a compare-exchange that always swaps, but cannot tell a no-op GPU from a correct one. A GPU
-  compare-exchange that does nothing is therefore not detected by these tests; that is accepted for the same
-  reason the set is (KM-09). At the emission level, the unit test `atomic_compare_exchange_on_rw_u32_is_accepted`
-  in `gust-macros` checks that the call lowers to `.compareExchange()`; the `atomics` Slang golden covers the
-  `atomic_add` kernel only and does not guard the compare-exchange.
+- **Weak compare-exchange on the GPU (D47).** The compare-exchange success cases (a single invocation, 7 to 11 and -5 to
+  11) are asserted as the set `{7, 11}` and `{-5, 11}` on the GPU, because WGSL allows a spurious failure there too
+  (17.8.5); on the twin they are asserted at 11, by definition. The RTX 5090 took the exchange branch in every measured
+  run, so the spurious branch is exercised only by the GPU-free test of the two check functions that the GPU tests call,
+  never by an adapter. On the 2026.22 pin (and on 2026.21 before it) the emitted WGSL is a retry loop (see the bullet
+  above), so the set is probably wider than that pin's WGSL produces; it stays because the contract is weak. Because the
+  unchanged value is accepted in every compare-exchange case, a GPU compare-exchange that did nothing would pass all of
+  the GPU assertions. The twin assertion catches a no-op twin; the failure case (exact, at 7, on both sides) catches a
+  compare-exchange that always swaps, but cannot tell a no-op GPU from a correct one. A GPU compare-exchange that does
+  nothing is therefore not detected by these tests; that is accepted for the same reason the set is (KM-09). At the
+  emission level, the unit test `atomic_compare_exchange_on_rw_u32_is_accepted` in `gust-macros` checks that the call
+  lowers to `.compareExchange()`; the `atomics` Slang golden covers the `atomic_add` kernel only and does not guard the
+  compare-exchange.
 
 ## 7. Known-mismatch ledger
 
@@ -1059,15 +1062,15 @@ or where the GPU's result is unspecified, and that no diagnostic can prevent bec
 values. Differences like these are expected and acceptable (D39): they are documented here, not removed.
 
 Each row is pinned by `crates/gust-wgpu/tests/mismatch.rs`, which runs every case on the GPU, as plain Rust and on the
-CPU twin (the macro-emitted twin of the same ledger kernel, called through the typed `dispatch`, one case per
-dispatch); an id guard in that file keeps this table and the test in step. The column "Rust (and CPU twin)" holds the
-plain-Rust result, and the test asserts that the twin's outcome is accepted by that same expectation, in the overflow
-mode of the test crate: the twin runs the shadow body compiled in that crate, so it panics or wraps exactly as the
-Rust column does. The twin is compared with Rust and never with the GPU, which D39 allows to differ. Each row's twin
-outcome is therefore pinned, including for the rows where the specification leaves the GPU open (KM-05 to KM-08,
-KM-11 to KM-14), where the GPU value stays an unenforced observation. A kernel without storage parameters is covered by a
-separate test in the same file. Labels are defined in section 2. No ledger row is **proven**: a row records a
-difference, and the proven label needs the two targets to agree.
+CPU twin (the macro-emitted twin of the same ledger kernel, called through the typed `dispatch`, one case per dispatch);
+an id guard in that file keeps this table and the test in step. The column "Rust (and CPU twin)" holds the plain-Rust
+result, and the test asserts that the twin's outcome is accepted by that same expectation, in the overflow mode of the
+test crate: the twin runs the shadow body compiled in that crate, so it panics or wraps exactly as the Rust column does.
+The twin is compared with Rust and never with the GPU, which D39 allows to differ. Each row's twin outcome is therefore
+pinned, including for the rows where the specification leaves the GPU open (KM-05 to KM-08, KM-11 to KM-14), where the
+GPU value stays an unenforced observation. A kernel without storage parameters is covered by a separate test in the same
+file. Labels are defined in section 2. No ledger row is **proven**: a row records a difference, and the proven label
+needs the two targets to agree.
 
 | Id | Case | Rust (and CPU twin) | GPU | Label |
 | --- | --- | --- | --- | --- |
@@ -1094,25 +1097,25 @@ its `KM-nn` row here and its case in `crates/gust-wgpu/tests/mismatch.rs`; the i
 
 Two kinds of adapter run the ledger, told apart by `device_type`: hardware, and software (`Cpu`, Mesa lavapipe in the
 `gpu-software` job). The kind never changes what is enforced: the spec-allowed GPU values, the Rust column, the twin
-column and every `DOMAIN` control hold on both, and a deviation of one of them on lavapipe is a red test, never a
-second observation. Only the observations of the unenforced rows (KM-07, KM-08, KM-11 to KM-14 and the NaN casts of
-KM-05 and KM-06) are kept per kind. The exception inside them is KM-13, whose value must also lie inside the error
-domain of section 4 on every adapter, so that bound is enforced like a `DOMAIN` control. The GPU column above is the hardware observation (RTX 5090, NVIDIA 610.88, Vulkan). The
-software column is a separate pin, set only where lavapipe differs from it, and the test prints a NOTE, with the
-driver, backend and `driver_info` of the adapter, when the running kind's own pin changes. A row without a software
-pin (the hardware pin accepted m5.b0's value) is then compared only with the hardware pin, the NOTE says "no software
-pin (the hardware pin accepted m5.b0's value)" for a difference from it, and nothing fails. The
-software pins of the NaN rows record m5.b0's exact payload bits, so a lavapipe payload change prints a NOTE, while the
-hardware pin accepts any NaN; neither ever fails, because the payload is not part of the contract. Measured on
-lavapipe (llvmpipe, LLVM 20.1.2, Mesa 25.2.8, debug and release alike, 18 rows): KM-07 gives `0x7fc00000` (the operand
-NaN, `f32::NAN`, propagating) from a NaN operand and `0xffc00000` (the x86 default NaN) from `inf * 0.0`,
-`inf - inf`, `inf / inf` and `0.0 / 0.0`, where the RTX 5090 gives `0x7fffffff`; `3.0e38 / 3.0e38` gives 1
-as Rust does, where the RTX 5090 gives 0; and KM-08 keeps denormals as Rust does (`1.0e-40 * 1.0` is `0x000116c2`,
-that is `1.0e-40`, and `1.0e-40 == 0.0` is false), where the RTX 5090 flushes them. KM-09 keeps its set rule on both
-kinds and gets no per-kind value: its observations vary between runs. KM-12 to KM-14 were measured on the RTX 5090
-only (slice mx.t4); they have no software pin yet, so a lavapipe run compares them with the hardware pin and prints a
-NOTE where they differ, and nothing fails except the KM-13 bound. Both are unspecified, measured observations of
-one driver version each, not requirements, and the Rust and twin columns are unchanged.
+column and every `DOMAIN` control hold on both, and a deviation of one of them on lavapipe is a red test, never a second
+observation. Only the observations of the unenforced rows (KM-07, KM-08, KM-11 to KM-14 and the NaN casts of KM-05 and
+KM-06) are kept per kind. The exception inside them is KM-13, whose value must also lie inside the error domain of
+section 4 on every adapter, so that bound is enforced like a `DOMAIN` control. The GPU column above is the hardware
+observation (RTX 5090, NVIDIA 610.88, Vulkan). The software column is a separate pin, set only where lavapipe differs
+from it, and the test prints a NOTE, with the driver, backend and `driver_info` of the adapter, when the running kind's
+own pin changes. A row without a software pin (the hardware pin accepted m5.b0's value) is then compared only with the
+hardware pin, the NOTE says "no software pin (the hardware pin accepted m5.b0's value)" for a difference from it, and
+nothing fails. The software pins of the NaN rows record m5.b0's exact payload bits, so a lavapipe payload change prints
+a NOTE, while the hardware pin accepts any NaN; neither ever fails, because the payload is not part of the contract.
+Measured on lavapipe (llvmpipe, LLVM 20.1.2, Mesa 25.2.8, debug and release alike, 18 rows): KM-07 gives `0x7fc00000`
+(the operand NaN, `f32::NAN`, propagating) from a NaN operand and `0xffc00000` (the x86 default NaN) from `inf * 0.0`,
+`inf - inf`, `inf / inf` and `0.0 / 0.0`, where the RTX 5090 gives `0x7fffffff`; `3.0e38 / 3.0e38` gives 1 as Rust does,
+where the RTX 5090 gives 0; and KM-08 keeps denormals as Rust does (`1.0e-40 * 1.0` is `0x000116c2`, that is `1.0e-40`,
+and `1.0e-40 == 0.0` is false), where the RTX 5090 flushes them. KM-09 keeps its set rule on both kinds and gets no
+per-kind value: its observations vary between runs. KM-12 to KM-14 were measured on the RTX 5090 only (slice mx.t4);
+they have no software pin yet, so a lavapipe run compares them with the hardware pin and prints a NOTE where they
+differ, and nothing fails except the KM-13 bound. Both are unspecified, measured observations of one driver version
+each, not requirements, and the Rust and twin columns are unchanged.
 
 **Known driver defect (D168, D169), not a ledger row.** On the RTX 5090 with NVIDIA driver 610.88 through Vulkan,
 a function-scope array has one or more elements read as 0 after an element at a dynamic index is loaded and
@@ -1231,17 +1234,17 @@ coretests entry above has the same shape.
   barrier itself is checked in the SPIR-V and the WGSL
   (`the_barrier_is_an_op_control_barrier_in_the_spirv_and_a_workgroup_barrier_in_the_wgsl`), which is compilation
   evidence and not execution evidence.
-- **Subgroup operations** (m8.s, D140; `crates/gust-wgpu/tests/subgroup.rs`, `tests/fixtures/subgroup.rs`; Gpu under `dev` and
-  under `dev+subgroups`). Label: **measured**, not proven, because a subgroup body has no twin. Under `dev+subgroups`
-  (`cargo xtask test --suite Gpu --profile dev+subgroups --test subgroup`) the `_subgroups` bodies run on the RTX 5090
-  (subgroup size 32, Vulkan): `lanes_u32`, `lanes_i32`, `lanes_f32` and `votes` write every result word of every
-  invocation beside the subgroup size and lane they ran with, and the tests compare the words with a host model rebuilt
-  from those two (sum, product, minimum, maximum, the three bitwise reductions, both exclusive and both inclusive scans,
-  the first lane, a literal-lane broadcast, a broadcast of a computed lane, a shuffle by a neighbour and by a computed
-  lane, `all`, `any`, the four ballot words, `count`, `elect`, size and lane) at 256 and at 300 elements (the last
-  workgroup ragged, its padded invocations holding 0 and taking part). `partial_sums` and `count_if` keep the sum of
-  their output in both builds. Under `dev` the same file judges the portable bodies, which write zeros, copies or
-  flags. The CPU twin and the `cpu` target run the portable bodies of `partial_sums` and `count_if`
+- **Subgroup operations** (m8.s, D140; `crates/gust-wgpu/tests/subgroup.rs`, `tests/fixtures/subgroup.rs`; Gpu under
+  `dev` and under `dev+subgroups`). Label: **measured**, not proven, because a subgroup body has no twin. Under
+  `dev+subgroups` (`cargo xtask test --suite Gpu --profile dev+subgroups --test subgroup`) the `_subgroups` bodies run
+  on the RTX 5090 (subgroup size 32, Vulkan): `lanes_u32`, `lanes_i32`, `lanes_f32` and `votes` write every result word
+  of every invocation beside the subgroup size and lane they ran with, and the tests compare the words with a host model
+  rebuilt from those two (sum, product, minimum, maximum, the three bitwise reductions, both exclusive and both
+  inclusive scans, the first lane, a literal-lane broadcast, a broadcast of a computed lane, a shuffle by a neighbour
+  and by a computed lane, `all`, `any`, the four ballot words, `count`, `elect`, size and lane) at 256 and at 300
+  elements (the last workgroup ragged, its padded invocations holding 0 and taking part). `partial_sums` and `count_if`
+  keep the sum of their output in both builds. Under `dev` the same file judges the portable bodies, which write zeros,
+  copies or flags. The CPU twin and the `cpu` target run the portable bodies of `partial_sums` and `count_if`
   (`tests/cpu-target/kernels/src/variant.rs`, three launches each). The Slang of the twelve bodies is pinned by
   `tests/fixtures/subgroup.slang`, their SPIR-V validates with `spirv-val`, and the fix-up is tested on the WGSL slangc
   writes for them. **Ran on**: the RTX 5090 (subgroup size 32), in this slice's own run, and lavapipe (the CI
@@ -1322,12 +1325,12 @@ and what is refused on purpose.
 
 **Two forms.** The statement form (`match e { 0 => { .. } 1 | 2 => { .. } _ => { .. } }`) has a block for each arm. The
 value form is accepted in one place only, the initializer of a `let` with a type:
-`let x: T = match e { 0 => 1u32, _ => { let t = e + 1u32; t * 2u32 } };`. An arm is an expression, or a block that ends in
-an expression or in a `return`, or a nested value `match`; the result may be a struct. A `match` that gives a value in
-any other position is `GUST-E0419`: an untyped `let`, an argument, an operand, the value of an assignment, a `return`, a
-bound, a condition, and the tail of a function with a result type (`fn f(v: u32) -> u32 { match v { 0 => 1u32, _ => 2u32 } }`;
-write `let r: u32 = match v { .. }; r`). A tail `match` whose arms `return`, or whose arms are unit blocks, is the
-statement form and stays accepted.
+`let x: T = match e { 0 => 1u32, _ => { let t = e + 1u32; t * 2u32 } };`. An arm is an expression, or a block that ends
+in an expression or in a `return`, or a nested value `match`; the result may be a struct. A `match` that gives a value
+in any other position is `GUST-E0419`: an untyped `let`, an argument, an operand, the value of an assignment, a
+`return`, a bound, a condition, and the tail of a function with a result type
+(`fn f(v: u32) -> u32 { match v { 0 => 1u32, _ => 2u32 } }`; write `let r: u32 = match v { .. }; r`). A tail `match`
+whose arms `return`, or whose arms are unit blocks, is the statement form and stays accepted.
 
 **Lowering.** The value form becomes `T x;` followed by a `switch` whose arms assign `x` and `break`. With no `_` the
 last arm is the `default`, so every path assigns `x` (an enum is closed; an integer `match` must end in `_`, because no
@@ -1336,20 +1339,21 @@ list of 32-bit literals is exhaustive). When the `match` names the let's own nam
 
 **Shadowing.** The temporary keeps the `match` from reading the new local, but a `let` that shadows a name of the same
 Slang scope is not supported for any `let`: slangc refuses the second declaration (E30200, "conflicting declaration"),
-and the macro has no GUST code for it. The value form does not change that. Put the shadowing `let` in a block of its own
-(`if cond { let k: u32 = match k { .. }; .. }`), as the `match_value` fixture does.
+and the macro has no GUST code for it. The value form does not change that. Put the shadowing `let` in a block of its
+own (`if cond { let k: u32 = match k { .. }; .. }`), as the `match_value` fixture does.
 
 **Patterns.** An integer `match` takes literals of `u32` or `i32` (`0`, `1 | 2`, `3u32`, `-1i32`, `3000000000` on a
-`u32`), each value once, and a final `_`. Ranges, bindings, constants (`u32::MAX`), a `bool`, float or character literal,
-another integer type, and a guard are refused (`GUST-E0521`, `GUST-E0418`). An enum `match` takes `E::A` of an enum of the
-module and does not mix with literals.
+`u32`), each value once, and a final `_`. Ranges, bindings, constants (`u32::MAX`), a `bool`, float or character
+literal, another integer type, and a guard are refused (`GUST-E0521`, `GUST-E0418`). An enum `match` takes `E::A` of an
+enum of the module and does not mix with literals.
 
-**Order of evaluation** (measured on Slang 2026.21, WGSL and SPIR-V, and re-run on the pinned 2026.22 by the GPU test, m9.p; the GPU test `m9_match_value` runs the cases
-against hand-written values). The scrutinee is read once, before the arms. The operands of an arm are evaluated left to
-right as in Rust: `match c.n { 5 => c.n + c.tick(), .. }` reads `c.n` before `tick` runs, `c.tick() + c.n` after it, two
-calls in one arm run in order, and a struct-literal arm assigns its fields in the order written. A `&mut self` method
-called in the scrutinee and again in an arm runs once in each place, in that order, and only the arm taken runs its call.
-Nothing is refused for order; the place of an assignment inside an arm keeps `GUST-E0421`.
+**Order of evaluation** (measured on Slang 2026.21, WGSL and SPIR-V, and re-run on the pinned 2026.22 by the GPU test,
+m9.p; the GPU test `m9_match_value` runs the cases against hand-written values). The scrutinee is read once, before the
+arms. The operands of an arm are evaluated left to right as in Rust: `match c.n { 5 => c.n + c.tick(), .. }` reads `c.n`
+before `tick` runs, `c.tick() + c.n` after it, two calls in one arm run in order, and a struct-literal arm assigns its
+fields in the order written. A `&mut self` method called in the scrutinee and again in an arm runs once in each place,
+in that order, and only the arm taken runs its call. Nothing is refused for order; the place of an assignment inside an
+arm keeps `GUST-E0421`.
 
 **Uniformity (D154).** An arm runs for some invocations only. A barrier in an arm is `GUST-E0414`, a subgroup operation
 in an arm is `GUST-E0747` (without `requires(subgroups)` `GUST-E0745`), and one reached through a helper is refused at
@@ -1384,37 +1388,38 @@ infers the types, so the macro needs none). A destructuring is one temporary, th
 `var __gust_tuple_<n> = f(..); var x = __gust_tuple_<n>._0; var y = __gust_tuple_<n>._1;`; with an annotation the
 temporary and the locals carry the types.
 
-**Order of evaluation** (measured on Slang 2026.21, WGSL and SPIR-V, and re-run on the pinned 2026.22 by the GPU test, m9.p; the GPU test `m9_tuples` runs the cases against
-hand-written values). The elements of a literal run left to right, each completely before the next, and a struct element
-is copied at its place in the order: `(c.n, c.tick())` reads `c.n` before `tick` runs, `(c.tick(), c.n)` after it,
-`(c, c.tick())` copies `c` before the call and `(c.tick(), c)` after it. A destructuring of a literal of two calls runs
-them in order, a tuple argument built from calls runs its elements in order before the method, and
-`c.pair().1 + c.tick()` and `c.tick() + c.pair().1` give Rust's values. An element place against a `&mut self` call
-runs the value first, as Rust does for a primitive place: `t.0 += g.tick()`, `t.1 = t.0 + g.tick()`,
-`t.0.n += t.0.tick()`, `t.0.n /= t.0.tick()` and `c.n + c.tick_pair().1` are run on the GPU and the twin against
-hand-written values. Nothing is refused for order.
+**Order of evaluation** (measured on Slang 2026.21, WGSL and SPIR-V, and re-run on the pinned 2026.22 by the GPU test,
+m9.p; the GPU test `m9_tuples` runs the cases against hand-written values). The elements of a literal run left to right,
+each completely before the next, and a struct element is copied at its place in the order: `(c.n, c.tick())` reads `c.n`
+before `tick` runs, `(c.tick(), c.n)` after it, `(c, c.tick())` copies `c` before the call and `(c.tick(), c)` after it.
+A destructuring of a literal of two calls runs them in order, a tuple argument built from calls runs its elements in
+order before the method, and `c.pair().1 + c.tick()` and `c.tick() + c.pair().1` give Rust's values. An element place
+against a `&mut self` call runs the value first, as Rust does for a primitive place: `t.0 += g.tick()`,
+`t.1 = t.0 + g.tick()`, `t.0.n += t.0.tick()`, `t.0.n /= t.0.tick()` and `c.n + c.tick_pair().1` are run on the GPU and
+the twin against hand-written values. Nothing is refused for order.
 
 **Refused on purpose.** A tuple in a struct field, a buffer, a uniform or workgroup memory (`GUST-E0212`). More than
-eight elements, one element, an element that is an array, a reference, an `Option` or a `Result`, `Some((..))`, `Ok((..))`
-and `Err((..))`, a comparison of a tuple the macro can see (`==`, `!=` and the orderings: a scope choice of this
-slice, not a limit of Slang), and `.8` on a tuple (`GUST-E0213`). A tuple struct (`GUST-E0104`). A nested pattern, `_` and `..` in a
-destructuring (`GUST-E0319`). A tuple as a `match` scrutinee (`GUST-E0515`: there are no tuple patterns). The macro
-sees no types: a comparison of a tuple behind a name it cannot follow (a tuple from an indexed element, say) is not
-caught by the macro; slangc either compiles it with Rust's meaning or refuses it (a struct element). Review m9.t
-measured slangc 2026.21: it lowers `==`, `!=` and `<`, `<=`, `>`, `>=` on a `Tuple` lexicographically with Rust's
-`PartialEq` and `PartialOrd` semantics, NaN included (`<=` gives `a0 <= b0` when the first elements differ or are
-unordered, else `a1 <= b1`); only a struct element fails (E39999). That is the basis for admitting tuple comparisons
-in a later slice, with GPU cases. A helper or method whose name is also a method name the macro knows (`len`, `min`)
-and that returns a tuple can make `input.len() == n` an `GUST-E0213` by name (it over-refuses, never misses).
+eight elements, one element, an element that is an array, a reference, an `Option` or a `Result`, `Some((..))`,
+`Ok((..))` and `Err((..))`, a comparison of a tuple the macro can see (`==`, `!=` and the orderings: a scope choice of
+this slice, not a limit of Slang), and `.8` on a tuple (`GUST-E0213`). A tuple struct (`GUST-E0104`). A nested pattern,
+`_` and `..` in a destructuring (`GUST-E0319`). A tuple as a `match` scrutinee (`GUST-E0515`: there are no tuple
+patterns). The macro sees no types: a comparison of a tuple behind a name it cannot follow (a tuple from an indexed
+element, say) is not caught by the macro; slangc either compiles it with Rust's meaning or refuses it (a struct
+element). Review m9.t measured slangc 2026.21: it lowers `==`, `!=` and `<`, `<=`, `>`, `>=` on a `Tuple`
+lexicographically with Rust's `PartialEq` and `PartialOrd` semantics, NaN included (`<=` gives `a0 <= b0` when the first
+elements differ or are unordered, else `a1 <= b1`); only a struct element fails (E39999). That is the basis for
+admitting tuple comparisons in a later slice, with GPU cases. A helper or method whose name is also a method name the
+macro knows (`len`, `min`) and that returns a tuple can make `input.len() == n` an `GUST-E0213` by name (it
+over-refuses, never misses).
 
 **Uniformity (D154).** A barrier inside an element is `GUST-E0327` (a barrier is a statement of its own) and a subgroup
 operation inside an element is `GUST-E0747` (a tuple literal is not an approved position for an operation); bind the
 result to a local first.
 
-**Known limitation.** An enum bound by an unannotated destructuring is not tracked by name as an enum, so the cast
-check (`GUST-E0122`) does not see `m as u32`; a `match m { Mode::Low => .. }` still works (the macro takes the enum the
-first arm names), and `GUST-E0211` is type-based. No accepted program computes a wrong value: the cast of a
-`repr(u32)` enum has the bits of Rust's `as`. Annotating the `let` (`let (m, w): (Mode, u32) = f();`) restores the check.
+**Known limitation.** An enum bound by an unannotated destructuring is not tracked by name as an enum, so the cast check
+(`GUST-E0122`) does not see `m as u32`; a `match m { Mode::Low => .. }` still works (the macro takes the enum the first
+arm names), and `GUST-E0211` is type-based. No accepted program computes a wrong value: the cast of a `repr(u32)` enum
+has the bits of Rust's `as`. Annotating the `let` (`let (m, w): (Mode, u32) = f();`) restores the check.
 
 **Edge cases.** The arithmetic inside an element has the wrapping contract of section 3 (D39). Tests:
 `crates/gust-wgpu/tests/m9_tuples.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations) and the macro tests in
@@ -1425,9 +1430,9 @@ first arm names), and `GUST-E0211` is type-based. No accepted program computes a
 A fixed-size array `[T; N]` is a value of the invocation: `N` is an integer literal above zero (`GUST-E0216`) and `T` is
 a scalar, a vector, a matrix, or a struct or enum of the module (an enum element is accepted and runs; the GPU test
 `m9_arrays` has `[Mode; 2]`). It is accepted as a typed local, a parameter, the result of a helper or a method and an
-argument of either. It copies on assignment and when passed, as Rust does for `Copy` elements (`bump_all` changes its own
-copy). An array local needs its annotation (`let a: [u32; 4] = ..;`): `let a = [1u32, 2u32];` is `GUST-E0811`, because
-slangc cannot infer the array type of an initializer list.
+argument of either. It copies on assignment and when passed, as Rust does for `Copy` elements (`bump_all` changes its
+own copy). An array local needs its annotation (`let a: [u32; 4] = ..;`): `let a = [1u32, 2u32];` is `GUST-E0811`,
+because slangc cannot infer the array type of an initializer list.
 
 **Forms.** A literal `[a, b, c]` and a repeat `[e; N]`; indexing `a[i as usize]` and `a[2]`; `a[i] = e;`, `a[i] += e;`,
 `a[i].f = e;` and `a[i].m()`; `a.len()`, which is the constant `N`. A literal is accepted as the initializer of a typed
@@ -1436,27 +1441,29 @@ typed `let`, the whole right side of an assignment statement, or a returned or t
 `GUST-E0811`). `usize` is accepted in one place, the cast of an index (`GUST-E0334` elsewhere, including a `usize`
 local or parameter and `.len()` outside an index or a direct `as u32`).
 
-**Lowering.** `[T; N]` is `T[N]`; `[a, b]` is `{ a, b }`; `a[i as usize]` is `a[uint(i)]` (the cast is lowered like `as u32`, so a `bool` or signed source indexes as in Rust). A repeat
-evaluates its operand once into a temporary, `T __gust_rep_<k> = e;`, and then `{ t, t, .. }` for `N <= 16`; above 16 it
-declares the array and fills it with a loop (`__gust_fill_<k>`). A repeat that is returned with `N > 16` is `GUST-E0811`
-(bind it to a local first). The names with the `__gust_` prefix are reserved (`GUST-E0901`).
+**Lowering.** `[T; N]` is `T[N]`; `[a, b]` is `{ a, b }`; `a[i as usize]` is `a[uint(i)]` (the cast is lowered like
+`as u32`, so a `bool` or signed source indexes as in Rust). A repeat evaluates its operand once into a temporary,
+`T __gust_rep_<k> = e;`, and then `{ t, t, .. }` for `N <= 16`; above 16 it declares the array and fills it with a loop
+(`__gust_fill_<k>`). A repeat that is returned with `N > 16` is `GUST-E0811` (bind it to a local first). The names with
+the `__gust_` prefix are reserved (`GUST-E0901`).
 
-**Order of evaluation** (Rust measured with rustc, Slang 2026.21 read on the WGSL target, and re-read on the pinned 2026.22 with the same result, m9.p; the GPU test `m9_arrays` runs
-every accepted case against hand-written values). Accepted because they match: the elements of a literal left to right
-(`[s.bump(), s.bump(), s.bump()]` is `[1, 2, 3]`), an array argument built from calls, two reads of one table with
-indexes that call, an index on a call result (`make3(s.bump())[1]`), a method on an element whose index calls another
-counter, an element assigned from its neighbours, and a repeat (`[s.bump(); 4]` runs `bump` once). Refused with
-`GUST-E0421`: an assignment or compound assignment to an element whose index reads a root that a `&mut self` call in the
-value changes (`a[s.n as usize] = s.bump()`, `a[s.get() as usize] += s.bump()`); Rust runs the value first, Slang the
-index first. Write `let v = s.bump(); a[s.n as usize] = v;`. The rule covers every indexed place, a storage buffer
-and workgroup memory included (`out[c.n] = c.next()`, `out[c.n] += c.next()`, `wg[w.n] = w.bump()`; fix round 1): slangc
-2026.21 reads the index of those first, where 2026.20 called first, so the order of Slang for an indexed place changed
-between two versions and GUST refuses the form rather than rely on it. Before this round slice a2 accepted the storage
-forms, which gave another element than the CPU twin on the GPU with the pinned Slang.
+**Order of evaluation** (Rust measured with rustc, Slang 2026.21 read on the WGSL target, and re-read on the pinned
+2026.22 with the same result, m9.p; the GPU test `m9_arrays` runs every accepted case against hand-written values).
+Accepted because they match: the elements of a literal left to right (`[s.bump(), s.bump(), s.bump()]` is `[1, 2, 3]`),
+an array argument built from calls, two reads of one table with indexes that call, an index on a call result
+(`make3(s.bump())[1]`), a method on an element whose index calls another counter, an element assigned from its
+neighbours, and a repeat (`[s.bump(); 4]` runs `bump` once). Refused with `GUST-E0421`: an assignment or compound
+assignment to an element whose index reads a root that a `&mut self` call in the value changes
+(`a[s.n as usize] = s.bump()`, `a[s.get() as usize] += s.bump()`); Rust runs the value first, Slang the index first.
+Write `let v = s.bump(); a[s.n as usize] = v;`. The rule covers every indexed place, a storage buffer and workgroup
+memory included (`out[c.n] = c.next()`, `out[c.n] += c.next()`, `wg[w.n] = w.bump()`; fix round 1): slangc 2026.21 reads
+the index of those first, where 2026.20 called first, so the order of Slang for an indexed place changed between two
+versions and GUST refuses the form rather than rely on it. Before this round slice a2 accepted the storage forms, which
+gave another element than the CPU twin on the GPU with the pinned Slang.
 
-**Out of bounds (D39).** An index outside `0..N` panics in Rust; on the GPU the access is clamped or undefined by target,
-so such a program is outside the defined domain of section 3 (KM-11 is the observation for a buffer index; no row is
-measured for a function-scope array, whose clamping or undefined access the target decides, so nothing is pinned
+**Out of bounds (D39).** An index outside `0..N` panics in Rust; on the GPU the access is clamped or undefined by
+target, so such a program is outside the defined domain of section 3 (KM-11 is the observation for a buffer index; no
+row is measured for a function-scope array, whose clamping or undefined access the target decides, so nothing is pinned
 there). Nothing checks it at run time; keep the index in range. A constant index past the end is not diagnosed by the
 macro; rustc rejects it when the body is compiled (the `unconditional_panic` lint), and `cargo check` does not.
 
@@ -1469,78 +1476,79 @@ negative or NaN source gives 0), while the GPU's result for an out-of-range floa
 sources non-negative and in range; these cases are not tested on the GPU.
 
 **Refused on purpose.** A nested array or an element that is a tuple, `Option`, `Result`, reference or resource
-(`GUST-E0217`); a slice type (`GUST-E0111`); `for x in a` (`GUST-E0409`); an array in a struct field, a buffer, a uniform
-or workgroup memory (`GUST-E0813` in this slice; m9.r2a admits struct fields and storage, below); an array as a tuple element
-(`GUST-E0213`); `==` and `!=` on arrays (`GUST-E0811`); a barrier inside a literal or an index (`GUST-E0327`) and a
-subgroup operation there (`GUST-E0747`).
+(`GUST-E0217`); a slice type (`GUST-E0111`); `for x in a` (`GUST-E0409`); an array in a struct field, a buffer, a
+uniform or workgroup memory (`GUST-E0813` in this slice; m9.r2a admits struct fields and storage, below); an array as a
+tuple element (`GUST-E0213`); `==` and `!=` on arrays (`GUST-E0811`); a barrier inside a literal or an index
+(`GUST-E0327`) and a subgroup operation there (`GUST-E0747`).
 
 Tests: `crates/gust-wgpu/tests/m9_arrays.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations) and the macro tests
 in `crates/gust-macros/src/tests/regression.rs`.
 
 **Arrays in structs and storage (m9.r2a, D159).** A struct field `a: [T; N]` lowers to `T a[N];` and a buffer element
-`RWStructuredBuffer<[T; N]>` to `RWStructuredBuffer<T[N]>`. `N` is in the `GpuPod` set (1 to 32 and the powers of two from
-64 to 4096; another length is `GUST-E0216`) and `T` is a scalar, a 2- or 4-wide vector, `Mat2`, `Mat4` or a struct of the
-module (`Vec3`, `UVec3` and `Mat3` are `GUST-E0214`; a nested array or non-value is `GUST-E0217`). The places
+`RWStructuredBuffer<[T; N]>` to `RWStructuredBuffer<T[N]>`. `N` is in the `GpuPod` set (1 to 32 and the powers of two
+from 64 to 4096; another length is `GUST-E0216`) and `T` is a scalar, a 2- or 4-wide vector, `Mat2`, `Mat4` or a struct
+of the module (`Vec3`, `UVec3` and `Mat3` are `GUST-E0214`; a nested array or non-value is `GUST-E0217`). The places
 `els[i].a[j]`, `cells[i][j]`, `els[i].a`, `cells[i]`, `s.a = t`, `let t: [T; N] = els[i].a;`, a literal for a field in a
 struct literal and `.len()` of a field or an element (its constant `N`) follow the rules above; `[e; N]` is not a struct
 field value (`GUST-E0811`). A struct with an array field must not leave implicit padding (`GUST-E0208`, the size of a
 field is `N` times the element). An array in a uniform (a direct element or a field of a struct a uniform reaches) is
-`GUST-E0215`; `Workgroup<[[T; N]; M]>` and `Workgroup<[S; M]>` stay `GUST-E0210`, and an atomic on an array element stays
-refused. `.len()` of a field name that two structs give two lengths (or an array and a non-array) is `GUST-E0306`.
+`GUST-E0215`; `Workgroup<[[T; N]; M]>` and `Workgroup<[S; M]>` stay `GUST-E0210`, and an atomic on an array element
+stays refused. `.len()` of a field name that two structs give two lengths (or an array and a non-array) is `GUST-E0306`.
 The `GUST-E0421` rule covers every indexed place, field arrays of storage elements and of locals included
 (`rows[c.n].a[1] = c.next()`): Slang 2026.21 reads the index first. The order cases that match Rust and are accepted are
 pinned by the GPU test: `m.ring[1] += m.bump()` (call first), `m.ring[1] = m.ring[1] + m.bump()` (left operand first),
-`m.ring = [m.bump(), ..]`, `[m.ring[0], m.bump(), m.ring[1], m.bump()]` and `f(m.ring[1], m.bump())`.
-Limitations: `==`, `!=` and the orderings on array fields and buffer elements are refused (`GUST-E0811`), as on local
-arrays. `.len()` of a field or element whose receiver contains a call is refused (`GUST-E0306`): the emitter writes the
-constant and would drop the call. An out-of-range dynamic index on a stored array is not checked: the CPU twin panics, and
-on the GPU the access clamps, reads zero or drops the store by the target's rules (a constant-sized inner array is not
-measured; KM-11 measured the runtime-sized buffer level). Array validation runs before struct validation, so a field
-`Option<[u32; 33]>` reports `GUST-E0216` before the `Option` refusal. A stored array builds through the
-precompiled and native path too (m9.pa): the record has an `array` layout kind and the fill reads it from the
-reflection (`GUST-E0217` keeps arrays of arrays out). Tests: `crates/gust-wgpu/tests/m9_arrays_storage.rs` (GPU and
-CPU twin at 1, 63, 64, 65 and 257), the `naga_layout` table and, for the precompiled run,
-`crates/gust-wgpu/tests/precompiled.rs`.
+`m.ring = [m.bump(), ..]`, `[m.ring[0], m.bump(), m.ring[1], m.bump()]` and `f(m.ring[1], m.bump())`. Limitations: `==`,
+`!=` and the orderings on array fields and buffer elements are refused (`GUST-E0811`), as on local arrays. `.len()` of a
+field or element whose receiver contains a call is refused (`GUST-E0306`): the emitter writes the constant and would
+drop the call. An out-of-range dynamic index on a stored array is not checked: the CPU twin panics, and on the GPU the
+access clamps, reads zero or drops the store by the target's rules (a constant-sized inner array is not measured; KM-11
+measured the runtime-sized buffer level). Array validation runs before struct validation, so a field `Option<[u32; 33]>`
+reports `GUST-E0216` before the `Option` refusal. A stored array builds through the precompiled and native path too
+(m9.pa): the record has an `array` layout kind and the fill reads it from the reflection (`GUST-E0217` keeps arrays of
+arrays out). Tests: `crates/gust-wgpu/tests/m9_arrays_storage.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257), the
+`naga_layout` table and, for the precompiled run, `crates/gust-wgpu/tests/precompiled.rs`.
 
 ## 12. Closures (M9, D154, D160)
 
 A closure is a local function that captures nothing: `let f = |x: f32, y: f32| -> f32 { .. };`. Every parameter is
-`name: Type`, the result type follows `->` and is not `()`, the body is a block (`GUST-E0331` otherwise), and the
-`let` is immutable and has no annotation (`GUST-E0330`). It is called as `f(a, b)` after its binding, in the body of a
-kernel, a helper or a method. It is not a value: it is not passed, returned, stored, rebound or named without a call
-(`GUST-E0330`), and a closure inside a closure is `GUST-E0332`. The parameter types are the types of a helper
-(scalars, vectors, matrices, structs and enums of the module, tuples and arrays); the GPU test runs one closure for each.
+`name: Type`, the result type follows `->` and is not `()`, the body is a block (`GUST-E0331` otherwise), and the `let`
+is immutable and has no annotation (`GUST-E0330`). It is called as `f(a, b)` after its binding, in the body of a kernel,
+a helper or a method. It is not a value: it is not passed, returned, stored, rebound or named without a call
+(`GUST-E0330`), and a closure inside a closure is `GUST-E0332`. The parameter types are the types of a helper (scalars,
+vectors, matrices, structs and enums of the module, tuples and arrays); the GPU test runs one closure for each.
 
 **What a closure may use.** Its parameters, the locals it declares itself, the helper functions and methods of the
-module, the paths of the module (`Vec2::new`, `Mode::A`, `Mat4::IDENTITY`) and struct literals. It may not use any
-other name of the surrounding function (`GUST-E0329`): a local, a parameter, a buffer, the invocation id, workgroup
-memory, a loop variable, `self`, or an earlier closure (spike X4: a closure that calls a closure is the same error, and
-the message says so). `move` is `GUST-E0329` too. The check is syntactic and exact: a module holds functions, structs,
-enums and `impl` blocks only, so a single free identifier in the body is a name of the surrounding function, except as the callee of a call (a helper, `Some`, the
-barrier, subgroup and atomic names): a local that shadows a helper name and is used as a value is a capture. The 22 rows
-(11 that capture, 11 that do not) and two method bodies of the capture table are the test `the_capture_table_of_closure_bodies`. A closure is judged as a helper (D154): no barrier, subgroup operation,
-atomic, `Workgroup` parameter or resource parameter, with the helper rule's codes and messages that say "closure". A
-call cycle through a closure body is the recursion of the function that holds it (`GUST-E0120`).
+module, the paths of the module (`Vec2::new`, `Mode::A`, `Mat4::IDENTITY`) and struct literals. It may not use any other
+name of the surrounding function (`GUST-E0329`): a local, a parameter, a buffer, the invocation id, workgroup memory, a
+loop variable, `self`, or an earlier closure (spike X4: a closure that calls a closure is the same error, and the
+message says so). `move` is `GUST-E0329` too. The check is syntactic and exact: a module holds functions, structs, enums
+and `impl` blocks only, so a single free identifier in the body is a name of the surrounding function, except as the
+callee of a call (a helper, `Some`, the barrier, subgroup and atomic names): a local that shadows a helper name and is
+used as a value is a capture. The 22 rows (11 that capture, 11 that do not) and two method bodies of the capture table
+are the test `the_capture_table_of_closure_bodies`. A closure is judged as a helper (D154): no barrier, subgroup
+operation, atomic, `Workgroup` parameter or resource parameter, with the helper rule's codes and messages that say
+"closure". A call cycle through a closure body is the recursion of the function that holds it (`GUST-E0120`).
 
-**Lowering (D160).** A closure is hoisted to a free Slang function `__gust_cl_<owner>_<n>`, with its parameters by value,
-placed before the function that holds it (a method's closures before the struct), and the `let` emits no line. `<owner>`
-is the function (`<Struct>_<method>` for a method) and `<n>` counts the closures of the module in source order, so a
-name never repeats (the plan numbered per owner; a global count is what keeps a helper `S_m` and a method `S::m` apart).
-`f(a, b)` becomes `__gust_cl_run_2(a, b)`. Slang lambdas are not used. A closure in a method is a free function, which is
-why `self` is a capture: pass `self.x` as an argument. The prefix `__gust_` is reserved (`GUST-E0901` for a closure with
-a name in it). A closure name is unique in its function and differs from every helper, method, dialect name and other
-binding (`GUST-E0328`); the same name in two functions is fine, and a Slang keyword is fine because the closure's own
-name is never emitted.
+**Lowering (D160).** A closure is hoisted to a free Slang function `__gust_cl_<owner>_<n>`, with its parameters by
+value, placed before the function that holds it (a method's closures before the struct), and the `let` emits no line.
+`<owner>` is the function (`<Struct>_<method>` for a method) and `<n>` counts the closures of the module in source
+order, so a name never repeats (the plan numbered per owner; a global count is what keeps a helper `S_m` and a method
+`S::m` apart). `f(a, b)` becomes `__gust_cl_run_2(a, b)`. Slang lambdas are not used. A closure in a method is a free
+function, which is why `self` is a capture: pass `self.x` as an argument. The prefix `__gust_` is reserved (`GUST-E0901`
+for a closure with a name in it). A closure name is unique in its function and differs from every helper, method,
+dialect name and other binding (`GUST-E0328`); the same name in two functions is fine, and a Slang keyword is fine
+because the closure's own name is never emitted.
 
-**Order of evaluation.** Measured with rustc and with slangc 2026.21 (then the pinned one; the GPU test `m9_closures` was re-run on the pinned 2026.22, m9.p, with the same values), on the WGSL and the SPIR-V target:
-the arguments of a call of a hoisted function with by-value parameters run left to right, as in Rust. `pair(c.tick(),
-c.tick())`, `pair(c.n, c.tick())`, `pair(c.tick(), c.n)` and the nested `pair(pair(c.tick(), c.tick()), c.tick())` give
-what Rust gives (the GPU test `m9_closures` pins 1002, 1, 1001 and 1002003). A closure cannot mutate anything outside
-itself, because it captures nothing and its parameters are copies, so a closure call has no effect to reorder and the
+**Order of evaluation.** Measured with rustc and with slangc 2026.21 (then the pinned one; the GPU test `m9_closures`
+was re-run on the pinned 2026.22, m9.p, with the same values), on the WGSL and the SPIR-V target: the arguments of a
+call of a hoisted function with by-value parameters run left to right, as in Rust. `pair(c.tick(), c.tick())`,
+`pair(c.n, c.tick())`, `pair(c.tick(), c.n)` and the nested `pair(pair(c.tick(), c.tick()), c.tick())` give what Rust
+gives (the GPU test `m9_closures` pins 1002, 1, 1001 and 1002003). A closure cannot mutate anything outside itself,
+because it captures nothing and its parameters are copies, so a closure call has no effect to reorder and the
 `GUST-E0421` places need no arm for it: `out[f(c.n)] = f(c.bump())` is refused through the `&mut self` call of its
 argument, exactly like `out[c.n] = c.bump()`. The one added case is the bound of a `for` range: a closure call there is
-`GUST-E0421`, kept conservative (`for-bound-closure`). A closure in the index and another in the value of one
-assignment (`scratch[slot(i)] = odd(i)`) run and agree with the CPU twin.
+`GUST-E0421`, kept conservative (`for-bound-closure`). A closure in the index and another in the value of one assignment
+(`scratch[slot(i)] = odd(i)`) run and agree with the CPU twin.
 
 **Edge cases.** The arithmetic inside a closure has the contract of section 3 (D39), the same as in a helper. Closure
 parameters and results are the types of a helper, so the limits of those types apply (no `Option` of a buffer, no
@@ -1551,77 +1559,83 @@ values written by hand), the macro tests in `crates/gust-macros/src/tests/regres
 
 ## 13. Traits with static dispatch (M9, D170)
 
-A `#[gpu]` module may declare `trait T { fn m(&self, ..) -> R; fn n(self, ..) -> Self; fn k(&mut self, ..); }`: methods with
-a receiver and no body (`GUST-E0124` for anything else: a default body, an associated item, a supertrait, a generic trait
-or method). `impl T for S` is accepted for a struct or a field-less enum of the module (`GUST-E0121` for a foreign type
-or a blanket impl; `GUST-E0124` for `&mut self` on an enum). A trait is not a type (`GUST-E0218`: `dyn`, `impl Trait`, a
-trait-typed local, field or parameter). Dispatch is static: a call names the method of the concrete type of its receiver.
+A `#[gpu]` module may declare `trait T { fn m(&self, ..) -> R; fn n(self, ..) -> Self; fn k(&mut self, ..); }`: methods
+with a receiver and no body (`GUST-E0124` for anything else: a default body, an associated item, a supertrait, a generic
+trait or method). `impl T for S` is accepted for a struct or a field-less enum of the module (`GUST-E0121` for a foreign
+type or a blanket impl; `GUST-E0124` for `&mut self` on an enum). A trait is not a type (`GUST-E0218`: `dyn`,
+`impl Trait`, a trait-typed local, field or parameter). Dispatch is static: a call names the method of the concrete type
+of its receiver.
 
 **Lowering.** `interface T { R m(A a); This n(..); [mutating] void k(..); }` and, for each impl,
 `extension S : T { .. }` (the same spelling for a struct and an enum; spike m9.g0 P5, P11, P15). `Self` in a trait
-signature is `This`. The interfaces and extensions are emitted after the structs and before the helpers; the closures of a
-trait-impl method are hoisted before the extension. A call `s.m(a)` is the Slang call `s.m(a)`; the call graph (D162) has
-a node for each trait-impl method, and `x.m(..)` reaches every method named `m`, so the by-name rule of recursion covers
-traits (a wrapper whose `area` calls `inner.area()` is a cycle, `GUST-E0120`, until one is renamed).
+signature is `This`. The interfaces and extensions are emitted after the structs and before the helpers; the closures of
+a trait-impl method are hoisted before the extension. A call `s.m(a)` is the Slang call `s.m(a)`; the call graph (D162)
+has a node for each trait-impl method, and `x.m(..)` reaches every method named `m`, so the by-name rule of recursion
+covers traits (a wrapper whose `area` calls `inner.area()` is a cycle, `GUST-E0120`, until one is renamed).
 
 **Method resolution.** By name, as for inherent methods (D156): a method call is a call of the methods of that name, and
-Slang resolves it by the type of the receiver. One name has one meaning in a module (`GUST-E0328`, the P18 ruling of spike
-m9.g0, where slangc accepted an inherent method and an extension method of one name silently): a trait method may not be
-named like an inherent method or a field of an implementing type, a reserved name or a name of the dialect, and two traits
-that declare one method name may not be implemented by one type.
+Slang resolves it by the type of the receiver. One name has one meaning in a module (`GUST-E0328`, the P18 ruling of
+spike m9.g0, where slangc accepted an inherent method and an extension method of one name silently): a trait method may
+not be named like an inherent method or a field of an implementing type, a reserved name or a name of the dialect, and
+two traits that declare one method name may not be implemented by one type.
 
-**Path calls.** `T::m(&s, a)`, `T::m(s, a)`, `<S as T>::m(&s, a)` and `<S as self::T>::m(&s, a)` are rewritten to `s.m(a)`
-when the first argument is a place (a local, a parameter, a field or an element, optionally under one `&` or `&mut`);
-any other first argument is `GUST-E0126`. `T::m(s, a)` is by-value `self` and `T::m(&s, a)` is `&self`; rustc still
-checks the spelling the user wrote, because only the copy of the module that validation and Slang emission read is
+**Path calls.** `T::m(&s, a)`, `T::m(s, a)`, `<S as T>::m(&s, a)` and `<S as self::T>::m(&s, a)` are rewritten to
+`s.m(a)` when the first argument is a place (a local, a parameter, a field or an element, optionally under one `&` or
+`&mut`); any other first argument is `GUST-E0126`. `T::m(s, a)` is by-value `self` and `T::m(&s, a)` is `&self`; rustc
+still checks the spelling the user wrote, because only the copy of the module that validation and Slang emission read is
 rewritten; the CPU twin and the typecheck item keep the tokens as written (test
 `the_cpu_twin_and_the_typecheck_item_keep_the_trait_path_call_as_written`). The rewrite also reaches the bodies of
 closures. Everything downstream sees a method call, so `GUST-E0333` (a `&mut self` trait method on storage, uniform or
-workgroup places), the order rules of `GUST-E0421` and the barrier, subgroup and atomic refusals of D154 apply to a trait
-method as to an inherent one. A trait method is validated as a helper: it may call helpers and inherent methods.
+workgroup places), the order rules of `GUST-E0421` and the barrier, subgroup and atomic refusals of D154 apply to a
+trait method as to an inherent one. A trait method is validated as a helper: it may call helpers and inherent methods.
 
-**Order of evaluation.** Measured with rustc (through the CPU twin) and with slangc 2026.21 (then the pinned one; the GPU test `m9_traits` was re-run on the pinned 2026.22, m9.p, with the same values) on the RTX 5090:
-the arguments of a call run left to right, and a by-value `self` receiver is copied before the arguments run. For a counter
-`d` with `d.n = x`: `d.plus(d.bump())` with `plus(self, k) = self.n * 100 + k` is `101x + 1` (the receiver is read before
+**Order of evaluation.** Measured with rustc (through the CPU twin) and with slangc 2026.21 (then the pinned one; the
+GPU test `m9_traits` was re-run on the pinned 2026.22, m9.p, with the same values) on the RTX 5090: the arguments of a
+call run left to right, and a by-value `self` receiver is copied before the arguments run. For a counter `d` with
+`d.n = x`: `d.plus(d.bump())` with `plus(self, k) = self.n * 100 + k` is `101x + 1` (the receiver is read before
 `bump`), by method syntax and by `Plus::plus(d, d.bump())`. For a trait method with two arguments,
 `s.mix(c.bump(), c.bump())` and `Mix::mix(&s, c2.bump(), c2.bump())` with `mix(&self, a, b) = side * 1000 + a * 10 + b`
 give `side * 1000 + 12`: the first `bump` is the first argument. The GPU test `m9_traits` pins all four, on the GPU and
 on the twin, with hand-written expectations (`order_self`, `order_self_path`, `order_args`, `order_args_path`).
 
 **Shapes in signatures and calls.** A trait method may take an array (`fn sum2(&self, v: [u32; 2])`, Slang `uint[2]`)
-and return a tuple (`-> (u32, u32)`, Slang `Tuple<uint, uint>`); the GPU test runs both (`pack_sum`, `pack_both`). `Self`
-inside a tuple or array (`-> (Self, u32)`) needs `Self: Sized` in Rust, which a trait of this dialect cannot say (a
-supertrait and a `where` clause are `GUST-E0124`), so rustc refuses it with E0277 (UI fixture `trait-self-in-tuple`). An
-inherent method may call trait methods (`Rect::score` calls `self.area()` and `self.tag()`; it is emitted inside the
+and return a tuple (`-> (u32, u32)`, Slang `Tuple<uint, uint>`); the GPU test runs both (`pack_sum`, `pack_both`).
+`Self` inside a tuple or array (`-> (Self, u32)`) needs `Self: Sized` in Rust, which a trait of this dialect cannot say
+(a supertrait and a `where` clause are `GUST-E0124`), so rustc refuses it with E0277 (UI fixture `trait-self-in-tuple`).
+An inherent method may call trait methods (`Rect::score` calls `self.area()` and `self.tag()`; it is emitted inside the
 struct, above the extensions that declare the callee, and slangc accepts it: `method_score`).
 
-**Edge cases.** The arithmetic in a trait method has the contract of section 3, as in a helper. Slang's standard module
-declares interfaces (`IFloat`, `IInteger`, ..); a user trait of such a name is renamed `__gust_r_<name>`
-(`STDLIB_INTERFACES`, measured: the user's interface shadows the standard one on slangc 2026.21, so this is hygiene, not a
-class-1 failure). A missing impl method is rustc's E0046 on the twin, not a Slang error. Generics and bounds: section 14.
-Tests: `crates/gust-wgpu/tests/m9_traits.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations), the macro
-tests in `crates/gust-macros/src/tests/regression.rs`, the fixture `tests/fixtures/traits.rs` and its golden, and the UI
-fixtures `trait-*`.
+**Edge cases.** The arithmetic in a trait method has the contract of section 3, as in a helper. Slang's standard
+module declares interfaces (`IFloat`, `IInteger`, ..); a user trait of such a name is renamed `__gust_r_<name>`
+(`STDLIB_INTERFACES`, measured: the user's interface shadows the standard one on slangc 2026.21, so this is hygiene,
+not a class-1 failure). A missing impl method is rustc's E0046 on the twin, not a Slang error. Generics and bounds:
+section 14. Tests: `crates/gust-wgpu/tests/m9_traits.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations), the
+macro tests in `crates/gust-macros/src/tests/regression.rs`, the fixture `tests/fixtures/traits.rs` and its golden,
+and the UI fixtures `trait-*`.
 
 ## 14. Generic helpers and methods with trait bounds (M9, D170)
 
 A free function or an inherent method with a receiver may take type parameters: `fn f<T: A + B>(t: T) -> T`,
-`fn f<T>(t: T) where T: A`, `impl S { fn m<T: A>(&self, t: T) -> u32 }`. A bound is a trait of the module, inline or in a
-`where` clause; `Copy` is accepted and dropped (every GPU value is a copy), and does not count as a bound:
-every type parameter needs at least one trait of the module (`GUST-E0125` otherwise), which keeps `T` a struct or enum of the module and a number, tuple or array out of it. Type arguments are inferred from the arguments (`GUST-E0123` for a turbofish or a parameter nothing
-determines) and `T` is written as a whole type: a parameter, a result, `let x: T`. `T` nested in an array, tuple,
-`Option` or reference, a generic kernel, closure or associated function without a receiver, const
-generics, lifetimes and defaults are `GUST-E0114` (a generic trait method is `GUST-E0124`); a generic struct or enum is `GUST-E0103`; a bound that is not a trait
-of the module or `Copy` is `GUST-E0125`. Arithmetic, comparison and literals on a `T` are not checked by the macro: a
-module trait has no operators, so rustc refuses them on the CPU twin and the typecheck item (UI fixture
-`generic-arith`, rustc's own error), and no Slang is produced from that program.
+`fn f<T>(t: T) where T: A`, `impl S { fn m<T: A>(&self, t: T) -> u32 }`. A bound is a trait of the module, inline or in
+a `where` clause; `Copy` is accepted and dropped (every GPU value is a copy), and does not count as a bound: every type
+parameter needs at least one trait of the module (`GUST-E0125` otherwise), which keeps `T` a struct or enum of the
+module and a number, tuple or array out of it. Type arguments are inferred from the arguments (`GUST-E0123` for a
+turbofish or a parameter nothing determines) and `T` is written as a whole type: a parameter, a result, `let x: T`. `T`
+nested in an array, tuple, `Option` or reference, a generic kernel, closure or associated function without a receiver,
+const generics, lifetimes and defaults are `GUST-E0114` (a generic trait method is `GUST-E0124`); a generic struct or
+enum is `GUST-E0103`; a bound that is not a trait of the module or `Copy` is `GUST-E0125`. Arithmetic, comparison and
+literals on a `T` are not checked by the macro: a module trait has no operators, so rustc refuses them on the CPU twin
+and the typecheck item (UI fixture `generic-arith`, rustc's own error), and no Slang is produced from that program.
 
 **Lowering.** `T f<T : A & B>(T t)`; inline and `where` bounds merge and are deduplicated, `Copy` is dropped.
-A generic method is a member of its struct (`[mutating] uint h<T : A>(T t)`). The
-specialisation is slangc's, per instantiation, statically (spike m9.g0). The names of generics go through the same
-renaming as other names (`collisions::emit_name`), so `T` named `IFloat` or `float4` is safe in Slang; a generic named
-like an item of the module, a dialect or primitive type or `Self` is `GUST-E0328`. The CPU twin and the typecheck item
-keep the generics as plain Rust.
+A generic method is a member of its struct (`[mutating] uint h<T : A>(T t)`). The specialisation is slangc's, per
+instantiation, statically (spike m9.g0). The names of generics go through the same renaming as other names
+(`collisions::emit_name`), so a `T` named `IFloat` or `float4` is safe in Slang. A type parameter named like an item of
+the module (a struct, enum, trait or function), like a type of the dialect (`Vec4`, `u32`, `bool`, `Option`, `Result`,
+`Workgroup`) or like one of the five id types that the emitter maps to `uint3` (`SV_DispatchThreadID`,
+`SV_GroupThreadID`, `SV_GroupID`, `LocalId`, `GroupId`), or named `Self`, is `GUST-E0328`; a type parameter named like a
+trait of the module reports `GUST-E0218` first, because the trait is not a type (test `parameter named like a trait`).
+The CPU twin and the typecheck item keep the generics as plain Rust.
 
 **Call graph, uniformity, ledger.** A call `t.m()` on a `T` is an edge to every method named `m` (D162, by name), a
 superset of the impls of any bound, so recursion through a bound and its impl is `GUST-E0120` (UI fixture
@@ -1629,11 +1643,14 @@ superset of the impls of any bound, so recursion through a bound and its impl is
 atomic or storage access in it is refused where it is written (UI fixture `generic-barrier`, `GUST-E0414`). The ledger
 rows of D133 apply to the impls as to any helper.
 
-**Order of evaluation.** The same as for non-generic calls (section 13), measured with rustc and slangc 2026.21 (first), re-measured on the pinned 2026.22 by the GPU test, and
-pinned on the RTX 5090 with hand-written expectations: arguments run left to right (`gmix(s, c.bump(), c.bump())`,
-`e.run_with(s)` whose body calls `t.mix(self.bump(), self.bump())`, `gmix_local`), and a by-value `T` argument is
-copied before a later argument mutates its source (`gplus(d, d.bump())` is `101x + 1`). A `&mut self` method through
-`T` is called on a local copy (`let mut c: T = t; c.grow(by);`), because a by-value parameter is not a mutation root.
+**Order of evaluation.** The same as for non-generic calls (section 13), measured with rustc and slangc 2026.21
+(first), re-measured on the pinned 2026.22 by the GPU test, and pinned on the RTX 5090 with hand-written expectations:
+arguments run left to right (`gmix(s, c.bump(), c.bump())`, `e.run_with(s)` whose body calls
+`t.mix(self.bump(), self.bump())`, `gmix_local`, and the generic method `h.weigh(s, c2.bump(), c2.bump())` with a fresh
+counter `c2`, where `weigh(&self, t, a, b)` is `t.mix(a, b) + self.k`: the values are `1011x + 1017`, and swapped
+arguments would give `1011x + 1026`), and a by-value `T` argument is copied before a later argument mutates its source
+(`gplus(d, d.bump())` is `101x + 1`). A `&mut self` method through `T` is called on a local copy
+(`let mut c: T = t; c.grow(by);`), because a by-value parameter is not a mutation root.
 
 Tests: `crates/gust-wgpu/tests/m9_generics.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations), the macro tests
 in `crates/gust-macros/src/tests/regression.rs`, the fixture `tests/fixtures/generics.rs` and its golden, and the UI
@@ -1646,15 +1663,20 @@ a compute or pixel (fragment) pipeline from slangc's own SPIR-V through wgpu's `
 instead of the WGSL that naga checks and rewrites. A kernel stays on the WGSL route, and the device records the reason
 (`HeadlessDevice::route_events`), when:
 
-- the feature is off, or the build has no `slang-runtime` (there is no SPIR-V to compile);
+- the build has no `slang-runtime` (there is no SPIR-V to compile); with the feature off none of this exists and
+  nothing is recorded;
 - the kernel is a precompiled WGSL artifact (its bytes are the contract);
 - the backend is not Vulkan ("backend is not Vulkan": DX12, Metal and GL advertise `PASSTHROUGH_SHADERS` but take no
   SPIR-V, so the device does not request the feature there);
 - the device lacks `PASSTHROUGH_SHADERS`;
 - the SPIR-V compile fails;
-- the module has a push-constant block, or the binding check fails (every resource binding the module declares must
-  be in the layout, with the layout's kind and stage; a layout binding the kernel does not touch is dropped by slangc
-  and is not an error).
+- the module has a push-constant block, or the binding check fails. `check_bindings` (`passthrough.rs`) reads the
+  module's entry points and resource variables and requires that the kernel's entry point exists at the execution model
+  of its stage (compute, or fragment for a `pixel` kernel) and that every resource binding the module declares is in
+  set 0 and in the layout under the same binding number with a compatible kind (a uniform buffer, a storage buffer, or a
+  texture or sampler variable against any texture, storage-texture or sampler entry: sampled and storage images are not
+  told apart). It does not compare the visibility of a layout entry. A layout binding the kernel does not touch is
+  dropped by slangc and is not an error.
 
 wgpu renumbers a bind group layout densely, so the route rewrites each `Binding` decoration to its rank in the layout;
 a sparse layout (bindings 3, 999, or 0 and 999) ran on both adapters. `GUST_SPIRV_ROUTE_LOG=<file>`, read at run
@@ -1690,9 +1712,50 @@ change). They are on whenever the feature is on, never a run-time switch (D174c)
 
 Differences that remain, as D39 limitations (each is an out-of-range index, which panics in Rust and so is outside the
 domain): an index into a storage buffer is not clamped by GUST; it keeps the device's behaviour, which is naga-like
-where `robustBufferAccess2` exists (D174b). The clamp also does not reach an untyped `let` array (`let a = [0u32; 4];`),
-the inner index of `a[i][j]`, or a module `const` array, whose lengths the macro does not track: out of range on the
-route is undefined there (possibly a device loss) where naga clamps. The conversion of a float to an
-integer saturates as Rust does on the route, where the WGSL route gave `0x7fffff80` and `0xffffff00` (rows KM-05 and
-KM-06; the mismatch test pins the route's values), a NaN converts to 0, and `NaN != NaN` is true. A float result may
-differ by an ulp where the driver contracts a multiply and an add.
+where `robustBufferAccess2` exists (D174b). The clamp reaches only an array whose length the macro tracks: a local or
+parameter declared `[T; N]` and bound only that way in its function, an array field (judged by its name), the inner
+index of `out[i][j]` for a storage buffer whose element is an array (the index `i` into the buffer is not clamped), and
+a `Workgroup<[T; N]>` parameter. It does not reach a local bound by an untyped `let` of a helper's array result
+(`let a = make4();`), a name bound twice in one function with different lengths or once as a non-array, or a field name
+that two structs declare with different lengths (or one of them as a non-array): `array_lengths` and
+`array_field_lengths` map those to no length. Out of range on the route is undefined there (possibly a device loss)
+where naga clamps, and it is outside the domain like every out-of-range index. The conversion of a float to an integer
+saturates as Rust does on the route, where the WGSL route gave `0x7fffff80` and `0xffffff00` (rows KM-05 and KM-06; the
+mismatch test pins the route's values), a NaN converts to 0, and `NaN != NaN` is true. A float result may differ by an
+ulp where the driver contracts a multiply and an add.
+
+## 16. Methods and impl blocks (M9, D154)
+
+An `impl S { .. }` block of a struct declared in the same module (several blocks per struct, and the path form
+`impl self::S`, are accepted; GUST-E0121) turns its functions into members of the generated Slang struct. A function
+with a receiver is a method: `&self` and `self` become a plain member function, `&mut self` becomes a member marked
+`[mutating]`, and a call `c.bump()` is emitted as the same call. A function without a receiver is an associated
+function, emitted `static`, and is called as `S::f(..)` or `Self::f(..)` (GUST-E0302 for the other path forms). `Self`
+in a type or a struct literal is the struct. An inherent `impl` for an enum is refused (GUST-E0121, "methods on an enum
+are not supported"); only a trait impl may name an enum (section 13).
+
+What the contract says:
+
+- A `&self` method only reads its receiver (the callee gets a copy on the GPU), and a `self` method works on a copy: the
+  caller's receiver does not change. A `&mut self` method writes through the receiver, and a `let mut` local (or a field
+  or an element of one) is the only receiver GUST accepts for it (a `self` method called by value on a shared place is
+  GUST-E0333 too, as the validator counts it as mutating); a storage, uniform, workgroup or invocation-id place
+  and a value that is not a place are GUST-E0333 (`let mut copy = out[i]; copy.bump(); out[i] = copy;`). The reason is
+  that a write through a place shared by the invocations would not show in the kernel, and that Slang passes a by-value
+  parameter as a read-only value.
+- Method names are checked against the names the dialect, swizzles, Slang's struct keywords and the struct's own fields
+  use (GUST-E0328), and a helper and a method must not share a name. The module call graph is built from names, so a
+  method call `x.m()` is an edge to every method named `m`: a method that calls another struct's method of the same name
+  is a cycle (GUST-E0120).
+- Evaluation order: Rust evaluates the arguments of a call left to right and the assigned value of `=` before its
+  place. Slang does not always do the same, so the forms where a `&mut self` call would be ordered differently are
+  refused (GUST-E0421; section 14 treats the call `h.weigh(s, c2.bump(), c2.bump())`), and the forms that match
+  Rust stay accepted.
+- Names that a method, a trait or a type parameter would give to Slang's own members (`this`, `Tuple`, `makeTuple`, the
+  standard interface names) are renamed by the emitter, with `__gust_r_` as the prefix. This changes the emitted text
+  and so the content key of an artifact built from such a module (CHANGELOG, 0.2.0, break B4).
+
+Evidence: the golden fixtures `methods.slang`, `methods_mut.slang`, `traits.slang`, `generics.slang` and `enums.slang`
+under `tests/fixtures` (each with a Rust source twin that the `m9_*` GPU tests and the macro regression tests include),
+and the UI fixtures named in DIAGNOSTICS under E0116, E0328, E0333 and E0421. GPU runs of those fixtures are recorded in
+the status log, not here.

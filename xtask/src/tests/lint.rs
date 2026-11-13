@@ -1,6 +1,7 @@
 use super::{
-    Member, find_machine_path, is_forbidden_script, licence_problem, machine_path_problems,
-    member_field_problems, parse_members, path_dependency_problems,
+    Member, carries_compiler_tag, compiler_tag_problems, find_machine_path, is_forbidden_script,
+    licence_problem, machine_path_problems, member_field_problems, parse_members,
+    path_dependency_problems,
 };
 
 #[test]
@@ -687,4 +688,106 @@ fn a_dependency_table_over_several_lines_is_reported_instead_of_skipped() {
         "{}",
         problems[0]
     );
+}
+
+// ---- compiler tags (NEXT_TASKS: every committed tag equals SLANG_PIN) ----
+
+const PIN: &str = "2026.22";
+
+#[test]
+fn a_current_compiler_tag_passes_in_a_reflection_document_and_a_manifest() {
+    let reflection = r#"{"schemaVersion":4,"compiler":"2026.22","target":"wgsl"}"#;
+    let manifest = "{\n  \"schema\": 1,\n  \"slang\": \"2026.22\"\n}\n";
+    assert_eq!(
+        compiler_tag_problems("a.wgsl.reflection.json", reflection, PIN),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        compiler_tag_problems("gust-artifacts/manifest.json", manifest, PIN),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn a_stale_compiler_tag_is_named_with_its_file_and_both_tags() {
+    // The fixture string of a document that an older Slang made (the m9.p regeneration missed one such example).
+    let stale = r#"{"schemaVersion":4,"compiler":"2026.21","target":"wgsl"}"#;
+    assert_eq!(
+        compiler_tag_problems(
+            "examples/x/gust-artifacts/k.wgsl.reflection.json",
+            stale,
+            PIN
+        ),
+        [
+            "examples/x/gust-artifacts/k.wgsl.reflection.json: `compiler` is `2026.21` but SLANG_PIN is `2026.22`; \
+             regenerate the artifact with the pinned compiler"
+        ]
+    );
+    let manifest = r#"{"schema":1,"slang":"2026.21.1"}"#;
+    let problems = compiler_tag_problems("examples/x/gust-artifacts/manifest.json", manifest, PIN);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("`slang` is `2026.21.1`"),
+        "{problems:?}"
+    );
+    // A tag that only extends the pin is not the pin.
+    let longer = r#"{"compiler":"2026.22.1"}"#;
+    assert_eq!(
+        compiler_tag_problems("k.reflection.json", longer, PIN).len(),
+        1
+    );
+    // Both fields stale: two problems.
+    let both = r#"{"compiler":"old","slang":"old"}"#;
+    assert_eq!(compiler_tag_problems("manifest.json", both, PIN).len(), 2);
+}
+
+#[test]
+fn a_null_slang_a_missing_field_and_odd_values_are_judged_as_documented() {
+    assert!(compiler_tag_problems("manifest.json", r#"{"schema":1,"slang":null}"#, PIN).is_empty());
+    assert!(compiler_tag_problems("manifest.json", r#"{"artifacts":[]}"#, PIN).is_empty());
+    // `compiler` is never null; a number is not a tag.
+    assert_eq!(
+        compiler_tag_problems("k.reflection.json", r#"{"compiler":null}"#, PIN).len(),
+        1
+    );
+    assert_eq!(
+        compiler_tag_problems("manifest.json", r#"{"slang":22}"#, PIN).len(),
+        1
+    );
+    // Only the top level counts: a nested field of another meaning is left alone.
+    assert!(
+        compiler_tag_problems(
+            "k.reflection.json",
+            r#"{"compiler":"2026.22","x":{"compiler":"other"}}"#,
+            PIN
+        )
+        .is_empty()
+    );
+    // A broken document cannot hide a stale tag.
+    let problems = compiler_tag_problems("manifest.json", r#"{"slang":"2026.21""#, PIN);
+    assert_eq!(problems.len(), 1);
+    assert!(
+        problems[0].starts_with("manifest.json: not JSON"),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn only_reflection_documents_and_manifests_carry_a_checked_tag() {
+    for yes in [
+        "examples/map-chain/gust-artifacts/443ab55c412cf3e5.wgsl.reflection.json",
+        "tests/precompiled/kernels/gust-artifacts/manifest.json",
+        "crates/gust/tests/fixtures/schema3/storage_inferred.wgsl.json",
+        "manifest.json",
+    ] {
+        assert!(carries_compiler_tag(yes), "{yes}");
+    }
+    for no in [
+        "crates/gust-macros/tests/golden/sample.kernel.json",
+        "Cargo.json",
+        "docs/manifest.json.md",
+        "not-a-manifest.json",
+    ] {
+        assert!(!carries_compiler_tag(no), "{no}");
+    }
 }

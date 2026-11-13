@@ -494,7 +494,7 @@ fn is_non_identity_operand(op: BinOp, value: &Expr) -> bool {
     }
 }
 
-/// The guard for the NVIDIA hole (plans/m9/arrbug.md and arrbug2.md, D168, D169), for every array of every length,
+/// The guard for the NVIDIA hole (D168, D169), for every array of every length,
 /// uniform or not, in the kernel, the helpers, the methods and the closure bodies (`Gen::guard_set`). A compound set
 /// at a dynamic index is `+= -= ^= *= /= <<= >>=` with an operand that is never the identity of its operator; `|= &= %=`
 /// have a literal index; a plain set at a dynamic index never stores the place's own value back; an element method

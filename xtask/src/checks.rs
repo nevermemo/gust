@@ -1073,7 +1073,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
         "format" => "format: rustfmt only",
         "lints" => "lints: strict Clippy over workspace/all targets",
         "lint" => {
-            "lint: no tracked shell scripts (D27) and no machine-specific paths in tracked text (home paths include WSL spellings); also part of check-fast"
+            "lint: no tracked shell scripts (D27) and no machine-specific paths in tracked text (home paths include WSL spellings), and every committed `compiler` and `slang` tag of the reflection documents and artifact manifests (examples included) equals SLANG_PIN; also part of check-fast"
         }
         "docs-check" => {
             "docs-check: relative Markdown links resolve to project files (anchors and external links are not checked), no merge-conflict markers, DECISIONS ids unique and increasing; also part of check-fast"

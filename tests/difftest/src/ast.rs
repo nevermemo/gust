@@ -978,7 +978,7 @@ pub const SHAPE_TRAIT_VALUE_SELF: &str =
     "shape trait call, by-value self whose source an argument mutates";
 pub const SHAPE_MUT_THROUGH_PARAM: &str = "shape &mut self through a type parameter";
 pub const SHAPE_PARAM_ARGS_SELF_ROOT: &str =
-    "shape call through a type parameter, arguments call the receiver's root";
+    "shape call through a type parameter, arguments change the enclosing method's self";
 
 /// The arguments of a call of `def` whose values reach its result in the order the call gives them: the integer ones
 /// of a function with an integer result.

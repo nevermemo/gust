@@ -34,7 +34,7 @@ use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 // method_score = r.score() = 2 * area + tag = 6x + 1006 + 2x = 1006 + 8x (an inherent method that calls trait methods): 1006, 1022, 1038, 1054, 1070
 // pk = Square { side: x + 2 }:
 //   pack_sum   = pk.sum2([x, 1]) = (x+2) + x + 1 = 2x + 3             (an array parameter)       : 3, 7, 11, 15, 19
-//   pack_both  = pk.both() = (x+2, 2(x+2)) as 0*100 + 1 = 102(x+2)   (a tuple result)         : 204, 408, 612, 816, 1020
+//   pack_both  = pk.both() = (x+2, 2(x+2)) as .0 * 100 + .1 = 102(x+2) (a tuple result)   : 204, 408, 612, 816, 1020
 const RECT_AREA: [u32; 5] = [0, 6, 12, 18, 24];
 const SQUARE_AREA: [u32; 5] = [1, 9, 25, 49, 81];
 const RECT_DOUBLED: [u32; 5] = [0, 24, 48, 72, 96];

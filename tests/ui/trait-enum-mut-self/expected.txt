@@ -3,4 +3,4 @@
 code: none
 file: trait-enum-mut-self/src/main.rs
 line: 17
-message: [GUST-E0124]
+message: [GUST-E0124] `step` takes `&mut self` and `Phase` is an enum: a method cannot assign its receiver (`*self = ..` has no lowering), so a `&mut self` method is for a struct; take `self` and return the new value

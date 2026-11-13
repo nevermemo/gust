@@ -195,8 +195,8 @@ fn the_nvidia_array_defect_is_still_there_or_absent_elsewhere() {
         );
         if kind == Device::Measured && results.iter().any(|(_, v, _)| *v == Verdict::Right) {
             message.push_str(
-                "Re-measure the D168/D169 programs (the shapes of the investigations arrbug and arrbug2) before \
-                 touching the guard. Remove the difftest's array guard (`Gen::guard_set` and `scan_driver_hole` in \
+                "Re-measure the programs of D168 and D169 (docs/DECISIONS.md: the shapes of the two investigations that \
+                 found the defect) before touching the guard. Remove the difftest's array guard (`Gen::guard_set` and `scan_driver_hole` in \
                  tests/difftest/src/array_tests.rs, also used by closure_tests.rs) and this sentinel's expectation \
                  only when a re-measure shows the driver computes Rust's values for every program.",
             );

@@ -5,7 +5,7 @@ use super::{
     SHORT_CIRCUIT_GPU_TEST, SUBGROUPS_PROFILE, batch_args, capability_problems,
     expected_capabilities, export_args, judge_batch, parse_report, parse_seeds, parse_shapes,
     profile_problems, random_seeds, record_problems, record_tree, report_problems, seed_list,
-    short_circuit_args, short_circuit_problems, steps, with_full_shapes,
+    short_circuit_args, short_circuit_problems, stale_log_removal, steps, with_full_shapes,
 };
 
 fn owned(args: &[&str]) -> Vec<String> {
@@ -1269,4 +1269,39 @@ fn every_batch_is_judged_by_the_capabilities_and_the_second_one_prints_its_timin
         .expect("run_steps");
     assert!(run.contains("subgroups_timing = judgement.summary.last().cloned()"));
     assert!(run.contains("{SUBGROUPS_PROFILE} batch: {}"));
+}
+
+// ---- the route log of an earlier run (m9.rt2 review, R2) ----
+
+#[test]
+fn a_failed_delete_of_an_old_route_log_fails_unless_the_log_was_never_there() {
+    use std::io::{Error, ErrorKind};
+    let log = Path::new("target/x.route.log");
+    assert_eq!(stale_log_removal(Ok(()), log), Ok(()));
+    assert_eq!(
+        stale_log_removal(Err(Error::from(ErrorKind::NotFound)), log),
+        Ok(())
+    );
+    for kind in [ErrorKind::PermissionDenied, ErrorKind::Other] {
+        let message = stale_log_removal(Err(Error::from(kind)), log).unwrap_err();
+        assert!(
+            message.starts_with(
+                "check-difftest: cannot delete the old route log target/x.route.log: "
+            ),
+            "{kind:?}: {message}"
+        );
+    }
+}
+
+#[test]
+fn a_route_log_that_cannot_be_deleted_is_an_error_on_the_real_file_system() {
+    // A directory in the log's place cannot be removed as a file, on every platform.
+    let dir = std::env::temp_dir().join(format!("gust-xtask-routelog-{}", std::process::id()));
+    let log = dir.join("a.route.log");
+    std::fs::create_dir_all(&log).unwrap();
+    let result = stale_log_removal(std::fs::remove_file(&log), &log);
+    let missing = stale_log_removal(std::fs::remove_file(dir.join("none.log")), &log);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(missing, Ok(()));
 }

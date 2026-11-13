@@ -2786,11 +2786,11 @@ impl HeadlessDevice {
             })
     }
 
-    /// The SPIR-V route (m9.rt2, D172, D174): slangc's SPIR-V for the kernel as a passthrough module, or the reason this
-    /// kernel stays on the WGSL route. Checked in this order: a precompiled WGSL artifact (its bytes are the contract and
-    /// no SPIR-V artifact exists), a backend that is not Vulkan, a build without the run-time compiler, a device without `PASSTHROUGH_SHADERS`, a
-    /// SPIR-V compile error, a module that does not fit the pipeline layout ([`passthrough::check_bindings`]), a binding
-    /// that cannot be renumbered.
+    /// The SPIR-V route (m9.rt2, D172, D174): slangc's SPIR-V for the kernel as a passthrough module, or the reason
+    /// this kernel stays on the WGSL route. Checked in this order: a precompiled WGSL artifact (its bytes are the
+    /// contract and no SPIR-V artifact exists), a backend that is not Vulkan, a build without the run-time compiler, a
+    /// device without `PASSTHROUGH_SHADERS`, a SPIR-V compile error, a module that does not fit the pipeline layout
+    /// ([`passthrough::check_bindings`]), a binding that cannot be renumbered.
     #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
     fn spirv_module(
         &self,
@@ -2862,13 +2862,15 @@ impl HeadlessDevice {
                 .append(true)
                 .open(path)
             {
-                let _ = writeln!(
-                    file,
-                    "{} {:?} {}",
+                // One `write_all` of the whole line (m9.rt2 review, R4): parallel test threads append to the same log,
+                // and `writeln!` on an unbuffered file issues several writes per line, which can tear a line.
+                let line = format!(
+                    "{} {:?} {}\n",
                     kernel.qualified_name(),
                     route,
                     reason.as_deref().unwrap_or("")
                 );
+                let _ = file.write_all(line.as_bytes());
             }
         }
         self.route_events
@@ -3638,8 +3640,9 @@ fn pod_vec_from_bytes<T: GpuPod>(bytes: &[u8]) -> Result<Vec<T>, Error> {
     Ok(values)
 }
 
-/// The feature the SPIR-V route needs (m9.rt2): `PASSTHROUGH_SHADERS`, when the feature is on, the adapter is Vulkan and has it. An
-/// adapter without it still opens; its kernels fall back to WGSL and `HeadlessDevice::route_events` says so.
+/// The feature the SPIR-V route needs (m9.rt2): `PASSTHROUGH_SHADERS`, when the feature is on, the adapter is Vulkan
+/// and has it. An adapter without it still opens; its kernels fall back to WGSL and `HeadlessDevice::route_events`
+/// says so.
 fn spirv_route_features(adapter: &wgpu::Adapter) -> wgpu::Features {
     #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
     {

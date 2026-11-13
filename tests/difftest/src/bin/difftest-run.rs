@@ -88,6 +88,14 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 .into(),
         );
     }
+    if parsed.shrink.is_some() && parsed.export_dir.is_some() {
+        // Every candidate of a shrink is built under the same package name, so one record directory would be shared
+        // (and discarded) across candidates: the pair is refused instead of giving records that mean nothing.
+        return Err(
+            "--shrink and --export-dir are exclusive: the candidates of a shrink would share one record directory"
+                .into(),
+        );
+    }
     if let Some(profile) = &parsed.profile {
         // The run crate compiles Slang at run time, which only `dev` and `dev+<capability>` keep (gust's build script).
         if profile != "dev" && !profile.starts_with("dev+") {
@@ -242,5 +250,33 @@ fn main() -> ExitCode {
             eprintln!("difftest-run: {message}");
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|arg| (*arg).to_owned()).collect()
+    }
+
+    #[test]
+    fn shrink_with_export_dir_is_refused_with_a_clear_message() {
+        let message = parse(&args(&["--shrink", "1:0", "--export-dir", "records"])).err();
+        assert_eq!(
+            message.as_deref(),
+            Some(
+                "--shrink and --export-dir are exclusive: the candidates of a shrink would share one record directory"
+            )
+        );
+        // The order of the arguments does not matter.
+        assert!(parse(&args(&["--export-dir", "records", "--shrink", "1:0"])).is_err());
+    }
+
+    #[test]
+    fn export_dir_alone_and_shrink_alone_still_parse() {
+        assert!(parse(&args(&["--seeds", "1-2", "--export-dir", "records"])).is_ok());
+        assert!(parse(&args(&["--shrink", "1:0"])).is_ok());
     }
 }

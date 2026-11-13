@@ -280,6 +280,17 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   layouts; the macro's array layouts checked against Rust's `size_of`/`align_of`/`offset_of!`. The re-check
   caught `testdata/array` without `* -text` (a CRLF checkout would have broken the stored hashes); fixed. 31
   main gates green, ending 17:52Z on 2026-11-12 (pin 446/46).
+- m9.g1 (merge `6c875d6`; Opus review MERGE AFTER FIXES 1/4/7, re-check MERGE): traits with static dispatch. A
+  trait whose methods have a receiver and no body lowers to a Slang `interface`, each `impl T for S` (a module
+  struct or field-less enum) to an `extension S : T`; method calls and the path forms `T::m(&s, a)`, `T::m(s, a)`,
+  `<S as T>::m(..)` are accepted (path calls rewritten to `s.m(a)` for validation and Slang only; the CPU twin keeps
+  them). Default bodies, associated items, supertraits, generic traits, `&mut self` on an enum (GUST-E0124), a
+  receiver that is not a place (E0126), `dyn`/`impl Trait`/a trait as a type (E0218, new) are refused by name.
+  Argument order matches Rust on slangc 2026.21 (a by-value `self` copied first, then left to right; `Mix::mix`
+  gives (x+1)*1000+12, the wrong order +21). Evidence: fixture `traits.rs` with golden Slang and SPIR-V, the GPU
+  test `m9_traits.rs` with hand-written values on the RTX 5090 and the twin (an inherent method calling trait
+  methods, array parameters, tuple results), a UI fixture per refusal. No existing golden changed. 31 main gates green,
+  ending 23:18Z on 2026-11-12 (pin 448/47).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -556,6 +556,8 @@ test module; do not mix that mechanical move with behavior changes.
   atomic_add(&mut ctr[0], 10u32)` on the same cell: Slang takes the index's atomic first, Rust the value's;
   E0421's mutating-call search sees module methods only, not atomics (contrived and racy across invocations;
   refuse an atomic in both the index and the value, or record it).
+- m9.g1 nits: a garbled comment on `pack_both` in tests/fixtures/traits.rs; `tests/ui/trait-enum-mut-self/
+  expected.txt` matches a prefix only. Review N4-N6 (plans/m9/review-m9g1-opus.md) left as reasoned there.
 - m9.pa nits: the array testdata records are pinned by key and layouts, not byte for byte, and `check-precompiled`
   does not regenerate them; a struct with tail padding after an array gets no macro layout (the fill supplies it).
 - m9.r2a re-check 2 nits: the component-name exemption of the E0811 array comparison takes any 1 to 4 letters of

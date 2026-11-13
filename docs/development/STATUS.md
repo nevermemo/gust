@@ -311,6 +311,16 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
 - m9.rt1 (spike, never merged): GO WITH CHANGES (D174). Slang's own SPIR-V through wgpu passthrough, with explicit
   guards and dense bindings, gives Rust's values where naga's WGSL path hits the D168/D169 NVIDIA defect.
   plans/m9/spike-rt1.md has the measurements; slice m9.rt2 builds the opt-in feature.
+- m9.rt2 (merge `0e05776`; Opus review MERGE AFTER FIXES 1/4/6, re-check MERGE): the SPIR-V route as the opt-in
+  Cargo feature `spirv-route` on gust-compute-wgpu (forwarded by `gust` and `gust-macros`), off by default (D172,
+  D174, D175). Vulkan only, with the fallback reasons recorded in `route_events()`; guards always on with the
+  route (index clamp, the div/rem helpers); sparse bindings densified; workgroup memory zeroed by a loop and a
+  barrier (the Vulkan extension is unusable: slangc refuses a groupshared initializer, E30623), cost within noise
+  on both GPUs. Evidence: route-on suites 466 passed on the RTX 5090 and the Radeon 890M; `check-difftest` with
+  `GUST_SPIRV_ROUTE=1` asserts every build took SPIR-V (128/128 dev, 2/2 short-circuit, 128/128 subgroups);
+  route-only goldens for reduce, scan and compact; a non-blocking CI job. The default route's Slang, WGSL and
+  goldens are unchanged. 37 lane gates (31 plus 6 route-on) green on 2026.22 ending 18:24Z on 2026-11-13
+  (pin 452/49); the merge adds only main's records docs, and docs-check, lint and check-arch passed on it.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

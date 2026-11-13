@@ -561,6 +561,12 @@ test module; do not mix that mechanical move with behavior changes.
 - A check that every committed compiler tag (`compiler`, `slang` fields of the reflection documents and manifests)
   equals `SLANG_PIN`; m9.p's regeneration script does it by hand (examples/subgroup-reduce was missed: check-artifacts
   skips example artifacts).
+- m9.rt2 nits: `spirv_route.rs` header still calls the feature-off build an empty test target; `check-difftest`
+  ignores a failed delete of an old route log (`let _ = fs::remove_file`), so stale lines could pass the all-SPIR-V
+  check: fail instead; the DX12 fallback test always returns early because the workspace builds wgpu with Vulkan
+  only (say so, or enable DX12 in a test-only build); route-log lines can tear across threads (a false failure,
+  never a false pass: buffer each line); SEMANTICS's binding sentence and two other doc imprecisions (review R5);
+  three lines over 120 columns.
 - m9.g2 nits: DIAGNOSTICS's E0121 entry still says a generic method is E0114 (a generic inherent method with a
   receiver is accepted); README's generics row should say at least one module trait is required; SEMANTICS's E0328
   sentence should name the id types and say a parameter named like a trait reports E0218 first; the order prose

@@ -70,12 +70,12 @@ use closure_gen::{ArgBias, Cl};
 /// resource, `i` or `return`; no capture, `move`, closure value, untyped, unit or nested closure is generated. The
 /// older spaces decode as in format 11 (their pins are read with their own stamp); the batch cut is new.
 ///
-/// 13: traits and generic helpers (slice m9.d2, D166, D170): a seed's batch is three float, four vector, one method, one
-/// enum, one value, two array, two closure and two trait programs. A trait program (`Space::Trait`, attempts from
+/// 13: traits and generic helpers (slice m9.d2, D166, D170): a seed's batch is two float, three vector, one method, two
+/// enum, two value, two array, two closure and two trait programs. A trait program (`Space::Trait`, attempts from
 /// `TRAIT_ATTEMPT_BASE`) is an enum program (no floats, tuples, arrays or closures) that also declares one to three
 /// module traits `Tr<n>` (one or two methods `t<n>m<k>` with a receiver and scalar parameters), each method
 /// implemented by exactly two structs or field-less enums, calls them (`s.m(a)`, `Tr::m(&s, a)`,
-/// `<S as Tr>::m(&s, a)`) and declares generic helpers `fn g<T: Tr0 + Tr1, U>(t: T, ..) -> ..` (inline or `where`
+/// `<S as Tr>::m(&s, a)`) and declares generic helpers and struct methods `fn g<T: Tr0 + Tr1, U>(t: T, ..) -> ..` (inline or `where`
 /// bounds, every parameter bounded by one or two module traits, `Copy` sometimes added) called with at least two
 /// different types. No turbofish, std bound, arithmetic on `T`, generic trait method, recursion, array or
 /// barrier/atomic/subgroup operation is generated. The older spaces decode as in format 12; the batch cut is new.
@@ -124,10 +124,10 @@ pub const VECTOR_ATTEMPT_BASE: u64 = 1_000_000;
 pub const METHOD_ATTEMPT_BASE: u64 = 2_000_000;
 /// In-domain programs of a seed's batch that are scalar (the float space), then vector, then method
 /// (`PROGRAMS_PER_SEED` in all).
-pub const SCALAR_PROGRAMS_PER_SEED: usize = 3;
-pub const VECTOR_PROGRAMS_PER_SEED: usize = 4;
+pub const SCALAR_PROGRAMS_PER_SEED: usize = 2;
+pub const VECTOR_PROGRAMS_PER_SEED: usize = 3;
 pub const METHOD_PROGRAMS_PER_SEED: usize = 1;
-pub const ENUM_PROGRAMS_PER_SEED: usize = 1;
+pub const ENUM_PROGRAMS_PER_SEED: usize = 2;
 pub const ARRAY_PROGRAMS_PER_SEED: usize = 2;
 pub const CLOSURE_PROGRAMS_PER_SEED: usize = 2;
 pub const TRAIT_PROGRAMS_PER_SEED: usize = 2;
@@ -1610,7 +1610,7 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         ty = Ty::U32;
     }
     // The closure space wants an integer result: the probe calls join it with a `^` that every path evaluates.
-    if (g.closures || g.traits) && ty == Ty::Bool && g.b.chance(70) {
+    if (g.closures && ty == Ty::Bool && g.b.chance(70)) || (g.traits && ty == Ty::Bool) {
         ty = Ty::U32;
     }
     if g.methods {
@@ -2380,7 +2380,7 @@ impl Gen<'_> {
         };
         for (slot, (_, ty)) in def.params.iter().enumerate() {
             match ty {
-                scalar if trait_root.is_some() && self.b.chance(65) => {
+                scalar if trait_root.is_some() && self.b.chance(80) => {
                     let root = trait_root.expect("a root");
                     let call = self.root_call(*scalar, root, depth.saturating_sub(1));
                     args.push(call.unwrap_or_else(|| self.expr(*scalar, depth)));
@@ -2930,7 +2930,13 @@ impl Gen<'_> {
         });
         // A trait impl weighs its integer parameters into an integer result, so that the order of two arguments shows.
         let tail = if forced.is_some() {
-            tail.map(|t| self.weight_params(t, &params))
+            tail.map(|t| {
+                let t = self.weight_params(t, &params);
+                match owner {
+                    Some(j) if recv != Recv::None => self.weight_self(t, j),
+                    _ => t,
+                }
+            })
         } else {
             tail
         };
@@ -4394,7 +4400,8 @@ mod tests {
         let mut loop_accumulators = 0;
         let mut float_outputs = 0;
         let mut float_to_int = 0;
-        for seed in 1..=16 {
+        // 24 seeds: the batch holds two float programs since format 13 (48 of them, as three per seed over 16 seeds before).
+        for seed in 1..=24 {
             for program in generate_batch(seed).unwrap().programs {
                 for (key, count) in operator_counts(&program) {
                     *total.entry(key).or_default() += count;

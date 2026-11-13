@@ -381,6 +381,8 @@ struct Counting {
     /// `&&` and `||` evaluations whose right operand was evaluated, and whose right operand was skipped.
     rhs_evaluated: u64,
     rhs_skipped: u64,
+    /// (generic function, type bound to its first type parameter) of every generic call that ran.
+    instantiations: std::collections::BTreeSet<(usize, String)>,
 }
 
 const KIND_UNARY: u8 = 0;
@@ -1037,6 +1039,9 @@ impl Machine<'_> {
                 // The wrong model: the first instantiation's specialisation serves every later call.
                 bind = *self.first_bind.entry(f).or_insert(bind);
             }
+            if let (Some(coverage), Some(t)) = (self.coverage.as_mut(), bind[0]) {
+                coverage.instantiations.insert((f, format!("{t:?}")));
+            }
         }
         // The arguments of a borrowing call (`&self`, `&mut self`) must not change the receiver, or the copy-in and
         // copy-out model of this interpreter would differ from Rust's references (the generator and `ast::Check`
@@ -1568,6 +1573,17 @@ pub struct Coverage {
     pub if_both_sides: u64,
     pub rhs_evaluated: u64,
     pub rhs_skipped: u64,
+    /// The (generic function, type bound to its first type parameter) pairs some call executed.
+    pub instantiations: std::collections::BTreeSet<(usize, String)>,
+}
+
+impl Coverage {
+    /// Whether some generic function ran with two different types bound to its first type parameter.
+    pub fn two_instantiations(&self) -> bool {
+        self.instantiations
+            .iter()
+            .any(|(f, t)| self.instantiations.iter().any(|(g, u)| g == f && u != t))
+    }
 }
 
 /// `run_full` with a deliberately wrong `match` evaluation (the mutation checks of slice m9.d1b).
@@ -1704,6 +1720,7 @@ fn run_machine(
                     .sum::<u64>(),
             rhs_evaluated: counting.rhs_evaluated,
             rhs_skipped: counting.rhs_skipped,
+            instantiations: counting.instantiations,
             ..Coverage::default()
         };
         for ((kind, head, tail), n) in counting.operators {

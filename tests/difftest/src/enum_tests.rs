@@ -450,14 +450,14 @@ fn the_emitted_text_of_the_hand_program_has_the_enum_forms() {
 }
 
 #[test]
-fn the_enum_space_is_selected_by_its_attempt_numbers_and_the_batch_cut_is_three_four_one_one_one_two_two_two()
+fn the_enum_space_is_selected_by_its_attempt_numbers_and_the_batch_cut_is_two_three_one_two_two_two_two_two()
  {
     assert_eq!(space_of_attempt(METHOD_ATTEMPT_BASE), Space::Method);
     assert_eq!(space_of_attempt(ENUM_ATTEMPT_BASE - 1), Space::Method);
     assert_eq!(space_of_attempt(ENUM_ATTEMPT_BASE), Space::Enum);
     assert_eq!(space_of_attempt(VALUE_ATTEMPT_BASE - 1), Space::Enum);
     assert_eq!(space_of_attempt(VALUE_ATTEMPT_BASE), Space::Value);
-    assert_eq!(ENUM_PROGRAMS_PER_SEED, 1);
+    assert_eq!(ENUM_PROGRAMS_PER_SEED, 2);
     for seed in 1..=3 {
         let batch = generate_batch(seed).unwrap();
         assert_eq!(batch.programs.len(), PROGRAMS_PER_SEED);

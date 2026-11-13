@@ -11,8 +11,12 @@ use crate::ast::{
     BinOp, Expr, FnDef, GenParam, Imp, InputBuf, Methods, Place, Program, Recv, Stmt, StructDef,
     TRet, TraitDef, TraitMethod, Ty, operator_counts,
 };
-use crate::ast::{GENERIC_CALL, SHAPE_GENERIC_ARGS_ROOT, SHAPE_TRAIT_ARGS_ROOT, TRAIT_CALL};
-use crate::generator::{Space, TRAIT_ATTEMPT_BASE, generate_batch_in};
+use crate::ast::{
+    GENERIC_CALL, GENERIC_METHOD_CALL, SHAPE_GENERIC_ARGS_ROOT, SHAPE_GENERIC_VALUE_SOURCE,
+    SHAPE_MUT_THROUGH_PARAM, SHAPE_PARAM_ARGS_SELF_ROOT, SHAPE_TRAIT_ARGS_ROOT,
+    SHAPE_TRAIT_VALUE_SELF, TRAIT_CALL,
+};
+use crate::generator::{Space, TRAIT_ATTEMPT_BASE, TRAIT_PROGRAMS_PER_SEED, generate_batch_in};
 use crate::interp::{Mutant, env_mutant, run, run_covered, run_mutant};
 
 const S0: Ty = Ty::Struct(0);
@@ -360,71 +364,201 @@ fn the_argument_shapes_count_where_calls_on_one_root_are_arguments() {
     }
 }
 
+/// The trait programs of the batches of `seeds` (the two a seed's batch holds, which are the first two of the trait
+/// space of that seed).
+fn batch_programs(seeds: std::ops::RangeInclusive<u64>) -> Vec<Program> {
+    let mut out = Vec::new();
+    for seed in seeds {
+        let batch = generate_batch_in(Space::Trait, seed).unwrap();
+        out.extend(batch.programs.into_iter().take(TRAIT_PROGRAMS_PER_SEED));
+    }
+    out
+}
+
+/// The trait programs of a seed's batch are the first two of its trait space.
+#[test]
+fn the_batch_holds_the_first_two_programs_of_the_trait_space() {
+    for seed in 1..=2 {
+        let batch = crate::generator::generate_batch(seed).unwrap();
+        let space = generate_batch_in(Space::Trait, seed).unwrap();
+        let tail = &batch.programs[batch.programs.len() - TRAIT_PROGRAMS_PER_SEED..];
+        assert_eq!(
+            tail,
+            &space.programs[..TRAIT_PROGRAMS_PER_SEED],
+            "seed {seed}"
+        );
+    }
+}
+
 /// The 64-seed trait space: every program has a trait call and a generic call, holds no array (so no trait or generic
-/// body holds one, and the D168/D169 guard has nothing to guard), and over the space the generic helpers are called
-/// with many different types.
+/// body holds one, and the D168/D169 guard has nothing to guard).
 #[test]
 fn the_trait_space_has_trait_and_generic_calls_and_no_array() {
-    let mut instantiations = std::collections::BTreeSet::new();
     let mut programs = 0;
     for seed in 1..=64 {
         for p in generate_batch_in(Space::Trait, seed).unwrap().programs {
             programs += 1;
             assert!(p.attempt >= TRAIT_ATTEMPT_BASE);
-            assert!(p.methods.has_traits() && p.has_trait_forms());
+            assert!(p.methods.has_traits());
             assert!(!p.has_array() && !p.has_closure() && !p.has_float());
-            let counts = operator_counts(&p);
-            assert!(counts.contains_key(TRAIT_CALL) && counts.contains_key(GENERIC_CALL));
-            crate::ast::visit_exprs(&p, &mut |e| {
-                if let Expr::Call { f, args, .. } = e
-                    && !p.methods.fns[*f].gens.is_empty()
-                {
-                    for (a, (_, pty)) in args.iter().zip(&p.methods.fns[*f].params) {
-                        if matches!(pty, Ty::Param(_)) {
-                            instantiations.insert((seed, *f, a.ty()));
-                        }
-                    }
-                }
-            });
         }
     }
     assert_eq!(programs, 64 * 16);
-    assert!(
-        instantiations.len() > programs / 2,
-        "{} instantiations",
-        instantiations.len()
-    );
 }
 
-/// Each mutant changes generated programs, not only the hand vectors (counts printed as `TRAIT-MUTANT`).
+/// The types bound to the first type parameter of one function by the calls in the text of `p`, by function.
+fn written_instantiations(
+    p: &Program,
+) -> std::collections::BTreeMap<usize, std::collections::BTreeSet<String>> {
+    let mut out: std::collections::BTreeMap<usize, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    crate::ast::visit_exprs(p, &mut |e| {
+        if let Expr::Call { f, args, .. } = e {
+            let def = &p.methods.fns[*f];
+            if def.gens.is_empty() {
+                return;
+            }
+            for (a, (_, pty)) in args.iter().zip(&def.params) {
+                if *pty == P0 {
+                    out.entry(*f).or_default().insert(format!("{:?}", a.ty()));
+                }
+            }
+        }
+    });
+    out
+}
+
+/// M3: every trait program of the batch (seeds 1 to 64) calls one generic helper with two different implementing types
+/// in the text and when it runs, and executes a trait call and a generic call.
+#[test]
+fn every_trait_program_runs_one_generic_function_with_two_types() {
+    let programs = batch_programs(1..=64);
+    assert_eq!(programs.len(), 64 * TRAIT_PROGRAMS_PER_SEED);
+    let (mut no_text, mut no_run, mut no_trait, mut no_generic) = (0, 0, 0, 0);
+    for p in &programs {
+        no_text += usize::from(!written_instantiations(p).values().any(|t| t.len() >= 2));
+        let (_, coverage) = run_covered(p).unwrap();
+        no_run += usize::from(!coverage.two_instantiations());
+        no_trait += usize::from(coverage.operators.get(TRAIT_CALL).copied().unwrap_or(0) == 0);
+        no_generic += usize::from(coverage.operators.get(GENERIC_CALL).copied().unwrap_or(0) == 0);
+    }
+    eprintln!(
+        "TRAIT-TWO-TYPES: {} programs, without two types in the text {no_text}, when run {no_run}; executing no trait call {no_trait}, no generic call {no_generic}",
+        programs.len()
+    );
+    assert_eq!((no_text, no_run, no_trait, no_generic), (0, 0, 0, 0));
+}
+
+/// The order shapes and the generic method, written in the text and executed, over the trait programs of the batches of
+/// seeds 1 to 4 and of seeds 1 to 64 (printed as `TRAIT-SHAPE`; floors on the 64).
+const SHAPES: [(&str, usize, usize); 8] = [
+    (GENERIC_METHOD_CALL, 8, 0),
+    (SHAPE_TRAIT_ARGS_ROOT, 10, 0),
+    (SHAPE_GENERIC_ARGS_ROOT, 15, 0),
+    (SHAPE_TRAIT_VALUE_SELF, 25, 1),
+    (SHAPE_GENERIC_VALUE_SOURCE, 25, 1),
+    (SHAPE_MUT_THROUGH_PARAM, 1, 0),
+    (SHAPE_PARAM_ARGS_SELF_ROOT, 2, 0),
+    (GENERIC_CALL, 100, 8),
+];
+
+#[test]
+fn the_order_shapes_and_generic_methods_are_written_and_executed_in_the_batch_programs() {
+    let programs = batch_programs(1..=64);
+    let mut missing = Vec::new();
+    for (name, floor, floor_4) in SHAPES {
+        let (mut written, mut executed) = ([0usize; 2], [0usize; 2]);
+        for (n, p) in programs.iter().enumerate() {
+            let text = operator_counts(p).get(name).copied().unwrap_or(0);
+            let (_, coverage) = run_covered(p).unwrap();
+            let ran = coverage.operators.get(name).copied().unwrap_or(0);
+            for (k, limit) in [(0, 8), (1, programs.len())] {
+                if n < limit {
+                    written[k] += usize::from(text > 0);
+                    executed[k] += usize::from(ran > 0);
+                }
+            }
+        }
+        eprintln!(
+            "TRAIT-SHAPE {name}: seeds 1 to 4: {} written, {} executing; seeds 1 to 64: {} written, {} executing",
+            written[0], executed[0], written[1], executed[1]
+        );
+        if written[1] < floor
+            || executed[1] < floor
+            || written[0] < floor_4
+            || executed[0] < floor_4
+        {
+            missing.push(format!(
+                "{name}: {} written, {} executing (seeds 1 to 64), {} and {} (seeds 1 to 4)",
+                written[1], executed[1], written[0], executed[0]
+            ));
+        }
+    }
+    assert!(missing.is_empty(), "{missing:?}");
+}
+
+/// The shapes count only where their value is observed: a statement call through `T` is followed by a read of the `T`
+/// (the generator changes a `T` only when it reads or returns it), and the counted arguments are integer arguments of
+/// a function with an integer result.
+#[test]
+fn a_changed_type_parameter_is_read_or_returned() {
+    for p in batch_programs(1..=64) {
+        for def in &p.methods.fns {
+            let mut changed = Vec::new();
+            for stmt in &def.body {
+                if let Stmt::Call {
+                    recv: Some(place), ..
+                } = stmt
+                    && matches!(place.root_ty, Ty::Param(_))
+                {
+                    changed.push(place.root_ty);
+                }
+            }
+            for ty in changed {
+                let Ty::Param(g) = ty else { continue };
+                assert!(
+                    def.ret == Some(ty)
+                        || crate::ast::generic_reads(&p.methods, def, usize::from(g)),
+                    "a type parameter changed and never read"
+                );
+            }
+        }
+    }
+}
+
+/// How many of `programs` each trait mutant changes (the right result differs from the mutated one), printed as
+/// `TRAIT-MUTANT` and compared with the floors.
+fn mutant_changes(programs: &[Program], mutant: Mutant) -> usize {
+    programs
+        .iter()
+        .filter(|p| {
+            let mutated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_mutant(p, mutant).ok().map(|r| r.values)
+            }));
+            mutated.is_ok_and(|values| run(p).ok() != values)
+        })
+        .count()
+}
+
+/// Each mutant changes generated programs, not only the hand vectors: counted on the 128 batch programs of seeds 1 to
+/// 64 and on the 8 of seeds 1 to 4 (the programs the GPU runs).
 #[test]
 fn the_trait_mutants_change_generated_programs() {
-    let mut space = Vec::new();
-    for seed in 1..=64 {
-        space.extend(generate_batch_in(Space::Trait, seed).unwrap().programs);
-    }
-    let changes = |p: &Program, mutant| {
-        let mutated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_mutant(p, mutant).ok().map(|r| r.values)
-        }));
-        mutated.is_ok_and(|values| run(p).ok() != values)
-    };
+    let programs = batch_programs(1..=64);
     let mut failures = Vec::new();
-    for (mutant, floor) in [
-        (Mutant::TraitWrongImpl, 120),
-        (Mutant::GenericReuse, 25),
-        (Mutant::TraitArgsRightToLeft, 50),
+    for (mutant, floor_64, floor_4) in [
+        (Mutant::TraitWrongImpl, 15, 1),
+        (Mutant::GenericReuse, 15, 1),
+        (Mutant::TraitArgsRightToLeft, 30, 1),
     ] {
-        let n = space.iter().filter(|p| changes(p, mutant)).count();
-        let first_four = space[..64].iter().filter(|p| changes(p, mutant)).count();
+        let n64 = mutant_changes(&programs, mutant);
+        let n4 = mutant_changes(&programs[..8], mutant);
         eprintln!(
-            "TRAIT-MUTANT {mutant:?}: changes {n} of {} space programs, {first_four} of the 64 of seeds 1 to 4",
-            space.len()
+            "TRAIT-MUTANT {mutant:?}: changes {n64} of {} batch programs of seeds 1 to 64, {n4} of 8 of seeds 1 to 4",
+            programs.len()
         );
-        if n < floor || first_four == 0 {
-            failures.push(format!(
-                "{mutant:?}: {n} in the space, {first_four} in seeds 1 to 4"
-            ));
+        if n64 < floor_64 || n4 < floor_4 {
+            failures.push(format!("{mutant:?}: {n64} of 128, {n4} of 8"));
         }
     }
     assert!(failures.is_empty(), "{failures:?}");

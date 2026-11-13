@@ -980,6 +980,34 @@ pub const SHAPE_MUT_THROUGH_PARAM: &str = "shape &mut self through a type parame
 pub const SHAPE_PARAM_ARGS_SELF_ROOT: &str =
     "shape call through a type parameter, arguments call the receiver's root";
 
+/// The arguments of a call of `def` whose values reach its result in the order the call gives them: the integer ones
+/// of a function with an integer result.
+fn observed_args<'a>(def: &FnDef, args: &'a [Expr]) -> Vec<&'a Expr> {
+    if !def.ret.is_some_and(Ty::is_int) {
+        return Vec::new();
+    }
+    args.iter()
+        .zip(&def.params)
+        .filter(|(_, (_, ty))| ty.is_int())
+        .map(|(arg, _)| arg)
+        .collect()
+}
+
+/// Whether the body of the generic `def` reads the `T` of its type parameter `g` through an integer method (the last
+/// parameter may be consumed by a by-value method, the others only with `Copy`): the generator folds that read into
+/// every integer result.
+pub fn generic_reads(methods: &Methods, def: &FnDef, g: usize) -> bool {
+    let Some(gp) = def.gens.get(g) else {
+        return false;
+    };
+    let by_value = gp.copy || g + 1 == def.gens.len();
+    gp.bounds.iter().any(|&tr| {
+        methods.traits[usize::from(tr)].methods.iter().any(|m| {
+            matches!(m.ret, TRet::Ty(t) if t.is_int()) && (by_value || m.recv != Recv::Value)
+        })
+    })
+}
+
 /// The trait and generic names (constructs and shapes) of a call of function `f` with receiver `recv` and `args`.
 pub fn trait_call_names(
     methods: &Methods,
@@ -989,9 +1017,12 @@ pub fn trait_call_names(
 ) -> Vec<&'static str> {
     let def = &methods.fns[f];
     let mut names = Vec::new();
+    // The arguments whose values reach the result: the integer ones of a function with an integer result (the impls
+    // and generic functions weigh them, in the order given, into it).
+    let observed = observed_args(def, args);
     let twice = || {
         let mut roots: Vec<Root> = Vec::new();
-        for arg in args {
+        for arg in observed.iter().copied() {
             let mut found = Vec::new();
             mutating_roots(methods, arg, &mut found);
             found.sort_by_key(|r| format!("{r:?}"));
@@ -1010,17 +1041,23 @@ pub fn trait_call_names(
             }
             if matches!(place.root_ty, Ty::Param(_)) {
                 names.push(THROUGH_PARAM);
-                if def.recv == Recv::Mut {
+                // A statement `c.m(..)` that changes the `T` the body reads afterwards (the generator changes a `T`
+                // only when it reads or returns it).
+                if def.recv == Recv::Mut && def.ret.is_none() {
                     names.push(SHAPE_MUT_THROUGH_PARAM);
                 }
-                if args
+                if observed
                     .iter()
                     .any(|a| contains_mut_call_on(methods, a, Root::SelfV))
                 {
                     names.push(SHAPE_PARAM_ARGS_SELF_ROOT);
                 }
             }
+            // A by-value struct impl reads its fields into its integer result: a copy taken after the argument ran
+            // would show.
             if def.recv == Recv::Value
+                && def.owner.is_some()
+                && def.ret.is_some_and(Ty::is_int)
                 && args
                     .iter()
                     .any(|a| contains_mut_call_on(methods, a, place.root))
@@ -1065,10 +1102,14 @@ pub fn trait_call_names(
         let source = args.iter().enumerate().any(|(i, arg)| {
             let root = match arg {
                 Expr::Var(v, Ty::Struct(_)) => Some(Root::Var(*v)),
-                Expr::Read { place, ty: Ty::Struct(_) } => Some(place.root),
+                Expr::Read {
+                    place,
+                    ty: Ty::Struct(_),
+                } => Some(place.root),
                 _ => None,
             };
-            matches!(def.params[i].1, Ty::Param(_))
+            matches!(def.params[i].1, Ty::Param(g) if def.ret.is_some_and(Ty::is_int)
+                    && generic_reads(methods, def, usize::from(g)))
                 && root.is_some_and(|root| {
                     args[i + 1..]
                         .iter()
@@ -2552,10 +2593,15 @@ impl Program {
         block(&self.body) || self.methods.fns.iter().any(|def| block(&def.body))
     }
 
-    /// Whether the program calls a trait method and a generic function (a trait program without both tests nothing new).
+    /// Whether the program, when it runs, calls a trait method and a generic function, and one generic function with
+    /// two different types bound to its first type parameter (a trait program without these tests nothing new). A
+    /// program outside the domain passes: its discard reason is the domain one.
     pub fn has_trait_forms(&self) -> bool {
-        let counts = operator_counts(self);
-        counts.contains_key(TRAIT_CALL) && counts.contains_key(GENERIC_CALL)
+        let Ok((_, coverage)) = crate::interp::run_covered(self) else {
+            return true;
+        };
+        let ran = |name: &str| coverage.operators.get(name).copied().unwrap_or(0) > 0;
+        ran(TRAIT_CALL) && ran(GENERIC_CALL) && coverage.two_instantiations()
     }
 
     /// Whether the program binds a closure and calls one (a closure program without both tests nothing new).

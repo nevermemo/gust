@@ -1552,36 +1552,64 @@ harness.
 
 ## Traits and generics (format 13, slice m9.d2)
 
-`DIFFTEST_FORMAT` is 13. A batch is three float, four vector, one method, one enum, one value, two array, two closure and
-two trait programs (16 in all). The cut was three float, four vector, one method, two enum, two value, two array and two
-closure programs before; the trait space takes one enum and one value slot, because the older spaces' calibrated tests
-(float corpus, vector batches) are tied to their slot counts. The trait space (`Space::Trait`, attempts from 7 000 000)
-is the enum space (structs, enums, methods, `match`, `return`; no floats, tuples, arrays, closures or value `match`) plus
-the module traits of m9.g1 and the generic helpers of m9.g2 (D166, D170). Older spaces decode as before: the format 1 to
-12 pins hold, each read with its own stamp (the closure pin is now read as format 12), and the format 13 pin is the trait
-space of seeds 1 to 4 (`corpus`). Mismatches are compiler bugs (D163); an order difference is never a D39 note.
+`DIFFTEST_FORMAT` is 13. A batch is two float, three vector, one method, two enum, two value, two array, two closure and
+two trait programs (16 in all). The trait space (`Space::Trait`, attempts from 7 000 000) is the enum space (structs,
+enums, methods, `match`, `return`; no floats, tuples, arrays, closures or value `match`) plus the module traits of m9.g1
+and the generic helpers and methods of m9.g2 (D166, D170). Older spaces decode as before: the format 1 to 12 pins hold,
+each read with its own stamp (the closure pin is now read as format 12), and the format 13 pin is the trait space of
+seeds 1 to 4 (`corpus`). Mismatches are compiler bugs (D163); an order difference is never a D39 note.
+
+**The cut (S3 of the Opus review).** The trait slots come from the float and vector slots, as the plan said, not from
+the enum and value slots (a first draft took those, which halved the tuple compound-set programs on the GPU). Cost:
+the float batch programs fall from 3 to 2 a seed and the vector ones from 4 to 3. Two calibrated tests were
+recalibrated and no other: the float corpus test reads 24 seeds (48 float programs, as 3 over 16 seeds before; with 32
+programs `> f32` was not written), and the vector tests: the 64-seed batch writes 62 of the 72 writable vector forms
+(67 in format 12; the ten not written are `* IVec2 i32`, `* Mat4 f32`, `* UVec4 UVec4`, `* f32 Mat2`, `* f32 Mat4`,
+`+ UVec2 UVec2`, `- Mat2 Mat2`, `- Mat4 Mat4`, `- UVec2 UVec2`, `- UVec4 UVec4`; the floor is 62), and the 20-form test
+reads seeds 1 to 20 (60 vector programs; `new UVec4` was not written within 11). The older spaces' shape rows on the
+GPU batch are not lower than in the format 12 wide run: of the 88 rows of that run's report, none has 10 % fewer programs
+now (the trait programs add to the enum rows), and the tuple rows that the first draft halved are as before (tuple
+compound set of an element field 7 programs, of an element 38).
 
 **Program space.** `pub trait Tr<n>` (one to three per program) has one or two methods `t<n>m<k>` with a receiver
 (`&self`, `&mut self` or `self`), up to two scalar parameters and no body; the result is nothing (only `&mut self`), a
-scalar or `Self` (only `self`). Every method is implemented by exactly two module types, structs or field-less enums, and
-a `&mut self` method only by structs (E0124); an enum impl takes `self` by value and reads it as a value. A struct impl is
-an ordinary method of its struct, so every rule about `&mut self` roots and borrows applies to it. Calls: `s.t0m1(a)`,
-`Tr0::t0m1(&s, a)` and `<S1 as Tr0>::t0m1(&s, a)` (`Expr::PathCall`, 40 % of the shared or by-value trait calls on a
-local place; never `&mut` receivers, since `Tr::m(&mut v, args)` has no two-phase borrow, and never a bare `self`). Generic
-helpers `fn g<T: Tr0 + Tr1 + Copy, U: Tr2>(t: T, u: U, a: u32) -> R` have one or two type parameters, one or two
-module-trait bounds each, inline or in a `where` clause, `Copy` half of the time and never alone. A call instantiates
-each parameter with a type that implements every bound, preferring a type the helper has not been called with, so two
-types appear over a program. Results of impl and generic calls are folded into the kernel result, and the impl bodies
-weight their parameters, so an argument order or a wrong impl shows in the output.
+scalar or `Self` (only `self`). Every method is implemented by exactly two module types, structs or field-less enums,
+and a `&mut self` method only by structs (E0124); an enum impl takes `self` by value and reads it as a value. A struct
+impl is an ordinary method of its struct, so every rule about `&mut self` roots and borrows applies to it. An impl with
+an integer result folds its integer parameters in (each `& 255`, times `2k + 1`) and, for a struct, its integer fields,
+so that the order of the arguments, a wrong impl and a copy of `self` taken before an argument ran all reach the result.
+Calls: `s.t0m1(a)`, `Tr0::t0m1(&s, a)` and `<S1 as Tr0>::t0m1(&s, a)` (`Expr::PathCall`, 40 % of the shared or by-value
+trait calls on a local place). Generic functions `fn g<T: Tr0 + Tr1 + Copy, U: Tr2>(t: T, u: U, a: u32) -> R` have one or
+two type parameters, one or two module-trait bounds each, inline or in a `where` clause, `Copy` half of the time and never
+alone. A generic function is a helper, or (40 %, never the first) a method of a struct, `&self` or `&mut self`, whose
+body may also call the receiver and whose arguments often change it. Its body copies each `T` (`let mut c: T = t;`),
+calls trait methods through the copies (a statement that changes a `T` is written only when the body reads or returns
+that `T` afterwards), and returns an integer or (helpers only) a `T`. An integer result folds in one integer read of
+every `T`, every integer `let` of the body, the weighted integer parameters and, for a method, the weighted integer
+fields of `self`; a generic function with an integer result is the form whose arguments' order shows.
 
-**By construction, not generated:** a turbofish, a std bound, arithmetic on `T`, a generic trait method, recursion, a
-type parameter without a module-trait bound, a path call on a `T` or an element, a default method body, a barrier, atomic
-or subgroup operation (the space has none). Parameters are named `T` and `U`, never a built-in id type. The two impls of
-a trait method sit side by side in the function table and both are drawn with the index of the first as their call
-limit, and a generic helper sits above every impl, so the by-name call graph (D162) is acyclic.
+**Two instantiations per program (M3).** The trait probes that join the kernel's result always include one generic
+helper with an integer result called once with each of two different implementing types for its first type parameter, and
+at least one trait-impl call. All probes are integer-valued and joined with `^`, so none is dropped or short-circuited (a
+trait program's result is never `bool`; a `bool` impl result is not probed). `has_trait_forms` now runs the program
+(`Coverage::instantiations`): a program is kept only if it executes a trait call, a generic call and one generic function
+with two types. The trait space reports its own attempts (`difftest-gen stats`): seeds 1 to 64 took 841 attempts for 128
+programs; the discards were overflow 344, static 199, no-match 74, division-by-zero 29, index 23, no-trait 19,
+shift-amount 16, no-input-read 7, min-over-minus-one 2. Every one of the 128 batch programs has the two types in the text
+and when run (`every_trait_program_runs_one_generic_function_with_two_types`), executes a trait call and executes a
+generic call: 0 programs without.
 
-**Hole guard (D168, D169).** The trait space has no arrays, so the array-hole rows have no trait program to fire on; the
-guard is the space itself.
+**Refused by the compiler (not written, by construction):** a turbofish, a std bound, a bound-less or only-`Copy` type
+parameter (E0125), a type parameter named like an id type (E0328, the parameters are `T` and `U`), a generic trait
+method, recursion, a `&mut self` method implemented by an enum (E0124), a `T` used by value twice without `Copy`, a path
+call `Tr::m(&mut v, ..)` (E0503: no two-phase borrow) and a path call on a bare `self`. A generic method returning `T`
+is refused by `Program::check` (not generated).
+
+**Accepted but not generated:** generic methods of enums (and the `&self`-only enum case the review names); path calls on
+a `T` or an element, and with `&mut`; trait parameters and results that are not scalars (P16: `float[4]`, tuples,
+structs); a `T` with an array field (P12) and any array (D168/D169: the trait space has none, so there is nothing for the
+hole guard to guard; this is a coverage hole of what g1 and g2 accept, not a guard); floats; a default method body; a
+barrier, atomic or subgroup operation (the space has none); more than three traits or two type parameters.
 
 **Interpreter rules** (Rust Reference, not the emitted Slang). A call of a trait method runs the impl of the receiver's
 concrete type (for a `T` receiver, the type `T` is bound to); the node's own `f` is only a name. A generic call evaluates
@@ -1589,25 +1617,51 @@ its arguments left to right, each completely, binds each type parameter to the t
 (resolved in the caller's binding), then runs the body once with that binding. A `self` or `T` taken by value is copied
 before a later argument runs; `&mut self` writes are copied back to the receiver's place.
 
-**Counted shapes** (static in text, executed): `trait call`, `trait path call`, `trait path call, qualified`, `trait call
-on an enum`, `trait call returning Self`, `trait call through a type parameter`, `generic call` (and with a two-trait
-bound, a where clause, two type parameters, returning `T`, in a generic body), and the order shapes `shape trait call
-arguments built from calls on one root`, `shape trait call, by-value self whose source an argument mutates`, and the
-generic counterparts. Seeds 1 to 64 (1024 programs, 128 of them trait programs, `dev` and `dev+subgroups`, RTX 5090):
-`trait call` 128 programs / 828 in text / 123 executing; `trait path call` 71 / 117 / 64; qualified 65 / 94 / 56; on an
-enum 94 / 221 / 84; returning `Self` 72 / 163 / 52; through a type parameter 96 / 250 / 70; `generic call` 128 / 274 / 114
-(two-trait bound 51 / 84 / 44, where clause 78 / 152 / 69, two type parameters 59 / 90 / 50, returning `T` 50 / 80 / 41,
-in a generic body 13 / 14 / 7); trait order shapes 9 / 12 / 8 and 36 / 53 / 34; generic order shapes 4 / 4 / 4 and
-13 / 16 / 12. Discards of the 64 seeds: 5466 in all, 293 of them `no-trait` (a trait attempt without a trait call and a
-generic call). Result: 1024 of 1024 programs executed, 0 mismatches, in both profiles.
+**Causal shapes (M1).** A shape is counted only in its observed form (`trait_call_names`): the argument shapes count the
+integer arguments of a function with an integer result (those are weighed into it); `shape trait call, by-value self whose
+source an argument mutates` counts a by-value struct impl with an integer result (it reads its fields); `shape generic
+call, by-value T whose source a later argument mutates` counts a generic function with an integer result that reads that
+`T`; `shape &mut self through a type parameter` counts a statement `c.m(..)` with no result, which the generator writes
+only when `c` is read or returned afterwards (`a_changed_type_parameter_is_read_or_returned`); `shape call through a type
+parameter, arguments call the receiver's root` is now reachable through generic methods of `&mut self`. Counts below are
+static (programs / in text) and executed (programs), over the 128 trait programs of seeds 1 to 64 (RTX 5090, `dev` and
+`dev+subgroups`; 1024 of 1024 programs executed, 0 mismatches in both):
 
-**Mutation checks** (`trait_tests`, `DIFFTEST_MUTANT`): `trait-wrong-impl` (the call runs the impl of the first type)
-fails `dispatch_runs_the_impl_of_the_receivers_type` alone; `generic-specialisation-reuse` (the first binding of a
-helper is reused) fails `each_instantiation_runs_with_its_own_type` alone; `trait-args-right-to-left` fails
-`trait_and_generic_arguments_run_left_to_right` alone. Each mutant also changes generated programs
-(`the_trait_mutants_change_generated_programs`: at least 120, 25 and 50 of the first 1024 programs).
+| Form | programs / in text / executing |
+| --- | --- |
+| `trait call` | 128 / 1105 / 128 |
+| `trait path call` / qualified | 76 / 128 / 68 and 78 / 115 / 73 |
+| `trait call on an enum` | 87 / 230 / 83 |
+| `trait call returning Self` | 73 / 199 / 66 |
+| `trait call through a type parameter` | 95 / 387 / 87 |
+| `generic call` | 128 / 436 / 128 |
+| two-trait bound / where clause / two type parameters | 40 / 130 / 40, 85 / 280 / 85, 50 / 146 / 50 |
+| returning `T` / in a generic body | 7 / 14 / 7, 10 / 11 / 6 |
+| `generic method call` | 23 / 37 / 23 |
+| `shape trait call arguments built from calls on one root` | 16 / 23 / 15 |
+| `shape generic call arguments built from calls on one root` | 26 / 45 / 26 |
+| `shape trait call, by-value self whose source an argument mutates` | 36 / 51 / 36 |
+| `shape generic call, by-value T whose source a later argument mutates` | 40 / 65 / 40 |
+| `shape &mut self through a type parameter` | 4 / 9 / 3 |
+| `shape call through a type parameter, arguments call the receiver's root` | 14 / 31 / 5 |
 
-**Tests.** `trait_tests` (hand vectors, mutants, shape counts, the no-array property), `corpus` (the format 13 pin;
-`seeds.txt` regenerated), `roundtrip` (`trait_programs_compile_through_the_macro_without_a_gust_diagnostic`: seeds 1 to
-12, 192 programs, `cargo check`), `classify` (`no-trait` is a discard class), `xtask` (`is_shape_row` takes the `trait `
-and `generic ` rows).
+Discards over the 64 seeds (all spaces): 5259, 19 of them `no-trait`. The batch of seeds 1 to 4 (G5; 8 trait programs):
+`generic call` 8 / 24 / 8, `generic method call` 1 / 1 / 1, `trait call` 8 / 66 / 8, the two by-value shapes 1 / 2 / 1 and
+2 / 3 / 2, the generic arguments shape 1 / 1 / 1, the trait arguments shape 1 / 1 / 0; the other two shapes are not in
+those 8 programs (8 programs are too few for shapes that 3 to 14 of 128 programs hold). The test
+`the_order_shapes_and_generic_methods_are_written_and_executed_in_the_batch_programs` asserts floors on the 64 seeds
+(and, for `generic call` and the two by-value shapes, on seeds 1 to 4).
+
+**Mutation checks** (`trait_tests`, `DIFFTEST_MUTANT`, each run on the final tree against the seven hand-vector tests
+only, `trait_tests`; the other modules' vectors that read `env_mutant` were not part of these runs): `trait-wrong-impl`
+(a concrete-receiver call runs the impl of the other implementing type; calls through a `T` are not mutated, the
+`GenericReuse` mutant covers them) fails `dispatch_runs_the_impl_of_the_receivers_type` alone; `generic-specialisation-reuse`
+(the first binding of a function serves every later call) fails `each_instantiation_runs_with_its_own_type` alone;
+`trait-args-right-to-left` fails `trait_and_generic_arguments_run_left_to_right` alone. The argument-order vectors ignore
+the wrong-impl mutant, since their two impls would otherwise fail them too.
+Each mutant also changes generated batch programs (`the_trait_mutants_change_generated_programs`, measured on the final tree, floors 15, 15 and 30 of 128 and one of 8): `trait-wrong-impl` 28 of the 128 batch programs of seeds 1 to 64 and 3 of the 8 of seeds 1 to 4 (the G5 batch), `generic-specialisation-reuse` 26 and 2, `trait-args-right-to-left` 50 and 3.
+
+**Tests.** `trait_tests` (hand vectors, mutants, shape floors, two instantiations, the no-array property),
+`corpus` (the format 13 pin; `seeds.txt` regenerated), `roundtrip` (`trait_programs_compile_through_the_macro_without_a_gust_diagnostic`:
+seeds 1 to 12, 192 programs, `cargo check`, generic methods included), `classify` (`no-trait` is a discard class), `xtask`
+(`is_shape_row` takes the `trait ` and `generic ` rows).

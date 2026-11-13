@@ -79,7 +79,7 @@ impl Gen<'_> {
                 } else {
                     Recv::Value
                 };
-                let n_params = [0, 1, 2][self.b.weighted(&[10, 30, 60])];
+                let n_params = [0, 1, 2][self.b.weighted(&[5, 25, 70])];
                 let params: Vec<Ty> = (0..n_params).map(|_| self.scalar_pick()).collect();
                 let ret = match recv {
                     Recv::Mut if self.b.chance(40) => TRet::Unit,
@@ -110,10 +110,10 @@ impl Gen<'_> {
             let k = self.table.fns.len();
             self.gen_fn(k);
         }
-        // Generic helpers, each calling the functions below it.
-        for _ in 0..1 + self.b.below(3) {
+        // Generic helpers and methods, each calling the functions below it; the first is a helper with an integer result.
+        for n in 0..1 + self.b.below(3) {
             let k = self.table.fns.len();
-            self.gen_generic_fn(k);
+            self.gen_generic_fn(k, n == 0);
         }
         // A helper above the generic ones calls them with concrete types.
         if self.b.chance(70) {
@@ -136,6 +136,35 @@ impl Gen<'_> {
                 Expr::Var(var, pty)
             } else {
                 Expr::cast(ty, Expr::Var(var, pty))
+            };
+            let masked = Expr::bin(BinOp::BitAnd, read, Expr::Lit(ty, 255));
+            let term = Expr::bin(BinOp::Mul, masked, Expr::Lit(ty, 2 * k as u32 + 1));
+            value = Expr::bin(BinOp::BitXor, value, term);
+        }
+        value
+    }
+
+    /// `value ^ (self.f & 255) * (2k + 1)` for every integer field `f` (the `k`th) of the receiver's struct `j`, when
+    /// `value` is an integer: a by-value `self` that an argument's call changes later shows in the result.
+    pub(super) fn weight_self(&mut self, mut value: Expr, j: u8) -> Expr {
+        let ty = value.ty();
+        if !ty.is_int() {
+            return value;
+        }
+        let this = Ty::Struct(j);
+        let fields = self.table.structs[usize::from(j)].fields.clone();
+        for (k, &fty) in fields.iter().enumerate() {
+            if !fty.is_int() {
+                continue;
+            }
+            let read = Expr::Read {
+                place: Place::this(this).field(k as u8),
+                ty: fty,
+            };
+            let read = if fty == ty {
+                read
+            } else {
+                Expr::cast(ty, read)
             };
             let masked = Expr::bin(BinOp::BitAnd, read, Expr::Lit(ty, 255));
             let term = Expr::bin(BinOp::Mul, masked, Expr::Lit(ty, 2 * k as u32 + 1));
@@ -320,64 +349,96 @@ impl Gen<'_> {
         }
     }
 
-    /// Calls that join the kernel's result (format 13): up to three trait-impl calls on top-level locals and up to two
-    /// generic helper calls, each with scalar value, so that a wrong impl, a reused specialisation or a reversed
-    /// argument order reaches the output.
+    /// Calls that join the kernel's result (format 13), all integer-valued and joined with `^`, so that every path
+    /// evaluates them: one to three trait-impl calls on locals, one generic helper called once with each of two
+    /// different implementing types (a wrong impl, a reused specialisation or a reversed argument order reaches the
+    /// output), and up to two more generic calls.
     pub(super) fn trait_probes(&mut self) -> Vec<Expr> {
         let mut out = Vec::new();
         let impls: Vec<usize> = (0..self.table.fns.len())
             .filter(|&k| {
                 let def = &self.table.fns[k];
-                def.imp.is_some() && def.ret.is_some_and(|t| t.is_int() || t == Ty::Bool)
+                def.imp.is_some() && def.ret.is_some_and(Ty::is_int)
             })
             .collect();
-        for _ in 0..3 {
-            if impls.is_empty() || !self.b.chance(85) {
+        for n in 0..3 {
+            if impls.is_empty() || (n > 0 && !self.b.chance(70)) {
                 continue;
             }
-            let f = impls[self.b.below(impls.len() as u32) as usize];
-            let def = self.table.fns[f].clone();
-            let imp = def.imp.expect("an impl");
-            let place = match imp.ty {
-                Ty::Enum(_) => {
-                    let vars = self.vars(imp.ty);
-                    if vars.is_empty() {
-                        continue;
+            // The first probe is not optional: a trait program calls an impl where it counts.
+            for _ in 0..if n == 0 { 4 } else { 1 } {
+                if let Some(call) = self.impl_probe(&impls) {
+                    out.push(call);
+                    break;
+                }
+            }
+        }
+        // One helper with two instantiations of its first type parameter (M3 of the m9.d2 review).
+        let helpers: Vec<usize> = (0..self.table.fns.len())
+            .filter(|&k| {
+                let def = &self.table.fns[k];
+                !def.gens.is_empty() && def.recv == Recv::None && def.ret.is_some_and(Ty::is_int)
+            })
+            .collect();
+        if !helpers.is_empty() {
+            let f = helpers[self.b.below(helpers.len() as u32) as usize];
+            let rty = self.table.fns[f].ret.expect("an integer result");
+            let bounds = self.table.fns[f].gens[0].bounds.clone();
+            let types = self.instantiations(&bounds);
+            if types.len() >= 2 {
+                let a = self.b.below(types.len() as u32) as usize;
+                let b = (a + 1 + self.b.below(types.len() as u32 - 1) as usize) % types.len();
+                for t in [types[a], types[b]] {
+                    if let Some(call) = self.generic_call_f(f, rty, 3, Some(t)) {
+                        out.push(call);
                     }
-                    Some(Place::var(
-                        vars[self.b.below(vars.len() as u32) as usize],
-                        imp.ty,
-                    ))
                 }
-                _ => None,
-            };
-            let parts = match place {
-                Some(place) => {
-                    let args = def.params.iter().map(|&(_, t)| self.expr(t, 2)).collect();
-                    Some((Some(place), args))
-                }
-                None => self.call_parts(f, 3),
-            };
-            if let Some((recv, args)) = parts {
-                let call = Expr::Call {
-                    f,
-                    owner: None,
-                    recv,
-                    args,
-                    ty: def.ret.expect("a result"),
-                };
-                out.push(self.maybe_path(call));
             }
         }
         for _ in 0..2 {
-            let ty = [Ty::U32, Ty::I32, Ty::Bool][self.b.weighted(&[40, 40, 20])];
-            if self.b.chance(70)
+            let ty = [Ty::U32, Ty::I32][self.b.weighted(&[50, 50])];
+            if self.b.chance(60)
                 && let Some(call) = self.generic_call(ty, 3)
             {
                 out.push(call);
             }
         }
         out
+    }
+
+    /// A call of one of the integer-valued `impls` on a local (an enum local, or a struct place `call_parts` draws).
+    fn impl_probe(&mut self, impls: &[usize]) -> Option<Expr> {
+        let f = impls[self.b.below(impls.len() as u32) as usize];
+        let def = self.table.fns[f].clone();
+        let imp = def.imp.expect("an impl");
+        let place = match imp.ty {
+            Ty::Enum(_) => {
+                let vars = self.vars(imp.ty);
+                if vars.is_empty() {
+                    return None;
+                }
+                Some(Place::var(
+                    vars[self.b.below(vars.len() as u32) as usize],
+                    imp.ty,
+                ))
+            }
+            _ => None,
+        };
+        let (recv, args) = match place {
+            Some(place) => {
+                let args = def.params.iter().map(|&(_, t)| self.expr(t, 2)).collect();
+                (Some(place), args)
+            }
+            None => self.call_parts(f, 3)?,
+        };
+        let call = Expr::Call {
+            f,
+            owner: None,
+            recv,
+            args,
+            ty: def.ret.expect("a result"),
+        };
+        Some(self.maybe_path(call))
     }
 
     /// A trait-method call on an enum local whose value has type `ty`, sometimes written as a path call.
@@ -452,8 +513,8 @@ impl Gen<'_> {
             .collect()
     }
 
-    /// A call of a generic helper whose value has type `ty`: the type parameters bound to different module types over
-    /// the program, a `T` argument often a struct place whose root a later argument mutates.
+    /// A call of a generic helper or method whose value has type `ty`: the type parameters bound to different module
+    /// types over the program, a `T` argument often a struct place whose root a later argument mutates.
     pub(super) fn generic_call(&mut self, ty: Ty, depth: u32) -> Option<Expr> {
         if depth == 0 {
             return None;
@@ -481,16 +542,83 @@ impl Gen<'_> {
             return None;
         }
         let f = candidates[self.b.below(candidates.len() as u32) as usize];
+        self.generic_call_f(f, ty, depth, None)
+    }
+
+    /// A call of the generic function `f` (a helper, or a method of a struct) whose value has type `ty`; `first`
+    /// forces the type bound to its first type parameter.
+    pub(super) fn generic_call_f(
+        &mut self,
+        f: usize,
+        ty: Ty,
+        depth: u32,
+        first: Option<Ty>,
+    ) -> Option<Expr> {
+        if depth == 0 || f >= self.callable() {
+            return None;
+        }
         let def = self.table.fns[f].clone();
+        // A method of a struct is called on a place of that struct, whose root the arguments leave alone.
+        let recv = if def.recv == Recv::None {
+            None
+        } else {
+            let places: Vec<Place> = self
+                .struct_places()
+                .into_iter()
+                .filter(|(place, j, writable)| {
+                    Some(*j) == def.owner
+                        && (def.recv != Recv::Mut
+                            || (*writable && !self.forbid.contains(&place.root)))
+                })
+                .map(|(place, ..)| place)
+                .collect();
+            if places.is_empty() {
+                return None;
+            }
+            Some(places[self.b.below(places.len() as u32) as usize].clone())
+        };
+        let pushed = recv.as_ref().map(|place| place.root);
+        if let Some(root) = pushed {
+            self.forbid.push(root);
+        }
+        let parts = self.generic_args(f, &def, ty, depth, first);
+        if pushed.is_some() {
+            self.forbid.pop();
+        }
+        let (args, rty) = parts?;
+        Some(Expr::Call {
+            f,
+            owner: None,
+            recv,
+            args,
+            ty: rty,
+        })
+    }
+
+    /// The arguments of a call of the generic `def` (function `f`) and the type of its value.
+    fn generic_args(
+        &mut self,
+        f: usize,
+        def: &FnDef,
+        ty: Ty,
+        depth: u32,
+        first: Option<Ty>,
+    ) -> Option<(Vec<Expr>, Ty)> {
         // Bind each type parameter; one used by the result is bound to the result type.
         let mut inst: Vec<Ty> = Vec::new();
         for (g, gp) in def.gens.iter().enumerate() {
+            if g == 0
+                && let Some(t) = first
+            {
+                inst.push(t);
+                continue;
+            }
             if def.ret == Some(Ty::Param(g as u8)) {
                 inst.push(ty);
                 continue;
             }
             let options = self.instantiations(&gp.bounds);
-            // Prefer a type this function has not been instantiated with yet: two types over a program.
+            // Prefer a type this function has not been instantiated with yet.
             let fresh: Vec<Ty> = options
                 .iter()
                 .copied()
@@ -508,6 +636,7 @@ impl Gen<'_> {
         }
         let mut bias_root: Option<Root> = None;
         let mut enum_root: Option<Root> = None;
+        let mut scalar_root: Option<Root> = None;
         let mut args = Vec::new();
         for (_, pty) in &def.params {
             match *pty {
@@ -538,15 +667,18 @@ impl Gen<'_> {
                     _ => return None,
                 },
                 scalar => {
-                    let root = bias_root.filter(|_| self.b.chance(70));
+                    // Two integer arguments are often calls on one root: the order they run in shows.
+                    if bias_root.is_none() && scalar_root.is_none() && self.b.chance(60) {
+                        scalar_root = self.pick_writable_root();
+                    }
+                    let root = bias_root.or(scalar_root).filter(|_| self.b.chance(75));
                     let call =
                         root.and_then(|r| self.root_call(scalar, r, depth.saturating_sub(1)));
                     args.push(call.unwrap_or_else(|| self.expr(scalar, depth - 1)));
                 }
             }
         }
-        for (g, t) in inst.iter().enumerate() {
-            let _ = g;
+        for t in &inst {
             self.inst_used.push((f, *t));
         }
         let rty = match def.ret {
@@ -554,13 +686,7 @@ impl Gen<'_> {
             Some(other) => other,
             None => return None,
         };
-        Some(Expr::Call {
-            f,
-            owner: None,
-            recv: None,
-            args,
-            ty: rty,
-        })
+        Some((args, rty))
     }
 
     /// The impl function of trait method `(tr, m)`, either of the two (the call node names one; the interpreter
@@ -573,10 +699,14 @@ impl Gen<'_> {
             .expect("both impls of a trait method exist")
     }
 
-    /// A generic helper `fn gK<T: Tr0 + Tr1, U: Tr2>(t: T, u: U, a: u32) -> R` (format 13): the parameters are bound to
-    /// copies `let mut c: T = t;`, and the body calls the bound traits' methods through them, reads a scalar, and
-    /// returns a scalar or `T`.
-    fn gen_generic_fn(&mut self, k: usize) {
+    /// A generic helper `fn gK<T: Tr0 + Tr1, U: Tr2>(t: T, u: U, a: u32) -> R` (format 13), or a generic method of a
+    /// struct (`&self` or `&mut self`): the parameters are bound to copies `let mut c: T = t;`, and the body calls the
+    /// bound traits' methods through them, reads a scalar through every `T`, and returns an integer or a `T`. An
+    /// integer result folds in every `T` read, every scalar `let` and the integer parameters (weighted), so that the
+    /// order of the arguments of a call, a `&mut self` call through `T` and a copy taken before a later argument all
+    /// reach the result. `plain_int` makes a helper (no receiver) with an integer result: the call that every trait
+    /// program makes with two different types.
+    fn gen_generic_fn(&mut self, k: usize, plain_int: bool) {
         let n_traits = self.table.traits.len();
         let ngen = if self.b.chance(35) { 2 } else { 1 };
         let mut gens: Vec<GenParam> = Vec::new();
@@ -595,31 +725,71 @@ impl Gen<'_> {
                 where_clause: self.b.chance(40),
             });
         }
+        // A method of a struct (never an enum: an enum method is not generated, see DIFFTEST.md).
+        let method: Option<(u8, Recv)> = if !plain_int && self.b.chance(40) {
+            let j = self.b.below(self.table.structs.len() as u32) as u8;
+            let recv = if self.b.chance(45) {
+                Recv::Mut
+            } else {
+                Recv::Shared
+            };
+            Some((j, recv))
+        } else {
+            None
+        };
         self.cur_fn = Some(k);
         self.scope.clear();
         self.cls.clear();
-        self.this = None;
+        self.this = method.map(|(j, recv)| (Ty::Struct(j), recv));
         self.cur_ret = None;
         self.cur_gens = gens.clone();
+        let nlast = gens.len();
+        let returns_t = !plain_int && method.is_none() && self.b.chance(35);
+        let g_ret = if returns_t {
+            self.b.below(nlast as u32) as usize
+        } else {
+            0
+        };
+        // Whether the body reads the `T` of parameter `g` through an integer method (the last `T` may be consumed).
+        let reads: Vec<bool> = (0..nlast)
+            .map(|g| {
+                !self
+                    .read_methods(&gens[g], gens[g].copy || g + 1 == nlast)
+                    .is_empty()
+            })
+            .collect();
         // Parameters: one `T`-typed parameter per type parameter, scalars mixed in.
         let mut params: Vec<(u32, Ty)> = Vec::new();
+        let mut scalars: Vec<(u32, Ty)> = Vec::new();
         let mut t_vars = Vec::new();
         for g in 0..gens.len() {
-            if self.b.chance(30) {
+            if self.b.chance(40) {
                 let ty = self.scalar_pick();
                 let var = self.fresh();
                 self.scope.push((var, ty, false));
                 params.push((var, ty));
+                scalars.push((var, ty));
             }
             let var = self.fresh();
             params.push((var, Ty::Param(g as u8)));
             t_vars.push(var);
         }
-        if self.b.chance(50) {
+        if self.b.chance(60) {
             let ty = self.scalar_pick();
             let var = self.fresh();
             self.scope.push((var, ty, false));
             params.push((var, ty));
+            scalars.push((var, ty));
+        }
+        // Two integer parameters are likely: the order their arguments run in shows in the result.
+        for _ in 0..2 {
+            if scalars.iter().filter(|(_, t)| t.is_int()).count() < 2 && self.b.chance(65) {
+                let ty = [Ty::U32, Ty::I32][self.b.weighted(&[50, 50])];
+                let var = self.fresh();
+                self.scope.push((var, ty, false));
+                params.push((var, ty));
+                scalars.push((var, ty));
+            }
         }
         // `let mut c: T = t;` for every type parameter.
         let mut body = Vec::new();
@@ -635,14 +805,32 @@ impl Gen<'_> {
             });
             c_vars.push(c);
         }
-        // Statements: `&mut self` calls through `T`, and scalars read through `T` (a by-value method needs `Copy`).
-        for _ in 0..self.b.below(3) {
+        // The integer results of the statements below, folded into an integer result.
+        let mut lets: Vec<(u32, Ty)> = Vec::new();
+        // Statements: calls through `T` (a by-value method needs `Copy`). A `T` is changed only when the body reads it
+        // afterwards (or returns it).
+        for _ in 0..1 + self.b.below(3) {
             let g = self.b.below(gens.len() as u32) as usize;
+            if (returns_t && g != g_ret) || (!returns_t && !reads[g]) {
+                continue;
+            }
             let pty = Ty::Param(g as u8);
             let place = Place::var(c_vars[g], pty);
-            let methods = self.bound_methods(&gens[g], gens[g].copy);
+            let mut methods = self.bound_methods(&gens[g], gens[g].copy);
             if methods.is_empty() {
                 continue;
+            }
+            // Half the statements are `&mut self` calls that return nothing: the `T` changes, the body reads it later.
+            let changing: Vec<(u8, u8)> = methods
+                .iter()
+                .copied()
+                .filter(|&(tr, m)| {
+                    let method = &self.table.traits[usize::from(tr)].methods[usize::from(m)];
+                    method.recv == Recv::Mut && method.ret == TRet::Unit
+                })
+                .collect();
+            if !changing.is_empty() && self.b.chance(50) {
+                methods = changing;
             }
             let (tr, m) = methods[self.b.below(methods.len() as u32) as usize];
             let method = self.table.traits[usize::from(tr)].methods[usize::from(m)].clone();
@@ -660,7 +848,7 @@ impl Gen<'_> {
                     args.push(call);
                     continue;
                 }
-                args.push(self.expr(p, 2));
+                args.push(self.self_arg(p));
             }
             match method.ret {
                 TRet::Unit => body.push(Stmt::Call {
@@ -684,13 +872,16 @@ impl Gen<'_> {
                         },
                     });
                     self.scope.push((var, t, false));
+                    if t.is_int() {
+                        lets.push((var, t));
+                    }
                 }
                 // A `Self` result consumes the `T`: only in the tail.
                 TRet::SelfTy => {}
             }
         }
         // A call of a lower generic helper with one of the `T`s (it needs `Copy`: the callee takes the value).
-        if self.b.chance(35) {
+        if !returns_t && self.b.chance(35) {
             let g = self.b.below(gens.len() as u32) as usize;
             if gens[g].copy {
                 let pty = Ty::Param(g as u8);
@@ -698,6 +889,7 @@ impl Gen<'_> {
                     .filter(|&f| {
                         let def = &self.table.fns[f];
                         def.gens.len() == 1
+                            && def.recv == Recv::None
                             && def.ret.is_some_and(|r| r != Ty::Param(0))
                             && def.gens[0]
                                 .bounds
@@ -730,13 +922,15 @@ impl Gen<'_> {
                         },
                     });
                     self.scope.push((var, rty, false));
+                    if rty.is_int() {
+                        lets.push((var, rty));
+                    }
                 }
             }
         }
-        // The result: a scalar, or a `T`.
-        let returns_t = self.b.chance(35);
+        // The result: an integer, or a `T`.
         let (ret, tail) = if returns_t {
-            let g = self.b.below(gens.len() as u32) as usize;
+            let g = g_ret;
             let pty = Ty::Param(g as u8);
             let selfs: Vec<(u8, u8)> = self
                 .bound_methods(&gens[g], true)
@@ -762,30 +956,19 @@ impl Gen<'_> {
             };
             (Some(pty), tail)
         } else {
-            let ty = self.scalar_pick();
+            let ty = [Ty::U32, Ty::I32][self.b.weighted(&[50, 50])];
             let mut value = self.expr(ty, 3);
-            // Method results read through the `T`s: fold in one call of each bound's scalar method.
+            // Method results read through every `T`.
             for g in 0..gens.len() {
-                let methods: Vec<(u8, u8)> = self
-                    .bound_methods(&gens[g], gens[g].copy || g + 1 == gens.len())
-                    .into_iter()
-                    .filter(|&(tr, m)| {
-                        matches!(
-                            self.table.traits[usize::from(tr)].methods[usize::from(m)].ret,
-                            TRet::Ty(_)
-                        ) && (gens[g].copy
-                            || self.table.traits[usize::from(tr)].methods[usize::from(m)].recv
-                                != Recv::Value)
-                    })
-                    .collect();
-                if methods.is_empty() || (g > 0 && !self.b.chance(70)) {
+                let methods = self.read_methods(&gens[g], gens[g].copy || g + 1 == nlast);
+                if methods.is_empty() {
                     continue;
                 }
                 let (tr, m) = methods[self.b.below(methods.len() as u32) as usize];
                 let method = self.table.traits[usize::from(tr)].methods[usize::from(m)].clone();
                 let TRet::Ty(rt) = method.ret else { continue };
                 let f = self.any_impl(tr, m);
-                let args: Vec<Expr> = method.params.iter().map(|&p| self.expr(p, 2)).collect();
+                let args: Vec<Expr> = method.params.iter().map(|&p| self.self_arg(p)).collect();
                 let call = Expr::Call {
                     f,
                     owner: None,
@@ -795,14 +978,20 @@ impl Gen<'_> {
                 };
                 value = fold_in(value, call);
             }
+            for &(var, t) in &lets {
+                value = fold_in(value, Expr::Var(var, t));
+            }
+            let mut value = self.weight_params(value, &scalars);
+            if let Some((j, _)) = method {
+                value = self.weight_self(value, j);
+            }
             (Some(ty), value)
         };
-        // A `T` consumed twice (a by-value method, then the return) needs `Copy`; set it when the body does so.
         self.table.fns.push(FnDef {
             imp: None,
             gens,
-            owner: None,
-            recv: Recv::None,
+            owner: method.map(|(j, _)| j),
+            recv: method.map_or(Recv::None, |(_, recv)| recv),
             params,
             ret,
             body,
@@ -810,7 +999,35 @@ impl Gen<'_> {
         });
         self.cur_fn = None;
         self.cur_gens.clear();
+        self.this = None;
         self.scope.clear();
+    }
+
+    /// An argument of type `p` in a generic body: in a `&mut self` method often a call that changes `self` (a copy of
+    /// the `T` in a local is another root), so that the order of the arguments and the state they see show.
+    fn self_arg(&mut self, p: Ty) -> Expr {
+        if p.is_int()
+            && matches!(self.this, Some((_, Recv::Mut)))
+            && self.b.chance(60)
+            && let Some(call) = self.root_call(p, Root::SelfV, 2)
+        {
+            return call;
+        }
+        self.expr(p, 2)
+    }
+
+    /// The trait methods through which a type parameter's value is read as an integer; without `by_value` the by-value
+    /// ones are left out.
+    fn read_methods(&self, gp: &GenParam, by_value: bool) -> Vec<(u8, u8)> {
+        self.bound_methods(gp, by_value)
+            .into_iter()
+            .filter(|&(tr, m)| {
+                matches!(
+                    self.table.traits[usize::from(tr)].methods[usize::from(m)].ret,
+                    TRet::Ty(t) if t.is_int()
+                )
+            })
+            .collect()
     }
 
     /// The trait methods a type parameter's bounds give; without `by_value` the by-value ones are left out.

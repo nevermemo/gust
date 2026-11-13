@@ -254,6 +254,24 @@ pub(crate) fn check_signature(
             ));
         }
     }
+    // Every type parameter has a trait of the module among its bounds (`Copy` is dropped and does not count): that is
+    // what keeps a type argument a struct or an enum of the module (GUST-E0121 for the impls), and keeps a primitive,
+    // a tuple or an array, whose Slang type an unsuffixed literal would fix differently, out of `T`.
+    let bounded = bounds(generics);
+    for name in &declared {
+        let has_trait = bounded
+            .iter()
+            .any(|(declared, found)| declared == name && !found.is_empty());
+        if !has_trait {
+            return Err(diagnostics::error(
+                Code::StdTraitBound,
+                generics,
+                format!(
+                    "the type parameter `{name}` needs a trait of this module as a bound (`{name}: Shape`): with no bound, or with `Copy` alone, it could be a number, a tuple or an array, and the dialect specialises a generic for the structs and enums of the module only"
+                ),
+            ));
+        }
+    }
     let mut scan = Scan {
         declared: &declared,
         nesting: 0,
@@ -284,6 +302,11 @@ fn name_problem(name: &str, taken: &HashSet<String>) -> Option<String> {
             | "Option"
             | "Result"
             | "Workgroup"
+            | "SV_DispatchThreadID"
+            | "SV_GroupThreadID"
+            | "SV_GroupID"
+            | "LocalId"
+            | "GroupId"
     ) || super::UNSUPPORTED_PRIMITIVES.contains(&name)
         || crate::math_types::math_type(name).is_some();
     if dialect {

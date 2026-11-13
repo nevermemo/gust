@@ -9344,8 +9344,11 @@ fn a_generic_helper_lowers_to_a_slang_generic_with_its_bounds() {
             "uint f<T : A>(T t)",
         ),
         // No user bound at all: a bare generic, and `-> T`.
-        ("fn keep<T>(t: T) -> T { t } ", "T keep<T>(T t)"),
-        ("fn keep<T: Copy>(t: T) -> T { t } ", "T keep<T>(T t)"),
+        ("fn keep<T: A>(t: T) -> T { t } ", "T keep<T : A>(T t)"),
+        (
+            "fn keep<T: Copy + A>(t: T) -> T { t } ",
+            "T keep<T : A>(T t)",
+        ),
         // Two type parameters.
         (
             "fn f<T: A, U>(t: T, u: U) -> u32 where U: B { t.a() + u.b() } ",
@@ -9595,6 +9598,60 @@ fn each_generic_refusal_carries_its_code() {
             "parameter named like a trait",
             generic_module("fn f<A: B>(t: A) -> A { t } ", blank),
             Code::TraitTypeUse,
+        ),
+        // M1 (review m9.g2): every type parameter needs a trait of the module; `Copy` does not count.
+        (
+            "unbounded type parameter",
+            generic_module("fn f<T>(t: T) -> T { t } ", blank),
+            Code::StdTraitBound,
+        ),
+        (
+            "Copy alone",
+            generic_module("fn f<T: Copy>(t: T) -> T { t } ", blank),
+            Code::StdTraitBound,
+        ),
+        (
+            "Copy alone in a where clause",
+            generic_module("fn f<T>(t: T) -> T where T: Copy { t } ", blank),
+            Code::StdTraitBound,
+        ),
+        (
+            "unbounded type parameter of a method",
+            generic_module("impl S { pub fn g<T>(&self, t: T) -> T { t } } ", blank),
+            Code::StdTraitBound,
+        ),
+        (
+            "second type parameter unbounded",
+            generic_module("fn f<T: A, U>(t: T, u: U) -> u32 { t.a() } ", blank),
+            Code::StdTraitBound,
+        ),
+        // A literal as the argument of an unbounded `T` (the review's shift scenario) never reaches slangc.
+        (
+            "unsuffixed literal through an unbounded identity",
+            generic_module(
+                "fn keep<T: Copy>(t: T) -> T { t } ",
+                "out[id.x] = (keep(1) << 31u32) >> 31u32;",
+            ),
+            Code::StdTraitBound,
+        ),
+        // S4: the spellings the emitter maps to `uint3`.
+        (
+            "parameter named GroupId",
+            generic_module("fn f<GroupId: A>(t: GroupId) -> u32 { t.a() } ", blank),
+            Code::MethodNameClash,
+        ),
+        (
+            "parameter named LocalId",
+            generic_module("fn f<LocalId: A>(t: LocalId) -> u32 { t.a() } ", blank),
+            Code::MethodNameClash,
+        ),
+        (
+            "parameter named SV_DispatchThreadID",
+            generic_module(
+                "fn f<SV_DispatchThreadID: A>(t: SV_DispatchThreadID) -> u32 { t.a() } ",
+                blank,
+            ),
+            Code::MethodNameClash,
         ),
         (
             "parameter named like a vector type",

@@ -27,7 +27,7 @@ use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 //   chain_square = desc_square + 2 (x+1)^2 + (7000 + (x+1) + 1)                : 14015, 14115, 14311, 14603, 14991
 //   method_fits  = 10 * 3x + 5                                                 : 5, 65, 125, 185, 245
 //   method_fits_bag = 10 (x+6) + 5                                             : 65, 85, 105, 125, 145
-//   method_weigh = (x+1) * 1000 + 12 + 5                                       : 1017, 3017, 5017, 7017, 9017
+//   method_weigh = h.weigh(s, c2.bump(), c2.bump()), c2.n = x: a = x+1, b = x+2, k = 5: (x+1) * 1000 + 10 (x+1) + (x+2) + 5 = 1011x + 1017 : 1017, 3039, 5061, 7083, 9105 (swapped arguments would give 1011x + 1026)
 // Order (Rust: left to right, and a by-value T is copied before a later argument mutates its source):
 //   order_args   = gmix(s, c.bump(), c.bump()), c.n = x: a = x+1, b = x+2     : 1012, 3034, 5056, 7078, 9100
 //   order_self   = gplus(d, d.bump()): self copied first (n = x), k = x+1: 101x + 1 : 1, 203, 405, 607, 809
@@ -51,7 +51,7 @@ const CHAIN_RECT: [u32; 5] = [7, 479, 951, 1423, 1895];
 const CHAIN_SQUARE: [u32; 5] = [14015, 14115, 14311, 14603, 14991];
 const METHOD_FITS: [u32; 5] = [5, 65, 125, 185, 245];
 const METHOD_FITS_BAG: [u32; 5] = [65, 85, 105, 125, 145];
-const METHOD_WEIGH: [u32; 5] = [1017, 3017, 5017, 7017, 9017];
+const METHOD_WEIGH: [u32; 5] = [1017, 3039, 5061, 7083, 9105];
 const ORDER_ARGS: [u32; 5] = [1012, 3034, 5056, 7078, 9100];
 const ORDER_SELF: [u32; 5] = [1, 203, 405, 607, 809];
 const ORDER_INNER: [u32; 5] = [1012, 3012, 5012, 7012, 9012];

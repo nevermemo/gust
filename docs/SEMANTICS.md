@@ -1595,17 +1595,17 @@ fixtures `trait-*`.
 
 A free function or an inherent method with a receiver may take type parameters: `fn f<T: A + B>(t: T) -> T`,
 `fn f<T>(t: T) where T: A`, `impl S { fn m<T: A>(&self, t: T) -> u32 }`. A bound is a trait of the module, inline or in a
-`where` clause; `Copy` is accepted and dropped (every GPU value is a copy), and a parameter with no user bound is
-allowed. Type arguments are inferred from the arguments (`GUST-E0123` for a turbofish or a parameter nothing
+`where` clause; `Copy` is accepted and dropped (every GPU value is a copy), and does not count as a bound:
+every type parameter needs at least one trait of the module (`GUST-E0125` otherwise), which keeps `T` a struct or enum of the module and a number, tuple or array out of it. Type arguments are inferred from the arguments (`GUST-E0123` for a turbofish or a parameter nothing
 determines) and `T` is written as a whole type: a parameter, a result, `let x: T`. `T` nested in an array, tuple,
-`Option` or reference, a generic kernel, closure, trait method or associated function without a receiver, const
-generics, lifetimes and defaults are `GUST-E0114`; a generic struct or enum is `GUST-E0103`; a bound that is not a trait
+`Option` or reference, a generic kernel, closure or associated function without a receiver, const
+generics, lifetimes and defaults are `GUST-E0114` (a generic trait method is `GUST-E0124`); a generic struct or enum is `GUST-E0103`; a bound that is not a trait
 of the module or `Copy` is `GUST-E0125`. Arithmetic, comparison and literals on a `T` are not checked by the macro: a
 module trait has no operators, so rustc refuses them on the CPU twin and the typecheck item (UI fixture
 `generic-arith`, rustc's own error), and no Slang is produced from that program.
 
-**Lowering.** `T f<T : A & B>(T t)`; inline and `where` bounds merge and are deduplicated, `Copy` is dropped, a
-parameter with no bound is `<T>`. A generic method is a member of its struct (`[mutating] uint h<T : A>(T t)`). The
+**Lowering.** `T f<T : A & B>(T t)`; inline and `where` bounds merge and are deduplicated, `Copy` is dropped.
+A generic method is a member of its struct (`[mutating] uint h<T : A>(T t)`). The
 specialisation is slangc's, per instantiation, statically (spike m9.g0). The names of generics go through the same
 renaming as other names (`collisions::emit_name`), so `T` named `IFloat` or `float4` is safe in Slang; a generic named
 like an item of the module, a dialect or primitive type or `Self` is `GUST-E0328`. The CPU twin and the typecheck item
@@ -1617,7 +1617,7 @@ superset of the impls of any bound, so recursion through a bound and its impl is
 atomic or storage access in it is refused where it is written (UI fixture `generic-barrier`, `GUST-E0414`). The ledger
 rows of D133 apply to the impls as to any helper.
 
-**Order of evaluation.** The same as for non-generic calls (section 13), measured with rustc and slangc 2026.21 and
+**Order of evaluation.** The same as for non-generic calls (section 13), measured with rustc and slangc 2026.21 (first), re-measured on the pinned 2026.22 by the GPU test, and
 pinned on the RTX 5090 with hand-written expectations: arguments run left to right (`gmix(s, c.bump(), c.bump())`,
 `e.run_with(s)` whose body calls `t.mix(self.bump(), self.bump())`, `gmix_local`), and a by-value `T` argument is
 copied before a later argument mutates its source (`gplus(d, d.bump())` is `101x + 1`). A `&mut self` method through

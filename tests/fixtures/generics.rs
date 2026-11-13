@@ -307,7 +307,9 @@ mod generics {
             let h = Holder { k: 5u32 };
             let method_fits = h.fits(r);
             let method_fits_bag = h.fits(bag);
-            let method_weigh = h.weigh(s, 1u32, 2u32);
+            // A generic method with side effects in its arguments: they run left to right.
+            let mut c2 = Counter { n: x };
+            let method_weigh = h.weigh(s, c2.bump(), c2.bump());
 
             // Arguments run left to right; a `T` passed by value is copied before a later argument mutates its source.
             let mut c = Counter { n: x };

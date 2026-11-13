@@ -541,6 +541,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "generic-unbounded"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "gpu-allocator"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

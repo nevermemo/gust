@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: generic-trait-method/src/main.rs
+line: 8
+message: [GUST-E0124] a generic trait method is not part of the dialect

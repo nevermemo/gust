@@ -1770,6 +1770,33 @@ fn emit_helper(
     Ok(())
 }
 
+/// The Slang generic list of a generic helper or method (slice m9.g2): `<T : Shape & Named, U>`. Each type parameter
+/// carries the traits it is bound to, in the order the validator's bound map gives them (inline, then `where`, `Copy`
+/// dropped); a parameter with no user bound is a bare name. Names go through the collision table like every type name
+/// does, and the bounds are interfaces, renamed the same way. Slang specialises the function for the argument types.
+fn emit_generic_list(generics: &syn::Generics) -> String {
+    let bounds = crate::validate::generics::bounds(generics);
+    if bounds.is_empty() {
+        return String::new();
+    }
+    let parameters: Vec<String> = bounds
+        .iter()
+        .map(|(name, traits)| {
+            let name = collisions::emit_name(name);
+            if traits.is_empty() {
+                name.into_owned()
+            } else {
+                let traits: Vec<String> = traits
+                    .iter()
+                    .map(|bound| collisions::emit_name(bound).into_owned())
+                    .collect();
+                format!("{name} : {}", traits.join(" & "))
+            }
+        })
+        .collect();
+    format!("<{}>", parameters.join(", "))
+}
+
 /// A function at `depth` levels of indentation: a helper at 0, a method inside its struct at 1. A receiver is `this` in
 /// Slang and is not a parameter; a `&self` or `self` method is a plain member function, which Slang does not let
 /// mutate, a `&mut self` method is `[mutating]`, and a function without a receiver is `static` (slice m9.a2).
@@ -1801,8 +1828,9 @@ fn emit_function(
     };
     write!(
         output,
-        "{padding}{qualifier}{return_type} {}(",
-        emit_ident(&signature.ident)
+        "{padding}{qualifier}{return_type} {}{}(",
+        emit_ident(&signature.ident),
+        emit_generic_list(&signature.generics)
     )
     .unwrap();
     let mut first = true;

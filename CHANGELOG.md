@@ -165,7 +165,17 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   as a type). `GUST-E0121` also covers a trait impl for a foreign type and a blanket impl; `GUST-E0328` also covers a
   trait method named like an inherent method of an implementing type, or declared by two traits one type implements.
   A trait impl was `GUST-E0102` or `GUST-E0121` before. The Slang names of the stdlib interfaces (`IFloat`, `IInteger`,
-  ..) are renamed in a user trait. Generics and bounds are slice g2.
+  ..) are renamed in a user trait.
+- Generic helpers and methods with trait bounds, static specialisation (M9, slice g2, D170). `fn f<T: A + B>(t: T) -> T`,
+  `fn f<T>(t: T) where T: A`, and `impl S { fn m<T: A>(&self, t: T) }` take type parameters bounded by traits of the
+  module (`Copy` is accepted and dropped); the type arguments are inferred from the arguments, and `T` is written as a
+  whole parameter, result or `let x: T` type. A struct, a unit enum or a struct with array fields can be the argument.
+  Slang gets `T f<T : A & B>(T t)` and specialises it. New: `GUST-E0123` (a turbofish, or a type parameter no argument
+  determines) and `GUST-E0125` (a bound that is not a trait of the module nor `Copy`: a std trait, `?Sized`, `for<..>`).
+  `GUST-E0114` now means a generic kernel, closure, trait method, associated function without a receiver, const
+  generic, lifetime or default, or `T` nested in an array, tuple or reference; `GUST-E0328` also covers a type parameter
+  named like an item of the module or a dialect type. Calls through a bound are covered by the by-name call graph
+  (`GUST-E0120`, D154), so every impl is validated as a helper. Generic structs and enums stay `GUST-E0103`.
 - Fixed (m9.f1): a method call with a `<` comparison argument before another argument, such as `s.m(a < b, c)`, failed in slangc with an undefined `__gust_keep`, because the scan that defines that helper did not visit method calls.
 - Fixed (m9.shift): a constant shift amount outside 0..32 (`x << 34u32`, `v >>= 32`) is refused with `GUST-E0335`;
   rustc refuses it when building, and naga used to reject the generated WGSL with an error that was not a GUST

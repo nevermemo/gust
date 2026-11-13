@@ -5992,7 +5992,7 @@ fn impl_shapes_that_are_not_accepted_yet_keep_their_own_codes() {
         ),
         ("impl<T> A { }", Code::ExternOrGenericFunction),
         (
-            "impl A { pub fn f<T>(&self) -> uint { 1u32 } }",
+            "impl A { pub fn f<const N: usize>(&self) -> uint { 1u32 } }",
             Code::ExternOrGenericFunction,
         ),
         (
@@ -9285,6 +9285,439 @@ fn a_closure_in_a_trait_impl_method_and_an_empty_trait_are_accepted() {
          impl U for R { fn m(&self, k: u32) -> u32 { let f = |a: u32, b: u32| -> u32 { a * b }; f(self.v, k) } } \
          impl Empty for R { } ",
         "let r = R { v: 2u32 }; out[id.x] = r.m(3u32);",
+    ))
+    .unwrap();
+}
+
+// ---- Generic helpers and methods with trait bounds (slice m9.g2, D170) ----
+
+/// Two traits, two structs, and impls: `S` implements both traits, `Q` the first.
+const GENERIC_ITEMS: &str = "pub trait A { fn a(&self) -> u32; } pub trait B { fn b(&self) -> u32; } \
+    pub struct S { pub v: u32 } pub struct Q { pub v: u32 } \
+    impl A for S { fn a(&self) -> u32 { self.v } } impl B for S { fn b(&self) -> u32 { self.v + 1u32 } } \
+    impl A for Q { fn a(&self) -> u32 { self.v * 2u32 } } ";
+
+fn generic_module(extra_items: &str, body: &str) -> String {
+    with_kernel(&format!("{GENERIC_ITEMS}{extra_items}"), body)
+}
+
+#[test]
+fn generics_golden() {
+    let source = translate(include_str!("../../../../tests/fixtures/generics.rs")).unwrap();
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "generics.slang",
+        &include_str!("../../../../tests/fixtures/generics.slang").replace("\r\n", "\n"),
+    );
+}
+
+#[test]
+fn a_generic_helper_lowers_to_a_slang_generic_with_its_bounds() {
+    let cases = [
+        // Inline bounds, two of them.
+        (
+            "fn f<T: A + B>(t: T) -> u32 { t.a() + t.b() } ",
+            "uint f<T : A & B>(T t)",
+        ),
+        // The same bounds in a `where` clause.
+        (
+            "fn f<T>(t: T) -> u32 where T: A + B { t.a() + t.b() } ",
+            "uint f<T : A & B>(T t)",
+        ),
+        // Inline and `where` bounds merge, each trait once, in order.
+        (
+            "fn f<T: A>(t: T) -> u32 where T: B + A { t.a() + t.b() } ",
+            "uint f<T : A & B>(T t)",
+        ),
+        // `Copy` says nothing on the GPU and is dropped, in each spelling.
+        (
+            "fn f<T: A + Copy + Copy>(t: T) -> u32 { t.a() } ",
+            "uint f<T : A>(T t)",
+        ),
+        (
+            "fn f<T: Copy + A>(t: T) -> u32 { t.a() } ",
+            "uint f<T : A>(T t)",
+        ),
+        // A bound named by `self::`.
+        (
+            "fn f<T: self::A>(t: T) -> u32 { t.a() } ",
+            "uint f<T : A>(T t)",
+        ),
+        // No user bound at all: a bare generic, and `-> T`.
+        ("fn keep<T: A>(t: T) -> T { t } ", "T keep<T : A>(T t)"),
+        (
+            "fn keep<T: Copy + A>(t: T) -> T { t } ",
+            "T keep<T : A>(T t)",
+        ),
+        // Two type parameters.
+        (
+            "fn f<T: A, U>(t: T, u: U) -> u32 where U: B { t.a() + u.b() } ",
+            "uint f<T : A, U : B>(T t, U u)",
+        ),
+    ];
+    for (items, expected) in cases {
+        let source = translate(&generic_module(items, "out[id.x] = 1u32;"))
+            .unwrap_or_else(|error| panic!("{items}: {error}"));
+        assert!(source.contains(expected), "{items}\n{source}");
+    }
+}
+
+#[test]
+fn a_generic_method_lowers_inside_its_struct() {
+    let source = translate(&generic_module(
+        "impl S { pub fn g<T: A + B>(&self, t: T) -> u32 { self.v + t.a() + t.b() } } ",
+        "let s = S { v: 1u32 }; out[id.x] = s.g(s);",
+    ))
+    .unwrap();
+    assert!(source.contains("uint g<T : A & B>(T t)"), "{source}");
+    // A `&mut self` method with a type parameter is `[mutating]` with the generic list after the name.
+    let source = translate(&generic_module(
+        "impl S { pub fn h<T: A>(&mut self, t: T) -> u32 { self.v += t.a(); self.v } } ",
+        "let mut s = S { v: 1u32 }; let q = Q { v: 2u32 }; out[id.x] = s.h(q);",
+    ))
+    .unwrap();
+    assert!(source.contains("[mutating] uint h<T : A>(T t)"), "{source}");
+}
+
+#[test]
+fn a_generic_helper_can_call_methods_generics_and_be_called_from_a_closure_and_a_method() {
+    translate(&generic_module(
+        "fn inner<T: A>(t: T) -> u32 { t.a() } \
+         fn outer<T: A + B + Copy>(t: T) -> u32 { inner(t) + t.b() + inner(t) } \
+         fn same<T: A>(t: T) -> T { let c: T = t; c } \
+         impl S { pub fn via(&self) -> u32 { let q = Q { v: self.v }; inner(q) } } ",
+        "let s = S { v: 1u32 }; let f = |q: S| -> u32 { outer(q) + inner(q) }; \
+         let t = same(s); out[id.x] = f(s) + s.via() + t.a();",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn a_generic_named_like_a_slang_interface_or_type_is_renamed() {
+    let source = translate(&generic_module(
+        "fn f<IFloat: A, float4: B>(x: IFloat, y: float4) -> u32 { x.a() + y.b() } ",
+        "out[id.x] = 1u32;",
+    ))
+    .unwrap();
+    assert!(
+        source.contains(
+            "uint f<__gust_r_IFloat : A, __gust_r_float4 : B>(__gust_r_IFloat x, __gust_r_float4 y)"
+        ),
+        "{source}"
+    );
+}
+
+#[test]
+fn the_cpu_twin_and_the_typecheck_item_keep_the_generics_as_plain_rust() {
+    let source = format!(
+        "mod m {{ {GENERIC_ITEMS} fn f<T: A + B + Copy>(t: T) -> u32 {{ t.a() + t.b() }} \
+         impl S {{ pub fn g<T>(&self, t: T) -> T where T: A {{ t }} }} \
+         #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<u32>) {{ \
+         let s = S {{ v: 1u32 }}; out[id.x] = f(s) + s.g(s).a(); }} }}"
+    );
+    for profile in [crate::expand::Profile::Other, crate::expand::Profile::Cpu] {
+        let text = expansion_for(&source, profile).to_string();
+        assert!(
+            text.contains("fn f < T : A + B + Copy > (t : T) -> u32"),
+            "{text}"
+        );
+        assert!(
+            text.contains("fn g < T > (& self , t : T) -> T where T : A"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn each_generic_refusal_carries_its_code() {
+    let blank = "out[id.x] = 1u32;";
+    let cases: Vec<(&str, String, Code)> = vec![
+        // E0123: no explicit type arguments, and every type parameter fixed by a parameter
+        (
+            "turbofish on a helper",
+            generic_module(
+                "fn f<T: A>(t: T) -> u32 { t.a() } ",
+                "let s = S { v: 1u32 }; out[id.x] = f::<S>(s);",
+            ),
+            Code::TurbofishOnGenericCall,
+        ),
+        (
+            "turbofish on a method",
+            generic_module(
+                "impl S { pub fn g<T: A>(&self, t: T) -> u32 { t.a() } } ",
+                "let s = S { v: 1u32 }; out[id.x] = s.g::<S>(s);",
+            ),
+            Code::TurbofishOnGenericCall,
+        ),
+        (
+            "a type parameter no parameter fixes",
+            generic_module("fn f<T: A>(n: u32) -> u32 { n } ", blank),
+            Code::TurbofishOnGenericCall,
+        ),
+        // E0125: bounds
+        (
+            "std bound Add",
+            generic_module("fn f<T: Add<Output = T>>(t: T) -> T { t } ", blank),
+            Code::StdTraitBound,
+        ),
+        (
+            "two std bounds",
+            generic_module("fn f<T: PartialEq + PartialOrd>(t: T) -> T { t } ", blank),
+            Code::StdTraitBound,
+        ),
+        (
+            "std bound in a where clause",
+            generic_module("fn f<T>(t: T) -> T where T: Clone { t } ", blank),
+            Code::StdTraitBound,
+        ),
+        (
+            "Sized",
+            generic_module("fn f<T: Sized>(t: T) -> T { t } ", blank),
+            Code::StdTraitBound,
+        ),
+        (
+            "maybe Sized",
+            generic_module("fn f<T: ?Sized>(t: T) -> T { t } ", blank),
+            Code::StdTraitBound,
+        ),
+        (
+            "a trait the module does not declare",
+            generic_module("fn f<T: Unknown>(t: T) -> T { t } ", blank),
+            Code::StdTraitBound,
+        ),
+        (
+            "Fn bound",
+            generic_module("fn f<T: Fn(u32) -> u32>(t: T) -> T { t } ", blank),
+            Code::StdTraitBound,
+        ),
+        // E0114: the generic list outside the contract
+        (
+            "lifetime parameter",
+            generic_module("fn f<'x>(n: u32) -> u32 { n } ", blank),
+            Code::ExternOrGenericFunction,
+        ),
+        (
+            "lifetime bound",
+            generic_module("fn f<T: A + 'static>(t: T) -> T { t } ", blank),
+            Code::ExternOrGenericFunction,
+        ),
+        (
+            "const generic",
+            generic_module("fn f<const N: usize>(n: u32) -> u32 { n } ", blank),
+            Code::ExternOrGenericFunction,
+        ),
+        (
+            "generic method with a const generic",
+            generic_module(
+                "impl S { pub fn f<const N: usize>(&self) -> u32 { 1u32 } } ",
+                blank,
+            ),
+            Code::ExternOrGenericFunction,
+        ),
+        (
+            "a predicate on a type that is not a parameter",
+            generic_module("fn f<T: A>(t: T) -> T where u32: A { t } ", blank),
+            Code::ExternOrGenericFunction,
+        ),
+        (
+            "the parameter inside an Option",
+            generic_module("fn f<T: A>(t: T, o: Option<T>) -> T { t } ", blank),
+            Code::ExternOrGenericFunction,
+        ),
+        (
+            "the parameter inside an array result",
+            generic_module("fn f<T: A + Copy>(t: T) -> [T; 2] { [t, t] } ", blank),
+            Code::ExternOrGenericFunction,
+        ),
+        (
+            "a closure that names the parameter",
+            generic_module(
+                "fn f<T: A>(t: T) -> u32 { let c = |x: T| -> u32 { 1u32 }; 1u32 } ",
+                blank,
+            ),
+            Code::ExternOrGenericFunction,
+        ),
+        (
+            "generic kernel",
+            format!(
+                "mod m {{ {GENERIC_ITEMS} #[kernel] pub fn run<T: A>(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<u32>) {{ out[id.x] = 1u32; }} }}"
+            ),
+            Code::ExternOrGenericFunction,
+        ),
+        (
+            "generic impl",
+            generic_module("impl<T> S { } ", blank),
+            Code::ExternOrGenericFunction,
+        ),
+        (
+            "generic associated function",
+            generic_module(
+                "impl S { pub fn make<T: A>(t: T) -> u32 { t.a() } } ",
+                blank,
+            ),
+            Code::ExternOrGenericFunction,
+        ),
+        // E0103: generic structs stay refused
+        (
+            "generic struct",
+            generic_module("pub struct G<T> { pub v: T } ", blank),
+            Code::GenericStruct,
+        ),
+        // E0124: trait methods are not generic
+        (
+            "generic trait method",
+            generic_module("pub trait U { fn m<X: A>(&self, x: X) -> u32; } ", blank),
+            Code::TraitFeature,
+        ),
+        (
+            "generic method in a trait impl",
+            generic_module(
+                "pub trait U { fn m(&self) -> u32; } impl U for S { fn m<X>(&self) -> u32 { 1u32 } } ",
+                blank,
+            ),
+            Code::TraitFeature,
+        ),
+        (
+            "a trait named Copy",
+            generic_module("pub trait Copy { fn m(&self) -> u32; } ", blank),
+            Code::TraitFeature,
+        ),
+        // E0218: `impl Trait` stays
+        (
+            "impl Trait argument",
+            generic_module("fn f(t: impl A) -> u32 { 1u32 } ", blank),
+            Code::TraitTypeUse,
+        ),
+        // E0328: a parameter named like an item or a type of the dialect
+        (
+            "parameter named like a struct",
+            generic_module("fn f<S: A>(t: S) -> S { t } ", blank),
+            Code::MethodNameClash,
+        ),
+        (
+            "parameter named like a trait",
+            generic_module("fn f<A: B>(t: A) -> A { t } ", blank),
+            Code::TraitTypeUse,
+        ),
+        // M1 (review m9.g2): every type parameter needs a trait of the module; `Copy` does not count.
+        (
+            "unbounded type parameter",
+            generic_module("fn f<T>(t: T) -> T { t } ", blank),
+            Code::StdTraitBound,
+        ),
+        (
+            "Copy alone",
+            generic_module("fn f<T: Copy>(t: T) -> T { t } ", blank),
+            Code::StdTraitBound,
+        ),
+        (
+            "Copy alone in a where clause",
+            generic_module("fn f<T>(t: T) -> T where T: Copy { t } ", blank),
+            Code::StdTraitBound,
+        ),
+        (
+            "unbounded type parameter of a method",
+            generic_module("impl S { pub fn g<T>(&self, t: T) -> T { t } } ", blank),
+            Code::StdTraitBound,
+        ),
+        (
+            "second type parameter unbounded",
+            generic_module("fn f<T: A, U>(t: T, u: U) -> u32 { t.a() } ", blank),
+            Code::StdTraitBound,
+        ),
+        // A literal as the argument of an unbounded `T` (the review's shift scenario) never reaches slangc.
+        (
+            "unsuffixed literal through an unbounded identity",
+            generic_module(
+                "fn keep<T: Copy>(t: T) -> T { t } ",
+                "out[id.x] = (keep(1) << 31u32) >> 31u32;",
+            ),
+            Code::StdTraitBound,
+        ),
+        // S4: the spellings the emitter maps to `uint3`.
+        (
+            "parameter named GroupId",
+            generic_module("fn f<GroupId: A>(t: GroupId) -> u32 { t.a() } ", blank),
+            Code::MethodNameClash,
+        ),
+        (
+            "parameter named LocalId",
+            generic_module("fn f<LocalId: A>(t: LocalId) -> u32 { t.a() } ", blank),
+            Code::MethodNameClash,
+        ),
+        (
+            "parameter named SV_DispatchThreadID",
+            generic_module(
+                "fn f<SV_DispatchThreadID: A>(t: SV_DispatchThreadID) -> u32 { t.a() } ",
+                blank,
+            ),
+            Code::MethodNameClash,
+        ),
+        (
+            "parameter named like a vector type",
+            generic_module("fn f<Vec4: A>(t: Vec4) -> Vec4 { t } ", blank),
+            Code::MethodNameClash,
+        ),
+        (
+            "parameter named u32",
+            generic_module("fn f<u32: A>(t: u32) -> u32 { t } ", blank),
+            Code::MethodNameClash,
+        ),
+        // E0120: recursion through a generic, and through the impl of a bound
+        (
+            "direct recursion",
+            generic_module(
+                "fn f<T: A>(t: T, n: u32) -> u32 { f(t, n) } ",
+                "let s = S { v: 1u32 }; out[id.x] = f(s, 1u32);",
+            ),
+            Code::RecursiveCall,
+        ),
+        (
+            "recursion through a bound's impl",
+            with_kernel(
+                "pub trait U { fn m(&self) -> u32; } pub struct R { pub v: u32 } \
+                 impl U for R { fn m(&self) -> u32 { h(R { v: self.v }) } } \
+                 fn h<T: U>(t: T) -> u32 { t.m() } ",
+                "let r = R { v: 1u32 }; out[id.x] = h(r);",
+            ),
+            Code::RecursiveCall,
+        ),
+        // D154: a barrier reached only through a bound's impl is refused at the impl
+        (
+            "barrier in the impl of a bound",
+            with_kernel(
+                "pub trait U { fn m(&self) -> u32; } pub struct R { pub v: u32 } \
+                 impl U for R { fn m(&self) -> u32 { workgroup_barrier(); 1u32 } } \
+                 fn h<T: U>(t: T) -> u32 { t.m() } ",
+                "let r = R { v: 1u32 }; out[id.x] = h(r);",
+            ),
+            Code::BarrierPosition,
+        ),
+    ];
+    let mut misses = Vec::new();
+    for (label, source, code) in &cases {
+        match translate(source) {
+            Ok(_) => misses.push(format!("{label}: accepted")),
+            Err(error) => {
+                let codes = crate::diagnostics::testing::codes_of(&error);
+                if codes.first() != Some(code) {
+                    misses.push(format!("{label}: wanted {code:?}, got {codes:?}: {error}"));
+                } else {
+                    assert_code_for(&error, *code, label);
+                }
+            }
+        }
+    }
+    assert!(misses.is_empty(), "{}", misses.join("\n"));
+}
+
+#[test]
+fn operators_on_a_type_parameter_are_rustcs_to_refuse() {
+    // With no std bound a `T` has no operators in Rust, so rustc refuses these on the twin and the typecheck item (the UI
+    // fixture generic-arith pins the error); the macro lets the text through and no Slang from it is ever built.
+    translate(&generic_module(
+        "fn f<T: A + Copy>(t: T) -> T { t + t } ",
+        "out[id.x] = 1u32;",
     ))
     .unwrap();
 }

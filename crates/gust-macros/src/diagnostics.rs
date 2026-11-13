@@ -110,9 +110,15 @@ codes! {
     /// missing `PartialEq` derive, a `repr` other than `u32` or `i32`, generics, no variants, or an `as` to the other
     /// integer type than the repr.
     EnumShape = 122 => "GUST-E0122";
+    /// Explicit type arguments on a call of a generic function or method (`f::<u32>(x)`), or a type parameter that no
+    /// parameter type fixes, so a call would need them.
+    TurbofishOnGenericCall = 123 => "GUST-E0123";
     /// A trait feature outside the methods-only subset: a default body, an associated item, a supertrait, a generic
     /// trait or trait method, a function without a receiver, or a `&mut self` method implemented for an enum.
     TraitFeature = 124 => "GUST-E0124";
+    /// A generic bound that is not a trait of the module or `Copy`: a std trait (`Add`, `PartialEq`, `Sized`, ..), a
+    /// trait that the module does not declare, or a bound with arguments.
+    StdTraitBound = 125 => "GUST-E0125";
     /// A trait path call (`Trait::m(x, ..)`, `<S as Trait>::m(x, ..)`) whose first argument is not a place.
     TraitPathReceiver = 126 => "GUST-E0126";
 

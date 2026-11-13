@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# rustc refuses `t + t` on a type parameter bounded by a trait of the module: its own error, E0369.
+code: E0369
+file: generic-arith/src/main.rs
+line: 21
+message: cannot add `T` to `T`

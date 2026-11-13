@@ -161,7 +161,8 @@ Decision: D02, D133 (methods), D154.
 GPU structs cannot take generic parameters or a `where` clause.
 Reached through `#[gpu]`.
 Rejected: `struct Pair<T> { first: T }`.
-Write instead: one concrete struct per payload type.
+Write instead: one concrete struct per payload type (generic helpers and methods exist since slice m9.g2, generic structs do not).
+Fixture: `tests/ui/generic-struct` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D02.
 
 ### GUST-E0104 struct needs named fields
@@ -248,10 +249,11 @@ Decision: D02.
 
 ### GUST-E0114 extern or generic function
 
-Functions are plain, non-generic Rust functions with the default ABI.
+Functions have the default ABI. A function or an inherent method may be generic since slice m9.g2 (type parameters bounded by traits of the module, inferred at the call, GUST-E0123 and GUST-E0125); a kernel, a closure, an associated function without a receiver and a generic named in a closure stay refused with this code (a generic trait method is GUST-E0124), and so do const generics, lifetime parameters and parameter defaults.
 Reached through `#[gpu]`.
-Rejected: `extern "C" fn f() {}` and `fn f<T>(x: T) {}`.
-Write instead: a plain, non-generic `fn`.
+Rejected: `extern "C" fn f() {}`, `#[kernel] fn run<T: Shape>(..)`, `fn f<const N: usize>(..)`, `fn f<'a>(..)`, `impl S { fn make<T: Shape>() -> u32 }` (no receiver), `T` nested in an array, tuple, `Option` or reference (`[T; 2]`), a closure that names `T`.
+Write instead: a plain `fn`, or a generic helper whose `T` is a whole parameter or result type.
+Fixture: `tests/ui/generic-kernel` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D02.
 
 ### GUST-E0115 unsupported attribute
@@ -303,7 +305,7 @@ Recursion has no GPU lowering, and the dialect keeps its call graph acyclic. The
 Reached through `#[gpu]`.
 Rejected: `fn f(n: u32) -> u32 { f(n - 1u32) }`, `fn a() { b() } fn b() { a() }`, `impl S { fn go(&self) { self.go() } }`, and a helper that calls a method that calls the helper.
 Write instead: a `for` loop with a fixed trip count that does the same work.
-Fixture: `tests/ui/method-recursion-direct`, `tests/ui/method-recursion-mutual` and `tests/ui/method-recursion-through` (`cargo xtask check-ui`, `code: none` plus the message).
+Fixture: `tests/ui/method-recursion-direct`, `tests/ui/method-recursion-mutual`, `tests/ui/method-recursion-through` and `tests/ui/generic-recursion` (`cargo xtask check-ui`, `code: none` plus the message). A generic helper adds nothing to the graph (slice m9.g2): `t.m()` on a `T` is an edge to every method named `m`, a superset of the impls of any bound, so every instantiation is covered, and `generic-recursion` closes the cycle through the impl of a bound.
 Decision: D162 (M9 plan 1 item 3, slice m9.a2).
 
 ### GUST-E0121 `impl` for a type the module does not define
@@ -327,14 +329,32 @@ Name collisions (not checked by the macro, loud in slangc, and the same for a st
 Fixture: `tests/ui/enum-data-variant`, `tests/ui/enum-discriminant`, `tests/ui/enum-no-partialeq` and `tests/ui/enum-cast-type` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D157 (M9 plan 2.2, slice m9.e1).
 
+### GUST-E0123 explicit type arguments on a call
+
+Type arguments of a generic helper or method are inferred from the arguments, never written (slice m9.g2, D170): a call with a turbofish, `f::<Sq>(x)` or `x.m::<Sq>(y)`, is refused with this code. A type parameter that is not the whole type of some parameter (it appears only in the result, in no parameter, or only nested in another type such as `Option<T>`) is refused too, because it could only be given by a turbofish or by the expected type; a `let` annotation does not help.
+Reached through `#[gpu]`.
+Rejected: `pick::<Sq>(s)`, `h.fits::<Sq>(s)`, `fn make<T: Shape>() -> T`.
+Write instead: pass a value of the type and let it be inferred; write the concrete function when nothing can be inferred.
+Fixture: `tests/ui/generic-turbofish` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D170 (M9 plan 2.7, slice m9.g2).
+
 ### GUST-E0124 trait form outside the contract
 
-A `#[gpu]` module accepts a trait that declares methods with a receiver (`&self`, `&mut self` or `self`) and no body, and `impl Trait for S` of a struct or field-less enum of the module (slice m9.g1, D170). The trait lowers to a Slang `interface`, each impl to an `extension S : Trait`, and a call to the concrete method: dispatch is static. A `&mut self` method becomes `[mutating]`; `Self` in a signature is `This`. Everything else about a trait is refused with this code: an `unsafe` or `auto` trait, a default method body, an associated type, constant or function without a receiver, a supertrait (`trait B: A`), a generic trait or method, an `async`, `const`, `unsafe`, `extern` or variadic method, and in an impl any item that is not a method (an associated `const` or type). A `&mut self` method in the impl of an enum is this code too: an enum is a value of the module with no fields to write, and that form is not part of this slice. Bounds and generics are slice m9.g2.
+A `#[gpu]` module accepts a trait that declares methods with a receiver (`&self`, `&mut self` or `self`) and no body, and `impl Trait for S` of a struct or field-less enum of the module (slice m9.g1, D170). The trait lowers to a Slang `interface`, each impl to an `extension S : Trait`, and a call to the concrete method: dispatch is static. A `&mut self` method becomes `[mutating]`; `Self` in a signature is `This`. Everything else about a trait is refused with this code: an `unsafe` or `auto` trait, a default method body, an associated type, constant or function without a receiver, a supertrait (`trait B: A`), a generic trait or method, an `async`, `const`, `unsafe`, `extern` or variadic method, and in an impl any item that is not a method (an associated `const` or type). A `&mut self` method in the impl of an enum is this code too: an enum is a value of the module with no fields to write, and that form is not part of this slice.
 Reached through `#[gpu]`.
 Rejected: `trait T { fn m(&self) -> u32 { 1u32 } }`, `trait T { type X; }`, `trait T { const N: u32; }`, `trait B: A { .. }`, `trait T<A> { .. }`, `trait T { fn m<A>(&self); }`, `trait T { fn make() -> u32; }`, `impl T for E { fn bump(&mut self) { .. } }` for an enum `E`.
 Write instead: declare the method without a body and implement it in each impl; share code with a helper function.
-Fixture: `tests/ui/trait-default-body`, `tests/ui/trait-assoc-type`, `tests/ui/trait-supertrait` and `tests/ui/trait-generic` (`cargo xtask check-ui`, `code: none` plus the message).
+Fixture: `tests/ui/trait-default-body`, `tests/ui/trait-assoc-type`, `tests/ui/trait-supertrait`, `tests/ui/trait-generic` and `tests/ui/generic-trait-method` (`cargo xtask check-ui`, `code: none` plus the message). Since slice m9.g2 a generic trait method stays refused with this code (the bound of a type parameter is a trait of the module, so the generic is a helper or an inherent method), and so does a trait named `Copy` (the bound `Copy` is accepted and dropped, and a module trait of that name would hide it).
 Decision: D170 (M9 plan 2.6, slice m9.g1).
+
+### GUST-E0125 bound outside the contract
+
+A type parameter of a generic helper or method needs at least one trait of the module as a bound (inline `T: A + B` or in a `where` clause), and may also have `Copy`, which is accepted and dropped (every value is a copy on the GPU) and does not count as that trait: with no module trait a `T` could be a number, a tuple or an array, and an unsuffixed literal would fix its Slang type differently from Rust's (review of m9.g2). A missing trait is this code too. Every other bound is refused with this code (slice m9.g2, D170): a std trait (`PartialOrd`, `PartialEq`, `Add`, `Default`, `Clone`, `Sized`, `Fn(..)`), `?Sized`, a higher-ranked `for<..>` bound and a trait the module does not declare. Operators, comparisons and literals on a `T` are left to rustc, which refuses them for a bound of the module (E0369 and its relatives) on the CPU twin and the typecheck item.
+Reached through `#[gpu]`.
+Rejected: `fn f<T: PartialOrd>(a: T)`, `fn f<T: Shape + core::ops::Add<Output = T>>(a: T)`, `fn f<T: Elsewhere>(a: T)`, `fn f<T>(a: T)`, `fn f<T: Copy>(a: T)`.
+Write instead: a trait of the module with the method you need (`trait Order { fn less(&self, o: Self) -> bool; }`).
+Fixture: `tests/ui/generic-std-bound` (two std bounds; the first is reported), `tests/ui/generic-unbounded` (`Copy` alone) and `tests/ui/generic-arith` (arithmetic on `T`: rustc's own error) (`cargo xtask check-ui`, `code: none` plus the message for the first; the second holds rustc's code).
+Decision: D170 (M9 plan 2.7, slice m9.g2).
 
 ### GUST-E0126 trait path call without a place receiver
 
@@ -496,7 +516,7 @@ Decision: D159 (M9 plan 2.4, slice m9.r1).
 
 ### GUST-E0218 trait used as a type
 
-A trait of the module is not a type: dispatch is static (slice m9.g1, D170), so there is no trait object and no `impl Trait` argument or result. A `dyn Trait`, an `impl Trait` in any type position, and a module trait named as a type (a parameter, a field, a local annotation) are this code. Generic bounds (`fn f<A: T>(a: A)`) are slice m9.g2.
+A trait of the module is not a type: dispatch is static (slice m9.g1, D170), so there is no trait object and no `impl Trait` argument or result. A `dyn Trait`, an `impl Trait` in any type position, and a module trait named as a type (a parameter, a field, a local annotation) are this code. A trait is a bound (`fn f<A: T>(a: A)`, slice m9.g2), not a type.
 Reached through `#[gpu]`.
 Rejected: `fn f(x: &dyn Shape)`, `fn f(x: impl Shape)`, `fn f() -> impl Shape`, `struct H { t: Shape }`, `let a: Shape = ..;`.
 Write instead: the concrete struct or enum, `fn f(x: Rect)`; for several shapes, one function per type or a helper both call.
@@ -779,6 +799,8 @@ Fixture: `tests/ui/method-name-clash` (`cargo xtask check-ui`, `code: none` plus
 Decision: D154 (M9 plan 2.1, slice m9.a1).
 
 A trait method follows the same rule (slice m9.g1, the P18 ruling of spike m9.g0): its name must not be a name of the dialect or a reserved one, must not be a field of an implementing struct, and must not be the name of an inherent method of an implementing type, because slangc accepts an inherent method and an extension method of one name silently and the call would pick one of them. Two traits that declare one method name must not be implemented by the same type, for the same reason.
+Since slice m9.g2 the same rule covers the name of a type parameter: it must not be the name of a struct, enum, trait, function or other item of the module, a dialect or primitive type (`Vec4`, `u32`, `bool`, `Option`), one of the id types the emitter maps to `uint3` (`SV_DispatchThreadID`, `SV_GroupThreadID`, `SV_GroupID`, `LocalId`, `GroupId`) or `Self`. A name that only collides in Slang is renamed instead (a generic called `IFloat`, or `float4`, is emitted as `__gust_r_IFloat`, and so on). A type parameter named like a trait of the module is GUST-E0218 first (the trait is not a type).
+
 Rejected (trait): `trait T { fn len(&self) -> u32; }`, `impl S { fn area(&self) -> u32 { .. } }` next to `impl Shape for S { fn area(&self) -> u32 { .. } }`, `trait A { fn go(&self); } trait B { fn go(&self); }` both implemented for `S`.
 Write instead (trait): another name for the inherent method, or one trait method.
 Fixture (trait): `tests/ui/trait-inherent-clash` and `tests/ui/trait-reserved-name` (`cargo xtask check-ui`, `code: none` plus the message).

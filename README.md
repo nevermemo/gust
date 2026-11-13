@@ -1152,8 +1152,14 @@ The direct syntax translator currently supports:
   (methods with a receiver and no body) and `impl T for S` of a struct or field-less enum of the module. A trait becomes
   a Slang `interface` and each impl an `extension S : T`; a call is the call of the concrete method, by method syntax or
   by the path forms `T::m(&s, a)`, `T::m(s, a)` and `<S as T>::m(&s, a)` on a place. No `dyn`, no `impl Trait`, no default
-  bodies, associated items, supertraits or generics (generics and bounds are slice m9.g2). GUST-E0124, E0126 and E0218
+  bodies, associated items, supertraits or generic traits. GUST-E0124, E0126 and E0218
   in [DIAGNOSTICS](docs/DIAGNOSTICS.md); see [SEMANTICS](docs/SEMANTICS.md) section 13;
+- generic helpers and methods with trait bounds (M9, m9.g2, D170): `fn f<T: A + B>(t: T) -> T`, a `where` clause, and
+  `impl S { fn m<T: A>(&self, t: T) }`. The bounds are traits of the module (and `Copy`, dropped); type arguments are
+  inferred (no turbofish) and `T` is a whole parameter, result or `let` type. Static specialisation in slangc
+  (`T f<T : A & B>(T t)`); the CPU twin keeps the generic as plain Rust. No generic kernels, structs, enums or trait
+  methods, no std-trait bounds or arithmetic on `T`, no const generics. GUST-E0123 and E0125 (and E0114 for the rest) in
+  [DIAGNOSTICS](docs/DIAGNOSTICS.md); see [SEMANTICS](docs/SEMANTICS.md) section 14;
 - `Option<T>` and `Result<T, T>` as local and helper values, including `if let` and
   a statement-only `match` with `Ok(x)`/`Err(e)` block arms (D14);
 - the vector and matrix types of `gust::math` (`Vec2` to `Vec4`, `IVec2` to `IVec4`, `UVec2` to `UVec4`, `Mat2` to

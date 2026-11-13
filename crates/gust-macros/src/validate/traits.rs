@@ -243,7 +243,7 @@ impl<'ast> Visit<'ast> for TypeUses<'_> {
         self.push(diagnostics::error(
             Code::TraitTypeUse,
             ty,
-            "`impl Trait` as a type is not part of the dialect: name the struct or enum of the module (generic helpers with trait bounds arrive in a later slice)",
+            "`impl Trait` as a type is not part of the dialect: name the struct or enum of the module (a generic helper `fn f<T: Trait>(t: T)` takes the bound)",
         ));
     }
 

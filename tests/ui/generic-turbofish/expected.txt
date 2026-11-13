@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: generic-turbofish/src/main.rs
+line: 26
+message: [GUST-E0123] type arguments are inferred from the arguments of a call: write `f(a)`, not `f::<X>(a)`

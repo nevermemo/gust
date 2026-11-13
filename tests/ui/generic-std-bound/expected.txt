@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: generic-std-bound/src/main.rs
+line: 19
+message: [GUST-E0125] `PartialOrd` is a std trait: a generic bound is a trait of this module or `Copy`

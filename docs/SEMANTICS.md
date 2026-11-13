@@ -1586,7 +1586,43 @@ struct, above the extensions that declare the callee, and slangc accepts it: `me
 **Edge cases.** The arithmetic in a trait method has the contract of section 3, as in a helper. Slang's standard module
 declares interfaces (`IFloat`, `IInteger`, ..); a user trait of such a name is renamed `__gust_r_<name>`
 (`STDLIB_INTERFACES`, measured: the user's interface shadows the standard one on slangc 2026.21, so this is hygiene, not a
-class-1 failure). A missing impl method is rustc's E0046 on the twin, not a Slang error. Generics and bounds are slice
-m9.g2. Tests: `crates/gust-wgpu/tests/m9_traits.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations), the macro
+class-1 failure). A missing impl method is rustc's E0046 on the twin, not a Slang error. Generics and bounds: section 14.
+Tests: `crates/gust-wgpu/tests/m9_traits.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations), the macro
 tests in `crates/gust-macros/src/tests/regression.rs`, the fixture `tests/fixtures/traits.rs` and its golden, and the UI
 fixtures `trait-*`.
+
+## 14. Generic helpers and methods with trait bounds (M9, D170)
+
+A free function or an inherent method with a receiver may take type parameters: `fn f<T: A + B>(t: T) -> T`,
+`fn f<T>(t: T) where T: A`, `impl S { fn m<T: A>(&self, t: T) -> u32 }`. A bound is a trait of the module, inline or in a
+`where` clause; `Copy` is accepted and dropped (every GPU value is a copy), and does not count as a bound:
+every type parameter needs at least one trait of the module (`GUST-E0125` otherwise), which keeps `T` a struct or enum of the module and a number, tuple or array out of it. Type arguments are inferred from the arguments (`GUST-E0123` for a turbofish or a parameter nothing
+determines) and `T` is written as a whole type: a parameter, a result, `let x: T`. `T` nested in an array, tuple,
+`Option` or reference, a generic kernel, closure or associated function without a receiver, const
+generics, lifetimes and defaults are `GUST-E0114` (a generic trait method is `GUST-E0124`); a generic struct or enum is `GUST-E0103`; a bound that is not a trait
+of the module or `Copy` is `GUST-E0125`. Arithmetic, comparison and literals on a `T` are not checked by the macro: a
+module trait has no operators, so rustc refuses them on the CPU twin and the typecheck item (UI fixture
+`generic-arith`, rustc's own error), and no Slang is produced from that program.
+
+**Lowering.** `T f<T : A & B>(T t)`; inline and `where` bounds merge and are deduplicated, `Copy` is dropped.
+A generic method is a member of its struct (`[mutating] uint h<T : A>(T t)`). The
+specialisation is slangc's, per instantiation, statically (spike m9.g0). The names of generics go through the same
+renaming as other names (`collisions::emit_name`), so `T` named `IFloat` or `float4` is safe in Slang; a generic named
+like an item of the module, a dialect or primitive type or `Self` is `GUST-E0328`. The CPU twin and the typecheck item
+keep the generics as plain Rust.
+
+**Call graph, uniformity, ledger.** A call `t.m()` on a `T` is an edge to every method named `m` (D162, by name), a
+superset of the impls of any bound, so recursion through a bound and its impl is `GUST-E0120` (UI fixture
+`generic-recursion`) and every impl a bound can reach is validated as a helper (D154): a barrier, subgroup operation,
+atomic or storage access in it is refused where it is written (UI fixture `generic-barrier`, `GUST-E0414`). The ledger
+rows of D133 apply to the impls as to any helper.
+
+**Order of evaluation.** The same as for non-generic calls (section 13), measured with rustc and slangc 2026.21 (first), re-measured on the pinned 2026.22 by the GPU test, and
+pinned on the RTX 5090 with hand-written expectations: arguments run left to right (`gmix(s, c.bump(), c.bump())`,
+`e.run_with(s)` whose body calls `t.mix(self.bump(), self.bump())`, `gmix_local`), and a by-value `T` argument is
+copied before a later argument mutates its source (`gplus(d, d.bump())` is `101x + 1`). A `&mut self` method through
+`T` is called on a local copy (`let mut c: T = t; c.grow(by);`), because a by-value parameter is not a mutation root.
+
+Tests: `crates/gust-wgpu/tests/m9_generics.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations), the macro tests
+in `crates/gust-macros/src/tests/regression.rs`, the fixture `tests/fixtures/generics.rs` and its golden, and the UI
+fixtures `generic-*`.

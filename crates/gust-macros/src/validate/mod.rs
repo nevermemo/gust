@@ -12,6 +12,7 @@ use crate::slang::texture;
 mod barrier;
 mod callgraph;
 pub(crate) mod classify;
+pub(crate) mod generics;
 pub(crate) mod limits;
 pub(crate) mod traits;
 
@@ -640,6 +641,15 @@ pub(crate) fn validate_module_in(
                          already is GPU code, and its functions are helpers or `#[kernel]`s",
                     ));
                 }
+                // A generic helper (slice m9.g2); a generic kernel is refused by `validate_function` (GUST-E0114).
+                if generics::is_generic(&function.sig)
+                    && !function
+                        .attrs
+                        .iter()
+                        .any(|attribute| attribute.path().is_ident("kernel"))
+                {
+                    generics::check_signature(&function.sig, &function.block, &trait_table, items)?;
+                }
                 validate_function(
                     stage,
                     function,
@@ -1155,7 +1165,7 @@ fn validate_impl(
                 "an `impl` of a GPU module holds methods only: associated constants, types and macros are not accepted",
             ));
         };
-        validate_method(stage, method, &owner, context)?;
+        validate_method(stage, method, &owner, context, implemented.is_some())?;
     }
     Ok(())
 }
@@ -1289,6 +1299,13 @@ fn validate_trait(
             ),
         ));
     }
+    if name == "Copy" {
+        return Err(diagnostics::error(
+            Code::TraitFeature,
+            &item.ident,
+            "a trait of a GPU module cannot be named `Copy`: in a generic bound `T: Copy` is the marker, which says nothing on the GPU and is dropped",
+        ));
+    }
     if !item.generics.params.is_empty() || item.generics.where_clause.is_some() {
         return Err(diagnostics::error(
             Code::TraitFeature,
@@ -1335,7 +1352,7 @@ fn validate_trait(
             return Err(diagnostics::error(
                 Code::TraitFeature,
                 &signature.generics,
-                "a generic trait method is not part of the dialect yet (generic helpers and methods are a later slice)",
+                "a generic trait method is not part of the dialect: a trait method is not generic (a generic helper function with the trait as its bound is)",
             ));
         }
         if signature.asyncness.is_some()
@@ -1424,6 +1441,7 @@ fn validate_method(
     method: &syn::ImplItemFn,
     owner: &Owner<'_>,
     context: &ImplContext<'_>,
+    trait_impl: bool,
 ) -> syn::Result<()> {
     if let Some(attribute) = method.attrs.iter().find(|attribute| {
         attribute.path().is_ident("kernel")
@@ -1474,6 +1492,25 @@ fn validate_method(
                 "`mut self` is not accepted: a method that changes its receiver takes `&mut self`, and a method that takes `self` by value reads its copy only",
             ));
         }
+    }
+    // Type parameters on a method (slice m9.g2): an inherent method with a receiver may have them; the method of a trait
+    // impl may not (a trait method is not generic, GUST-E0124), and nor may an associated function.
+    if generics::is_generic(&method.sig) {
+        if trait_impl {
+            return Err(diagnostics::error(
+                Code::TraitFeature,
+                &method.sig.generics,
+                "a generic method in a trait impl is not part of the dialect: a trait method is not generic (write a generic helper function that takes the bound)",
+            ));
+        }
+        if receiver_of(&method.sig).is_none() {
+            return Err(diagnostics::error(
+                Code::ExternOrGenericFunction,
+                &method.sig.generics,
+                "a generic associated function (no receiver) is not part of the dialect: a generic helper function or a generic method with a receiver is",
+            ));
+        }
+        generics::check_signature(&method.sig, &method.block, context.traits, context.items)?;
     }
     let function = method_as_function(method);
     validate_function(
@@ -2224,11 +2261,15 @@ fn validate_function(
             "unsafe is not part of the Rust-to-Slang subset",
         ));
     }
-    if function.sig.abi.is_some() || !function.sig.generics.params.is_empty() {
+    // A generic helper or inherent method was judged by `generics::check_signature` before the call (slice m9.g2); a
+    // generic kernel or closure is not accepted.
+    if function.sig.abi.is_some()
+        || ((is_kernel || closure) && !function.sig.generics.params.is_empty())
+    {
         return Err(diagnostics::error(
             Code::ExternOrGenericFunction,
             &function.sig,
-            "extern and generic GPU functions are not supported yet",
+            "extern GPU functions and generic kernels are not supported: a generic is a helper function or an inherent method with trait bounds, and kernels are concrete",
         ));
     }
 
@@ -4077,6 +4118,16 @@ impl RestrictedVisitor {
 
     fn check_module_method_call(&mut self, call: &syn::ExprMethodCall, facts: MethodFacts) {
         let method = call.method.to_string();
+        if call.turbofish.is_some() {
+            self.reject(
+                Code::TurbofishOnGenericCall,
+                call,
+                &format!(
+                    "type arguments are inferred from the arguments of a call: write `.{method}(a)`, not `.{method}::<X>(a)`"
+                ),
+            );
+            return;
+        }
         let root = Self::place_root(&call.receiver);
         if facts.mutating()
             && let Some(root) = &root
@@ -4769,6 +4820,23 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 }
                 return;
             }
+        }
+        // `f::<X>(a)` on a function of the module (slice m9.g2): type arguments are inferred from the arguments only.
+        if let syn::Expr::Path(path) = call.func.as_ref()
+            && path.qself.is_none()
+            && path.path.leading_colon.is_none()
+            && path.path.segments.len() == 1
+            && !path.path.segments[0].arguments.is_none()
+            && self
+                .function_names
+                .contains(&path.path.segments[0].ident.to_string())
+        {
+            self.reject(
+                Code::TurbofishOnGenericCall,
+                path,
+                "type arguments are inferred from the arguments of a call: write `f(a)`, not `f::<X>(a)` (a generic function of the dialect has parameters whose types fix its type parameters)",
+            );
+            return;
         }
         let allowed = match call.func.as_ref() {
             syn::Expr::Path(path) => path
@@ -6146,7 +6214,7 @@ mod tests {
                 Code::UnsafeFunction,
             ),
             (
-                syn::parse_quote! { mod bad { fn f<T>(x: T) {} } },
+                syn::parse_quote! { mod bad { fn f<const N: usize>(x: u32) {} } },
                 Code::ExternOrGenericFunction,
             ),
             (

@@ -298,6 +298,19 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   review caught licence listings truncated by a `head` in the pipeline (counts corrected; verdict unchanged) and
   that m9.g1 had not run on 2026.22 (it does, unchanged). 31 main gates green on 2026.22, ending 02:56Z on
   2026-11-13 (pin 448/47).
+- m9.g2 (merge `4090483`; Opus review MERGE AFTER FIXES 1/4/6, re-check MERGE): generic helpers and inherent
+  methods whose type parameters are bounded by module traits (`T: A`, `T: A + B`, inline or `where`), lowered to
+  Slang generics constrained by the interfaces. Refused by name before slangc: turbofish and uninferable `T`
+  (E0123), a parameter with no module-trait bound or std bounds only (E0125), generic trait methods (E0124),
+  `impl<T>` (E0114), and generic names that collide with items or built-in id types (E0328). The review's must-fix:
+  an unbounded `T` could be a primitive inferred from an unsuffixed literal, bypassing D86; now refused. Evidence:
+  fixture `generics.rs` with golden Slang and SPIR-V, ten UI fixtures, the GPU test `m9_generics.rs` with
+  hand-written values on the RTX 5090 and the twin, including side-effecting argument order through a generic
+  method. No existing golden changed. 31 gates green on 2026.22 on the lane's tree, ending 09:46Z on
+  2026-11-13 (pin 450/48); the merge commit's tree is byte-identical to it.
+- m9.rt1 (spike, never merged): GO WITH CHANGES (D174). Slang's own SPIR-V through wgpu passthrough, with explicit
+  guards and dense bindings, gives Rust's values where naga's WGSL path hits the D168/D169 NVIDIA defect.
+  plans/m9/spike-rt1.md has the measurements; slice m9.rt2 builds the opt-in feature.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

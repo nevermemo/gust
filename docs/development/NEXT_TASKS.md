@@ -561,6 +561,12 @@ test module; do not mix that mechanical move with behavior changes.
 - A check that every committed compiler tag (`compiler`, `slang` fields of the reflection documents and manifests)
   equals `SLANG_PIN`; m9.p's regeneration script does it by hand (examples/subgroup-reduce was missed: check-artifacts
   skips example artifacts).
+- m9.g2 nits: DIAGNOSTICS's E0121 entry still says a generic method is E0114 (a generic inherent method with a
+  receiver is accepted); README's generics row should say at least one module trait is required; SEMANTICS's E0328
+  sentence should name the id types and say a parameter named like a trait reports E0218 first; the order prose
+  should list `h.weigh(s, c2.bump(), c2.bump())`; a few edited lines in CHANGELOG and SEMANTICS run past the wrap
+  width. Left from round 1: `T::m(&t)` gets E0302's generic text (suggest `t.m()`; pin a unit case); a kernel
+  with a `where` clause and no generics is still accepted; no fixture has a generic inherent method on an enum impl.
 - m9.p nits: the licence evidence names its search strings; SEMANTICS's "131 of 131" is now 132 with traits.
 - m9.g1 nits: a garbled comment on `pack_both` in tests/fixtures/traits.rs; `tests/ui/trait-enum-mut-self/
   expected.txt` matches a prefix only. Review N4-N6 (plans/m9/review-m9g1-opus.md) left as reasoned there.

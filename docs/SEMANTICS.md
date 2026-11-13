@@ -807,12 +807,21 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   a threaded lockstep twin measured far too slow (S7.4, D118), so no CPU strategy for barrier kernels is defined.
   Under `GUST_PROFILE=cpu` such a kernel has no `Run` implementation. Subgroup operations (m8.s) took the second way
   as well, through capability variants: see "Subgroup operations" below.
-- **Workgroup memory starts unspecified.** A `Workgroup<[T; N]>` parameter is a `groupshared` array of one workgroup.
-  Slang gives it no initial value and the GPU leaves its contents unspecified, so a kernel must write every element
-  it reads before it reads it. A read of an element that no invocation of the same workgroup has written yet is outside
-  the defined domain, and so is a read of an element another invocation wrote with no `workgroup_barrier()` between
-  the write and the read. The validator checks the position of each barrier (every invocation of the workgroup must
-  reach it), not this precondition, and no test can observe a value the GPU leaves unspecified.
+- **Workgroup memory starts as zeros (D174).** A `Workgroup<[T; N]>` parameter is a `groupshared` array of one workgroup,
+  and every element reads as zero (`false` for a `bool`) until some invocation of the workgroup writes it, on every
+  route this crate runs. On the WGSL route that is WGSL's own rule (naga zero-initialises workgroup variables); on the
+  SPIR-V route (section 15) slangc's module has no such rule, because Slang refuses an initialiser on `groupshared`
+  (E30623), so the emitted Slang zeroes the arrays itself, the invocations of the group sharing the work, and puts a
+  barrier after it, before the kernel's first statement (measured on the RTX 5090 and the Radeon 890M:
+  `crates/gust-wgpu/tests/spirv_route.rs`, 256 groups, three rounds, with a dispatch that fills the same memory with a
+  pattern before; without the zeroing the 5090 showed the previous dispatch's pattern and the 890M garbage). A kernel
+  that reads a workgroup element before it writes it is therefore inside the domain and reads zero. The CPU twin has
+  nothing to say: a kernel with workgroup memory has no twin (`cpu = "unsupported"`, GUST-E0717), so there is no
+  twin value to differ from this contract. A SPIR-V file exported by `cargo gust build` from a build without the
+  feature has no zeroing (SPIR-V artifacts for precompiled kernels are not covered). A read of an element another
+  invocation wrote with no `workgroup_barrier()` between the write and the read is still outside the defined domain.
+  The validator checks the position of each barrier (every invocation of the workgroup must reach it), not this
+  precondition.
 - **Workgroup races.** Two invocations of a workgroup that write the same element of workgroup memory, or one that
   writes an element another reads, with no `workgroup_barrier()` between the accesses, are a race and outside the
   domain, as for storage parameters above. Workgroup memory is private to its workgroup: a barrier orders the
@@ -1116,7 +1125,10 @@ so GUST does not refuse or rewrite the form. Programs that write a real change a
 a struct field is affected the same way; arrays in storage buffers were not measured. The GPU test
 `driver_sentinel` (m9.sen) runs three `#[gpu]` kernels shaped like the investigations' programs (the D168 kernels read
 `v[0]` directly) and expects these wrong values on the RTX 5090 and Rust's elsewhere; if their results change on the
-5090, it fails, the cue to re-measure before touching the difftest guard.
+5090, it fails, the cue to re-measure before touching the difftest guard. With the `spirv-route` feature on and the
+route taken (section 15), the defect did not reproduce on the RTX 5090: the sentinel reads the route of its kernels
+and then expects Rust's values on every adapter, and a defect's values on the route are a new finding. The difftest
+guard stays, because the WGSL route is the default.
 
 ## 8. What is proven
 
@@ -1626,3 +1638,35 @@ copied before a later argument mutates its source (`gplus(d, d.bump())` is `101x
 Tests: `crates/gust-wgpu/tests/m9_generics.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations), the macro tests
 in `crates/gust-macros/src/tests/regression.rs`, the fixture `tests/fixtures/generics.rs` and its golden, and the UI
 fixtures `generic-*`.
+
+## 15. The SPIR-V route (M9, m9.rt2, D172, D174)
+
+The Cargo feature `spirv-route` of `gust-compute-wgpu` (forwarded by `gust-compute`; off by default; Vulkan only) builds
+a compute pipeline from slangc's own SPIR-V through wgpu's `create_shader_module_passthrough`, instead of the WGSL
+that naga checks and rewrites. A kernel stays on the WGSL route, and the device records the reason
+(`HeadlessDevice::route_events`), when the feature is off, the device lacks `PASSTHROUGH_SHADERS`, the binding check
+fails (every binding the layout names must be in the module, with the layout's kind; a binding the kernel does not
+touch is dropped by slangc and handled by renumbering), the SPIR-V compile fails, or the kernel is a precompiled WGSL
+artifact. wgpu renumbers a bind group layout densely, so the route rewrites each `Binding` decoration to its rank in
+the layout; a sparse layout (bindings 3, 999, or 0 and 999) ran on both adapters.
+
+Passthrough has none of naga's run-time guards, so with the feature on the macro emits them as Slang, in the text
+both routes share (a kernel that falls back gets the same guarded text; with the feature off the text does not
+change). They are on whenever the feature is on, never a run-time switch (D174c):
+
+- an index into a local or workgroup array that is not a literal is clamped to the last element (`min(idx, len-1)`),
+  as naga does;
+- an integer `/` or `%` goes through the helpers `__gust_div` and `__gust_rem`, also for a literal divisor: a zero
+  divisor, and `MIN / -1`, divide by one, and a signed `%` is `a - d * (a / d)` because `OpSRem` is poison for negative
+  operands on Vulkan (wgpu issue 8191);
+- workgroup memory is zeroed (D174a): the group's invocations store zeros in a strided loop and then meet at a
+  barrier, before the first statement. This holds on every route, because the WGSL route gets the same text. The
+  extension `VK_KHR_zero_initialize_workgroup_memory` is not usable: Slang 2026.22 refuses an initializer on
+  `groupshared` (E30623). A kernel with workgroup memory has no CPU twin (`GUST-E0717`), so the twin has nothing to
+  match.
+
+Differences that remain, as D39 limitations: an index into a storage buffer is not clamped by GUST; it keeps the
+device's behaviour, which is naga-like where `robustBufferAccess2` exists (D174b). The conversion of a float to an
+integer saturates as Rust does on the route, where the WGSL route gave `0x7fffff80` and `0xffffff00` (rows KM-05 and
+KM-06; the mismatch test pins the route's values), a NaN converts to 0, and `NaN != NaN` is true. A float result may
+differ by an ulp where the driver contracts a multiply and an add.

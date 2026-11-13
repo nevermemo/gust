@@ -46,6 +46,46 @@ use crate::{
     workspace::{cargo_target_dir, workspace_root},
 };
 
+/// Setting this to `1` runs the batches and the GPU test with the SPIR-V route (slice m9.rt2, D172): the generated crates
+/// depend on `gust-wgpu` with a fixed feature list that no Cargo flag can extend from here, so the route is delivered the
+/// way `check-dual` delivers its cfg, through `CARGO_ENCODED_RUSTFLAGS`, as `--cfg feature="spirv-route"` for every crate of
+/// the build (the macro and `gust-wgpu` both read `cfg!(feature = "spirv-route")`). `GUST_SPIRV_ROUTE_LOG` (a file) then
+/// records the route of each kernel.
+pub(crate) const ROUTE_VARIABLE: &str = "GUST_SPIRV_ROUTE";
+
+/// The `CARGO_ENCODED_RUSTFLAGS` of a route run: two flags joined by the unit separator.
+pub(crate) const ROUTE_RUSTFLAGS: &str = "--cfg\u{1f}feature=\"spirv-route\"";
+
+/// The environment variables a cargo call of this command gets for the route: none unless [`ROUTE_VARIABLE`] is `1`. It
+/// refuses a value other than `0` or `1`, and refuses while a rustflags variable is set, because
+/// `CARGO_ENCODED_RUSTFLAGS` takes precedence over them and would silently drop their flags.
+pub(crate) fn route_environment(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<Vec<(&'static str, &'static str)>, String> {
+    match lookup(ROUTE_VARIABLE).as_deref().and_then(|v| v.to_str()) {
+        None | Some("0") => return Ok(Vec::new()),
+        Some("1") => {}
+        Some(other) => {
+            return Err(format!(
+                "check-difftest: {ROUTE_VARIABLE} is `{other}`; use `1` (route on) or leave it unset"
+            ));
+        }
+    }
+    let set: Vec<&str> = crate::checks::RUSTFLAGS_VARIABLES
+        .iter()
+        .copied()
+        .filter(|name| lookup(name).is_some())
+        .collect();
+    if !set.is_empty() {
+        return Err(format!(
+            "check-difftest: {ROUTE_VARIABLE}=1 delivers its cfg through CARGO_ENCODED_RUSTFLAGS, which would drop the flags of {}; unset {} and run it again",
+            set.join(", "),
+            if set.len() == 1 { "it" } else { "them" }
+        ));
+    }
+    Ok(vec![("CARGO_ENCODED_RUSTFLAGS", ROUTE_RUSTFLAGS)])
+}
+
 /// Programs the generator keeps per seed (`PROGRAMS_PER_SEED` of the harness crate; the report must say so).
 pub(crate) const PROGRAMS_PER_SEED: u64 = 16;
 
@@ -1352,10 +1392,12 @@ fn run_batch(
             "check-difftest: a batch under the profile `{profile}` needs a record directory"
         ));
     }
+    let route = route_environment(|name| std::env::var_os(name))?;
     println!("-- cargo {}", args.join(" "));
     let status = workspace_command("cargo")
         .args(&args)
         .current_dir(root)
+        .envs(route)
         .env("CARGO_TARGET_DIR", target)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
@@ -1379,12 +1421,14 @@ fn run_batch(
 fn run_short_circuit(root: &Path, target: &Path) -> Result<Vec<String>, String> {
     let args = short_circuit_args();
     println!("-- cargo {}", args.join(" "));
+    let route = route_environment(|name| std::env::var_os(name))?;
     // CARGO_TARGET_DIR is what the test reads to build its run crate beside the batch's (without it the test builds
     // the whole dependency tree again under its own `target/tmp`).
     let output = workspace_command("cargo")
         .args(&args)
         .current_dir(root)
         .env("CARGO_TARGET_DIR", target)
+        .envs(route)
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
         .output()
@@ -1546,5 +1590,60 @@ mod shape_row_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+}
+
+/// Tests of the route environment (slice m9.rt2).
+#[cfg(test)]
+mod route_environment_tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    fn lookup<'a>(set: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
+        move |name| {
+            set.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| OsString::from(*value))
+        }
+    }
+
+    #[test]
+    fn unset_or_zero_adds_nothing() {
+        assert_eq!(route_environment(lookup(&[])), Ok(Vec::new()));
+        assert_eq!(
+            route_environment(lookup(&[(ROUTE_VARIABLE, "0")])),
+            Ok(Vec::new())
+        );
+    }
+
+    #[test]
+    fn one_delivers_the_cfg_through_the_encoded_rustflags() {
+        assert_eq!(
+            route_environment(lookup(&[(ROUTE_VARIABLE, "1")])),
+            Ok(vec![("CARGO_ENCODED_RUSTFLAGS", ROUTE_RUSTFLAGS)])
+        );
+        assert_eq!(
+            ROUTE_RUSTFLAGS.split('\u{1f}').collect::<Vec<_>>(),
+            ["--cfg", "feature=\"spirv-route\""]
+        );
+    }
+
+    #[test]
+    fn another_value_and_preset_rustflags_are_refused() {
+        let error = route_environment(lookup(&[(ROUTE_VARIABLE, "yes")])).unwrap_err();
+        assert!(error.contains("use `1`"), "{error}");
+        let error =
+            route_environment(lookup(&[(ROUTE_VARIABLE, "1"), ("RUSTFLAGS", "")])).unwrap_err();
+        assert!(
+            error.contains("RUSTFLAGS") && error.contains("unset it"),
+            "{error}"
+        );
+        let error = route_environment(lookup(&[
+            (ROUTE_VARIABLE, "1"),
+            ("CARGO_ENCODED_RUSTFLAGS", "x"),
+            ("CARGO_BUILD_RUSTFLAGS", "y"),
+        ]))
+        .unwrap_err();
+        assert!(error.contains("unset them"), "{error}");
     }
 }

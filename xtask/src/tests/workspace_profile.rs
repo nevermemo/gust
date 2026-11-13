@@ -90,11 +90,19 @@ fn table(manifest: &str, name: &str) -> Vec<String> {
 fn slang_runtime_is_a_feature_of_gust_and_gust_wgpu_and_is_off_by_default() {
     assert_eq!(
         table("crates/gust/Cargo.toml", "features"),
-        ["slang-runtime = []", "cargo-gust-bridge = []"]
+        [
+            "slang-runtime = []",
+            "cargo-gust-bridge = []",
+            r#"spirv-route = ["gust-macros/spirv-route"]"#
+        ]
     );
+    // `spirv-route` (m9.rt2, D172) is the opt-in SPIR-V route: off by default, forwarded down to the macro.
     assert_eq!(
         table("crates/gust-wgpu/Cargo.toml", "features"),
-        [r#"slang-runtime = ["gust/slang-runtime"]"#]
+        [
+            r#"slang-runtime = ["gust/slang-runtime"]"#,
+            r#"spirv-route = ["gust/spirv-route"]"#
+        ]
     );
 }
 

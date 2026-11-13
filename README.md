@@ -103,6 +103,10 @@ build, hold no process-spawning compiler. A `[dev-dependencies]` entry with the 
 examples, but never `cargo run` of a binary. Check that state with
 `cargo check -p gust-compute -p gust-compute-wgpu --no-default-features --lib` (the Unit suite runs it).
 
+The SPIR-V route is the opt-in feature `spirv-route` of `gust-compute-wgpu` (off by default, Vulkan only): compute
+kernels are built from slangc's own SPIR-V and fall back to WGSL where the device or the kernel cannot take it. It adds
+index, division and workgroup-zeroing guards to the generated Slang (`docs/SEMANTICS.md`, section 15).
+
 Build profiles (D44, D51): the environment variable `GUST_PROFILE` is `dev`, `native`, `web` or `cpu`, and
 `gust`'s build script reads it (any other value, including an empty one, fails the build). `native` and `web` are strict:
 every `#[gpu]` kernel must have a precompiled artifact, or the build fails with a compile error at the kernel, and the

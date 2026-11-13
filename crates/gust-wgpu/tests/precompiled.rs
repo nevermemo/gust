@@ -528,3 +528,22 @@ fn arrays_of_vectors_and_of_structs_run_from_their_precompiled_artifact() {
         assert_eq!((poly.n, poly.pad), (x + 1, 9), "poly {i}");
     }
 }
+
+/// A precompiled artifact keeps the WGSL route even with the SPIR-V route on (D172): the artifact is the WGSL that was
+/// verified, so there is no SPIR-V to take, and the fallback is recorded with its reason.
+#[cfg(feature = "spirv-route")]
+#[test]
+fn a_precompiled_artifact_stays_on_the_wgsl_route_and_says_why() {
+    let device = device();
+    run(&device, &PRE).expect("the verified artifact runs");
+    let events = device.route_events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].route, gust_wgpu::Route::Wgsl, "{events:?}");
+    assert!(
+        events[0]
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("precompiled WGSL artifact")),
+        "{events:?}"
+    );
+}

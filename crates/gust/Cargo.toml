@@ -33,6 +33,9 @@ slang-runtime = []
 # `slang-runtime`, and prints a `cargo:warning` saying so; an explicit strict `GUST_PROFILE` still refuses. It is not
 # part of the pre-1.0 promise (D111): do not name it in an application's manifest.
 cargo-gust-bridge = []
+# The SPIR-V route (m9.rt2, D172, D174): the macro emits the route's guards (see `gust-compute-macros/spirv-route`). Off by
+# default. Turned on by `gust-compute-wgpu/spirv-route`; it changes the emitted Slang text only, nothing in this crate.
+spirv-route = ["gust-macros/spirv-route"]
 
 [dependencies]
 gust-macros.workspace = true

@@ -995,9 +995,12 @@ pub(crate) struct GpuSuitePin {
 /// ```
 ///
 /// prints `<passed> <lines>`; the output must also show no line other than `0 failed; 0 ignored`.
+///
+/// Slice m9.rt2: 450 over 48 became 450 over 49. The test file `tests/spirv_route.rs` is a target of every build and
+/// prints a `0 passed` line without the `spirv-route` feature; the tests that need the feature are not in this count.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
     passed: 450,
-    result_lines: 48,
+    result_lines: 49,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

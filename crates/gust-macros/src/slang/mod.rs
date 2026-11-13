@@ -14,6 +14,7 @@ use crate::{
 mod collision_tests;
 pub(crate) mod collisions;
 pub(crate) mod div_table;
+pub(crate) mod guards;
 pub(crate) mod mul_table;
 pub(crate) mod neg_table;
 pub(crate) mod texture;
@@ -984,10 +985,18 @@ pub(crate) fn emit_kernel_in(
     let mut division = DivisionUsage::default();
     division.visit_item_mod(module);
     if division.div {
-        output.push_str(&div_table::overload_text("div", "/", div_table::DIV_ROWS));
+        output.push_str(&div_table::module_overload_text(
+            "div",
+            "/",
+            div_table::DIV_ROWS,
+        ));
     }
     if division.rem {
-        output.push_str(&div_table::overload_text("rem", "%", div_table::REM_ROWS));
+        output.push_str(&div_table::module_overload_text(
+            "rem",
+            "%",
+            div_table::REM_ROWS,
+        ));
     }
 
     // The integer `dot` as a sum of products (see `dot_overload_text`); `.dot` is `__gust_dot` in such a module.
@@ -1041,6 +1050,8 @@ pub(crate) fn emit_kernel_in(
     let mut invocation = None;
     // The ids derived from the dispatch-thread id (name, whether it is the group id), in parameter order.
     let mut derived_ids: Vec<(String, bool)> = Vec::new();
+    // The `Workgroup<[T; N]>` parameters (name, Slang element type, length), for the guards of the SPIR-V route.
+    let mut workgroup_arrays: Vec<guards::WorkgroupArray> = Vec::new();
     for argument in &kernel.sig.inputs {
         let (name, ty) = typed_argument(argument)?;
         let name = emit_ident(name);
@@ -1052,12 +1063,13 @@ pub(crate) fn emit_kernel_in(
             ParameterFlavor::Workgroup => {
                 let (element, length) = crate::validate::workgroup_array(ty)
                     .map_err(|message| diagnostics::error(Code::WorkgroupShape, ty, message))?;
-                writeln!(
-                    output,
-                    "groupshared {} {name}[{length}];",
-                    emit_type(element)?
-                )
-                .unwrap();
+                let element_type = emit_type(element)?;
+                writeln!(output, "groupshared {element_type} {name}[{length}];").unwrap();
+                workgroup_arrays.push(guards::WorkgroupArray {
+                    name: name.clone(),
+                    element: element_type,
+                    length,
+                });
             }
             // A resource the shape numbers (`gets_slot`, the rule of the descriptor and the record) is declared
             // with the next binding; one it leaves out is not declared at all.
@@ -1191,8 +1203,23 @@ pub(crate) fn emit_kernel_in(
     writeln!(output, "{}", stage.entry_signature(&facts)).unwrap();
     writeln!(output, "{{").unwrap();
     output.push_str(&stage.prologue(&facts));
+    if guards::enabled() && stage.slang_stage() == "compute" {
+        output.push_str(&guards::workgroup_zeroing(
+            &workgroup_arrays,
+            facts.invocation,
+            facts.workgroup_size,
+        ));
+    }
     output.push_str(&texture::dimension_prologue(&textures, kernel));
-    let _arrays = ArrayScope::enter(array_lengths(&kernel.sig.inputs, &kernel.block));
+    let mut kernel_arrays = array_lengths(&kernel.sig.inputs, &kernel.block);
+    // A `Workgroup<[T; N]>` parameter is an array of known length: its dynamic indices are clamped like a local array's.
+    // Only with the guards on: with them off the tables, and with them every diagnostic and text, are what they were.
+    for array in workgroup_arrays.iter().filter(|_| guards::enabled()) {
+        kernel_arrays
+            .entry(array.name.clone())
+            .or_insert(Some(array.length));
+    }
+    let _arrays = ArrayScope::enter(kernel_arrays);
     let _closures = ClosureScope::enter(&kernel.block);
     emit_statements(&mut output, &mut table, &kernel.block.stmts, 1, false)?;
     output.push_str(&stage.epilogue(&facts));
@@ -2652,11 +2679,21 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             format!("makeTuple({})", emit_list(tuple.elems.iter())?.join(", "))
         }
         syn::Expr::Group(group) => emit_expression(&group.expr)?,
-        syn::Expr::Index(index) => format!(
-            "{}[{}]",
-            emit_expression(&index.expr)?,
-            emit_expression(&index.index)?
-        ),
+        syn::Expr::Index(index) => {
+            // The SPIR-V route's guard (D172): naga's `Restrict` policy for arrays, as explicit code. A non-literal
+            // index of an array whose length the tables name is clamped to `min(uint(i), N - 1)`. A storage buffer
+            // has no length here and is not clamped (D174b).
+            let position = emit_expression(&index.index)?;
+            let position = match array_place_length_of(&index.expr) {
+                Some(length)
+                    if guards::enabled() && length > 0 && !is_literal_operand(&index.index) =>
+                {
+                    format!("min(uint({position}), {}u)", length - 1)
+                }
+                _ => position,
+            };
+            format!("{}[{}]", emit_expression(&index.expr)?, position)
+        }
         syn::Expr::Lit(literal) => emit_literal(&literal.lit)?,
         syn::Expr::MethodCall(call) if is_math_method(call) => emit_math_method(call)?,
         // The wrapping methods are the plain operators, even in a module that names a matrix (where `*` is
@@ -3161,7 +3198,10 @@ fn division_helper(binary: &syn::ExprBinary) -> Option<(&'static str, bool)> {
         syn::BinOp::RemAssign(_) => ("rem", true),
         _ => return None,
     };
-    (!is_literal_operand(&binary.right)).then_some(helper)
+    // With the guards of the SPIR-V route on (D172), `%` and `%=` take the helper for a literal divisor too: slangc's own
+    // `%` becomes `OpSRem`, which is poison for negative operands on Vulkan (naga writes `a - d * (a / d)`).
+    (!is_literal_operand(&binary.right) || (guards::enabled() && helper.0 == "rem"))
+        .then_some(helper)
 }
 
 /// Which division helpers the module needs: `div` (for `/` and `/=`) and `rem` (for `%` and `%=`).

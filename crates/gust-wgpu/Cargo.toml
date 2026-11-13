@@ -25,6 +25,11 @@ targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 # Compile a kernel at run time through `gust/slang-runtime` (the native reflection helper). Off by default (D44):
 # without it the crate has no process-spawning compiler, and a run-time compile returns an error.
 slang-runtime = ["gust/slang-runtime"]
+# The opt-in SPIR-V route (m9.rt2, D172, D174): on a Vulkan device with PASSTHROUGH_SHADERS the kernel's own slangc SPIR-V
+# is handed to the driver, and the kernels are emitted with the guards that naga adds on the WGSL route. Off by default
+# (the WGSL route is the one that is tested everywhere); every other case falls back to WGSL and says so
+# (`HeadlessDevice::route_events`). Native Vulkan only; has no effect on wasm32. Needs `slang-runtime` to take effect.
+spirv-route = ["gust/spirv-route"]
 
 [dependencies]
 gust.workspace = true

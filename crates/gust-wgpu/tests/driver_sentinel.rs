@@ -133,6 +133,15 @@ fn the_nvidia_array_defect_is_still_there_or_absent_elsewhere() {
     );
     eprintln!("sentinel adapter: {adapter}");
     let kind = classify(info);
+    // On the SPIR-V route (m9.rt2) the program is not naga's: the defect was measured on the WGSL route, so a device
+    // whose sentinel kernels took the route is held to Rust's values (a defect there is a new finding).
+    let held = |device: &HeadlessDevice| {
+        if spirv_route_taken(device) {
+            Device::Other
+        } else {
+            kind
+        }
+    };
 
     let a = device.create_typed_buffer("sentinel a", &vec![A0; COUNT], GpuBufferAccess::ReadOnly);
     let mut results: Vec<Judged> = Vec::new();
@@ -151,7 +160,7 @@ fn the_nvidia_array_defect_is_still_there_or_absent_elsewhere() {
         }
         let got = device.read_typed_buffer(&out).unwrap();
         // Recorded on the RTX 5090: element 0 reads as 0 wherever the index was not 0.
-        results.push(judged(name, kind, &got, d168_right, |i| {
+        results.push(judged(name, held(&device), &got, d168_right, |i| {
             if i % n == 0 { D168_RIGHT } else { 0 }
         }));
     }
@@ -162,7 +171,7 @@ fn the_nvidia_array_defect_is_still_there_or_absent_elsewhere() {
     device.dispatch_call(&call).unwrap();
     let got = device.read_typed_buffer(&out).unwrap();
     // Recorded on the RTX 5090: 0 where i % 4 == 3.
-    results.push(judged("d169_len4", kind, &got, d169_right, |i| {
+    results.push(judged("d169_len4", held(&device), &got, d169_right, |i| {
         if i % 4 == 3 { 0 } else { D169_PLAIN }
     }));
 
@@ -194,4 +203,19 @@ fn the_nvidia_array_defect_is_still_there_or_absent_elsewhere() {
         }
         panic!("{message}");
     }
+}
+
+/// Whether every kernel this device built so far took the SPIR-V route (m9.rt2). `false` without the feature.
+#[cfg(feature = "spirv-route")]
+fn spirv_route_taken(device: &HeadlessDevice) -> bool {
+    let events = device.route_events();
+    !events.is_empty()
+        && events
+            .iter()
+            .all(|event| event.route == gust_wgpu::Route::Spirv)
+}
+
+#[cfg(not(feature = "spirv-route"))]
+fn spirv_route_taken(_device: &HeadlessDevice) -> bool {
+    false
 }

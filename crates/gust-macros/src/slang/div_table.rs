@@ -64,3 +64,138 @@ pub fn overload_text(name: &str, op: &str, rows: &[(&str, &str)]) -> String {
     text.push('\n');
     text
 }
+
+/// The same overloads as [`overload_text`] with the integer rules of naga's SPIR-V writer as explicit code (the SPIR-V
+/// route, D172; WGSL section 8.8): a zero divisor, and for `i32` also `MIN / -1`, divides by one, so `x / 0` is `x` and
+/// `x % 0` is 0. A signed remainder is `a - d * (a / d)`, naga's own form: `OpSRem` is poison for negative operands on
+/// Vulkan without maintenance8 (wgpu issue 8191). An unsigned remainder is `OpUMod`, which needs only the divisor
+/// guard. The float rows keep the plain operator. Vector rows apply the scalar helper to each lane.
+pub fn guarded_overload_text(name: &str, op: &str, rows: &[(&str, &str)]) -> String {
+    let remainder = name == "rem";
+    let integer = |kind: &str| kind.starts_with("int") || kind.starts_with("uint");
+    let scalar_body = |kind: &str| -> String {
+        match (kind, remainder) {
+            ("uint", false) => "uint d = (b == 0u) ? 1u : b; return a / d;".to_owned(),
+            ("uint", true) => "uint d = (b == 0u) ? 1u : b; return a % d;".to_owned(),
+            ("int", false) => {
+                "int d = (b == 0 || (a == (-2147483647 - 1) && b == -1)) ? 1 : b; return a / d;"
+                    .to_owned()
+            }
+            ("int", true) => {
+                "int d = (b == 0 || (a == (-2147483647 - 1) && b == -1)) ? 1 : b; return a - d * (a / d);"
+                    .to_owned()
+            }
+            _ => format!("return a {op} b;"),
+        }
+    };
+    let mut text = String::new();
+    for &(left, right) in rows {
+        let (l, r) = (slang(left), slang(right));
+        let body = if l == "int" || l == "uint" {
+            scalar_body(l)
+        } else if integer(l) {
+            let width = l
+                .chars()
+                .last()
+                .and_then(|digit| digit.to_digit(10))
+                .expect("a vector type ends in its width") as usize;
+            let lanes = ["x", "y", "z", "w"];
+            let parts: Vec<String> = lanes[..width]
+                .iter()
+                .map(|lane| {
+                    if r == l {
+                        format!("__gust_{name}(a.{lane}, b.{lane})")
+                    } else {
+                        format!("__gust_{name}(a.{lane}, b)")
+                    }
+                })
+                .collect();
+            format!("return {l}({});", parts.join(", "))
+        } else {
+            format!("return a {op} b;")
+        };
+        text.push_str(&format!("{l} __gust_{name}({l} a, {r} b) {{ {body} }}\n"));
+    }
+    for &(left, right) in rows {
+        let (l, r) = (slang(left), slang(right));
+        if integer(l) {
+            text.push_str(&format!(
+                "void __gust_{name}_assign(inout {l} a, {r} b) {{ a = __gust_{name}(a, b); }}\n"
+            ));
+        } else {
+            text.push_str(&format!(
+                "void __gust_{name}_assign(inout {l} a, {r} b) {{ a = a {op} b; }}\n"
+            ));
+        }
+    }
+    text.push('\n');
+    text
+}
+
+/// The overloads a module that divides gets: the plain ones, or the guarded ones when the guards of the SPIR-V route
+/// are on (see `guards`).
+pub fn module_overload_text(name: &str, op: &str, rows: &[(&str, &str)]) -> String {
+    if super::guards::enabled() {
+        guarded_overload_text(name, op, rows)
+    } else {
+        overload_text(name, op, rows)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_plain_text_is_unchanged_and_the_guarded_text_has_the_integer_rules() {
+        let plain = overload_text("div", "/", DIV_ROWS);
+        assert!(plain.contains("int __gust_div(int a, int b) { return a / b; }\n"));
+        let guarded = guarded_overload_text("div", "/", DIV_ROWS);
+        assert!(guarded.contains(
+            "int __gust_div(int a, int b) { int d = (b == 0 || (a == (-2147483647 - 1) && b == -1)) ? 1 : b; return a / d; }\n"
+        ));
+        assert!(guarded.contains(
+            "uint __gust_div(uint a, uint b) { uint d = (b == 0u) ? 1u : b; return a / d; }\n"
+        ));
+        assert!(guarded.contains("float __gust_div(float a, float b) { return a / b; }\n"));
+        assert!(guarded.contains(
+            "uint2 __gust_div(uint2 a, uint b) { return uint2(__gust_div(a.x, b), __gust_div(a.y, b)); }\n"
+        ));
+        assert!(guarded.contains(
+            "int4 __gust_div(int4 a, int4 b) { return int4(__gust_div(a.x, b.x), __gust_div(a.y, b.y), __gust_div(a.z, b.z), __gust_div(a.w, b.w)); }\n"
+        ));
+        assert!(
+            guarded.contains(
+                "void __gust_div_assign(inout int2 a, int b) { a = __gust_div(a, b); }\n"
+            )
+        );
+        assert!(
+            guarded.contains("void __gust_div_assign(inout float3 a, float b) { a = a / b; }\n")
+        );
+        let rem = guarded_overload_text("rem", "%", REM_ROWS);
+        assert!(rem.contains("return a - d * (a / d); }\n"));
+        assert!(rem.contains("uint d = (b == 0u) ? 1u : b; return a % d; }\n"));
+        assert!(rem.contains("float __gust_rem(float a, float b) { return a % b; }\n"));
+        assert_eq!(
+            guarded.lines().count(),
+            plain.lines().count(),
+            "one line per row in both"
+        );
+    }
+
+    #[test]
+    fn the_route_picks_the_text() {
+        {
+            let _off = super::super::guards::Forced::new(false);
+            assert_eq!(
+                module_overload_text("div", "/", DIV_ROWS),
+                overload_text("div", "/", DIV_ROWS)
+            );
+        }
+        let _on = super::super::guards::Forced::new(true);
+        assert_eq!(
+            module_overload_text("rem", "%", REM_ROWS),
+            guarded_overload_text("rem", "%", REM_ROWS)
+        );
+    }
+}

@@ -1,10 +1,10 @@
 //! The opt-in SPIR-V route (slice m9.rt2; D172, D174), on a real adapter. Compiled only with the Cargo feature
-//! `spirv-route`; the feature-off Gpu suite does not see this file.
+//! `spirv-route`; the feature-off Gpu suite does not see this file (it builds as an empty test target).
 //!
-//! Four things: the sparse binding layouts that crashed passthrough in the spike (binding 3, 999 and `{0, 999}`), the
-//! zero-initialisation of workgroup memory (D174a), the guards of the emitted Slang (index clamp, division helpers, the
+//! Three things: the sparse binding layouts that crashed passthrough in the spike (binding 3, 999 and `{0, 999}`), the
+//! guards of the emitted Slang (index clamp, division helpers, the
 //! literal `%`; D39 limitations pinned at the values naga's guards give), and the fallback record
-//! (`HeadlessDevice::route_events`). On a hardware adapter every kernel here must take the SPIR-V route; on a software
+//! (`HeadlessDevice::route_events`). The workgroup zero-initialisation probes (D174a) are in `workgroup_zero.rs`, which runs on both routes. On a hardware adapter every kernel here must take the SPIR-V route; on a software
 //! adapter (lavapipe) either route is accepted as long as the record says why.
 #![cfg(feature = "spirv-route")]
 
@@ -196,65 +196,6 @@ fn sparse_bindings_run_on_the_spirv_route() {
 
 #[gust::gpu]
 mod probes {
-    // Workgroup memory read before any write (D174a). `wg_dirty` fills the group with a pattern first; `wg_read_first`
-    // reads before writing, in a dispatch that may reuse the same shared memory.
-    #[kernel(workgroup_size(64, 1, 1), cpu = "unsupported")]
-    pub fn wg_dirty(
-        id: SV_DispatchThreadID,
-        lid: LocalId,
-        mut out: RWStructuredBuffer<u32>,
-        mut scratch: Workgroup<[u32; 64]>,
-    ) {
-        scratch[lid.x] = 0xDEADBEEFu32;
-        workgroup_barrier();
-        out[id.x] = scratch[(lid.x + 1u32) % 64u32];
-    }
-
-    #[kernel(workgroup_size(64, 1, 1), cpu = "unsupported")]
-    pub fn wg_read_first(
-        id: SV_DispatchThreadID,
-        lid: LocalId,
-        mut out: RWStructuredBuffer<u32>,
-        scratch: Workgroup<[u32; 64]>,
-    ) {
-        out[id.x] = scratch[lid.x];
-    }
-
-    // A workgroup array that is not a multiple of the group, of a vector type and a bool: zero loop edge cases.
-    #[kernel(workgroup_size(64, 1, 1), cpu = "unsupported")]
-    pub fn wg_odd_dirty(
-        id: SV_DispatchThreadID,
-        lid: LocalId,
-        mut out: RWStructuredBuffer<u32>,
-        mut a: Workgroup<[Vec2; 100]>,
-        mut b: Workgroup<[bool; 3]>,
-    ) {
-        a[lid.x] = Vec2::new(1.0f32, 2.0f32);
-        if lid.x < 3u32 {
-            b[lid.x] = true;
-        }
-        workgroup_barrier();
-        out[id.x] = 1u32;
-    }
-
-    #[kernel(workgroup_size(64, 1, 1), cpu = "unsupported")]
-    pub fn wg_odd_read_first(
-        id: SV_DispatchThreadID,
-        lid: LocalId,
-        mut out: RWStructuredBuffer<u32>,
-        a: Workgroup<[Vec2; 100]>,
-        b: Workgroup<[bool; 3]>,
-    ) {
-        let mut seen = 0u32;
-        if a[lid.x].x != 0.0f32 || a[lid.x + 36u32].y != 0.0f32 {
-            seen += 1u32;
-        }
-        if b[lid.x % 3u32] {
-            seen += 2u32;
-        }
-        out[id.x] = seen;
-    }
-
     // Dynamic indices out of range: a local array, a workgroup array, from run-time values (the index clamp).
     #[kernel(workgroup_size(64, 1, 1), cpu = "unsupported")]
     pub fn clamps(
@@ -304,75 +245,6 @@ mod probes {
         out[i * 6u32 + 4u32] = (x % 3i32) as u32;
         out[i * 6u32 + 5u32] = (x % -3i32) as u32;
     }
-}
-
-fn dispatch_zero_probe(
-    device: &HeadlessDevice,
-    dirty: &gust::KernelDescriptor,
-    read_first: &gust::KernelDescriptor,
-    groups: usize,
-) -> Vec<Vec<u32>> {
-    let n = groups * 64;
-    let mut rounds = Vec::new();
-    for _ in 0..3 {
-        let dirty_out = device.create_typed_buffer("d", &vec![0u32; n], GpuBufferAccess::ReadWrite);
-        device
-            .dispatch_buffers(dirty, n as u32, &[BufferBinding::read_write(&dirty_out)])
-            .unwrap();
-        let _ = device.read_typed_buffer(&dirty_out).unwrap();
-        let out =
-            device.create_typed_buffer("c", &vec![0x5555_5555u32; n], GpuBufferAccess::ReadWrite);
-        device
-            .dispatch_buffers(read_first, n as u32, &[BufferBinding::read_write(&out)])
-            .unwrap();
-        rounds.push(device.read_typed_buffer(&out).unwrap());
-    }
-    rounds
-}
-
-#[test]
-fn workgroup_memory_reads_as_zero_before_any_write_on_the_route() {
-    let device = device();
-    // 256 groups, 3 rounds: the previous dispatch's pattern would still sit in shared memory without the zeroing (the
-    // spike saw 0xDEADBEEF on the RTX 5090 and garbage on the Radeon 890M).
-    let rounds = dispatch_zero_probe(
-        &device,
-        &probes::wg_dirty::DESCRIPTOR,
-        &probes::wg_read_first::DESCRIPTOR,
-        256,
-    );
-    for (round, got) in rounds.iter().enumerate() {
-        let bad = got.iter().filter(|word| **word != 0).count();
-        assert_eq!(
-            bad,
-            0,
-            "round {round}: {bad} of {} words are not zero",
-            got.len()
-        );
-    }
-    assert_spirv(&device, "probes::wg_read_first");
-    assert_spirv(&device, "probes::wg_dirty");
-}
-
-#[test]
-fn workgroup_zeroing_covers_arrays_that_are_not_a_multiple_of_the_group() {
-    let device = device();
-    let rounds = dispatch_zero_probe(
-        &device,
-        &probes::wg_odd_dirty::DESCRIPTOR,
-        &probes::wg_odd_read_first::DESCRIPTOR,
-        64,
-    );
-    for (round, got) in rounds.iter().enumerate() {
-        let bad = got.iter().filter(|word| **word != 0).count();
-        assert_eq!(
-            bad,
-            0,
-            "round {round}: {bad} of {} words are not zero",
-            got.len()
-        );
-    }
-    assert_spirv(&device, "probes::wg_odd_read_first");
 }
 
 #[test]
@@ -494,4 +366,30 @@ fn a_kernel_the_route_took_is_recorded_once_per_device() {
         "the pipeline cache builds it once: {events:?}"
     );
     assert_eq!(events[0].kernel, "spirv_route::one3");
+}
+
+/// A backend that is not Vulkan stays on the WGSL route and says why (review M1): DX12, Metal and GL advertise
+/// `PASSTHROUGH_SHADERS` but take no SPIR-V, so asking for the feature there would panic at the first kernel. Runs where
+/// a DX12 adapter exists (Windows) and says so where it does not.
+#[test]
+fn a_dx12_device_falls_back_to_wgsl_with_the_backend_reason() {
+    let options = gust_wgpu::DeviceOptions::default().with_backends(wgpu::Backends::DX12);
+    let Ok(device) = HeadlessDevice::with_options(options) else {
+        eprintln!("spirv_route: no DX12 adapter here, the fallback was not run");
+        return;
+    };
+    eprintln!(
+        "spirv_route: DX12 adapter {} ({:?})",
+        device.adapter_info().name,
+        device.adapter_info().backend
+    );
+    assert_eq!(run::<O3>(&device, false), (17.0, 5.0));
+    let events = device.route_events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].route, Route::Wgsl, "{events:?}");
+    assert_eq!(
+        events[0].reason.as_deref(),
+        Some("backend is not Vulkan"),
+        "{events:?}"
+    );
 }

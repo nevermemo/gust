@@ -1642,31 +1642,57 @@ fixtures `generic-*`.
 ## 15. The SPIR-V route (M9, m9.rt2, D172, D174)
 
 The Cargo feature `spirv-route` of `gust-compute-wgpu` (forwarded by `gust-compute`; off by default; Vulkan only) builds
-a compute pipeline from slangc's own SPIR-V through wgpu's `create_shader_module_passthrough`, instead of the WGSL
-that naga checks and rewrites. A kernel stays on the WGSL route, and the device records the reason
-(`HeadlessDevice::route_events`), when the feature is off, the device lacks `PASSTHROUGH_SHADERS`, the binding check
-fails (every binding the layout names must be in the module, with the layout's kind; a binding the kernel does not
-touch is dropped by slangc and handled by renumbering), the SPIR-V compile fails, or the kernel is a precompiled WGSL
-artifact. wgpu renumbers a bind group layout densely, so the route rewrites each `Binding` decoration to its rank in
-the layout; a sparse layout (bindings 3, 999, or 0 and 999) ran on both adapters.
+a compute or pixel (fragment) pipeline from slangc's own SPIR-V through wgpu's `create_shader_module_passthrough`,
+instead of the WGSL that naga checks and rewrites. A kernel stays on the WGSL route, and the device records the reason
+(`HeadlessDevice::route_events`), when:
+
+- the feature is off, or the build has no `slang-runtime` (there is no SPIR-V to compile);
+- the kernel is a precompiled WGSL artifact (its bytes are the contract);
+- the backend is not Vulkan ("backend is not Vulkan": DX12, Metal and GL advertise `PASSTHROUGH_SHADERS` but take no
+  SPIR-V, so the device does not request the feature there);
+- the device lacks `PASSTHROUGH_SHADERS`;
+- the SPIR-V compile fails;
+- the module has a push-constant block, or the binding check fails (every resource binding the module declares must
+  be in the layout, with the layout's kind and stage; a layout binding the kernel does not touch is dropped by slangc
+  and is not an error).
+
+wgpu renumbers a bind group layout densely, so the route rewrites each `Binding` decoration to its rank in the layout;
+a sparse layout (bindings 3, 999, or 0 and 999) ran on both adapters. `GUST_SPIRV_ROUTE_LOG=<file>`, read at run
+time by every build with the feature on, appends one line `<kernel> <Spirv|Wgsl> <reason>` per kernel build to that
+file; `check-difftest` uses it to show which route the generated crates took, and nothing else reads it.
+
+The feature is a property of the build graph, not of one crate: Cargo unifies features, so one dependency that enables
+`gust-compute-wgpu/spirv-route` changes the emitted Slang of every kernel in that build (the guards below). The values
+stay the same, but the content key of a kernel's artifact hashes its Slang, so artifacts built by `cargo gust build`
+without the feature do not match a build with it (under `GUST_PROFILE=native` or `web` the build then fails for lack of
+an artifact), and the reverse. Build the artifacts and the program with the same set of features.
 
 Passthrough has none of naga's run-time guards, so with the feature on the macro emits them as Slang, in the text
 both routes share (a kernel that falls back gets the same guarded text; with the feature off the text does not
 change). They are on whenever the feature is on, never a run-time switch (D174c):
 
-- an index into a local or workgroup array that is not a literal is clamped to the last element (`min(idx, len-1)`),
-  as naga does;
-- an integer `/` or `%` goes through the helpers `__gust_div` and `__gust_rem`, also for a literal divisor: a zero
-  divisor, and `MIN / -1`, divide by one, and a signed `%` is `a - d * (a / d)` because `OpSRem` is poison for negative
-  operands on Vulkan (wgpu issue 8191);
+- an index that is not a literal, into an array whose length the macro knows (a typed local or parameter, an array
+  field, an element array of a buffer, a workgroup array), is clamped to the last element (`min(idx, len-1)`), as
+  naga does;
+- an integer `/` or `%` with a divisor that is not a literal goes through the helpers `__gust_div` and `__gust_rem`
+  (D74), and `%` goes through `__gust_rem` for a literal divisor too (a plain `/` by a literal stays plain: a literal
+  zero is refused, and `MIN / -1` panics in Rust). A zero divisor, and `MIN / -1`, divide by one, and a signed `%` is
+  `a - d * (a / d)` because `OpSRem` is poison for negative operands on Vulkan (wgpu issue 8191);
 - workgroup memory is zeroed (D174a): the group's invocations store zeros in a strided loop and then meet at a
   barrier, before the first statement. This holds on every route, because the WGSL route gets the same text. The
   extension `VK_KHR_zero_initialize_workgroup_memory` is not usable: Slang 2026.22 refuses an initializer on
   `groupshared` (E30623). A kernel with workgroup memory has no CPU twin (`GUST-E0717`), so the twin has nothing to
-  match.
+  match. The cost was measured once on a 256-invocation kernel with a `[u32; 256]` workgroup array over 4M elements,
+  route on, with the zeroing present and then removed from the emitted Slang by a temporary local change (median of 7
+  runs of 200 dispatches): 0.989 ms against 1.001 ms on the RTX 5090, and 1.566 ms against 1.509 ms on the Radeon
+  890M. That is inside the noise on NVIDIA and about 4 % on the AMD part; the kernel is memory bound, so a kernel that
+  is not may pay more.
 
-Differences that remain, as D39 limitations: an index into a storage buffer is not clamped by GUST; it keeps the
-device's behaviour, which is naga-like where `robustBufferAccess2` exists (D174b). The conversion of a float to an
+Differences that remain, as D39 limitations (each is an out-of-range index, which panics in Rust and so is outside the
+domain): an index into a storage buffer is not clamped by GUST; it keeps the device's behaviour, which is naga-like
+where `robustBufferAccess2` exists (D174b). The clamp also does not reach an untyped `let` array (`let a = [0u32; 4];`),
+the inner index of `a[i][j]`, or a module `const` array, whose lengths the macro does not track: out of range on the
+route is undefined there (possibly a device loss) where naga clamps. The conversion of a float to an
 integer saturates as Rust does on the route, where the WGSL route gave `0x7fffff80` and `0xffffff00` (rows KM-05 and
 KM-06; the mismatch test pins the route's values), a NaN converts to 0, and `NaN != NaN` is true. A float result may
 differ by an ulp where the driver contracts a multiply and an add.

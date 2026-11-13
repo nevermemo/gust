@@ -792,6 +792,8 @@ fn a_pixel_kernel_through_the_f32_buffer_path_matches_the_grid_kernel() {
         );
         assert_eq!(differing_words(&got, &want), 0, "n = {n}");
     }
+    #[cfg(feature = "spirv-route")]
+    assert_every_kernel_took_spirv(&device);
 }
 
 fn stats(device: &HeadlessDevice) -> (usize, u64, u64) {
@@ -1087,4 +1089,27 @@ fn the_identity_kernels_have_the_shapes_their_names_say() {
     for kernel in pixel::MODULE_DESCRIPTOR.kernels {
         assert_eq!(kernel.shape, Shape::Pixel, "{}", kernel.name);
     }
+}
+
+/// With the `spirv-route` feature on, every kernel this device built, the pixel kernel included, took the SPIR-V route
+/// (review S1 of m9.rt2): a silent fallback to WGSL would pass every value check. A software adapter may take either.
+#[cfg(feature = "spirv-route")]
+fn assert_every_kernel_took_spirv(device: &HeadlessDevice) {
+    let events = device.route_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.kernel.ends_with("pixel_f32")),
+        "the pixel kernel has no route event: {events:?}"
+    );
+    if is_cpu_adapter(device) {
+        return;
+    }
+    assert!(
+        events
+            .iter()
+            .all(|event| event.route == gust_wgpu::Route::Spirv),
+        "{events:?}"
+    );
+    println!("route: {} kernel(s), all SPIR-V", events.len());
 }

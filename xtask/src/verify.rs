@@ -996,10 +996,11 @@ pub(crate) struct GpuSuitePin {
 ///
 /// prints `<passed> <lines>`; the output must also show no line other than `0 failed; 0 ignored`.
 ///
-/// Slice m9.rt2: 450 over 48 became 450 over 49. The test file `tests/spirv_route.rs` is a target of every build and
-/// prints a `0 passed` line without the `spirv-route` feature; the tests that need the feature are not in this count.
+/// Slice m9.rt2: 450 over 48 became 452 over 49. The new target `tests/workgroup_zero.rs` (two tests) runs on both
+/// routes, so it is in this count. `tests/spirv_route.rs` needs the `spirv-route` feature (`required-features`), so a
+/// build without it has no such target and prints no line; its tests are not in this count.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 450,
+    passed: 452,
     result_lines: 49,
 };
 

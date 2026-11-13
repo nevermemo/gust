@@ -51,5 +51,10 @@ wgpu = { workspace = true, features = ["webgpu"] }
 [dev-dependencies]
 gust-wgpu = { package = "gust-compute-wgpu", path = ".", features = ["slang-runtime"] }
 
+# The route tests need the feature; without it the target is not built and prints no `test result:` line (m9.rt2).
+[[test]]
+name = "spirv_route"
+required-features = ["spirv-route"]
+
 [lints]
 workspace = true

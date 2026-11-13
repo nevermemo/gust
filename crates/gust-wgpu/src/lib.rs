@@ -2788,7 +2788,7 @@ impl HeadlessDevice {
 
     /// The SPIR-V route (m9.rt2, D172, D174): slangc's SPIR-V for the kernel as a passthrough module, or the reason this
     /// kernel stays on the WGSL route. Checked in this order: a precompiled WGSL artifact (its bytes are the contract and
-    /// no SPIR-V artifact exists), a build without the run-time compiler, a device without `PASSTHROUGH_SHADERS`, a
+    /// no SPIR-V artifact exists), a backend that is not Vulkan, a build without the run-time compiler, a device without `PASSTHROUGH_SHADERS`, a
     /// SPIR-V compile error, a module that does not fit the pipeline layout ([`passthrough::check_bindings`]), a binding
     /// that cannot be renumbered.
     #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
@@ -2802,6 +2802,9 @@ impl HeadlessDevice {
     ) -> Result<wgpu::ShaderModule, String> {
         if from_artifact {
             return Err("precompiled WGSL artifact: its bytes are the contract".to_owned());
+        }
+        if let Some(reason) = passthrough::backend_reason(self.adapter_info.backend) {
+            return Err(reason.to_owned());
         }
         #[cfg(not(feature = "slang-runtime"))]
         {
@@ -2881,6 +2884,8 @@ impl HeadlessDevice {
     /// The route each pipeline of this device was built from so far, in build order, one event per kernel compile (the
     /// pipeline cache means a kernel appears once per device unless its compile failed). `Route::Wgsl` carries the
     /// reason the SPIR-V route was not taken. Only with the `spirv-route` feature (m9.rt2).
+    /// With the environment variable `GUST_SPIRV_ROUTE_LOG=<file>` set, every event is also appended to that file as a line
+    /// `<kernel> <Spirv|Wgsl> <reason>`, which is how `check-difftest` shows the route of generated crates.
     #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
     pub fn route_events(&self) -> Vec<RouteEvent> {
         self.route_events
@@ -3633,11 +3638,15 @@ fn pod_vec_from_bytes<T: GpuPod>(bytes: &[u8]) -> Result<Vec<T>, Error> {
     Ok(values)
 }
 
-/// The feature the SPIR-V route needs (m9.rt2): `PASSTHROUGH_SHADERS`, when the feature is on and the adapter has it. An
+/// The feature the SPIR-V route needs (m9.rt2): `PASSTHROUGH_SHADERS`, when the feature is on, the adapter is Vulkan and has it. An
 /// adapter without it still opens; its kernels fall back to WGSL and `HeadlessDevice::route_events` says so.
 fn spirv_route_features(adapter: &wgpu::Adapter) -> wgpu::Features {
     #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
     {
+        // Vulkan only: DX12, Metal and GL advertise the feature but take no SPIR-V (review M1).
+        if passthrough::backend_reason(adapter.get_info().backend).is_some() {
+            return wgpu::Features::empty();
+        }
         adapter.features() & wgpu::Features::PASSTHROUGH_SHADERS
     }
     #[cfg(not(all(feature = "spirv-route", not(target_arch = "wasm32"))))]

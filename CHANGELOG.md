@@ -16,7 +16,7 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
 ### Added
 
 - The SPIR-V route (m9.rt2, D172, D174): the opt-in Cargo feature `spirv-route` of `gust-compute-wgpu` and
-  `gust-compute` builds Vulkan compute pipelines from slangc's SPIR-V (wgpu passthrough shaders) and falls back to WGSL,
+  `gust-compute` builds Vulkan compute and pixel pipelines from slangc's SPIR-V (wgpu passthrough shaders) and falls back to WGSL,
   with a recorded reason (`HeadlessDevice::route_events`, `Route`, `RouteEvent`, `SPIRV_ROUTE`), when the device or the
   kernel cannot take it. With the feature on, the generated Slang clamps array indices, guards integer division and
   remainder, and zeroes workgroup memory; the WGSL text does not change with the feature off. See SEMANTICS section 15.

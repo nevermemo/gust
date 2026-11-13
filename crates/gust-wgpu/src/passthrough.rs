@@ -53,6 +53,7 @@ const DECORATION_BINDING: u32 = 33;
 const DECORATION_DESCRIPTOR_SET: u32 = 34;
 const CLASS_UNIFORM_CONSTANT: u32 = 0;
 const CLASS_UNIFORM: u32 = 2;
+const CLASS_PUSH_CONSTANT: u32 = 9;
 const CLASS_STORAGE_BUFFER: u32 = 12;
 /// `OpEntryPoint` execution models: fragment 4, GLCompute 5.
 const MODEL_FRAGMENT: u32 = 4;
@@ -88,6 +89,13 @@ fn instructions(words: &[u32]) -> Result<Vec<(usize, usize)>, String> {
         at += count;
     }
     Ok(found)
+}
+
+/// The reason a backend cannot take the SPIR-V route, or `None` for Vulkan (m9.rt2, review M1). wgpu-hal advertises
+/// `PASSTHROUGH_SHADERS` on DX12, Metal and GL as well, but those backends take no SPIR-V: a SPIR-V-only passthrough
+/// module is an error there, so the route is Vulkan only and the device does not even ask for the feature elsewhere.
+pub(crate) fn backend_reason(backend: wgpu::Backend) -> Option<&'static str> {
+    (backend != wgpu::Backend::Vulkan).then_some("backend is not Vulkan")
 }
 
 /// Read the entry points and the resource variables of a SPIR-V module.
@@ -127,6 +135,11 @@ pub(crate) fn scan(words: &[u32]) -> Result<Scan, String> {
         }
     }
     for (id, class) in variables {
+        // A push-constant block is not a resource of the bind group layout (and the pipeline layout has none), so
+        // the module cannot be built into a pipeline: refuse it here as a fallback instead of at pipeline creation.
+        if class == CLASS_PUSH_CONSTANT {
+            return Err("the module declares a push-constant block".to_owned());
+        }
         if matches!(
             class,
             CLASS_UNIFORM_CONSTANT | CLASS_UNIFORM | CLASS_STORAGE_BUFFER
@@ -277,6 +290,33 @@ mod tests {
         assert_eq!(
             found.resources,
             vec![(0, 3, CLASS_STORAGE_BUFFER), (0, 999, CLASS_STORAGE_BUFFER)]
+        );
+    }
+
+    #[test]
+    fn only_vulkan_takes_the_route() {
+        assert_eq!(backend_reason(wgpu::Backend::Vulkan), None);
+        for backend in [
+            wgpu::Backend::Dx12,
+            wgpu::Backend::Metal,
+            wgpu::Backend::Gl,
+            wgpu::Backend::BrowserWebGpu,
+        ] {
+            assert_eq!(
+                backend_reason(backend),
+                Some("backend is not Vulkan"),
+                "{backend:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_push_constant_block_is_refused() {
+        let mut words = module(&[3]);
+        words.extend(op(OP_VARIABLE, &[2, 50, CLASS_PUSH_CONSTANT]));
+        assert_eq!(
+            scan(&words).unwrap_err(),
+            "the module declares a push-constant block"
         );
     }
 

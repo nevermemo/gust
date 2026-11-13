@@ -1220,8 +1220,7 @@ Decision: D14.
 
 ### GUST-E0518 match arm block
 
-Each arm body is a block, in a `Result` match and in a statement `match` on an enum or an integer; in a value `match` an arm is an expression, or a block that ends in an expression without `;` (or in a `return`), and a value arm whose block ends any other way is this code too. A `match` that gives a value outside a typed `let` is GUST-E0419, not this code, except in the tail of a nested block or
-an `if`, which still reports this code (an open nit in NEXT_TASKS).
+Each arm body is a block, in a `Result` match and in a statement `match` on an enum or an integer; in a value `match` an arm is an expression, or a block that ends in an expression without `;` (or in a `return`), and a value arm whose block ends any other way is this code too. A `match` that gives a value outside a typed `let` is GUST-E0419, not this code, except in the tail of a nested block or an `if`, which still reports this code (an open nit in NEXT_TASKS).
 Reached through `#[gpu]`.
 Rejected: `Ok(x) => x`, `E::A => 1u32,` in a statement `match`, and in a value `match` an arm block that ends in a statement (`E::A => { let t = 1u32; }`).
 Write instead: `Ok(x) => { .. }`, `E::A => { .. }`, and for a value arm an expression or a block that ends in one.

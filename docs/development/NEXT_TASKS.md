@@ -568,10 +568,8 @@ test module; do not mix that mechanical move with behavior changes.
   ignores a failed delete of an old route log (`let _ = fs::remove_file`), so stale lines could pass the all-SPIR-V
   check: fail instead; the DX12 fallback test always returns early because the workspace builds wgpu with Vulkan
   only (say so, or enable DX12 in a test-only build); route-log lines can tear across threads (a false failure,
-  never a false pass: buffer each line); the comment on the `spirv-route` feature in `crates/gust-wgpu/Cargo.toml`
-  says it has no effect on wasm32, which is true of the runtime and not of the macro's guards (review R5, the one
-  imprecision of the three that is in code; the SEMANTICS one was fixed in m9.x2); three code lines over 120
-  columns.
+  never a false pass: buffer each line); three code lines over 120 columns (review R5's other
+  imprecisions were fixed in m9.x2).
 - m9.g2 nits (the documentation ones were fixed in m9.x2). Left from round 1: `T::m(&t)` gets E0302's generic text
   (suggest `t.m()`; pin a unit case); a kernel with a `where` clause and no generics is still accepted; no fixture has a
   generic inherent method on an enum impl.

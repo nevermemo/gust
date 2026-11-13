@@ -106,10 +106,11 @@ examples, but never `cargo run` of a binary. Check that state with
 The SPIR-V route is the opt-in feature `spirv-route` of `gust-compute-wgpu` (off by default, Vulkan only): compute and
 pixel kernels are built from slangc's own SPIR-V and fall back to WGSL where the backend, the device or the kernel
 cannot take it. It works with run-time compilation only (a build with `slang-runtime`, which `native` and `web` refuse):
-those builds, and a kernel with a precompiled artifact, stay on WGSL, so enabling it does not change what a shipped
-binary runs. It adds index, division and workgroup-zeroing guards to the generated Slang (`docs/SEMANTICS.md`, section
-15). Cargo unifies features: one crate of the build that enables it changes the Slang of every kernel in that build, and
-with it the content keys of precompiled artifacts, so build the artifacts and the program with the same features.
+those builds, and a kernel with a precompiled artifact, stay on WGSL, so enabling it does not move a shipped binary off
+WGSL (its kernels still carry the guards). It adds index, division and workgroup-zeroing guards to the generated Slang
+(`docs/SEMANTICS.md`, section 15). Cargo unifies features: one crate of the build that enables it changes the Slang of
+every kernel in that build, and with it the content keys of precompiled artifacts, so build the artifacts and the
+program with the same features.
 
 Build profiles (D44, D51): the environment variable `GUST_PROFILE` is `dev`, `native`, `web` or `cpu`, and `gust`'s
 build script reads it (any other value, including an empty one, fails the build). `native` and `web` are strict: every
@@ -1175,11 +1176,11 @@ The direct syntax translator currently supports:
 - methods and `impl` blocks (M9, m9.a1 and m9.a2, D154): `impl S { .. }` of a struct of the module, any number of
   blocks, with `&self`, `&mut self` and `self` methods and associated functions without a receiver (`S::make(..)`,
   `Self::make(..)`). A method is a member of the Slang struct (`[mutating]` for `&mut self`, `static` for an associated
-  function). A `&mut self` or `self` method is callable on a `let mut` local (or a field or element of one) only: a
-  storage, uniform, workgroup or invocation-id place is GUST-E0333. No inherent `impl` for an enum, a type outside the
-  module, or with generics (GUST-E0121, E0114), no `mut self` or typed receiver (GUST-E0116), a method name that clashes
-  with a built-in (GUST-E0328), and no `&mut self` call whose order of evaluation on the GPU would differ from Rust's
-  (GUST-E0421); see [SEMANTICS](docs/SEMANTICS.md) sections 14 and 16;
+  function). A `&mut self` method is callable on a `let mut` local (or a field or element of one) only; neither it nor a
+  `self` method may be called on a storage, uniform, workgroup or invocation-id place (GUST-E0333). No inherent `impl`
+  for an enum, a type outside the module, or with generics (GUST-E0121, E0114), no `mut self` or typed receiver
+  (GUST-E0116), a method name that clashes with a built-in (GUST-E0328), and no `&mut self` call whose order of
+  evaluation on the GPU would differ from Rust's (GUST-E0421); see [SEMANTICS](docs/SEMANTICS.md) sections 14 and 16;
 - field-less enums and `match` (M9, m9.e1 and m9.e2, D157): `enum E { A, B = 3 }` (a `u32` or `#[repr(i32)]` repr, the
   user derives `PartialEq`), compared with `==` and `!=`, cast with `as` to the repr type, and matched as a Slang
   `switch`: a statement `match` on an enum or an integer, and a value `match` as the initializer of a typed `let`. No

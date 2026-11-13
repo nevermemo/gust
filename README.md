@@ -464,12 +464,16 @@ case is `Cpu` evidence.
   ([SEMANTICS](docs/SEMANTICS.md)). In the browser `web+subgroups` is refused at build time, and a device
   opened with a capability there is `Error::MissingCapability`: the pinned wgpu cannot request the feature, so a web
   build runs the portable body. `check-web` shows that refusal in Chrome 156; it says nothing about the adapter.
-- **Not supported as of 0.2.0-dev:** macOS and Metal (no Metal backend is compiled), and DX12 is not claimed (the spike S3
-  probe ran DX12, but `gust-compute-wgpu` does not compile it). Software adapters such as Mesa lavapipe run the GPU
+- **Not supported as of 0.2.0-dev:** macOS and Metal (no Metal backend is compiled), and DX12 is not claimed (the spike
+  S3 probe ran DX12, but `gust-compute-wgpu` does not compile it). Software adapters such as Mesa lavapipe run the GPU
   tests in CI as `Gpu (software)` evidence; they are not a target.
 - **CPU:** a `GUST_PROFILE=cpu` build contains no GPU runtime and runs the kernels as plain Rust (see "Try it").
 - **SPIR-V:** SPIR-V is exported (`cargo gust build --format spirv`) and validated with `spirv-val` when that is on
-  `PATH`; the runtime executes the WGSL. Running the exported SPIR-V is planned for a 0.1.x release (D114).
+  `PATH`; the runtime executes the WGSL by default. The opt-in `spirv-route` feature (the paragraph near the top, D172
+  and D174) builds Vulkan compute and pixel pipelines from slangc's own SPIR-V instead (wgpu passthrough) and falls back
+  to WGSL, recording the reason in `HeadlessDevice::route_events`, on any other backend, on a device without passthrough
+  shaders, for a precompiled WGSL artifact and for a module with push constants. The measurements of the route name the
+  RTX 5090 and the Radeon 890M ([SEMANTICS](docs/SEMANTICS.md) section 15); another adapter is not measured.
 
 ## Stability
 
@@ -492,6 +496,9 @@ The promise covers:
 - the modules that 0.2.0 adds to `gust-compute` (`gust::capability`, `gust::limits`, `gust::target`, `gust::routes`),
   `GUST_PROFILE`'s `+capability` suffix, the `[package.metadata.gust]` table and `gust.toml`, and the hidden marker
   `gust::target::GpuKernel` with the line that a hand-written `Kernel` adds (below);
+- the additions of M9: `gust::routed` (`RoutedDevice` and its buffers, D165), the `spirv-route` feature with `Route`,
+  `RouteEvent`, `HeadlessDevice::route_events` and `SPIRV_ROUTE` (D172, D174), and the array layout kinds
+  (`TypeLayoutKind::Array`, `TypeLayout::array`, D159);
 - the diagnostic codes, `GUST-E....` ([DIAGNOSTICS](docs/DIAGNOSTICS.md)): a code keeps its meaning, the message text
   may be reworded.
 
@@ -501,17 +508,18 @@ macro emits, the hidden `descriptor;` form of `par_for!`, the internal `cargo-gu
 the toolchain support (the rules for finding Slang that `cargo-gust` shares with the run-time bridge, D109). The
 `cargo xtask` commands and the evidence tiers belong to this repository and are not published.
 
-`pixel` kernels, `Shape` and the texture and sampler types are in the published surface and under the promise above, so a
-0.x release may change them like the rest. Their evidence is narrower than the rest: a GUST `pixel` or texture kernel
+`pixel` kernels, `Shape` and the texture and sampler types are in the published surface and under the promise above, so
+a 0.x release may change them like the rest. Their evidence is narrower than the rest: a GUST `pixel` or texture kernel
 has run on one hardware adapter, the RTX 5090 (Vulkan), and on the lavapipe software adapter, and on no other hardware.
 Headless Chrome on that same NVIDIA GPU has run a `pixel` kernel and no texture kernel. Another vendor's GPU, or a
 phone, may show a difference the tests have not seen ([Shapes](#shapes-grid-and-pixel) lists what has run).
 
 ### Upgrading from 0.1.0 to 0.2.0
 
-0.2.0 is a minor bump because of one break, B1, in two parts (the descriptor constructor and setters, and the
-`GpuKernel` bound), and it is the last one of its kind; the rest of M8 only adds ([CHANGELOG](CHANGELOG.md) has the
-full list, with the report of the `semver` CI job).
+0.2.0 is a minor bump because of four breaks: B1, in two parts (the descriptor constructor and setters, and the
+`GpuKernel` bound), which is the last one of its kind; B2, reserved subgroup function names; B3, recursion refused;
+and B4, more renamed names. The rest of M8 and M9 only adds ([CHANGELOG](CHANGELOG.md) has the full list; the
+`semver` CI job covers the public API, and was not run for the M9 additions).
 
 - **B1, part 1: `KernelDescriptor` is `#[non_exhaustive]`.** A struct literal, or a struct update from a base value, no
   longer compiles outside `gust-compute`, because the descriptor gained `variant`, `requires` and `target`. Build one
@@ -521,12 +529,23 @@ full list, with the report of the `semver` CI job).
 - **B1, part 2: the `GpuKernel` bound.** A hand-written `Kernel` implementation that runs on `HeadlessDevice` also adds
   one line, `impl gust::target::GpuKernel for MyKernel {}`; without it the call is an E0277 that says the device
   cannot run the kernel. The semver tool does not list that line, because the marker is `#[doc(hidden)]`.
-- **A route flip is a call-site change (documented, not a break).** Routing sends a kernel to the CPU or the GPU for a
-  whole build (see "Routing kernels to the CPU or the GPU at build time"), and a typed call names its device. A kernel
-  routed to the CPU has no `GpuKernel` impl, so its `HeadlessDevice` calls stop compiling (E0277) and its `CpuDevice`
-  calls start to; flipping the route back reverses both. Only the calls of a generated element-wise map (`name::map`)
-  do not name a device and are the same on either target. No 0.1.0 kernel is routed, so none breaks; a target-agnostic
-  device handle that the route would choose is filed in NEXT_TASKS, not built.
+- **B2: subgroup names are reserved (GUST-E0745).** A function of a `#[gpu]` module can no longer be named like one of
+  the 21 subgroup operations (`subgroup_add`, `subgroup_size` and the rest); the call of such a name is that operation.
+  Rename the function. The macro makes this check, so the semver tool cannot list it.
+- **B3: recursion is refused (GUST-E0120).** A cycle in the module's call graph, built from names (`f(..)`, `x.m(..)` to
+  every method named `m`, `S::f(..)`), is an error wherever the module is validated, also in a module routed to the CPU
+  and in a helper that was never dispatched, which 0.1.0 let through. Rewrite the recursion as a `for` loop with a fixed
+  trip count, and rename a method that calls another struct's method of the same name.
+- **B4: more names are renamed in the Slang text.** `Tuple`, `makeTuple`, `this` and the 47 names of Slang's standard
+  interfaces (`IFloat`, `IInteger`, `__BuiltinType` and so on) are emitted as `__gust_r_<name>`, like the other reserved
+  names (D81). Source needs no change, but a module that uses one gets another Slang text and so another content key:
+  run `cargo gust build` again and commit `gust-artifacts/`.- **A route flip is a call-site change (documented, not a
+  break).** Routing sends a kernel to the CPU or the GPU for a whole build (see "Routing kernels to the CPU or the GPU
+  at build time"), and a typed call names its device. A kernel routed to the CPU has no `GpuKernel` impl, so its
+  `HeadlessDevice` calls stop compiling (E0277) and its `CpuDevice` calls start to; flipping the route back reverses
+  both. Only the calls of a generated element-wise map (`name::map`) do not name a device and are the same on either
+  target. No 0.1.0 kernel is routed, so none breaks. The device handle that follows the route is
+  `gust::routed::RoutedDevice` (M9, D165), an addition.
 - **A new dependency.** `gust-compute-macros` depends on `toml` 1 (no default features; `std` and `parse`) to read
   `[package.metadata.gust]`, which adds four more crates to a build of `gust-compute`: `toml_parser`, `toml_datetime`,
   `serde_spanned` and `winnow`. All five are MIT or Apache-2.0 (`winnow` is MIT) and declare a minimum Rust of 1.85
@@ -1150,23 +1169,50 @@ The direct syntax translator currently supports:
 - implicit helper returns (including tail `if`/`else` and blocks), 32-bit numeric
   suffixes/radix literals, Rust expression grouping, and boolean/integer `!` and `^`;
 - struct literals as a `let` initializer or the right side of an assignment (D07);
+- methods and `impl` blocks (M9, m9.a1 and m9.a2, D154): `impl S { .. }` of a struct of the module, any number of
+  blocks, with `&self`, `&mut self` and `self` methods and associated functions without a receiver (`S::make(..)`,
+  `Self::make(..)`). A method is a member of the Slang struct (`[mutating]` for `&mut self`, `static` for an associated
+  function). A `&mut self` method is callable on a `let mut` local (or a field or element of one) only: a storage,
+  uniform or workgroup place is GUST-E0333. No `impl` for an enum, a type outside the module, or with generics
+  (GUST-E0121, E0114), no `mut self` or typed receiver (GUST-E0116), a method name that clashes with a built-in
+  (GUST-E0328), and no `&mut self` call whose order of evaluation on the GPU would differ from Rust's (GUST-E0421); see
+  [SEMANTICS](docs/SEMANTICS.md) sections 14 and 16;
+- field-less enums and `match` (M9, m9.e1 and m9.e2, D157): `enum E { A, B = 3 }` (a `u32` or `#[repr(i32)]` repr, the
+  user derives `PartialEq`), compared with `==` and `!=`, cast with `as` to the repr type, and matched as a Slang
+  `switch`: a statement `match` on an enum or an integer, and a value `match` as the initializer of a typed `let`. No
+  enum with data, no enum in a struct field, buffer, uniform or `Option` (GUST-E0211), no guard, and no `break` or
+  `continue` in an arm (GUST-E0417 to E0419, GUST-E0122); see [SEMANTICS](docs/SEMANTICS.md) section 9;
+- tuples (M9, m9.t, D158): `(a, b)` of two to eight elements (scalars, vectors, matrices, structs, enums, tuples) as a
+  local, a parameter or a result of a helper or method, with `t.0` and destructuring `let (a, b) = ..;`. Not stored in a
+  struct field, buffer, uniform or workgroup memory (GUST-E0212), no tuple comparison (GUST-E0213); see
+  [SEMANTICS](docs/SEMANTICS.md) section 10;
+- fixed-size arrays `[T; N]` (M9, m9.r1 and m9.r2a, D159): `N` is a literal above zero; a typed local, parameter or
+  result, literals and repeats `[e; N]`, indexing with `as usize`, `.len()`, and a struct field or a storage buffer
+  element `[T; N]` for the lengths of the `GpuPod` set (1 to 32 and powers of two to 4096). No nested arrays or arrays
+  of tuples (GUST-E0217), no `for x in a`, no array in a uniform (GUST-E0215), no `==` on arrays and no untyped array
+  `let` (GUST-E0811). An out-of-range index is outside the defined domain. On the RTX 5090 with the NVIDIA driver 610.88
+  a function-scope array can read zeros after an element is written back unchanged (a driver defect, D168 and D169,
+  guarded by the GPU test `driver_sentinel`); the opt-in `spirv-route` did not reproduce it there
+  ([SEMANTICS](docs/SEMANTICS.md) sections 11 and 15);
 - non-capturing closures (M9, m9.c, D160): `let f = |x: f32, y: f32| -> f32 { .. };` with every parameter typed, an
-  explicit result type and a block body, bound immutably and called as `f(a, b)` after its `let`, in a kernel, a helper or
-  a method. A closure captures nothing (it uses its parameters, its own locals, the helpers and the methods of the
+  explicit result type and a block body, bound immutably and called as `f(a, b)` after its `let`, in a kernel, a helper
+  or a method. A closure captures nothing (it uses its parameters, its own locals, the helpers and the methods of the
   module), is not a value (it is not passed, returned or stored) and holds no closure; each one becomes a hoisted Slang
   function. GUST-E0329 to E0332 in [DIAGNOSTICS](docs/DIAGNOSTICS.md); see [SEMANTICS](docs/SEMANTICS.md) section 12;
-- traits with static dispatch (M9, m9.g1, D170): `trait T { fn m(&self) -> R; fn n(self) -> Self; fn k(&mut self, ..); }`
-  (methods with a receiver and no body) and `impl T for S` of a struct or field-less enum of the module. A trait becomes
-  a Slang `interface` and each impl an `extension S : T`; a call is the call of the concrete method, by method syntax or
-  by the path forms `T::m(&s, a)`, `T::m(s, a)` and `<S as T>::m(&s, a)` on a place. No `dyn`, no `impl Trait`, no default
-  bodies, associated items, supertraits or generic traits. GUST-E0124, E0126 and E0218
-  in [DIAGNOSTICS](docs/DIAGNOSTICS.md); see [SEMANTICS](docs/SEMANTICS.md) section 13;
+- traits with static dispatch (M9, m9.g1, D170):
+  `trait T { fn m(&self) -> R; fn n(self) -> Self; fn k(&mut self, ..); }` (methods with a receiver and no body) and
+  `impl T for S` of a struct or field-less enum of the module. A trait becomes a Slang `interface` and each impl an
+  `extension S : T`; a call is the call of the concrete method, by method syntax or by the path forms `T::m(&s, a)`,
+  `T::m(s, a)` and `<S as T>::m(&s, a)` on a place. No `dyn`, no `impl Trait`, no default bodies, associated items,
+  supertraits or generic traits. GUST-E0124, E0126 and E0218 in [DIAGNOSTICS](docs/DIAGNOSTICS.md); see
+  [SEMANTICS](docs/SEMANTICS.md) section 13;
 - generic helpers and methods with trait bounds (M9, m9.g2, D170): `fn f<T: A + B>(t: T) -> T`, a `where` clause, and
-  `impl S { fn m<T: A>(&self, t: T) }`. The bounds are traits of the module (and `Copy`, dropped); type arguments are
-  inferred (no turbofish) and `T` is a whole parameter, result or `let` type. Static specialisation in slangc
-  (`T f<T : A & B>(T t)`); the CPU twin keeps the generic as plain Rust. No generic kernels, structs, enums or trait
-  methods, no std-trait bounds or arithmetic on `T`, no const generics. GUST-E0123 and E0125 (and E0114 for the rest) in
-  [DIAGNOSTICS](docs/DIAGNOSTICS.md); see [SEMANTICS](docs/SEMANTICS.md) section 14;
+  `impl S { fn m<T: A>(&self, t: T) }`. Every type parameter needs at least one trait of the module as a bound
+  (GUST-E0125; `Copy` may be added and is dropped); type arguments are inferred (no turbofish) and `T` is a whole
+  parameter, result or `let` type. Static specialisation in slangc (`T f<T : A & B>(T t)`); the CPU twin keeps the
+  generic as plain Rust. No generic kernels, structs, enums or trait methods, no std-trait bounds or arithmetic on `T`,
+  no const generics. GUST-E0123 and E0125 (and E0114 for the rest) in [DIAGNOSTICS](docs/DIAGNOSTICS.md); see
+  [SEMANTICS](docs/SEMANTICS.md) section 14;
 - `Option<T>` and `Result<T, T>` as local and helper values, including `if let` and
   a statement-only `match` with `Ok(x)`/`Err(e)` block arms (D14);
 - the vector and matrix types of `gust::math` (`Vec2` to `Vec4`, `IVec2` to `IVec4`, `UVec2` to `UVec4`, `Mat2` to
@@ -1203,10 +1249,10 @@ The direct syntax translator currently supports:
   three-dimensional Slang workgroup sizes in descriptors;
 - workgroup memory (`Workgroup<[T; N]>`), `LocalId`/`GroupId` and `workgroup_barrier()` (m7.g1, D100, D101), and
   `par_for!` loops (m7.p, D103): see their sections above;
-- execution shapes (MX, D61, D63): `grid` by default and `pixel` by `#[kernel(shape = pixel)]`, with the classifier
-  that decides which a kernel can take and the pin errors GUST-E0721 to E0728 (E0729 is the profile's own refusal); see "Shapes: `grid` and `pixel`" for
-  what makes a kernel `grid`-only and for the limits of `pixel` (one-dimensional calls, `Shared` outputs, at most 2^26
-  elements, fragment-stage storage writes);
+- execution shapes (MX, D61, D63): `grid` by default and `pixel` by `#[kernel(shape = pixel)]`, with the classifier that
+  decides which a kernel can take and the pin errors GUST-E0721 to E0728 (E0729 is the profile's own refusal); see
+  "Shapes: `grid` and `pixel`" for what makes a kernel `grid`-only and for the limits of `pixel` (one-dimensional calls,
+  `Shared` outputs, at most 2^26 elements, fragment-stage storage writes);
 - 2-D textures and samplers (MX, D64, D90): `Texture2D<T>`, `StorageTexture2D<F>` (the three `r32` formats),
   `WriteTexture2D<F>` (nine formats) and `Sampler` parameters with `load`, `store`, `sample`, `width` and `height`
   (GUST-E0731 to E0736); see "Textures and samplers". Three-wide texels, converting formats, 1-D, 3-D, cube, array and
@@ -1218,29 +1264,28 @@ The direct syntax translator currently supports:
   or the GPU for a whole build, chosen by `GUST_ROUTE__*` variables that `cargo gust` sets from a `gust.toml`;
   GUST-E0748 and E0749; see "Routing kernels to the CPU or the GPU at build time".
 
-The validator intentionally rejects allocation, standard-library access, macros,
-closures that capture, escape or carry a different form (`move`, untyped, nested, passed or returned), async/await, references (other than an atomic's `&mut buffer[index]`
-receiver), `while`/`loop`/inclusive ranges, general `match` and `?`,
-`unwrap`/`expect`, unsafe code, arbitrary method calls, and external function calls
-inside GPU modules. These restrictions describe the implemented translator, not
-limits of Slang itself.
+The validator intentionally rejects allocation, standard-library access, macros, closures that capture, escape or carry
+a different form (`move`, untyped, nested, passed or returned), async/await, references (other than an atomic's
+`&mut buffer[index]` receiver), `while`/`loop`/inclusive ranges, a `match` outside the forms above (an enum or integer
+scrutinee with literal or variant patterns) and `?`, `unwrap`/`expect`, unsafe code, recursion (GUST-E0120), `dyn` and
+`impl Trait`, arbitrary method calls, and external function calls inside GPU modules. These restrictions describe the
+implemented translator, not limits of Slang itself.
 
-Struct literals in other expression positions, nested struct literals, and record
-update syntax (`..base`) are rejected; whole-struct buffer copies and field updates
-work. Option and Result values cannot be struct fields or buffer elements.
-Booleans are expression values, not host-shareable `GpuPod` fields. A buffer element is a 32-bit scalar, a 2- or
-4-wide vector, a 2x2 or 4x4 matrix or a struct of these. `StorageV2` describes the padding that natural alignment
-implies, but a `GpuPod` type is the padding-free subset, so a struct with implicit padding is E0208 and no
-uninitialised byte is uploaded. A uniform is a `Std140V1` struct whose padding is written as fields (E0209) and holds
-no `Mat2` (E0205). 3-wide vectors and `Mat3` are not buffer elements (E0204). An array `[T; N]` is a buffer element or a struct field (storage only; see E0214, E0215 and E0216 in docs/DIAGNOSTICS.md); `GpuPod` is implemented for
-`[T; N]` with the lengths of that set. Since m7.lv (D116) the macro also writes these
-layouts into the export record, `storage_v2` for an element that holds a vector or a matrix and `std140_v1` for a
-uniform, and `cargo gust build` and `check` compare each with the reflection (a layout the macro cannot describe, an
-alias or a type from outside the module, is filled from the reflection and listed in `export_unchecked` instead);
-before it, a `Vec4` or `Mat4` element failed `cargo gust build` and a uniform was not checked at export (D104,
-retired by D116). See
-[architecture](docs/ARCHITECTURE.md) for known semantic
-gaps (and [SEMANTICS](docs/SEMANTICS.md) for limits); successful Rust checking does not prove equivalence to Slang inference.
+Struct literals in other expression positions, nested struct literals, and record update syntax (`..base`) are rejected;
+whole-struct buffer copies and field updates work. Option and Result values cannot be struct fields or buffer elements.
+Booleans are expression values, not host-shareable `GpuPod` fields. A buffer element is a 32-bit scalar, a 2- or 4-wide
+vector, a 2x2 or 4x4 matrix or a struct of these. `StorageV2` describes the padding that natural alignment implies, but
+a `GpuPod` type is the padding-free subset, so a struct with implicit padding is E0208 and no uninitialised byte is
+uploaded. A uniform is a `Std140V1` struct whose padding is written as fields (E0209) and holds no `Mat2` (E0205).
+3-wide vectors and `Mat3` are not buffer elements (E0204). An array `[T; N]` is a buffer element or a struct field
+(storage only; see E0214, E0215 and E0216 in docs/DIAGNOSTICS.md); `GpuPod` is implemented for `[T; N]` with the lengths
+of that set. Since m7.lv (D116) the macro also writes these layouts into the export record, `storage_v2` for an element
+that holds a vector or a matrix and `std140_v1` for a uniform, and `cargo gust build` and `check` compare each with the
+reflection (a layout the macro cannot describe, an alias or a type from outside the module, is filled from the
+reflection and listed in `export_unchecked` instead); before it, a `Vec4` or `Mat4` element failed `cargo gust build`
+and a uniform was not checked at export (D104, retired by D116). See [architecture](docs/ARCHITECTURE.md) for known
+semantic gaps (and [SEMANTICS](docs/SEMANTICS.md) for limits); successful Rust checking does not prove equivalence to
+Slang inference.
 
 Around the translator, the host side currently provides:
 

@@ -36,6 +36,8 @@ pub mod shrink;
 #[cfg(test)]
 mod soundness;
 #[cfg(test)]
+mod trait_tests;
+#[cfg(test)]
 mod value_tests;
 #[cfg(test)]
 mod vector_tests;

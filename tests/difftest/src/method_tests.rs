@@ -47,6 +47,7 @@ fn call(f: usize, recv: Place, args: Vec<Expr>) -> Expr {
 fn methods() -> Methods {
     let this = Place::this(S0);
     Methods {
+        traits: Vec::new(),
         structs: vec![
             StructDef {
                 fields: vec![Ty::U32],
@@ -62,6 +63,8 @@ fn methods() -> Methods {
         ],
         fns: vec![
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: Some(0),
                 recv: Recv::Mut,
                 params: vec![(10, Ty::U32)],
@@ -75,6 +78,8 @@ fn methods() -> Methods {
                 tail: Some(field(&this)),
             },
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: Some(0),
                 recv: Recv::Value,
                 params: vec![(11, Ty::U32)],
@@ -83,6 +88,8 @@ fn methods() -> Methods {
                 tail: Some(Expr::bin(BinOp::Add, field(&this), Expr::Var(11, Ty::U32))),
             },
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: Some(0),
                 recv: Recv::Shared,
                 params: Vec::new(),
@@ -91,6 +98,8 @@ fn methods() -> Methods {
                 tail: Some(Expr::bin(BinOp::Mul, field(&this), u(2))),
             },
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: Some(0),
                 recv: Recv::Mut,
                 params: Vec::new(),

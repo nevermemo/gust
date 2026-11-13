@@ -18,7 +18,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::ast::{Expr, KNOWN_SHAPE_NAMES, Program, Stmt, operator_counts};
+use crate::ast::{Expr, KNOWN_SHAPE_NAMES, Program, Stmt, TRAIT_SHAPE_NAMES, operator_counts};
 use crate::classify::{
     CLASSES, Mismatch, PixelRaw, Raw, classify, discard_class, float_comparison, read_results,
 };
@@ -236,6 +236,7 @@ pub fn coverage_json(programs: &[&Program]) -> Result<Json, String> {
     }
     let known: Vec<String> = KNOWN_SHAPE_NAMES
         .iter()
+        .chain(TRAIT_SHAPE_NAMES.iter())
         .map(|name| (*name).to_owned())
         .collect();
     let mut names: Vec<&String> = syntactic

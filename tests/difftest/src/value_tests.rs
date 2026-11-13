@@ -137,11 +137,14 @@ fn methods() -> Methods {
         value: u(1),
     };
     Methods {
+        traits: Vec::new(),
         structs: vec![StructDef {
             fields: vec![Ty::U32],
         }],
         fns: vec![
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: Some(0),
                 recv: Recv::Mut,
                 params: Vec::new(),
@@ -150,6 +153,8 @@ fn methods() -> Methods {
                 tail: Some(n_of(&this)),
             },
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: Some(0),
                 recv: Recv::Mut,
                 params: Vec::new(),
@@ -158,6 +163,8 @@ fn methods() -> Methods {
                 tail: Some(tuple(vec![n_of(&this), mul(n_of(&this), u(100))])),
             },
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: None,
                 recv: Recv::None,
                 params: vec![(20, Ty::U32)],
@@ -485,6 +492,8 @@ fn the_element_field_compound_shape_is_counted_for_that_form_only() {
 fn dead_compound_set(op: BinOp, amount: u32) -> Program {
     let mut p = tuple_order_program();
     p.methods.fns.push(FnDef {
+        imp: None,
+        gens: Vec::new(),
         owner: Some(0),
         recv: Recv::Mut,
         params: Vec::new(),

@@ -12,13 +12,14 @@
 use std::collections::BTreeMap;
 
 use crate::ast::{
-    Arm, BinOp, Elem, EnumDef, Expr, FnDef, InputBuf, Lane, MAX_ENUMS, MAX_FLAT, MAX_TRIPS,
-    MAX_TUPLE_FLAT, MAX_VARIANTS, Methods, Pat, Place, Program, Recv, Root, Stmt, StructDef,
-    TupleTy, Ty, WIDTHS, chain_terms,
+    Arm, BinOp, Elem, EnumDef, Expr, FnDef, GenParam, Imp, InputBuf, Lane, MAX_ENUMS, MAX_FLAT,
+    MAX_TRIPS, MAX_TUPLE_FLAT, MAX_VARIANTS, Methods, Pat, Place, Program, Recv, Root, Stmt,
+    StructDef, TupleTy, Ty, WIDTHS, chain_terms,
 };
 use crate::interp;
 mod array_gen;
 mod closure_gen;
+mod trait_gen;
 use crate::prng::{Prng, byte_stream};
 use closure_gen::{ArgBias, Cl};
 
@@ -68,7 +69,17 @@ use closure_gen::{ArgBias, Cl};
 /// and nothing else, calls helpers and methods but no closure, and holds no barrier, atomic, subgroup operation,
 /// resource, `i` or `return`; no capture, `move`, closure value, untyped, unit or nested closure is generated. The
 /// older spaces decode as in format 11 (their pins are read with their own stamp); the batch cut is new.
-pub const DIFFTEST_FORMAT: u32 = 12;
+///
+/// 13: traits and generic helpers (slice m9.d2, D166, D170): a seed's batch is two float, three vector, one method, two
+/// enum, two value, two array, two closure and two trait programs. A trait program (`Space::Trait`, attempts from
+/// `TRAIT_ATTEMPT_BASE`) is an enum program (no floats, tuples, arrays or closures) that also declares one to three
+/// module traits `Tr<n>` (one or two methods `t<n>m<k>` with a receiver and scalar parameters), each method
+/// implemented by exactly two structs or field-less enums, calls them (`s.m(a)`, `Tr::m(&s, a)`,
+/// `<S as Tr>::m(&s, a)`) and declares generic helpers and struct methods `fn g<T: Tr0 + Tr1, U>(t: T, ..) -> ..` (inline or `where`
+/// bounds, every parameter bounded by one or two module traits, `Copy` sometimes added) called with at least two
+/// different types. No turbofish, std bound, arithmetic on `T`, generic trait method, recursion, array or
+/// barrier/atomic/subgroup operation is generated. The older spaces decode as in format 12; the batch cut is new.
+pub const DIFFTEST_FORMAT: u32 = 13;
 
 /// Which programs the generator writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,6 +111,9 @@ pub enum Space {
     /// kernel, helper and method bodies, called in every position a helper call is accepted. Selected by an attempt
     /// number of `CLOSURE_ATTEMPT_BASE` or more.
     Closure,
+    /// The enum space plus module traits and generic helpers (slice m9.d2, format 13). Selected by an attempt number of
+    /// `TRAIT_ATTEMPT_BASE` or more.
+    Trait,
 }
 
 /// The first attempt number of the vector space. A program is a pure function of `(seed, attempt)`, and the attempt
@@ -110,19 +124,23 @@ pub const VECTOR_ATTEMPT_BASE: u64 = 1_000_000;
 pub const METHOD_ATTEMPT_BASE: u64 = 2_000_000;
 /// In-domain programs of a seed's batch that are scalar (the float space), then vector, then method
 /// (`PROGRAMS_PER_SEED` in all).
-pub const SCALAR_PROGRAMS_PER_SEED: usize = 3;
-pub const VECTOR_PROGRAMS_PER_SEED: usize = 4;
+pub const SCALAR_PROGRAMS_PER_SEED: usize = 2;
+pub const VECTOR_PROGRAMS_PER_SEED: usize = 3;
 pub const METHOD_PROGRAMS_PER_SEED: usize = 1;
 pub const ENUM_PROGRAMS_PER_SEED: usize = 2;
 pub const ARRAY_PROGRAMS_PER_SEED: usize = 2;
 pub const CLOSURE_PROGRAMS_PER_SEED: usize = 2;
+pub const TRAIT_PROGRAMS_PER_SEED: usize = 2;
+/// The first attempt number of the trait space (above every closure attempt a seed can make).
+pub const TRAIT_ATTEMPT_BASE: u64 = 7_000_000;
 pub const VALUE_PROGRAMS_PER_SEED: usize = PROGRAMS_PER_SEED
     - SCALAR_PROGRAMS_PER_SEED
     - VECTOR_PROGRAMS_PER_SEED
     - METHOD_PROGRAMS_PER_SEED
     - ENUM_PROGRAMS_PER_SEED
     - ARRAY_PROGRAMS_PER_SEED
-    - CLOSURE_PROGRAMS_PER_SEED;
+    - CLOSURE_PROGRAMS_PER_SEED
+    - TRAIT_PROGRAMS_PER_SEED;
 /// The first attempt number of the array space (above every value attempt a seed can make).
 pub const ARRAY_ATTEMPT_BASE: u64 = 5_000_000;
 /// The first attempt number of the closure space (above every array attempt a seed can make).
@@ -140,7 +158,9 @@ pub const ARRAY_END: usize = VALUE_END + ARRAY_PROGRAMS_PER_SEED;
 
 /// The space whose decoder reads the program of this attempt number.
 pub fn space_of_attempt(attempt: u64) -> Space {
-    if attempt >= CLOSURE_ATTEMPT_BASE {
+    if attempt >= TRAIT_ATTEMPT_BASE {
+        Space::Trait
+    } else if attempt >= CLOSURE_ATTEMPT_BASE {
         Space::Closure
     } else if attempt >= ARRAY_ATTEMPT_BASE {
         Space::Array
@@ -259,6 +279,25 @@ struct Gen<'a> {
     probe_writers: Vec<(u32, u32, u8, Ty)>,
     /// The closures bound in the open blocks.
     cls: Vec<Cl>,
+    /// The trait space (implies `enums`, not `values`, `arrays` or `closures`): module traits, their impls and generic
+    /// helpers. Every draw they add sits behind this flag.
+    traits: bool,
+    /// The type parameters of the generic function being drawn (empty elsewhere).
+    cur_gens: Vec<GenParam>,
+    /// The (generic function, type) instantiations drawn so far: a call prefers a type not yet used.
+    inst_used: Vec<(usize, Ty)>,
+}
+
+/// The signature a struct impl of a trait method is drawn with (format 13).
+#[derive(Clone)]
+struct Forced {
+    owner: Option<u8>,
+    recv: Recv,
+    params: Vec<Ty>,
+    ret: Option<Ty>,
+    imp: Imp,
+    /// The index below which the body may call: the first impl of the pair.
+    limit: usize,
 }
 
 /// A data value as a literal; i32::MIN is written as the expression -2147483647 - 1 (the emitter never writes the
@@ -357,7 +396,8 @@ impl Gen<'_> {
             | Ty::Struct(_)
             | Ty::Enum(_)
             | Ty::Tuple(_)
-            | Ty::Array(_) => {
+            | Ty::Array(_)
+            | Ty::Param(_) => {
                 unreachable!("a vector, matrix, struct or enum has no literal")
             }
             Ty::F32 => self.float_literal(),
@@ -1435,7 +1475,12 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         scope: Vec::new(),
         methods: matches!(
             space,
-            Space::Method | Space::Enum | Space::Value | Space::Array | Space::Closure
+            Space::Method
+                | Space::Enum
+                | Space::Value
+                | Space::Array
+                | Space::Closure
+                | Space::Trait
         ),
         table: Methods::default(),
         cur_fn: None,
@@ -1443,7 +1488,7 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         forbid: Vec::new(),
         enums: matches!(
             space,
-            Space::Enum | Space::Value | Space::Array | Space::Closure
+            Space::Enum | Space::Value | Space::Array | Space::Closure | Space::Trait
         ),
         cur_ret: None,
         force_enum_ret: false,
@@ -1456,6 +1501,9 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         in_closure: false,
         probe_writers: Vec::new(),
         cls: Vec::new(),
+        traits: space == Space::Trait,
+        cur_gens: Vec::new(),
+        inst_used: Vec::new(),
     };
     let count = match g.b.below(6) {
         k @ 0..=4 => COUNTS[k as usize],
@@ -1514,6 +1562,10 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         }
         g.closure_probe_lets(&mut body);
     }
+    // The trait space adds a local of every implementing type, so that the kernel can call the impls.
+    if g.traits {
+        g.trait_locals(&mut body);
+    }
     body.extend(g.block(0, 2, 7));
     // The value space ends the kernel body, often, with `t.k.f op= t.k.m()` on a top-level tuple local (fix round 1),
     // and the result reads the field: the order-sensitive set then decides the output of the program.
@@ -1558,7 +1610,7 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         ty = Ty::U32;
     }
     // The closure space wants an integer result: the probe calls join it with a `^` that every path evaluates.
-    if g.closures && ty == Ty::Bool && g.b.chance(70) {
+    if (g.closures && ty == Ty::Bool && g.b.chance(70)) || (g.traits && ty == Ty::Bool) {
         ty = Ty::U32;
     }
     if g.methods {
@@ -1589,6 +1641,12 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         }
     }
     let mut result = g.expr(ty, MAX_DEPTH);
+    // The trait space joins calls of its impls and generic helpers to the result: every path evaluates them.
+    if g.traits {
+        for probe in g.trait_probes() {
+            result = fold_in(result, probe);
+        }
+    }
     // The value space joins a call of a helper that returns from inside an arm to the result (nit R1 of the m9.d1b
     // re-check: such a `return` must run in many programs, not in a handful).
     let mut arm_call = None;
@@ -1904,6 +1962,9 @@ pub struct Batch {
     /// Of `attempts`, the attempts of the closure part, and of `discarded`, the discards of the closure part.
     pub closure_attempts: u64,
     pub closure_discarded: BTreeMap<&'static str, u32>,
+    /// Of `attempts`, the attempts of the trait part, and of `discarded`, the discards of the trait part.
+    pub trait_attempts: u64,
+    pub trait_discarded: BTreeMap<&'static str, u32>,
 }
 
 impl Batch {
@@ -1939,6 +2000,7 @@ pub fn generate_batch(seed: u64) -> Result<Batch, String> {
     fill(&mut batch, Space::Value, VALUE_PROGRAMS_PER_SEED)?;
     fill(&mut batch, Space::Array, ARRAY_PROGRAMS_PER_SEED)?;
     fill(&mut batch, Space::Closure, CLOSURE_PROGRAMS_PER_SEED)?;
+    fill(&mut batch, Space::Trait, TRAIT_PROGRAMS_PER_SEED)?;
     Ok(batch)
 }
 
@@ -1967,6 +2029,8 @@ fn empty_batch(seed: u64) -> Batch {
         array_discarded: BTreeMap::new(),
         closure_attempts: 0,
         closure_discarded: BTreeMap::new(),
+        trait_attempts: 0,
+        trait_discarded: BTreeMap::new(),
     }
 }
 
@@ -1979,6 +2043,7 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
         Space::Value => VALUE_ATTEMPT_BASE,
         Space::Array => ARRAY_ATTEMPT_BASE,
         Space::Closure => CLOSURE_ATTEMPT_BASE,
+        Space::Trait => TRAIT_ATTEMPT_BASE,
         _ => 0,
     };
     let target = batch.programs.len() + want;
@@ -1990,6 +2055,7 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
         batch.value_attempts += u64::from(space == Space::Value);
         batch.array_attempts += u64::from(space == Space::Array);
         batch.closure_attempts += u64::from(space == Space::Closure);
+        batch.trait_attempts += u64::from(space == Space::Trait);
         let program = generate_attempt_in(space, batch.seed, attempt);
         // A vector program that came out scalar tests nothing new, nor does a method program that calls nothing, nor
         // an enum program without a `match`.
@@ -2005,8 +2071,12 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
             Some("no-value")
         } else if space == Space::Closure && !program.has_closure() {
             Some("no-closure")
+        } else if space == Space::Trait && !program.has_trait_forms() {
+            Some("no-trait")
         } else if matches!(space, Space::Array | Space::Closure) && !program.has_array() {
             Some("no-array")
+        } else if space == Space::Trait && !program.has_match() {
+            Some("no-match")
         } else if matches!(space, Space::Value | Space::Array | Space::Closure)
             && !program.has_call()
         {
@@ -2031,6 +2101,9 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
                 }
                 if space == Space::Closure {
                     *batch.closure_discarded.entry(reason).or_default() += 1;
+                }
+                if space == Space::Trait {
+                    *batch.trait_discarded.entry(reason).or_default() += 1;
                 }
                 if space == Space::Value {
                     *batch.value_discarded.entry(reason).or_default() += 1;
@@ -2119,6 +2192,13 @@ impl Gen<'_> {
             }
         }
         out
+    }
+
+    /// Whether an ordinary call may name function `k`: not a generic function (its arguments are drawn by `generic_call`) and
+    /// not the impl of an enum (its receiver is no struct place).
+    fn plain(&self, k: usize) -> bool {
+        let def = &self.table.fns[k];
+        def.gens.is_empty() && !(def.recv != Recv::None && def.owner.is_none())
     }
 
     /// The functions a call may name here: those below the one being drawn (the kernel may name all).
@@ -2226,7 +2306,8 @@ impl Gen<'_> {
         (0..self.callable())
             .filter(|&k| {
                 let def = &self.table.fns[k];
-                def.recv == Recv::Mut
+                self.plain(k)
+                    && def.recv == Recv::Mut
                     && places
                         .iter()
                         .any(|(_, j, writable)| *writable && Some(*j) == def.owner)
@@ -2291,8 +2372,19 @@ impl Gen<'_> {
         let mut args = Vec::new();
         let mut complete = true;
         let mut enum_root: Option<Root> = None;
+        // A trait method called on one root often gets calls on another root among its arguments.
+        let trait_root = if self.traits && def.imp.is_some() && def.recv != Recv::Value {
+            self.pick_writable_root()
+        } else {
+            None
+        };
         for (slot, (_, ty)) in def.params.iter().enumerate() {
             match ty {
+                scalar if trait_root.is_some() && self.b.chance(80) => {
+                    let root = trait_root.expect("a root");
+                    let call = self.root_call(*scalar, root, depth.saturating_sub(1));
+                    args.push(call.unwrap_or_else(|| self.expr(*scalar, depth)));
+                }
                 // A comparison before the last argument: the shape that made the macro emit `__gust_keep` (m9.f1).
                 Ty::Bool if self.values && slot + 1 < def.params.len() && self.b.chance(45) => {
                     let operand = self.int_ty();
@@ -2332,8 +2424,21 @@ impl Gen<'_> {
 
     /// A call whose value has type `ty` (a scalar, or a struct for an associated function), if one is in reach.
     fn value_call(&mut self, ty: Ty, depth: u32) -> Option<Expr> {
+        if self.traits {
+            if self.b.chance(30)
+                && let Some(call) = self.generic_call(ty, depth)
+            {
+                return Some(call);
+            }
+            if matches!(ty, Ty::Enum(_) | Ty::U32 | Ty::I32 | Ty::Bool)
+                && self.b.chance(25)
+                && let Some(call) = self.trait_call(ty, depth)
+            {
+                return Some(call);
+            }
+        }
         let candidates: Vec<usize> = (0..self.callable())
-            .filter(|&k| self.table.fns[k].ret == Some(ty))
+            .filter(|&k| self.table.fns[k].ret == Some(ty) && self.plain(k))
             .collect();
         if candidates.is_empty() {
             return None;
@@ -2370,12 +2475,17 @@ impl Gen<'_> {
             }
         };
         let (recv, args) = self.call_parts(f, depth)?;
-        Some(Expr::Call {
+        let call = Expr::Call {
             f,
             owner,
             recv,
             args,
             ty,
+        };
+        Some(if self.traits {
+            self.maybe_path(call)
+        } else {
+            call
         })
     }
 
@@ -2403,7 +2513,10 @@ impl Gen<'_> {
         let candidates: Vec<usize> = (0..self.callable())
             .filter(|&k| {
                 let def = &self.table.fns[k];
-                def.recv == Recv::Mut && def.ret == Some(ty) && !on_root(def.owner).is_empty()
+                self.plain(k)
+                    && def.recv == Recv::Mut
+                    && def.ret == Some(ty)
+                    && !on_root(def.owner).is_empty()
             })
             .collect();
         if candidates.is_empty() {
@@ -2571,6 +2684,12 @@ impl Gen<'_> {
         let structs = 1 + self.b.below(3) as usize;
         for j in 0..structs {
             let count = 1 + self.b.below(3);
+            if self.traits && j > 0 && self.b.chance(55) {
+                // A copy of the struct before: two types of one shape, so that a wrong impl stays observable.
+                let fields = self.table.structs[j - 1].fields.clone();
+                self.table.structs.push(StructDef { fields });
+                continue;
+            }
             let mut fields = Vec::new();
             for _ in 0..count {
                 // No `bool` field: a GPU struct is a `GpuPod` type, and `bool` is not one.
@@ -2589,6 +2708,10 @@ impl Gen<'_> {
         }
         if self.enums {
             self.gen_enums();
+        }
+        if self.traits {
+            self.gen_trait_tables();
+            return;
         }
         let total = 3 + self.b.below(4) as usize;
         for k in 0..total {
@@ -2609,10 +2732,18 @@ impl Gen<'_> {
     }
 
     fn gen_fn(&mut self, k: usize) {
+        self.gen_fn_with(k, None);
+    }
+
+    /// `gen_fn`, or (a trait program, format 13) the struct impl of a trait method with the signature the trait gives:
+    /// `forced.limit` is the index below which the body may call (the first impl of the pair).
+    fn gen_fn_with(&mut self, k: usize, forced: Option<Forced>) {
         let structs = self.table.structs.len() as u32;
         // The first function is often a `&mut self` method returning `bool`: the right operand of an `&&`/`||`.
-        let first_bool = k == 0 && self.b.chance(35);
-        let kind = if first_bool {
+        let first_bool = forced.is_none() && k == 0 && self.b.chance(35);
+        let kind = if forced.is_some() {
+            1
+        } else if first_bool {
             2
         } else if self.force_enum_ret {
             // Not an associated function: it returns its struct.
@@ -2620,7 +2751,10 @@ impl Gen<'_> {
         } else {
             self.b.weighted(&[18, 18, 26, 18, 20])
         };
-        let recv = [Recv::None, Recv::Shared, Recv::Mut, Recv::Value, Recv::None][kind];
+        let recv = forced.as_ref().map_or(
+            [Recv::None, Recv::Shared, Recv::Mut, Recv::Value, Recv::None][kind],
+            |fo| fo.recv,
+        );
         // An associated function builds its struct from a literal, which needs every field to be a scalar.
         let scalar_structs: Vec<u8> = (0..structs as u8)
             .filter(|&j| {
@@ -2630,14 +2764,18 @@ impl Gen<'_> {
                     .all(|f| !f.is_struct())
             })
             .collect();
-        let owner = (kind != 0).then(|| {
-            if kind == 4 {
-                scalar_structs[self.b.below(scalar_structs.len() as u32) as usize]
-            } else {
-                self.b.below(structs) as u8
-            }
-        });
-        self.cur_fn = Some(k);
+        let owner = if let Some(fo) = &forced {
+            fo.owner
+        } else {
+            (kind != 0).then(|| {
+                if kind == 4 {
+                    scalar_structs[self.b.below(scalar_structs.len() as u32) as usize]
+                } else {
+                    self.b.below(structs) as u8
+                }
+            })
+        };
+        self.cur_fn = Some(forced.as_ref().map_or(k, |fo| fo.limit));
         self.scope.clear();
         self.cls.clear();
         self.this = owner
@@ -2645,7 +2783,9 @@ impl Gen<'_> {
             .map(|o| (Ty::Struct(o), recv));
         let mut params = Vec::new();
         // A by-value method takes at least one parameter, mostly a `u32`: the slot of a `&mut self` call's value.
-        let count = if self.enums {
+        let count = if forced.is_some() {
+            0
+        } else if self.enums {
             1 + self.b.below(3)
         } else {
             self.b.below(3).max(u32::from(kind == 3))
@@ -2672,18 +2812,32 @@ impl Gen<'_> {
             self.scope.push((var, ty, false));
             params.push((var, ty));
         }
-        let ret = match kind {
-            _ if first_bool => Some(Ty::Bool),
-            4 => owner.map(Ty::Struct),
-            // A helper that takes an array often returns it (modified): the array in, the array out.
-            0 if self.arrays && params.iter().any(|(_, ty)| ty.is_array()) && self.b.chance(50) => {
-                params.iter().map(|(_, ty)| *ty).find(|ty| ty.is_array())
+        if let Some(fo) = forced.as_ref() {
+            for &ty in &fo.params {
+                let var = self.fresh();
+                self.scope.push((var, ty, false));
+                params.push((var, ty));
             }
-            _ if self.force_enum_ret => Some(self.enum_ty()),
-            2 if self.b.chance(40) => None,
-            _ if self.values && self.b.chance(28) => Some(self.tuple_ty()),
-            _ if self.enums && self.b.chance(30) => Some(self.enum_ty()),
-            _ => Some([Ty::U32, Ty::I32, Ty::Bool][self.b.weighted(&[40, 40, 20])]),
+        }
+        let ret = if let Some(fo) = &forced {
+            fo.ret
+        } else {
+            match kind {
+                _ if first_bool => Some(Ty::Bool),
+                4 => owner.map(Ty::Struct),
+                // A helper that takes an array often returns it (modified): the array in, the array out.
+                0 if self.arrays
+                    && params.iter().any(|(_, ty)| ty.is_array())
+                    && self.b.chance(50) =>
+                {
+                    params.iter().map(|(_, ty)| *ty).find(|ty| ty.is_array())
+                }
+                _ if self.force_enum_ret => Some(self.enum_ty()),
+                2 if self.b.chance(40) => None,
+                _ if self.values && self.b.chance(28) => Some(self.tuple_ty()),
+                _ if self.enums && self.b.chance(30) => Some(self.enum_ty()),
+                _ => Some([Ty::U32, Ty::I32, Ty::Bool][self.b.weighted(&[40, 40, 20])]),
+            }
         };
         // A helper (no receiver, no owner) may end a block in `return`.
         self.cur_ret = if self.enums
@@ -2774,12 +2928,26 @@ impl Gen<'_> {
                 value
             }
         });
+        // A trait impl weighs its integer parameters into an integer result, so that the order of two arguments shows.
+        let tail = if forced.is_some() {
+            tail.map(|t| {
+                let t = self.weight_params(t, &params);
+                match owner {
+                    Some(j) if recv != Recv::None => self.weight_self(t, j),
+                    _ => t,
+                }
+            })
+        } else {
+            tail
+        };
         // Lets that the tail hoisted come before it (and before the `let` of a struct tail).
         self.splice_pre(pre_mark, at, &mut body);
         if self.values && arm_returns(&body, false) {
             self.arm_return_fns.push(k);
         }
         self.table.fns.push(FnDef {
+            imp: forced.as_ref().map(|fo| fo.imp),
+            gens: Vec::new(),
             owner,
             recv,
             params,
@@ -3642,7 +3810,7 @@ impl Gen<'_> {
     fn enum_scrutinee(&mut self, e: u8, scrut: Expr) -> Expr {
         if matches!(
             scrut,
-            Expr::Var(..) | Expr::Call { .. } | Expr::Variant { .. }
+            Expr::Var(..) | Expr::Call { .. } | Expr::PathCall { .. } | Expr::Variant { .. }
         ) {
             scrut
         } else {
@@ -4232,7 +4400,8 @@ mod tests {
         let mut loop_accumulators = 0;
         let mut float_outputs = 0;
         let mut float_to_int = 0;
-        for seed in 1..=16 {
+        // 24 seeds: the batch holds two float programs since format 13 (48 of them, as three per seed over 16 seeds before).
+        for seed in 1..=24 {
             for program in generate_batch(seed).unwrap().programs {
                 for (key, count) in operator_counts(&program) {
                     *total.entry(key).or_default() += count;

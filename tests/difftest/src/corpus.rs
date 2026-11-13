@@ -83,7 +83,8 @@ mod tests {
     use crate::generator::{
         ARRAY_ATTEMPT_BASE, ARRAY_END, CLOSURE_ATTEMPT_BASE, ENUM_ATTEMPT_BASE, ENUM_END,
         METHOD_ATTEMPT_BASE, METHOD_END, PROGRAMS_PER_SEED, SCALAR_PROGRAMS_PER_SEED, Space,
-        VALUE_ATTEMPT_BASE, VALUE_END, VECTOR_ATTEMPT_BASE, VECTOR_END, generate_batch_in,
+        TRAIT_ATTEMPT_BASE, TRAIT_PROGRAMS_PER_SEED, VALUE_ATTEMPT_BASE, VALUE_END,
+        VECTOR_ATTEMPT_BASE, VECTOR_END, generate_batch_in,
     };
 
     #[test]
@@ -249,7 +250,7 @@ mod tests {
                         .iter()
                         .all(|p| p.attempt >= CLOSURE_ATTEMPT_BASE && p.has_closure())
                 );
-                (seed, batch_hash(&batch.programs))
+                (seed, batch_hash_as_format(&batch.programs, 12))
             })
             .collect();
         let pinned: Vec<(u64, u64)> = vec![
@@ -265,7 +266,7 @@ mod tests {
     /// the enum space, two of the value space and two of the array space (format 11): the scalar decoding of every seed is what
     /// format 5 wrote, and so is the vector decoding of format 6; only the cut of the batch is new.
     #[test]
-    fn a_batch_is_three_float_four_vector_one_method_two_enum_two_value_two_array_and_two_closure_programs()
+    fn a_batch_is_three_float_four_vector_one_method_one_enum_one_value_two_array_two_closure_and_two_trait_programs()
      {
         for seed in 1..=8 {
             let batch = generate_batch(seed).unwrap();
@@ -326,6 +327,38 @@ mod tests {
                     program.attempt
                 );
             }
+            let last = &batch.programs[PROGRAMS_PER_SEED - TRAIT_PROGRAMS_PER_SEED..];
+            assert_eq!(last.len(), 2);
+            for program in last {
+                assert!(program.attempt >= TRAIT_ATTEMPT_BASE, "seed {seed}");
+                assert!(program.methods.has_traits() && program.has_trait_forms());
+            }
         }
+    }
+
+    /// Format 13 (m9.d2): the trait space of seeds 1 to 4 (16 programs each, as `generate_batch_in` keeps them)
+    /// decodes to these programs. The older spaces are untouched: their pins above still hold, each read with its own
+    /// stamp.
+    #[test]
+    fn the_trait_space_holds_the_format_13_programs_of_the_first_seeds() {
+        let hashes: Vec<(u64, u64)> = (1..=4)
+            .map(|seed| {
+                let batch = generate_batch_in(Space::Trait, seed).unwrap();
+                assert!(
+                    batch
+                        .programs
+                        .iter()
+                        .all(|p| p.attempt >= TRAIT_ATTEMPT_BASE && p.has_trait_forms())
+                );
+                (seed, batch_hash(&batch.programs))
+            })
+            .collect();
+        let pinned: Vec<(u64, u64)> = vec![
+            (1, 9563745800497969671),
+            (2, 6395250079408895879),
+            (3, 17641521707558961229),
+            (4, 16935275922206718759),
+        ];
+        assert_eq!(hashes, pinned, "trait");
     }
 }

@@ -58,10 +58,13 @@ fn tick() -> Expr {
 fn methods() -> Methods {
     let this = Place::this(S0);
     Methods {
+        traits: Vec::new(),
         structs: vec![StructDef {
             fields: vec![Ty::U32],
         }],
         fns: vec![FnDef {
+            imp: None,
+            gens: Vec::new(),
             owner: Some(0),
             recv: Recv::Mut,
             params: Vec::new(),
@@ -456,16 +459,22 @@ fn a_batch_ends_with_its_closure_programs() {
     assert_eq!(CLOSURE_PROGRAMS_PER_SEED, 2);
     for seed in 1..=4 {
         let batch = generate_batch(seed).unwrap();
-        for p in &batch.programs[ARRAY_END..] {
+        for p in &batch.programs[ARRAY_END..ARRAY_END + CLOSURE_PROGRAMS_PER_SEED] {
             assert!(p.attempt >= CLOSURE_ATTEMPT_BASE, "seed {seed}");
             assert!(
                 p.has_closure() && p.has_array() && p.has_call(),
                 "seed {seed}"
             );
         }
-        assert_eq!(batch.programs[ARRAY_END..].len(), CLOSURE_PROGRAMS_PER_SEED);
+        assert_eq!(
+            batch.programs[ARRAY_END..ARRAY_END + CLOSURE_PROGRAMS_PER_SEED].len(),
+            CLOSURE_PROGRAMS_PER_SEED
+        );
         let space = generate_batch_in(Space::Closure, seed).unwrap();
-        assert_eq!(&space.programs[..2], &batch.programs[ARRAY_END..]);
+        assert_eq!(
+            &space.programs[..2],
+            &batch.programs[ARRAY_END..ARRAY_END + CLOSURE_PROGRAMS_PER_SEED]
+        );
         assert!(batch.closure_attempts == 2 + batch.closure_discarded.values().sum::<u32>() as u64);
     }
 }
@@ -598,7 +607,8 @@ fn the_closure_programs_of_the_64_seed_runs_write_and_run_every_form_and_order_s
                 .unwrap()
                 .programs
                 .into_iter()
-                .skip(ARRAY_END),
+                .skip(ARRAY_END)
+                .take(CLOSURE_PROGRAMS_PER_SEED),
         );
     }
     assert_eq!((space.len(), batch.len()), (1024, 128));
@@ -651,7 +661,8 @@ fn the_closure_mutants_change_generated_programs() {
                 .unwrap()
                 .programs
                 .into_iter()
-                .skip(ARRAY_END),
+                .skip(ARRAY_END)
+                .take(CLOSURE_PROGRAMS_PER_SEED),
         );
     }
     // A change is a different output buffer (or a different domain verdict). A mutated run that breaks an assertion of

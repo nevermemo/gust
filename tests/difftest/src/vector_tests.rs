@@ -579,13 +579,13 @@ fn the_vector_space_is_deterministic_and_never_writes_a_constant_mat2() {
     );
 }
 
-/// The vector programs of seeds 1 to 8 pass `check` and the domain, and together use 20 named forms and the
+/// The vector programs of seeds 1 to 20 (60 programs; seeds 1 to 8 at four a seed were 32, and three a seed did not write `new UVec4` within 11 seeds) pass `check` and the domain, and together use 20 named forms and the
 /// prefixes `swizzle `, `transpose ` and `/ `. It does not say that every form is written: see
 /// `the_generator_writes_every_binary_row_...` below.
 #[test]
-fn the_vector_programs_of_a_batch_are_in_the_domain_and_seeds_1_to_8_use_twenty_listed_forms() {
+fn the_vector_programs_of_a_batch_are_in_the_domain_and_seeds_1_to_20_use_twenty_listed_forms() {
     let mut names = std::collections::BTreeSet::new();
-    for seed in 1..=8 {
+    for seed in 1..=20 {
         let batch = generate_batch(seed).unwrap();
         for p in &batch.programs
             [crate::generator::SCALAR_PROGRAMS_PER_SEED..crate::generator::VECTOR_END]
@@ -670,10 +670,10 @@ fn the_generator_writes_every_binary_row_negation_and_swizzle_shape_within_the_f
 
 /// How many of the [`crate::ast::writable_aggregate_forms`] the programs of the 64-seed batch itself write (the batch
 /// holds four vector programs per seed since format 11 (five in format 8 to 10, which wrote 71 of 72). Measured in
-/// slice m9.d1d: 67. See DIFFTEST.md,
+/// slice m9.d1d: 67; 62 since format 13, which takes a vector slot for the trait space (three vector programs a seed, DIFFTEST.md). See DIFFTEST.md,
 /// "Coverage of the older spaces". The test above guards the generator over its own space; this one guards the batch
 /// that the GPU runs.
-const BATCH_FORMS_AT_64_SEEDS: usize = 67;
+const BATCH_FORMS_AT_64_SEEDS: usize = 62;
 
 #[test]
 fn the_gated_batch_of_64_seeds_writes_the_vector_forms_that_it_wrote_when_measured() {

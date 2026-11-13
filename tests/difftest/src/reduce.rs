@@ -327,7 +327,7 @@ fn called_fns(p: &Program) -> BTreeSet<usize> {
 fn prune_functions(p: &Program, _: u32) -> Vec<Program> {
     let used = called_fns(p);
     (0..p.methods.fns.len())
-        .filter(|k| !used.contains(k))
+        .filter(|k| !used.contains(k) && p.methods.fns[*k].imp.is_none())
         .map(|k| {
             let mut candidate = p.clone();
             candidate.methods.fns.remove(k);

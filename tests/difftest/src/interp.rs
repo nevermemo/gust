@@ -16,12 +16,13 @@ use std::collections::{BTreeMap, HashMap};
 use crate::agg::{self, Agg, Scalar};
 use crate::ast::{
     ASSIGN_COMP, Arm, BinOp, CLOSURE_BODY_HELPER, CLOSURE_BODY_METHOD, CLOSURE_PARAM_METHOD,
-    ClosureDef, Elem, Expr, MATCH_ARM_RETURN_RUN, Pat, Place, Program, Recv, Root, SHAPE_EXPR_CALL,
-    SHAPE_STMT_CALL, STRUCT_LIT, Stmt, TUPLE_READ, Ty, UnOp, array_call_names, array_expr_names,
-    array_set_names, array_store_names, bin_shape, call_arg_names, call_name, call_shape,
-    closure_call_names, closure_let_names, closure_set_names, destruct_names, enum_as_name,
-    enum_call_shapes, match_names, match_shape, set_name, set_shape, tuple_field_names,
-    tuple_lit_names, tuple_set_names, value_match_names,
+    ClosureDef, Elem, Expr, MATCH_ARM_RETURN_RUN, Pat, PathForm, Place, Program, Recv, Root,
+    SHAPE_EXPR_CALL, SHAPE_STMT_CALL, STRUCT_LIT, Stmt, TRAIT_PATH_CALL, TRAIT_PATH_QUALIFIED,
+    TUPLE_READ, Ty, UnOp, array_call_names, array_expr_names, array_set_names, array_store_names,
+    bin_shape, call_arg_names, call_name, call_shape, closure_call_names, closure_let_names,
+    closure_set_names, destruct_names, enum_as_name, enum_call_shapes, match_names, match_shape,
+    set_name, set_shape, trait_call_names, tuple_field_names, tuple_lit_names, tuple_set_names,
+    value_match_names,
 };
 use crate::float::{self, Fl};
 
@@ -292,6 +293,10 @@ struct Machine<'a> {
     closure_ctx: Option<(&'a ClosureDef, bool)>,
     /// The result of the first call of each closure in this element, for the `closure-memo` mutant.
     memo: HashMap<u32, Val>,
+    /// The bindings of the type parameters of the generic functions in progress, innermost last (format 13).
+    binds: Vec<[Option<Ty>; 2]>,
+    /// The first binding of each generic function in this element, for the `generic-specialisation-reuse` mutant.
+    first_bind: HashMap<usize, [Option<Ty>; 2]>,
     /// Test hook for the mutation checks (slice m9.d1b); `None` is the Rust semantics.
     mutant: Option<Mutant>,
 }
@@ -315,6 +320,9 @@ pub(crate) fn env_mutant() -> Option<Mutant> {
         Ok("closure-args-right-to-left") => Some(Mutant::ClosureArgsRightToLeft),
         Ok("closure-param-by-ref") => Some(Mutant::ClosureParamByRef),
         Ok("closure-memo") => Some(Mutant::ClosureMemo),
+        Ok("trait-wrong-impl") => Some(Mutant::TraitWrongImpl),
+        Ok("generic-specialisation-reuse") => Some(Mutant::GenericReuse),
+        Ok("trait-args-right-to-left") => Some(Mutant::TraitArgsRightToLeft),
         _ => None,
     }
 }
@@ -353,6 +361,12 @@ pub enum Mutant {
     ClosureParamByRef,
     /// A closure body is evaluated by the first call of the element only; later calls reuse the result. (m9.d1e)
     ClosureMemo,
+    /// A call of a trait method runs the impl of the other implementing type. (m9.d2)
+    TraitWrongImpl,
+    /// A generic function runs every call with the type parameters of its first call. (m9.d2)
+    GenericReuse,
+    /// The arguments of a trait or generic call run right to left (their values are still placed left to right). (m9.d2)
+    TraitArgsRightToLeft,
 }
 
 /// What `run_covered` counts while it runs.
@@ -367,6 +381,8 @@ struct Counting {
     /// `&&` and `||` evaluations whose right operand was evaluated, and whose right operand was skipped.
     rhs_evaluated: u64,
     rhs_skipped: u64,
+    /// (generic function, type bound to its first type parameter) of every generic call that ran.
+    instantiations: std::collections::BTreeSet<(usize, String)>,
 }
 
 const KIND_UNARY: u8 = 0;
@@ -729,6 +745,14 @@ impl Machine<'_> {
                 Ok(value.expect("a value call has a tail"))
             }
             Expr::ClosureCall { var, args, .. } => self.closure_call(*var, args),
+            Expr::PathCall { form, call } => {
+                self.count_name(if *form == PathForm::Trait {
+                    TRAIT_PATH_CALL
+                } else {
+                    TRAIT_PATH_QUALIFIED
+                });
+                self.expr(call)
+            }
             Expr::StructLit { fields, order, .. } => {
                 self.count_name(STRUCT_LIT);
                 // The fields in the order written, as Rust evaluates them; a nested struct contributes its
@@ -818,7 +842,7 @@ impl Machine<'_> {
         let program = self.program;
         let methods = &program.methods;
         let mut base = 0;
-        let mut ty = place.root_ty;
+        let mut ty = self.resolve(place.root_ty);
         if let Some(index) = place.index.as_deref() {
             let Ty::Array(a) = place.root_ty else {
                 unreachable!("Program::check requires an array under an index")
@@ -891,6 +915,18 @@ impl Machine<'_> {
         }
     }
 
+    /// A type resolved in the binding of the generic function that is running: `T` is the type it was called with.
+    fn resolve(&self, ty: Ty) -> Ty {
+        match ty {
+            Ty::Param(g) => self
+                .binds
+                .last()
+                .and_then(|b| b[usize::from(g)])
+                .expect("a bound type parameter"),
+            other => other,
+        }
+    }
+
     /// A call, in Rust's order: the receiver is read first (a by-value `self` is copied now; for `&self` and `&mut
     /// self` the arguments cannot change it, `ast::Check` refuses a `&mut self` call on its root inside them), then
     /// the arguments left to right, then the body. `&mut self` writes the final receiver back to its place.
@@ -901,8 +937,14 @@ impl Machine<'_> {
         args: &[Expr],
     ) -> Result<Option<Val>, Violation> {
         let program = self.program;
-        let def = &program.methods.fns[f];
+        let mut f = f;
+        let mut def = &program.methods.fns[f];
         self.count_name(call_name(def.recv, def.owner));
+        if self.coverage.is_some() {
+            for name in trait_call_names(&program.methods, f, recv, args) {
+                self.count_name(name);
+            }
+        }
         if self.coverage.is_some()
             && let Some(shape) = call_shape(&program.methods, f, recv, args)
         {
@@ -940,9 +982,66 @@ impl Machine<'_> {
         }
         let loc = recv.as_ref().map(|place| self.locate(place)).transpose()?;
         let receiver = loc.as_ref().map(|loc| self.loc_get(loc));
-        let mut values = Vec::with_capacity(args.len());
-        for arg in args {
-            values.push(self.expr(arg)?);
+        // A trait method is resolved by the concrete type of its receiver (a type parameter through its binding), from the
+        // trait method the node names and not from the impl it happens to carry.
+        if let (Some(imp), Some(loc)) = (def.imp, loc.as_ref()) {
+            let rty = self.resolve(loc.ty);
+            let via_param = recv
+                .as_ref()
+                .is_some_and(|p| matches!(p.root_ty, Ty::Param(_)));
+            let mut target = program
+                .methods
+                .impl_fn(imp.tr, imp.m, rty)
+                .expect("the receiver's type implements the trait");
+            if self.mutant == Some(Mutant::TraitWrongImpl) && !via_param {
+                // The wrong model (a call on a concrete type): the impl of the other implementing type runs.
+                let other = program
+                    .methods
+                    .implementors(imp.tr)
+                    .into_iter()
+                    .find(|ty| *ty != rty)
+                    .expect("a trait has two implementors");
+                target = program.methods.impl_fn(imp.tr, imp.m, other).expect("impl");
+            }
+            debug_assert!(
+                (self.mutant == Some(Mutant::TraitWrongImpl) && !via_param)
+                    || target == f
+                    || via_param,
+                "the node's impl is not the receiver's: f={f} target={target} imp={imp:?} rty={rty:?} loc={:?}",
+                loc.ty
+            );
+            f = target;
+            def = &program.methods.fns[f];
+        }
+        let reverse = matches!(self.mutant, Some(Mutant::TraitArgsRightToLeft))
+            && (def.imp.is_some() || !def.gens.is_empty());
+        let mut slots: Vec<Option<Val>> = vec![None; args.len()];
+        let order: Vec<usize> = if reverse {
+            (0..args.len()).rev().collect()
+        } else {
+            (0..args.len()).collect()
+        };
+        for k in order {
+            slots[k] = Some(self.expr(&args[k])?);
+        }
+        let values: Vec<Val> = slots.into_iter().flatten().collect();
+        // A generic function binds each type parameter to the type of the arguments declared with it (resolved in the
+        // caller's binding) for the length of its body.
+        let mut bind: [Option<Ty>; 2] = [None, None];
+        let generic = !def.gens.is_empty();
+        if generic {
+            for (arg, (_, pty)) in args.iter().zip(&def.params) {
+                if let Ty::Param(g) = pty {
+                    bind[usize::from(*g)] = Some(self.resolve(arg.ty()));
+                }
+            }
+            if self.mutant == Some(Mutant::GenericReuse) {
+                // The wrong model: the first instantiation's specialisation serves every later call.
+                bind = *self.first_bind.entry(f).or_insert(bind);
+            }
+            if let (Some(coverage), Some(t)) = (self.coverage.as_mut(), bind[0]) {
+                coverage.instantiations.insert((f, format!("{t:?}")));
+            }
         }
         // The arguments of a borrowing call (`&self`, `&mut self`) must not change the receiver, or the copy-in and
         // copy-out model of this interpreter would differ from Rust's references (the generator and `ast::Check`
@@ -965,13 +1064,22 @@ impl Machine<'_> {
         let ctx = self.closure_ctx.take();
         let depths = (self.for_depth, self.arm_depth);
         (self.for_depth, self.arm_depth) = (0, 0);
+        if generic {
+            self.binds.push(bind);
+        }
         let ran = self.block(&def.body);
         (self.for_depth, self.arm_depth) = depths;
-        ran?;
-        let value = match self.returned.take() {
-            Some(value) => Some(value),
-            None => def.tail.as_ref().map(|tail| self.expr(tail)).transpose()?,
+        let value = match ran {
+            Ok(()) => match self.returned.take() {
+                Some(value) => Ok(Some(value)),
+                None => def.tail.as_ref().map(|tail| self.expr(tail)).transpose(),
+            },
+            Err(violation) => Err(violation),
         };
+        if generic {
+            self.binds.pop();
+        }
+        let value = value?;
         self.closure_ctx = ctx;
         if self.mutant == Some(Mutant::ArrayArgByRef) {
             // The wrong model: an array argument that is a variable is the callee's parameter itself.
@@ -1465,6 +1573,17 @@ pub struct Coverage {
     pub if_both_sides: u64,
     pub rhs_evaluated: u64,
     pub rhs_skipped: u64,
+    /// The (generic function, type bound to its first type parameter) pairs some call executed.
+    pub instantiations: std::collections::BTreeSet<(usize, String)>,
+}
+
+impl Coverage {
+    /// Whether some generic function ran with two different types bound to its first type parameter.
+    pub fn two_instantiations(&self) -> bool {
+        self.instantiations
+            .iter()
+            .any(|(f, t)| self.instantiations.iter().any(|(g, u)| g == f && u != t))
+    }
 }
 
 /// `run_full` with a deliberately wrong `match` evaluation (the mutation checks of slice m9.d1b).
@@ -1559,6 +1678,8 @@ fn run_machine(
         closures: closure_table(program),
         closure_ctx: None,
         memo: HashMap::new(),
+        binds: Vec::new(),
+        first_bind: HashMap::new(),
     };
     // An array program's output starts as the store's `init`, and element `i` stores into `out[idx]`.
     let init = program.store.as_ref().map_or(0, |store| store.init);
@@ -1572,6 +1693,7 @@ fn run_machine(
         machine.element = element;
         machine.self_stack.clear();
         machine.memo.clear();
+        machine.first_bind.clear();
         let (bits, interval, slot) = run_element(&mut machine, program)
             .map_err(|violation| Failure { element, violation })?;
         match slot {
@@ -1598,6 +1720,7 @@ fn run_machine(
                     .sum::<u64>(),
             rhs_evaluated: counting.rhs_evaluated,
             rhs_skipped: counting.rhs_skipped,
+            instantiations: counting.instantiations,
             ..Coverage::default()
         };
         for ((kind, head, tail), n) in counting.operators {
@@ -1636,6 +1759,8 @@ pub fn observed_values(program: &Program, element: u32) -> HashMap<usize, u32> {
         closures: closure_table(program),
         closure_ctx: None,
         memo: HashMap::new(),
+        binds: Vec::new(),
+        first_bind: HashMap::new(),
     };
     let _ = machine
         .block(&program.body)
@@ -1736,6 +1861,7 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
             // A field, a call or a struct literal is open; its operands are folded as nodes of their own.
             Expr::Read { .. }
             | Expr::Call { .. }
+            | Expr::PathCall { .. }
             | Expr::ClosureCall { .. }
             | Expr::StructLit { .. }
             | Expr::Tuple { .. }

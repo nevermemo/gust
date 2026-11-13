@@ -12,8 +12,8 @@ compared with the table in `crates/cargo-gust/src/slang.rs` (the 2026.21 ones wi
 extracted or read; all six matched. What was run: file listings of all three archives of each version and their
 differences; byte comparisons of `LICENSE`, `README.md`, `LICENSES/`, `third-party-notices/` and `share/slang/agent-skills/`
 between the two versions on each platform; a string scan for "GNU General Public" and "GNU Lesser" of every regular
-file in `bin/` and `lib/` of the three 2026.22 archives (Windows 56 files, Linux 57, macOS 65; no hit in any), of which
-the executables and libraries are 11, 7 and 7 files (also no hit); and the `mi_malloc` counts of the compiler library.
+file in `bin/` and `lib/` of the three 2026.22 archives (Windows 56 files, Linux 57, macOS 65; no hit in any, the
+per-file counts are in `gpl-scan.txt`); and the `mi_malloc` counts of the compiler library.
 The Linux and macOS archives were extracted on Windows, which could not create the two `.so` symlinks of the Linux archives
 (`libslang-compiler.so` and `libslang-rt.so`); every regular file was extracted and the listings come from the archives themselves. Nothing
 from any archive was run in this audit. Rule (D46): permissive licences are accepted with their notices kept; a
@@ -40,10 +40,12 @@ listing differences, text comparison, scan output, `mimalloc-counts.txt`) is sav
   `stage-contracts`, `stage-inputs` and `trace` as `.slang`, plus `portable.slang-module`), in `bin/` on Windows and in
   `lib/` on Linux and macOS (macOS also lists an AppleDouble `._portable.slang-module`). They are Slang's own source and
   compiled module, shipped with the compiler and covered by its `LICENSE`; the files carry no separate licence text.
-  The rest of the differences are documentation examples under `share/doc/slang/generated/tests/`: 33 added and 5
-  removed on Windows and Linux (the added include `.yaml` finding notes), more on macOS because of `._` resource-fork
-  entries. One entry of the macOS 2026.22 tar listing prints as a truncated `share/doc/s` (a long-name header), under
-  the documentation tree. Nothing under `bin/` or `lib/` was removed, and no executable or library was added.
+  The rest of the differences are under `share/doc/`, mostly documentation examples in
+  `share/doc/slang/generated/tests/` (the added include `.yaml` finding notes). Counted over the version-normalised
+  difference of the complete listings, 155 entries are added and 9 removed on Windows and on Linux, and 156 added and
+  9 removed on macOS (the one extra is the `._portable.slang-module` file); 145 of the added and all 9 removed are under
+  `share/doc/`. Nothing outside `share/doc/` was removed, and no executable or library was added (evidence:
+  `listing-diff-*.txt`, `listing-diff-counts.txt`).
 - Two of the added documentation examples have `optix` in their names
   (`optix-report-intersection-cuda-emit.slang`, `optix-hit-attribute-too-large-rejected.slang`); the Windows listing
   has 14 such names against 12. They are Slang test sources; no OptiX SDK and no `optix.h` is in any listing.
@@ -52,9 +54,13 @@ listing differences, text comparison, scan output, `mimalloc-counts.txt`) is sav
   `libslang-compiler.dylib` 2 and 2, with six `SLANG_ENABLE_MIMALLOC` occurrences each on Linux and macOS in 2026.22. Nothing
   changed on any platform, so the earlier reading stands (inferred from strings only), and so does the open item of
   the 2026.21 audit: no one has checked the Linux and macOS libraries for linked mimalloc symbols (`nm`, `objdump`).
-- The Linux archive has 7 executables and libraries and the macOS archive 7, against 11 on Windows (scanned by file
-  type or mode); the 2026.21 audit counted 11, 11 and 13 by a wider rule. The recursive scan above covers every
-  regular file, so the narrower count hides nothing.
+- Executables and libraries by platform: Windows has 11 (`slang.exe`, `slangc.exe`, `slangd.exe`, `slangi.exe` and
+  seven `.dll` files) in `bin/`. Linux and macOS have the four executables `bin/slang`, `bin/slangc`, `bin/slangd` and
+  `bin/slangi` and their shared libraries in `lib/`. A first, narrow scan selected files by name or mode and, because
+  extraction on Windows drops the mode bits, missed those four executables on Linux and macOS (it listed 7 and 7). The
+  scan that the verdict rests on is not selective: it covers every regular file of `bin/` and `lib/` (56, 57 and 65
+  files), which includes them, and `gpl-scan.txt` records each file's hit count (0 in every file) and the totals per
+  archive (files scanned, files with hits: 0).
 
 ## The named checks (2026.22)
 

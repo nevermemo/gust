@@ -1332,7 +1332,7 @@ and the macro has no GUST code for it. The value form does not change that. Put 
 another integer type, and a guard are refused (`GUST-E0521`, `GUST-E0418`). An enum `match` takes `E::A` of an enum of the
 module and does not mix with literals.
 
-**Order of evaluation** (measured on Slang 2026.21, WGSL and SPIR-V; the GPU test `m9_match_value` runs the cases
+**Order of evaluation** (measured on Slang 2026.21, WGSL and SPIR-V, and re-run on the pinned 2026.22 by the GPU test, m9.p; the GPU test `m9_match_value` runs the cases
 against hand-written values). The scrutinee is read once, before the arms. The operands of an arm are evaluated left to
 right as in Rust: `match c.n { 5 => c.n + c.tick(), .. }` reads `c.n` before `tick` runs, `c.tick() + c.n` after it, two
 calls in one arm run in order, and a struct-literal arm assigns its fields in the order written. A `&mut self` method
@@ -1372,7 +1372,7 @@ infers the types, so the macro needs none). A destructuring is one temporary, th
 `var __gust_tuple_<n> = f(..); var x = __gust_tuple_<n>._0; var y = __gust_tuple_<n>._1;`; with an annotation the
 temporary and the locals carry the types.
 
-**Order of evaluation** (measured on Slang 2026.21, WGSL and SPIR-V; the GPU test `m9_tuples` runs the cases against
+**Order of evaluation** (measured on Slang 2026.21, WGSL and SPIR-V, and re-run on the pinned 2026.22 by the GPU test, m9.p; the GPU test `m9_tuples` runs the cases against
 hand-written values). The elements of a literal run left to right, each completely before the next, and a struct element
 is copied at its place in the order: `(c.n, c.tick())` reads `c.n` before `tick` runs, `(c.tick(), c.n)` after it,
 `(c, c.tick())` copies `c` before the call and `(c.tick(), c)` after it. A destructuring of a literal of two calls runs
@@ -1429,7 +1429,7 @@ evaluates its operand once into a temporary, `T __gust_rep_<k> = e;`, and then `
 declares the array and fills it with a loop (`__gust_fill_<k>`). A repeat that is returned with `N > 16` is `GUST-E0811`
 (bind it to a local first). The names with the `__gust_` prefix are reserved (`GUST-E0901`).
 
-**Order of evaluation** (Rust measured with rustc, Slang 2026.21 read on the WGSL target; the GPU test `m9_arrays` runs
+**Order of evaluation** (Rust measured with rustc, Slang 2026.21 read on the WGSL target, and re-read on the pinned 2026.22 with the same result, m9.p; the GPU test `m9_arrays` runs
 every accepted case against hand-written values). Accepted because they match: the elements of a literal left to right
 (`[s.bump(), s.bump(), s.bump()]` is `[1, 2, 3]`), an array argument built from calls, two reads of one table with
 indexes that call, an index on a call result (`make3(s.bump())[1]`), a method on an element whose index calls another
@@ -1520,7 +1520,7 @@ a name in it). A closure name is unique in its function and differs from every h
 binding (`GUST-E0328`); the same name in two functions is fine, and a Slang keyword is fine because the closure's own
 name is never emitted.
 
-**Order of evaluation.** Measured with rustc and with slangc 2026.21 (the pinned one), on the WGSL and the SPIR-V target:
+**Order of evaluation.** Measured with rustc and with slangc 2026.21 (then the pinned one; the GPU test `m9_closures` was re-run on the pinned 2026.22, m9.p, with the same values), on the WGSL and the SPIR-V target:
 the arguments of a call of a hoisted function with by-value parameters run left to right, as in Rust. `pair(c.tick(),
 c.tick())`, `pair(c.n, c.tick())`, `pair(c.tick(), c.n)` and the nested `pair(pair(c.tick(), c.tick()), c.tick())` give
 what Rust gives (the GPU test `m9_closures` pins 1002, 1, 1001 and 1002003). A closure cannot mutate anything outside
@@ -1568,7 +1568,7 @@ closures. Everything downstream sees a method call, so `GUST-E0333` (a `&mut sel
 workgroup places), the order rules of `GUST-E0421` and the barrier, subgroup and atomic refusals of D154 apply to a trait
 method as to an inherent one. A trait method is validated as a helper: it may call helpers and inherent methods.
 
-**Order of evaluation.** Measured with rustc (through the CPU twin) and with slangc 2026.21 (the pinned one) on the RTX 5090:
+**Order of evaluation.** Measured with rustc (through the CPU twin) and with slangc 2026.21 (then the pinned one; the GPU test `m9_traits` was re-run on the pinned 2026.22, m9.p, with the same values) on the RTX 5090:
 the arguments of a call run left to right, and a by-value `self` receiver is copied before the arguments run. For a counter
 `d` with `d.n = x`: `d.plus(d.bump())` with `plus(self, k) = self.n * 100 + k` is `101x + 1` (the receiver is read before
 `bump`), by method syntax and by `Plus::plus(d, d.bump())`. For a trait method with two arguments,

@@ -556,6 +556,12 @@ test module; do not mix that mechanical move with behavior changes.
   atomic_add(&mut ctr[0], 10u32)` on the same cell: Slang takes the index's atomic first, Rust the value's;
   E0421's mutating-call search sees module methods only, not atomics (contrived and racy across invocations;
   refuse an atomic in both the index and the value, or record it).
+- Remove `__gust_xor`: with Slang 2026.22 (#14324) bool `^` is valid WGSL from naga's view; emit `^` directly and
+  re-bless the goldens that change (D173).
+- A check that every committed compiler tag (`compiler`, `slang` fields of the reflection documents and manifests)
+  equals `SLANG_PIN`; m9.p's regeneration script does it by hand (examples/subgroup-reduce was missed: check-artifacts
+  skips example artifacts).
+- m9.p nits: the licence evidence names its search strings; SEMANTICS's "131 of 131" is now 132 with traits.
 - m9.g1 nits: a garbled comment on `pack_both` in tests/fixtures/traits.rs; `tests/ui/trait-enum-mut-self/
   expected.txt` matches a prefix only. Review N4-N6 (plans/m9/review-m9g1-opus.md) left as reasoned there.
 - m9.pa nits: the array testdata records are pinned by key and layouts, not byte for byte, and `check-precompiled`

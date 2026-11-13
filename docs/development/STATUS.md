@@ -291,6 +291,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   test `m9_traits.rs` with hand-written values on the RTX 5090 and the twin (an inherent method calling trait
   methods, array parameters, tuple results), a UI fixture per refusal. No existing golden changed. 31 main gates green,
   ending 23:18Z on 2026-11-12 (pin 448/47).
+- m9.p (merge `48b3bf3`; Opus review MERGE AFTER FIXES 2/5/4, re-check MERGE): the Slang pin is 2026.22 (D173).
+  The committed artifacts carrying the compiler tag are regenerated (no `.wgsl` or SPIR-V byte change); the pin
+  prose, the SEMANTICS statements made of the current pin, and the D46 licence audit follow. Evidence: SL22's
+  131/131 identical goldens and the traits golden; the D167 order probes and the GPU order tests unchanged. The
+  review caught licence listings truncated by a `head` in the pipeline (counts corrected; verdict unchanged) and
+  that m9.g1 had not run on 2026.22 (it does, unchanged). 31 main gates green on 2026.22, ending 02:56Z on
+  2026-11-13 (pin 448/47).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

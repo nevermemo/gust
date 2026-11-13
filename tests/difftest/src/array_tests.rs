@@ -92,11 +92,14 @@ fn digits(id: u32) -> Expr {
 fn methods() -> Methods {
     let this = Place::this(S0);
     Methods {
+        traits: Vec::new(),
         structs: vec![StructDef {
             fields: vec![Ty::U32],
         }],
         fns: vec![
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: Some(0),
                 recv: Recv::Mut,
                 params: Vec::new(),
@@ -113,6 +116,8 @@ fn methods() -> Methods {
                 }),
             },
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: None,
                 recv: Recv::None,
                 params: vec![(20, arr())],

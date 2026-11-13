@@ -13,7 +13,8 @@ use std::io;
 use std::path::Path;
 
 use crate::ast::{
-    Arm, COMPONENT_LETTERS, Expr, FnDef, Pat, Place, Program, Recv, Root, Stmt, Ty, UnOp,
+    Arm, COMPONENT_LETTERS, Expr, FnDef, Methods, Pat, PathForm, Place, Program, Recv, Root, Stmt,
+    TRet, Ty, UnOp,
 };
 use crate::generator::DIFFTEST_FORMAT;
 use crate::shapes::{PIXEL_KERNEL, ShapePlan};
@@ -117,20 +118,26 @@ fn literal(ty: Ty, bits: u32) -> String {
                 format!("{value}i32")
             }
         }
-        Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) | Ty::Tuple(_) | Ty::Array(_) => {
+        Ty::Vec(..)
+        | Ty::Mat(_)
+        | Ty::Struct(_)
+        | Ty::Enum(_)
+        | Ty::Tuple(_)
+        | Ty::Array(_)
+        | Ty::Param(_) => {
             unreachable!("{} has no literal", ty.name())
         }
     }
 }
 
 /// The text of a place: `v3`, `v3.f1`, `self.f0.f2`, `v3[(i + 1) as usize]`, `v3[k as usize].f1`.
-fn place_text(place: &Place) -> String {
+fn place_text(m: &Methods, place: &Place) -> String {
     let mut text = match place.root {
         Root::Var(var) => format!("v{var}"),
         Root::SelfV => "self".to_owned(),
     };
     if let Some(index) = place.index.as_deref() {
-        text.push_str(&format!("[{} as usize]", operand(index)));
+        text.push_str(&format!("[{} as usize]", operand(m, index)));
     }
     for (n, k) in place.path.iter().enumerate() {
         // The first step out of a tuple is its element (`.0`); every other step is a struct field (`.f0`).
@@ -143,15 +150,58 @@ fn place_text(place: &Place) -> String {
     text
 }
 
-/// The text of a call of function `f`: `v3.m2(a, b)`, `S1::m4(a)` or `m5(a)`.
-fn call_text(f: usize, owner: Option<u8>, recv: &Option<Place>, args: &[Expr]) -> String {
-    let args: Vec<String> = args.iter().map(emit_expr).collect();
-    let args = args.join(", ");
-    match (recv, owner) {
-        (Some(place), _) => format!("{}.m{f}({args})", place_text(place)),
-        (None, Some(owner)) => format!("S{owner}::m{f}({args})"),
-        (None, None) => format!("m{f}({args})"),
+/// The name of the function `f` in a call: `m<f>`, or `t<tr>m<m>` for the impl of a trait method (the one name that
+/// every impl of the trait method has).
+fn fn_name(m: &Methods, f: usize) -> String {
+    match m.fns[f].imp {
+        Some(imp) => format!("t{}m{}", imp.tr, imp.m),
+        None => format!("m{f}"),
     }
+}
+
+/// The text of a call of function `f`: `v3.m2(a, b)`, `S1::m4(a)` or `m5(a)`.
+fn call_text(
+    m: &Methods,
+    f: usize,
+    owner: Option<u8>,
+    recv: &Option<Place>,
+    args: &[Expr],
+) -> String {
+    let args: Vec<String> = args.iter().map(|e| emit_expr(m, e)).collect();
+    let args = args.join(", ");
+    let name = fn_name(m, f);
+    match (recv, owner) {
+        (Some(place), _) => format!("{}.{name}({args})", place_text(m, place)),
+        (None, Some(owner)) => format!("S{owner}::{name}({args})"),
+        (None, None) => format!("{name}({args})"),
+    }
+}
+
+/// A path call: `Tr0::t0m1(&v3, a)`, `Tr0::t0m1(&mut v3, a)`, `Tr0::t0m1(v3, a)` or `<S1 as Tr0>::t0m1(&v3, a)`.
+fn path_call_text(m: &Methods, form: PathForm, call: &Expr) -> String {
+    let Expr::Call {
+        f,
+        recv: Some(place),
+        args,
+        ..
+    } = call
+    else {
+        unreachable!("a path call wraps a method call")
+    };
+    let def = &m.fns[*f];
+    let imp = def.imp.expect("a path call names a trait method");
+    let amp = match def.recv {
+        Recv::Shared => "&",
+        Recv::Mut => "&mut ",
+        _ => "",
+    };
+    let head = match form {
+        PathForm::Trait => format!("Tr{}", imp.tr),
+        PathForm::Qualified => format!("<{} as Tr{}>", imp.ty.decl_name(), imp.tr),
+    };
+    let mut parts = vec![format!("{amp}{}", place_text(m, place))];
+    parts.extend(args.iter().map(|e| emit_expr(m, e)));
+    format!("{head}::{}({})", fn_name(m, *f), parts.join(", "))
 }
 
 /// Whether the text of `expr` needs no parentheses as an operand.
@@ -176,6 +226,7 @@ fn is_atom(expr: &Expr) -> bool {
         // A field path or a call is a postfix, a struct literal a braced atom (it never sits under an operator).
         Expr::Read { .. }
         | Expr::Call { .. }
+        | Expr::PathCall { .. }
         | Expr::ClosureCall { .. }
         | Expr::StructLit { .. } => true,
         // A tuple literal is parenthesised, `f().1` a postfix.
@@ -191,32 +242,36 @@ fn is_atom(expr: &Expr) -> bool {
     }
 }
 
-fn operand(expr: &Expr) -> String {
+fn operand(m: &Methods, expr: &Expr) -> String {
     if is_atom(expr) {
-        emit_expr(expr)
+        emit_expr(m, expr)
     } else {
-        format!("({})", emit_expr(expr))
+        format!("({})", emit_expr(m, expr))
     }
 }
 
 /// The text of an expression at statement level (no outer parentheses).
-pub fn emit_expr(expr: &Expr) -> String {
+pub fn emit_expr(m: &Methods, expr: &Expr) -> String {
     match expr {
         Expr::Lit(ty, bits) => literal(*ty, *bits),
         Expr::Var(var, _) => format!("v{var}"),
         Expr::Gid => "i".to_owned(),
         Expr::Len(buf) => format!("{}.len()", BUFFER_NAMES[*buf]),
-        Expr::Input { buf, index, .. } => format!("{}[{}]", BUFFER_NAMES[*buf], emit_expr(index)),
+        Expr::Input { buf, index, .. } => {
+            format!("{}[{}]", BUFFER_NAMES[*buf], emit_expr(m, index))
+        }
         Expr::Un { op, e, .. } => {
             let symbol = match op {
                 UnOp::Neg => "-",
                 UnOp::Not => "!",
             };
-            format!("{symbol}{}", operand(e))
+            format!("{symbol}{}", operand(m, e))
         }
-        Expr::Bin { op, l, r, .. } => format!("{} {} {}", operand(l), op.symbol(), operand(r)),
-        Expr::Cast { to, e } => format!("{} as {}", operand(e), to.name()),
-        Expr::EnumAs { to, e } => format!("{} as {}", operand(e), to.name()),
+        Expr::Bin { op, l, r, .. } => {
+            format!("{} {} {}", operand(m, l), op.symbol(), operand(m, r))
+        }
+        Expr::Cast { to, e } => format!("{} as {}", operand(m, e), to.name()),
+        Expr::EnumAs { to, e } => format!("{} as {}", operand(m, e), to.name()),
         Expr::Variant { e, v } => format!("E{e}::V{v}"),
         Expr::Make { ty, rows, args } => {
             let constructor = match (ty, rows) {
@@ -224,64 +279,71 @@ pub fn emit_expr(expr: &Expr) -> String {
                 (Ty::Mat(_), false) => "from_cols",
                 _ => "new",
             };
-            let args: Vec<String> = args.iter().map(emit_expr).collect();
+            let args: Vec<String> = args.iter().map(|e| emit_expr(m, e)).collect();
             format!("{}::{constructor}({})", ty.name(), args.join(", "))
         }
-        Expr::Splat { ty, e } => format!("{}::splat({})", ty.name(), emit_expr(e)),
+        Expr::Splat { ty, e } => format!("{}::splat({})", ty.name(), emit_expr(m, e)),
         Expr::Comp { e, index } => {
-            format!("{}.{}", operand(e), COMPONENT_LETTERS[usize::from(*index)])
+            format!(
+                "{}.{}",
+                operand(m, e),
+                COMPONENT_LETTERS[usize::from(*index)]
+            )
         }
         Expr::Swizzle { e, lanes } => {
             let letters: String = lanes
                 .iter()
                 .map(|&k| COMPONENT_LETTERS[usize::from(k)])
                 .collect();
-            format!("{}.{letters}()", operand(e))
+            format!("{}.{letters}()", operand(m, e))
         }
-        Expr::Dot { l, r } => format!("{}.dot({})", operand(l), emit_expr(r)),
-        Expr::Transpose { e } => format!("{}.transpose()", operand(e)),
-        Expr::AggBin { op, l, r, .. } => format!("{} {} {}", operand(l), op.symbol(), operand(r)),
-        Expr::AggNeg { e } => format!("-{}", operand(e)),
-        Expr::Read { place, .. } => place_text(place),
+        Expr::Dot { l, r } => format!("{}.dot({})", operand(m, l), emit_expr(m, r)),
+        Expr::Transpose { e } => format!("{}.transpose()", operand(m, e)),
+        Expr::AggBin { op, l, r, .. } => {
+            format!("{} {} {}", operand(m, l), op.symbol(), operand(m, r))
+        }
+        Expr::AggNeg { e } => format!("-{}", operand(m, e)),
+        Expr::Read { place, .. } => place_text(m, place),
         Expr::Call {
             f,
             owner,
             recv,
             args,
             ..
-        } => call_text(*f, *owner, recv, args),
+        } => call_text(m, *f, *owner, recv, args),
+        Expr::PathCall { form, call } => path_call_text(m, *form, call),
         Expr::ClosureCall { var, args, .. } => {
-            let args: Vec<String> = args.iter().map(emit_expr).collect();
+            let args: Vec<String> = args.iter().map(|e| emit_expr(m, e)).collect();
             format!("cl{var}({})", args.join(", "))
         }
         Expr::Tuple { elems, .. } => {
-            let elems: Vec<String> = elems.iter().map(emit_expr).collect();
+            let elems: Vec<String> = elems.iter().map(|e| emit_expr(m, e)).collect();
             format!("({})", elems.join(", "))
         }
-        Expr::TupleField { e, index } => format!("{}.{index}", operand(e)),
+        Expr::TupleField { e, index } => format!("{}.{index}", operand(m, e)),
         Expr::ArrayLit { elems, .. } => {
-            let elems: Vec<String> = elems.iter().map(emit_expr).collect();
+            let elems: Vec<String> = elems.iter().map(|e| emit_expr(m, e)).collect();
             format!("[{}]", elems.join(", "))
         }
         Expr::Repeat { ty, e } => {
             let Ty::Array(a) = ty else {
                 unreachable!("a repeat of an array type")
             };
-            format!("[{}; {}]", emit_expr(e), a.n)
+            format!("[{}; {}]", emit_expr(m, e), a.n)
         }
-        Expr::ArrLen { place } => format!("({}.len() as u32)", place_text(place)),
+        Expr::ArrLen { place } => format!("({}.len() as u32)", place_text(m, place)),
         Expr::StructLit { ty, fields, order } => {
             let fields: Vec<String> = fields
                 .iter()
                 .zip(order)
-                .map(|(field, k)| format!("f{k}: {}", emit_expr(field)))
+                .map(|(field, k)| format!("f{k}: {}", emit_expr(m, field)))
                 .collect();
             format!("{} {{ {} }}", ty.name(), fields.join(", "))
         }
     }
 }
 
-fn emit_stmt(stmt: &Stmt, level: usize, out: &mut String) {
+fn emit_stmt(m: &Methods, stmt: &Stmt, level: usize, out: &mut String) {
     let pad = INDENT.repeat(level);
     match stmt {
         Stmt::Let {
@@ -295,7 +357,7 @@ fn emit_stmt(stmt: &Stmt, level: usize, out: &mut String) {
                 out,
                 "{pad}{keyword} v{var}: {} = {};",
                 ty.text(),
-                emit_expr(init)
+                emit_expr(m, init)
             );
         }
         Stmt::LetTuple {
@@ -317,7 +379,7 @@ fn emit_stmt(stmt: &Stmt, level: usize, out: &mut String) {
                 out,
                 "{pad}let ({}){annotation} = {};",
                 names.join(", "),
-                emit_expr(init)
+                emit_expr(m, init)
             );
         }
         Stmt::LetMatch {
@@ -329,18 +391,18 @@ fn emit_stmt(stmt: &Stmt, level: usize, out: &mut String) {
         } => {
             let keyword = if *mutable { "let mut" } else { "let" };
             let head = format!("{keyword} v{var}: {} = ", ty.text());
-            emit_value_match(scrut, arms, level, &head, ";", out);
+            emit_value_match(m, scrut, arms, level, &head, ";", out);
         }
-        Stmt::TailMatch { scrut, arms } => emit_value_match(scrut, arms, level, "", "", out),
+        Stmt::TailMatch { scrut, arms } => emit_value_match(m, scrut, arms, level, "", "", out),
         Stmt::Yield { value } => {
-            let _ = writeln!(out, "{pad}{}", emit_expr(value));
+            let _ = writeln!(out, "{pad}{}", emit_expr(m, value));
         }
         Stmt::Assign { var, value } => {
-            let _ = writeln!(out, "{pad}v{var} = {};", emit_expr(value));
+            let _ = writeln!(out, "{pad}v{var} = {};", emit_expr(m, value));
         }
         Stmt::AssignComp { var, index, value } => {
             let letter = COMPONENT_LETTERS[usize::from(*index)];
-            let _ = writeln!(out, "{pad}v{var}.{letter} = {};", emit_expr(value));
+            let _ = writeln!(out, "{pad}v{var}.{letter} = {};", emit_expr(m, value));
         }
         Stmt::Set {
             place, op, value, ..
@@ -349,8 +411,8 @@ fn emit_stmt(stmt: &Stmt, level: usize, out: &mut String) {
             let _ = writeln!(
                 out,
                 "{pad}{} {symbol}= {};",
-                place_text(place),
-                emit_expr(value)
+                place_text(m, place),
+                emit_expr(m, value)
             );
         }
         Stmt::Call {
@@ -359,26 +421,26 @@ fn emit_stmt(stmt: &Stmt, level: usize, out: &mut String) {
             recv,
             args,
         } => {
-            let _ = writeln!(out, "{pad}{};", call_text(*f, *owner, recv, args));
+            let _ = writeln!(out, "{pad}{};", call_text(m, *f, *owner, recv, args));
         }
         Stmt::If { cond, then, els } => {
-            let _ = writeln!(out, "{pad}if {} {{", emit_expr(cond));
-            emit_block(then, level + 1, out);
+            let _ = writeln!(out, "{pad}if {} {{", emit_expr(m, cond));
+            emit_block(m, then, level + 1, out);
             if els.is_empty() {
                 let _ = writeln!(out, "{pad}}}");
             } else {
                 let _ = writeln!(out, "{pad}}} else {{");
-                emit_block(els, level + 1, out);
+                emit_block(m, els, level + 1, out);
                 let _ = writeln!(out, "{pad}}}");
             }
         }
         Stmt::For { var, trips, body } => {
             let _ = writeln!(out, "{pad}for v{var} in 0u32..{trips}u32 {{");
-            emit_block(body, level + 1, out);
+            emit_block(m, body, level + 1, out);
             let _ = writeln!(out, "{pad}}}");
         }
         Stmt::Return { value } => {
-            let _ = writeln!(out, "{pad}return {};", emit_expr(value));
+            let _ = writeln!(out, "{pad}return {};", emit_expr(m, value));
         }
         Stmt::LetClosure { def } => {
             let params: Vec<String> = def
@@ -395,16 +457,16 @@ fn emit_stmt(stmt: &Stmt, level: usize, out: &mut String) {
                 params.join(", "),
                 def.ret.text()
             );
-            emit_block(&def.body, level + 1, out);
-            let _ = writeln!(out, "{pad}{INDENT}{}", emit_expr(&def.tail));
+            emit_block(m, &def.body, level + 1, out);
+            let _ = writeln!(out, "{pad}{INDENT}{}", emit_expr(m, &def.tail));
             let _ = writeln!(out, "{pad}}};");
         }
         Stmt::Match { scrut, arms } => {
-            let _ = writeln!(out, "{pad}match {} {{", emit_expr(scrut));
+            let _ = writeln!(out, "{pad}match {} {{", emit_expr(m, scrut));
             for arm in arms {
                 let pattern = pattern_text(&arm.pat, scrut.ty());
                 let _ = writeln!(out, "{pad}{INDENT}{pattern} => {{");
-                emit_block(&arm.body, level + 2, out);
+                emit_block(m, &arm.body, level + 2, out);
                 let _ = writeln!(out, "{pad}{INDENT}}}");
             }
             let _ = writeln!(out, "{pad}}}");
@@ -442,6 +504,7 @@ fn pattern_text(pat: &Pat, ty: Ty) -> String {
 /// A value `match`: `head` (`let v3: u32 = `, or nothing for an arm's value) `match scrut { arms }` `tail` (`;`).
 /// An arm that is one `Yield` is written `pat => value,` and one that is a nested value `match` is written inline.
 fn emit_value_match(
+    m: &Methods,
     scrut: &Expr,
     arms: &[Arm],
     level: usize,
@@ -450,20 +513,28 @@ fn emit_value_match(
     out: &mut String,
 ) {
     let pad = INDENT.repeat(level);
-    let _ = writeln!(out, "{pad}{head}match {} {{", emit_expr(scrut));
+    let _ = writeln!(out, "{pad}{head}match {} {{", emit_expr(m, scrut));
     let inner = INDENT.repeat(level + 1);
     for arm in arms {
         let pattern = pattern_text(&arm.pat, scrut.ty());
         match arm.body.as_slice() {
             [Stmt::Yield { value }] => {
-                let _ = writeln!(out, "{inner}{pattern} => {},", emit_expr(value));
+                let _ = writeln!(out, "{inner}{pattern} => {},", emit_expr(m, value));
             }
             [Stmt::TailMatch { scrut, arms }] => {
-                emit_value_match(scrut, arms, level + 1, &format!("{pattern} => "), ",", out);
+                emit_value_match(
+                    m,
+                    scrut,
+                    arms,
+                    level + 1,
+                    &format!("{pattern} => "),
+                    ",",
+                    out,
+                );
             }
             body => {
                 let _ = writeln!(out, "{inner}{pattern} => {{");
-                emit_block(body, level + 2, out);
+                emit_block(m, body, level + 2, out);
                 let _ = writeln!(out, "{inner}}}");
             }
         }
@@ -471,9 +542,9 @@ fn emit_value_match(
     let _ = writeln!(out, "{pad}}}{tail}");
 }
 
-fn emit_block(stmts: &[Stmt], level: usize, out: &mut String) {
+fn emit_block(m: &Methods, stmts: &[Stmt], level: usize, out: &mut String) {
     for stmt in stmts {
-        emit_stmt(stmt, level, out);
+        emit_stmt(m, stmt, level, out);
     }
 }
 
@@ -507,7 +578,8 @@ pub fn emit_module_in(program: &Program, pixel: bool) -> String {
     out
 }
 
-/// A function's signature after `fn name`: the parameters (with the receiver) and the result type.
+/// A function's signature after `fn name`: the type parameters, the parameters (with the receiver), the result type and a
+/// `where` clause.
 fn signature(def: &FnDef) -> String {
     let mut params: Vec<String> = Vec::new();
     match def.recv {
@@ -524,7 +596,38 @@ fn signature(def: &FnDef) -> String {
     let ret = def
         .ret
         .map_or(String::new(), |ty| format!(" -> {}", ty.decl_text()));
-    format!("({}){ret}", params.join(", "))
+    let bounds = |g: &crate::ast::GenParam| {
+        let mut parts: Vec<String> = g.bounds.iter().map(|b| format!("Tr{b}")).collect();
+        if g.copy {
+            parts.push("Copy".to_owned());
+        }
+        parts.join(" + ")
+    };
+    let name = |k: usize| Ty::Param(k as u8).name();
+    let mut generics = String::new();
+    let mut clause = Vec::new();
+    if !def.gens.is_empty() {
+        let inline: Vec<String> = def
+            .gens
+            .iter()
+            .enumerate()
+            .map(|(k, g)| {
+                if g.where_clause {
+                    clause.push(format!("{}: {}", name(k), bounds(g)));
+                    name(k).to_owned()
+                } else {
+                    format!("{}: {}", name(k), bounds(g))
+                }
+            })
+            .collect();
+        generics = format!("<{}>", inline.join(", "));
+    }
+    let where_clause = if clause.is_empty() {
+        String::new()
+    } else {
+        format!(" where {}", clause.join(", "))
+    };
+    format!("{generics}({}){ret}{where_clause}", params.join(", "))
 }
 
 /// `#[allow(unreachable_code)]` on a function with a `return` (a `return` that ends an arm can leave the tail dead in
@@ -546,22 +649,72 @@ fn emit_allow(def: &FnDef, pad: &str, out: &mut String) {
     }
 }
 
-/// One function at `level`: its signature, its body and its tail.
-fn emit_fn(k: usize, def: &FnDef, level: usize, out: &mut String) {
+/// One function at `level`: its signature, its body and its tail. A trait-impl method has the trait method's name and no
+/// `pub` (an impl item takes the visibility of its trait).
+fn emit_fn(m: &Methods, k: usize, def: &FnDef, level: usize, out: &mut String) {
     let pad = INDENT.repeat(level);
     emit_allow(def, &pad, out);
-    let _ = writeln!(out, "{pad}pub fn m{k}{} {{", signature(def));
-    emit_block(&def.body, level + 1, out);
+    let (public, name) = match def.imp {
+        Some(_) => ("", fn_name(m, k)),
+        None => ("pub ", format!("m{k}")),
+    };
+    let _ = writeln!(out, "{pad}{public}fn {name}{} {{", signature(def));
+    emit_block(m, &def.body, level + 1, out);
     if let Some(tail) = &def.tail {
-        let _ = writeln!(out, "{pad}{INDENT}{}", emit_expr(tail));
+        let _ = writeln!(out, "{pad}{INDENT}{}", emit_expr(m, tail));
     }
     let _ = writeln!(out, "{pad}}}");
+}
+
+/// The traits of a trait program and the `impl Tr for T` blocks (each type's methods of one trait in one block).
+fn emit_traits(m: &Methods, out: &mut String) {
+    for (tr, def) in m.traits.iter().enumerate() {
+        let _ = writeln!(out, "{INDENT}pub trait Tr{tr} {{");
+        for (k, method) in def.methods.iter().enumerate() {
+            let receiver = match method.recv {
+                Recv::Shared => "&self",
+                Recv::Mut => "&mut self",
+                _ => "self",
+            };
+            let mut params = vec![receiver.to_owned()];
+            for (n, ty) in method.params.iter().enumerate() {
+                params.push(format!("a{n}: {}", ty.decl_name()));
+            }
+            let ret = match method.ret {
+                TRet::Unit => String::new(),
+                TRet::Ty(ty) => format!(" -> {}", ty.decl_name()),
+                TRet::SelfTy => " -> Self".to_owned(),
+            };
+            let _ = writeln!(
+                out,
+                "{INDENT}{INDENT}fn t{tr}m{k}({}){ret};",
+                params.join(", ")
+            );
+        }
+        let _ = writeln!(out, "{INDENT}}}\n");
+    }
+    for (tr, def) in m.traits.iter().enumerate() {
+        for ty in m.implementors(tr as u8) {
+            let _ = writeln!(out, "{INDENT}impl Tr{tr} for {} {{", ty.decl_name());
+            for k in 0..def.methods.len() {
+                if k > 0 {
+                    out.push('\n');
+                }
+                let f = m
+                    .impl_fn(tr as u8, k as u8, ty)
+                    .expect("every implementor has every method");
+                emit_fn(m, f, &m.fns[f], 2, out);
+            }
+            let _ = writeln!(out, "{INDENT}}}\n");
+        }
+    }
 }
 
 /// The structs, the `impl` block of each struct that has functions, and the helpers of a method program, at module
 /// depth. Nothing for any other program.
 fn emit_methods(program: &Program, out: &mut String) {
     let methods = &program.methods;
+    let m = methods;
     for (j, def) in methods.enums.iter().enumerate() {
         let _ = writeln!(out, "{INDENT}#[derive(PartialEq, Eq)]");
         if def.repr == Ty::I32 {
@@ -585,12 +738,13 @@ fn emit_methods(program: &Program, out: &mut String) {
         }
         let _ = writeln!(out, "{INDENT}}}\n");
     }
+    emit_traits(m, out);
     for j in 0..methods.structs.len() {
         let owned: Vec<(usize, &FnDef)> = methods
             .fns
             .iter()
             .enumerate()
-            .filter(|(_, def)| def.owner == Some(j as u8))
+            .filter(|(_, def)| def.owner == Some(j as u8) && def.imp.is_none())
             .collect();
         if owned.is_empty() {
             continue;
@@ -600,17 +754,17 @@ fn emit_methods(program: &Program, out: &mut String) {
             if n > 0 {
                 out.push('\n');
             }
-            emit_fn(*k, def, 2, out);
+            emit_fn(m, *k, def, 2, out);
         }
         let _ = writeln!(out, "{INDENT}}}\n");
     }
     for (k, def) in methods.fns.iter().enumerate() {
-        if def.owner.is_none() {
+        if def.owner.is_none() && def.imp.is_none() {
             emit_allow(def, INDENT, out);
             let _ = writeln!(out, "{INDENT}fn m{k}{} {{", signature(def));
-            emit_block(&def.body, 2, out);
+            emit_block(m, &def.body, 2, out);
             if let Some(tail) = &def.tail {
-                let _ = writeln!(out, "{INDENT}{INDENT}{}", emit_expr(tail));
+                let _ = writeln!(out, "{INDENT}{INDENT}{}", emit_expr(m, tail));
             }
             let _ = writeln!(out, "{INDENT}}}\n");
         }
@@ -619,6 +773,7 @@ fn emit_methods(program: &Program, out: &mut String) {
 
 /// One kernel of a module, at module depth.
 fn emit_kernel(program: &Program, option: &str, name: &str, out: &mut String) {
+    let m = &program.methods;
     let _ = writeln!(out, "{INDENT}#[kernel({option})]");
     let _ = writeln!(out, "{INDENT}pub fn {name}(");
     let _ = writeln!(out, "{INDENT}{INDENT}id: SV_DispatchThreadID,");
@@ -638,10 +793,10 @@ fn emit_kernel(program: &Program, option: &str, name: &str, out: &mut String) {
     let _ = writeln!(out, "{INDENT}) {{");
     let _ = writeln!(out, "{INDENT}{INDENT}let i = id.x;");
     let _ = writeln!(out, "{INDENT}{INDENT}if i < out.len() {{");
-    emit_block(&program.body, 3, out);
+    emit_block(m, &program.body, 3, out);
     let pad = INDENT.repeat(3);
     if program.result.ty() == Ty::Bool && program.store.is_none() {
-        let _ = writeln!(out, "{pad}if {} {{", emit_expr(&program.result));
+        let _ = writeln!(out, "{pad}if {} {{", emit_expr(m, &program.result));
         let _ = writeln!(out, "{pad}{INDENT}out[i] = 1u32;");
         let _ = writeln!(out, "{pad}}} else {{");
         let _ = writeln!(out, "{pad}{INDENT}out[i] = 0u32;");
@@ -651,11 +806,11 @@ fn emit_kernel(program: &Program, option: &str, name: &str, out: &mut String) {
         let _ = writeln!(
             out,
             "{pad}out[{}] {symbol}= {};",
-            emit_expr(&store.index),
-            emit_expr(&program.result)
+            emit_expr(m, &store.index),
+            emit_expr(m, &program.result)
         );
     } else {
-        let _ = writeln!(out, "{pad}out[i] = {};", emit_expr(&program.result));
+        let _ = writeln!(out, "{pad}out[i] = {};", emit_expr(m, &program.result));
     }
     let _ = writeln!(out, "{INDENT}{INDENT}}}");
     let _ = writeln!(out, "{INDENT}}}");
@@ -926,7 +1081,7 @@ mod tests {
             ),
         ];
         for (expr, expected) in cases {
-            assert_eq!(emit_expr(&expr), expected, "{expr:?}");
+            assert_eq!(emit_expr(&Methods::default(), &expr), expected, "{expr:?}");
         }
     }
 

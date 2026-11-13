@@ -180,6 +180,8 @@ impl Gen<'_> {
             );
             let value = Expr::bin(BinOp::Add, masked, Expr::Lit(fty, 1));
             self.table.fns.push(crate::ast::FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: Some(j as u8),
                 recv: Recv::Mut,
                 params: Vec::new(),

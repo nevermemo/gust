@@ -10,9 +10,9 @@ use crate::ast::{
 };
 use crate::emit::emit_module;
 use crate::generator::{
-    ARRAY_END, ENUM_ATTEMPT_BASE, ENUM_END, ENUM_PROGRAMS_PER_SEED, METHOD_ATTEMPT_BASE,
-    METHOD_END, PROGRAMS_PER_SEED, SCALAR_PROGRAMS_PER_SEED, Space, VALUE_ATTEMPT_BASE, VALUE_END,
-    VECTOR_END, generate_batch, generate_batch_in, space_of_attempt,
+    ARRAY_END, CLOSURE_PROGRAMS_PER_SEED, ENUM_ATTEMPT_BASE, ENUM_END, ENUM_PROGRAMS_PER_SEED,
+    METHOD_ATTEMPT_BASE, METHOD_END, PROGRAMS_PER_SEED, SCALAR_PROGRAMS_PER_SEED, Space,
+    VALUE_ATTEMPT_BASE, VALUE_END, VECTOR_END, generate_batch, generate_batch_in, space_of_attempt,
 };
 use crate::interp::{Mutant, env_mutant, run, run_covered, run_mutant, static_violation};
 
@@ -79,11 +79,14 @@ fn enums() -> Vec<EnumDef> {
 fn methods() -> Methods {
     let this = Place::this(S0);
     Methods {
+        traits: Vec::new(),
         structs: vec![StructDef {
             fields: vec![Ty::U32],
         }],
         fns: vec![
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: Some(0),
                 recv: Recv::Mut,
                 params: Vec::new(),
@@ -97,6 +100,8 @@ fn methods() -> Methods {
                 tail: Some(n_of(&this)),
             },
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: None,
                 recv: Recv::None,
                 params: vec![(20, Ty::U32)],
@@ -111,6 +116,8 @@ fn methods() -> Methods {
                 tail: Some(variant(0, 0)),
             },
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: Some(0),
                 recv: Recv::Shared,
                 params: Vec::new(),
@@ -119,6 +126,8 @@ fn methods() -> Methods {
                 tail: Some(call(1, None, vec![n_of(&this)], E0)),
             },
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: None,
                 recv: Recv::None,
                 params: vec![(21, E0), (22, E0)],
@@ -141,6 +150,8 @@ fn methods() -> Methods {
                 )),
             },
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: None,
                 recv: Recv::None,
                 params: vec![(23, E0)],
@@ -439,14 +450,14 @@ fn the_emitted_text_of_the_hand_program_has_the_enum_forms() {
 }
 
 #[test]
-fn the_enum_space_is_selected_by_its_attempt_numbers_and_the_batch_cut_is_three_four_one_two_two_two_two()
+fn the_enum_space_is_selected_by_its_attempt_numbers_and_the_batch_cut_is_three_four_one_one_one_two_two_two()
  {
     assert_eq!(space_of_attempt(METHOD_ATTEMPT_BASE), Space::Method);
     assert_eq!(space_of_attempt(ENUM_ATTEMPT_BASE - 1), Space::Method);
     assert_eq!(space_of_attempt(ENUM_ATTEMPT_BASE), Space::Enum);
     assert_eq!(space_of_attempt(VALUE_ATTEMPT_BASE - 1), Space::Enum);
     assert_eq!(space_of_attempt(VALUE_ATTEMPT_BASE), Space::Value);
-    assert_eq!(ENUM_PROGRAMS_PER_SEED, 2);
+    assert_eq!(ENUM_PROGRAMS_PER_SEED, 1);
     for seed in 1..=3 {
         let batch = generate_batch(seed).unwrap();
         assert_eq!(batch.programs.len(), PROGRAMS_PER_SEED);
@@ -464,13 +475,17 @@ fn the_enum_space_is_selected_by_its_attempt_numbers_and_the_batch_cut_is_three_
                 Space::Value
             } else if k < ARRAY_END {
                 Space::Array
-            } else {
+            } else if k < ARRAY_END + CLOSURE_PROGRAMS_PER_SEED {
                 Space::Closure
+            } else {
+                Space::Trait
             };
             assert_eq!(space, expected, "seed {seed} program {k}");
         }
         assert!(
-            batch.enum_attempts == 2 + batch.enum_discarded.values().sum::<u32>() as u64,
+            batch.enum_attempts
+                == ENUM_PROGRAMS_PER_SEED as u64
+                    + batch.enum_discarded.values().sum::<u32>() as u64,
             "seed {seed}: {} attempts, {:?}",
             batch.enum_attempts,
             batch.enum_discarded

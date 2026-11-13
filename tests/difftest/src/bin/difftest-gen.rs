@@ -86,6 +86,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 add("value-attempts".into(), batch.value_attempts);
                 add("array-attempts".into(), batch.array_attempts);
                 add("closure-attempts".into(), batch.closure_attempts);
+                add("trait-attempts".into(), batch.trait_attempts);
                 for (reason, n) in &batch.discarded {
                     add(format!("discard {reason}"), u64::from(*n));
                 }
@@ -107,6 +108,15 @@ fn run(args: &[String]) -> Result<(), String> {
                 for (reason, n) in &batch.closure_discarded {
                     add(format!("closure-discard {reason}"), u64::from(*n));
                 }
+                for (reason, n) in &batch.trait_discarded {
+                    add(format!("trait-discard {reason}"), u64::from(*n));
+                }
+                let traits = batch
+                    .programs
+                    .iter()
+                    .filter(|p| p.methods.has_traits())
+                    .count();
+                add("trait-programs".into(), traits as u64);
                 let closures = batch.programs.iter().filter(|p| p.has_closure()).count();
                 add("closure-programs".into(), closures as u64);
                 let arrays = batch.programs.iter().filter(|p| p.has_array()).count();
@@ -138,6 +148,8 @@ fn run(args: &[String]) -> Result<(), String> {
                             || name.starts_with("match")
                             || name.starts_with("tuple ")
                             || name.starts_with("closure ")
+                            || name.starts_with("trait ")
+                            || name.starts_with("generic ")
                             || name.starts_with("enum ")
                             || name == "return"
                             || name == difftest::ast::STRUCT_LIT

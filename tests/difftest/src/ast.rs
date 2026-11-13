@@ -62,6 +62,10 @@ pub enum Ty {
     /// A fixed-size array `[T; N]` (format 11, slice m9.d1d). It lives in a local, a parameter or a result; it is never a
     /// field, a buffer element, a tuple element or the result of the kernel. Like a tuple it describes itself.
     Array(ArrTy),
+    /// A type parameter of the generic function being drawn or checked: `T` (0) or `U` (1) (format 13, slice m9.d2). It
+    /// lives in a parameter, a `let x: T`, a result of a generic function and the receiver of a call through a bound.
+    /// Its value is a struct (flat components) or an enum of the instantiation; the interpreter binds it per call.
+    Param(u8),
 }
 
 /// An element type of a tuple or an array: a scalar, a module struct or a module enum (format 10), and (arrays only,
@@ -215,8 +219,10 @@ impl Ty {
             Ty::Enum(1) => "E1",
             Ty::Tuple(_) => "(tuple)",
             Ty::Array(_) => "(array)",
-            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) => {
-                panic!("a width, struct or enum outside the program space: {self:?}")
+            Ty::Param(0) => "T",
+            Ty::Param(1) => "U",
+            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) | Ty::Param(_) => {
+                panic!("a width, struct, enum or parameter outside the program space: {self:?}")
             }
         }
     }
@@ -233,7 +239,8 @@ impl Ty {
             | Ty::Struct(_)
             | Ty::Enum(_)
             | Ty::Tuple(_)
-            | Ty::Array(_) => {
+            | Ty::Array(_)
+            | Ty::Param(_) => {
                 panic!("{} is not a buffer element type", self.name())
             }
         }
@@ -243,7 +250,7 @@ impl Ty {
     /// `E<k>` of an enum. (A tuple is spelled by `text`.)
     pub fn decl_name(self) -> &'static str {
         match self {
-            Ty::Struct(_) | Ty::Enum(_) => self.name(),
+            Ty::Struct(_) | Ty::Enum(_) | Ty::Param(_) => self.name(),
             other => other.dialect_name(),
         }
     }
@@ -526,6 +533,19 @@ pub enum Expr {
     /// `cl3(a, b)`: a call of the closure bound by `Stmt::LetClosure` with `var` 3. The arguments run left to right,
     /// each completely, then the body runs once; `ty` is the closure's result type. (Format 12.)
     ClosureCall { var: u32, args: Vec<Expr>, ty: Ty },
+    /// `Tr0::t0m1(&s, a)`, `<S1 as Tr0>::t0m1(&s, a)` or `Tr0::t0m1(s, a)`: a call of a trait-impl method written as a path
+    /// call (format 13). `call` is the `Expr::Call` of the method, whose receiver is the first argument; the semantics are
+    /// those of `s.t0m1(a)`.
+    PathCall { form: PathForm, call: Box<Expr> },
+}
+
+/// How a path call names the trait (format 13).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathForm {
+    /// `Tr0::t0m1(&s, a)`.
+    Trait,
+    /// `<S1 as Tr0>::t0m1(&s, a)`.
+    Qualified,
 }
 
 /// A non-capturing closure (format 12): `let cl3 = |v4: u32, mut v5: [u32; 3]| -> u32 { body; tail };`. Every
@@ -599,6 +619,46 @@ pub enum Recv {
     Value,
 }
 
+/// What a trait method returns (format 13, slice m9.d2): nothing, a scalar, or `Self` (the receiver's type).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TRet {
+    Unit,
+    Ty(Ty),
+    SelfTy,
+}
+
+/// One method of a module trait: a receiver (`&self`, `&mut self` or `self`), scalar parameters, no body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TraitMethod {
+    pub recv: Recv,
+    pub params: Vec<Ty>,
+    pub ret: TRet,
+}
+
+/// A module trait `Tr<n>` (format 13): methods `t<n>m<k>`, each implemented by exactly two types of the module.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TraitDef {
+    pub methods: Vec<TraitMethod>,
+}
+
+/// A function that is the impl of trait method `m` of trait `tr` for the struct or enum `ty` (format 13). A struct impl
+/// keeps `owner = Some(j)`, so every rule about the methods of a struct holds for it; an enum impl has no owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Imp {
+    pub tr: u8,
+    pub m: u8,
+    pub ty: Ty,
+}
+
+/// One type parameter of a generic function: its trait bounds, whether `Copy` is among them, and whether the bounds are
+/// written in a `where` clause (format 13).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GenParam {
+    pub bounds: Vec<u8>,
+    pub copy: bool,
+    pub where_clause: bool,
+}
+
 /// A helper, a method or an associated function. Parameters are immutable value parameters (a scalar or a struct). The
 /// body is a block of the kernel's statements; `tail` is the value (absent for a unit `&mut self` method).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -610,6 +670,10 @@ pub struct FnDef {
     pub ret: Option<Ty>,
     pub body: Vec<Stmt>,
     pub tail: Option<Expr>,
+    /// The trait method this function implements (format 13); `None` for every other function.
+    pub imp: Option<Imp>,
+    /// The type parameters of a generic helper or method (format 13); empty for every other function.
+    pub gens: Vec<GenParam>,
 }
 
 /// The struct and function tables of a method program (format 8). Function `k` calls only functions below `k`, so the
@@ -620,11 +684,42 @@ pub struct Methods {
     pub fns: Vec<FnDef>,
     /// The enums of an enum program (format 9); empty for every other space.
     pub enums: Vec<EnumDef>,
+    /// The traits of a trait program (format 13); empty for every other space.
+    pub traits: Vec<TraitDef>,
 }
 
 impl Methods {
     pub fn is_empty(&self) -> bool {
         self.structs.is_empty() && self.fns.is_empty() && self.enums.is_empty()
+    }
+
+    /// The function that implements trait method `m` of trait `tr` for `ty`, if there is one.
+    pub fn impl_fn(&self, tr: u8, m: u8, ty: Ty) -> Option<usize> {
+        self.fns
+            .iter()
+            .position(|def| def.imp == Some(Imp { tr, m, ty }))
+    }
+
+    /// The types that implement trait `tr` (the types of the impls of its first method), in table order.
+    pub fn implementors(&self, tr: u8) -> Vec<Ty> {
+        self.fns
+            .iter()
+            .filter_map(|def| {
+                def.imp
+                    .filter(|imp| imp.tr == tr && imp.m == 0)
+                    .map(|imp| imp.ty)
+            })
+            .collect()
+    }
+
+    /// Whether `ty` implements trait `tr`.
+    pub fn implements(&self, ty: Ty, tr: u8) -> bool {
+        self.implementors(tr).contains(&ty)
+    }
+
+    /// Whether any function of the program is a trait impl or generic (a trait program, format 13).
+    pub fn has_traits(&self) -> bool {
+        !self.traits.is_empty()
     }
 
     /// The number of scalar components of a value of struct `j`, nested structs flattened.
@@ -768,6 +863,7 @@ pub const SHAPE_VALUE_CALL_INNER: &str =
 /// too: the call runs before the element is read.
 fn mut_call_root(methods: &Methods, e: &Expr) -> Option<Root> {
     match e {
+        Expr::PathCall { call, .. } => mut_call_root(methods, call),
         Expr::Call {
             f,
             recv: Some(place),
@@ -856,6 +952,158 @@ pub const SHAPE_MATCH_SCRUTINEE: &str =
 pub const SHAPE_ENUM_EQ: &str = "shape enum ==/!= of two calls on one root";
 pub const SHAPE_ENUM_ARG: &str = "shape enum argument built from a &mut self call";
 pub const SHAPE_ENUM_ARGS_ROOT: &str = "shape enum arguments built from calls on one root";
+
+/// Names of the constructs of the trait space (format 13, slice m9.d2), counted statically by `operator_counts` and when
+/// executed by the interpreter, under the same names. The `shape` ones are the order-sensitive forms the generator is
+/// biased toward; each counts only where a `&mut self` call on a root is among the operands the order is observed on.
+pub const TRAIT_CALL: &str = "trait call";
+pub const TRAIT_CALL_ENUM: &str = "trait call on an enum";
+pub const TRAIT_PATH_CALL: &str = "trait path call";
+pub const TRAIT_PATH_QUALIFIED: &str = "trait path call, qualified";
+pub const TRAIT_SELF_RESULT: &str = "trait call returning Self";
+pub const THROUGH_PARAM: &str = "trait call through a type parameter";
+pub const GENERIC_CALL: &str = "generic call";
+pub const GENERIC_METHOD_CALL: &str = "generic method call";
+pub const GENERIC_TWO_PARAMS: &str = "generic call with two type parameters";
+pub const GENERIC_TWO_BOUNDS: &str = "generic call with a two-trait bound";
+pub const GENERIC_WHERE: &str = "generic call with a where clause";
+pub const GENERIC_RETURNS_T: &str = "generic call returning T";
+pub const GENERIC_FROM_GENERIC: &str = "generic call in a generic body";
+pub const SHAPE_TRAIT_ARGS_ROOT: &str = "shape trait call arguments built from calls on one root";
+pub const SHAPE_GENERIC_ARGS_ROOT: &str =
+    "shape generic call arguments built from calls on one root";
+pub const SHAPE_GENERIC_VALUE_SOURCE: &str =
+    "shape generic call, by-value T whose source a later argument mutates";
+pub const SHAPE_TRAIT_VALUE_SELF: &str =
+    "shape trait call, by-value self whose source an argument mutates";
+pub const SHAPE_MUT_THROUGH_PARAM: &str = "shape &mut self through a type parameter";
+pub const SHAPE_PARAM_ARGS_SELF_ROOT: &str =
+    "shape call through a type parameter, arguments call the receiver's root";
+
+/// The trait and generic names (constructs and shapes) of a call of function `f` with receiver `recv` and `args`.
+pub fn trait_call_names(
+    methods: &Methods,
+    f: usize,
+    recv: &Option<Place>,
+    args: &[Expr],
+) -> Vec<&'static str> {
+    let def = &methods.fns[f];
+    let mut names = Vec::new();
+    let twice = || {
+        let mut roots: Vec<Root> = Vec::new();
+        for arg in args {
+            let mut found = Vec::new();
+            mutating_roots(methods, arg, &mut found);
+            found.sort_by_key(|r| format!("{r:?}"));
+            found.dedup();
+            roots.extend(found);
+        }
+        roots
+            .iter()
+            .any(|r| roots.iter().filter(|o| *o == r).count() >= 2)
+    };
+    if def.imp.is_some() {
+        names.push(TRAIT_CALL);
+        if let Some(place) = recv {
+            if place.root_ty.is_enum() {
+                names.push(TRAIT_CALL_ENUM);
+            }
+            if matches!(place.root_ty, Ty::Param(_)) {
+                names.push(THROUGH_PARAM);
+                if def.recv == Recv::Mut {
+                    names.push(SHAPE_MUT_THROUGH_PARAM);
+                }
+                if args
+                    .iter()
+                    .any(|a| contains_mut_call_on(methods, a, Root::SelfV))
+                {
+                    names.push(SHAPE_PARAM_ARGS_SELF_ROOT);
+                }
+            }
+            if def.recv == Recv::Value
+                && args
+                    .iter()
+                    .any(|a| contains_mut_call_on(methods, a, place.root))
+            {
+                names.push(SHAPE_TRAIT_VALUE_SELF);
+            }
+        }
+        let self_ret = def.imp.is_some_and(|i| {
+            methods.traits[usize::from(i.tr)].methods[usize::from(i.m)].ret == TRet::SelfTy
+        });
+        if self_ret {
+            names.push(TRAIT_SELF_RESULT);
+        }
+        if twice() {
+            names.push(SHAPE_TRAIT_ARGS_ROOT);
+        }
+    }
+    if !def.gens.is_empty() {
+        names.push(if def.recv == Recv::None {
+            GENERIC_CALL
+        } else {
+            GENERIC_METHOD_CALL
+        });
+        if args.iter().any(|a| matches!(a.ty(), Ty::Param(_))) {
+            names.push(GENERIC_FROM_GENERIC);
+        }
+        if def.gens.len() == 2 {
+            names.push(GENERIC_TWO_PARAMS);
+        }
+        if def.gens.iter().any(|g| g.bounds.len() == 2) {
+            names.push(GENERIC_TWO_BOUNDS);
+        }
+        if def.gens.iter().any(|g| g.where_clause) {
+            names.push(GENERIC_WHERE);
+        }
+        if matches!(def.ret, Some(Ty::Param(_))) {
+            names.push(GENERIC_RETURNS_T);
+        }
+        if twice() {
+            names.push(SHAPE_GENERIC_ARGS_ROOT);
+        }
+        let source = args.iter().enumerate().any(|(i, arg)| {
+            let root = match arg {
+                Expr::Var(v, Ty::Struct(_)) => Some(Root::Var(*v)),
+                Expr::Read { place, ty: Ty::Struct(_) } => Some(place.root),
+                _ => None,
+            };
+            matches!(def.params[i].1, Ty::Param(_))
+                && root.is_some_and(|root| {
+                    args[i + 1..]
+                        .iter()
+                        .any(|later| contains_mut_call_on(methods, later, root))
+                })
+        });
+        if source {
+            names.push(SHAPE_GENERIC_VALUE_SOURCE);
+        }
+    }
+    names
+}
+
+/// The names the trait and generic constructs add to the known shape rows.
+pub const TRAIT_SHAPE_NAMES: [&str; 19] = [
+    TRAIT_CALL,
+    TRAIT_CALL_ENUM,
+    TRAIT_PATH_CALL,
+    TRAIT_PATH_QUALIFIED,
+    TRAIT_SELF_RESULT,
+    THROUGH_PARAM,
+    GENERIC_CALL,
+    GENERIC_METHOD_CALL,
+    GENERIC_TWO_PARAMS,
+    GENERIC_TWO_BOUNDS,
+    GENERIC_WHERE,
+    GENERIC_RETURNS_T,
+    GENERIC_FROM_GENERIC,
+    SHAPE_TRAIT_ARGS_ROOT,
+    SHAPE_GENERIC_ARGS_ROOT,
+    SHAPE_GENERIC_VALUE_SOURCE,
+    SHAPE_TRAIT_VALUE_SELF,
+    SHAPE_MUT_THROUGH_PARAM,
+    SHAPE_PARAM_ARGS_SELF_ROOT,
+];
 
 /// Every shape and `match` construct name that `check-difftest` prints a row for, so a name that is never written still
 /// shows as a row of zeros (`coverage_json` adds these to the operator rows).
@@ -1897,6 +2145,7 @@ impl Expr {
 
     pub fn ty(&self) -> Ty {
         match self {
+            Expr::PathCall { call, .. } => call.ty(),
             Expr::Lit(ty, _) | Expr::Var(_, ty) | Expr::Input { ty, .. } | Expr::Un { ty, .. } => {
                 *ty
             }
@@ -1982,6 +2231,7 @@ impl Expr {
     /// `visit_exprs`, which the reducer's node numbering relies on).
     pub fn for_each_child(&self, f: &mut dyn FnMut(&Expr)) {
         match self {
+            Expr::PathCall { call, .. } => f(call),
             Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) | Expr::Variant { .. } => {}
             Expr::Input { index, .. } => f(index),
             Expr::Un { e, .. }
@@ -2019,6 +2269,7 @@ impl Expr {
     /// [`Expr::for_each_child`] with mutable access.
     pub fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Expr)) {
         match self {
+            Expr::PathCall { call, .. } => f(call),
             Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) | Expr::Variant { .. } => {}
             Expr::Input { index, .. } => f(index),
             Expr::Un { e, .. }
@@ -2301,6 +2552,12 @@ impl Program {
         block(&self.body) || self.methods.fns.iter().any(|def| block(&def.body))
     }
 
+    /// Whether the program calls a trait method and a generic function (a trait program without both tests nothing new).
+    pub fn has_trait_forms(&self) -> bool {
+        let counts = operator_counts(self);
+        counts.contains_key(TRAIT_CALL) && counts.contains_key(GENERIC_CALL)
+    }
+
     /// Whether the program binds a closure and calls one (a closure program without both tests nothing new).
     pub fn has_closure(&self) -> bool {
         let mut bound = false;
@@ -2570,7 +2827,7 @@ impl Methods {
             {
                 return Err(format!("m{k} is a function of an unknown struct"));
             }
-            if def.recv != Recv::None && def.owner.is_none() {
+            if def.recv != Recv::None && def.owner.is_none() && def.imp.is_none() {
                 return Err(format!("m{k} has a receiver and no struct"));
             }
             for (_, ty) in &def.params {
@@ -2580,6 +2837,7 @@ impl Methods {
                     Ty::Enum(e) if usize::from(*e) < self.enums.len() => {}
                     Ty::Tuple(t) => self.check_tuple(*t)?,
                     Ty::Array(a) => self.check_array(*a)?,
+                    Ty::Param(_) => {}
                     other => return Err(format!("m{k} has a parameter of {}", other.name())),
                 }
             }
@@ -2598,6 +2856,8 @@ impl Methods {
                 self.check_tuple(t)?;
             }
             match (def.recv, def.owner, def.ret) {
+                (Recv::Shared | Recv::Value, _, Some(Ty::Struct(_))) if def.imp.is_some() => {}
+                (Recv::None, None, Some(Ty::Param(_))) => {}
                 (Recv::None, Some(owner), ret) if ret != Some(Ty::Struct(owner)) => {
                     return Err(format!("associated m{k} does not return its struct"));
                 }
@@ -2626,6 +2886,130 @@ impl Methods {
             }
             if def.ret.is_some() != def.tail.is_some() {
                 return Err(format!("m{k}: the tail and the result type disagree"));
+            }
+        }
+        self.check_traits()?;
+        Ok(())
+    }
+
+    /// Format 13: the traits, their impls and the generic functions. A trait method is implemented by exactly two types,
+    /// the same two for every method of the trait, with the signature the trait gives (`Self` as the type); a `&mut self`
+    /// method only by structs; an impl is no generic function; a type parameter has one or two module traits as bounds.
+    fn check_traits(&self) -> Result<(), String> {
+        if self.traits.len() > 3 {
+            return Err(format!("{} traits", self.traits.len()));
+        }
+        for (tr, def) in self.traits.iter().enumerate() {
+            if def.methods.is_empty() || def.methods.len() > 2 {
+                return Err(format!("Tr{tr} has {} methods", def.methods.len()));
+            }
+            for (m, method) in def.methods.iter().enumerate() {
+                if method.recv == Recv::None {
+                    return Err(format!("Tr{tr}::m{m} has no receiver"));
+                }
+                if method
+                    .params
+                    .iter()
+                    .any(|p| !matches!(p, Ty::U32 | Ty::I32 | Ty::Bool))
+                {
+                    return Err(format!("Tr{tr}::m{m} has a non-scalar parameter"));
+                }
+                match (method.recv, method.ret) {
+                    (Recv::Mut, TRet::Unit | TRet::Ty(_)) => {}
+                    (Recv::Mut, TRet::SelfTy) => {
+                        return Err("a `&mut self` method returns Self".into());
+                    }
+                    (_, TRet::Unit) => return Err(format!("Tr{tr}::m{m} returns nothing")),
+                    (Recv::Shared, TRet::SelfTy) => {
+                        return Err("a `&self` method returns Self".into());
+                    }
+                    _ => {}
+                }
+                if let TRet::Ty(t) = method.ret
+                    && !matches!(t, Ty::U32 | Ty::I32 | Ty::Bool)
+                {
+                    return Err(format!("Tr{tr}::m{m} returns {}", t.name()));
+                }
+                let types: Vec<Ty> = self
+                    .fns
+                    .iter()
+                    .filter_map(|f| f.imp.filter(|i| i.tr as usize == tr && i.m as usize == m))
+                    .map(|i| i.ty)
+                    .collect();
+                if types.len() != 2 || types[0] == types[1] {
+                    return Err(format!("Tr{tr}::m{m} has {} impls", types.len()));
+                }
+                if m > 0 && types != self.implementors(tr as u8) {
+                    return Err(format!("the impls of Tr{tr} differ between its methods"));
+                }
+                for ty in types {
+                    match ty {
+                        Ty::Struct(j) if usize::from(j) < self.structs.len() => {}
+                        Ty::Enum(e) if usize::from(e) < self.enums.len() => {
+                            if method.recv != Recv::Value {
+                                return Err("an enum impl whose receiver is not `self`".into());
+                            }
+                        }
+                        other => return Err(format!("an impl for {}", other.name())),
+                    }
+                }
+            }
+        }
+        for (k, def) in self.fns.iter().enumerate() {
+            if let Some(imp) = def.imp {
+                let Some(method) = self
+                    .traits
+                    .get(usize::from(imp.tr))
+                    .and_then(|t| t.methods.get(usize::from(imp.m)))
+                else {
+                    return Err(format!("m{k} implements an unknown trait method"));
+                };
+                let ret = match method.ret {
+                    TRet::Unit => None,
+                    TRet::Ty(t) => Some(t),
+                    TRet::SelfTy => Some(imp.ty),
+                };
+                let owner = match imp.ty {
+                    Ty::Struct(j) => Some(j),
+                    _ => None,
+                };
+                if def.recv != method.recv
+                    || def.ret != ret
+                    || def.owner != owner
+                    || !def.gens.is_empty()
+                    || def.params.iter().map(|p| p.1).collect::<Vec<_>>() != method.params
+                {
+                    return Err(format!(
+                        "m{k} does not match the signature of its trait method"
+                    ));
+                }
+            }
+            if def.gens.len() > 2 {
+                return Err(format!("m{k} has {} type parameters", def.gens.len()));
+            }
+            for (g, gen_param) in def.gens.iter().enumerate() {
+                if gen_param.bounds.is_empty() || gen_param.bounds.len() > 2 {
+                    return Err(format!(
+                        "m{k}: a type parameter with {} bounds",
+                        gen_param.bounds.len()
+                    ));
+                }
+                let mut seen = BTreeSet::new();
+                for &b in &gen_param.bounds {
+                    if usize::from(b) >= self.traits.len() || !seen.insert(b) {
+                        return Err(format!("m{k}: a bound that is not a trait, or twice"));
+                    }
+                }
+                if !def.params.iter().any(|p| p.1 == Ty::Param(g as u8)) {
+                    return Err(format!("m{k}: nothing determines the type parameter {g}"));
+                }
+            }
+            let in_range = |ty: Ty| match ty {
+                Ty::Param(g) => usize::from(g) < def.gens.len(),
+                _ => true,
+            };
+            if !def.params.iter().all(|p| in_range(p.1)) || !def.ret.is_none_or(in_range) {
+                return Err(format!("m{k} names a type parameter it does not have"));
             }
         }
         Ok(())
@@ -2684,8 +3068,11 @@ impl Check<'_> {
             Root::SelfV if self.in_closure => {
                 return Err("a closure captures `self` (E0329)".into());
             }
-            Root::SelfV => match self.in_fn.and_then(|k| self.methods.fns[k].owner) {
-                Some(owner) if self.self_recv() != Recv::None => Ty::Struct(owner),
+            Root::SelfV => match self.in_fn.and_then(|k| {
+                let def = &self.methods.fns[k];
+                def.owner.map(Ty::Struct).or(def.imp.map(|i| i.ty))
+            }) {
+                Some(ty) if self.self_recv() != Recv::None => ty,
                 _ => return Err("`self` outside a method".into()),
             },
         };
@@ -2766,10 +3153,42 @@ impl Check<'_> {
         if args.len() != def.params.len() {
             return Err(format!("m{f} takes {} arguments", def.params.len()));
         }
+        let mut bound: [Option<Ty>; 2] = [None, None];
+        let mut self_param: Option<Ty> = None;
         for (arg, (_, ty)) in args.iter().zip(&def.params) {
             self.expr(arg)?;
-            if arg.ty() != *ty {
-                return Err(format!("argument of m{f} has the wrong type"));
+            match ty {
+                Ty::Param(g) => {
+                    let slot = &mut bound[usize::from(*g)];
+                    if slot.is_some_and(|t| t != arg.ty()) {
+                        return Err(format!("m{f}: one type parameter bound to two types"));
+                    }
+                    *slot = Some(arg.ty());
+                }
+                _ if arg.ty() != *ty => {
+                    return Err(format!("argument of m{f} has the wrong type"));
+                }
+                _ => {}
+            }
+        }
+        for (g, gen_param) in def.gens.iter().enumerate() {
+            let Some(actual) = bound[g] else {
+                return Err(format!("m{f}: a type parameter nothing binds"));
+            };
+            for &b in &gen_param.bounds {
+                let ok = match actual {
+                    Ty::Param(c) => self.in_fn.is_some_and(|k| {
+                        methods.fns[k]
+                            .gens
+                            .get(usize::from(c))
+                            .is_some_and(|p| p.bounds.contains(&b))
+                    }),
+                    Ty::Struct(_) | Ty::Enum(_) => methods.implements(actual, b),
+                    _ => false,
+                };
+                if !ok {
+                    return Err(format!("m{f}: the type bound to a parameter lacks Tr{b}"));
+                }
             }
         }
         match (def.recv, recv) {
@@ -2779,8 +3198,25 @@ impl Check<'_> {
             }
             (kind, Some(place)) => {
                 self.place_index(place, true)?;
-                if self.place_ty(place)? != Ty::Struct(def.owner.unwrap_or(u8::MAX)) {
+                let rty = self.place_ty(place)?;
+                let fits = match (def.imp, rty) {
+                    (Some(imp), Ty::Param(c)) => self.in_fn.is_some_and(|k| {
+                        methods.fns[k]
+                            .gens
+                            .get(usize::from(c))
+                            .is_some_and(|p| p.bounds.contains(&imp.tr))
+                    }),
+                    (Some(imp), ty) => ty == imp.ty,
+                    (None, ty) => ty == Ty::Struct(def.owner.unwrap_or(u8::MAX)),
+                };
+                if !fits {
                     return Err(format!("receiver of m{f} has the wrong type"));
+                }
+                if let (Some(imp), Ty::Param(_)) = (def.imp, rty)
+                    && methods.traits[usize::from(imp.tr)].methods[usize::from(imp.m)].ret
+                        == TRet::SelfTy
+                {
+                    self_param = Some(rty);
                 }
                 if kind == Recv::Mut
                     && matches!(place.root, Root::Var(v) if self.closure_params.contains(&v))
@@ -2807,7 +3243,11 @@ impl Check<'_> {
                 }
             }
         }
-        Ok(def.ret)
+        Ok(match def.ret {
+            _ if self_param.is_some() => self_param,
+            Some(Ty::Param(g)) => bound[usize::from(g)],
+            other => other,
+        })
     }
 
     /// One function in a scope of its own: its parameters, its body and its tail.
@@ -3474,6 +3914,23 @@ impl Check<'_> {
                 Some(ret) if ret == *ty => Ok(()),
                 _ => Err(format!("a call of m{f} has the wrong type")),
             },
+            Expr::PathCall { call, .. } => {
+                let Expr::Call {
+                    f,
+                    recv: Some(place),
+                    ..
+                } = &**call
+                else {
+                    return Err("a path call that is not a method call".into());
+                };
+                if self.methods.fns[*f].imp.is_none() {
+                    return Err("a path call of a function that implements no trait".into());
+                }
+                if matches!(place.root_ty, Ty::Param(_)) || place.index.is_some() {
+                    return Err("a path call on a type parameter or an element".into());
+                }
+                self.expr(call)
+            }
             Expr::ClosureCall { var, args, ty } => {
                 let Some((_, params, ret)) = self.closures.iter().rev().find(|c| c.0 == *var)
                 else {
@@ -3747,6 +4204,19 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
         if let Some(shape) = shape {
             *counts.entry(shape.to_owned()).or_default() += 1;
         }
+        if let Expr::Call { f, recv, args, .. } = e {
+            for name in trait_call_names(methods, *f, recv, args) {
+                *counts.entry(name.to_owned()).or_default() += 1;
+            }
+        }
+        if let Expr::PathCall { form, .. } = e {
+            let name = if *form == PathForm::Trait {
+                TRAIT_PATH_CALL
+            } else {
+                TRAIT_PATH_QUALIFIED
+            };
+            *counts.entry(name.to_owned()).or_default() += 1;
+        }
         if let Expr::Call { f, args, .. } = e {
             for shape in enum_call_shapes(methods, args) {
                 *counts.entry(shape.to_owned()).or_default() += 1;
@@ -3851,6 +4321,9 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
                 }
                 Stmt::Call { f, recv, args, .. } => {
                     let def = &methods.fns[*f];
+                    for name in trait_call_names(methods, *f, recv, args) {
+                        *counts.entry(name.to_owned()).or_default() += 1;
+                    }
                     if def.recv == Recv::Mut {
                         *counts.entry(SHAPE_STMT_CALL.to_owned()).or_default() += 1;
                     }

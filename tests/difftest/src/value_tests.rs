@@ -137,11 +137,14 @@ fn methods() -> Methods {
         value: u(1),
     };
     Methods {
+        traits: Vec::new(),
         structs: vec![StructDef {
             fields: vec![Ty::U32],
         }],
         fns: vec![
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: Some(0),
                 recv: Recv::Mut,
                 params: Vec::new(),
@@ -150,6 +153,8 @@ fn methods() -> Methods {
                 tail: Some(n_of(&this)),
             },
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: Some(0),
                 recv: Recv::Mut,
                 params: Vec::new(),
@@ -158,6 +163,8 @@ fn methods() -> Methods {
                 tail: Some(tuple(vec![n_of(&this), mul(n_of(&this), u(100))])),
             },
             FnDef {
+                imp: None,
+                gens: Vec::new(),
                 owner: None,
                 recv: Recv::None,
                 params: vec![(20, Ty::U32)],
@@ -485,6 +492,8 @@ fn the_element_field_compound_shape_is_counted_for_that_form_only() {
 fn dead_compound_set(op: BinOp, amount: u32) -> Program {
     let mut p = tuple_order_program();
     p.methods.fns.push(FnDef {
+        imp: None,
+        gens: Vec::new(),
         owner: Some(0),
         recv: Recv::Mut,
         params: Vec::new(),
@@ -651,9 +660,9 @@ fn the_emitted_text_of_the_hand_programs_has_the_value_forms() {
 }
 
 #[test]
-fn the_value_space_is_the_last_two_programs_of_the_batch() {
+fn the_value_space_is_one_program_of_the_batch() {
     assert_eq!(PROGRAMS_PER_SEED, 16);
-    assert_eq!(VALUE_PROGRAMS_PER_SEED, 2);
+    assert_eq!(VALUE_PROGRAMS_PER_SEED, 1);
     for seed in 1..=3 {
         let batch = generate_batch(seed).unwrap();
         assert_eq!(batch.programs.len(), PROGRAMS_PER_SEED);
@@ -865,7 +874,7 @@ fn the_mutants_also_change_some_generated_value_program() {
 #[test]
 fn the_order_sensitive_tuple_field_set_runs_in_the_batch_and_its_mutant_changes_a_batch_program() {
     let mut programs = Vec::new();
-    for seed in 1..=64 {
+    for seed in 1..=128 {
         programs.extend(
             generate_batch(seed)
                 .unwrap()

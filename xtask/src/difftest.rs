@@ -592,6 +592,8 @@ fn is_shape_row(name: &str) -> bool {
         || name.starts_with("tuple ")
         || name.starts_with("array ")
         || name.starts_with("closure ")
+        || name.starts_with("trait ")
+        || name.starts_with("generic ")
         || name == "return"
 }
 

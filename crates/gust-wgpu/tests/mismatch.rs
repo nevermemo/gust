@@ -243,6 +243,10 @@ struct Case {
     /// "no software pin": the hardware pin accepted m5.b0's value there. Never set on an enforced row or on a
     /// set-valued KM-09 row.
     software: Option<Outcome>,
+    /// The observation on the SPIR-V route (m9.rt2) where it differs from `gpu` (measured: an out-of-range float-to-integer
+    /// cast saturates as Rust does, and `NaN != NaN` is true). It applies on every adapter kind, to enforced rows too, when
+    /// the kernels of the ledger took the SPIR-V route; `None` is "the same as `gpu`".
+    spirv: Option<Outcome>,
     rust: fn(OverflowChecks) -> Outcome,
     /// Whether the pinned GPU value is a requirement the test enforces (see `gpu_is_enforced`).
     enforced: bool,
@@ -255,8 +259,17 @@ impl Case {
         self
     }
 
+    /// The observation of an enforced or unenforced row on the SPIR-V route (see the `spirv` field).
+    fn spirv(mut self, observation: Outcome) -> Self {
+        self.spirv = Some(observation);
+        self
+    }
+
     /// The pin that the running kind compares with: the one pin of an enforced row, else the kind's own.
-    fn pin(&self, kind: AdapterKind) -> Option<Outcome> {
+    fn pin(&self, kind: AdapterKind, spirv: bool) -> Option<Outcome> {
+        if spirv && let Some(observation) = self.spirv {
+            return Some(observation);
+        }
         if self.enforced {
             return Some(self.gpu);
         }
@@ -282,6 +295,7 @@ fn case(
         operands,
         gpu,
         software: None,
+        spirv: None,
         rust,
         enforced: gpu_is_enforced(id, kind, operands.1),
     }
@@ -638,7 +652,8 @@ fn cases() -> Vec<Case> {
         (0, f(1.0e10), 0),
         v(0x7fff_ff80),
         |_| v(i(i32::MAX)),
-    ));
+    )
+    .spirv(v(i(i32::MAX))));
     add(case(
         "KM-05",
         "f32 -1.0e10 as i32",
@@ -654,7 +669,8 @@ fn cases() -> Vec<Case> {
         (0, NAN, 0),
         v(0x8000_0000),
         |_| v(0),
-    ));
+    )
+    .spirv(v(0)));
     add(case(
         "KM-05",
         "f32 2147483648.0 (2^31) as i32",
@@ -662,7 +678,8 @@ fn cases() -> Vec<Case> {
         (0, f(2_147_483_648.0), 0),
         v(0x7fff_ff80),
         |_| v(i(i32::MAX)),
-    ));
+    )
+    .spirv(v(i(i32::MAX))));
     // ---- KM-06 f32 as u32 of a negative, NaN or too large value ----
     add(case(
         "KM-06",
@@ -695,7 +712,8 @@ fn cases() -> Vec<Case> {
         (0, f(1.0e10), 0),
         v(0xffff_ff00),
         |_| v(u32::MAX),
-    ));
+    )
+    .spirv(v(u32::MAX)));
     add(case(
         "KM-06",
         "f32 -1.0e10 as u32",
@@ -711,7 +729,8 @@ fn cases() -> Vec<Case> {
         (0, f(4_294_967_296.0), 0),
         v(0xffff_ff00),
         |_| v(u32::MAX),
-    ));
+    )
+    .spirv(v(u32::MAX)));
 
     // ---- KM-10 overflow of + - * and negation ----
     add(case(
@@ -1240,7 +1259,8 @@ fn cases() -> Vec<Case> {
         (1, NAN, NAN),
         v(0),
         |_| v(1),
-    ));
+    )
+    .spirv(v(1)));
     add(case(
         "KM-07",
         "f32 NaN < 1.0",
@@ -2407,6 +2427,10 @@ fn known_mismatches_pin_the_gpu_the_plain_rust_and_the_cpu_twin_outcome() {
 
     let cases = cases();
     let observed = gpu_observed(&device, &cases);
+    // The SPIR-V route is in force when every kernel the ledger built took it (a build without the feature, or an adapter
+    // without PASSTHROUGH_SHADERS, keeps the WGSL pins).
+    let spirv = spirv_route_taken(&device);
+    eprintln!("S2 route: {}", if spirv { "SPIR-V" } else { "WGSL" });
     let mut failures = Vec::new();
     let mut ledger = Vec::new();
     for (case, gpu) in cases.iter().zip(&observed) {
@@ -2417,7 +2441,7 @@ fn known_mismatches_pin_the_gpu_the_plain_rust_and_the_cpu_twin_outcome() {
         // An enforced row is checked against its one pin on every adapter. An unenforced row is compared with the
         // running kind's own pin; a row without one has no software pin (the hardware pin accepted
         // m5.b0's value), and the observation is then only compared with the hardware pin to tell whether it is new.
-        let pin = case.pin(kind);
+        let pin = case.pin(kind, spirv);
         let reference = pin.unwrap_or(case.gpu);
         let gpu_ok = gpu
             .iter()
@@ -2477,7 +2501,7 @@ fn known_mismatches_pin_the_gpu_the_plain_rust_and_the_cpu_twin_outcome() {
                 "{} `{}`: GPU expected {:?}, observed {}",
                 case.id,
                 case.what,
-                case.gpu,
+                reference,
                 gpu_summary(gpu)
             ));
         }
@@ -2721,6 +2745,14 @@ fn the_emitted_wgsl_uses_plain_operators_and_conversions() {
         );
         let quotient = function(&divide, "_gust_div_0");
         assert!(quotient.contains(&format!("-> {ty}")), "{quotient}");
+        // With the SPIR-V route feature the helpers carry the guards (D172), so the body is not the bare operator;
+        // the operator still stands in it, on a guarded divisor.
+        if gust_wgpu::SPIRV_ROUTE {
+            assert!(quotient.contains(" / "), "{quotient}");
+            let remainder = function(&divide, "_gust_rem_0");
+            assert!(remainder.contains(&format!("-> {ty}")), "{remainder}");
+            continue;
+        }
         assert!(
             expression(quotient, ty)
                 .is_some_and(|text| text.starts_with("a_") && text.contains(" / b_")),
@@ -2855,4 +2887,19 @@ fn a_kernel_without_storage_parameters_runs_on_the_twin() {
             .as_ref(),
     );
     assert!(message.starts_with(DIV_ZERO), "{message}");
+}
+
+/// Whether every kernel this device built so far took the SPIR-V route (m9.rt2). `false` without the feature.
+#[cfg(feature = "spirv-route")]
+fn spirv_route_taken(device: &HeadlessDevice) -> bool {
+    let events = device.route_events();
+    !events.is_empty()
+        && events
+            .iter()
+            .all(|event| event.route == gust_wgpu::Route::Spirv)
+}
+
+#[cfg(not(feature = "spirv-route"))]
+fn spirv_route_taken(_device: &HeadlessDevice) -> bool {
+    false
 }

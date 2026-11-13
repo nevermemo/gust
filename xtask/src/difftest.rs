@@ -46,6 +46,86 @@ use crate::{
     workspace::{cargo_target_dir, workspace_root},
 };
 
+/// Setting this to `1` runs the batches and the GPU test with the SPIR-V route (slice m9.rt2, D172): the generated crates
+/// depend on `gust-wgpu` with a fixed feature list that no Cargo flag can extend from here, so the route is delivered the
+/// way `check-dual` delivers its cfg, through `CARGO_ENCODED_RUSTFLAGS`, as `--cfg feature="spirv-route"` for every crate of
+/// the build (the macro and `gust-wgpu` both read `cfg!(feature = "spirv-route")`). `GUST_SPIRV_ROUTE_LOG` (a file) then
+/// records the route of each kernel.
+pub(crate) const ROUTE_VARIABLE: &str = "GUST_SPIRV_ROUTE";
+
+/// The `CARGO_ENCODED_RUSTFLAGS` of a route run: two flags joined by the unit separator.
+pub(crate) const ROUTE_RUSTFLAGS: &str = "--cfg\u{1f}feature=\"spirv-route\"";
+
+/// The environment variables a cargo call of this command gets for the route: none unless [`ROUTE_VARIABLE`] is `1`. It
+/// refuses a value other than `0` or `1`, and refuses while a rustflags variable is set, because
+/// `CARGO_ENCODED_RUSTFLAGS` takes precedence over them and would silently drop their flags.
+pub(crate) fn route_environment(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<Vec<(&'static str, &'static str)>, String> {
+    match lookup(ROUTE_VARIABLE).as_deref().and_then(|v| v.to_str()) {
+        None | Some("0") => return Ok(Vec::new()),
+        Some("1") => {}
+        Some(other) => {
+            return Err(format!(
+                "check-difftest: {ROUTE_VARIABLE} is `{other}`; use `1` (route on) or leave it unset"
+            ));
+        }
+    }
+    let set: Vec<&str> = crate::checks::RUSTFLAGS_VARIABLES
+        .iter()
+        .copied()
+        .filter(|name| lookup(name).is_some())
+        .collect();
+    if !set.is_empty() {
+        return Err(format!(
+            "check-difftest: {ROUTE_VARIABLE}=1 delivers its cfg through CARGO_ENCODED_RUSTFLAGS, which would drop the flags of {}; unset {} and run it again",
+            set.join(", "),
+            if set.len() == 1 { "it" } else { "them" }
+        ));
+    }
+    Ok(vec![("CARGO_ENCODED_RUSTFLAGS", ROUTE_RUSTFLAGS)])
+}
+
+/// The file `gust-wgpu` appends one line to for each kernel it builds, `<kernel> <Spirv|Wgsl> <reason>` (a verification
+/// aid of the `spirv-route` feature; it is read when the variable is set, whatever the caller).
+pub(crate) const ROUTE_LOG_VARIABLE: &str = "GUST_SPIRV_ROUTE_LOG";
+
+/// The route counts of a log and what is wrong with it: `(spirv, wgsl, problems)`. A route run is evidence only if the
+/// log is not empty and every line says `Spirv`; each other line is named with its reason.
+pub(crate) fn judge_route_log(text: &str) -> (usize, usize, Vec<String>) {
+    let (mut spirv, mut wgsl) = (0, 0);
+    let mut problems = Vec::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        match line.split_whitespace().nth(1) {
+            Some("Spirv") => spirv += 1,
+            _ => {
+                wgsl += 1;
+                if problems.len() < 5 {
+                    problems.push(format!("a kernel did not take the SPIR-V route: {line}"));
+                }
+            }
+        }
+    }
+    if spirv + wgsl == 0 {
+        problems.push("the route log has no line: no kernel took any route".to_owned());
+    }
+    (spirv, wgsl, problems)
+}
+
+/// Read the route log of `what` and judge it; prints the counts. A missing log is a problem.
+fn route_log_problems(what: &str, log: &Path) -> Vec<String> {
+    let text = fs::read_to_string(log).unwrap_or_default();
+    let (spirv, wgsl, problems) = judge_route_log(&text);
+    println!(
+        "check-difftest: route of {what}: {spirv} kernel build(s) on SPIR-V, {wgsl} on WGSL ({})",
+        log.display()
+    );
+    problems
+        .into_iter()
+        .map(|problem| format!("{what}: {problem}"))
+        .collect()
+}
+
 /// Programs the generator keeps per seed (`PROGRAMS_PER_SEED` of the harness crate; the report must say so).
 pub(crate) const PROGRAMS_PER_SEED: u64 = 16;
 
@@ -1352,14 +1432,27 @@ fn run_batch(
             "check-difftest: a batch under the profile `{profile}` needs a record directory"
         ));
     }
+    let route = route_environment(|name| std::env::var_os(name))?;
+    // With the route on, every kernel the batch builds appends its route to a log beside the report, and the log is
+    // judged below (Opus S1 of m9.rt2): a silent fallback to WGSL must not pass as route evidence.
+    let route_log = (!route.is_empty()).then(|| report_path.with_extension("route.log"));
+    if let Some(log) = &route_log {
+        let _ = fs::remove_file(log);
+    }
     println!("-- cargo {}", args.join(" "));
-    let status = workspace_command("cargo")
+    let mut command = workspace_command("cargo");
+    command
         .args(&args)
         .current_dir(root)
+        .envs(route)
         .env("CARGO_TARGET_DIR", target)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    if let Some(log) = &route_log {
+        command.env(ROUTE_LOG_VARIABLE, log);
+    }
+    let status = command
         .status()
         .map_err(|error| format!("check-difftest: could not launch cargo: {error}"))?;
     let report = fs::read_to_string(report_path)
@@ -1373,25 +1466,44 @@ fn run_batch(
             .problems
             .extend(capability_problems(&parsed, profile));
     }
+    if let Some(log) = &route_log {
+        judgement
+            .problems
+            .extend(route_log_problems(&format!("the `{profile}` batch"), log));
+    }
     Ok(judgement)
 }
 
 fn run_short_circuit(root: &Path, target: &Path) -> Result<Vec<String>, String> {
     let args = short_circuit_args();
     println!("-- cargo {}", args.join(" "));
+    let route = route_environment(|name| std::env::var_os(name))?;
     // CARGO_TARGET_DIR is what the test reads to build its run crate beside the batch's (without it the test builds
     // the whole dependency tree again under its own `target/tmp`).
-    let output = workspace_command("cargo")
+    let route_log = (!route.is_empty()).then(|| target.join("short-circuit.route.log"));
+    if let Some(log) = &route_log {
+        let _ = fs::remove_file(log);
+    }
+    let mut command = workspace_command("cargo");
+    command
         .args(&args)
         .current_dir(root)
         .env("CARGO_TARGET_DIR", target)
+        .envs(route)
         .stdin(Stdio::null())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    if let Some(log) = &route_log {
+        command.env(ROUTE_LOG_VARIABLE, log);
+    }
+    let output = command
         .output()
         .map_err(|error| format!("check-difftest: could not launch cargo: {error}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     print!("{stdout}");
     let mut problems = short_circuit_problems(&args, &stdout);
+    if let Some(log) = &route_log {
+        problems.extend(route_log_problems("the short_circuit test", log));
+    }
     if !output.status.success() {
         problems.push(format!(
             "cargo {} failed (exit {})",
@@ -1546,5 +1658,77 @@ mod shape_row_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+}
+
+/// Tests of the route environment (slice m9.rt2).
+#[cfg(test)]
+mod route_environment_tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    fn lookup<'a>(set: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
+        move |name| {
+            set.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| OsString::from(*value))
+        }
+    }
+
+    #[test]
+    fn unset_or_zero_adds_nothing() {
+        assert_eq!(route_environment(lookup(&[])), Ok(Vec::new()));
+        assert_eq!(
+            route_environment(lookup(&[(ROUTE_VARIABLE, "0")])),
+            Ok(Vec::new())
+        );
+    }
+
+    #[test]
+    fn one_delivers_the_cfg_through_the_encoded_rustflags() {
+        assert_eq!(
+            route_environment(lookup(&[(ROUTE_VARIABLE, "1")])),
+            Ok(vec![("CARGO_ENCODED_RUSTFLAGS", ROUTE_RUSTFLAGS)])
+        );
+        assert_eq!(
+            ROUTE_RUSTFLAGS.split('\u{1f}').collect::<Vec<_>>(),
+            ["--cfg", "feature=\"spirv-route\""]
+        );
+    }
+
+    #[test]
+    fn another_value_and_preset_rustflags_are_refused() {
+        let error = route_environment(lookup(&[(ROUTE_VARIABLE, "yes")])).unwrap_err();
+        assert!(error.contains("use `1`"), "{error}");
+        let error =
+            route_environment(lookup(&[(ROUTE_VARIABLE, "1"), ("RUSTFLAGS", "")])).unwrap_err();
+        assert!(
+            error.contains("RUSTFLAGS") && error.contains("unset it"),
+            "{error}"
+        );
+        let error = route_environment(lookup(&[
+            (ROUTE_VARIABLE, "1"),
+            ("CARGO_ENCODED_RUSTFLAGS", "x"),
+            ("CARGO_BUILD_RUSTFLAGS", "y"),
+        ]))
+        .unwrap_err();
+        assert!(error.contains("unset them"), "{error}");
+    }
+
+    #[test]
+    fn the_route_log_passes_only_when_every_line_is_spirv() {
+        let (spirv, wgsl, problems) = judge_route_log("a::k Spirv \nb::k Spirv \n");
+        assert_eq!((spirv, wgsl), (2, 0));
+        assert!(problems.is_empty(), "{problems:?}");
+        let (spirv, wgsl, problems) =
+            judge_route_log("a::k Spirv \nb::k Wgsl backend is not Vulkan\n");
+        assert_eq!((spirv, wgsl), (1, 1));
+        assert_eq!(problems.len(), 1);
+        assert!(
+            problems[0].contains("b::k Wgsl backend is not Vulkan"),
+            "{problems:?}"
+        );
+        let (_, _, problems) = judge_route_log("");
+        assert_eq!(problems.len(), 1, "{problems:?}");
     }
 }

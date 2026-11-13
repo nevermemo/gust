@@ -171,6 +171,7 @@
 //!
 //! - the modules `profile`, `spirv` and `toolchain` (the last one with the `slang-runtime` feature), and
 //!   `slang::probe` with its `slang::TargetProbe`;
+//! - the constant `SPIRV_GUARDS` (whether the `spirv-route` feature put the route's guards into the emitted Slang);
 //! - in `cpu`: `validate`, `read`, `write`, `read_uniform`, `invocations`, `FromGlobalId`, `CpuJob::complete`,
 //!   `__no_hook`, the macro `__gust_overflow_checks` behind `overflow_checks!`, and the module `parallel`;
 //! - in `cpu::texture`: `TextureRef`, `TextureMut`, `read`, `write`, `sampler` and `SamplerOwner`;
@@ -203,6 +204,11 @@ pub mod map;
 pub mod math;
 #[doc(hidden)]
 pub mod profile;
+
+/// Whether the macros emit the guards of the SPIR-V route (the Cargo feature `spirv-route`, m9.rt2): the exact key of the
+/// emitted Slang text, which `gust-wgpu`'s own `SPIRV_ROUTE` is not (that one also needs a native target). Not public API.
+#[doc(hidden)]
+pub const SPIRV_GUARDS: bool = cfg!(feature = "spirv-route");
 pub mod reflect;
 pub mod routed;
 pub mod routes;

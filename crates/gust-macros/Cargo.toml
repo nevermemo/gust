@@ -16,6 +16,12 @@ exclude = ["tests/", "examples/", "benches/", "src/slang/collision_tests.rs"]
 name = "gust_macros"
 proc-macro = true
 
+[features]
+# The SPIR-V route (m9.rt2, D172, D174): the emitted Slang carries the guards that naga adds on the WGSL route (array index
+# clamp, integer division helpers, workgroup zero-initialisation). Forwarded from `gust-compute/spirv-route`, which
+# `gust-compute-wgpu/spirv-route` turns on. Off by default: the emitted text is then byte for byte what it was.
+spirv-route = []
+
 [dependencies]
 proc-macro2.workspace = true
 quote.workspace = true

@@ -26,6 +26,15 @@ fn emitted(module: &ModuleDescriptor) -> String {
 }
 
 fn check_golden(module: &ModuleDescriptor, file: &str) {
+    // With the SPIR-V route's guards in the emitted Slang (m9.rt2) the text is another one, pinned in its own file; the
+    // files without the suffix stay the text of a build without the feature.
+    let routed;
+    let file = if gust::SPIRV_GUARDS {
+        routed = file.replace(".slang", ".spirv-route.slang");
+        routed.as_str()
+    } else {
+        file
+    };
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures")
         .join(file);

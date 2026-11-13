@@ -1133,6 +1133,9 @@ fn the_goldens_are_the_fixtures_directory() {
                 !name.starts_with("par_for.")
                     && !name.starts_with("variant.")
                     && !name.starts_with("subgroup.")
+                    // The goldens of `gust-algo` with the `spirv-route` feature on (slice m9.rt2): the same
+                    // kernels with the route's guards in the text, read only by that crate's golden test.
+                    && !name.ends_with(".spirv-route.slang")
             })
             .cloned()
             .collect()

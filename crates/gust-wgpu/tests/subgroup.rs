@@ -304,6 +304,8 @@ fn a_device_opened_with_the_capability_runs_a_kernel_that_requires_it() {
     // The `requires` set is part of the cache key: the kernel that differs only in it is compiled on its own, it does
     // not borrow the pipeline of the one that needs subgroups.
     assert_eq!(device.pipeline_cache_stats().misses, compiled + 1);
+    #[cfg(feature = "spirv-route")]
+    assert_every_kernel_took_spirv(&device);
 }
 
 #[test]
@@ -1103,4 +1105,22 @@ fn broadcast_of_f32_with_a_computed_lane_matches_the_host_model() {
             );
         }
     }
+}
+
+/// With the `spirv-route` feature on, every kernel this device built took the SPIR-V route (review S1 of m9.rt2): a
+/// silent fallback to WGSL would pass every value check above. A software adapter may take either route.
+#[cfg(feature = "spirv-route")]
+fn assert_every_kernel_took_spirv(device: &HeadlessDevice) {
+    let events = device.route_events();
+    assert!(!events.is_empty(), "no route event was recorded");
+    if device.adapter_info().device_type == wgpu::DeviceType::Cpu {
+        return;
+    }
+    assert!(
+        events
+            .iter()
+            .all(|event| event.route == gust_wgpu::Route::Spirv),
+        "{events:?}"
+    );
+    println!("route: {} kernel(s), all SPIR-V", events.len());
 }

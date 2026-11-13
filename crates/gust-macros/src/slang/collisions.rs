@@ -213,7 +213,7 @@ pub const COLLISIONS: &[Collision] = &[
 ];
 
 /// The interfaces the standard module of the pinned slangc declares (slice m9.g1), read from the interface declarations
-/// embedded in `bin/slang-compiler.dll` of slangc 2026.21 (`grep -a -o -E "interface +(I[A-Z][A-Za-z0-9]+|__[A-Za-z0-9_]+)"`;
+/// embedded in `bin/slang-compiler.dll` of slangc 2026.21 (the same 47 names in 2026.22, m9.p) (`grep -a -o -E "interface +(I[A-Z][A-Za-z0-9]+|__[A-Za-z0-9_]+)"`;
 /// `IFoo` is a doc comment's example and is left out). A user `trait IFloat` becomes `interface IFloat` next to the
 /// standard module's own. Measured on 2026.21 (WGSL, slice m9.g1): a user interface of each of nine of these names
 /// (`IFloat`, `IInteger`, `IComparable`, `IArithmetic`, `ILogical`, `IDefaultInitializable`, `IFunc`, `IArray`,

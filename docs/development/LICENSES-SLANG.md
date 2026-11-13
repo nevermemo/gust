@@ -1,9 +1,80 @@
-# Slang bundle licences (pinned 2026.21)
+# Slang bundle licences (pinned 2026.22)
 
 This file records the audits of the Slang releases that GUST's pinned-Slang manager downloads (D46, M4 slices m4.f and
 m4.r). GUST does not redistribute the bundle: the manager fetches it from Slang's GitHub release into the user's cache,
 keeps the archive layout, and leaves the bundle's own `LICENSE`, `LICENSES/` and `third-party-notices/` beside the
 binaries. `cargo gust slang install` lists them when it finishes, and `cargo gust doctor` points to them.
+
+The 2026.22 archives were audited on 2026-11-12 (slice m9.p, round 2; every date in this file is UTC), each against the
+2026.21 archive of the same platform, by the method of the 2026.21 audit below. Every archive was downloaded from the
+official release `v2026.22` of `shader-slang/slang` (the 2026.21 archives again, for the comparison) and its SHA-256 was
+compared with the table in `crates/cargo-gust/src/slang.rs` (the 2026.21 ones with the table below) before it was
+extracted or read; all six matched. What was run: file listings of all three archives of each version and their
+differences; byte comparisons of `LICENSE`, `README.md`, `LICENSES/`, `third-party-notices/` and `share/slang/agent-skills/`
+between the two versions on each platform; a string scan for "GNU General Public" and "GNU Lesser" of every regular
+file in `bin/` and `lib/` of the three 2026.22 archives (Windows 56 files, Linux 57, macOS 65; no hit in any, the
+per-file counts are in `gpl-scan.txt`); and the `mi_malloc` counts of the compiler library.
+The Linux and macOS archives were extracted on Windows, which could not create the two `.so` symlinks of the Linux archives
+(`libslang-compiler.so` and `libslang-rt.so`); every regular file was extracted and the listings come from the archives themselves. Nothing
+from any archive was run in this audit. Rule (D46): permissive licences are accepted with their notices kept; a
+copyleft or non-commercial component stops the download path for that platform. The evidence (digests, listings,
+listing differences, text comparison, scan output, `mimalloc-counts.txt`) is saved as text under
+`plans/m9/probe/m9p-lic/` of the project's working area (outside the repository); the downloads are under
+`run/spikes/m9p-lic/`.
+
+| Archive | SHA-256 | Verdict |
+| --- | --- | --- |
+| `slang-2026.22-windows-x86_64.zip` | `dd0c4a86bd44cdb7e9cf712af0c8ebf2fff1bba19fa5e3c128ff87384e8ff17b` | accept |
+| `slang-2026.22-linux-x86_64.tar.gz` | `a877b75c6ec515f5d8bf66ea4bae4f0a5ba85050b9540c2046670285808347e6` | accept |
+| `slang-2026.22-macos-aarch64.tar.gz` | `885b5bd9a79a1ae81fdb92212f5f7c785001f870d45c39f9bb5df01339db3fea` | accept |
+
+## What changed from 2026.21 to 2026.22
+
+- `LICENSE`, `README.md`, every text in `LICENSES/` (the same seven) and every file in `third-party-notices/` (the same
+  six, and `mimalloc-LICENSE` on Windows only) are byte for byte the 2026.21 ones, on all three platforms. The
+  listings of `LICENSE`, `LICENSES/` and `third-party-notices/` are identical.
+- `share/slang/agent-skills/` has the same files; its `PROVENANCE.json` differs only in `slangVersion`.
+- The archive listings grow by 146, 146 and 147 lines (Windows 5073 to 5219, Linux 5074 to 5220, macOS 5082 to 5229).
+  The additions outside documentation are ten entries of a new `slang/raytracing/` directory of Slang's standard
+  module (a directory and nine files: `contexts`, `descriptor`, `portable`, `program-schema`, `ray-types`,
+  `stage-contracts`, `stage-inputs` and `trace` as `.slang`, plus `portable.slang-module`), in `bin/` on Windows and in
+  `lib/` on Linux and macOS (macOS also lists an AppleDouble `._portable.slang-module`). They are Slang's own source and
+  compiled module, shipped with the compiler and covered by its `LICENSE`; the files carry no separate licence text.
+  The rest of the differences are under `share/doc/`, mostly documentation examples in
+  `share/doc/slang/generated/tests/` (the added include `.yaml` finding notes). Counted over the version-normalised
+  difference of the complete listings, 155 entries are added and 9 removed on Windows and on Linux, and 156 added and
+  9 removed on macOS (the one extra is the `._portable.slang-module` file); 145 of the added and all 9 removed are under
+  `share/doc/`. Nothing outside `share/doc/` was removed, and no executable or library was added (evidence:
+  `listing-diff-*.txt`, `listing-diff-counts.txt`).
+- Two of the added documentation examples have `optix` in their names
+  (`optix-report-intersection-cuda-emit.slang`, `optix-hit-attribute-too-large-rejected.slang`); the Windows listing
+  has 14 such names against 12. They are Slang test sources; no OptiX SDK and no `optix.h` is in any listing.
+- `mi_malloc` strings, counted the same way (`grep -a -o mi_malloc`): Windows `slang-compiler.dll` 14 in 2026.21 and 14
+  in 2026.22 (12 lines both), `mi_decl_export` 163 and 163; Linux `libslang-compiler.so` 2 and 2; macOS
+  `libslang-compiler.dylib` 2 and 2, with six `SLANG_ENABLE_MIMALLOC` occurrences each on Linux and macOS in 2026.22. Nothing
+  changed on any platform, so the earlier reading stands (inferred from strings only), and so does the open item of
+  the 2026.21 audit: no one has checked the Linux and macOS libraries for linked mimalloc symbols (`nm`, `objdump`).
+- Executables and libraries by platform: Windows has 11 (`slang.exe`, `slangc.exe`, `slangd.exe`, `slangi.exe` and
+  seven `.dll` files) in `bin/`. Linux and macOS have the four executables `bin/slang`, `bin/slangc`, `bin/slangd` and
+  `bin/slangi` and their shared libraries in `lib/`. A first, narrow scan selected files by name or mode and, because
+  extraction on Windows drops the mode bits, missed those four executables on Linux and macOS (it listed 7 and 7). The
+  scan that the verdict rests on is not selective: it covers every regular file of `bin/` and `lib/` (56, 57 and 65
+  files), which includes them, and `gpl-scan.txt` records each file's hit count (0 in every file) and the totals per
+  archive (files scanned, files with hits: 0).
+
+## The named checks (2026.22)
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| No GPL-2.0 lz4 code | pass | `third-party-notices/lz4-LICENSE` is byte for byte the 2026.21 one. No "GNU General Public" or "GNU Lesser" in any file of `bin/` or `lib/` on any platform. |
+| cmark's CC-BY-SA part | pass | `cmark-COPYING` is unchanged; no `spec.txt` and no cmark source tree is in any listing. |
+| glslang's GPL-3.0 text | pass | `glslang-LICENSE.txt` is unchanged (the GPL-3.0 text with the bison exception beside BSD, MIT and Apache-2.0 texts). |
+| optix-dev absent | pass (listing) | No OptiX SDK and no `optix.h` in any 2026.22 listing; the 14 names that contain "optix" are documentation test sources. From the listings, not from running anything. |
+
+Verdict: all three 2026.22 archives are accepted under D46 (permissive licences with notices, no copyleft or
+non-commercial component added, and no licence text or notice changed).
+
+## Earlier pin: 2026.21 (audited 2026-11-07, slice m8.p)
 
 The 2026.21 archives were audited on 2026-11-07 (slice m8.p; every date in this file is UTC), each against the 2026.20
 archive of the same platform, and every archive was checked against its published SHA-256 before it was extracted or

@@ -214,9 +214,9 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   E0277) and has `CpuDevice` calls instead, and flipping the route back reverses both. Only the calls of a generated
   element-wise map (`name::map`) are the same on either target. No 0.1.0 kernel is routed. A device handle that
   follows the route is not built in 0.2.0.
-- The pinned Slang is 2026.21 (`cargo gust slang install` fetches it); the 0.1.0 line stays on 2026.20. Artifacts
+- The pinned Slang is 2026.22 (`cargo gust slang install` fetches it); the 0.1.0 line stays on 2026.20. Artifacts
   built with 2026.20 fail `cargo gust check` ("the manifest was built with Slang `2026.20` but the installed helper
-  reports `2026.21`"); run `cargo gust build` again (or pass `--allow-slang-mismatch`). The emitted WGSL of one
+  reports `2026.22`"); run `cargo gust build` again (or pass `--allow-slang-mismatch`). The emitted WGSL of one
   kernel kind changes visibly: a compare-exchange now retries after a spurious failure (Slang #13918, read from the
   emitted text). That stays inside the weak contract of `atomic_compare_exchange`, but it is a change in GPU behaviour.
 

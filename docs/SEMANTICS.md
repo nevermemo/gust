@@ -24,7 +24,7 @@ describes the intended behaviour and is not evidence.
 - **GPU target (exists).** A `#[gpu]` module is translated directly from the Rust syntax tree to Slang, `slangc`
   compiles the Slang to WGSL, and wgpu runs the WGSL. The measured adapter is NVIDIA GeForce RTX 5090 on Vulkan,
   driver 610.88, slangc 2026.20, 2026-11-01 (the semantics were first measured on slangc 2026.13.1, 2026-10-24, and the
-  Gpu suite passed again on 2026.20 and on the pinned 2026.21, 2026-11-07). The WGSL specification is the portable
+  Gpu suite passed again on 2026.20, on 2026.21 (2026-11-07) and on the pinned 2026.22, 2026-11-12). The WGSL specification is the portable
   reference for this path. The contract does not extend to Slang's other targets: Slang itself leaves, for example,
   integer division by zero undefined. Every `/`, `%`, `/=` and `%=` whose divisor is not a literal lowers to the
   overloaded helper `__gust_div` or `__gust_rem` (`__gust_div_assign` and `__gust_rem_assign` with the place `inout`, so
@@ -1012,7 +1012,8 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   the new value or stays unchanged (`{7, 11}` for 7 to 11, `{-5, 11}` for -5 to 11); on the twin it is exact (11).
   The failure case (compare against a value the cell does not hold) is exact on both, because a spurious failure
   only adds failures. The returned flag is never part of the contract: the GPU form is statement-only.
-  On the pinned Slang 2026.21 the emitted WGSL retries after a spurious failure (Slang #13918: a retry loop around
+  On the pinned Slang 2026.22, as on 2026.21 before it (the `atomics` golden is among the 131 golden entries whose WGSL
+  was identical on the two, spike SL22), the emitted WGSL retries after a spurious failure (Slang #13918: a retry loop around
   `atomicCompareExchangeWeak`, read from the emitted text; not re-measured on a GPU), so the spurious failure that the
   contract allows is not expected there. The contract stays weak because it covers other pins and targets; the
   assertions are not tightened.
@@ -1032,7 +1033,7 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   -5 to 11) are asserted as the set `{7, 11}` and `{-5, 11}` on the GPU, because WGSL allows a spurious failure
   there too (17.8.5); on the twin they are asserted at 11, by definition. The RTX 5090 took the exchange branch in
   every measured run, so the spurious branch is exercised only by the GPU-free test of the two check functions that
-  the GPU tests call, never by an adapter. On the 2026.21 pin the emitted WGSL is a retry loop (see the bullet above),
+  the GPU tests call, never by an adapter. On the 2026.22 pin (and on 2026.21 before it) the emitted WGSL is a retry loop (see the bullet above),
   so the set is probably wider than that pin's WGSL produces; it stays because the contract is weak.
   Because the unchanged value is accepted in every compare-exchange case, a GPU compare-exchange that did nothing
   would pass all of the GPU assertions. The twin assertion catches a no-op twin; the failure case (exact, at 7, on
@@ -1069,7 +1070,7 @@ difference, and the proven label needs the two targets to agree.
 | KM-06 | `f32 as u32` of a negative, too large or NaN value | Saturates: negative and NaN give 0, `1.0e10` and `2^32` give `u32::MAX`, in every profile. | Finite values (WGSL section 15.7.6, as KM-05): negatives such as `-1.0`, `-3.99` and `-1.0e10` give 0; `1.0e10` and `2^32` give 4294967040 (`0xffffff00`), not `u32::MAX`. NaN: indeterminate; observed 0. | spec-allowed (finite), unspecified (NaN), measured |
 | KM-07 | NaN and infinity through arithmetic and comparison | IEEE 754: NaN propagates, `NaN != NaN` is true, ordered comparisons with NaN are false, `1.0 / 0.0` is `+inf`. | Unspecified (an operation that would produce NaN or infinity may give an indeterminate value; comparisons with NaN are not guaranteed to be unordered). Observed: NaN and infinity propagate and compare as in IEEE for every case except `NaN != NaN`, which is false. The sign and payload of a NaN are not preserved either: the GPU produced `0x7fffffff` in every case, Rust produces `0x7fc00000` or `0xffc00000`. Division by a divisor above 2^126 is also outside WGSL's division accuracy range: `3.0e38 / 3.0e38` gave 0 on the GPU, Rust gives 1. | unspecified, measured |
 | KM-08 | Denormal (subnormal) `f32` operands and results | Kept: `1.0e-40 * 1.0` is `1.0e-40`, `1.0e-40 == 0.0` is false. | Unspecified (flushing to zero is allowed). Observed: operands and results flushed to zero (`1.0e-40 * 1.0`, `+ 0.0`, `* 2.0`, `/ 2.0` and `4.0e-38 / 4.0` give 0), and `1.0e-40 == 0.0` is true. | unspecified, measured |
-| KM-09 | Contended `atomic_exchange` and `atomic_compare_exchange` (257 invocations, one cell), and the uncontended `atomic_compare_exchange` (one invocation) | Sequential, ascending invocation id: the exchange ends at 256; the compare-exchange from 999 to `id + 1` ends at 1. | Set-valued: the exchange ends at some id in 0 to 256, the compare-exchange at some value in 1 to 257, or at 999 (unchanged) because the weak compare-exchange may fail spuriously (WGSL section 17.8.5); the test accepts all of that set. The uncontended case (one invocation, `compare-exchange(cell, 999, id + 1)`) is set-valued too: the cell ends at 1 or stays 999 (WGSL section 17.8.5, D47), and the Rust and twin columns end at 1. On the 2026.21 pin the emitted WGSL retries after a spurious failure (a retry loop around `atomicCompareExchangeWeak`, Slang #13918, read from the text), so the spurious failure is not expected there; the contract stays weak because it covers other pins and targets, and the tests accept the same set. Observed on the 2026.20 pin (before #13918; not re-measured on 2026.21), over 32 dispatches per run, three runs: 1 to 10 distinct final values per run, and, in the contended cases, never the sequential result (the exchange ended between 1 and 251, the compare-exchange between 7 and 137). The uncontended case ended at 1, the sequential result, in every dispatch, in both overflow modes. | spec-allowed (the set), measured |
+| KM-09 | Contended `atomic_exchange` and `atomic_compare_exchange` (257 invocations, one cell), and the uncontended `atomic_compare_exchange` (one invocation) | Sequential, ascending invocation id: the exchange ends at 256; the compare-exchange from 999 to `id + 1` ends at 1. | Set-valued: the exchange ends at some id in 0 to 256, the compare-exchange at some value in 1 to 257, or at 999 (unchanged) because the weak compare-exchange may fail spuriously (WGSL section 17.8.5); the test accepts all of that set. The uncontended case (one invocation, `compare-exchange(cell, 999, id + 1)`) is set-valued too: the cell ends at 1 or stays 999 (WGSL section 17.8.5, D47), and the Rust and twin columns end at 1. On the 2026.22 pin, as on 2026.21 before it (131 of 131 golden WGSL entries identical, spike SL22), the emitted WGSL retries after a spurious failure (a retry loop around `atomicCompareExchangeWeak`, Slang #13918, read from the text), so the spurious failure is not expected there; the contract stays weak because it covers other pins and targets, and the tests accept the same set. Observed on the 2026.20 pin (before #13918; not re-measured on 2026.21), over 32 dispatches per run, three runs: 1 to 10 distinct final values per run, and, in the contended cases, never the sequential result (the exchange ended between 1 and 251, the compare-exchange between 7 and 137). The uncontended case ended at 1, the sequential result, in every dispatch, in both overflow modes. | spec-allowed (the set), measured |
 | KM-10 | Overflow of the plain operators `+`, `-`, `*` and unary `-` on `u32` and `i32`. The methods `wrapping_add`, `wrapping_sub`, `wrapping_mul` and `wrapping_neg` are the way to ask for the wrapped result (slice m7.w): they are `DOMAIN` controls in the ledger test, not part of this row | Checks on: panics ("attempt to add with overflow" and so on). Checks off: wraps modulo 2^32. The `wrapping_*` methods wrap in every profile. | Wraps modulo 2^32 (WGSL section 6.2.3): `u32::MAX + 1 == 0`, `i32::MAX + 1 == i32::MIN`, `0u32 - 1 == u32::MAX`, `-i32::MIN == i32::MIN`. The `wrapping_*` methods lower to the same plain operators (`wrapping_neg` is `0 - a`) and give these values. | spec-allowed, measured |
 | KM-11 | Out-of-bounds index equal to the buffer length | Panics "index out of bounds" in every profile. | Unspecified (a dynamic error, WGSL section 6.5.7). Observed with index 4: a load from a 4-element buffer returned 0, and a store into a 4-element buffer was dropped (the buffer was unchanged); the store is measured alone, with a longer `source` so that the kernel's own load is in bounds, and the twin's store row panics at the store because its load is in bounds. | unspecified, measured |
 | KM-12 | A texel address outside a texture: `load` or `store` at `(width, 0)` or `(0, height)` of a 4 x 2 `r32uint` storage texture (slice mx.t4) | Panics "index out of bounds" in every profile: the twin says "index out of bounds: the texel is (4, 0) but the texture is 4x2" (a coordinate past the width panics although the flat index exists), and a `Vec<Vec<u32>>` indexed the same way panics too. | Unspecified (WGSL `textureLoad` and `textureStore` with an out-of-range coordinate). Observed at both addresses: the load returned 0 and the store changed no texel. One format, one adapter. | unspecified, measured |
@@ -1331,7 +1332,7 @@ and the macro has no GUST code for it. The value form does not change that. Put 
 another integer type, and a guard are refused (`GUST-E0521`, `GUST-E0418`). An enum `match` takes `E::A` of an enum of the
 module and does not mix with literals.
 
-**Order of evaluation** (measured on Slang 2026.21, WGSL and SPIR-V; the GPU test `m9_match_value` runs the cases
+**Order of evaluation** (measured on Slang 2026.21, WGSL and SPIR-V, and re-run on the pinned 2026.22 by the GPU test, m9.p; the GPU test `m9_match_value` runs the cases
 against hand-written values). The scrutinee is read once, before the arms. The operands of an arm are evaluated left to
 right as in Rust: `match c.n { 5 => c.n + c.tick(), .. }` reads `c.n` before `tick` runs, `c.tick() + c.n` after it, two
 calls in one arm run in order, and a struct-literal arm assigns its fields in the order written. A `&mut self` method
@@ -1371,7 +1372,7 @@ infers the types, so the macro needs none). A destructuring is one temporary, th
 `var __gust_tuple_<n> = f(..); var x = __gust_tuple_<n>._0; var y = __gust_tuple_<n>._1;`; with an annotation the
 temporary and the locals carry the types.
 
-**Order of evaluation** (measured on Slang 2026.21, WGSL and SPIR-V; the GPU test `m9_tuples` runs the cases against
+**Order of evaluation** (measured on Slang 2026.21, WGSL and SPIR-V, and re-run on the pinned 2026.22 by the GPU test, m9.p; the GPU test `m9_tuples` runs the cases against
 hand-written values). The elements of a literal run left to right, each completely before the next, and a struct element
 is copied at its place in the order: `(c.n, c.tick())` reads `c.n` before `tick` runs, `(c.tick(), c.n)` after it,
 `(c, c.tick())` copies `c` before the call and `(c.tick(), c)` after it. A destructuring of a literal of two calls runs
@@ -1428,7 +1429,7 @@ evaluates its operand once into a temporary, `T __gust_rep_<k> = e;`, and then `
 declares the array and fills it with a loop (`__gust_fill_<k>`). A repeat that is returned with `N > 16` is `GUST-E0811`
 (bind it to a local first). The names with the `__gust_` prefix are reserved (`GUST-E0901`).
 
-**Order of evaluation** (Rust measured with rustc, Slang 2026.21 read on the WGSL target; the GPU test `m9_arrays` runs
+**Order of evaluation** (Rust measured with rustc, Slang 2026.21 read on the WGSL target, and re-read on the pinned 2026.22 with the same result, m9.p; the GPU test `m9_arrays` runs
 every accepted case against hand-written values). Accepted because they match: the elements of a literal left to right
 (`[s.bump(), s.bump(), s.bump()]` is `[1, 2, 3]`), an array argument built from calls, two reads of one table with
 indexes that call, an index on a call result (`make3(s.bump())[1]`), a method on an element whose index calls another
@@ -1519,7 +1520,7 @@ a name in it). A closure name is unique in its function and differs from every h
 binding (`GUST-E0328`); the same name in two functions is fine, and a Slang keyword is fine because the closure's own
 name is never emitted.
 
-**Order of evaluation.** Measured with rustc and with slangc 2026.21 (the pinned one), on the WGSL and the SPIR-V target:
+**Order of evaluation.** Measured with rustc and with slangc 2026.21 (then the pinned one; the GPU test `m9_closures` was re-run on the pinned 2026.22, m9.p, with the same values), on the WGSL and the SPIR-V target:
 the arguments of a call of a hoisted function with by-value parameters run left to right, as in Rust. `pair(c.tick(),
 c.tick())`, `pair(c.n, c.tick())`, `pair(c.tick(), c.n)` and the nested `pair(pair(c.tick(), c.tick()), c.tick())` give
 what Rust gives (the GPU test `m9_closures` pins 1002, 1, 1001 and 1002003). A closure cannot mutate anything outside
@@ -1567,7 +1568,7 @@ closures. Everything downstream sees a method call, so `GUST-E0333` (a `&mut sel
 workgroup places), the order rules of `GUST-E0421` and the barrier, subgroup and atomic refusals of D154 apply to a trait
 method as to an inherent one. A trait method is validated as a helper: it may call helpers and inherent methods.
 
-**Order of evaluation.** Measured with rustc (through the CPU twin) and with slangc 2026.21 (the pinned one) on the RTX 5090:
+**Order of evaluation.** Measured with rustc (through the CPU twin) and with slangc 2026.21 (then the pinned one; the GPU test `m9_traits` was re-run on the pinned 2026.22, m9.p, with the same values) on the RTX 5090:
 the arguments of a call run left to right, and a by-value `self` receiver is copied before the arguments run. For a counter
 `d` with `d.n = x`: `d.plus(d.bump())` with `plus(self, k) = self.n * 100 + k` is `101x + 1` (the receiver is read before
 `bump`), by method syntax and by `Plus::plus(d, d.bump())`. For a trait method with two arguments,

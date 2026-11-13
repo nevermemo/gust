@@ -7,7 +7,7 @@
         {
           "file": "52e85c5f03f72272.wgsl",
           "format": "wgsl",
-          "reflection_sha256": "bc11c6e6d5541033629f30c043d59053f5bb0a095a360d3cb0cf77edc9456f95",
+          "reflection_sha256": "ab2aae072f96b9055a9ebeafc29510bd893d6dc596e5739352cc6bf1c3163367",
           "sha256": "6b83da9c0c13d3d1b156951e7baeb6b5a832a205ad4a6f1b63719767c125a614"
         }
       ],
@@ -17,5 +17,5 @@
     }
   ],
   "schema": 1,
-  "slang": "2026.21"
+  "slang": "2026.22"
 }

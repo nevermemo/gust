@@ -33,8 +33,8 @@ fn join(dirs: &[&Path]) -> OsString {
 }
 
 /// A `git describe` tag that no Slang prints. The tests list it as a validated build to exercise the mechanism; the
-/// shipped list is empty (2026.21 was validated with the release archive), so no real tag is ever listed here.
-const SYNTHETIC_BUILD: &str = "2026.21-1-g0a1b2c3d4";
+/// shipped list is empty (2026.22 was validated with the release archive), so no real tag is ever listed here.
+const SYNTHETIC_BUILD: &str = "2026.22-1-g0a1b2c3d4";
 const SYNTHETIC_VALIDATED: &[&str] = &[SYNTHETIC_BUILD];
 
 fn locate_synthetic(env: &Env, allow_mismatch: bool) -> Result<Located, String> {
@@ -43,7 +43,7 @@ fn locate_synthetic(env: &Env, allow_mismatch: bool) -> Result<Located, String> 
 
 #[test]
 fn the_asset_table_has_the_three_pinned_archives_with_their_digests() {
-    assert_eq!(SLANG_VERSION, "2026.21");
+    assert_eq!(SLANG_VERSION, "2026.22");
     type Row = (&'static str, &'static str, &'static str, &'static str, u64);
     let table: Vec<Row> = ASSETS
         .iter()
@@ -55,23 +55,23 @@ fn the_asset_table_has_the_three_pinned_archives_with_their_digests() {
             (
                 "windows",
                 "x86_64",
-                "slang-2026.21-windows-x86_64.zip",
-                "4b6f509e73397175ed36a341beb7ad15f4fff5feaf5f6d95fecf896c0d86b8de",
-                63_779_512
+                "slang-2026.22-windows-x86_64.zip",
+                "dd0c4a86bd44cdb7e9cf712af0c8ebf2fff1bba19fa5e3c128ff87384e8ff17b",
+                64_105_029
             ),
             (
                 "linux",
                 "x86_64",
-                "slang-2026.21-linux-x86_64.tar.gz",
-                "691f9341e5bec099eec97ee30a83bcbef541cee7fe3b4de68a821d42f9506c2f",
-                83_483_073
+                "slang-2026.22-linux-x86_64.tar.gz",
+                "a877b75c6ec515f5d8bf66ea4bae4f0a5ba85050b9540c2046670285808347e6",
+                83_714_452
             ),
             (
                 "macos",
                 "aarch64",
-                "slang-2026.21-macos-aarch64.tar.gz",
-                "c3d3c959ba3e0c8fdb6c2a5cf6a471ed097ed19c41820af9fb21625779794fb2",
-                62_862_834
+                "slang-2026.22-macos-aarch64.tar.gz",
+                "885b5bd9a79a1ae81fdb92212f5f7c785001f870d45c39f9bb5df01339db3fea",
+                63_098_220
             ),
         ]
     );
@@ -93,20 +93,20 @@ fn the_asset_table_has_the_three_pinned_archives_with_their_digests() {
     }
     assert_eq!(
         asset_for(SLANG_VERSION, "linux", "x86_64").map(|asset| asset.file),
-        Some("slang-2026.21-linux-x86_64.tar.gz")
+        Some("slang-2026.22-linux-x86_64.tar.gz")
     );
     assert_eq!(asset_for(SLANG_VERSION, "linux", "aarch64"), None);
     assert_eq!(asset_for("2026.19", "linux", "x86_64"), None);
     assert_eq!(asset_for(SLANG_VERSION, "freebsd", "x86_64"), None);
     assert_eq!(
         download_url(asset_for(SLANG_VERSION, "windows", "x86_64").unwrap()),
-        "https://github.com/shader-slang/slang/releases/download/v2026.21/slang-2026.21-windows-x86_64.zip"
+        "https://github.com/shader-slang/slang/releases/download/v2026.22/slang-2026.22-windows-x86_64.zip"
     );
 }
 
 #[test]
 fn the_shipped_list_of_validated_builds_is_empty() {
-    // 2026.21 was validated with the release archive, which prints the bare pin; no source build is listed. The check
+    // 2026.22 was validated with the release archive, which prints the bare pin; no source build is listed. The check
     // below is an identity check (the pin matches itself); the asset table above holds that the release is the pin.
     assert!(VALIDATED_BUILDS.is_empty(), "{VALIDATED_BUILDS:?}");
     assert!(matches_pin(SLANG_VERSION, VALIDATED_BUILDS));
@@ -114,7 +114,7 @@ fn the_shipped_list_of_validated_builds_is_empty() {
     // the 2026.20 source build that an earlier pin listed.
     for reported in [
         SYNTHETIC_BUILD,
-        "2026.21-1-gdeadbee",
+        "2026.22-1-gdeadbee",
         "2026.13.1",
         "2026.13.1-1-g84792eb15",
     ] {
@@ -133,26 +133,26 @@ fn the_pin_matches_exactly_or_a_listed_validated_build_and_nothing_else() {
     for reported in [
         "",
         "2026.2",
-        "2026.210",
-        "2026.22",
-        "2026.21-",
-        "2026.21-rc1",
-        "2026.21-1",
-        "2026.21-g0a1b2c3d4",
-        "2026.21--1-g0a1b2c3d4",
-        "2026.21-x-g0a1b2c3d4",
-        "2026.21-1-g0a1b2c3d",
-        "2026.21-1-gzzzzzzzzz",
-        "2026.21-1-g0a1b2c3d4-dirty",
+        "2026.220",
+        "2026.23",
+        "2026.22-",
+        "2026.22-rc1",
+        "2026.22-1",
+        "2026.22-g0a1b2c3d4",
+        "2026.22--1-g0a1b2c3d4",
+        "2026.22-x-g0a1b2c3d4",
+        "2026.22-1-g0a1b2c3d",
+        "2026.22-1-gzzzzzzzzz",
+        "2026.22-1-g0a1b2c3d4-dirty",
         // Well-formed `git describe` tags of builds nobody validated.
-        "2026.21-2-gdeadbee",
-        "2026.21-12-gabcdef0",
-        "2026.21-400-gabc1234",
-        "2026.21-1-g0a1b2c3d5",
-        "2026.21 ",
-        "v2026.21",
+        "2026.22-2-gdeadbee",
+        "2026.22-12-gabcdef0",
+        "2026.22-400-gabc1234",
+        "2026.22-1-g0a1b2c3d5",
+        "2026.22 ",
+        "v2026.22",
         "2026.19-1-g0a1b2c3d4",
-        "12026.21",
+        "12026.22",
     ] {
         assert!(!matches_pin(reported, SYNTHETIC_VALIDATED), "{reported:?}");
     }
@@ -279,14 +279,14 @@ fn a_located_slang_that_is_not_exactly_the_pin_gets_a_one_line_note() {
     let validated = version_note(&located(SYNTHETIC_BUILD, true)).unwrap();
     assert!(
         validated.contains(&format!("`{SYNTHETIC_BUILD}`"))
-            && validated.contains("validated build of the pinned 2026.21")
+            && validated.contains("validated build of the pinned 2026.22")
             && !validated.contains('\n'),
         "{validated}"
     );
     let other = version_note(&located("2025.1.0", false)).unwrap();
     assert!(
         other.contains("`2025.1.0`")
-            && other.contains("not the pinned 2026.21")
+            && other.contains("not the pinned 2026.22")
             && other.contains("--allow-slang-mismatch")
             && !other.contains('\n'),
         "{other}"
@@ -299,7 +299,7 @@ fn an_unlisted_build_of_the_pinned_version_is_refused_everywhere() {
     let home = scratch.0.join("home");
     let on_path = scratch.0.join("path");
     // A tag that looks like a `git describe` build but was not validated.
-    let unlisted = "2026.21-2-gdeadbee";
+    let unlisted = "2026.22-2-gdeadbee";
     fake_slangc(&on_path, unlisted);
     let env = env_with(
         None,
@@ -352,7 +352,7 @@ fn a_mismatched_slangc_on_path_is_refused_with_the_install_command_unless_allowe
     assert!(error.contains("cargo gust slang install"), "{error}");
     assert!(error.contains("--allow-slang-mismatch"), "{error}");
     assert!(
-        error.contains("https://github.com/shader-slang/slang/releases/download/v2026.21/"),
+        error.contains("https://github.com/shader-slang/slang/releases/download/v2026.22/"),
         "the manual download URL: {error}"
     );
     // With the flag the first slangc on PATH is used, and it is marked as not the pin.
@@ -424,7 +424,7 @@ fn notice_files_are_the_licence_files_and_directories_beside_the_binaries() {
     ] {
         fs::write(dir.join(name), "x").unwrap();
     }
-    // The two directories of a 2026.21 bundle are listed as directories; any other directory is not, whatever its name.
+    // The two directories of a 2026.22 bundle are listed as directories; any other directory is not, whatever its name.
     fs::create_dir(dir.join("LICENSES")).unwrap();
     fs::create_dir(dir.join("third-party-notices")).unwrap();
     fs::create_dir(dir.join("licenses-extra")).unwrap();
@@ -508,7 +508,7 @@ impl Fetch for Fake {
     fn extract(&self, _archive: &Path, dest: &Path) -> Result<(), String> {
         self.extracts.set(self.extracts.get() + 1);
         fs::write(dest.join("LICENSE"), "Apache-2.0 WITH LLVM-exception").unwrap();
-        // The two notice directories of a 2026.21 bundle.
+        // The two notice directories of a 2026.22 bundle.
         fs::create_dir(dest.join("LICENSES")).unwrap();
         fs::write(dest.join("LICENSES").join("MIT.txt"), "MIT").unwrap();
         fs::create_dir(dest.join("third-party-notices")).unwrap();
@@ -569,7 +569,7 @@ fn install_downloads_verifies_extracts_and_renames_keeping_the_notices_beside_th
     assert_eq!(installed, Installed::Fresh(dir.clone()));
     assert_eq!(
         tools.seen_urls.borrow().as_slice(),
-        ["https://github.com/shader-slang/slang/releases/download/v2026.21/slang-test.tar.gz"]
+        ["https://github.com/shader-slang/slang/releases/download/v2026.22/slang-test.tar.gz"]
     );
     assert!(slangc_in(&dir).is_file());
     assert_eq!(

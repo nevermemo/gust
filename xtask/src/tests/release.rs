@@ -7,11 +7,12 @@ use std::{
 };
 
 use super::{
-    DependencyKind, DocDebt, DocMessage, HELLO_DIR, HELLO_OUTPUT, Member, Options, PackageSpec,
-    RegistryCleanup, Run, WorkDir, caret_satisfied, clean_registry_src, consumer_lock_problems,
-    dep_info_entries, doc_messages, doc_problems, docsrs_request, dry_run_problems,
-    existing_crate_lines, finish_outcome, fixture_dependency_problems, has_nightly, helper_choice,
-    metadata_problems, package_allows, package_files, package_problems, parse_args, parse_metadata,
+    DependencyKind, DocDebt, DocMessage, HELLO_DIR, HELLO_OUTPUT, Member, NightlyVerdict, Options,
+    PackageSpec, RegistryCleanup, Run, WorkDir, caret_satisfied, clean_registry_src,
+    consumer_lock_problems, dep_info_entries, doc_messages, doc_problems, docsrs_request,
+    docsrs_runs, dry_run_problems, existing_crate_lines, finish_outcome,
+    fixture_dependency_problems, has_nightly, helper_choice, metadata_problems, nightly_failure,
+    nightly_verdict, package_allows, package_files, package_problems, parse_args, parse_metadata,
     patch_config_arguments, patched_manifest, r1_command, r8_command, readme_blocks,
     readme_problems, recipe_ran, registry_entries, registry_target, required_file_problems,
     section_value, size_problems, target_dep_info_entries, unused_library_patches, verify_problems,
@@ -176,7 +177,7 @@ const METADATA: &str = r#"{
         {"kind": ["lib"], "src_path": "C:\\work\\repo\\crates\\alpha\\src\\lib.rs"},
         {"kind": ["custom-build"], "src_path": "C:\\work\\repo\\crates\\alpha\\build.rs"}
       ],
-      "metadata": {"docs": {"rs": {"features": ["extra"], "rustdoc-args": ["--cfg", "docsrs"]}}}
+      "metadata": {"docs": {"rs": {"features": ["extra"], "rustdoc-args": ["--cfg", "docsrs"], "targets": ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]}}}
     },
     {
       "name": "tool", "version": "1.2.0", "publish": null,
@@ -216,6 +217,11 @@ fn members_are_read_from_cargo_metadata() {
     assert_eq!(alpha.entry, "src/lib.rs");
     assert_eq!(alpha.docs_features, strings(&["extra"]));
     assert_eq!(alpha.docs_rustdoc_args, strings(&["--cfg", "docsrs"]));
+    assert_eq!(
+        alpha.docs_targets,
+        strings(&["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"])
+    );
+    assert!(member(&members, "alpha-macros").docs_targets.is_empty());
     assert!(member(&members, "alpha-macros").has_library);
     let tool = member(&members, "tool");
     assert!(tool.has_binary && !tool.has_library);
@@ -446,6 +452,117 @@ fn a_nightly_toolchain_is_found_in_the_rustup_listing() {
         "stable-x86_64-pc-windows-msvc (default)\n1.90.0-x86_64-pc-windows-msvc\n"
     ));
     assert!(!has_nightly(""));
+}
+
+const WANTED: [&str; 2] = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"];
+const TOOLCHAINS: &str =
+    "stable-x86_64-pc-windows-msvc (default)\nnightly-x86_64-pc-windows-msvc\n";
+
+#[test]
+fn a_missing_nightly_is_a_verdict_whatever_targets_are_listed() {
+    let stable_only = "stable-x86_64-pc-windows-msvc (default)\n1.90.0-x86_64-pc-windows-msvc\n";
+    let everything = "x86_64-unknown-linux-gnu\nwasm32-unknown-unknown\n";
+    assert_eq!(
+        nightly_verdict(stable_only, everything, &strings(&WANTED)),
+        NightlyVerdict::NoNightly
+    );
+    assert_eq!(
+        nightly_verdict("", "", &[]),
+        NightlyVerdict::NoNightly,
+        "no wanted targets still needs the nightly"
+    );
+}
+
+#[test]
+fn missing_targets_are_named_in_the_order_the_metadata_names_them() {
+    let wanted = strings(&WANTED);
+    assert_eq!(
+        nightly_verdict(TOOLCHAINS, "x86_64-pc-windows-msvc\n", &wanted),
+        NightlyVerdict::MissingTargets(strings(&WANTED))
+    );
+    assert_eq!(
+        nightly_verdict(
+            TOOLCHAINS,
+            "x86_64-pc-windows-msvc\nx86_64-unknown-linux-gnu\r\n",
+            &wanted
+        ),
+        NightlyVerdict::MissingTargets(strings(&["wasm32-unknown-unknown"]))
+    );
+    // A target whose name only contains a wanted one is not that target.
+    assert_eq!(
+        nightly_verdict(
+            TOOLCHAINS,
+            "wasm32-unknown-unknown-extra\n",
+            &strings(&["wasm32-unknown-unknown"])
+        ),
+        NightlyVerdict::MissingTargets(strings(&["wasm32-unknown-unknown"]))
+    );
+}
+
+#[test]
+fn a_nightly_with_every_target_is_ready() {
+    assert_eq!(
+        nightly_verdict(
+            TOOLCHAINS,
+            "wasm32-unknown-unknown\nx86_64-pc-windows-msvc\nx86_64-unknown-linux-gnu\n",
+            &strings(&WANTED)
+        ),
+        NightlyVerdict::Ready
+    );
+    assert_eq!(nightly_verdict(TOOLCHAINS, "", &[]), NightlyVerdict::Ready);
+}
+
+#[test]
+fn the_failure_of_the_full_run_says_how_to_install_what_is_missing() {
+    assert_eq!(nightly_failure(&NightlyVerdict::Ready), None);
+    let none = nightly_failure(&NightlyVerdict::NoNightly).unwrap();
+    assert!(
+        none.contains("rustup toolchain install nightly --profile minimal"),
+        "{none}"
+    );
+    let one = nightly_failure(&NightlyVerdict::MissingTargets(strings(&[
+        "wasm32-unknown-unknown",
+    ])))
+    .unwrap();
+    assert!(
+        one.contains("target wasm32-unknown-unknown;")
+            && one.contains("rustup target add --toolchain nightly wasm32-unknown-unknown`"),
+        "{one}"
+    );
+    let two = nightly_failure(&NightlyVerdict::MissingTargets(strings(&WANTED))).unwrap();
+    assert!(
+        two.contains("targets x86_64-unknown-linux-gnu, wasm32-unknown-unknown;")
+            && two.contains(
+                "rustup target add --toolchain nightly x86_64-unknown-linux-gnu wasm32-unknown-unknown`"
+            ),
+        "{two}"
+    );
+}
+
+#[test]
+fn the_docsrs_runs_group_libraries_by_the_targets_they_name() {
+    let set = members();
+    let alpha = member(&set, "alpha");
+    let macros = member(&set, "alpha-macros");
+    let runs = docsrs_runs(&[alpha, macros]);
+    let shape: Vec<(Option<&str>, Vec<&str>)> = runs
+        .iter()
+        .map(|(target, group)| {
+            (
+                target.as_deref(),
+                group.iter().map(|member| member.name.as_str()).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            (Some("x86_64-unknown-linux-gnu"), vec!["alpha"]),
+            (Some("wasm32-unknown-unknown"), vec!["alpha"]),
+            (None, vec!["alpha-macros"]),
+        ]
+    );
+    assert!(docsrs_runs(&[]).is_empty());
 }
 
 // ---------------------------------------------------------------------------------------------------------------

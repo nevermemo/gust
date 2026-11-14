@@ -282,7 +282,10 @@ fn the_list_of_entries_is_the_members_of_the_gallery_workspace() {
         .collect::<Vec<_>>();
     entries.sort();
     assert_eq!(members, entries);
-    assert_eq!(entries, ["hello-gust"]);
+    assert_eq!(
+        entries,
+        ["hello-gust", "histogram", "particles", "saxpy-uniform"]
+    );
 }
 
 #[test]

@@ -47,10 +47,24 @@ pub(crate) struct Entry {
 
 /// Every entry of the gallery. A unit test and the check itself compare this list with the `members` of
 /// `gallery/Cargo.toml`, so an entry cannot be added to one and forgotten in the other.
-pub(crate) const ENTRIES: [Entry; 1] = [Entry {
-    dir: "hello-gust",
-    expected_line: "hello-gust: [11.0, 22.0, 33.0, 44.0]",
-}];
+pub(crate) const ENTRIES: [Entry; 4] = [
+    Entry {
+        dir: "hello-gust",
+        expected_line: "hello-gust: [11.0, 22.0, 33.0, 44.0]",
+    },
+    Entry {
+        dir: "saxpy-uniform",
+        expected_line: "saxpy-uniform: a=2 [12.0, 24.0, 36.0, 48.0], a=3 [13.0, 26.0, 39.0, 52.0]",
+    },
+    Entry {
+        dir: "histogram",
+        expected_line: "histogram: 100000 keys in 8 bins [35376, 14623, 11255, 9474, 8348, 7546, 6933, 6445]",
+    },
+    Entry {
+        dir: "particles",
+        expected_line: "particles: 1000 particles, 16 steps, 1129 bounces, energy 20272.84375",
+    },
+];
 
 /// A guide listing: a packaged file (path relative to the repository root) that must be byte-identical to the region
 /// `anchor` of the gallery file `source` (also relative to the root). The guide's chapters add theirs in later slices.

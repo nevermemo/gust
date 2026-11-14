@@ -7,7 +7,7 @@
 //! - The process table (pid, parent pid, name, CPU time, creation time) at the window's start and at its end.
 //!   `Win32_Process` carries the same fields; this reads them through ToolHelp and `GetProcessTimes`, which spawns no
 //!   helper process of its own (a `powershell` call would itself be a foreign process in the table it reports).
-//! - The harness's PID ancestry (harness, its shell-like parent chain, the children of that chain), computed from the
+//! - The harness's PID ancestry (harness, its shell-like parent chain, the harness's own descendants; the shell's other children are recorded apart as siblings), computed from the
 //!   start table and recorded; no process is dropped from the record, only flagged by the ancestry block.
 //!
 //! Nothing here judges anything: there are no thresholds and the `publishable` flag stays false (b1b sets thresholds
@@ -167,20 +167,25 @@ fn stem(name: &str) -> String {
 /// What the PID-ancestry rule excludes, from one process table.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ancestry {
-    /// The harness first, then its parents upward, while they are shell-like.
+    /// The harness first, then its parents upward, while they are shell-like. Excluded.
     pub chain: Vec<u32>,
-    /// Direct children of any chain member (the harness's own helper processes, the other children of the shell),
-    /// that are not themselves in the chain.
-    pub children: Vec<u32>,
+    /// Every descendant of the harness itself (its helper processes, their children). Excluded.
+    pub descendants: Vec<u32>,
+    /// Direct children of the other chain members that are not the harness or its descendants: a `cargo build`
+    /// started from the same terminal, a logger started from the same shell. These are **foreign** load until b1b
+    /// decides otherwise; they carry the mark `sibling_of_harness` in the sidecar.
+    pub siblings: Vec<u32>,
     /// The first ancestor that is not shell-like (not excluded), and why the walk ended.
     pub stopped_at: Option<u32>,
     pub reason: &'static str,
 }
 
-/// The harness (`own`), its parent chain up to the session shell, and their children.
+/// The harness (`own`), its parent chain up to the session shell, the harness's own descendants, and, apart, the
+/// shell's other children.
 ///
 /// A parent counts only if it exists in the table, is not already in the chain, and was not created after its child
-/// (a pid can be reused, so a parent pid can name an unrelated younger process).
+/// (a pid can be reused, so a parent pid can name an unrelated younger process). The guard needs both creation times;
+/// when either is unreadable it is skipped, so a reused pid can then be taken for a parent.
 pub fn ancestry(table: &[Proc], own: u32) -> Ancestry {
     let by_pid = table.iter().map(|p| (p.pid, p)).collect::<BTreeMap<_, _>>();
     let mut chain = vec![own];
@@ -210,27 +215,62 @@ pub fn ancestry(table: &[Proc], own: u32) -> Ancestry {
         }
     }
     let members = chain.iter().copied().collect::<BTreeSet<_>>();
-    let children = table
+    let child_of = |p: &Proc, parent: u32| {
+        p.ppid == parent
+            && p.pid != p.ppid
+            && by_pid
+                .get(&parent)
+                .is_some_and(|parent| match (parent.created, p.created) {
+                    (Some(parent_created), Some(created)) => parent_created <= created,
+                    _ => true,
+                })
+    };
+    // The harness's own descendants, breadth first; a pid is visited once, so a cycle ends.
+    let mut descendants = Vec::new();
+    let mut seen = members.clone();
+    let mut frontier = vec![own];
+    while let Some(parent) = frontier.pop() {
+        for p in table.iter().filter(|p| child_of(p, parent)) {
+            if seen.insert(p.pid) {
+                descendants.push(p.pid);
+                frontier.push(p.pid);
+            }
+        }
+    }
+    descendants.sort_unstable();
+    let siblings = table
         .iter()
-        .filter(|p| {
-            members.contains(&p.ppid)
-                && !members.contains(&p.pid)
-                && p.pid != p.ppid
-                && by_pid
-                    .get(&p.ppid)
-                    .is_some_and(|parent| match (parent.created, p.created) {
-                        (Some(parent_created), Some(created)) => parent_created <= created,
-                        _ => true,
-                    })
-        })
+        .filter(|p| !seen.contains(&p.pid) && members.iter().any(|member| child_of(p, *member)))
         .map(|p| p.pid)
         .collect();
     Ancestry {
         chain,
-        children,
+        descendants,
+        siblings,
         stopped_at,
         reason,
     }
+}
+
+/// A process table plus whether the walk of it ended early.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProcTable {
+    pub rows: Vec<Proc>,
+    /// `Some(reason)` when the walk ended on anything but "no more files": the table is then incomplete.
+    pub truncated: Option<String>,
+}
+
+/// `HRESULT_FROM_WIN32(ERROR_NO_MORE_FILES)`: the normal end of a ToolHelp walk.
+const NO_MORE_FILES_HRESULT: i32 = 0x8007_0012u32 as i32;
+
+/// The truncation note for a walk that ended with `hresult`, or `None` when it ended normally.
+pub fn walk_truncation(hresult: i32) -> Option<String> {
+    (hresult != NO_MORE_FILES_HRESULT).then(|| {
+        format!(
+            "process walk ended with HRESULT {:#010x}, not ERROR_NO_MORE_FILES",
+            hresult as u32
+        )
+    })
 }
 
 /// A DXGI adapter as the sampler sees it.
@@ -298,7 +338,8 @@ pub struct Reading {
     pub t_ms: f64,
     pub engines: Vec<(Engine, f64)>,
     zero: usize,
-    invalid: usize,
+    /// Instances whose value PDH did not call valid: (instance name, PDH status).
+    invalid: Vec<(String, u32)>,
     unparsed: Vec<String>,
 }
 
@@ -306,9 +347,11 @@ impl Reading {
     fn json(&self) -> Value {
         json!({
             "t_ms": self.t_ms,
-            "instances": self.engines.len() + self.zero + self.invalid + self.unparsed.len(),
+            "instances": self.engines.len() + self.zero + self.invalid.len() + self.unparsed.len(),
             "zero_instances": self.zero,
-            "invalid_instances": self.invalid,
+            "invalid_instances": self.invalid.len(),
+            // Kept by name with the PDH status that made them invalid, never only counted.
+            "invalid": self.invalid.iter().map(|(name, status)| json!({ "name": name, "pdh_status": status })).collect::<Vec<_>>(),
             "unparsed_instances": self.unparsed,
             // Only instances with a non-zero value are listed; the zero ones are counted above.
             "engines": self.engines.iter().map(|(e, pct)| json!([
@@ -318,17 +361,27 @@ impl Reading {
     }
 }
 
-fn reading_from(t_ms: f64, raw: Vec<(String, f64, bool)>) -> Reading {
+/// PDH statuses 0 (`PDH_CSTATUS_VALID_DATA`) and 1 (`PDH_CSTATUS_NEW_DATA`) carry a usable value.
+fn status_is_valid(status: u32) -> bool {
+    status <= 1
+}
+
+/// One reading from the raw PDH items (name, value, status). An empty read is an error, never "no instances": a
+/// machine with a GPU always has engine instances, so zero of them means the read failed quietly.
+fn reading_from(t_ms: f64, raw: Vec<(String, f64, u32)>) -> Result<Reading, String> {
+    if raw.is_empty() {
+        return Err("PDH returned no GPU-engine instances".to_owned());
+    }
     let mut reading = Reading {
         t_ms,
         engines: Vec::new(),
         zero: 0,
-        invalid: 0,
+        invalid: Vec::new(),
         unparsed: Vec::new(),
     };
-    for (name, value, valid) in raw {
-        if !valid {
-            reading.invalid += 1;
+    for (name, value, status) in raw {
+        if !status_is_valid(status) {
+            reading.invalid.push((name, status));
             continue;
         }
         match parse_instance(&name) {
@@ -337,12 +390,21 @@ fn reading_from(t_ms: f64, raw: Vec<(String, f64, bool)>) -> Reading {
             None => reading.unparsed.push(name),
         }
     }
-    reading
+    Ok(reading)
 }
 
-fn process_rows(table: &[Proc]) -> Value {
+/// The sidecar entry of one sample: the reading, or the error that stood in for it.
+fn sample_json(t_ms: f64, read: Result<Vec<(String, f64, u32)>, String>) -> Value {
+    match read.and_then(|raw| reading_from(t_ms, raw)) {
+        Ok(reading) => reading.json(),
+        Err(error) => json!({ "t_ms": t_ms, "error": error }),
+    }
+}
+
+fn process_rows(table: &ProcTable) -> Value {
     Value::Array(
         table
+            .rows
             .iter()
             .map(|p| json!([p.pid, p.ppid, p.name, p.cpu_100ns, p.created]))
             .collect(),
@@ -407,6 +469,8 @@ impl Sampler {
             "schema": 1,
             "source": "PDH \\GPU Engine(*)\\Utilization Percentage; ToolHelp process table with GetProcessTimes",
             "judgement": "none: recording only, thresholds are set later from these records",
+            "publishable": crate::meta::PUBLISHABLE,
+            "publishable_reason": crate::meta::PUBLISHABLE_REASON,
             "settle_s": self.timing.settle.as_secs_f64(),
             "window_s": self.timing.window.as_secs_f64(),
             "rate_hz": self.timing.rate_hz,
@@ -438,12 +502,14 @@ impl Sampler {
 
     #[cfg(windows)]
     fn sample_windows(&self, cell: Value) -> Value {
-        thread::sleep(self.timing.settle);
-        let window_started = Instant::now();
+        // `nvidia-smi` (a helper process) runs inside the settle interval, so no helper is spawned in the window.
+        let settle_started = Instant::now();
         let smi = crate::meta::gpu_snapshot();
+        thread::sleep(self.timing.settle.saturating_sub(settle_started.elapsed()));
+        let window_started = Instant::now();
         let start_table = win::process_table();
         let pdh = win::Pdh::open();
-        let mut readings = Vec::new();
+        let mut samples = Vec::new();
         let mut pdh_error = None;
         match &pdh {
             Err(reason) => pdh_error = Some(reason.clone()),
@@ -458,13 +524,8 @@ impl Sampler {
                             thread::sleep(wait);
                         }
                         let t_ms = primed.elapsed().as_secs_f64() * 1000.0;
-                        match pdh.collect().and_then(|()| pdh.read()) {
-                            Ok(raw) => readings.push(reading_from(t_ms, raw)),
-                            Err(reason) => {
-                                pdh_error = Some(reason);
-                                break;
-                            }
-                        }
+                        // A failed or empty sample is recorded as an error entry; the window goes on.
+                        samples.push(sample_json(t_ms, pdh.collect().and_then(|()| pdh.read())));
                     }
                 }
             },
@@ -472,16 +533,18 @@ impl Sampler {
         let end_table = win::process_table();
         let ancestry_json = match &start_table {
             Ok(table) => {
-                let a = ancestry(table, self.own_pid);
+                let a = ancestry(&table.rows, self.own_pid);
                 let name_of = |pid: u32| {
                     table
+                        .rows
                         .iter()
                         .find(|p| p.pid == pid)
                         .map_or(Value::Null, |p| json!(p.name))
                 };
                 json!({
                     "chain": a.chain.iter().map(|pid| json!({ "pid": pid, "name": name_of(*pid) })).collect::<Vec<_>>(),
-                    "children": a.children,
+                    "harness_descendants": a.descendants.iter().map(|pid| json!({ "pid": pid, "name": name_of(*pid) })).collect::<Vec<_>>(),
+                    "siblings": a.siblings.iter().map(|pid| json!({ "pid": pid, "name": name_of(*pid), "sibling_of_harness": true })).collect::<Vec<_>>(),
                     "stopped_at": a.stopped_at.map(|pid| json!({ "pid": pid, "name": name_of(pid) })),
                     "reason": a.reason,
                 })
@@ -494,13 +557,15 @@ impl Sampler {
             "adapter_luid": self.mapped_luid().map(Luid::text),
             "pdh": {
                 "error": pdh_error,
-                "samples": readings.iter().map(Reading::json).collect::<Vec<_>>(),
+                "samples": samples,
             },
             "nvidia_smi": smi,
-            "processes_start": start_table.as_ref().map_or(Value::Null, |t| process_rows(t)),
+            "processes_start": start_table.as_ref().map_or(Value::Null, process_rows),
             "processes_start_error": start_table.as_ref().err(),
-            "processes_end": end_table.as_ref().map_or(Value::Null, |t| process_rows(t)),
+            "processes_start_truncated": start_table.as_ref().ok().and_then(|t| t.truncated.clone()),
+            "processes_end": end_table.as_ref().map_or(Value::Null, process_rows),
             "processes_end_error": end_table.as_ref().err(),
+            "processes_end_truncated": end_table.as_ref().ok().and_then(|t| t.truncated.clone()),
             "ancestry": ancestry_json,
         })
     }
@@ -541,7 +606,7 @@ impl Sampler {
             }
             let t_ms = primed.elapsed().as_secs_f64() * 1000.0;
             pdh.collect()?;
-            readings.push(reading_from(t_ms, pdh.read()?));
+            readings.push(reading_from(t_ms, pdh.read()?)?);
         }
         Ok(readings)
     }
@@ -635,7 +700,9 @@ mod tests {
         assert_eq!(a.chain, vec![50, 40, 30, 20]);
         assert_eq!(a.stopped_at, Some(10));
         assert_eq!(a.reason, "first ancestor that is not a shell or cargo");
-        assert_eq!(a.children, vec![51, 60]);
+        assert_eq!(a.descendants, vec![51]);
+        // rustc under the same shell is a sibling of the harness, foreign until b1b decides; its child is neither.
+        assert_eq!(a.siblings, vec![60]);
     }
 
     #[test]
@@ -648,7 +715,7 @@ mod tests {
         let a = ancestry(&table, 50);
         assert_eq!(a.chain, vec![50]);
         assert_eq!(a.reason, "parent pid reused by a younger process");
-        assert!(a.children.is_empty());
+        assert!(a.descendants.is_empty() && a.siblings.is_empty());
 
         let cycle = [
             proc(50, 20, "gust-bench.exe", 100),
@@ -741,24 +808,29 @@ mod tests {
         let reading = reading_from(
             250.0,
             vec![
-                (NAME.to_owned(), 12.5, true),
+                (NAME.to_owned(), 12.5, 0),
                 (
                     "pid_9_luid_0x0_0x1_phys_0_eng_0_engtype_Copy".to_owned(),
                     0.0,
-                    true,
+                    0,
                 ),
                 (
                     "pid_9_luid_0x0_0x1_phys_0_eng_1_engtype_3D".to_owned(),
                     7.0,
-                    false,
+                    5,
                 ),
-                ("garbage".to_owned(), 3.0, true),
+                ("garbage".to_owned(), 3.0, 1),
             ],
-        );
+        )
+        .unwrap();
         let json = reading.json();
         assert_eq!(json["instances"], 4);
         assert_eq!(json["zero_instances"], 1);
         assert_eq!(json["invalid_instances"], 1);
+        assert_eq!(
+            json["invalid"],
+            json!([{ "name": "pid_9_luid_0x0_0x1_phys_0_eng_1_engtype_3D", "pdh_status": 5 }])
+        );
         assert_eq!(json["unparsed_instances"], json!(["garbage"]));
         assert_eq!(
             json["engines"],
@@ -781,7 +853,7 @@ mod tests {
             t_ms: 0.0,
             engines,
             zero: 0,
-            invalid: 0,
+            invalid: Vec::new(),
             unparsed: Vec::new(),
         };
         let readings = [
@@ -796,5 +868,91 @@ mod tests {
         assert_eq!(max.get(&a), Some(&20.0));
         assert_eq!(max.get(&b), Some(&1.0));
         assert_eq!(max_by_luid(&readings, 7).len(), 0);
+    }
+
+    #[test]
+    fn harness_descendants_are_kept_apart_from_the_shells_other_children() {
+        let table = [
+            proc(30, 1, "bash.exe", 30),
+            proc(50, 30, "gust-bench.exe", 50),
+            proc(51, 50, "nvidia-smi.exe", 51),
+            proc(52, 51, "conhost.exe", 52),
+            // A cargo build started from the same terminal, and a logger it started.
+            proc(60, 30, "cargo.exe", 60),
+            proc(61, 60, "rustc.exe", 61),
+            // A younger process that only reuses the harness's pid as its parent pid.
+            proc(70, 50, "stale.exe", 10),
+        ];
+        let a = ancestry(&table, 50);
+        assert_eq!(a.chain, vec![50, 30]);
+        assert_eq!(a.descendants, vec![51, 52]);
+        assert_eq!(a.siblings, vec![60]);
+    }
+
+    #[test]
+    fn an_empty_pdh_read_is_an_error_sample_not_zero_instances() {
+        assert!(reading_from(250.0, Vec::new()).is_err());
+        let sample = sample_json(250.0, Ok(Vec::new()));
+        assert_eq!(sample["error"], "PDH returned no GPU-engine instances");
+        assert!(sample.get("instances").is_none());
+        let failed = sample_json(500.0, Err("PdhCollectQueryData failed".to_owned()));
+        assert_eq!(failed["error"], "PdhCollectQueryData failed");
+        assert_eq!(failed["t_ms"], 500.0);
+        let ok = sample_json(250.0, Ok(vec![(NAME.to_owned(), 1.0, 0)]));
+        assert_eq!(ok["instances"], 1);
+        assert!(ok.get("error").is_none());
+    }
+
+    #[test]
+    fn only_no_more_files_ends_a_process_walk_normally() {
+        assert_eq!(walk_truncation(0x8007_0012u32 as i32), None);
+        // ERROR_ACCESS_DENIED and ERROR_BAD_LENGTH both mean the table is incomplete.
+        for code in [0x8007_0005u32, 0x8007_0018u32] {
+            let note = walk_truncation(code as i32).expect("truncated");
+            assert!(note.contains(&format!("{code:#010x}")), "{note}");
+        }
+    }
+
+    #[test]
+    fn invalid_instance_names_are_kept_with_their_status() {
+        let reading = reading_from(
+            0.0,
+            vec![
+                (
+                    "pid_7_luid_0x0_0x1_phys_0_eng_0_engtype_3D".to_owned(),
+                    0.0,
+                    0,
+                ),
+                (
+                    "pid_8_luid_0x0_0x1_phys_0_eng_0_engtype_3D".to_owned(),
+                    0.0,
+                    0x8000_0001,
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(reading.invalid.len(), 1);
+        assert_eq!(
+            reading.json()["invalid"],
+            json!([{ "name": "pid_8_luid_0x0_0x1_phys_0_eng_0_engtype_3D", "pdh_status": 0x8000_0001u32 }])
+        );
+    }
+
+    #[test]
+    fn the_sidecar_header_says_not_publishable_and_why() {
+        let sampler = Sampler {
+            timing: Timing::default(),
+            own_pid: 1,
+            adapters: Ok(Vec::new()),
+            mapping: Mapping::Failed("test".to_owned()),
+            adapter_name: "x".to_owned(),
+        };
+        let header = sampler.header();
+        assert_eq!(header["publishable"], false);
+        assert_eq!(
+            header["publishable_reason"],
+            crate::meta::PUBLISHABLE_REASON
+        );
+        assert!(!crate::meta::PUBLISHABLE_REASON.is_empty());
     }
 }

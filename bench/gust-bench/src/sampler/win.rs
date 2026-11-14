@@ -5,7 +5,8 @@ use windows::{
     Win32::{
         Foundation::{CloseHandle, FILETIME, HANDLE},
         Graphics::Dxgi::{
-            CreateDXGIFactory1, DXGI_ADAPTER_DESC1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIFactory1,
+            CreateDXGIFactory1, DXGI_ADAPTER_DESC1, DXGI_ADAPTER_FLAG_SOFTWARE,
+            DXGI_ERROR_NOT_FOUND, IDXGIFactory1,
         },
         System::{
             Diagnostics::ToolHelp::{
@@ -23,7 +24,7 @@ use windows::{
     core::w,
 };
 
-use super::{DxgiAdapter, Luid, Proc};
+use super::{DxgiAdapter, Luid, Proc, ProcTable, walk_truncation};
 
 /// A PDH query holding the one wildcard counter `\GPU Engine(*)\Utilization Percentage`.
 pub struct Pdh {
@@ -67,8 +68,8 @@ impl Pdh {
         })
     }
 
-    /// Every instance of the counter at the last collection: (instance name, percent, value was valid).
-    pub fn read(&self) -> Result<Vec<(String, f64, bool)>, String> {
+    /// Every instance of the counter at the last collection: (instance name, percent, PDH status; 0 and 1 are valid).
+    pub fn read(&self) -> Result<Vec<(String, f64, u32)>, String> {
         let mut bytes = 0u32;
         let mut count = 0u32;
         // SAFETY: a null item buffer with a zero size asks PDH for the size it needs (PDH_MORE_DATA).
@@ -109,17 +110,16 @@ impl Pdh {
             for index in 0..count as usize {
                 // SAFETY: PDH filled `count` items at the start of the buffer; each name pointer addresses a
                 // NUL-terminated wide string inside that same buffer.
-                let (name, value, valid) = unsafe {
+                let (name, value, item_status) = unsafe {
                     let item = &*items.add(index);
                     let name = item.szName.to_string().unwrap_or_default();
-                    // CStatus 0 is PDH_CSTATUS_VALID_DATA and 1 is PDH_CSTATUS_NEW_DATA.
                     (
                         name,
                         item.FmtValue.Anonymous.doubleValue,
-                        item.FmtValue.CStatus <= 1,
+                        item.FmtValue.CStatus,
                     )
                 };
-                out.push((name, value, valid));
+                out.push((name, value, item_status));
             }
             return Ok(out);
         }
@@ -158,7 +158,7 @@ fn times(pid: u32) -> Option<(u64, u64)> {
 }
 
 /// The process table: pid, parent pid, image name, CPU time and creation time (the fields of `Win32_Process`).
-pub fn process_table() -> Result<Vec<Proc>, String> {
+pub fn process_table() -> Result<ProcTable, String> {
     // SAFETY: `entry.dwSize` is set as the API requires; the snapshot handle is closed before returning.
     unsafe {
         let snapshot: HANDLE = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
@@ -186,8 +186,13 @@ pub fn process_table() -> Result<Vec<Proc>, String> {
             });
             next = Process32NextW(snapshot, &mut entry);
         }
+        // Only ERROR_NO_MORE_FILES is the end of the table; anything else leaves it truncated.
+        let truncated = next.err().and_then(|error| walk_truncation(error.code().0));
         let _ = CloseHandle(snapshot);
-        Ok(table)
+        Ok(ProcTable {
+            rows: table,
+            truncated,
+        })
     }
 }
 
@@ -199,7 +204,12 @@ pub fn dxgi_adapters() -> Result<Vec<DxgiAdapter>, String> {
             CreateDXGIFactory1().map_err(|error| format!("CreateDXGIFactory1: {error}"))?;
         let mut adapters = Vec::new();
         let mut index = 0;
-        while let Ok(adapter) = factory.EnumAdapters1(index) {
+        loop {
+            let adapter = match factory.EnumAdapters1(index) {
+                Ok(adapter) => adapter,
+                Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
+                Err(error) => return Err(format!("EnumAdapters1({index}): {error}")),
+            };
             let desc: DXGI_ADAPTER_DESC1 = adapter
                 .GetDesc1()
                 .map_err(|error| format!("GetDesc1: {error}"))?;

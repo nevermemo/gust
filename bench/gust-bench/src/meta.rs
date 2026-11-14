@@ -177,6 +177,14 @@ pub fn load_snapshot() -> Value {
     json!({ "process_counts": counts, "gpu_compute_app_count": gpu_apps })
 }
 
+/// Why no file is publishable yet. The judgement (plan 2.4) is b1b's; the per-run file, the aggregate and the sampler
+/// sidecar all say `publishable: false` with exactly this text.
+pub const PUBLISHABLE: bool = false;
+
+/// The reason that goes with [`PUBLISHABLE`].
+pub const PUBLISHABLE_REASON: &str =
+    "no judgement is implemented yet: the sampler records the quiet window, thresholds come later";
+
 /// The provenance fields every results file carries at its top level (plan 2.5 item 8): the route, the build and the
 /// adapter under test. The route is read from the build (`gust_wgpu::SPIRV_ROUTE`), never from a flag.
 pub fn provenance(adapter: &wgpu::AdapterInfo) -> Value {
@@ -218,6 +226,14 @@ mod tests {
 
     /// The shape of the three provenance fields is pinned: a reader (and the renderer of b1b) relies on exactly
     /// these keys in every results file.
+    /// Every output (per-run file, aggregate, sidecar) takes both fields from these constants, so pinning them pins the
+    /// three outputs; the aggregate and sidecar tests check their own copies.
+    #[test]
+    fn no_file_is_publishable_and_the_reason_is_not_empty() {
+        const { assert!(!PUBLISHABLE) };
+        assert!(PUBLISHABLE_REASON.len() > 20);
+    }
+
     #[test]
     fn provenance_pins_route_build_and_adapter() {
         let value = provenance_of("wgsl", "Test GPU", "Vulkan", "555.55", "driver 1");

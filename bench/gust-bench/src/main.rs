@@ -291,8 +291,8 @@ fn run(options: &Options) -> BenchResult<bool> {
         "label": options.label.clone().unwrap_or_else(|| "run".to_owned()),
         "banner": "shared machine, not publishable",
         // The publishable judgement (plan 2.4) is b1b's; until then no file is publishable, and says why.
-        "publishable": false,
-        "publishable_reason": "no judgement is implemented yet: the sampler records the quiet window, thresholds come later",
+        "publishable": meta::PUBLISHABLE,
+        "publishable_reason": meta::PUBLISHABLE_REASON,
         "sampler": sampler_json,
         "meta": machine,
         "config": {
@@ -346,6 +346,13 @@ fn probe_adapters() -> BenchResult<bool> {
     let device = HeadlessDevice::new()?;
     let adapter = device.adapter_info();
     let ctx = Rc::new(WgpuContext::new()?);
+    if adapter.name != ctx.info.name {
+        return Err(format!(
+            "the probe's two devices are on different adapters: `{}` and `{}`",
+            adapter.name, ctx.info.name
+        )
+        .into());
+    }
     let sampler = Sampler::open(sampler::Timing::default(), adapter);
     let own = std::process::id();
     let window = Duration::from_secs(3);

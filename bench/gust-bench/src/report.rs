@@ -86,6 +86,26 @@ fn load(paths: &[String]) -> BenchResult<Vec<Value>> {
         .collect()
 }
 
+/// The three labels every run must agree on: an aggregate of a WGSL and a SPIR-V run, or of two adapters, is not one
+/// measurement, so a mismatch is an error rather than being labelled by the first run.
+fn check_labels(runs: &[Value]) -> BenchResult<()> {
+    let Some(first) = runs.first() else {
+        return Err("no run files to aggregate".into());
+    };
+    for (index, run) in runs.iter().enumerate().skip(1) {
+        for key in ["route", "build", "adapter"] {
+            if run[key] != first[key] {
+                return Err(format!(
+                    "run {} disagrees with run 0 on `{key}`: {} against {}",
+                    index, run[key], first[key]
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn gather(runs: &[Value]) -> Table {
     let mut table = Table::new();
     for run in runs {
@@ -143,6 +163,7 @@ fn cold_starts(runs: &[Value]) -> BTreeMap<(String, u64, String), Vec<f64>> {
 
 pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult<()> {
     let runs = load(inputs)?;
+    check_labels(&runs)?;
     let table = gather(&runs);
     let cold = cold_starts(&runs);
 
@@ -192,14 +213,15 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         .collect::<Vec<_>>();
     let summary = json!({
         "banner": BANNER,
-        "publishable": false,
+        "publishable": crate::meta::PUBLISHABLE,
+        "publishable_reason": crate::meta::PUBLISHABLE_REASON,
         "route": runs[0]["route"],
         "build": runs[0]["build"],
         "adapter": runs[0]["adapter"],
         "meta": runs[0]["meta"],
         "config": runs[0]["config"],
         "runs": runs.iter().map(|run| json!({
-            "label": run["label"], "load_before": run["load_before"], "load_after": run["load_after"],
+            "label": run["label"], "sidecar": run["sampler"]["sidecar"], "load_before": run["load_before"], "load_after": run["load_after"],
             "gpu_before": run["gpu_before"], "gpu_after": run["gpu_after"],
             "wall_s": run["wall_s"], "failures": run["failures"],
         })).collect::<Vec<_>>(),
@@ -523,4 +545,109 @@ fn overhead_rows(table: &Table, sizes: &BTreeMap<String, Vec<u64>>) -> Vec<Value
         }
     }
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(route: &str, adapter: &str, sidecar: &str) -> Value {
+        json!({
+            "label": "t", "route": route, "build": { "profile": "release" },
+            "adapter": { "name": adapter }, "meta": {}, "config": {},
+            "sampler": { "enabled": true, "sidecar": sidecar },
+            "cells": [], "failures": [],
+        })
+    }
+
+    fn write_runs(dir: &std::path::Path, runs: &[Value]) -> Vec<String> {
+        runs.iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let path = dir.join(format!("run{index}.json"));
+                fs::write(&path, value.to_string()).unwrap();
+                path.to_str().unwrap().to_owned()
+            })
+            .collect()
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("gust-bench-report-{name}-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_label_mismatch_between_runs_is_an_error() {
+        let same = [
+            run("wgsl", "GPU A", "a.json"),
+            run("wgsl", "GPU A", "b.json"),
+        ];
+        assert!(check_labels(&same).is_ok());
+        for other in [
+            run("spirv", "GPU A", "b.json"),
+            run("wgsl", "GPU B", "b.json"),
+        ] {
+            let error = check_labels(&[run("wgsl", "GPU A", "a.json"), other]).unwrap_err();
+            assert!(error.to_string().contains("disagrees"), "{error}");
+        }
+        let mut build = run("wgsl", "GPU A", "b.json");
+        build["build"] = json!({ "profile": "debug" });
+        assert!(check_labels(&[run("wgsl", "GPU A", "a.json"), build]).is_err());
+        assert!(check_labels(&[]).is_err());
+    }
+
+    #[test]
+    fn the_aggregate_says_not_publishable_with_the_reason_and_lists_the_sidecars() {
+        let dir = scratch("aggregate");
+        let inputs = write_runs(
+            &dir,
+            &[
+                run("wgsl", "GPU A", "a.samples.json"),
+                run("wgsl", "GPU A", "b.samples.json"),
+            ],
+        );
+        let out_json = dir.join("out.json");
+        let out_md = dir.join("out.md");
+        aggregate(
+            &inputs,
+            out_json.to_str().unwrap(),
+            out_md.to_str().unwrap(),
+        )
+        .unwrap();
+        let summary: Value = serde_json::from_str(&fs::read_to_string(&out_json).unwrap()).unwrap();
+        assert_eq!(summary["publishable"], false);
+        assert_eq!(
+            summary["publishable_reason"],
+            crate::meta::PUBLISHABLE_REASON
+        );
+        assert_eq!(summary["runs"][0]["sidecar"], "a.samples.json");
+        assert_eq!(summary["runs"][1]["sidecar"], "b.samples.json");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_aggregate_refuses_runs_of_different_routes() {
+        let dir = scratch("mismatch");
+        let inputs = write_runs(
+            &dir,
+            &[
+                run("wgsl", "GPU A", "a.json"),
+                run("spirv", "GPU A", "b.json"),
+            ],
+        );
+        let out_json = dir.join("out.json");
+        let out_md = dir.join("out.md");
+        assert!(
+            aggregate(
+                &inputs,
+                out_json.to_str().unwrap(),
+                out_md.to_str().unwrap()
+            )
+            .is_err()
+        );
+        assert!(!out_json.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

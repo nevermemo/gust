@@ -1,0 +1,25 @@
+# Benchmark harness for GUST (M10 spike B1). A nested workspace of its own, outside the main workspace graph, so the
+# comparators never enter the root Cargo.lock, the MSRV checks, `check-arch` or `check-full`.
+[workspace]
+members = ["gust-bench"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.90"
+publish = false
+
+# `cfg(gust_dual)` is set through RUSTFLAGS (D26), never by cargo, so rustc's check-cfg has to be told about it.
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }
+
+# Benchmark numbers come from release builds only. Overflow checks and debug assertions are off on purpose: the CPU
+# comparators must not pay for checks the GPU path does not run (NEXT_TASKS M10 note on equal safety policy).
+[profile.release]
+opt-level = 3
+overflow-checks = false
+debug-assertions = false
+codegen-units = 1
+lto = "thin"

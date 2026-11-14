@@ -33,11 +33,18 @@ pub(crate) fn lint(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<(), Str
 }
 
 /// Returns a summary on success, or one line per problem.
-fn lint_tracked_files(root: &Path) -> Result<String, Vec<String>> {
+///
+/// Every tracked file is read, so the benchmark harness under `bench/` (its sources, its manifests, the committed
+/// `bench/results/**` files and their `*.samples.json` sidecars) gets the same rules as the rest: no machine-specific
+/// path anywhere, `path =` dependencies named by their package. `bench/` is a nested workspace outside the root
+/// `cargo metadata`, so the release-metadata rule does not apply to it; the summary counts its text files so that a
+/// run which saw none (a results commit that was never tracked) is visible.
+pub(crate) fn lint_tracked_files(root: &Path) -> Result<String, Vec<String>> {
     let files = tracked_files(root).map_err(|error| vec![error])?;
     let mut problems = Vec::new();
     let mut scanned = 0usize;
     let mut text_files = 0usize;
+    let mut bench_text_files = 0usize;
     let mut skipped = 0usize;
     let mut manifests: Vec<(String, String)> = Vec::new();
     let mut tagged_documents = 0usize;
@@ -83,6 +90,9 @@ fn lint_tracked_files(root: &Path) -> Result<String, Vec<String>> {
             continue;
         };
         text_files += 1;
+        if is_bench_file(relative) {
+            bench_text_files += 1;
+        }
         problems.extend(machine_path_problems(relative, text));
         if relative.rsplit('/').next() == Some("Cargo.toml") {
             manifests.push((relative.clone(), text.to_owned()));
@@ -94,7 +104,8 @@ fn lint_tracked_files(root: &Path) -> Result<String, Vec<String>> {
     if problems.is_empty() {
         Ok(format!(
             "Lint passed: {scanned} tracked files have no shell scripts; {text_files} text files have no \
-             machine-specific paths ({skipped} binary or non-UTF-8 files were skipped, not scanned); {} manifests \
+             machine-specific paths ({bench_text_files} of them under bench/; {skipped} binary or non-UTF-8 files \
+             were skipped, not scanned); {} manifests \
              name the crates/ packages they depend on by path; {publishable} publishable packages carry the \
              release metadata, a README and the licence copies; the compiler tags of {tagged_documents} reflection \
              documents and artifact manifests equal SLANG_PIN.\n",
@@ -103,6 +114,11 @@ fn lint_tracked_files(root: &Path) -> Result<String, Vec<String>> {
     } else {
         Err(problems)
     }
+}
+
+/// Whether the tracked file `relative` (a `/` path) belongs to the benchmark harness's tree.
+fn is_bench_file(relative: &str) -> bool {
+    relative.starts_with("bench/")
 }
 
 /// Whether the tracked file `relative` (a `/` path) is a reflection document or an artifact manifest, the files whose

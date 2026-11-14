@@ -60,6 +60,10 @@ The procedure (M5 plan, section 2.4 with Revision 1, R1-7):
   whatever the operands (`docs/SEMANTICS.md` section 4), so `10.0 / 2.0 == 5.0` is not a portable GPU assertion.
   `GPU: two-neighbour set` is an integer above 2^24 converted to `f32` (15.7.6): either neighbour of the integer, and
   the same set for the round trip back to `i32`. The twin is exact in every row, because it is Rust's own arithmetic.
+  One known route limitation widens the set (m9.z): when the opt-in SPIR-V route was taken on a software (CPU-type)
+  adapter, the `casts[3]` and `casts[7]` slots of `i32` (CT-80, CT-84) also accept the source integer itself, and the
+  failure message says so (`docs/SEMANTICS.md` section 15). The label of the row does not change, the RTX 5090 and the
+  WGSL route keep the two-neighbour set, and the float slots are never widened.
 - **Triples**: the (operator, type, operand class) triples the row exercises, each marked `[new]` or `[existing]`
   (section 4).
 - **Origin**: `source` or `derived` (section 1, step 5).

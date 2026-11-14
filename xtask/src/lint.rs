@@ -66,6 +66,14 @@ fn lint_tracked_files(root: &Path) -> Result<String, Vec<String>> {
             problems.push(format!("{relative}: could not be read"));
             continue;
         };
+        // A file that carries a compiler tag is judged before the binary skip below: one that is not UTF-8 text is a
+        // problem there, never a quiet skip.
+        if let Some(pin) = &pin
+            && let Some(check) = compiler_tag_check(relative, &bytes, pin)
+        {
+            tagged_documents += check.documents;
+            problems.extend(check.problems);
+        }
         // Binary and non-UTF-8 files are not scanned for paths; the summary counts them.
         let Some(text) = std::str::from_utf8(&bytes)
             .ok()
@@ -76,10 +84,6 @@ fn lint_tracked_files(root: &Path) -> Result<String, Vec<String>> {
         };
         text_files += 1;
         problems.extend(machine_path_problems(relative, text));
-        if let (Some(pin), true) = (&pin, carries_compiler_tag(relative)) {
-            tagged_documents += 1;
-            problems.extend(compiler_tag_problems(relative, text, pin));
-        }
         if relative.rsplit('/').next() == Some("Cargo.toml") {
             manifests.push((relative.clone(), text.to_owned()));
         }
@@ -107,6 +111,73 @@ fn lint_tracked_files(root: &Path) -> Result<String, Vec<String>> {
 fn carries_compiler_tag(relative: &str) -> bool {
     let name = relative.rsplit('/').next().unwrap_or(relative);
     name == "manifest.json" || name.ends_with(".reflection.json") || name.ends_with(".wgsl.json")
+}
+
+/// Whether the tracked file `relative` (a `/` path) is a probe expectation of the reflection helper: an `expected.txt`
+/// under a `testdata` folder, whose lines that start with `{` are reflection documents (one per line, with a
+/// `compiler` tag) between header and error lines. Today that is `crates/cargo-gust/src/testdata/schema3/expected.txt`
+/// alone, the helper's own output for the schema-3 probes (m9.x1 review S1): its WGSL lines are compared with the
+/// checked `.wgsl.json` fixtures by `crates/gust/tests/reflection.rs`, but nothing compares its SPIR-V lines, so a pin
+/// bump that regenerates the other artifacts could leave their tags stale and lint green. The other tracked
+/// `expected.txt` files (`tests/ui`, `tests/dual`, `tests/cpu-target`, `tests/precompiled`) hold compiler or driver
+/// diagnostics, never a reflection document.
+fn carries_line_documents(relative: &str) -> bool {
+    relative.rsplit('/').next() == Some("expected.txt") && relative.contains("/testdata/")
+}
+
+/// What the compiler-tag check found in one tracked file: the number of documents whose tags were read, and the
+/// problems.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct TagCheck {
+    pub(crate) documents: usize,
+    pub(crate) problems: Vec<String>,
+}
+
+/// The compiler-tag check of one tracked file, from its bytes: `None` for a file that carries no tag. A file that does
+/// carry one but is not UTF-8 text, or holds a NUL, is a problem (an editor that saves a manifest as UTF-16 must not
+/// hide a stale tag; m9.x1 review N4), not a skip. A whole-file document counts as one; for the probe expectations
+/// (`carries_line_documents`) every line that starts with `{` is a document, each judged by `compiler_tag_problems`
+/// under the name `<file>:<line>`, and a file with no such line is a problem too (the check would pass on nothing).
+pub(crate) fn compiler_tag_check(relative: &str, bytes: &[u8], pin: &str) -> Option<TagCheck> {
+    let whole_file = carries_compiler_tag(relative);
+    let by_line = carries_line_documents(relative);
+    if !whole_file && !by_line {
+        return None;
+    }
+    let Some(text) = std::str::from_utf8(bytes)
+        .ok()
+        .filter(|_| !bytes.contains(&0))
+    else {
+        return Some(TagCheck {
+            documents: 0,
+            problems: vec![format!(
+                "{relative}: not UTF-8 text, or holds a NUL, so its compiler tag was not checked; save it as UTF-8"
+            )],
+        });
+    };
+    if whole_file {
+        return Some(TagCheck {
+            documents: 1,
+            problems: compiler_tag_problems(relative, text, pin),
+        });
+    }
+    let mut check = TagCheck::default();
+    for (index, line) in text.lines().enumerate() {
+        if line.starts_with('{') {
+            check.documents += 1;
+            check.problems.extend(compiler_tag_problems(
+                &format!("{relative}:{}", index + 1),
+                line,
+                pin,
+            ));
+        }
+    }
+    if check.documents == 0 {
+        check.problems.push(format!(
+            "{relative}: no line starts with `{{`, so no reflection document had its compiler tag checked"
+        ));
+    }
+    Some(check)
 }
 
 /// The problems of one tagged document: a top-level `compiler` or `slang` that is not `pin` (the `SLANG_PIN` of

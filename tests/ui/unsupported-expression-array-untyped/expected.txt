@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: unsupported-expression-array-untyped/src/main.rs
+line: 9
+message: [GUST-E0811] an array literal or repeat initializes a typed `let`, because Slang cannot infer the type of `{ .. }`: write `let a: [T; N] = ..;`

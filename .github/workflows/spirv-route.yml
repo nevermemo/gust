@@ -197,8 +197,12 @@ jobs:
           cargo run --locked --quiet -p cargo-gust -- doctor
       - name: Tests with the SPIR-V route on lavapipe
         # `--no-fail-fast`: every failing test is listed, not only the first target's. The device is lavapipe
-        # (VK_DRIVER_FILES above); the route tests accept either route on a software adapter as long as the route
-        # record names the reason, and the goldens are the route's (`*.spirv-route.slang`).
+        # (VK_DRIVER_FILES above). GUST_REQUIRE_SPIRV_ROUTE=1 makes the route tests (spirv_route.rs, workgroup_zero.rs)
+        # fail when a kernel fell back to WGSL on lavapipe, where they would otherwise pass without having run the
+        # route (m9.z). The goldens are the route's (`*.spirv-route.slang`). The coretests accept the source integer for
+        # CT-80 and CT-84 `CastInt` here, a known limitation of the route on a software adapter (SEMANTICS section 15).
+        env:
+          GUST_REQUIRE_SPIRV_ROUTE: "1"
         run: |
           set -o pipefail
           cargo --locked test --no-fail-fast -p gust-compute-wgpu --features spirv-route 2>&1 | tee "$RUNNER_TEMP/spirv-route-wgpu.log"

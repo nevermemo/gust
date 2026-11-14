@@ -1461,6 +1461,18 @@ the index of those first, where 2026.20 called first, so the order of Slang for 
 versions and GUST refuses the form rather than rely on it. Before this round slice a2 accepted the storage forms, which
 gave another element than the CPU twin on the GPU with the pinned Slang.
 
+**Known difference: two atomics on one cell in an assignment (m9.z, the edge-case policy, D39).** `E0421` looks for
+`&mut self` calls of the module, not for atomics, so
+`out[atomic_add(&mut c[i], 1u32) as usize] = atomic_add(&mut c[i], 10u32);` is accepted, and when both atomics name the
+same cell the two orders give different values. Rust runs the value first (Rust Reference, assignment expressions: the
+right operand, then the place); slangc 2026.22 runs the index first (read on the CPU: the WGSL has
+`_S1 = atomicAdd(c[i], 1)`, then `_S2 = atomicAdd(c[i], 10)`, then `o[_S1] = _S2`; the form was not run on a GPU in
+this slice). On a cell that starts at 0 Rust stores 0 at `out[10]` and the GPU stores 1 at `out[0]`. With one cell per
+invocation nothing races, so the difference is deterministic, not a data race; it is the same class as the other
+orders above, but GUST neither refuses nor reorders it. Write instead `let v = atomic_add(&mut c[i], 10u32);
+out[atomic_add(&mut c[i], 1u32) as usize] = v;`, which has one order on both targets. Atomics on different cells
+do not interact, so they are not affected.
+
 **Out of bounds (D39).** An index outside `0..N` panics in Rust; on the GPU the access is clamped or undefined by
 target, so such a program is outside the defined domain of section 3 (KM-11 is the observation for a buffer index; no
 row is measured for a function-scope array, whose clamping or undefined access the target decides, so nothing is pinned
@@ -1724,6 +1736,23 @@ saturates as Rust does on the route, where the WGSL route gave `0x7fffff80` and 
 mismatch test pins the route's values), a NaN converts to 0, and `NaN != NaN` is true. A float result may differ by an
 ulp where the driver contracts a multiply and an add.
 
+**Known limitation on a software adapter (m9.z; CI run 43535559010, Mesa lavapipe 25.2.8, LLVM 20.1.2).** With the
+route taken, `(x as f32) as i32` for `x = 16777217` and `x = -16777217` gives `x` itself (16777217, -16777217), where
+Rust gives the neighbour that `x as f32` rounds to (16777216, -16777216), and where the WGSL rule of section 4 allows
+only a neighbour; the `i32 as f32` half is right. The same coretests (CT-80, CT-84) pass through the route on the
+RTX 5090 and through WGSL on lavapipe. What slangc 2026.22 emits for the pair, read on the CPU (`spirv-dis` of the
+`casts` kernel of the coretests fixture, with the route's flags): a plain `OpConvertSToF` followed by an `OpConvertFToS`
+of its result, no `RelaxedPrecision`, no `FPFastMathMode`, no fold. naga's SPIR-V for the same kernel was not obtained
+(no naga CLI was built); naga 30.0.1's writer, read and not run, puts an `FClamp` between the two conversions
+(`back/spv/block.rs`, the float to integer cast), which is the likely reason the WGSL route is not affected. The cause
+is a hypothesis, not a measurement: the driver's optimiser (Mesa's NIR or LLVM) folds the undecorated
+`OpConvertFToS(OpConvertSToF(x))` pair to `x`, which holds only for `x` that fit in 24 bits. Nobody ran the pair on
+lavapipe alone or looked at the optimised IR. Per the edge-case policy (D39) this is a documented limitation: the
+emitter is not changed to force a match, and the route stays opt-in. The coretests accept `x` itself for those two
+`CastInt` slots when, and only when, the SPIR-V route was taken on a software (CPU-type) adapter (`CORETESTS.md`). What
+would close it: the isolated pair on lavapipe (a one-kernel probe), the same module through `spirv-opt` and
+`spirv-reduce`, and a Mesa report if the fold is confirmed.
+
 ## 16. Methods and impl blocks (M9, D154)
 
 An `impl S { .. }` block of a struct declared in the same module (several blocks per struct, and the path form
@@ -1751,8 +1780,10 @@ What the contract says:
   place. Slang does not always do the same, so the forms where a `&mut self` call would be ordered differently are
   refused (GUST-E0421; section 14 treats the call `h.weigh(s, c2.bump(), c2.bump())`), and the forms that match
   Rust stay accepted.
-- Names that a method, a trait or a type parameter would give to Slang's own members (`this`, `Tuple`, `makeTuple`, the
-  standard interface names) are renamed by the emitter, with `__gust_r_` as the prefix. This changes the emitted text
+- Names that a method, a trait or a type parameter would give to Slang's own members (`this`, `Tuple`, `makeTuple`,
+  `interface`, `extension`, the standard interface names) are renamed by the emitter, with `__gust_r_` as the prefix
+  (`interface` and `extension` since m9.z: a user struct of that name placed before an emitted trait or impl captures
+  the keyword in slangc 2026.22). This changes the emitted text
   and so the content key of an artifact built from such a module (CHANGELOG, 0.2.0, break B4).
 
 Evidence: the golden fixtures `methods.slang`, `methods_mut.slang`, `traits.slang`, `generics.slang` and `enums.slang`

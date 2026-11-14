@@ -345,11 +345,13 @@ pub struct CompiledReflection {
 /// `GUST_SLANG_HOME`) it returns `GUST_SLANG_REFLECT` as given, or the bare name, and [`compile_reflected`] is the
 /// call that reports the problem.
 #[cfg(feature = "slang-runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 pub fn native_compiler_path() -> PathBuf {
     crate::toolchain::helper_candidate_in(&crate::toolchain::Env::from_process())
 }
 
 #[cfg(feature = "slang-runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 /// Compile and reflect the same linked program using the native Slang helper ([`native_compiler_path`]). An unusable
 /// `GUST_SLANG_REFLECT` or `GUST_SLANG_HOME` is an error here, with the variable and its value in the text.
 pub fn compile_reflected(
@@ -375,6 +377,7 @@ pub fn compile_reflected(
 /// compile fails, and with the other variants of [`Error`] when its reflection output is malformed or does not belong
 /// to the kernel.
 #[cfg(feature = "slang-runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 pub fn compile_reflected_with_helper(
     kernel: &KernelDescriptor,
     target: Target,
@@ -462,6 +465,7 @@ fn outdated_helper_note(output: &std::process::Output) -> &'static str {
 
 /// What [`compile_reflected_clean`] produced: the parsed result and the helper's JSON, verbatim.
 #[cfg(feature = "slang-runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 #[derive(Debug)]
 pub struct CleanCompilation {
     /// The artifact and layouts, checked by `from_output` against the clean text.
@@ -478,6 +482,7 @@ pub struct CleanCompilation {
 /// Only a failed compile touches the directive copy: the helper compiles it once more, so that the diagnostics name
 /// Rust lines as `compile_reflected_with_helper` does.
 #[cfg(feature = "slang-runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 pub fn compile_reflected_clean(
     kernel: &KernelDescriptor,
     target: Target,
@@ -708,6 +713,7 @@ fn slangc_reflection_command(
 }
 
 #[cfg(feature = "slang-runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 /// Compile exactly this target and entry point, requesting Slang's JSON metadata.
 pub fn reflect(kernel: &KernelDescriptor, target: Target) -> Result<Reflection, Error> {
     let directory = TemporaryDirectory::create()?;

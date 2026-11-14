@@ -240,6 +240,7 @@ impl From<std::io::Error> for Error {
 /// Rust lines where the descriptor has a source origin), with [`Error::Toolchain`] when the toolchain cannot be located
 /// or asked, and with [`Error::Io`] when a file cannot be read or written.
 #[cfg(feature = "slang-runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 pub fn compile(kernel: &KernelDescriptor, target: Target) -> Result<Vec<u8>, Error> {
     compile_with_origin(
         kernel.slang_source,
@@ -254,6 +255,7 @@ pub fn compile(kernel: &KernelDescriptor, target: Target) -> Result<Vec<u8>, Err
 /// [`Error::InvalidSpirvLength`] or [`Error::InvalidSpirv`] when the output is not a whole number of words or fails the
 /// structural check.
 #[cfg(feature = "slang-runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 pub fn compile_spirv(kernel: &KernelDescriptor) -> Result<Vec<u32>, Error> {
     let bytes = compile(kernel, Target::Spirv)?;
     decode_spirv(&bytes)
@@ -274,6 +276,7 @@ pub(crate) fn decode_spirv(bytes: &[u8]) -> Result<Vec<u32>, Error> {
 /// Compile `kernel` to WGSL and return the text. Fails as [`compile`] does; output that is not UTF-8 is an
 /// [`Error::Io`].
 #[cfg(feature = "slang-runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 pub fn compile_wgsl(kernel: &KernelDescriptor) -> Result<String, Error> {
     let bytes = compile(kernel, Target::Wgsl)?;
     String::from_utf8(bytes)
@@ -283,12 +286,14 @@ pub fn compile_wgsl(kernel: &KernelDescriptor) -> Result<String, Error> {
 /// Compile Slang text that has no descriptor: a `grid` (compute) entry point, as every kernel is today. A text of
 /// another shape goes through [`compile_source_as`].
 #[cfg(feature = "slang-runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 pub fn compile_source(source: &str, entry: &str, target: Target) -> Result<Vec<u8>, Error> {
     compile_source_as(source, entry, Shape::Grid, target)
 }
 
 /// [`compile_source`] for an entry point of `shape`: slangc gets that shape's `-stage`.
 #[cfg(feature = "slang-runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 pub fn compile_source_as(
     source: &str,
     entry: &str,
@@ -782,9 +787,11 @@ fn positive_coordinate(value: &str) -> Option<usize> {
 
 /// A directory under the system temporary directory for one compiler run. It is removed with its contents when dropped.
 #[cfg(feature = "slang-runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 pub struct TemporaryDirectory(PathBuf);
 
 #[cfg(feature = "slang-runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 impl TemporaryDirectory {
     /// The directory's path.
     pub fn path(&self) -> &Path {
@@ -831,6 +838,7 @@ pub fn write_source(kernel: &KernelDescriptor, path: impl AsRef<Path>) -> Result
 }
 
 #[cfg(feature = "slang-runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 /// Machine-readable record of whether the installed Slang compiler can emit a
 /// target. Capability claims must follow this evidence, not assumption.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -853,6 +861,7 @@ const PROBE_KERNEL: &str = concat!(
 );
 
 #[cfg(feature = "slang-runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 /// Probe whether `slangc` can emit `target` by compiling a known-good kernel.
 ///
 /// This is capability evidence, not a correctness test: it records whether the

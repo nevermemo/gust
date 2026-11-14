@@ -1637,6 +1637,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shape-pixel-output-read-raw"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "shape-pixel-return"
 version = "0.0.0"
 dependencies = [

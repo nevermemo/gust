@@ -72,7 +72,10 @@ fn address_problem(expression: &syn::Expr) -> Option<&'static str> {
             Some("a negated value (a texel address cannot be negative)")
         }
         syn::Expr::Cast(cast) => match cast.ty.as_ref() {
-            syn::Type::Path(path) if path.path.is_ident("u32") || path.path.is_ident("uint") => {
+            syn::Type::Path(path)
+                if crate::names::path_is(&path.path, "u32")
+                    || crate::names::path_is(&path.path, "uint") =>
+            {
                 None
             }
             _ => Some("a cast to a type other than `u32`"),
@@ -97,7 +100,10 @@ fn coordinate_problem(expression: &syn::Expr) -> Option<&'static str> {
             _ => None,
         },
         syn::Expr::Cast(cast) => match cast.ty.as_ref() {
-            syn::Type::Path(path) if path.path.is_ident("f32") || path.path.is_ident("float") => {
+            syn::Type::Path(path)
+                if crate::names::path_is(&path.path, "f32")
+                    || crate::names::path_is(&path.path, "float") =>
+            {
                 None
             }
             _ => Some("a cast to a type other than `f32`"),
@@ -128,7 +134,7 @@ fn option_payload(ty: &syn::TypePath) -> Option<Option<&syn::Type>> {
         return None;
     }
     let segment = &ty.path.segments[0];
-    if segment.ident != "Option" {
+    if !crate::names::ident_is(&segment.ident, "Option") {
         return None;
     }
     let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
@@ -150,7 +156,7 @@ fn result_payload(ty: &syn::TypePath) -> Option<Option<(&syn::Type, &syn::Type)>
         return None;
     }
     let segment = &ty.path.segments[0];
-    if segment.ident != "Result" {
+    if !crate::names::ident_is(&segment.ident, "Result") {
         return None;
     }
     let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
@@ -180,7 +186,7 @@ fn rw_buffer_element_type(ty: &syn::Type) -> Option<String> {
         return None;
     }
     let segment = &type_path.path.segments[0];
-    if segment.ident != "RWStructuredBuffer" {
+    if !crate::names::ident_is(&segment.ident, "RWStructuredBuffer") {
         return None;
     }
     let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
@@ -203,7 +209,7 @@ pub fn option_pattern(pattern: &syn::Pat) -> Option<&syn::PatIdent> {
     let syn::Pat::TupleStruct(tuple) = pattern else {
         return None;
     };
-    if !tuple.path.is_ident("Some") || tuple.elems.len() != 1 {
+    if !crate::names::path_is(&tuple.path, "Some") || tuple.elems.len() != 1 {
         return None;
     }
     match &tuple.elems[0] {
@@ -216,7 +222,7 @@ pub fn result_pattern(pattern: &syn::Pat) -> Option<&syn::PatIdent> {
     let syn::Pat::TupleStruct(tuple) = pattern else {
         return None;
     };
-    if !tuple.path.is_ident("Ok") || tuple.elems.len() != 1 {
+    if !crate::names::path_is(&tuple.path, "Ok") || tuple.elems.len() != 1 {
         return None;
     }
     match &tuple.elems[0] {
@@ -229,7 +235,7 @@ fn err_pattern(pattern: &syn::Pat) -> Option<&syn::PatIdent> {
     let syn::Pat::TupleStruct(tuple) = pattern else {
         return None;
     };
-    if !tuple.path.is_ident("Err") || tuple.elems.len() != 1 {
+    if !crate::names::path_is(&tuple.path, "Err") || tuple.elems.len() != 1 {
         return None;
     }
     match &tuple.elems[0] {
@@ -371,9 +377,13 @@ fn constant_shift_amount(expression: &syn::Expr) -> Option<i128> {
             let syn::Type::Path(target) = strip_type_parens(&cast.ty) else {
                 return None;
             };
-            if target.path.is_ident("u32") || target.path.is_ident("uint") {
+            if crate::names::path_is(&target.path, "u32")
+                || crate::names::path_is(&target.path, "uint")
+            {
                 Some(i128::from(value as u32))
-            } else if target.path.is_ident("i32") || target.path.is_ident("int") {
+            } else if crate::names::path_is(&target.path, "i32")
+                || crate::names::path_is(&target.path, "int")
+            {
                 Some(i128::from(value as i32))
             } else {
                 None
@@ -446,7 +456,7 @@ fn unsuffixed_literal_only(expression: &syn::Expr) -> Option<&syn::Expr> {
                 && matches!(
                     call.func.as_ref(),
                     syn::Expr::Path(path)
-                        if path.path.is_ident("Some") || path.path.is_ident("Ok") || path.path.is_ident("Err")
+                        if crate::names::path_is(&path.path, "Some") || crate::names::path_is(&path.path, "Ok") || crate::names::path_is(&path.path, "Err")
                 ) =>
         {
             unsuffixed_literal_only(&call.args[0])
@@ -1092,7 +1102,7 @@ fn validate_impl(
     let mut implemented = None;
     if let Some((negation, path, _)) = &item.trait_ {
         let blanket = item.generics.type_params().any(|parameter| {
-            matches!(item.self_ty.as_ref(), syn::Type::Path(own) if own.qself.is_none() && own.path.is_ident(&parameter.ident))
+            matches!(item.self_ty.as_ref(), syn::Type::Path(own) if own.qself.is_none() && own.path.get_ident().is_some_and(|ident| crate::names::same_ident(ident, &parameter.ident)))
         });
         if blanket {
             return Err(diagnostics::error(
@@ -1601,7 +1611,9 @@ fn bare_self_use(block: &syn::Block) -> Option<&syn::ExprPath> {
     fn is_self(expression: &syn::Expr) -> bool {
         match expression {
             syn::Expr::Paren(inner) => is_self(&inner.expr),
-            syn::Expr::Path(path) => path.qself.is_none() && path.path.is_ident("self"),
+            syn::Expr::Path(path) => {
+                path.qself.is_none() && crate::names::path_is(&path.path, "self")
+            }
             _ => false,
         }
     }
@@ -1620,7 +1632,10 @@ fn bare_self_use(block: &syn::Block) -> Option<&syn::ExprPath> {
             }
         }
         fn visit_expr_path(&mut self, path: &'a syn::ExprPath) {
-            if self.found.is_none() && path.qself.is_none() && path.path.is_ident("self") {
+            if self.found.is_none()
+                && path.qself.is_none()
+                && crate::names::path_is(&path.path, "self")
+            {
                 self.found = Some(path);
             }
         }
@@ -1684,9 +1699,10 @@ fn validate_struct(item: &syn::ItemStruct) -> syn::Result<()> {
             syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
         )?;
         if derives.iter().any(|path| {
-            path.segments
-                .last()
-                .is_some_and(|segment| segment.ident == "Clone" || segment.ident == "Copy")
+            path.segments.last().is_some_and(|segment| {
+                crate::names::ident_is(&segment.ident, "Clone")
+                    || crate::names::ident_is(&segment.ident, "Copy")
+            })
         }) {
             return Err(diagnostics::error(
                 Code::ManualCloneCopy,
@@ -4106,6 +4122,8 @@ impl RestrictedVisitor {
             let mut names = Names(HashSet::new());
             names.visit_expr(index);
             if let Some((root, method)) = roots.iter().find(|(root, _)| names.0.contains(root)) {
+                // A keyword name keeps its `r#` in the text, so the suggestion is valid Rust (Opus round 3 N4).
+                let (root, method) = (crate::names::spelling(root), crate::names::spelling(method));
                 self.reject(
                     Code::ForBoundSideEffect,
                     index,
@@ -4412,7 +4430,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 .path
                 .segments
                 .last()
-                .is_some_and(|segment| segment.ident == "Workgroup")
+                .is_some_and(|segment| crate::names::ident_is(&segment.ident, "Workgroup"))
         {
             if !self
                 .workgroup_types
@@ -4568,7 +4586,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     fn visit_expr_cast(&mut self, cast: &'ast syn::ExprCast) {
         // `i as usize` is the index of an array (slice m9.r1) and nothing else: the dialect has no `usize` value.
         if matches!(strip_type_parens(&cast.ty), syn::Type::Path(path)
-            if path.qself.is_none() && path.path.is_ident("usize"))
+            if path.qself.is_none() && crate::names::path_is(&path.path, "usize"))
         {
             if self.index_depth == 0 {
                 self.reject(
@@ -4686,7 +4704,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 self.reject(Code::QualifiedMathPath, path, QUALIFIED_MATH_PATH);
                 return;
             }
-            if path.path.is_ident("Some") {
+            if crate::names::path_is(&path.path, "Some") {
                 if call.args.len() != 1 {
                     self.reject(
                         Code::SomeArguments,
@@ -4707,7 +4725,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 self.visit_expr(&call.args[0]);
                 return;
             }
-            if path.path.is_ident("Ok") || path.path.is_ident("Err") {
+            if crate::names::path_is(&path.path, "Ok") || crate::names::path_is(&path.path, "Err") {
                 if call.args.len() != 1 {
                     self.reject(
                         Code::OkErrArguments,
@@ -5528,7 +5546,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         {
             return;
         }
-        if path.qself.is_none() && path.path.is_ident("workgroup_barrier") {
+        if path.qself.is_none() && crate::names::path_is(&path.path, "workgroup_barrier") {
             self.reject(
                 Code::BarrierForm,
                 path,
@@ -5542,9 +5560,9 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 path,
                 "associated constants and foreign paths are not in the Rust-to-Slang subset; reference local variables, parameters, or same-module helpers",
             );
-        } else if path.path.is_ident("Some")
-            || path.path.is_ident("Ok")
-            || path.path.is_ident("Err")
+        } else if crate::names::path_is(&path.path, "Some")
+            || crate::names::path_is(&path.path, "Ok")
+            || crate::names::path_is(&path.path, "Err")
         {
             self.reject(
                 Code::VariantAsValue,

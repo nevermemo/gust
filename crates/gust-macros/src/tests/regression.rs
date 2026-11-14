@@ -7754,6 +7754,100 @@ fn a_shadow_of_a_value_parameter_ends_with_its_block_for_gust_e0333() {
     }
 }
 
+/// The pixel pin rules (D63, D94) read the body by name, so a raw spelling of the output is the same output.
+fn expanded_pixel_kernel(body: &str) -> String {
+    let source = format!(
+        "mod shade {{ #[kernel(shape = pixel)] pub fn paint(id: SV_DispatchThreadID, input: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>) {{ {body} }} }}"
+    );
+    let item: proc_macro2::TokenStream = source.parse().unwrap();
+    crate::gpu_impl_with(
+        proc_macro2::TokenStream::new(),
+        item,
+        crate::expand::Profile::Other,
+    )
+    .to_string()
+}
+
+#[test]
+fn a_raw_spelling_of_the_output_does_not_escape_the_pixel_rules() {
+    // Codex-class audit, Opus round 3 M1: `is_ident(name)` compared with the `r#`. Plain forms first (the pins).
+    for (body, code) in [
+        ("out[id.x] = out[id.x] + input[id.x];", "GUST-E0728"),
+        ("out[id.x + 1u32] = input[id.x];", "GUST-E0725"),
+        ("out[id.x] = r#out[id.x] + input[id.x];", "GUST-E0728"),
+        ("r#out[id.x] = out[id.x] + input[id.x];", "GUST-E0728"),
+        ("r#out[id.x + 1u32] = input[id.x];", "GUST-E0725"),
+        ("out[id.x + 1u32] = r#input[id.x];", "GUST-E0725"),
+    ] {
+        let text = expanded_pixel_kernel(body);
+        assert!(text.contains(code), "{body}: {text}");
+    }
+    // And the accepted form stays accepted in both spellings.
+    for body in ["out[id.x] = input[id.x];", "r#out[id.x] = r#input[id.x];"] {
+        let text = expanded_pixel_kernel(body);
+        assert!(!text.contains("compile_error"), "{body}: {text}");
+    }
+}
+
+#[test]
+fn a_raw_type_name_is_read_like_the_plain_one() {
+    // `out: r#RWStructuredBuffer<uint>` is the storage buffer it names (Opus round 3 S2).
+    let plain = translate(&with_kernel("", "out[id.x] = 1u32;")).unwrap();
+    let raw = translate(
+        &with_kernel("", "out[id.x] = 1u32;")
+            .replace("RWStructuredBuffer<uint>", "r#RWStructuredBuffer<uint>"),
+    )
+    .unwrap();
+    assert_eq!(plain, raw);
+    // Option and Result in a helper signature, and a raw `Workgroup`.
+    let result = "fn f(x: u32) -> Option<u32> { Some(x) }";
+    let raw_result = "fn f(x: u32) -> r#Option<u32> { r#Some(x) }";
+    assert_eq!(
+        translate(&with_kernel(result, "out[id.x] = 1u32;")).is_ok(),
+        translate(&with_kernel(raw_result, "out[id.x] = 1u32;")).is_ok()
+    );
+}
+
+#[test]
+fn a_raw_barrier_call_is_the_barrier() {
+    // Opus round 3 N2: `r#workgroup_barrier()` behaves like `workgroup_barrier()`.
+    let source = |call: &str| {
+        format!(
+            "mod m {{ #[kernel(workgroup_size(64, 1, 1), cpu = \"unsupported\")] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {{ out[id.x] = 1u32; {call}; out[id.x] = 2u32; }} }}"
+        )
+    };
+    let plain = translate(&source("workgroup_barrier()")).unwrap();
+    let raw = translate(&source("r#workgroup_barrier()")).unwrap();
+    assert_eq!(plain, raw);
+}
+
+#[test]
+fn a_blanket_impl_for_a_raw_spelling_of_the_parameter_is_refused() {
+    // Opus round 3 N3: `impl<T: Tr> Tr for r#T` is the blanket impl of `T`.
+    let items = "pub trait Tr { fn f(&self) -> u32; } pub struct T { pub n: u32 } \
+                 impl<T: Tr> Tr for r#T { fn f(&self) -> u32 { 1u32 } }";
+    let code = |items: &str| {
+        let error = translate(&with_kernel(items, "out[id.x] = 1u32;")).unwrap_err();
+        error.to_string()[..12].to_owned()
+    };
+    let plain = items.replace("r#T", "T");
+    assert_eq!(code(items), code(&plain));
+}
+
+#[test]
+fn the_e0421_hint_spells_a_raw_keyword_receiver_validly() {
+    // Opus round 3 N4: the suggestion for a receiver called `r#type` must keep the `r#`.
+    let counter = "pub struct C { pub n: u32 } impl C { fn bump(&mut self) -> u32 { self.n += 1u32; self.n } }";
+    let body = "let mut r#type = C { n: 0u32 }; let mut a: [u32; 4] = [0u32; 4]; a[r#type.n as usize] = r#type.bump(); out[id.x] = a[1];";
+    let error = translate(&with_kernel(counter, body))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("`let v = r#type.bump(..); a[i] = v;`"),
+        "{error}"
+    );
+}
+
 #[test]
 fn an_array_literal_or_repeat_without_a_lowering_is_gust_e0811() {
     for body in [

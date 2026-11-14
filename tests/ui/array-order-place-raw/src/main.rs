@@ -13,7 +13,6 @@ mod block {
         }
     }
 
-
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<u32>) {
         let mut s = Counter { n: 0u32 };

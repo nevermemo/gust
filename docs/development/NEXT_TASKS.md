@@ -532,6 +532,9 @@ test module; do not mix that mechanical move with behavior changes.
   The earlier run was the first lavapipe measurement of the route: only the coretests target failed. Filed, not fixed:
   the variable rule is repeated in `workgroup_zero.rs` instead of shared with `software_adapter_verdict`, and the wiring
   of the variable has no test (only lavapipe CI runs it).
+- A pattern binding, a `for` variable or a closure parameter that shadows a value parameter still gets a false
+  GUST-E0333 on a `&mut self` call (m9.z round 3 fixed the `let` shadow and its block scope only; Opus round 3 N5).
+  The validator keys the by-value parameters by name and removes a name only at a `let`.
 - No browser (Tint) run of any M9 fixture (methods, enums and `match`, tuples, arrays, closures, traits and generics)
   exists, although `web` is a target (Opus sanity check of M9): one `check-web` of the M9 fixtures would show whether
   Tint takes the WGSL as naga does. Not started in m9.z.

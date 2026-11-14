@@ -2770,9 +2770,11 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             emit_arguments(call.args.iter())?.join(", ")
         ),
         syn::Expr::Paren(paren) => format!("({})", emit_expression(&paren.expr)?),
-        syn::Expr::Path(path) if path.path.is_ident("None") => "none".to_owned(),
+        syn::Expr::Path(path) if crate::names::path_is(&path.path, "None") => "none".to_owned(),
         // The receiver of a method is `this` in Slang (slice m9.a1).
-        syn::Expr::Path(path) if path.qself.is_none() && path.path.is_ident("self") => {
+        syn::Expr::Path(path)
+            if path.qself.is_none() && crate::names::path_is(&path.path, "self") =>
+        {
             "this".to_owned()
         }
         syn::Expr::Path(path)
@@ -3236,18 +3238,18 @@ impl<'ast> Visit<'ast> for XorUsage {
 }
 
 fn is_some_constructor(call: &syn::ExprCall) -> bool {
-    matches!(call.func.as_ref(), syn::Expr::Path(path) if path.path.is_ident("Some"))
+    matches!(call.func.as_ref(), syn::Expr::Path(path) if crate::names::path_is(&path.path, "Some"))
         && call.args.len() == 1
 }
 
 fn is_ok_constructor(call: &syn::ExprCall) -> bool {
-    matches!(call.func.as_ref(), syn::Expr::Path(path) if path.path.is_ident("Ok"))
+    matches!(call.func.as_ref(), syn::Expr::Path(path) if crate::names::path_is(&path.path, "Ok"))
         && call.args.len() == 1
 }
 
 fn is_result_constructor(call: &syn::ExprCall) -> bool {
     is_ok_constructor(call)
-        || (matches!(call.func.as_ref(), syn::Expr::Path(path) if path.path.is_ident("Err"))
+        || (matches!(call.func.as_ref(), syn::Expr::Path(path) if crate::names::path_is(&path.path, "Err"))
             && call.args.len() == 1)
 }
 
@@ -3270,7 +3272,7 @@ fn atomic_op_name(call: &syn::ExprCall) -> Option<&'static str> {
         return None;
     };
     let ident = path.path.get_ident()?;
-    match ident.to_string().as_str() {
+    match ident.unraw().to_string().as_str() {
         "atomic_add" => Some("atomic_add"),
         "atomic_min" => Some("atomic_min"),
         "atomic_max" => Some("atomic_max"),
@@ -3318,7 +3320,7 @@ impl<'ast> Visit<'ast> for OptionUsage {
             .path
             .segments
             .last()
-            .is_some_and(|segment| segment.ident == "Option");
+            .is_some_and(|segment| crate::names::ident_is(&segment.ident, "Option"));
         syn::visit::visit_type_path(self, ty);
     }
 
@@ -3338,7 +3340,7 @@ impl<'ast> Visit<'ast> for OptionUsage {
     }
 
     fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
-        self.0 |= path.path.is_ident("None");
+        self.0 |= crate::names::path_is(&path.path, "None");
         syn::visit::visit_expr_path(self, path);
     }
 }
@@ -3351,7 +3353,7 @@ impl<'ast> Visit<'ast> for ResultUsage {
             .path
             .segments
             .last()
-            .is_some_and(|segment| segment.ident == "Result");
+            .is_some_and(|segment| crate::names::ident_is(&segment.ident, "Result"));
         syn::visit::visit_type_path(self, ty);
     }
 
@@ -3505,7 +3507,7 @@ fn unparenthesized_expr(expression: &syn::Expr) -> &syn::Expr {
 /// Whether `ty` is the path `usize`.
 fn is_usize_type(ty: &syn::Type) -> bool {
     matches!(unparenthesized_type(ty), syn::Type::Path(path)
-        if path.qself.is_none() && path.path.is_ident("usize"))
+        if path.qself.is_none() && crate::names::path_is(&path.path, "usize"))
 }
 
 /// The Slang type of a local, a parameter or a result (slice m9.r1): [`emit_type`], and `T[N]` for `[T; N]`. A struct
@@ -3703,7 +3705,7 @@ pub(crate) fn type_name(ty: &syn::Type) -> Option<String> {
     path.path
         .segments
         .last()
-        .map(|segment| segment.ident.to_string())
+        .map(|segment| segment.ident.unraw().to_string())
 }
 
 #[cfg(test)]

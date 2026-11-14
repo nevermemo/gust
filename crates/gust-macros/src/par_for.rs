@@ -395,7 +395,7 @@ fn gpu_vec_element(path: &syn::TypePath) -> Option<&syn::Type> {
         return None;
     }
     let segment = path.path.segments.last()?;
-    if segment.ident != "GpuVec" {
+    if !crate::names::ident_is(&segment.ident, "GpuVec") {
         return None;
     }
     let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {

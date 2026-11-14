@@ -624,7 +624,7 @@ fn peel(mut expression: &syn::Expr) -> &syn::Expr {
 
 /// Whether `expression` is the plain name `name`.
 fn is_name(expression: &syn::Expr, name: &str) -> bool {
-    matches!(peel(expression), syn::Expr::Path(path) if path.qself.is_none() && path.path.is_ident(name))
+    matches!(peel(expression), syn::Expr::Path(path) if path.qself.is_none() && crate::names::path_is(&path.path, name))
 }
 
 /// Whether `expression` is `id.x` or `id.global_id().x` for the invocation parameter `id`.
@@ -636,7 +636,7 @@ fn is_direct_own(expression: &syn::Expr, id: &str) -> bool {
         return false;
     }
     match peel(&field.base) {
-        syn::Expr::Path(path) => path.qself.is_none() && path.path.is_ident(id),
+        syn::Expr::Path(path) => path.qself.is_none() && crate::names::path_is(&path.path, id),
         syn::Expr::MethodCall(call) => {
             call.method == "global_id"
                 && call.args.is_empty()
@@ -902,7 +902,7 @@ impl<'ast> Visit<'ast> for OutputScan<'_> {
     }
 
     fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
-        if path.qself.is_none() && path.path.is_ident(self.name) {
+        if path.qself.is_none() && crate::names::path_is(&path.path, self.name) {
             self.find(Why::OutputOther, path);
         }
     }

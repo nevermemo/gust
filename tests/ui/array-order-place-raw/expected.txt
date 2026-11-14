@@ -2,5 +2,5 @@
 # A macro error is a compile_error!: code none.
 code: none
 file: array-order-place-raw/src/main.rs
-line: 21
+line: 20
 message: [GUST-E0421] the index of the assigned place reads `s`, and the value calls `.bump(..)` on it with `&mut self`: Rust evaluates the value first and the index after it, Slang computes the index first, so another element than Rust's would be written; call the method first (`let v = s.bump(..); a[i] = v;`)

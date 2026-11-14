@@ -11,6 +11,7 @@ use crate::{
     checks::{GOLDEN_SPIRV_SETS, check_dual, tests_not_ok},
     difftest::check_difftest_report,
     docs::docs_check,
+    gallery::check_gallery_gpu_report,
     lint::lint,
     precompiled::check_precompiled_report,
     process::{
@@ -384,6 +385,13 @@ fn verify_inner(
                 skipped.push(name.to_owned());
             }
         }
+    }
+    // The GPU part of `check-gallery` (m10.g0): `cargo run --release` per gallery entry on the adapter. It is not part of
+    // `integration_checks`: that list is pinned by tests, and only this part of the gallery check belongs to the full
+    // gate (the Slang and no-Slang parts run in CI).
+    if mode == VerifyMode::Full {
+        let outcome = check_gallery_gpu_report().map(|summary| format!("{summary}\n"));
+        run_integration(checks, "check-gallery", outcome)?;
     }
     Ok(())
 }

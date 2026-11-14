@@ -47,7 +47,7 @@ pub(crate) struct Entry {
 
 /// Every entry of the gallery. A unit test and the check itself compare this list with the `members` of
 /// `gallery/Cargo.toml`, so an entry cannot be added to one and forgotten in the other.
-pub(crate) const ENTRIES: [Entry; 4] = [
+pub(crate) const ENTRIES: [Entry; 6] = [
     Entry {
         dir: "hello-gust",
         expected_line: "hello-gust: [11.0, 22.0, 33.0, 44.0]",
@@ -63,6 +63,14 @@ pub(crate) const ENTRIES: [Entry; 4] = [
     Entry {
         dir: "particles",
         expected_line: "particles: 1000 particles, 16 steps, 1129 bounces, energy 20272.84375",
+    },
+    Entry {
+        dir: "image-threshold",
+        expected_line: "image-threshold: 37 x 21 texels, 366 bright by the pixel kernel, 366 by the grid kernel",
+    },
+    Entry {
+        dir: "reduce-scan",
+        expected_line: "reduce-scan: 100000 values in 8 sizes, sum 450000, scan ends at 450000 with checksum 22499850000",
     },
 ];
 

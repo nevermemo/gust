@@ -33,8 +33,8 @@ fn gpu_particles_step(@builtin(global_invocation_id) id_0 : vec3<u32>)
         p_0.pos_0[i32(1)] = _S3;
         if((_S3 < 0.0f))
         {
-            p_0.pos_0[i32(1)] = 0.0f - p_0.pos_0[i32(1)];
-            p_0.vel_0[i32(1)] = 0.0f - p_0.vel_0[i32(1)] * 0.5f;
+            p_0.pos_0[i32(1)] = - p_0.pos_0[i32(1)];
+            p_0.vel_0[i32(1)] = - p_0.vel_0[i32(1)] * 0.5f;
             p_0.bounces_0 = p_0.bounces_0 + u32(1);
         }
         ps_0[i_0].pos_0 = p_0.pos_0;

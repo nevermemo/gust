@@ -7,7 +7,7 @@
 What it shows:
 
 - A uniform is a struct of the `#[gpu]` module with no implicit padding. `Params` writes its three `pad` fields out, so
-  the 16 bytes of the constant buffer are the 16 bytes of the Rust value. `create_uniform` refuses a padded type with a
+  the 16 bytes of the constant buffer (a uniform's size is a multiple of 16) are the 16 bytes of the Rust value. `create_uniform` refuses a padded type with a
   message that names the fix, and the macro refuses a layout with a gap at compile time.
 - The typed call, `saxpy::apply::dispatch(&device, n, &uniform, &x, &y, &out)`: the parameters are the kernel's own, in
   its order, and a buffer where the uniform goes (or the reverse) is a compile error, not a run-time one.
@@ -31,7 +31,8 @@ cargo test                        # the CPU twin against the host reference; no 
 cargo run --features gust-dev     # development: compiles the kernel at run time through Slang, needs an adapter
 cargo gust build                  # compiles the kernel with Slang and writes gust-artifacts/ (commit them)
 cargo gust check                  # fails when gust-artifacts/ no longer matches the sources
-cargo run --release               # no Slang needed; needs a Vulkan compute adapter
+cargo build --release             # no Slang needed: the kernel is embedded from gust-artifacts/
+cargo run --release               # needs a Vulkan compute adapter
 ```
 
 `main` asserts both results before it prints (the values are small integers, exact in `f32`). It prints `saxpy-uniform: a=2 [12.0, 24.0, 36.0, 48.0], a=3 [13.0, 26.0, 39.0, 52.0]` and a line `adapter: <name>` with the GPU it ran on.

@@ -1,0 +1,8 @@
+[package]
+name = "shape-pixel-output-read-raw"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+gust = { package = "gust-compute", path = "../../../crates/gust" }

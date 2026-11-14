@@ -12,9 +12,13 @@ The workspace version is `0.2.0-dev`. Work for 0.2.0 lands on `main`; the 0.1.0 
 parts (the descriptor constructor and setters, and the `GpuKernel` bound), is the last of its kind: the descriptor is
 `#[non_exhaustive]` from now on. B2 is a function name in a `#[gpu]` module that is now reserved (the 21 subgroup
 operations). B3 is that recursion is refused (`GUST-E0120`). B4 is that more names are renamed in the emitted Slang,
-which changes the content key of a precompiled artifact of a module that uses one (`Tuple`, `makeTuple`, `this` and the
-46 names of Slang's standard interfaces). The public API that M9 adds is additive (D165 and the route types); the
-semver tool was not run for it.
+which changes the content key of a precompiled artifact of a module that uses one (`Tuple`, `makeTuple`, `this`,
+`interface`, `extension` and the 46 names of Slang's standard interfaces). The public API that M9 adds is additive
+(D165 and the route types). The `semver` job of CI ran on `f613b32` (run 43535559023): cargo-semver-checks 0.51.0
+against `release/0.1`, `--release-type patch`, the `dev` profile and the default features, 229 checks for each of
+`gust-compute` and `gust-compute-wgpu` (31 skipped). Its one finding is the `#[non_exhaustive]` on `KernelDescriptor`
+in `gust-compute` (B1, already listed); for `gust-compute-wgpu` it found nothing ("no semver update required"). It
+does not judge the macro language and skips `#[doc(hidden)]` items, so the list is not a proof.
 
 ### Added
 
@@ -233,16 +237,18 @@ semver tool was not run for it.
   the Slang line table), which were rewritten to put the recursive call into the Slang text. A call `x.m(..)` also
   counts as a call of every method named `m` of another struct, so rename a method that calls another struct's method of
   the same name.
-- **B4: more names are renamed in the emitted Slang** (`Tuple`, `makeTuple`, `this`, and the 46 interface names of
-  Slang's standard module, `IFloat`, `IInteger`, `IComparable`, `__BuiltinType` and the rest, `STDLIB_INTERFACES` in
-  `crates/gust-macros/src/slang/collisions.rs`). M9 uses `Tuple<..>` and `makeTuple` for tuples and `this` for method
-  receivers, and emits a user `trait` as an `interface`, so a user name equal to one of these is emitted as
-  `__gust_r_<name>`, as the 0.1.0 names of the collision table already were (D81). A 0.1.0 module with any user name of
-  one of these spellings (a struct, field, local, helper or parameter; 0.1.0 had no enums) gets other Slang text, hence
-  another content key for its precompiled artifacts. Migration: run `cargo gust build` again and commit
-  `gust-artifacts/`; the source needs no change, and a slangc message shows the Rust spelling again. Not measured: how
-  many 0.1.0 modules use such a name (no example of this repository does; the tests that use one are the renaming's
-  own).
+- **B4: more names are renamed in the emitted Slang** (`Tuple`, `makeTuple`, `this`, `interface`, `extension`, and the
+  46 interface names of Slang's standard module, `IFloat`, `IInteger`, `IComparable`, `__BuiltinType` and the rest,
+  `STDLIB_INTERFACES` in `crates/gust-macros/src/slang/collisions.rs`). M9 uses `Tuple<..>` and `makeTuple` for tuples
+  and `this` for method receivers, and emits a user `trait` as an `interface` and an impl as an `extension`, so a user
+  name equal to one of these is emitted as `__gust_r_<name>`, as the 0.1.0 names of the collision table already were
+  (D81). A 0.1.0 module with any user name of one of these spellings (a struct, field, local, helper or parameter; 0.1.0
+  had no enums) gets other Slang text, hence another content key for its precompiled artifacts. Migration: run
+  `cargo gust build` again and commit `gust-artifacts/`; the source needs no change, and a slangc message shows the
+  Rust spelling again. Measured on slangc 2026.22 for `interface` and `extension`: as a local, field, helper,
+  parameter or struct on its own the word compiles, and a user struct, helper or global of that name placed before an
+  emitted `interface` or `extension` fails (E20001); the rename removes that. Not measured: how many 0.1.0 modules use
+  such a name (no example of this repository does; the tests that use one are the renaming's own).
 - `DeviceOptions::default()` and `HeadlessDevice::new()` now request `gust::capability::enabled()`. In a build with no
   capability that is the empty set, as before; in a `+subgroups` build they open a device with the feature or fail with
   `Error::MissingCapability`.

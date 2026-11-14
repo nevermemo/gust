@@ -183,7 +183,8 @@ fn the_class_2_entries_are_the_names_the_emitted_text_uses() {
         .map(|entry| entry.name)
         .collect();
     // R1-A.4 and S6.3b, plus the measured additions (`Atomic`, `none`, and `true`, `false` and `var`, which the review
-    // of 2026-11-01 found captured by a local of that name).
+    // of 2026-11-01 found captured by a local of that name), and `interface` and `extension` (m9.z, the keywords the
+    // trait lowering of m9.g1 emits).
     let expected: BTreeSet<_> = [
         "Atomic",
         "ConstantBuffer",
@@ -194,6 +195,7 @@ fn the_class_2_entries_are_the_names_the_emitted_text_uses() {
         "__GustResult",
         "bool",
         "dot",
+        "extension",
         "false",
         "float",
         "float2",
@@ -205,6 +207,7 @@ fn the_class_2_entries_are_the_names_the_emitted_text_uses() {
         "int",
         "int2",
         "int4",
+        "interface",
         "makeTuple",
         "matrix",
         "mul",
@@ -637,4 +640,49 @@ fn the_stdlib_interface_list_is_sorted_unique_and_renamed() {
         );
     }
     assert!(!collides("Shape"));
+}
+
+/// `interface` and `extension` are the keywords GUST emits for a trait and an impl (slice m9.g1), and a user struct of
+/// that name before them captured the keyword (slangc E20001, measured in m9.z). The struct, its impl and the call are
+/// renamed at every site, and the keywords are left alone. The Slangc-tier table test compiles the renamed text.
+#[test]
+fn a_struct_named_like_the_trait_or_impl_keyword_is_renamed_and_the_keywords_stay() {
+    for name in ["interface", "extension"] {
+        assert!(collides(name), "{name}");
+        assert_eq!(emit_name(name), format!("{PREFIX}{name}"));
+        let renamed = format!("{PREFIX}{name}");
+        let text = emit(&format!(
+            "mod m {{
+                pub trait Shape {{ fn area(&self) -> u32; }}
+                pub struct {name} {{ pub w: u32 }}
+                impl Shape for {name} {{ fn area(&self) -> u32 {{ self.w }} }}
+                #[kernel]
+                pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<u32>) {{
+                    let s = {name} {{ w: 3 }};
+                    out[id.x] = s.area();
+                }}
+            }}"
+        ))
+        .unwrap_or_else(|error| panic!("{name}: {error}"));
+        for piece in [
+            format!("struct {renamed}"),
+            format!("extension {renamed} : Shape"),
+            "interface Shape".to_owned(),
+            format!("{renamed} s"),
+        ] {
+            assert!(
+                text.contains(&piece),
+                "{name}: `{piece}` missing in\n{text}"
+            );
+        }
+        // No declaration or use keeps the bare spelling next to a keyword or a type position.
+        for bare in [
+            format!("struct {name}"),
+            format!("extension {name} :"),
+            // The local of that type; the leading space keeps `__gust_r_interface s` from matching.
+            format!("\n    {name} s"),
+        ] {
+            assert!(!text.contains(&bare), "{name}: `{bare}` left in\n{text}");
+        }
+    }
 }

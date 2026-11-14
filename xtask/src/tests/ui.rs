@@ -1819,7 +1819,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 246] = [
+const PINNED_FIXTURES: [&str; 249] = [
     "array-barrier",
     "array-buffer-len",
     "array-const-len",
@@ -1831,6 +1831,7 @@ const PINNED_FIXTURES: [&str; 246] = [
     "array-ok",
     "array-order-field",
     "array-order-place",
+    "array-order-place-raw",
     "array-order-storage",
     "array-reserved-temp",
     "array-slice",
@@ -1967,6 +1968,7 @@ const PINNED_FIXTURES: [&str; 246] = [
     "shape-pixel-other-index",
     "shape-pixel-output-compound",
     "shape-pixel-output-read",
+    "shape-pixel-output-read-raw",
     "shape-pixel-return",
     "shape-pixel-second-alias",
     "shape-pixel-storage-texture",
@@ -2052,6 +2054,7 @@ const PINNED_FIXTURES: [&str; 246] = [
     "typed-call-sampler-for-buffer",
     "typed-call-texture-for-buffer",
     "typed-call-texture-ok",
+    "unsupported-expression-array-untyped",
     "variant-ambiguous",
     "variant-cpu-unsupported",
     "variant-malformed",

@@ -517,6 +517,27 @@ test module; do not mix that mechanical move with behavior changes.
 
 ## M9 follow-ups (filed during M9)
 
+- The SPIR-V route on Mesa lavapipe gives a wrong `(x as f32) as i32` (m9.z; CI run 43535559010, workflow
+  `spirv-route`, Mesa 25.2.8, LLVM 20.1.2): CT-80 and CT-84 `CastInt` return `x` itself for `x = 16777217` and
+  `-16777217` where Rust gives 16777216 and -16777216; the `CastFloat` half is right, and the same rows pass through
+  the route on the RTX 5090 and through WGSL on lavapipe. Triage on the CPU (scratch under `run/spikes/m9.z/`):
+  slangc 2026.22's SPIR-V for the `casts` kernel is a plain `OpConvertSToF` then `OpConvertFToS` of its result, with no
+  decoration (`RelaxedPrecision`, `FPFastMathMode`) and no fold; naga 30.0.1's writer (read, not run: no naga CLI was
+  built) puts an `FClamp` between the two. Cause: a hypothesis, that Mesa's optimiser folds the undecorated pair to
+  `x`. Policy (D39, the edge-case policy): a documented limitation (SEMANTICS section 15, README), not chased; the
+  coretests accept `x` itself for those two slots only on a software adapter with the route taken. What would close
+  it: a one-kernel probe of the pair on lavapipe alone, the same module through `spirv-opt` and `spirv-reduce`, a
+  Mesa report if the fold is confirmed.
+  The `continue-on-error` of the `spirv-route` workflow is gone since the first green run (43561965483, m9.z round 2).
+  The earlier run was the first lavapipe measurement of the route: only the coretests target failed. Filed, not fixed:
+  the variable rule is repeated in `workgroup_zero.rs` instead of shared with `software_adapter_verdict`, and the wiring
+  of the variable has no test (only lavapipe CI runs it).
+- A pattern binding, a `for` variable or a closure parameter that shadows a value parameter still gets a false
+  GUST-E0333 on a `&mut self` call (m9.z round 3 fixed the `let` shadow and its block scope only; Opus round 3 N5).
+  The validator keys the by-value parameters by name and removes a name only at a `let`.
+- No browser (Tint) run of any M9 fixture (methods, enums and `match`, tuples, arrays, closures, traits and generics)
+  exists, although `web` is a target (Opus sanity check of M9): one `check-web` of the M9 fixtures would show whether
+  Tint takes the WGSL as naga does. Not started in m9.z.
 - m9.r2b re-check nits: two of the mutation checks reach only the array check, two `ArrayOf::ELEMENT_OK`
   assertions have no doctest, and the stride message names `Vec3` where it means any 12-byte element.
 - m9.e1 re-check nits: an enum local named like the binding of an `Ok(m)` arm in a `Result` match gets a false
@@ -549,16 +570,16 @@ test module; do not mix that mechanical move with behavior changes.
   raw; the `int` cast alias and `as (u32)` have no test.
 - Order audit follow-ups: `&&` and `||` short circuit has no named compiler test (the difftest covers it); the
   storage-place order shape belongs to m9.d1d. `out[atomic_add(&mut ctr[0], 1u32) as usize] =
-  atomic_add(&mut ctr[0], 10u32)` on the same cell: Slang takes the index's atomic first, Rust the value's;
-  E0421's mutating-call search sees module methods only, not atomics (contrived and racy across invocations;
-  refuse an atomic in both the index and the value, or record it).
+  atomic_add(&mut ctr[0], 10u32)` on the same cell: Slang takes the index's atomic first, Rust the value's; recorded
+  in SEMANTICS section 11 (m9.z) as a known difference with its rewrite, with no code change. E0421's mutating-call
+  search still sees module methods only, not atomics; refusing an atomic in both the index and the value would
+  replace the note (and the form was not run on a GPU in m9.z, only read in slangc's WGSL).
 - Remove `__gust_xor`: with Slang 2026.22 (#14324) bool `^` is valid WGSL from naga's view; emit `^` directly and
   re-bless the goldens that change (D173).
-- m9.x1 nits: the compiler-tag check in `cargo xtask lint` does not read
-  `crates/cargo-gust/src/testdata/schema3/expected.txt`, whose five SPIR-V reflection lines no other check compares
-  (its WGSL lines are compared with the checked fixtures): check its `{` lines or name it as an exclusion. A tagged
-  file that is not UTF-8 or holds a NUL is counted as skipped, not checked, and a JSON top level that is not an object
-  passes; no test shows that `lint_tracked_files` calls the check; exact equality would reject artifacts of a future
+- m9.x1 nits (the compiler-tag check now reads the `{` lines of `crates/cargo-gust/src/testdata/schema3/expected.txt`
+  and counts a tagged file that is not UTF-8 or holds a NUL as a problem, m9.z): a JSON top level that is not an
+  object passes the tag check; no test shows that `lint_tracked_files` calls it (the pure `compiler_tag_check` is
+  tested, the loop is not); exact equality would reject artifacts of a future
   `VALIDATED_BUILDS` entry (say so in the help). A test process left from a killed run could append to the new route
   log after the delete (a per-run log name closes it; the delete's doc comment gives another reason). New lines over
   120 columns in driver_sentinel.rs, spirv_route.rs, lint.rs and DIFFTEST.md. DIFFTEST.md: cite the gust-macros
@@ -607,9 +628,6 @@ test module; do not mix that mechanical move with behavior changes.
   (`lock_for`) as the delete's guard, not xtask's fresh export directory; document the discard on
   `execute_shapes` and `Options.export_dir` (`--shrink` with `--export-dir` is refused since m9.x1). GUST-E0712's message says "same Slang text" when only
   the `.kernel.json` record differs (gust-macros `collision_message`).
-
-- `interface` and `extension` are emitted by M9 (traits) but are in neither `COLLISIONS` nor `STDLIB_INTERFACES`; a user
-  name of that spelling probably fails in slangc loudly (not measured).
 
 ## Deferred language/runtime breadth
 

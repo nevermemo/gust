@@ -27,6 +27,7 @@ use std::{
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
+use syn::ext::IdentExt as _;
 
 use crate::{
     diagnostics::{self, Code},
@@ -402,7 +403,7 @@ fn bare_name(ty: &syn::Type) -> Option<String> {
     if !segment.arguments.is_empty() {
         return None;
     }
-    Some(segment.ident.to_string())
+    Some(segment.ident.unraw().to_string())
 }
 
 /// The layout of a scalar, vector or matrix spelling that may be a buffer element, `None` for anything else (a struct,
@@ -520,8 +521,6 @@ fn std140_layout_at(
     structs: &HashMap<String, &syn::ItemStruct>,
     depth: usize,
 ) -> Option<Layout> {
-    use syn::ext::IdentExt as _;
-
     if depth > MAX_NESTING {
         return None;
     }
@@ -1623,7 +1622,7 @@ pub(super) mod tests {
         let items = structs_of(source);
         let structs: HashMap<String, &syn::ItemStruct> = items
             .iter()
-            .map(|item| (item.ident.to_string(), item))
+            .map(|item| (item.ident.unraw().to_string(), item))
             .collect();
         let ty: syn::Type = crate::diagnostics::testing::parse_str(element).unwrap();
         element_layout(&ty, &structs)
@@ -1650,7 +1649,7 @@ pub(super) mod tests {
         let items = structs_of(source);
         let structs: HashMap<String, &syn::ItemStruct> = items
             .iter()
-            .map(|item| (item.ident.to_string(), item))
+            .map(|item| (item.ident.unraw().to_string(), item))
             .collect();
         let ty: syn::Type = crate::diagnostics::testing::parse_str(element).unwrap();
         storage_resource(&ty, &structs)
@@ -1660,7 +1659,7 @@ pub(super) mod tests {
         let items = structs_of(source);
         let structs: HashMap<String, &syn::ItemStruct> = items
             .iter()
-            .map(|item| (item.ident.to_string(), item))
+            .map(|item| (item.ident.unraw().to_string(), item))
             .collect();
         let ty: syn::Type = crate::diagnostics::testing::parse_str(element).unwrap();
         uniform_resource(&ty, &structs)
@@ -1866,7 +1865,7 @@ pub(super) mod tests {
         let items = structs_of(UNIFORM_STRUCTS);
         let by_name: HashMap<String, &syn::ItemStruct> = items
             .iter()
-            .map(|item| (item.ident.to_string(), item))
+            .map(|item| (item.ident.unraw().to_string(), item))
             .collect();
         let model = crate::uniform::std140_struct(by_name["Frame"], &by_name, 0).unwrap();
         assert_eq!((model.size, model.alignment), (frame.size, frame.alignment));

@@ -1,7 +1,7 @@
 use super::{
-    Member, carries_compiler_tag, compiler_tag_problems, find_machine_path, is_forbidden_script,
-    licence_problem, machine_path_problems, member_field_problems, parse_members,
-    path_dependency_problems,
+    Member, TagCheck, carries_compiler_tag, carries_line_documents, compiler_tag_check,
+    compiler_tag_problems, find_machine_path, is_forbidden_script, licence_problem,
+    machine_path_problems, member_field_problems, parse_members, path_dependency_problems,
 };
 
 #[test]
@@ -789,5 +789,166 @@ fn only_reflection_documents_and_manifests_carry_a_checked_tag() {
         "not-a-manifest.json",
     ] {
         assert!(!carries_compiler_tag(no), "{no}");
+    }
+}
+
+// ---- the probe expectations and the unreadable tagged file (m9.z; m9.x1 review S1 and N4) ----
+
+const EXPECTATIONS: &str = "crates/cargo-gust/src/testdata/schema3/expected.txt";
+
+/// A probe-expectation file in the shape of the real one: header lines, one document per line, an error line.
+fn expectations(sampled_tag: &str, fragment_tag: &str) -> String {
+    format!(
+        "== sampled_float4 wgsl compute\n\
+         {{\"schemaVersion\":3,\"compiler\":\"{sampled_tag}\",\"target\":\"wgsl\"}}\n\
+         == fragment_gap spirv fragment\n\
+         {{\"schemaVersion\":3,\"compiler\":\"{fragment_tag}\",\"target\":\"spirv\"}}\n\
+         == refuse_texture3d wgsl compute\n\
+         error: Slang reflection compiler failed: unsupported texture shape (3D)\n"
+    )
+}
+
+#[test]
+fn only_the_reflection_probe_expectations_are_read_line_by_line() {
+    assert!(carries_line_documents(EXPECTATIONS));
+    assert!(carries_line_documents("a/testdata/b/expected.txt"));
+    assert!(carries_line_documents("testdata/schema3/expected.txt"));
+    for no in [
+        "tests/ui/array-barrier/expected.txt",
+        "tests/dual/e1-expected.txt",
+        "tests/precompiled/e6-bridge-expected.txt",
+        "crates/cargo-gust/src/testdata/schema3/other.txt",
+        "crates/cargo-gust/src/testdata/schema3/not-expected.txt",
+        "expected.txt",
+        "docs/testdata.md",
+        "mytestdata/expected.txt",
+    ] {
+        assert!(!carries_line_documents(no), "{no}");
+    }
+    // The whole-file rule does not apply to it, so a line is never judged as a whole document.
+    assert!(!carries_compiler_tag(EXPECTATIONS));
+}
+
+#[test]
+fn a_stale_tag_on_any_document_line_of_the_expectations_is_named_with_its_line() {
+    // The first document is current, the second (a SPIR-V line, which no other check compares) is stale.
+    let text = expectations("2026.22", "2026.21");
+    let check = compiler_tag_check(EXPECTATIONS, text.as_bytes(), PIN).unwrap();
+    assert_eq!(check.documents, 2);
+    assert_eq!(check.problems.len(), 1, "{:?}", check.problems);
+    let problem = &check.problems[0];
+    assert!(
+        problem.starts_with(&format!(
+            "{EXPECTATIONS}:4: `compiler` is `2026.21` but SLANG_PIN is `2026.22`"
+        )),
+        "{problem}"
+    );
+    // Both stale: both lines are named, in order.
+    let text = expectations("2026.20", "2026.21");
+    let check = compiler_tag_check(EXPECTATIONS, text.as_bytes(), PIN).unwrap();
+    assert_eq!(check.problems.len(), 2);
+    assert!(check.problems[0].contains(":2:") && check.problems[1].contains(":4:"));
+    // Current tags, header lines and the error line: nothing to report, two documents counted.
+    let text = expectations("2026.22", "2026.22");
+    assert_eq!(
+        compiler_tag_check(EXPECTATIONS, text.as_bytes(), PIN),
+        Some(TagCheck {
+            documents: 2,
+            problems: Vec::new()
+        })
+    );
+    // CRLF line ends (a working tree with autocrlf) do not matter.
+    let crlf = expectations("2026.22", "2026.22").replace('\n', "\r\n");
+    let check = compiler_tag_check(EXPECTATIONS, crlf.as_bytes(), PIN).unwrap();
+    assert_eq!((check.documents, check.problems.len()), (2, 0));
+}
+
+#[test]
+fn a_broken_document_line_or_a_file_without_one_is_a_problem() {
+    let broken = "== a wgsl compute\n{\"schemaVersion\":3,\"compiler\":\"2026.22\"\n";
+    let check = compiler_tag_check(EXPECTATIONS, broken.as_bytes(), PIN).unwrap();
+    assert_eq!(check.documents, 1);
+    assert!(
+        check.problems.len() == 1
+            && check.problems[0].starts_with(&format!("{EXPECTATIONS}:2: not JSON")),
+        "{:?}",
+        check.problems
+    );
+    // No `{` line at all: the check would pass on nothing, so it says so.
+    let none = "== a wgsl compute\nerror: x\n";
+    let check = compiler_tag_check(EXPECTATIONS, none.as_bytes(), PIN).unwrap();
+    assert_eq!(check.documents, 0);
+    assert!(check.problems.len() == 1 && check.problems[0].contains("no line starts with `{`"));
+    // An indented `{` is not a document line.
+    let indented = "  {\"compiler\":\"2026.21\"}\n";
+    assert_eq!(
+        compiler_tag_check(EXPECTATIONS, indented.as_bytes(), PIN)
+            .unwrap()
+            .documents,
+        0
+    );
+}
+
+#[test]
+fn a_tagged_file_that_is_not_utf8_text_is_a_problem_not_a_skip() {
+    let utf16: Vec<u8> = "{\"slang\":\"2026.21\"}"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let invalid = b"{\"slang\":\"2026.22\"}\xff".to_vec();
+    let nul = b"{\"slang\":\"2026.22\"}\0".to_vec();
+    for path in [
+        "gust-artifacts/manifest.json",
+        "k.wgsl.reflection.json",
+        "k.wgsl.json",
+        EXPECTATIONS,
+    ] {
+        for (label, bytes) in [
+            ("UTF-16", &utf16),
+            ("invalid UTF-8", &invalid),
+            ("NUL", &nul),
+        ] {
+            let check = compiler_tag_check(path, bytes, PIN)
+                .unwrap_or_else(|| panic!("{path} carries a tag ({label})"));
+            assert_eq!(check.documents, 0, "{path} {label}");
+            assert_eq!(
+                check.problems.len(),
+                1,
+                "{path} {label}: {:?}",
+                check.problems
+            );
+            assert!(
+                check.problems[0].starts_with(&format!("{path}: not UTF-8 text, or holds a NUL")),
+                "{path} {label}: {:?}",
+                check.problems
+            );
+        }
+    }
+}
+
+#[test]
+fn a_whole_file_document_counts_once_and_a_file_without_a_tag_is_not_judged() {
+    let manifest = "{\"slang\":\"2026.22\"}";
+    assert_eq!(
+        compiler_tag_check("gust-artifacts/manifest.json", manifest.as_bytes(), PIN),
+        Some(TagCheck {
+            documents: 1,
+            problems: Vec::new()
+        })
+    );
+    // The same stale-tag message as `compiler_tag_problems` gives, for a whole file.
+    let stale = compiler_tag_check("manifest.json", b"{\"slang\":\"2026.21\"}", PIN).unwrap();
+    assert_eq!(
+        stale.problems,
+        compiler_tag_problems("manifest.json", "{\"slang\":\"2026.21\"}", PIN)
+    );
+    // Files that carry no tag are never judged, whatever their bytes (binary files stay a skip of the path scan).
+    for path in [
+        "tests/ui/x/expected.txt",
+        "docs/SEMANTICS.md",
+        "crates/gust/src/lib.rs",
+        "a.spv",
+    ] {
+        assert_eq!(compiler_tag_check(path, &[0xff, 0, 1], PIN), None, "{path}");
     }
 }

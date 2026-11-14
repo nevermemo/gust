@@ -114,7 +114,14 @@ Do not wait for Codex during normal local swarm work.
   test and dual builds, and in no production build except the `cpu` target and a
   CPU-routed kernel (D51, D65), whose runtime they are. Independent host references stay
   required for semantics fixtures; a twin assertion is added to them and to the GPU
-  assertion, never in place of either, and is never GPU evidence.
+  assertion, never in place of either, and is never GPU evidence. The opt-in SPIR-V route
+  (D172, D174, D175) does not change any of this: it is a Cargo feature of the build
+  (`spirv-route`, off by default, Vulkan only, run-time compilation only: a precompiled
+  artifact keeps its WGSL) that gives the one GPU pipeline of a kernel slangc's own SPIR-V
+  instead of WGSL. It is no CPU/GPU switch and no second pipeline, but a kernel falls back
+  to WGSL at run time where the device or the backend cannot take SPIR-V, and the device
+  records why. Its result differences from the WGSL route are documented in
+  `docs/SEMANTICS.md` section 15.
 - Workflow commands live in `cargo xtask`; do not add shell or PowerShell scripts
   (D27). The ordered plan is `docs/ROADMAP.md`; read its "Now and next" first.
 - Do not claim compiler reflection in the macro: bindings and restricted POD layouts
@@ -122,7 +129,10 @@ Do not wait for Codex during normal local swarm work.
   through the native helper before creating a pipeline (D17); that check is a gate,
   not a source of bindings.
 - Portable behavior is required; native accelerations need capability gates and
-  the same visible semantics. No GPU inter-workgroup spin waits.
+  the same visible semantics. The one documented exception is the opt-in SPIR-V route,
+  whose result differences (an unclamped storage index, float to integer conversions, one
+  rounding case on a software adapter) are D39 limitations listed in `docs/SEMANTICS.md`
+  section 15; it is a build feature, never a default. No GPU inter-workgroup spin waits.
 - Prefer a diagnostic over silently translating unsupported Rust semantics.
 - Do not rename crates, initialize Git, remove working examples, add dependencies,
   or expand architecture merely to align branding. Explain necessary changes. The published package names are D48's

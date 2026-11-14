@@ -6,7 +6,8 @@
 //! guards of the emitted Slang (index clamp, division helpers, the literal `%`; D39 limitations pinned at the values
 //! naga's guards give), and the fallback record (`HeadlessDevice::route_events`). The workgroup zero-initialisation
 //! probes (D174a) are in `workgroup_zero.rs`, which runs on both routes. On a hardware adapter every kernel here must
-//! take the SPIR-V route; on a software adapter (lavapipe) either route is accepted as long as the record says why.
+//! take the SPIR-V route; on a software adapter (lavapipe) either route is accepted as long as the record says why,
+//! unless `GUST_REQUIRE_SPIRV_ROUTE=1` is set, which turns a fall back to WGSL into a failure (CI sets it).
 #![cfg(feature = "spirv-route")]
 
 use gust::{
@@ -22,8 +23,39 @@ fn device() -> HeadlessDevice {
     device
 }
 
+/// The environment variable that makes a software adapter hold the route to the hardware rule: with
+/// `GUST_REQUIRE_SPIRV_ROUTE=1` a kernel that fell back to WGSL on lavapipe fails the test instead of passing without
+/// having exercised the route (m9.z; CI's `spirv-route` workflow sets it for the lavapipe step).
+const REQUIRE_ROUTE_VARIABLE: &str = "GUST_REQUIRE_SPIRV_ROUTE";
+
+/// Whether [`REQUIRE_ROUTE_VARIABLE`] is `1`. Any other value, or none, keeps the software-adapter rule below.
+fn route_required() -> bool {
+    std::env::var_os(REQUIRE_ROUTE_VARIABLE).is_some_and(|value| value == "1")
+}
+
+/// The verdict for a kernel on a software adapter: the SPIR-V route passes; a fall back to WGSL passes only with a
+/// recorded reason and only when the route is not required.
+fn software_adapter_verdict(
+    route: Route,
+    reason: Option<&str>,
+    required: bool,
+) -> Result<(), String> {
+    if route == Route::Spirv {
+        return Ok(());
+    }
+    if reason.is_none() {
+        return Err("a fall back to WGSL with no recorded reason".to_owned());
+    }
+    if required {
+        return Err(format!(
+            "{REQUIRE_ROUTE_VARIABLE}=1 requires the SPIR-V route, but the kernel fell back to WGSL ({reason:?})"
+        ));
+    }
+    Ok(())
+}
+
 /// The route the kernel `qualified` took on `device`, asserting the expectation: SPIR-V on every hardware adapter, and on
-/// a software one SPIR-V or WGSL with the recorded reason.
+/// a software one SPIR-V, or WGSL with the recorded reason unless `GUST_REQUIRE_SPIRV_ROUTE=1` is set.
 fn assert_spirv(device: &HeadlessDevice, qualified: &str) {
     let events: Vec<_> = device
         .route_events()
@@ -37,8 +69,10 @@ fn assert_spirv(device: &HeadlessDevice, qualified: &str) {
     );
     let event = &events[0];
     if device.adapter_info().device_type == wgpu::DeviceType::Cpu {
-        if event.route == Route::Wgsl {
-            assert!(event.reason.is_some(), "{event:?}");
+        if let Err(message) =
+            software_adapter_verdict(event.route, event.reason.as_deref(), route_required())
+        {
+            panic!("{qualified} on a software adapter: {message}: {event:?}");
         }
         return;
     }
@@ -372,19 +406,18 @@ fn a_kernel_the_route_took_is_recorded_once_per_device() {
 /// A backend that is not Vulkan stays on the WGSL route and says why (review M1): DX12, Metal and GL advertise
 /// `PASSTHROUGH_SHADERS` but take no SPIR-V, so asking for the feature there would panic at the first kernel. This end
 /// to end test can run only where wgpu itself is built with a non-Vulkan backend: this workspace builds wgpu with
-/// `vulkan` only (`std`, `vulkan`, `wgsl`), so no DX12 adapter can open on any machine of the project and the test
-/// returns early. The decision itself (a backend that is not Vulkan stays on WGSL) is covered by the unit test in
-/// `passthrough.rs`; this test matters to a downstream build whose own wgpu dependency enables `dx12`, `metal` or `gles`.
+/// `vulkan` only (`std`, `vulkan`, `wgsl`), so no DX12 adapter can open on any machine of the project. It is
+/// `#[ignore]`d so that the test list does not report a pass for a test that cannot run (m9.z); run with
+/// `-- --ignored` in a build whose wgpu enables `dx12`, and it fails when no DX12 adapter opens. The decision itself
+/// (a backend that is not Vulkan stays on WGSL) is covered by the unit test in `passthrough.rs`, which does run; this
+/// test matters to a downstream build whose own wgpu dependency enables `dx12`, `metal` or `gles`.
 #[test]
+#[ignore = "the workspace builds wgpu with Vulkan only, so no DX12 adapter can open; the fallback decision is covered \
+            by the unit test in passthrough.rs"]
 fn a_dx12_device_falls_back_to_wgsl_with_the_backend_reason() {
     let options = gust_wgpu::DeviceOptions::default().with_backends(wgpu::Backends::DX12);
-    let Ok(device) = HeadlessDevice::with_options(options) else {
-        eprintln!(
-            "spirv_route: no DX12 adapter can open: the workspace builds wgpu with Vulkan only, so the end-to-end \
-             fallback was not run (the decision is covered by the unit test)"
-        );
-        return;
-    };
+    let device = HeadlessDevice::with_options(options)
+        .expect("a DX12 adapter is required: run this ignored test only in a build whose wgpu enables `dx12`");
     eprintln!(
         "spirv_route: DX12 adapter {} ({:?})",
         device.adapter_info().name,
@@ -399,4 +432,23 @@ fn a_dx12_device_falls_back_to_wgsl_with_the_backend_reason() {
         Some("backend is not Vulkan"),
         "{events:?}"
     );
+}
+
+// ---- the software-adapter rule (m9.z; no adapter needed) ----
+
+#[test]
+fn a_software_adapter_may_fall_back_to_wgsl_only_when_the_route_is_not_required() {
+    let reason = Some("the device lacks PASSTHROUGH_SHADERS");
+    // The route taken passes either way.
+    assert_eq!(software_adapter_verdict(Route::Spirv, None, false), Ok(()));
+    assert_eq!(software_adapter_verdict(Route::Spirv, None, true), Ok(()));
+    // A fall back with a reason passes only when the route is not required.
+    assert_eq!(software_adapter_verdict(Route::Wgsl, reason, false), Ok(()));
+    let message = software_adapter_verdict(Route::Wgsl, reason, true).unwrap_err();
+    assert!(message.contains("GUST_REQUIRE_SPIRV_ROUTE=1"), "{message}");
+    assert!(message.contains("PASSTHROUGH_SHADERS"), "{message}");
+    // A fall back with no reason is never accepted.
+    for required in [false, true] {
+        assert!(software_adapter_verdict(Route::Wgsl, None, required).is_err());
+    }
 }

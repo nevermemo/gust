@@ -67,7 +67,7 @@ pub(super) fn check(items: &[syn::Item]) -> syn::Result<()> {
                     .attrs
                     .iter()
                     .any(|attribute| attribute.path().is_ident("kernel"));
-                let name = function.sig.ident.to_string();
+                let name = function.sig.ident.unraw().to_string();
                 if !kernel {
                     names.helpers.insert(name.clone(), nodes.len());
                 }
@@ -217,7 +217,7 @@ impl<'ast> Visit<'ast> for Calls<'_> {
             && path.path.leading_colon.is_none()
         {
             if let Some(ident) = path.path.get_ident() {
-                if let Some(&to) = self.names.helpers.get(&ident.to_string()) {
+                if let Some(&to) = self.names.helpers.get(&ident.unraw().to_string()) {
                     self.add(&[to], ident);
                 }
             } else if path.path.segments.len() == 2 {

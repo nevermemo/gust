@@ -4,7 +4,7 @@
 //! that rests on naga's own zero-initialisation of the WGSL route, so this file is not gated: the Gpu suite checks the
 //! promise on the default route too, and a change of naga's default would fail here. With the feature on the guards
 //! are in the emitted Slang, and the probes also assert that the kernels took the SPIR-V route (a software adapter
-//! may take either, as long as the record says why).
+//! may take either, as long as the record says why, unless `GUST_REQUIRE_SPIRV_ROUTE=1` is set).
 
 use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
 
@@ -34,6 +34,13 @@ fn assert_spirv(device: &HeadlessDevice, qualified: &str) {
     if device.adapter_info().device_type == wgpu::DeviceType::Cpu {
         if event.route == Route::Wgsl {
             assert!(event.reason.is_some(), "{event:?}");
+            // `GUST_REQUIRE_SPIRV_ROUTE=1` (set by CI's lavapipe step; m9.z): a fall back is a failure, not a pass
+            // that never exercised the route. Same rule as `spirv_route.rs`.
+            assert!(
+                std::env::var_os("GUST_REQUIRE_SPIRV_ROUTE").is_none_or(|value| value != "1"),
+                "GUST_REQUIRE_SPIRV_ROUTE=1 requires the SPIR-V route, but {qualified} fell back to WGSL on a software \
+                 adapter: {event:?}"
+            );
         }
         return;
     }

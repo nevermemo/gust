@@ -365,9 +365,40 @@ fn observed_or_text(
     .map_err(|_| format!("{stream:?}[{index}] is not a valid {want:?} slot"))
 }
 
+/// Whether the SPIR-V route was taken for the `casts` kernel on a software (CPU-type) adapter, the one condition under
+/// which the known route limitation applies (SEMANTICS section 15, NEXT_TASKS "M9 follow-ups"): on Mesa lavapipe the
+/// route gives `i32(f32(x))` for `x = 16777217` as 16777217 where Rust gives a neighbour (CI run 43535559010). The
+/// hardware adapters and the WGSL route (also on lavapipe) keep the two-neighbour set unchanged. Without the Cargo
+/// feature `spirv-route` there is no route and the answer is `false`.
+#[cfg(feature = "spirv-route")]
+fn spirv_route_on_software_adapter(device: &HeadlessDevice) -> bool {
+    device.adapter_info().device_type == wgpu::DeviceType::Cpu
+        && device.route_events().iter().any(|event| {
+            event.kernel.ends_with("::casts") && event.route == gust_wgpu::Route::Spirv
+        })
+}
+
+#[cfg(not(feature = "spirv-route"))]
+fn spirv_route_on_software_adapter(_device: &HeadlessDevice) -> bool {
+    false
+}
+
 /// Whether `got` is in the set `accept` allows for the literal `want` of the slot `(stream, index)`.
 /// `index` selects the source integer of the two-neighbour set.
 fn accepts(accept: Accept, stream: Stream, index: usize, want: Lit, got: Lit) -> bool {
+    accepts_on_route(accept, stream, index, want, got, false)
+}
+
+/// [`accepts`], and with `route_limitation` (see [`spirv_route_on_software_adapter`]) the two-neighbour set of the
+/// `CastInt` stream also holds the source integer itself. Nothing else widens: not the float stream, not another set.
+fn accepts_on_route(
+    accept: Accept,
+    stream: Stream,
+    index: usize,
+    want: Lit,
+    got: Lit,
+    route_limitation: bool,
+) -> bool {
     match accept {
         Accept::Exact => got == want,
         Accept::Ulps25 => match (got, want) {
@@ -380,15 +411,23 @@ fn accepts(accept: Accept, stream: Stream, index: usize, want: Lit, got: Lit) ->
                 (Stream::CastFloat, Lit::F(got)) => {
                     got == (source - 1) as f32 || got == (source + 1) as f32
                 }
-                (Stream::CastInt, Lit::I(got)) => got == source - 1 || got == source + 1,
+                (Stream::CastInt, Lit::I(got)) => {
+                    got == source - 1 || got == source + 1 || (route_limitation && got == source)
+                }
                 _ => false,
             }
         }
     }
 }
 
-/// The accepted set in words, for a failure message.
-fn set_text(accept: Accept, stream: Stream, index: usize, want: Lit) -> String {
+/// The accepted set in words, for a failure message. `route_limitation` as in [`accepts_on_route`].
+fn set_text(
+    accept: Accept,
+    stream: Stream,
+    index: usize,
+    want: Lit,
+    route_limitation: bool,
+) -> String {
     match accept {
         Accept::Exact => format!("exactly {}", want.render()),
         Accept::Ulps25 => format!(
@@ -402,6 +441,12 @@ fn set_text(accept: Accept, stream: Stream, index: usize, want: Lit) -> String {
                     "{:?} or {:?} (the neighbours of {source})",
                     (source - 1) as f32,
                     (source + 1) as f32
+                ),
+                _ if route_limitation => format!(
+                    "{} or {} (the neighbours of {source}), or {source} itself (the known limitation of the SPIR-V \
+                     route on a software adapter, SEMANTICS section 15)",
+                    source - 1,
+                    source + 1
                 ),
                 _ => format!(
                     "{} or {} (the neighbours of {source})",
@@ -829,6 +874,15 @@ fn scalar_coretests_run_on_the_gpu_and_the_twin_against_the_literals() {
 
     let gpu = run_gpu(&device);
     let twin = run_twins();
+    // Known limitation of the opt-in SPIR-V route on a software adapter: CT-80 and CT-84 `CastInt` also accept the
+    // source integer. False on the RTX 5090, on the WGSL route and without the `spirv-route` feature.
+    let route_limitation = spirv_route_on_software_adapter(&device);
+    if route_limitation {
+        eprintln!(
+            "coretests: the SPIR-V route was taken on a software adapter; CT-80 and CT-84 CastInt also accept the \
+             source integer (known route limitation, SEMANTICS section 15)"
+        );
+    }
 
     let mut executed: Vec<&'static str> = Vec::new();
     let mut failures = String::new();
@@ -848,8 +902,10 @@ fn scalar_coretests_run_on_the_gpu_and_the_twin_against_the_literals() {
             // The twin is Rust's own arithmetic: exact in every row (including the 2.5 ULP and two-neighbour rows).
             let twin_ok =
                 matches!(twin_value, Ok(got) if accepts(Accept::Exact, stream, index, want, got));
-            let gpu_ok =
-                matches!(gpu_value, Ok(got) if accepts(case.accept, stream, index, want, got));
+            let gpu_ok = matches!(
+                gpu_value,
+                Ok(got) if accepts_on_route(case.accept, stream, index, want, got, route_limitation)
+            );
 
             if let (Accept::Ulps25, Ok(Lit::F(got)), Lit::F(literal)) =
                 (case.accept, &gpu_value, want)
@@ -870,7 +926,7 @@ fn scalar_coretests_run_on_the_gpu_and_the_twin_against_the_literals() {
                     case.id,
                     show(&gpu_value),
                     want.render(),
-                    set_text(case.accept, stream, index, want)
+                    set_text(case.accept, stream, index, want, route_limitation)
                 );
             }
 
@@ -879,7 +935,7 @@ fn scalar_coretests_run_on_the_gpu_and_the_twin_against_the_literals() {
                     failures,
                     "{} {stream:?}[{index}]: expected {} ({}); GPU {} [{}], twin {} [{}]",
                     case.id,
-                    set_text(case.accept, stream, index, want),
+                    set_text(case.accept, stream, index, want, route_limitation),
                     case.accept.label(),
                     show(&gpu_value),
                     if gpu_ok { "ok" } else { "FAIL" },
@@ -1035,4 +1091,72 @@ fn the_acceptance_sets_accept_what_r1_7_says_and_nothing_else() {
         assert!(!cast(Stream::CastFloat, Lit::F(0.0), Lit::F(f32::NAN)));
         assert!(!cast(Stream::CastFloat, Lit::F(0.0), Lit::I(source + 1)));
     }
+}
+
+/// The known limitation of the SPIR-V route on a software adapter (SEMANTICS section 15) widens one set by one value:
+/// the `CastInt` slots of the two-neighbour rows (CT-80, CT-84) also accept the source integer. The float slots, the
+/// far values, the exact rows and every other stream keep their sets, and the strict `accepts` never widens.
+#[test]
+fn the_route_limitation_widens_only_the_cast_int_neighbour_set_by_the_source_itself() {
+    for (index, source) in [(3usize, 16_777_217i32), (7, -16_777_217)] {
+        assert_eq!(CASTS_A[index], source);
+        let widened =
+            |stream, got| accepts_on_route(Accept::Neighbours, stream, index, Lit::I(0), got, true);
+        let strict = |stream, got| {
+            accepts_on_route(Accept::Neighbours, stream, index, Lit::I(0), got, false)
+        };
+        // The source itself is accepted for `CastInt` only with the limitation.
+        assert!(widened(Stream::CastInt, Lit::I(source)));
+        assert!(!strict(Stream::CastInt, Lit::I(source)));
+        assert!(!accepts(
+            Accept::Neighbours,
+            Stream::CastInt,
+            index,
+            Lit::I(0),
+            Lit::I(source)
+        ));
+        // The two neighbours stay accepted; a value farther away is still refused.
+        for got in [source - 1, source + 1] {
+            assert!(widened(Stream::CastInt, Lit::I(got)));
+            assert!(strict(Stream::CastInt, Lit::I(got)));
+        }
+        for got in [source - 3, source + 3, source - 2, source + 2] {
+            assert!(!widened(Stream::CastInt, Lit::I(got)), "{got}");
+        }
+        // The float slot is not widened: the source is not representable as `f32`, so it never was in the set.
+        assert!(!widened(Stream::CastFloat, Lit::F(source as f32 + 3.0)));
+        assert!(!widened(Stream::CastFloat, Lit::F(f32::NAN)));
+        assert!(!widened(Stream::CastInt, Lit::F(0.0)));
+    }
+    // The exact rows and the ULP rows ignore the flag.
+    for accept in [Accept::Exact, Accept::Ulps25] {
+        assert!(!accepts_on_route(
+            accept,
+            Stream::CastInt,
+            3,
+            Lit::I(16_777_216),
+            Lit::I(16_777_217),
+            true
+        ));
+    }
+    // The wording names the limitation only when it applies.
+    let with = set_text(
+        Accept::Neighbours,
+        Stream::CastInt,
+        3,
+        Lit::I(16_777_216),
+        true,
+    );
+    let without = set_text(
+        Accept::Neighbours,
+        Stream::CastInt,
+        3,
+        Lit::I(16_777_216),
+        false,
+    );
+    assert!(
+        with.contains("known limitation") && with.contains("16777217 itself"),
+        "{with}"
+    );
+    assert!(!without.contains("limitation"), "{without}");
 }

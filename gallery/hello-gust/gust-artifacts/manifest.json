@@ -1,0 +1,21 @@
+{
+  "kernels": [
+    {
+      "clean_sha256": "dc268a4fde3d423f58fe0ea93420c8aca987d7181d2df1d13f940feb96e86146",
+      "entry_point": "gpu_vector_add_add",
+      "formats": [
+        {
+          "file": "52e85c5f03f72272.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "ab2aae072f96b9055a9ebeafc29510bd893d6dc596e5739352cc6bf1c3163367",
+          "sha256": "6b83da9c0c13d3d1b156951e7baeb6b5a832a205ad4a6f1b63719767c125a614"
+        }
+      ],
+      "key": "52e85c5f03f72272",
+      "module": "vector_add",
+      "name": "add"
+    }
+  ],
+  "schema": 1,
+  "slang": "2026.22"
+}

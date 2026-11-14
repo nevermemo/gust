@@ -43,6 +43,11 @@ jobs:
         # development PC) and this job keeps its time (R4.10). The suite prints each skipped step; a local run of
         # `cargo xtask test --suite Unit` runs them.
         run: cargo --locked xtask test --suite Unit --skip-difftest
+      - name: Gallery without Slang
+        # The no-Slang part of `check-gallery` (m10.g0): the gallery's release build and tests with Slang proved absent
+        # from PATH, the anchors, and the guide-listing sync check. The Slang part runs in the job `slang`, the GPU part
+        # in `check-full`. It comes before the dual build, which stays the last step of the job.
+        run: cargo --locked xtask check-gallery --no-slang
       - name: Dual test build
         # `--cfg gust_dual` (D26): fmt and clippy of tests/dual, the workspace built with the cfg, and the cross-crate
         # proof E1-E3. Cargo only; the examples' GPU runs of the full mode stay local.
@@ -204,6 +209,11 @@ jobs:
         run: >-
           cargo run --locked --quiet -p cargo-gust --
           check -p kernels --manifest-path tests/precompiled/Cargo.toml --recompile
+      - name: Gallery artifacts (Slang part)
+        # The Slang part of `check-gallery` (m10.g0): `cargo gust check` of the committed artifacts of every gallery entry,
+        # and a fresh `cargo gust build` in a scratch copy compared with them byte for byte, with the pinned Slang
+        # installed above.
+        run: cargo --locked xtask check-gallery --slang
 
   precompiled:
     # D45, D46: the production-shaped consumer of precompiled kernels (tests/precompiled). `--check-only` is the mode

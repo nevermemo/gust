@@ -1049,3 +1049,24 @@ fn assigning_element_count_to_a_dispatch_still_sets_what_runs() {
     device.dispatch_batch(&[dispatch]).unwrap();
     assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0]);
 }
+
+// ---- O5 (m10.api1): the infallible `create_typed_buffer` above `max_buffer_size` ----
+
+/// O5, pinned before the 0.2.0 API pass: `create_typed_buffer` has an infallible signature and never reads
+/// `max_buffer_size` (its documentation says so), so a request above it is wgpu's to reject, and wgpu's validation
+/// error reaches the uncaptured-error handler, which panics. The fallible functions
+/// (`try_create_typed_buffer`, `create_zeroed_buffer`) return `Error::DeviceLimit` instead; the tests above pin that.
+/// If this test starts failing because the call no longer panics, the O5 decision has landed and this pin is to be
+/// replaced by an assertion on the new behaviour.
+#[test]
+#[should_panic(expected = "is greater than the maximum buffer size")]
+fn create_typed_buffer_above_max_buffer_size_panics_in_wgpu() {
+    let device = device();
+    let maximum = device.limits().max_buffer_size;
+    let values = vec![0_u32; (maximum / 4) as usize + 1];
+    let _ = device.create_typed_buffer(
+        "o5 above max_buffer_size",
+        &values,
+        GpuBufferAccess::ReadWrite,
+    );
+}

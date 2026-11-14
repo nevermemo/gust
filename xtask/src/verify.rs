@@ -1004,8 +1004,11 @@ pub(crate) struct GpuSuitePin {
 /// limitation widens only the `CastInt` slots of CT-80 and CT-84 by the source integer (it needs no adapter and runs
 /// with the feature off too). The two route tests that changed (`spirv_route.rs`, `workgroup_zero.rs`) keep their
 /// count.
+///
+/// Slice m10.api1: 453 over 49 became 454 over 49. One new test in `tests/limits.rs`, the O5 pin: the infallible
+/// `create_typed_buffer` above `max_buffer_size` panics in wgpu (it needs an adapter).
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 453,
+    passed: 454,
     result_lines: 49,
 };
 

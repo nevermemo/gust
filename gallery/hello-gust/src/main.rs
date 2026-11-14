@@ -32,6 +32,7 @@ fn main() {
     vector_add::add::dispatch(&device, 4, &ga, &gb, &out).expect("dispatch");
     let result = device.read_f32_buffer(&out).expect("read back");
     println!("hello-gust: {result:?}");
+    println!("adapter: {}", device.adapter_info().name);
 }
 // ANCHOR_END: main
 

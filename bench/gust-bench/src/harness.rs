@@ -33,6 +33,14 @@ pub struct Config {
     pub warmup_end_to_end: usize,
     pub warmup_dispatch: usize,
     pub cold_repeats: usize,
+    /// Time-based warm-up of a GPU cell before its first timed sample: the cell's own dispatches run for at least
+    /// this long, so the clocks have left idle (the sampler idles the GPU for the settle and window before every
+    /// cell). Zero turns it off.
+    pub warmup_time: Duration,
+    /// Upper bound of the warm-up when the clock query is slow.
+    pub warmup_max: Duration,
+    /// Measure only the cold start (GPU cells at the first size), none of the four timings.
+    pub cold_only: bool,
 }
 
 impl Default for Config {
@@ -45,6 +53,9 @@ impl Default for Config {
             warmup_end_to_end: 3,
             warmup_dispatch: 5,
             cold_repeats: 3,
+            warmup_time: Duration::from_millis(750),
+            warmup_max: Duration::from_secs(3),
+            cold_only: false,
         }
     }
 }
@@ -125,6 +136,56 @@ fn collect(
     Ok(Some(values))
 }
 
+/// Warms a GPU backend up by time: dispatches on resident data for at least `config.warmup_time`, and then reads the
+/// GPU clock state (SM clock, pstate, PCIe link) while the dispatches go on, so the record shows the clock at the end
+/// of the warm-up, which is the clock the first timed sample sees. (A query started at the beginning would read the
+/// idle clock: `nvidia-smi` takes a few hundred ms to answer.) Returns the record.
+fn warm_up_by_time(backend: &mut dyn Backend, config: &Config) -> BenchResult<Value> {
+    let started = Instant::now();
+    let mut dispatches = 0u64;
+    while started.elapsed() < config.warmup_time {
+        backend.dispatch()?;
+        dispatches += 1;
+    }
+    let busy_until_query = Instant::now();
+    let clocks = std::thread::scope(|scope| -> BenchResult<Value> {
+        let query = scope.spawn(meta::gpu_clocks);
+        while !query.is_finished() && started.elapsed() < config.warmup_max {
+            backend.dispatch()?;
+            dispatches += 1;
+        }
+        // `join` only fails when the query thread panicked.
+        Ok(query.join().unwrap_or(Value::Null))
+    })?;
+    Ok(json!({
+        "target_s": config.warmup_time.as_secs_f64(),
+        "actual_s": started.elapsed().as_secs_f64(),
+        "clock_query_s": busy_until_query.elapsed().as_secs_f64(),
+        "dispatches": dispatches,
+        "clocks": clocks,
+    }))
+}
+
+/// Process-wide set of (backend, workload) pairs whose cold start has been measured once already: the first cold start of a
+/// kernel in a process also pays one-time costs (the Slang helper's compiler check, a first module), so it is reported apart.
+fn first_cold_in_process(backend_id: &'static str, workload: Workload) -> bool {
+    use std::{collections::HashSet, sync::Mutex};
+    static SEEN: Mutex<Option<HashSet<(&'static str, Workload)>>> = Mutex::new(None);
+    let mut guard = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .get_or_insert_with(HashSet::new)
+        .insert((backend_id, workload))
+}
+
+/// What a backend's cold start does and does not include, written next to its numbers.
+fn cold_note(backend_id: &str) -> &'static str {
+    if backend_id.starts_with("gust") {
+        "pipeline cache cleared, first dispatch timed: includes the run-time Slang compile (or the artifact load) and naga/driver pipeline creation; the driver's shader cache may be warm from an earlier process"
+    } else {
+        "driver shader cache warm: prepare already created this pipeline on the same device, so this is module and pipeline creation plus one dispatch, not a first-ever compile"
+    }
+}
+
 /// Everything one cell produced.
 pub struct Cell {
     pub json: Value,
@@ -161,6 +222,8 @@ pub fn run_cell(backend: &mut dyn Backend, input: &CellInput<'_>, config: &Confi
     let mut failures = Vec::new();
     let mut metrics = serde_json::Map::new();
     let mut cold_ms = None;
+    let mut cold_first = false;
+    let mut warmup = Value::Null;
     let mut misses = None;
 
     let outcome = (|| -> BenchResult<()> {
@@ -168,12 +231,17 @@ pub fn run_cell(backend: &mut dyn Backend, input: &CellInput<'_>, config: &Confi
 
         if input.cold && backend.kind() == Kind::Gpu {
             let mut values = Vec::new();
+            cold_first =
+                config.cold_repeats > 0 && first_cold_in_process(backend.id(), input.workload);
             for _ in 0..config.cold_repeats {
                 if let Some(duration) = backend.cold_start()? {
                     values.push(ms(duration));
                 }
             }
             cold_ms = Some(values);
+        }
+        if config.cold_only {
+            return Ok(());
         }
 
         // Warm-up: real dispatches, so the driver's lazy pipeline work and the clocks have settled.
@@ -185,6 +253,9 @@ pub fn run_cell(backend: &mut dyn Backend, input: &CellInput<'_>, config: &Confi
             backend.dispatch()?;
         }
         backend.gpu_time(config.batch)?;
+        if backend.kind() == Kind::Gpu && !config.warmup_time.is_zero() {
+            warmup = warm_up_by_time(backend, config)?;
+        }
         let misses_before = backend.cache_misses();
 
         let mut out = vec![f32::NAN; n];
@@ -277,6 +348,9 @@ pub fn run_cell(backend: &mut dyn Backend, input: &CellInput<'_>, config: &Confi
         "metrics": metrics,
         "checks_passed": checks,
         "cold_start_ms": cold_ms,
+        "cold_start_first_in_process": cold_first,
+        "cold_start_note": cold_ms.as_ref().map(|_| cold_note(backend.id())),
+        "warmup": warmup,
         "cache_misses": misses.map(|(before, after)| json!({ "before": before, "after": after })),
         "failed": !failures.is_empty(),
         "wall_s": started.elapsed().as_secs_f64(),

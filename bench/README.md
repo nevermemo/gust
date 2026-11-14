@@ -18,6 +18,31 @@ A custom harness in a nested, unpublished workspace. It measures two workloads, 
 copy in one submission, no wait between). They are off by default; `--ablation LIST|all` adds them to a run. The fresh
 result `Vec` stays per call in every ablation. A test counts bind groups, staging buffers and submissions per switch.
 
+`--ablation all` also adds `wgsl-percall+all-on`: every switch on, the result `Vec` still fresh per call. The table
+then reads `wgsl-percall`, each switch alone, `+all-on`, `wgsl-prebuilt` and `gust-gpu`; the step from `+all-on` to
+`wgsl-prebuilt` is the result `Vec`, the step from `wgsl-percall` to `+all-on` is the three switches together.
+
+Before the timed samples of a GPU cell the harness warms the cell up by time (0.75 s of its own dispatches, 0.5 s with
+`--quick`, `--warmup-secs S` to change it), because the sampler idles the GPU for the settle and window before every
+cell and the clocks would otherwise still be low. The SM clock, memory clock, pstate and PCIe link generation are read
+while that warm-up is running and stored in the cell (`warmup.clocks`); the aggregate lists them. `--cold-only` skips
+the four timings and measures only the cold start (`--cold-repeats N`).
+
+The first cold start of each kernel on a backend in a process is flagged (`cold_start_first_in_process`) and the aggregate lists it
+apart from the rest: it also pays one-time costs. A hand-WGSL cold start is labelled "driver shader cache warm" (its
+pipeline was already created once on the same device by `prepare`).
+
+**Precompiled cold start.**
+
+The `#[gpu]` macro embeds artifacts found in `gust-artifacts/` beside the Cargo.toml of the package that compiles it.
+`gust-bench` has none, so it compiles Slang at run time. `gust-bench-pre` is the same harness sources (its binary
+`gust-bench-pre` has `path = "../gust-bench/src/main.rs"`) in a package of its own, with the committed artifacts in
+`gust-bench-pre/gust-artifacts/`; a build of it embeds them and its results say `config.shader_source = "precompiled"`.
+To regenerate them after a kernel changes: `cargo gust build --manifest-path bench/gust-bench-pre/Cargo.toml` (the
+pinned Slang and its helper), then commit the directory. Run it with
+`gust-bench-pre run --workloads W1,W2 --sizes 4096 --backends gust-gpu,wgsl-prebuilt --cold-only --cold-repeats 10
+--no-sampler --out FILE`.
+
 The hand-WGSL device is a second `wgpu::Device` on the same adapter selection (Vulkan, high performance, default
 limits, `TIMESTAMP_QUERY`), because `HeadlessDevice` does not expose its own device. The harness refuses to run if the
 two devices land on different adapters or if the adapter is a software one.

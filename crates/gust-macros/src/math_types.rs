@@ -112,7 +112,7 @@ pub(crate) fn associated_item(path: &syn::Path) -> Option<(&'static MathType, &'
     let member = members
         .iter()
         .copied()
-        .find(|member| second.ident == member)?;
+        .find(|member| crate::names::ident_is(&second.ident, member))?;
     Some((math, member))
 }
 

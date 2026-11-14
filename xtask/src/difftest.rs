@@ -90,14 +90,110 @@ pub(crate) fn route_environment(
 /// aid of the `spirv-route` feature; it is read when the variable is set, whatever the caller).
 pub(crate) const ROUTE_LOG_VARIABLE: &str = "GUST_SPIRV_ROUTE_LOG";
 
-/// The route counts of a log and what is wrong with it: `(spirv, wgsl, problems)`. A route run is evidence only if the
-/// log is not empty and every line says `Spirv`; each other line is named with its reason.
-pub(crate) fn judge_route_log(text: &str) -> (usize, usize, Vec<String>) {
+/// What [`judge_route_log`] found: the kernel builds on each route, the programs that took the SPIR-V route, and the
+/// problems.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RouteLogJudgement {
+    pub(crate) spirv: usize,
+    pub(crate) wgsl: usize,
+    /// The distinct programs (the module of a qualified kernel name, `s<seed>_a<attempt>` in the corpus) with at least
+    /// one `Spirv` line.
+    pub(crate) programs_on_spirv: usize,
+    pub(crate) problems: Vec<String>,
+}
+
+/// The module part of the qualified kernel name that starts a log line: what comes before the last `::`.
+fn log_line_module(line: &str) -> Option<&str> {
+    let name = line.split_whitespace().next()?;
+    name.rsplit_once("::").map(|(module, _)| module)
+}
+
+/// The programs a run built, as far as its caller knows them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExpectedPrograms {
+    /// A batch: the report names its seeds and the programs kept per seed, and a program's module is
+    /// `s<seed>_a<attempt>`, so the log must hold exactly that many modules for each seed and none for another seed.
+    PerSeed(Vec<(u64, u64)>),
+    /// A run whose programs are known by name (the short_circuit test).
+    Modules(Vec<String>),
+}
+
+/// The seed of a module named `s<seed>_a<attempt>`.
+fn module_seed(module: &str) -> Option<u64> {
+    let rest = module.strip_prefix('s')?;
+    rest.split_once("_a")?.0.parse().ok()
+}
+
+/// What the log says against what the run built: a program that built kernels without an event, and a program in the
+/// log that the run did not build, are both problems.
+fn expectation_problems(
+    expected: &ExpectedPrograms,
+    seen: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    match expected {
+        ExpectedPrograms::Modules(names) => {
+            for name in names.iter().filter(|name| !seen.contains(*name)) {
+                problems.push(format!(
+                    "the run built the program {name} but the route log has no SPIR-V line for it"
+                ));
+            }
+            for module in seen.iter().filter(|module| !names.contains(module)) {
+                problems.push(format!(
+                    "the route log has a SPIR-V line for {module}, which the run did not build"
+                ));
+            }
+        }
+        ExpectedPrograms::PerSeed(per_seed) => {
+            let mut counts = std::collections::BTreeMap::<u64, u64>::new();
+            for module in seen {
+                match module_seed(module) {
+                    Some(seed) => *counts.entry(seed).or_default() += 1,
+                    None => problems.push(format!(
+                        "the route log has a SPIR-V line for {module}, which is no program of the corpus"
+                    )),
+                }
+            }
+            for (seed, programs) in per_seed {
+                let found = counts.remove(seed).unwrap_or(0);
+                if found != *programs {
+                    problems.push(format!(
+                        "seed {seed}: the run built {programs} program(s) but the route log has a SPIR-V line for {found}"
+                    ));
+                }
+            }
+            for (seed, found) in counts {
+                problems.push(format!(
+                    "the route log has a SPIR-V line for {found} program(s) of seed {seed}, which the run did not use"
+                ));
+            }
+        }
+    }
+    problems
+}
+
+/// The route counts of a log and what is wrong with it. A route run is evidence only if the log is not empty, every
+/// line says `Spirv` (each other line is named with its reason), and, when the caller knows the programs the run built
+/// (`expected`), the programs with a `Spirv` line are exactly those: a program that built its kernels without writing an
+/// event would otherwise pass unnoticed (Codex sanity pass at `f613b32`, item 9), and a program the run did not build
+/// is a log of another run. The identity is the program (the module of the kernel, `s<seed>_a<attempt>`), because the
+/// log and the generated crate both know it; a program with several kernels or shapes counts once. The report names
+/// seeds and per-seed counts but no modules, so a batch is compared per seed.
+pub(crate) fn judge_route_log(
+    text: &str,
+    expected: Option<&ExpectedPrograms>,
+) -> RouteLogJudgement {
     let (mut spirv, mut wgsl) = (0, 0);
+    let mut seen = std::collections::BTreeSet::new();
     let mut problems = Vec::new();
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
         match line.split_whitespace().nth(1) {
-            Some("Spirv") => spirv += 1,
+            Some("Spirv") => {
+                spirv += 1;
+                if let Some(module) = log_line_module(line) {
+                    seen.insert(module.to_owned());
+                }
+            }
             _ => {
                 wgsl += 1;
                 if problems.len() < 5 {
@@ -109,7 +205,15 @@ pub(crate) fn judge_route_log(text: &str) -> (usize, usize, Vec<String>) {
     if spirv + wgsl == 0 {
         problems.push("the route log has no line: no kernel took any route".to_owned());
     }
-    (spirv, wgsl, problems)
+    if let Some(expected) = expected {
+        problems.extend(expectation_problems(expected, &seen));
+    }
+    RouteLogJudgement {
+        spirv,
+        wgsl,
+        programs_on_spirv: seen.len(),
+        problems,
+    }
 }
 
 /// The decision after an attempt to delete the route log of an earlier run (m9.rt2 review, R2): a log that was never
@@ -132,14 +236,26 @@ fn remove_stale_log(log: &Path) -> Result<(), String> {
 }
 
 /// Read the route log of `what` and judge it; prints the counts. A missing log is a problem.
-fn route_log_problems(what: &str, log: &Path) -> Vec<String> {
+fn route_log_problems(what: &str, log: &Path, expected: Option<&ExpectedPrograms>) -> Vec<String> {
     let text = fs::read_to_string(log).unwrap_or_default();
-    let (spirv, wgsl, problems) = judge_route_log(&text);
+    let judgement = judge_route_log(&text, expected);
     println!(
-        "check-difftest: route of {what}: {spirv} kernel build(s) on SPIR-V, {wgsl} on WGSL ({})",
+        "check-difftest: route of {what}: {} kernel build(s) on SPIR-V in {} program(s), {} on WGSL{} ({})",
+        judgement.spirv,
+        judgement.programs_on_spirv,
+        judgement.wgsl,
+        expected.map_or(String::new(), |expected| match expected {
+            ExpectedPrograms::PerSeed(per_seed) => format!(
+                "; the report names {} program(s) in {} seed(s), compared per seed",
+                per_seed.iter().map(|(_, programs)| programs).sum::<u64>(),
+                per_seed.len()
+            ),
+            ExpectedPrograms::Modules(names) => format!("; the run built {}", names.join(", ")),
+        }),
         log.display()
     );
-    problems
+    judgement
+        .problems
         .into_iter()
         .map(|problem| format!("{what}: {problem}"))
         .collect()
@@ -152,6 +268,10 @@ pub(crate) const PROGRAMS_PER_SEED: u64 = 16;
 pub(crate) const DEFAULT_SEEDS: &str = "1-8";
 
 const MANIFEST: &str = "tests/difftest/Cargo.toml";
+
+/// The programs of that test (`run_both(9002, ..)`: seed 9002, attempt 1 for `and`, 2 for `or`); its route log must name
+/// exactly these modules.
+pub(crate) const SHORT_CIRCUIT_MODULES: [&str; 2] = ["s9002_a1", "s9002_a2"];
 
 /// The GPU half of `tests/difftest/tests/short_circuit.rs`; it must be reported `ok`, not merely not failed.
 pub(crate) const SHORT_CIRCUIT_GPU_TEST: &str = "the_gpu_skips_an_out_of_bounds_right_operand";
@@ -1479,7 +1599,15 @@ fn run_batch(
     let report = fs::read_to_string(report_path)
         .map_err(|error| format!("{}: {error}", report_path.display()));
     let mut judgement = judge_batch(options, status.code(), report.clone());
+    let mut expected = None;
     if let Ok(parsed) = report.and_then(|source| parse_report(&source)) {
+        expected = Some(ExpectedPrograms::PerSeed(
+            parsed
+                .per_seed
+                .iter()
+                .map(|(seed, programs, _, _)| (*seed, *programs))
+                .collect(),
+        ));
         judgement
             .problems
             .extend(profile_problems(&parsed, profile));
@@ -1488,9 +1616,11 @@ fn run_batch(
             .extend(capability_problems(&parsed, profile));
     }
     if let Some(log) = &route_log {
-        judgement
-            .problems
-            .extend(route_log_problems(&format!("the `{profile}` batch"), log));
+        judgement.problems.extend(route_log_problems(
+            &format!("the `{profile}` batch"),
+            log,
+            expected.as_ref(),
+        ));
     }
     Ok(judgement)
 }
@@ -1523,7 +1653,16 @@ fn run_short_circuit(root: &Path, target: &Path) -> Result<Vec<String>, String> 
     print!("{stdout}");
     let mut problems = short_circuit_problems(&args, &stdout);
     if let Some(log) = &route_log {
-        problems.extend(route_log_problems("the short_circuit test", log));
+        problems.extend(route_log_problems(
+            "the short_circuit test",
+            log,
+            Some(&ExpectedPrograms::Modules(
+                SHORT_CIRCUIT_MODULES
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+            )),
+        ));
     }
     if !output.status.success() {
         problems.push(format!(
@@ -1738,18 +1877,113 @@ mod route_environment_tests {
 
     #[test]
     fn the_route_log_passes_only_when_every_line_is_spirv() {
-        let (spirv, wgsl, problems) = judge_route_log("a::k Spirv \nb::k Spirv \n");
-        assert_eq!((spirv, wgsl), (2, 0));
-        assert!(problems.is_empty(), "{problems:?}");
-        let (spirv, wgsl, problems) =
-            judge_route_log("a::k Spirv \nb::k Wgsl backend is not Vulkan\n");
-        assert_eq!((spirv, wgsl), (1, 1));
-        assert_eq!(problems.len(), 1);
+        let judged = judge_route_log("a::k Spirv \nb::k Spirv \n", None);
+        assert_eq!((judged.spirv, judged.wgsl), (2, 0));
+        assert!(judged.problems.is_empty(), "{:?}", judged.problems);
+        let judged = judge_route_log("a::k Spirv \nb::k Wgsl backend is not Vulkan\n", None);
+        assert_eq!((judged.spirv, judged.wgsl), (1, 1));
+        assert_eq!(judged.problems.len(), 1);
         assert!(
-            problems[0].contains("b::k Wgsl backend is not Vulkan"),
-            "{problems:?}"
+            judged.problems[0].contains("b::k Wgsl backend is not Vulkan"),
+            "{:?}",
+            judged.problems
         );
-        let (_, _, problems) = judge_route_log("");
-        assert_eq!(problems.len(), 1, "{problems:?}");
+        let judged = judge_route_log("", None);
+        assert_eq!(judged.problems.len(), 1, "{:?}", judged.problems);
+    }
+
+    fn per_seed(counts: &[(u64, u64)]) -> ExpectedPrograms {
+        ExpectedPrograms::PerSeed(counts.to_vec())
+    }
+
+    #[test]
+    fn the_route_log_must_have_a_spirv_line_for_every_program_the_run_built() {
+        // Three programs (s1_a1, s1_a2, s2_a1), two kernels in the first.
+        let expected = per_seed(&[(1, 2), (2, 1)]);
+        let full = "s1_a1::k Spirv \ns1_a1::k2 Spirv \ns1_a2::k Spirv \ns2_a1::k Spirv \n";
+        let judged = judge_route_log(full, Some(&expected));
+        assert_eq!(judged.programs_on_spirv, 3);
+        assert!(judged.problems.is_empty(), "{:?}", judged.problems);
+        // A run in which one program wrote no event is not evidence, however many lines the others wrote.
+        let missing = "s1_a1::k Spirv \ns1_a1::k2 Spirv \ns1_a2::k Spirv \n";
+        let judged = judge_route_log(missing, Some(&expected));
+        assert_eq!(judged.programs_on_spirv, 2);
+        assert_eq!(judged.problems.len(), 1, "{:?}", judged.problems);
+        assert!(
+            judged.problems[0].contains("seed 2")
+                && judged.problems[0].contains("built 1 program(s)")
+                && judged.problems[0].contains("for 0"),
+            "{:?}",
+            judged.problems
+        );
+        // A WGSL line does not count as a program on SPIR-V.
+        let judged = judge_route_log(
+            "s1_a1::k Spirv \ns1_a2::k Wgsl backend is not Vulkan\n",
+            Some(&per_seed(&[(1, 2)])),
+        );
+        assert_eq!(judged.programs_on_spirv, 1);
+        assert_eq!(judged.problems.len(), 2, "{:?}", judged.problems);
+        // No expectation asks only for a non-empty log.
+        assert!(judge_route_log(missing, None).problems.is_empty());
+    }
+
+    #[test]
+    fn a_program_the_run_did_not_build_in_the_route_log_fails_too() {
+        // Two programs of seed 1 built, three modules of seed 1 with a SPIR-V line: the count alone passed this
+        // (Opus round 3 S1). A swap within a seed (`s1_a3` in place of `s1_a2`) still passes: the report has per-seed
+        // counts only (Opus round 4 N-a).
+        let expected = per_seed(&[(1, 2)]);
+        let extra = "s1_a1::k Spirv \ns1_a2::k Spirv \ns1_a3::k Spirv \n";
+        let judged = judge_route_log(extra, Some(&expected));
+        assert_eq!(judged.problems.len(), 1, "{:?}", judged.problems);
+        assert!(
+            judged.problems[0].contains("seed 1"),
+            "{:?}",
+            judged.problems
+        );
+        // A seed the report does not list, and a module that is no program of the corpus.
+        let other = "s1_a1::k Spirv \ns1_a2::k Spirv \ns7_a1::k Spirv \nweird::k Spirv \n";
+        let judged = judge_route_log(other, Some(&expected));
+        assert_eq!(judged.problems.len(), 2, "{:?}", judged.problems);
+        assert!(
+            judged.problems.iter().any(|p| p.contains("seed 7")),
+            "{:?}",
+            judged.problems
+        );
+        assert!(
+            judged.problems.iter().any(|p| p.contains("weird")),
+            "{:?}",
+            judged.problems
+        );
+    }
+
+    #[test]
+    fn the_short_circuit_log_must_name_exactly_its_two_programs() {
+        let expected = ExpectedPrograms::Modules(
+            SHORT_CIRCUIT_MODULES
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+        );
+        let both = "s9002_a1::k Spirv \ns9002_a2::k Spirv \n";
+        assert!(judge_route_log(both, Some(&expected)).problems.is_empty());
+        // One of the two missing, and one that is not theirs.
+        let judged = judge_route_log("s9002_a1::k Spirv \n", Some(&expected));
+        assert_eq!(judged.problems.len(), 1, "{:?}", judged.problems);
+        assert!(
+            judged.problems[0].contains("s9002_a2"),
+            "{:?}",
+            judged.problems
+        );
+        let judged = judge_route_log(
+            "s9002_a1::k Spirv \ns9002_a2::k Spirv \ns9003_a1::k Spirv \n",
+            Some(&expected),
+        );
+        assert_eq!(judged.problems.len(), 1, "{:?}", judged.problems);
+        assert!(
+            judged.problems[0].contains("s9003_a1"),
+            "{:?}",
+            judged.problems
+        );
     }
 }

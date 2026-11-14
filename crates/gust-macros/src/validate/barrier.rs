@@ -33,7 +33,9 @@ pub(crate) const WORKGROUP_MEMORY_LIMIT: u64 = 16 * 1024;
 /// Whether `call` is `workgroup_barrier(..)`, whatever its arguments.
 pub(crate) fn is_barrier_call(call: &syn::ExprCall) -> bool {
     match call.func.as_ref() {
-        syn::Expr::Path(path) => path.qself.is_none() && path.path.is_ident("workgroup_barrier"),
+        syn::Expr::Path(path) => {
+            path.qself.is_none() && crate::names::path_is(&path.path, "workgroup_barrier")
+        }
         _ => false,
     }
 }
@@ -89,7 +91,7 @@ pub(crate) fn subgroup_operation(call: &syn::ExprCall) -> Option<&'static str> {
     if path.qself.is_some() {
         return None;
     }
-    let ident = path.path.get_ident()?.to_string();
+    let ident = path.path.get_ident()?.unraw().to_string();
     SUBGROUP_OPERATIONS
         .iter()
         .find(|(operation, _)| *operation == ident)
@@ -142,7 +144,7 @@ pub(crate) fn workgroup_array(ty: &syn::Type) -> Result<(&syn::Type, u32), Strin
         .path
         .segments
         .last()
-        .filter(|segment| segment.ident == "Workgroup")
+        .filter(|segment| crate::names::ident_is(&segment.ident, "Workgroup"))
         .ok_or_else(|| "a workgroup parameter is `Workgroup<[T; N]>`".to_owned())?;
     let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
         return Err("`Workgroup` needs an array type argument: `Workgroup<[T; N]>`".to_owned());

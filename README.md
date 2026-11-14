@@ -447,9 +447,12 @@ a `gust.toml`.
 Without a `gust.toml`, nothing changes and plain cargo's rules apply. Plain `cargo build` sets no variable, and no
 `cargo gust` command yet builds a routed release binary: only `run` and `test` compile a binary under the driver.
 Changing the `gust.toml` rebuilds the crates that use a tag, in both directions (measured by `cargo xtask
-check-routing`: a route that goes from unset to set recompiles too). A route flip is a call-site change: a kernel call
-names its device, so a kernel routed to the CPU is called on `CpuDevice` and one routed to the GPU on `HeadlessDevice`,
-and only the generated element-wise map (`name::map`) is the same on both ("Upgrading from 0.1.0 to 0.2.0").
+check-routing`: a route that goes from unset to set recompiles too).
+A route flip is a call-site change when a kernel call names its device: a kernel routed to the CPU is called on
+`CpuDevice` and one routed to the GPU on `HeadlessDevice`, and only the generated element-wise map (`name::map`) is
+the same on both ("Upgrading from 0.1.0 to 0.2.0"). A `gust::routed::RoutedDevice` (M9, D165) is the exception: one
+handle whose calls run each kernel on the target its build resolved, so the same call-site source covers a flip
+(storage-buffer kernels only, and not with a GPU on wasm32; see `gust::routed`).
 `cargo xtask check-routing` is the evidence (see the command table near the top); everything it runs but its `gpu`
 case is `Cpu` evidence.
 
@@ -475,7 +478,12 @@ case is `Cpu` evidence.
   to WGSL, recording the reason in `HeadlessDevice::route_events`, on any other backend, on a device without passthrough
   shaders, for a precompiled WGSL artifact (so a `native` or `web` build, which has no run-time compiler, never takes
   the route) and for a module with push constants. The measurements of the route name the RTX 5090 and the Radeon 890M
-  ([SEMANTICS](docs/SEMANTICS.md) section 15); another adapter is not measured.
+  ([SEMANTICS](docs/SEMANTICS.md) section 15). Mesa lavapipe ran the route's tests in CI (the `spirv-route`
+  workflow, not a required check; its first green run, 43561965483, ran the route tests and the coretests with
+  `GUST_REQUIRE_SPIRV_ROUTE=1`, so no route test passed by falling back to WGSL). The earlier run had one failing test
+  target, the scalar coretests, where `(x as f32) as i32` for `x = 16777217` and `-16777217` gives `x` itself and
+  not the neighbour Rust gives (the WGSL route on lavapipe is right).
+  That is a documented limitation, not chased (SEMANTICS section 15); no other adapter is measured.
 
 ## Stability
 
@@ -538,8 +546,9 @@ and B4, more renamed names. The rest of M8 and M9 only adds ([CHANGELOG](CHANGEL
   every method named `m`, `S::f(..)`), is an error wherever the module is validated, also in a module routed to the CPU
   and in a helper that was never dispatched, which 0.1.0 let through. Rewrite the recursion as a `for` loop with a fixed
   trip count, and rename a method that calls another struct's method of the same name.
-- **B4: more names are renamed in the Slang text.** `Tuple`, `makeTuple`, `this` and the 46 names of Slang's standard
-  interfaces (`IFloat`, `IInteger`, `__BuiltinType` and so on) are emitted as `__gust_r_<name>`, like the other reserved
+- **B4: more names are renamed in the Slang text.** `Tuple`, `makeTuple`, `this`, `interface`, `extension` and the 46
+  names of Slang's standard interfaces (`IFloat`, `IInteger`, `__BuiltinType` and so on) are emitted as
+  `__gust_r_<name>`, like the other reserved
   names (D81), wherever a user name has that spelling (a struct, field, local, helper or parameter). Source needs no
   change, but such a module gets another Slang text and so another content key: run `cargo gust build` again and
   commit `gust-artifacts/` (`cargo gust check` fails for the stale artifacts until you do).
@@ -1196,9 +1205,11 @@ The direct syntax translator currently supports:
   element `[T; N]` for the lengths of the `GpuPod` set (1 to 32 and powers of two to 4096). No nested arrays or arrays
   of tuples (GUST-E0217), no `for x in a`, no array in a uniform (GUST-E0215), no `==` on arrays and no untyped array
   `let` (GUST-E0811). An out-of-range index is outside the defined domain. On the RTX 5090 with the NVIDIA driver 610.88
-  a function-scope array can read zeros after an element is written back unchanged (a driver defect, D168 and D169,
-  guarded by the GPU test `driver_sentinel`); the opt-in `spirv-route` did not reproduce it there
-  ([SEMANTICS](docs/SEMANTICS.md) sections 11 and 15);
+  a function-scope array can read zeros after an element is written back unchanged (a driver defect, D168 and D169).
+  The GPU test `driver_sentinel` only watches the driver for it and fails when the defect goes away or changes; it does
+  not protect your program: the default WGSL route still computes the wrong values on that driver for such a pattern,
+  and the cure is the opt-in `spirv-route`, which did not reproduce it there (a build feature, Vulkan only,
+  run-time compilation only; [SEMANTICS](docs/SEMANTICS.md) sections 11 and 15);
 - non-capturing closures (M9, m9.c, D160): `let f = |x: f32, y: f32| -> f32 { .. };` with every parameter typed, an
   explicit result type and a block body, bound immutably and called as `f(a, b)` after its `let`, in a kernel, a helper
   or a method. A closure captures nothing (it uses its parameters, its own locals, the helpers and the methods of the

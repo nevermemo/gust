@@ -640,7 +640,7 @@ pub(crate) fn is_pure_place(place: &syn::Expr) -> bool {
                 && !is_assignment_operator(&binary.op)
         }
         syn::Expr::MethodCall(call) => {
-            let name = call.method.to_string();
+            let name = crate::names::name_of(&call.method);
             let builtin = call.args.is_empty() && matches!(name.as_str(), "global_id" | "len");
             // The wrapping methods are arithmetic on their operands, like `+` and `-` above.
             let wrapping = crate::validate::wrapping_arity(&name) == Some(call.args.len())
@@ -2701,11 +2701,11 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         // negation is `0 - a`, which slangc types as the operand's own type and lowers without a unary minus
         // (WGSL has no negation of a `u32`).
         syn::Expr::MethodCall(call)
-            if crate::validate::wrapping_arity(&call.method.to_string())
+            if crate::validate::wrapping_arity(&crate::names::name_of(&call.method))
                 .is_some_and(|arity| arity == call.args.len()) =>
         {
             let receiver = emit_expression(&call.receiver)?;
-            match call.method.to_string().as_str() {
+            match crate::names::name_of(&call.method).as_str() {
                 "wrapping_neg" => format!("(0 - {receiver})"),
                 name => {
                     let operator = match name {
@@ -2723,10 +2723,10 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
                 }
             }
         }
-        syn::Expr::MethodCall(call) if call.method == "global_id" => {
+        syn::Expr::MethodCall(call) if crate::names::ident_is(&call.method, "global_id") => {
             emit_expression(&call.receiver)?
         }
-        syn::Expr::MethodCall(call) if call.method == "len" => {
+        syn::Expr::MethodCall(call) if crate::names::ident_is(&call.method, "len") => {
             // The length of an array is its `N` (slice m9.r1); the length of a storage parameter is a constant of the
             // dispatch. An array field (`s.items.len()`) and an array element of a buffer (`out[i].len()`) are judged by
             // the tables of the module and of the kernel (slice m9.r2a).
@@ -2741,19 +2741,21 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         syn::Expr::MethodCall(call) if texture::is_texture_method(call) => {
             texture::emit_method(call)?
         }
-        syn::Expr::MethodCall(call) if call.method == "is_some" => {
+        syn::Expr::MethodCall(call) if crate::names::ident_is(&call.method, "is_some") => {
             format!("{}.hasValue", emit_expression(&call.receiver)?)
         }
-        syn::Expr::MethodCall(call) if call.method == "is_none" => {
+        syn::Expr::MethodCall(call) if crate::names::ident_is(&call.method, "is_none") => {
             format!("(!{}.hasValue)", emit_expression(&call.receiver)?)
         }
-        syn::Expr::MethodCall(call) if call.method == "is_ok" => {
+        syn::Expr::MethodCall(call) if crate::names::ident_is(&call.method, "is_ok") => {
             format!("{}.isOk", emit_expression(&call.receiver)?)
         }
-        syn::Expr::MethodCall(call) if call.method == "is_err" => {
+        syn::Expr::MethodCall(call) if crate::names::ident_is(&call.method, "is_err") => {
             format!("(!{}.isOk)", emit_expression(&call.receiver)?)
         }
-        syn::Expr::MethodCall(call) if call.method == "unwrap_or" && call.args.len() == 1 => {
+        syn::Expr::MethodCall(call)
+            if crate::names::ident_is(&call.method, "unwrap_or") && call.args.len() == 1 =>
+        {
             format!(
                 "__gust_unwrap_or({}, {})",
                 emit_expression(&call.receiver)?,
@@ -2770,9 +2772,11 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             emit_arguments(call.args.iter())?.join(", ")
         ),
         syn::Expr::Paren(paren) => format!("({})", emit_expression(&paren.expr)?),
-        syn::Expr::Path(path) if path.path.is_ident("None") => "none".to_owned(),
+        syn::Expr::Path(path) if crate::names::path_is(&path.path, "None") => "none".to_owned(),
         // The receiver of a method is `this` in Slang (slice m9.a1).
-        syn::Expr::Path(path) if path.qself.is_none() && path.path.is_ident("self") => {
+        syn::Expr::Path(path)
+            if path.qself.is_none() && crate::names::path_is(&path.path, "self") =>
+        {
             "this".to_owned()
         }
         syn::Expr::Path(path)
@@ -2907,7 +2911,7 @@ fn identity_matrix(math: &math_types::MathType) -> String {
 /// Whether a method call is one of the vector and matrix methods: a swizzle, `dot`, `mul_vecN`, `mul_matN` or
 /// `transpose`.
 fn is_math_method(call: &syn::ExprMethodCall) -> bool {
-    let name = call.method.to_string();
+    let name = crate::names::name_of(&call.method);
     math_types::is_swizzle(&name)
         || math_types::method_arity(&name).is_some_and(|arity| arity == call.args.len())
 }
@@ -2915,7 +2919,7 @@ fn is_math_method(call: &syn::ExprMethodCall) -> bool {
 /// `v.xy()` is `v.xy`, `a.dot(b)` is `dot(a, b)`, `m.mul_vec4(v)` and `a.mul_mat4(b)` are `mul(m, v)` and `mul(a, b)`,
 /// and `m.transpose()` is `transpose(m)`.
 fn emit_math_method(call: &syn::ExprMethodCall) -> syn::Result<String> {
-    let name = call.method.to_string();
+    let name = crate::names::name_of(&call.method);
     let receiver = emit_expression(&call.receiver)?;
     Ok(if math_types::is_swizzle(&name) {
         format!("{receiver}.{name}")
@@ -3236,18 +3240,18 @@ impl<'ast> Visit<'ast> for XorUsage {
 }
 
 fn is_some_constructor(call: &syn::ExprCall) -> bool {
-    matches!(call.func.as_ref(), syn::Expr::Path(path) if path.path.is_ident("Some"))
+    matches!(call.func.as_ref(), syn::Expr::Path(path) if crate::names::path_is(&path.path, "Some"))
         && call.args.len() == 1
 }
 
 fn is_ok_constructor(call: &syn::ExprCall) -> bool {
-    matches!(call.func.as_ref(), syn::Expr::Path(path) if path.path.is_ident("Ok"))
+    matches!(call.func.as_ref(), syn::Expr::Path(path) if crate::names::path_is(&path.path, "Ok"))
         && call.args.len() == 1
 }
 
 fn is_result_constructor(call: &syn::ExprCall) -> bool {
     is_ok_constructor(call)
-        || (matches!(call.func.as_ref(), syn::Expr::Path(path) if path.path.is_ident("Err"))
+        || (matches!(call.func.as_ref(), syn::Expr::Path(path) if crate::names::path_is(&path.path, "Err"))
             && call.args.len() == 1)
 }
 
@@ -3270,7 +3274,7 @@ fn atomic_op_name(call: &syn::ExprCall) -> Option<&'static str> {
         return None;
     };
     let ident = path.path.get_ident()?;
-    match ident.to_string().as_str() {
+    match ident.unraw().to_string().as_str() {
         "atomic_add" => Some("atomic_add"),
         "atomic_min" => Some("atomic_min"),
         "atomic_max" => Some("atomic_max"),
@@ -3318,7 +3322,7 @@ impl<'ast> Visit<'ast> for OptionUsage {
             .path
             .segments
             .last()
-            .is_some_and(|segment| segment.ident == "Option");
+            .is_some_and(|segment| crate::names::ident_is(&segment.ident, "Option"));
         syn::visit::visit_type_path(self, ty);
     }
 
@@ -3328,7 +3332,10 @@ impl<'ast> Visit<'ast> for OptionUsage {
     }
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        self.0 |= matches!(call.method.to_string().as_str(), "is_some" | "is_none");
+        self.0 |= matches!(
+            crate::names::name_of(&call.method).as_str(),
+            "is_some" | "is_none"
+        );
         syn::visit::visit_expr_method_call(self, call);
     }
 
@@ -3338,7 +3345,7 @@ impl<'ast> Visit<'ast> for OptionUsage {
     }
 
     fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
-        self.0 |= path.path.is_ident("None");
+        self.0 |= crate::names::path_is(&path.path, "None");
         syn::visit::visit_expr_path(self, path);
     }
 }
@@ -3351,7 +3358,7 @@ impl<'ast> Visit<'ast> for ResultUsage {
             .path
             .segments
             .last()
-            .is_some_and(|segment| segment.ident == "Result");
+            .is_some_and(|segment| crate::names::ident_is(&segment.ident, "Result"));
         syn::visit::visit_type_path(self, ty);
     }
 
@@ -3361,7 +3368,10 @@ impl<'ast> Visit<'ast> for ResultUsage {
     }
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        self.0 |= matches!(call.method.to_string().as_str(), "is_ok" | "is_err");
+        self.0 |= matches!(
+            crate::names::name_of(&call.method).as_str(),
+            "is_ok" | "is_err"
+        );
         syn::visit::visit_expr_method_call(self, call);
     }
 
@@ -3505,7 +3515,7 @@ fn unparenthesized_expr(expression: &syn::Expr) -> &syn::Expr {
 /// Whether `ty` is the path `usize`.
 fn is_usize_type(ty: &syn::Type) -> bool {
     matches!(unparenthesized_type(ty), syn::Type::Path(path)
-        if path.qself.is_none() && path.path.is_ident("usize"))
+        if path.qself.is_none() && crate::names::path_is(&path.path, "usize"))
 }
 
 /// The Slang type of a local, a parameter or a result (slice m9.r1): [`emit_type`], and `T[N]` for `[T; N]`. A struct
@@ -3703,7 +3713,7 @@ pub(crate) fn type_name(ty: &syn::Type) -> Option<String> {
     path.path
         .segments
         .last()
-        .map(|segment| segment.ident.to_string())
+        .map(|segment| segment.ident.unraw().to_string())
 }
 
 #[cfg(test)]

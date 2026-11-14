@@ -7673,6 +7673,188 @@ fn a_place_whose_index_a_mutating_value_changes_is_gust_e0421() {
 }
 
 #[test]
+fn a_raw_identifier_is_the_same_place_root_in_gust_e0421() {
+    // Codex sanity pass at f613b32, item 4: `r#s` and `s` are one variable in Rust, so the root of the place and the
+    // name in the index must be compared unraw. The raw, the mixed and the plain spellings, for `=` and `op=`.
+    let counter = "pub struct C { pub n: u32 } impl C { fn bump(&mut self) -> u32 { self.n += 1u32; self.n } }";
+    for (place, value) in [
+        ("a[r#s.n as usize]", "r#s.bump()"),
+        ("a[s.n as usize]", "r#s.bump()"),
+        ("a[r#s.n as usize]", "s.bump()"),
+        ("a[s.n as usize]", "s.bump()"),
+    ] {
+        for operator in ["=", "+="] {
+            let body = format!(
+                "let mut s = C {{ n: 0u32 }}; let mut a: [u32; 4] = [0u32; 4]; {place} {operator} {value}; out[id.x] = a[1];"
+            );
+            assert_rejected(&with_kernel(counter, &body), Code::ForBoundSideEffect);
+        }
+    }
+    // A binding that is itself raw.
+    assert_rejected(
+        &with_kernel(
+            counter,
+            "let mut r#s = C { n: 0u32 }; let mut a: [u32; 4] = [0u32; 4]; a[s.n as usize] = r#s.bump(); out[id.x] = a[1];",
+        ),
+        Code::ForBoundSideEffect,
+    );
+}
+
+#[test]
+fn a_raw_identifier_is_the_same_name_in_gust_e0333() {
+    let counter = "pub struct C { pub n: u32 } impl C { fn bump(&mut self) -> u32 { self.n += 1u32; self.n } }";
+    // A value parameter called by a raw spelling, and a raw parameter called by the plain one.
+    for helper in [
+        "fn h(p: C) -> u32 { r#p.bump() }",
+        "fn h(r#p: C) -> u32 { p.bump() }",
+        "fn h(r#p: C) -> u32 { r#p.bump() }",
+    ] {
+        assert_rejected(
+            &with_kernel(&format!("{counter} {helper}"), "out[id.x] = 0u32;"),
+            Code::MutatingMethodOnSharedPlace,
+        );
+    }
+    // A storage buffer, in the same three spellings.
+    for (parameters, receiver) in [
+        ("input: StructuredBuffer<C>", "r#input[0u32]"),
+        ("r#input: StructuredBuffer<C>", "input[0u32]"),
+        ("r#input: StructuredBuffer<C>", "r#input[0u32]"),
+    ] {
+        let source = format!(
+            "mod m {{ {counter} #[kernel(workgroup_size(64, 1, 1), cpu = \"unsupported\")] \
+             pub fn run(id: SV_DispatchThreadID, {parameters}) {{ {receiver}.bump(); }} }}"
+        );
+        assert_rejected(&source, Code::MutatingMethodOnSharedPlace);
+    }
+}
+
+#[test]
+fn a_shadow_of_a_value_parameter_ends_with_its_block_for_gust_e0333() {
+    // The shadow `let mut p = p;` is a place inside the `if`; after it the name is the by-value parameter again.
+    let counter = "pub struct C { pub n: u32 } impl C { fn bump(&mut self) -> u32 { self.n += 1u32; self.n } }";
+    assert_rejected(
+        &with_kernel(
+            &format!(
+                "{counter} fn h(p: C, k: u32) -> u32 {{ if k == 0u32 {{ let mut p = p; p.bump(); }} p.bump() }}"
+            ),
+            "out[id.x] = 0u32;",
+        ),
+        Code::MutatingMethodOnSharedPlace,
+    );
+    // Pins: the shadow inside its block, and a shadow in the function block itself, stay accepted.
+    for helper in [
+        "fn h(p: C, k: u32) -> u32 { if k == 0u32 { let mut p = p; p.bump(); } k }",
+        "fn h(p: C) -> u32 { let mut p = p; p.bump() }",
+    ] {
+        translate(&with_kernel(
+            &format!("{counter} {helper}"),
+            "out[id.x] = 0u32;",
+        ))
+        .unwrap();
+    }
+}
+
+/// The pixel pin rules (D63, D94) read the body by name, so a raw spelling of the output is the same output.
+fn expanded_pixel_kernel(body: &str) -> String {
+    let source = format!(
+        "mod shade {{ #[kernel(shape = pixel)] pub fn paint(id: SV_DispatchThreadID, input: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>) {{ {body} }} }}"
+    );
+    let item: proc_macro2::TokenStream = source.parse().unwrap();
+    crate::gpu_impl_with(
+        proc_macro2::TokenStream::new(),
+        item,
+        crate::expand::Profile::Other,
+    )
+    .to_string()
+}
+
+#[test]
+fn a_raw_spelling_of_the_output_does_not_escape_the_pixel_rules() {
+    // Codex-class audit, Opus round 3 M1: `is_ident(name)` compared with the `r#`. Plain forms first (the pins).
+    for (body, code) in [
+        ("out[id.x] = out[id.x] + input[id.x];", "GUST-E0728"),
+        ("out[id.x + 1u32] = input[id.x];", "GUST-E0725"),
+        ("out[id.x] = r#out[id.x] + input[id.x];", "GUST-E0728"),
+        ("r#out[id.x] = out[id.x] + input[id.x];", "GUST-E0728"),
+        ("r#out[id.x + 1u32] = input[id.x];", "GUST-E0725"),
+        ("out[id.x + 1u32] = r#input[id.x];", "GUST-E0725"),
+    ] {
+        let text = expanded_pixel_kernel(body);
+        assert!(text.contains(code), "{body}: {text}");
+    }
+    // And the accepted form stays accepted in both spellings.
+    for body in ["out[id.x] = input[id.x];", "r#out[id.x] = r#input[id.x];"] {
+        let text = expanded_pixel_kernel(body);
+        assert!(!text.contains("compile_error"), "{body}: {text}");
+    }
+}
+
+#[test]
+fn a_raw_type_name_is_read_like_the_plain_one() {
+    // `out: r#RWStructuredBuffer<uint>` is the storage buffer it names (Opus round 3 S2).
+    let plain = translate(&with_kernel("", "out[id.x] = 1u32;")).unwrap();
+    let raw = translate(
+        &with_kernel("", "out[id.x] = 1u32;")
+            .replace("RWStructuredBuffer<uint>", "r#RWStructuredBuffer<uint>"),
+    )
+    .unwrap();
+    assert_eq!(plain, raw);
+    // Option and Result in a helper signature, and a raw `Workgroup`.
+    let result = "fn f(x: u32) -> Option<u32> { Some(x) }";
+    let raw_result = "fn f(x: u32) -> r#Option<u32> { r#Some(x) }";
+    // Each result is checked on its own (Opus round 4 N-d): `is_ok() == is_ok()` would pass if both failed.
+    let plain_result = translate(&with_kernel(result, "out[id.x] = 1u32;")).unwrap();
+    let raw_result = translate(&with_kernel(raw_result, "out[id.x] = 1u32;")).unwrap();
+    assert_eq!(plain_result, raw_result);
+    // And a raw `Workgroup` is the workgroup parameter it names (barrier.rs, validate/mod.rs).
+    let workgroup = "mod m { #[kernel(workgroup_size(64, 1, 1), cpu = \"unsupported\")] \
+                     pub fn run(id: SV_DispatchThreadID, mut wg: Workgroup<[uint; 4]>) { wg[0u32] = 1u32; } }";
+    let plain = translate(workgroup).unwrap();
+    let raw = translate(&workgroup.replace("Workgroup<", "r#Workgroup<")).unwrap();
+    assert_eq!(plain, raw);
+}
+
+#[test]
+fn a_raw_barrier_call_is_the_barrier() {
+    // Opus round 3 N2: `r#workgroup_barrier()` behaves like `workgroup_barrier()`.
+    let source = |call: &str| {
+        format!(
+            "mod m {{ #[kernel(workgroup_size(64, 1, 1), cpu = \"unsupported\")] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {{ out[id.x] = 1u32; {call}; out[id.x] = 2u32; }} }}"
+        )
+    };
+    let plain = translate(&source("workgroup_barrier()")).unwrap();
+    let raw = translate(&source("r#workgroup_barrier()")).unwrap();
+    assert_eq!(plain, raw);
+}
+
+#[test]
+fn a_blanket_impl_for_a_raw_spelling_of_the_parameter_is_refused() {
+    // Opus round 3 N3: `impl<T: Tr> Tr for r#T` is the blanket impl of `T`.
+    let items = "pub trait Tr { fn f(&self) -> u32; } pub struct T { pub n: u32 } \
+                 impl<T: Tr> Tr for r#T { fn f(&self) -> u32 { 1u32 } }";
+    let code = |items: &str| {
+        let error = translate(&with_kernel(items, "out[id.x] = 1u32;")).unwrap_err();
+        error.to_string()[..12].to_owned()
+    };
+    let plain = items.replace("r#T", "T");
+    assert_eq!(code(items), code(&plain));
+}
+
+#[test]
+fn the_e0421_hint_spells_a_raw_keyword_receiver_validly() {
+    // Opus round 3 N4: the suggestion for a receiver called `r#type` must keep the `r#`.
+    let counter = "pub struct C { pub n: u32 } impl C { fn bump(&mut self) -> u32 { self.n += 1u32; self.n } }";
+    let body = "let mut r#type = C { n: 0u32 }; let mut a: [u32; 4] = [0u32; 4]; a[r#type.n as usize] = r#type.bump(); out[id.x] = a[1];";
+    let error = translate(&with_kernel(counter, body))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("`let v = r#type.bump(..); a[i] = v;`"),
+        "{error}"
+    );
+}
+
+#[test]
 fn an_array_literal_or_repeat_without_a_lowering_is_gust_e0811() {
     for body in [
         "let a = [1u32, 2u32]; out[id.x] = a[0];",
@@ -9720,4 +9902,157 @@ fn operators_on_a_type_parameter_are_rustcs_to_refuse() {
         "out[id.x] = 1u32;",
     ))
     .unwrap();
+}
+
+#[test]
+fn the_e0421_hint_prints_a_self_receiver_bare() {
+    // Opus round 4 S-b: `self` cannot be written `r#self`, so the suggestion must not print it that way.
+    let counter = "pub struct C { pub n: u32 } impl C { fn bump(&mut self) -> u32 { self.n += 1u32; self.n } \
+                   fn run(&mut self) -> u32 { let mut a: [u32; 4] = [0u32; 4]; a[self.n as usize] = self.bump(); a[1] } }";
+    let error = translate(&with_kernel(
+        counter,
+        "let mut c = C { n: 0u32 }; out[id.x] = c.run();",
+    ))
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("`let v = self.bump(..); a[i] = v;`"),
+        "{error}"
+    );
+    assert!(!error.contains("r#self"), "{error}");
+}
+
+#[test]
+fn a_raw_method_name_emits_the_slang_of_the_plain_one() {
+    // Opus round 4 S-a: the validator dispatches on the unraw name, so the emitter must too (`out.r#len()` is `out.len()`).
+    let texture = "mod m { #[kernel(workgroup_size(8, 8, 1))] pub fn run(id: SV_DispatchThreadID, mut out: WriteTexture2D<Rgba32Float>) { \
+                   let w = out.width(); if id.x < w { out.store(id.x, id.y, Vec4::splat(1.0f32)); } } }";
+    let cases = [
+        (
+            "len",
+            with_kernel(
+                "",
+                "let a: [u32; 4] = [0u32; 4]; out[id.x] = a.len() as u32;",
+            ),
+        ),
+        (
+            "len",
+            with_kernel("", "let n = out.len(); out[id.x] = n as u32;"),
+        ),
+        (
+            "wrapping_add",
+            with_kernel("", "out[id.x] = id.x.wrapping_add(1u32);"),
+        ),
+        (
+            "wrapping_neg",
+            with_kernel("", "out[id.x] = id.x.wrapping_neg();"),
+        ),
+        (
+            "xy",
+            vector_module(
+                "",
+                "let v = Vec4::splat(1.0); let w = v.xy(); out[i] = w.x;",
+            ),
+        ),
+        (
+            "dot",
+            vector_module("", "let v = Vec4::splat(1.0); out[i] = v.dot(v);"),
+        ),
+        ("width", texture.to_owned()),
+        ("store", texture.to_owned()),
+    ];
+    for (method, plain_source) in cases {
+        let raw_source = plain_source.replace(&format!(".{method}("), &format!(".r#{method}("));
+        assert_ne!(
+            plain_source, raw_source,
+            "{method}: the case has no `.{method}(`"
+        );
+        let plain = translate(&plain_source).unwrap_or_else(|error| panic!("{method}: {error}"));
+        let raw = translate(&raw_source).unwrap_or_else(|error| panic!("{method} (raw): {error}"));
+        assert_eq!(plain, raw, "{method}");
+    }
+}
+
+#[test]
+fn a_raw_member_x_of_the_invocation_is_the_own_index() {
+    // Opus round 5 S1: `member == "x"` kept the `r#`, so `out[id.r#x] = ..` was refused as OwnIndexWrite.
+    let pixel_source = |body: &str| {
+        format!(
+            "mod shade {{ #[kernel(shape = pixel)] pub fn run(id: SV_DispatchThreadID, input: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>) {{ {body} }} }}"
+        )
+    };
+    let plain = expanded_pixel_kernel("out[id.x] = input[id.x];");
+    assert!(!plain.contains("compile_error"), "{plain}");
+    let plain_slang = translate(&pixel_source("out[id.x] = input[id.x];")).unwrap();
+    for body in [
+        "out[id.r#x] = input[id.x];",
+        "out[id.r#x] = input[id.r#x];",
+        "out[id.r#global_id().r#x] = input[id.x];",
+    ] {
+        let raw = expanded_pixel_kernel(body);
+        assert!(!raw.contains("compile_error"), "{body}: {raw}");
+        assert_eq!(
+            plain_slang,
+            translate(&pixel_source(body)).unwrap(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn raw_global_id_len_option_and_result_methods_are_the_plain_ones() {
+    // Opus round 5 N3: the Option and Result usage scans and the classify checks compare method names.
+    let pixel_source = |body: &str| {
+        format!(
+            "mod shade {{ #[kernel(shape = pixel)] pub fn run(id: SV_DispatchThreadID, input: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>) {{ {body} }} }}"
+        )
+    };
+    let plain_body = "out[id.global_id().x] = input[id.x] + (out.len() as f32);";
+    assert!(!expanded_pixel_kernel(plain_body).contains("compile_error"));
+    let raw_body = "out[id.r#global_id().x] = input[id.x] + (out.r#len() as f32);";
+    assert!(!expanded_pixel_kernel(raw_body).contains("compile_error"));
+    assert_eq!(
+        translate(&pixel_source(plain_body)).unwrap(),
+        translate(&pixel_source(raw_body)).unwrap()
+    );
+    // A guard `own < out.len()` is transparent (classify's `is_output_length`): the raw spelling must be too.
+    for body in [
+        "if id.x < out.len() { out[id.x] = input[id.x]; }",
+        "if id.x < out.r#len() { out[id.x] = input[id.x]; }",
+    ] {
+        let text = expanded_pixel_kernel(body);
+        assert!(!text.contains("compile_error"), "{body}: {text}");
+    }
+    let items =
+        "fn f(x: u32) -> Option<u32> { Some(x) } fn g(x: u32) -> Result<u32, u32> { Ok(x) }";
+    let cases = [
+        (
+            "is_some",
+            "let o = f(id.x); if o.is_some() { out[id.x] = 1u32; }",
+        ),
+        (
+            "is_none",
+            "let o = f(id.x); if o.is_none() { out[id.x] = 1u32; }",
+        ),
+        (
+            "unwrap_or",
+            "let o = f(id.x); out[id.x] = o.unwrap_or(7u32);",
+        ),
+        (
+            "is_ok",
+            "let r = g(id.x); if r.is_ok() { out[id.x] = 1u32; }",
+        ),
+        (
+            "is_err",
+            "let r = g(id.x); if r.is_err() { out[id.x] = 1u32; }",
+        ),
+    ];
+    for (method, body) in cases {
+        let plain_source = with_kernel(items, body);
+        let raw_source = plain_source.replace(&format!(".{method}("), &format!(".r#{method}("));
+        assert_ne!(plain_source, raw_source, "{method}");
+        let plain = translate(&plain_source).unwrap_or_else(|error| panic!("{method}: {error}"));
+        let raw = translate(&raw_source).unwrap_or_else(|error| panic!("{method} (raw): {error}"));
+        assert_eq!(plain, raw, "{method}");
+    }
 }

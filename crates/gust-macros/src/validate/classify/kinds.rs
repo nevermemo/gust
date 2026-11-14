@@ -355,7 +355,7 @@ pub(super) fn callee_kind(call: &syn::ExprCall, helpers: &HashSet<String>) -> Op
     {
         return Some(format!("math::{member}"));
     }
-    let name = path.path.get_ident()?.to_string();
+    let name = path.path.get_ident()?.unraw().to_string();
     if matches!(name.as_str(), "Some" | "Ok" | "Err") {
         return Some(name);
     }

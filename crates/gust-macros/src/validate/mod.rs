@@ -72,7 +72,10 @@ fn address_problem(expression: &syn::Expr) -> Option<&'static str> {
             Some("a negated value (a texel address cannot be negative)")
         }
         syn::Expr::Cast(cast) => match cast.ty.as_ref() {
-            syn::Type::Path(path) if path.path.is_ident("u32") || path.path.is_ident("uint") => {
+            syn::Type::Path(path)
+                if crate::names::path_is(&path.path, "u32")
+                    || crate::names::path_is(&path.path, "uint") =>
+            {
                 None
             }
             _ => Some("a cast to a type other than `u32`"),
@@ -97,7 +100,10 @@ fn coordinate_problem(expression: &syn::Expr) -> Option<&'static str> {
             _ => None,
         },
         syn::Expr::Cast(cast) => match cast.ty.as_ref() {
-            syn::Type::Path(path) if path.path.is_ident("f32") || path.path.is_ident("float") => {
+            syn::Type::Path(path)
+                if crate::names::path_is(&path.path, "f32")
+                    || crate::names::path_is(&path.path, "float") =>
+            {
                 None
             }
             _ => Some("a cast to a type other than `f32`"),
@@ -128,7 +134,7 @@ fn option_payload(ty: &syn::TypePath) -> Option<Option<&syn::Type>> {
         return None;
     }
     let segment = &ty.path.segments[0];
-    if segment.ident != "Option" {
+    if !crate::names::ident_is(&segment.ident, "Option") {
         return None;
     }
     let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
@@ -150,7 +156,7 @@ fn result_payload(ty: &syn::TypePath) -> Option<Option<(&syn::Type, &syn::Type)>
         return None;
     }
     let segment = &ty.path.segments[0];
-    if segment.ident != "Result" {
+    if !crate::names::ident_is(&segment.ident, "Result") {
         return None;
     }
     let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
@@ -180,7 +186,7 @@ fn rw_buffer_element_type(ty: &syn::Type) -> Option<String> {
         return None;
     }
     let segment = &type_path.path.segments[0];
-    if segment.ident != "RWStructuredBuffer" {
+    if !crate::names::ident_is(&segment.ident, "RWStructuredBuffer") {
         return None;
     }
     let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
@@ -192,7 +198,10 @@ fn rw_buffer_element_type(ty: &syn::Type) -> Option<String> {
     let syn::Type::Path(element_path) = element else {
         return None;
     };
-    element_path.path.get_ident().map(ToString::to_string)
+    element_path
+        .path
+        .get_ident()
+        .map(|ident| ident.unraw().to_string())
 }
 
 /// `Some(identifier)` in an `if let`, the only pattern with a direct Slang lowering.
@@ -200,7 +209,7 @@ pub fn option_pattern(pattern: &syn::Pat) -> Option<&syn::PatIdent> {
     let syn::Pat::TupleStruct(tuple) = pattern else {
         return None;
     };
-    if !tuple.path.is_ident("Some") || tuple.elems.len() != 1 {
+    if !crate::names::path_is(&tuple.path, "Some") || tuple.elems.len() != 1 {
         return None;
     }
     match &tuple.elems[0] {
@@ -213,7 +222,7 @@ pub fn result_pattern(pattern: &syn::Pat) -> Option<&syn::PatIdent> {
     let syn::Pat::TupleStruct(tuple) = pattern else {
         return None;
     };
-    if !tuple.path.is_ident("Ok") || tuple.elems.len() != 1 {
+    if !crate::names::path_is(&tuple.path, "Ok") || tuple.elems.len() != 1 {
         return None;
     }
     match &tuple.elems[0] {
@@ -226,7 +235,7 @@ fn err_pattern(pattern: &syn::Pat) -> Option<&syn::PatIdent> {
     let syn::Pat::TupleStruct(tuple) = pattern else {
         return None;
     };
-    if !tuple.path.is_ident("Err") || tuple.elems.len() != 1 {
+    if !crate::names::path_is(&tuple.path, "Err") || tuple.elems.len() != 1 {
         return None;
     }
     match &tuple.elems[0] {
@@ -316,7 +325,7 @@ pub fn result_match_arms(
 
 /// The atomic operation name if the path is a recognized atomic intrinsic.
 fn atomic_operation_name(path: &syn::ExprPath) -> Option<&'static str> {
-    match path.path.get_ident()?.to_string().as_str() {
+    match path.path.get_ident()?.unraw().to_string().as_str() {
         "atomic_add" => Some("atomic_add"),
         "atomic_min" => Some("atomic_min"),
         "atomic_max" => Some("atomic_max"),
@@ -368,9 +377,13 @@ fn constant_shift_amount(expression: &syn::Expr) -> Option<i128> {
             let syn::Type::Path(target) = strip_type_parens(&cast.ty) else {
                 return None;
             };
-            if target.path.is_ident("u32") || target.path.is_ident("uint") {
+            if crate::names::path_is(&target.path, "u32")
+                || crate::names::path_is(&target.path, "uint")
+            {
                 Some(i128::from(value as u32))
-            } else if target.path.is_ident("i32") || target.path.is_ident("int") {
+            } else if crate::names::path_is(&target.path, "i32")
+                || crate::names::path_is(&target.path, "int")
+            {
                 Some(i128::from(value as i32))
             } else {
                 None
@@ -443,14 +456,16 @@ fn unsuffixed_literal_only(expression: &syn::Expr) -> Option<&syn::Expr> {
                 && matches!(
                     call.func.as_ref(),
                     syn::Expr::Path(path)
-                        if path.path.is_ident("Some") || path.path.is_ident("Ok") || path.path.is_ident("Err")
+                        if crate::names::path_is(&path.path, "Some") || crate::names::path_is(&path.path, "Ok") || crate::names::path_is(&path.path, "Err")
                 ) =>
         {
             unsuffixed_literal_only(&call.args[0])
         }
         // `Some(7).unwrap_or(0)`: the receiver is an `Option<{integer}>`, which rustc accepts, and the default is
         // the same unconstrained integer. (On a bare integer receiver rustc itself refuses the method call.)
-        syn::Expr::MethodCall(call) if call.method == "unwrap_or" && call.args.len() == 1 => {
+        syn::Expr::MethodCall(call)
+            if crate::names::ident_is(&call.method, "unwrap_or") && call.args.len() == 1 =>
+        {
             let receiver = unsuffixed_literal_only(&call.receiver)?;
             unsuffixed_literal_only(&call.args[0])?;
             Some(receiver)
@@ -556,7 +571,7 @@ pub(crate) fn helper_names(module: &syn::ItemMod) -> HashSet<String> {
                     .iter()
                     .any(|attribute| attribute.path().is_ident("kernel")) =>
             {
-                Some(function.sig.ident.to_string())
+                Some(function.sig.ident.unraw().to_string())
             }
             _ => None,
         })
@@ -608,7 +623,7 @@ pub(crate) fn validate_module_in(
             syn::Item::Fn(function)
                 if matches!(&function.sig.output, syn::ReturnType::Type(_, ty) if matches!(ty.as_ref(), syn::Type::Path(path) if result_payload(path).is_some())) =>
             {
-                Some(function.sig.ident.to_string())
+                Some(function.sig.ident.unraw().to_string())
             }
             _ => None,
         })
@@ -958,7 +973,7 @@ fn method_table(items: &[syn::Item]) -> MethodTable {
             if let Some(name) = enum_type_name(ty, &table.enums) {
                 table
                     .enum_returns
-                    .insert(function.sig.ident.to_string(), name);
+                    .insert(function.sig.ident.unraw().to_string(), name);
             }
             if is_tuple_type(ty) {
                 table
@@ -1089,7 +1104,7 @@ fn validate_impl(
     let mut implemented = None;
     if let Some((negation, path, _)) = &item.trait_ {
         let blanket = item.generics.type_params().any(|parameter| {
-            matches!(item.self_ty.as_ref(), syn::Type::Path(own) if own.qself.is_none() && own.path.is_ident(&parameter.ident))
+            matches!(item.self_ty.as_ref(), syn::Type::Path(own) if own.qself.is_none() && own.path.get_ident().is_some_and(|ident| crate::names::same_ident(ident, &parameter.ident)))
         });
         if blanket {
             return Err(diagnostics::error(
@@ -1598,7 +1613,9 @@ fn bare_self_use(block: &syn::Block) -> Option<&syn::ExprPath> {
     fn is_self(expression: &syn::Expr) -> bool {
         match expression {
             syn::Expr::Paren(inner) => is_self(&inner.expr),
-            syn::Expr::Path(path) => path.qself.is_none() && path.path.is_ident("self"),
+            syn::Expr::Path(path) => {
+                path.qself.is_none() && crate::names::path_is(&path.path, "self")
+            }
             _ => false,
         }
     }
@@ -1617,7 +1634,10 @@ fn bare_self_use(block: &syn::Block) -> Option<&syn::ExprPath> {
             }
         }
         fn visit_expr_path(&mut self, path: &'a syn::ExprPath) {
-            if self.found.is_none() && path.qself.is_none() && path.path.is_ident("self") {
+            if self.found.is_none()
+                && path.qself.is_none()
+                && crate::names::path_is(&path.path, "self")
+            {
                 self.found = Some(path);
             }
         }
@@ -1681,9 +1701,10 @@ fn validate_struct(item: &syn::ItemStruct) -> syn::Result<()> {
             syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
         )?;
         if derives.iter().any(|path| {
-            path.segments
-                .last()
-                .is_some_and(|segment| segment.ident == "Clone" || segment.ident == "Copy")
+            path.segments.last().is_some_and(|segment| {
+                crate::names::ident_is(&segment.ident, "Clone")
+                    || crate::names::ident_is(&segment.ident, "Copy")
+            })
         }) {
             return Err(diagnostics::error(
                 Code::ManualCloneCopy,
@@ -1772,7 +1793,7 @@ fn validate_enum(item: &syn::ItemEnum) -> syn::Result<()> {
                 let last = path
                     .segments
                     .last()
-                    .map(|segment| segment.ident.to_string());
+                    .map(|segment| segment.ident.unraw().to_string());
                 match last.as_deref() {
                     Some("Clone" | "Copy") => {
                         return Err(diagnostics::error(
@@ -2150,7 +2171,7 @@ fn validate_function(
     let is_kernel = crate::expand::kernel_attribute_in(stage, function)?.is_some();
     // The names of the subgroup operations are the dialect's: a call of one is that operation (the emitter and the
     // classifier read the name), so a function of the module cannot take the name (m8.s, D140).
-    if barrier::subgroup_arity(&function.sig.ident.to_string()).is_some() {
+    if barrier::subgroup_arity(&function.sig.ident.unraw().to_string()).is_some() {
         return Err(diagnostics::error(
             Code::SubgroupNotAllowed,
             &function.sig.ident,
@@ -2298,13 +2319,13 @@ fn validate_function(
             }
             match parameter_flavor_in(stage, &argument.ty) {
                 ParameterFlavor::Invocation => {
-                    visitor.invocations.insert(name.ident.to_string());
+                    visitor.invocations.insert(name.ident.unraw().to_string());
                 }
                 ParameterFlavor::LocalId | ParameterFlavor::GroupId => {
-                    visitor.derived_ids.insert(name.ident.to_string());
+                    visitor.derived_ids.insert(name.ident.unraw().to_string());
                 }
                 ParameterFlavor::Workgroup => {
-                    visitor.derived_ids.insert(name.ident.to_string());
+                    visitor.derived_ids.insert(name.ident.unraw().to_string());
                     if let syn::Type::Path(path) = argument.ty.as_ref() {
                         visitor
                             .workgroup_types
@@ -2315,10 +2336,10 @@ fn validate_function(
                     }
                 }
                 ParameterFlavor::StorageRead => {
-                    visitor.resources.insert(name.ident.to_string());
+                    visitor.resources.insert(name.ident.unraw().to_string());
                 }
                 ParameterFlavor::Uniform => {
-                    visitor.uniforms.insert(name.ident.to_string());
+                    visitor.uniforms.insert(name.ident.unraw().to_string());
                     // A constant buffer is read-only: a `mut` binding would let the twin's copy be written.
                     if name.mutability.is_some() {
                         visitor.reject(
@@ -2329,17 +2350,17 @@ fn validate_function(
                     }
                 }
                 ParameterFlavor::StorageReadWrite => {
-                    visitor.resources.insert(name.ident.to_string());
+                    visitor.resources.insert(name.ident.unraw().to_string());
                     if let Some(element) = rw_buffer_element_type(&argument.ty) {
                         visitor
                             .read_write_buffers
-                            .insert(name.ident.to_string(), element);
+                            .insert(name.ident.unraw().to_string(), element);
                     }
                 }
                 flavor @ (ParameterFlavor::SampledTexture
                 | ParameterFlavor::StorageTexture
                 | ParameterFlavor::WriteTexture) => {
-                    let name = name.ident.to_string();
+                    let name = name.ident.unraw().to_string();
                     match texture::texture_spec(flavor, &argument.ty) {
                         Ok(spec) => {
                             visitor.textures.insert(
@@ -2368,7 +2389,7 @@ fn validate_function(
                     }
                 }
                 ParameterFlavor::Sampler => {
-                    visitor.samplers.insert(name.ident.to_string());
+                    visitor.samplers.insert(name.ident.unraw().to_string());
                     if !texture::sampler_has_no_arguments(&argument.ty) {
                         visitor.reject(
                             Code::TextureType,
@@ -2384,7 +2405,7 @@ fn validate_function(
                 }
                 ParameterFlavor::Value if matches!(argument.ty.as_ref(), syn::Type::Path(path) if result_payload(path).is_some()) =>
                 {
-                    visitor.result_values.insert(name.ident.to_string());
+                    visitor.result_values.insert(name.ident.unraw().to_string());
                 }
                 _ => {}
             }
@@ -3017,7 +3038,7 @@ impl<'ast> Visit<'ast> for AtomicBufferUsage {
             && let syn::Expr::Path(path) = index.expr.as_ref()
             && let Some(name) = path.path.get_ident()
         {
-            self.0.insert(name.to_string());
+            self.0.insert(name.unraw().to_string());
         }
         visit::visit_expr_call(self, call);
     }
@@ -3078,7 +3099,7 @@ fn tuple_element_problem(element: &syn::Type) -> Option<&'static str> {
         syn::Type::Group(inner) => tuple_element_problem(&inner.elem),
         syn::Type::Tuple(_) => None,
         syn::Type::Path(path) => {
-            let last = path.path.segments.last()?.ident.to_string();
+            let last = path.path.segments.last()?.ident.unraw().to_string();
             matches!(last.as_str(), "Option" | "Result").then_some(
                 "a tuple element cannot be an `Option` or a `Result`: keep the optional value in its own local",
             )
@@ -3097,7 +3118,7 @@ fn array_element_problem(element: &syn::Type) -> Option<&'static str> {
             "an array element cannot be an array: nested arrays are not supported, use one flat array and index `i * N + j`",
         ),
         syn::Type::Path(path) => {
-            let last = path.path.segments.last()?.ident.to_string();
+            let last = path.path.segments.last()?.ident.unraw().to_string();
             if matches!(last.as_str(), "Option" | "Result") {
                 Some(
                     "an array element cannot be an `Option` or a `Result`: keep the optional value in its own local",
@@ -3491,7 +3512,7 @@ impl RestrictedVisitor {
             let syn::Pat::Ident(ident) = element else {
                 continue;
             };
-            let name = ident.ident.to_string();
+            let name = ident.ident.unraw().to_string();
             if self.is_parameter_name(&name) {
                 self.reject(
                     Code::ShadowedParameter,
@@ -3502,7 +3523,7 @@ impl RestrictedVisitor {
             }
             let key = ident.ident.unraw().to_string();
             self.value_params.remove(&key);
-            self.result_values.remove(&ident.ident.to_string());
+            self.result_values.remove(&ident.ident.unraw().to_string());
             // What is not visible stays unknown: an enum held in a tuple is not tracked (documented limitation).
             match ty.and_then(|ty| enum_type_name(ty, &self.methods.enums)) {
                 Some(enum_name) => {
@@ -3537,7 +3558,7 @@ impl RestrictedVisitor {
                 let syn::Expr::Path(path) = call.func.as_ref() else {
                     return None;
                 };
-                let name = path.path.get_ident()?.to_string();
+                let name = path.path.get_ident()?.unraw().to_string();
                 self.methods.enum_returns.get(&name).cloned()
             }
             _ => None,
@@ -3847,7 +3868,7 @@ impl RestrictedVisitor {
                     && path
                         .path
                         .get_ident()
-                        .is_some_and(|name| self.uniforms.contains(&name.to_string()))
+                        .is_some_and(|name| self.uniforms.contains(&name.unraw().to_string()))
             }
             syn::Expr::Paren(paren) => self.is_uniform_parameter(&paren.expr),
             syn::Expr::Group(group) => self.is_uniform_parameter(&group.expr),
@@ -3859,7 +3880,7 @@ impl RestrictedVisitor {
     fn direct_name(expression: &syn::Expr) -> Option<String> {
         match expression {
             syn::Expr::Path(path) if path.qself.is_none() => {
-                path.path.get_ident().map(ToString::to_string)
+                path.path.get_ident().map(|ident| ident.unraw().to_string())
             }
             syn::Expr::Paren(paren) => Self::direct_name(&paren.expr),
             syn::Expr::Group(group) => Self::direct_name(&group.expr),
@@ -3889,7 +3910,7 @@ impl RestrictedVisitor {
         let Some(facts) = self.textures.get(&receiver).copied() else {
             return false;
         };
-        let method = call.method.to_string();
+        let method = call.method.unraw().to_string();
         if call.turbofish.is_some() {
             self.reject(
                 Code::BuiltinTypeArguments,
@@ -4008,7 +4029,7 @@ impl RestrictedVisitor {
     fn place_root(expression: &syn::Expr) -> Option<String> {
         match expression {
             syn::Expr::Path(path) if path.qself.is_none() => {
-                path.path.get_ident().map(ToString::to_string)
+                path.path.get_ident().map(|ident| ident.unraw().to_string())
             }
             syn::Expr::Field(field) => Self::place_root(&field.base),
             syn::Expr::Index(index) => Self::place_root(&index.expr),
@@ -4103,6 +4124,8 @@ impl RestrictedVisitor {
             let mut names = Names(HashSet::new());
             names.visit_expr(index);
             if let Some((root, method)) = roots.iter().find(|(root, _)| names.0.contains(root)) {
+                // A keyword name keeps its `r#` in the text, so the suggestion is valid Rust (Opus round 3 N4).
+                let (root, method) = (crate::names::spelling(root), crate::names::spelling(method));
                 self.reject(
                     Code::ForBoundSideEffect,
                     index,
@@ -4117,7 +4140,7 @@ impl RestrictedVisitor {
     }
 
     fn check_module_method_call(&mut self, call: &syn::ExprMethodCall, facts: MethodFacts) {
-        let method = call.method.to_string();
+        let method = call.method.unraw().to_string();
         if call.turbofish.is_some() {
             self.reject(
                 Code::TurbofishOnGenericCall,
@@ -4191,12 +4214,12 @@ impl RestrictedVisitor {
             syn::Expr::Path(path) => path
                 .path
                 .get_ident()
-                .is_some_and(|name| self.result_values.contains(&name.to_string())),
+                .is_some_and(|name| self.result_values.contains(&name.unraw().to_string())),
             syn::Expr::Call(call) => match call.func.as_ref() {
                 syn::Expr::Path(path) => path
                     .path
                     .get_ident()
-                    .is_some_and(|name| self.result_helpers.contains(&name.to_string())),
+                    .is_some_and(|name| self.result_helpers.contains(&name.unraw().to_string())),
                 _ => false,
             },
             syn::Expr::Paren(paren) => self.is_known_result(&paren.expr),
@@ -4291,7 +4314,10 @@ impl RestrictedVisitor {
             );
             return;
         };
-        let buffer_name = buffer_path.path.get_ident().map(ToString::to_string);
+        let buffer_name = buffer_path
+            .path
+            .get_ident()
+            .map(|ident| ident.unraw().to_string());
         let element = match buffer_name
             .as_ref()
             .and_then(|name| self.read_write_buffers.get(name))
@@ -4381,7 +4407,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         for segment in &path.segments {
-            if BANNED_NAMES.contains(&segment.ident.to_string().as_str()) {
+            if BANNED_NAMES.contains(&segment.ident.unraw().to_string().as_str()) {
                 self.reject(
                     Code::CpuOnlyName,
                     path,
@@ -4406,7 +4432,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 .path
                 .segments
                 .last()
-                .is_some_and(|segment| segment.ident == "Workgroup")
+                .is_some_and(|segment| crate::names::ident_is(&segment.ident, "Workgroup"))
         {
             if !self
                 .workgroup_types
@@ -4522,7 +4548,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         if let Some(ident) = ty.path.get_ident() {
-            let name = ident.to_string();
+            let name = ident.unraw().to_string();
             if name == "usize" {
                 self.reject(
                     Code::UsizeOutsideIndex,
@@ -4562,7 +4588,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     fn visit_expr_cast(&mut self, cast: &'ast syn::ExprCast) {
         // `i as usize` is the index of an array (slice m9.r1) and nothing else: the dialect has no `usize` value.
         if matches!(strip_type_parens(&cast.ty), syn::Type::Path(path)
-            if path.qself.is_none() && path.path.is_ident("usize"))
+            if path.qself.is_none() && crate::names::path_is(&path.path, "usize"))
         {
             if self.index_depth == 0 {
                 self.reject(
@@ -4585,14 +4611,16 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         }
         // `a.len() as u32`: the one place the `usize` length of an array may stand outside an index.
         if let syn::Expr::MethodCall(call) = strip_parens(&cast.expr)
-            && call.method == "len"
+            && crate::names::ident_is(&call.method, "len")
         {
             self.len_casts.insert(std::ptr::from_ref(call) as usize);
         }
         if let Some(enum_name) = self.enum_of(&cast.expr) {
             let repr = self.methods.enums[&enum_name].repr_name();
             let target = match cast.ty.as_ref() {
-                syn::Type::Path(path) => path.path.get_ident().map(|ident| ident.to_string()),
+                syn::Type::Path(path) => {
+                    path.path.get_ident().map(|ident| ident.unraw().to_string())
+                }
                 _ => None,
             };
             let matches_repr = target.as_deref().is_some_and(|target| {
@@ -4617,7 +4645,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             syn::Type::Path(path) => path
                 .path
                 .get_ident()
-                .is_some_and(|ident| CAST_TARGETS.contains(&ident.to_string().as_str())),
+                .is_some_and(|ident| CAST_TARGETS.contains(&ident.unraw().to_string().as_str())),
             _ => false,
         };
         if !supported {
@@ -4662,11 +4690,10 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         if let syn::Expr::Path(path) = call.func.as_ref() {
-            let contains_banned_name = path
-                .path
-                .segments
-                .iter()
-                .any(|segment| BANNED_NAMES.contains(&segment.ident.to_string().as_str()));
+            let contains_banned_name =
+                path.path.segments.iter().any(|segment| {
+                    BANNED_NAMES.contains(&segment.ident.unraw().to_string().as_str())
+                });
             if contains_banned_name {
                 self.reject(
                     Code::CpuOnlyName,
@@ -4679,7 +4706,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 self.reject(Code::QualifiedMathPath, path, QUALIFIED_MATH_PATH);
                 return;
             }
-            if path.path.is_ident("Some") {
+            if crate::names::path_is(&path.path, "Some") {
                 if call.args.len() != 1 {
                     self.reject(
                         Code::SomeArguments,
@@ -4700,7 +4727,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 self.visit_expr(&call.args[0]);
                 return;
             }
-            if path.path.is_ident("Ok") || path.path.is_ident("Err") {
+            if crate::names::path_is(&path.path, "Ok") || crate::names::path_is(&path.path, "Err") {
                 if call.args.len() != 1 {
                     self.reject(
                         Code::OkErrArguments,
@@ -4829,7 +4856,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             && !path.path.segments[0].arguments.is_none()
             && self
                 .function_names
-                .contains(&path.path.segments[0].ident.to_string())
+                .contains(&path.path.segments[0].ident.unraw().to_string())
         {
             self.reject(
                 Code::TurbofishOnGenericCall,
@@ -4842,7 +4869,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             syn::Expr::Path(path) => path
                 .path
                 .get_ident()
-                .is_some_and(|ident| self.function_names.contains(&ident.to_string())),
+                .is_some_and(|ident| self.function_names.contains(&ident.unraw().to_string())),
             _ => false,
         };
         if allowed
@@ -4874,7 +4901,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     fn visit_expr_index(&mut self, index: &'ast syn::ExprIndex) {
         if let syn::Expr::Path(path) = index.expr.as_ref()
             && let Some(name) = path.path.get_ident()
-            && self.atomic_buffers.contains(&name.to_string())
+            && self.atomic_buffers.contains(&name.unraw().to_string())
         {
             self.reject(
                 Code::AtomicDirectAccess,
@@ -4909,7 +4936,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                     | syn::Expr::Path(_)
                     | syn::Expr::Index(_)
             )
-            && !matches!(expression, syn::Expr::MethodCall(call) if call.method == "len")
+            && !matches!(expression, syn::Expr::MethodCall(call) if crate::names::ident_is(&call.method, "len"))
         {
             let outer = std::mem::replace(&mut self.index_depth, 0);
             visit::visit_expr(self, expression);
@@ -5131,7 +5158,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         if self.check_texture_call(call) {
             return;
         }
-        let method = call.method.to_string();
+        let method = call.method.unraw().to_string();
         let in_dialect = matches!(
             method.as_str(),
             "global_id"
@@ -5253,7 +5280,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         let receiver = match call.receiver.as_ref() {
-            syn::Expr::Path(path) => path.path.get_ident().map(ToString::to_string),
+            syn::Expr::Path(path) => path.path.get_ident().map(|ident| ident.unraw().to_string()),
             _ => None,
         };
         // The `.len()` of an array is its `N` (slice m9.r1): a `usize` in Rust, so it stands inside an index or directly
@@ -5455,7 +5482,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         // A texture or a sampler is the receiver of a texture method (or the sampler argument of `sample`) and
         // nothing else; those uses never reach this function (`check_texture_call`).
         if path.qself.is_none()
-            && let Some(name) = path.path.get_ident().map(ToString::to_string)
+            && let Some(name) = path.path.get_ident().map(|ident| ident.unraw().to_string())
             && (self.textures.contains_key(&name) || self.samplers.contains(&name))
         {
             let uses = if self.samplers.contains(&name) {
@@ -5482,7 +5509,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             && path
                 .path
                 .get_ident()
-                .is_some_and(|name| self.uniforms.contains(&name.to_string()))
+                .is_some_and(|name| self.uniforms.contains(&name.unraw().to_string()))
         {
             self.reject(
                 Code::UniformWholeValue,
@@ -5521,7 +5548,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         {
             return;
         }
-        if path.qself.is_none() && path.path.is_ident("workgroup_barrier") {
+        if path.qself.is_none() && crate::names::path_is(&path.path, "workgroup_barrier") {
             self.reject(
                 Code::BarrierForm,
                 path,
@@ -5535,9 +5562,9 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 path,
                 "associated constants and foreign paths are not in the Rust-to-Slang subset; reference local variables, parameters, or same-module helpers",
             );
-        } else if path.path.is_ident("Some")
-            || path.path.is_ident("Ok")
-            || path.path.is_ident("Err")
+        } else if crate::names::path_is(&path.path, "Some")
+            || crate::names::path_is(&path.path, "Ok")
+            || crate::names::path_is(&path.path, "Err")
         {
             self.reject(
                 Code::VariantAsValue,
@@ -5561,7 +5588,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             );
             return;
         };
-        let text = name.ident.to_string();
+        let text = name.ident.unraw().to_string();
         if self.is_parameter_name(&text) {
             self.reject(
                 Code::ShadowedParameter,
@@ -5699,7 +5726,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             }
         };
         if let Some(variable) = variable {
-            let name = variable.ident.to_string();
+            let name = variable.ident.unraw().to_string();
             if self.is_parameter_name(&name) {
                 self.reject(
                     Code::ShadowedParameter,
@@ -5771,14 +5798,17 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_block(&mut self, block: &'ast syn::Block) {
-        // An enum local lives to the end of its block: a `let` inside it that shadows an outer name is forgotten after.
+        // An enum local lives to the end of its block: a `let` inside it that shadows an outer name is forgotten after,
+        // and a shadow of a value parameter ends with its block too (the parameter is a by-value `in` again).
         let outer = self.enum_values.clone();
         let outer_tuples = self.tuple_values.clone();
         let outer_closures = self.closures.clone();
+        let outer_value_params = self.value_params.clone();
         visit::visit_block(self, block);
         self.enum_values = outer;
         self.tuple_values = outer_tuples;
         self.closures = outer_closures;
+        self.value_params = outer_value_params;
     }
 
     fn visit_expr_while(&mut self, expression: &'ast syn::ExprWhile) {
@@ -5846,7 +5876,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                     return;
                 }
                 for name in [ok_name, err_name] {
-                    let text = name.ident.to_string();
+                    let text = name.ident.unraw().to_string();
                     if self.is_parameter_name(&text) {
                         self.reject(
                             Code::ShadowedParameter,
@@ -5966,7 +5996,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         if let Ok((pattern, _)) = crate::slang::local_binding(&local.pat) {
-            let name = pattern.ident.to_string();
+            let name = pattern.ident.unraw().to_string();
             if self.is_parameter_name(&name) {
                 self.reject(
                     Code::ShadowedParameter,
@@ -5976,7 +6006,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 return;
             }
             // A local of the name of a value parameter is a binding of its own: `let mut p = p;` is how a `&mut self`
-            // method gets a place to work on (the rule is by name, so a scope that ends is not tracked).
+            // method gets a place to work on (the rule is by name; `visit_block` restores the set when the block of the shadow ends).
             self.value_params.remove(&pattern.ident.unraw().to_string());
         }
         if crate::slang::local_binding(&local.pat).is_err() {
@@ -6106,7 +6136,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             .as_ref()
             .is_some_and(|initial| self.is_known_result(&initial.expr));
         if annotated_result || initialized_result {
-            self.result_values.insert(pattern.ident.to_string());
+            self.result_values.insert(pattern.ident.unraw().to_string());
         }
     }
 }

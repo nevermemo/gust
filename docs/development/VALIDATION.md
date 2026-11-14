@@ -108,12 +108,15 @@ WGSL.
 SPIR-V print an informational `OpCopyLogical` count per module, read from `spirv-dis` (a missing `spirv-dis` is said in the line); it is never a failure. Slang emits that
 instruction for copies between aggregates of different layouts, and naga's SPIR-V front end refuses it, which is the
 whole reason the count exists: GUST's SPIR-V targets Vulkan drivers, and feeding it to naga is unsupported. The
-executed route is WGSL. WGSL of the M6 constructs is judged by wgpu's own module creation in the GPU tests (wgpu's
+default executed route is WGSL; the opt-in `spirv-route` feature (D172, D174, D175) hands slangc's own SPIR-V to
+Vulkan with run-time compilation, and its evidence is the gust-compute-wgpu tests and difftest format 13 run
+through it (the RTX 5090; lavapipe in the `spirv-route` workflow). WGSL of the M6 constructs is judged by wgpu's own module creation in the GPU tests (wgpu's
 default capabilities), not by a naga run with every capability enabled, which passed WGSL that wgpu refuses. Known
 limit: a constant `Mat2` or `Mat3` handed to wgpu as SPIR-V crashes the runner (the faulting layer is not isolated;
-SEMANTICS section 4). That is not a statement about the other cases: no M6 GPU case executes SPIR-V, because
-`gust-wgpu` is fed WGSL, so every M6 Gpu result is WGSL evidence and the Spirv tier of M6 is `spirv-val` of the
-exported modules. Matrix and uniform layout decorations in SPIR-V have never been executed. `cargo xtask slangc` compiles with the same matrix flag
+SEMANTICS section 4). That is not a statement about the other cases: without the `spirv-route` feature no GPU
+case executes SPIR-V, because `gust-wgpu` is fed WGSL, so every M6 Gpu result is WGSL evidence and the Spirv tier of
+M6 is `spirv-val` of the exported modules. Matrix and uniform layout decorations in SPIR-V are executed only where
+a test run through the route uses them; no record yet says which do. `cargo xtask slangc` compiles with the same matrix flag
 as `gust`: a unit test reads the bodies of `gust`'s `slangc_command` and `slangc_reflection_command` and requires the
 flag in each (the whole argument lists of those two are pinned by their own tests in `gust`).
 

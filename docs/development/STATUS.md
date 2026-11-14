@@ -1,6 +1,6 @@
 # Current status
 
-## Active: roadmap M9 (2026-11-09)
+## Active: roadmap M10 (2026-11-14; M9 closed, D176)
 
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
 2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done; M0.15
@@ -218,7 +218,8 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   reads, `.len()`, sets and compound sets, copies, array arguments and results, element method calls, the indexed
   output store). Its first wide run found an NVIDIA shader-compiler defect (D168): a uniformly filled local array
   with an identity write-back at a dynamic index reads element 0 as 0 on the RTX 5090 (driver 610.88) through Vulkan
-  and D3D12; the Radeon 890M is correct; GUST's Slang, slangc's WGSL and naga's SPIR-V are correct. The generator
+  and D3D12 (D169 corrects this: the D3D12 result held only for that program under debug flags); the Radeon
+  890M is correct; GUST's Slang, slangc's WGSL and naga's SPIR-V are correct. The generator
   avoids the trigger per operator (a non-identity operand for `+ - ^ * / << >>`, a literal index for `|= &= %=` and
   for element calls on uniformly filled arrays); DIFFTEST.md documents the hole. Four order and copy mutations each
   fail their named test; N6 gives validation failures a shrink identity. Wide run seeds 1-64: 1024 programs, 0
@@ -348,6 +349,35 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   ending 00:32Z on 2026-11-14 (pin 452/49), including both difftest runs and the gust-compute-wgpu tests through the
   SPIR-V route on the RTX 5090; the merge adds only m9.x2's files (prose and comments), and docs-check, lint and
   check-arch passed on it.
+- m9.z, the M9 sanity-check fixes (merge `9c38524`; four review rounds, the last Opus re-check MERGE). Round 1 made
+  the rulings: the coretests accept `x` itself for CT-80/CT-84 `CastInt` only on a software adapter with the route
+  taken (the lavapipe cast, NEXT_TASKS); `GUST_REQUIRE_SPIRV_ROUTE=1` makes every route test fail when the route was
+  not taken; `interface` and `extension` join the collision list (B4); the lint scans 53 documents. Round 2 removed
+  the `spirv-route` workflow's `continue-on-error` after PR run 43561965483, the first green lavapipe run of the
+  route. Round 3 answered Codex's confirming pass: raw identifiers bypassed GUST-E0421 (`a[r#c.n as usize] =
+  r#c.bump();`) and E0333; the route-log check compares the programs that ran, not only the events. Round 4
+  closed the class: `names.rs` compares without the `r#` prefix in every rule (with `shape = pixel` a raw `r#out`
+  had escaped the pixel output rules, D63/D94), raw type names (`r#RWStructuredBuffer<u32>`) read as the type,
+  and the route-log check compares program sets per seed. Each new test was red before its fix (run records in
+  the work area). 35 lane gates green on `d51a0bc` (Gpu pin 453/49), including both difftest batches and the
+  gust-compute-wgpu tests through the route; the merge tree equals the gated tree.
+- m9.x3, the raw-name tail (merge `ef2a73b`; Opus review MERGE, re-check MERGE). Method names and the invocation's
+  field members compare without the prefix in the validator and the emitter (a raw `a.r#len()` had been refused
+  as E0334 while the plain one passed; raw and plain spellings now emit identical Slang), and the E0421 hint spells
+  `self`, `Self`, `super`, `crate` and `_` bare and `gen` as `r#gen`. 35 lane gates green on `bfb25b8` (Gpu pin
+  453/49); the merge tree equals the gated tree.
+- M9 close records (2026-11-14; D176). (i) `cargo xtask check-full` and the full `check-release` passed on `f613b32`
+  (00:39 to 02:07Z) and on `ef2a73b`, the merge of the close fixes (16:16 to 17:40Z, clean tree); NVIDIA GeForce RTX 5090 / Vulkan, driver 610.88,
+  Slang 2026.22. (ii) Main CI on `9c38524`: ci 43600889946, gpu-software 43600889955, spirv-route 43600889990,
+  all green; on `ef2a73b`: ci 43614513807, gpu-software 43614513819, spirv-route 43614513892, all green. (iii) The sanity checks at `f613b32`, Fable (plans/m9/sanity-fable.md), Opus
+  (plans/m9/sanity-opus.md) and Codex (work area codex/m9-sanity2), all said "proceed with fixes"; Codex alone
+  found the raw-identifier escapes. Codex's confirming pass on `ef2a73b` (work area
+  codex/m9-sanity3) said "close after fixes, documentation and closure records only": every correctness finding is
+  closed (the raw-name escapes, the lavapipe cast as a documented limitation, the vacuous route tests, B4's names,
+  the semver evidence); the route-log check still passes a same-seed substitution (documented); its sweep found no
+  raw-name comparison left that escapes a rule or miscompiles (attribute paths, variant targets and repr names fail
+  closed); the stale VALIDATION, HANDOFF, ROADMAP and STATUS lines and a CHANGELOG line for the same-cell atomic
+  order are fixed in these records. (iv) What carries out of M9 is in NEXT_TASKS, "M9 follow-ups".
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so
@@ -1648,17 +1678,20 @@ full_check_needed_before_commit: no
 ## Current baseline
 
 - Branch: `main`
-- Last complete compiler feature: M8 (capability variants: `#[variant]`, `GUST_PROFILE` capabilities, subgroup
+- Last complete compiler feature: M9 (language breadth II: methods, field-less enums with `match`, tuples,
+  fixed-size arrays, non-capturing closures, traits as Slang interfaces and generics, the opt-in SPIR-V route;
+  D176); before it M8 (capability variants: `#[variant]`, `GUST_PROFILE` capabilities, subgroup
   operations, the portable floor, routing and `cargo gust`; D153); before it MX (execution shapes and textures: the
   stage-profile trait, the `pixel` shape, textures and samplers, the classifier and the shape pin; D129); before it M7
   (map generator, `GpuVec` residency, `par_for!`, shared memory and barriers, multi-dimensional dispatch, wrapping
   arithmetic, gust-algo; D126)
-- Last full validation: `cargo xtask check-full` passed at `2f96e69` (M8 close records, 2026-11-09, 05:11 to 05:53Z,
-  NVIDIA GeForce RTX 5090 / Vulkan, driver 610.88, Slang v2026.21; clean tree), through the shared cargo slot wrapper:
+- Last full validation: `cargo xtask check-full` passed at `ef2a73b` (M9 close, 2026-11-14, 16:16 to 17:40Z, clean tree,
+  NVIDIA GeForce RTX 5090 / Vulkan, driver 610.88, Slang 2026.22; clean tree), through the shared cargo slot wrapper:
   workspace tests, the release-only tests required by name, every example test with `--include-ignored`, `check-dual` in
   full mode, the SPIR-V artifacts through `spirv-val`, and `check-web` with the browser run, and since mx.p1c the
   difftest with `--shapes grid,pixel`. The step output, including the `GUST_OK` line, lives in the local
-  `.ai/VALIDATION.json` record of that run, which is not committed. The runs before it were at `dd74689` (M7 close,
+  `.ai/VALIDATION.json` record of that run, which is not committed. The runs before it were at `f613b32` (M9's last slice records, 2026-11-14,
+00:39 to 02:07Z), `2f96e69` (M8 close, 2026-11-09, 05:11 to 05:53Z, Slang v2026.21), `dd74689` (M7 close,
   2026-11-04, 15:58 to 16:33Z), `f452a37` (M6 close, 2026-11-02, 19:32 to 20:12Z, driver 610.88, Slang v2026.20),
   `7dd9c3d` (M5 close after m5.f1, 2026-11-02, 13:49 to 14:01Z), `68c6f40` (m5.c2, 2026-11-02, one untracked log file),
   `27b342b` (M4 close after m4.i) and `c964222` (2026-11-02, before the M4 sanity fixes), then `5971c12` (M3 close,

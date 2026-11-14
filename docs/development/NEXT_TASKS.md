@@ -535,6 +535,11 @@ test module; do not mix that mechanical move with behavior changes.
 - A pattern binding, a `for` variable or a closure parameter that shadows a value parameter still gets a false
   GUST-E0333 on a `&mut self` call (m9.z round 3 fixed the `let` shadow and its block scope only; Opus round 3 N5).
   The validator keys the by-value parameters by name and removes a name only at a `let`.
+- m9.x3 nits (Opus review and re-check): the comment on the raw Option/Result method test
+  (`crates/gust-macros/src/tests/regression.rs`) says it covers the Option and Result usage scans, which it cannot
+  (any program calling `is_some` or `is_ok` names the type elsewhere); drop the redundant method arms of those
+  scans or reword the comment; `names.rs` has a 143-column line; the rc records of revert experiments say rc=0
+  whatever the tests did (only the logs show it).
 - No browser (Tint) run of any M9 fixture (methods, enums and `match`, tuples, arrays, closures, traits and generics)
   exists, although `web` is a target (Opus sanity check of M9): one `check-web` of the M9 fixtures would show whether
   Tint takes the WGSL as naga does. Not started in m9.z.

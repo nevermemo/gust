@@ -3,8 +3,9 @@
 ## Current state
 
 - Branch: `main`
-- Active: M8 (capability variants, 0.2.0) is closed (D153); M9 (language breadth II) is next, and its plan comes
-  first. The 0.2.0 publish stays the owner's act (D148, RELEASE.md). M7 (D126) and MX (D129) are closed, and M6
+- Active: M9 (language breadth II) is closed (D176); M10 (publication) is next, and its plan comes first. M8
+  (capability variants, 0.2.0) is closed (D153). The 0.2.0 publish stays the owner's act (D148, RELEASE.md). M7
+  (D126) and MX (D129) are closed, and M6
   (language breadth I) is closed (D86). See the "Now and next" section of [ROADMAP.md](../ROADMAP.md) and
   [STATUS.md](STATUS.md).
 - M0 is closed (D28), and M0.15 (the CI `unit` job is a required check on `main`) followed on
@@ -25,8 +26,8 @@
 
 ## Evidence
 
-- Last full record: `cargo xtask check-full` passed at `2f96e69` (2026-11-09, 05:11 to 05:53Z, M8 close, RTX 5090 /
-  Vulkan, driver 610.88, Slang v2026.21, with the `dev+subgroups` Gpu step); details in STATUS and D153.
+- Last full record: `cargo xtask check-full` and the full `check-release` passed at `ef2a73b` (2026-11-14, 16:16 to 17:40Z, clean tree,
+  M9 close, RTX 5090 / Vulkan, driver 610.88, Slang 2026.22); details in STATUS and D176.
 - CI `unit` and `msrv` jobs green on main.
 - Evidence tiers and labels: [VALIDATION.md](VALIDATION.md).
 

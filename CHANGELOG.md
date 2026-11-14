@@ -262,6 +262,11 @@ does not judge the macro language and skips `#[doc(hidden)]` items, so the list 
   reports `2026.22`"); run `cargo gust build` again (or pass `--allow-slang-mismatch`). The emitted WGSL of one
   kernel kind changes visibly: a compare-exchange now retries after a spurious failure (Slang #13918, read from the
   emitted text). That stays inside the weak contract of `atomic_compare_exchange`, but it is a change in GPU behaviour.
+- A known departure from Rust, documented rather than refused: in an assignment whose index and value are atomics on
+  the same cell (`out[atomic_add(&mut c[i], 1u32) as usize] = atomic_add(&mut c[i], 10u32);`) the GPU runs the index
+  first (slangc 2026.22, read from the emitted WGSL; not run on a GPU), where Rust and the CPU twin run the value
+  first, so the two store different values (SEMANTICS, "Known departure from Rust: two atomics on one cell in an
+  assignment"; D176). Whether Slang 2026.20, the 0.1.0 line, ran the value first was not measured.
 
 ### A new dependency
 

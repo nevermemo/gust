@@ -7,15 +7,16 @@ use std::{
 };
 
 use super::{
-    DependencyKind, DocDebt, DocMessage, HELLO_DIR, HELLO_OUTPUT, Member, NightlyVerdict, Options,
-    PackageSpec, RegistryCleanup, Run, WorkDir, caret_satisfied, clean_registry_src,
-    consumer_lock_problems, dep_info_entries, doc_messages, doc_problems, docsrs_request,
-    docsrs_runs, dry_run_problems, existing_crate_lines, finish_outcome,
-    fixture_dependency_problems, has_nightly, helper_choice, metadata_problems, nightly_failure,
-    nightly_verdict, package_allows, package_files, package_problems, parse_args, parse_metadata,
-    patch_config_arguments, patched_manifest, r1_command, r8_command, readme_blocks,
-    readme_problems, recipe_ran, registry_entries, registry_target, required_file_problems,
-    section_value, size_problems, target_dep_info_entries, unused_library_patches, verify_problems,
+    DOCS_RS_DEFAULT_TARGET, DependencyKind, DocDebt, DocMessage, HELLO_DIR, HELLO_OUTPUT, Member,
+    NightlyPlan, NightlyVerdict, Options, PackageSpec, RegistryCleanup, Run, WorkDir,
+    caret_satisfied, clean_registry_src, consumer_lock_problems, dep_info_entries, doc_messages,
+    doc_problems, docsrs_request, docsrs_runs, dry_run_problems, existing_crate_lines,
+    finish_outcome, fixture_dependency_problems, has_nightly, helper_choice, metadata_problems,
+    nightly_failure, nightly_verdict, package_allows, package_files, package_problems, parse_args,
+    parse_metadata, patch_config_arguments, patched_manifest, r1_command, r5_nightly_plan,
+    r8_command, readme_blocks, readme_problems, recipe_ran, registry_entries, registry_target,
+    required_file_problems, section_value, size_problems, target_dep_info_entries,
+    unused_library_patches, verify_problems,
 };
 use crate::workspace::workspace_root;
 
@@ -513,6 +514,46 @@ fn a_nightly_with_every_target_is_ready() {
 }
 
 #[test]
+fn the_nightly_plan_depends_on_the_mode() {
+    let wanted = strings(&WANTED);
+    let stable_only = "stable-x86_64-pc-windows-msvc (default)\n";
+    let everything = "wasm32-unknown-unknown\nx86_64-unknown-linux-gnu\n";
+    // --check-only: skipped without a nightly, the host run with one (targets are not looked at).
+    assert_eq!(
+        r5_nightly_plan(true, stable_only, "", &wanted),
+        NightlyPlan::Skip
+    );
+    assert_eq!(
+        r5_nightly_plan(true, TOOLCHAINS, "", &wanted),
+        NightlyPlan::Host
+    );
+    assert_eq!(
+        r5_nightly_plan(true, TOOLCHAINS, everything, &wanted),
+        NightlyPlan::Host
+    );
+    // The full run: the per-target runs when all is installed, else a failure with the install text.
+    assert_eq!(
+        r5_nightly_plan(false, TOOLCHAINS, everything, &wanted),
+        NightlyPlan::Targets
+    );
+    match r5_nightly_plan(false, stable_only, "", &wanted) {
+        NightlyPlan::Fail(text) => {
+            assert!(text.contains("rustup toolchain install nightly"), "{text}")
+        }
+        other => panic!("a missing nightly must fail the full run, got {other:?}"),
+    }
+    match r5_nightly_plan(false, TOOLCHAINS, "wasm32-unknown-unknown\n", &wanted) {
+        NightlyPlan::Fail(text) => {
+            assert!(
+                text.contains("rustup target add --toolchain nightly x86_64-unknown-linux-gnu`"),
+                "{text}"
+            )
+        }
+        other => panic!("a missing target must fail the full run, got {other:?}"),
+    }
+}
+
+#[test]
 fn the_failure_of_the_full_run_says_how_to_install_what_is_missing() {
     assert_eq!(nightly_failure(&NightlyVerdict::Ready), None);
     let none = nightly_failure(&NightlyVerdict::NoNightly).unwrap();
@@ -557,11 +598,18 @@ fn the_docsrs_runs_group_libraries_by_the_targets_they_name() {
     assert_eq!(
         shape,
         vec![
-            (Some("x86_64-unknown-linux-gnu"), vec!["alpha"]),
+            (
+                Some("x86_64-unknown-linux-gnu"),
+                vec!["alpha", "alpha-macros"]
+            ),
             (Some("wasm32-unknown-unknown"), vec!["alpha"]),
-            (None, vec!["alpha-macros"]),
         ]
     );
+    // A library that names no target is documented for what docs.rs builds, not for the host.
+    let alone = docsrs_runs(&[macros]);
+    assert_eq!(alone.len(), 1);
+    assert_eq!(alone[0].0.as_deref(), Some("x86_64-unknown-linux-gnu"));
+    assert_eq!(alone[0].0.as_deref(), Some(DOCS_RS_DEFAULT_TARGET));
     assert!(docsrs_runs(&[]).is_empty());
 }
 

@@ -24,7 +24,7 @@
 //! - **R5**: `cargo doc --no-deps` of every library crate, every rustdoc warning an error ([`KNOWN_DOC_DEBT`] lists
 //!   the ones admitted, each by text, none since mr.b2; a listed warning that disappears fails the check), on
 //!   stable; and on nightly with the docs.rs features and `--cfg docsrs`, once for each target a library's docs.rs
-//!   metadata names (the host when it names none; `gust-compute-wgpu` names wasm32). The full run fails when no nightly
+//!   metadata names (`x86_64-unknown-linux-gnu`, as docs.rs does, when it names none; `gust-compute-wgpu` adds wasm32). The full run fails when no nightly
 //!   toolchain or one of those targets is installed, and says how to install it ([`nightly_verdict`]); `--check-only`
 //!   runs the nightly pass when a nightly is installed and prints it as skipped otherwise, as before.
 //! - **R6**: each `.crate` file is under 2 MiB.
@@ -1136,13 +1136,51 @@ pub(crate) fn nightly_failure(verdict: &NightlyVerdict) -> Option<String> {
     }
 }
 
+/// What the nightly part of R5 does in a mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NightlyPlan {
+    /// `--check-only` without a nightly: printed as skipped.
+    Skip,
+    /// `--check-only` with a nightly: one run for the host, without `--target`.
+    Host,
+    /// The full run with everything installed: one run per named target.
+    Targets,
+    /// The full run without the nightly or a target: the failure text.
+    Fail(String),
+}
+
+/// The mode decision of R5's nightly part, from the rustup listings: `--check-only` keeps its old behaviour (skip
+/// without a nightly, else the host run); the full run must have the nightly and every wanted target, or fails.
+pub(crate) fn r5_nightly_plan(
+    check_only: bool,
+    toolchains: &str,
+    installed_targets: &str,
+    wanted: &[String],
+) -> NightlyPlan {
+    if check_only {
+        return if has_nightly(toolchains) {
+            NightlyPlan::Host
+        } else {
+            NightlyPlan::Skip
+        };
+    }
+    match nightly_failure(&nightly_verdict(toolchains, installed_targets, wanted)) {
+        Some(failure) => NightlyPlan::Fail(failure),
+        None => NightlyPlan::Targets,
+    }
+}
+
+/// The target docs.rs builds a package for when its metadata names none.
+pub(crate) const DOCS_RS_DEFAULT_TARGET: &str = "x86_64-unknown-linux-gnu";
+
 /// The docs.rs-shaped runs of R5: one per target that a library's metadata names, with the libraries that name it, and
-/// one for the host (target `None`) with the libraries that name none. Targets keep the order of first mention.
+/// one for `x86_64-unknown-linux-gnu` (what docs.rs builds) with the libraries that name none. Targets keep the order
+/// of first mention.
 pub(crate) fn docsrs_runs<'a>(libraries: &[&'a Member]) -> Vec<(Option<String>, Vec<&'a Member>)> {
     let mut runs: Vec<(Option<String>, Vec<&'a Member>)> = Vec::new();
     for library in libraries {
         let targets: Vec<Option<String>> = if library.docs_targets.is_empty() {
-            vec![None]
+            vec![Some(DOCS_RS_DEFAULT_TARGET.to_owned())]
         } else {
             library.docs_targets.iter().cloned().map(Some).collect()
         };
@@ -1729,11 +1767,15 @@ fn release_steps(
 
 /// R1, R2, R5 to R8; the summary up to R8.
 fn all_steps(run: &Run, metadata: &Metadata, publishable: &[&Member]) -> Result<String, String> {
+    let plan = r5_plan(run, publishable);
+    if let NightlyPlan::Fail(failure) = &plan {
+        return Err(failure.clone());
+    }
     let listing = r2_lists(run, publishable)?;
     let crates = r1_package(run, publishable)?;
     let unpacked = r2_unpacked(run, publishable)?;
     let sizes = r6_sizes(&crates, publishable)?;
-    let docs = r5_docs(run, publishable)?;
+    let docs = r5_docs(run, publishable, &plan)?;
     let recipe = r7_recipe(run, &metadata.members, publishable, &unpacked)?;
     let dry = r8_dry_run(run, publishable)?;
 
@@ -1953,8 +1995,39 @@ fn doc_run(
     Ok(doc_messages(&String::from_utf8_lossy(&output.stdout)))
 }
 
+/// Reads the rustup listings and decides the nightly part of R5 ([`r5_nightly_plan`]). The full run calls it before R1
+/// so that a missing nightly or target fails at once, not after the packaging.
+fn r5_plan(run: &Run, publishable: &[&Member]) -> NightlyPlan {
+    let libraries: Vec<&Member> = publishable
+        .iter()
+        .copied()
+        .filter(|member| member.has_library)
+        .collect();
+    let rustup = |args: &[&str]| -> String {
+        Command::new("rustup")
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .unwrap_or_default()
+    };
+    let listing = rustup(&["toolchain", "list"]);
+    let wanted: Vec<String> = docsrs_runs(&libraries)
+        .into_iter()
+        .filter_map(|(target, _)| target)
+        .collect();
+    let installed = if has_nightly(&listing) {
+        rustup(&["target", "list", "--installed", "--toolchain", "nightly"])
+    } else {
+        String::new()
+    };
+    r5_nightly_plan(run.check_only, &listing, &installed, &wanted)
+}
+
 /// R5: rustdoc.
-fn r5_docs(run: &Run, publishable: &[&Member]) -> Result<String, String> {
+fn r5_docs(run: &Run, publishable: &[&Member], plan: &NightlyPlan) -> Result<String, String> {
     let libraries: Vec<&Member> = publishable
         .iter()
         .copied()
@@ -1973,20 +2046,16 @@ fn r5_docs(run: &Run, publishable: &[&Member]) -> Result<String, String> {
         .filter(|message| message.level == "warning")
         .count();
 
-    let rustup = |args: &[&str]| -> String {
-        Command::new("rustup")
-            .args(args)
-            .stdin(Stdio::null())
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-            .unwrap_or_default()
-    };
-    let listing = rustup(&["toolchain", "list"]);
-    let nightly = if run.check_only {
-        // Today's behaviour of `--check-only`: one run for the host when a nightly is installed, else skipped.
-        if has_nightly(&listing) {
+    let runs = docsrs_runs(&libraries);
+    let nightly = match plan {
+        NightlyPlan::Fail(failure) => return Err(failure.clone()),
+        NightlyPlan::Skip => {
+            println!(
+                "check-release R5: no nightly toolchain is installed; the docs.rs-shaped run is SKIPPED"
+            );
+            "nightly docs.rs run SKIPPED (no nightly toolchain installed)".to_owned()
+        }
+        NightlyPlan::Host => {
             let (features, flags) = docsrs_request(&libraries);
             let messages = doc_run(
                 run,
@@ -2004,28 +2073,8 @@ fn r5_docs(run: &Run, publishable: &[&Member]) -> Result<String, String> {
                 &KNOWN_DOC_DEBT,
             ));
             "nightly with the docs.rs features and --cfg docsrs (host only)".to_owned()
-        } else {
-            println!(
-                "check-release R5: no nightly toolchain is installed; the docs.rs-shaped run is SKIPPED"
-            );
-            "nightly docs.rs run SKIPPED (no nightly toolchain installed)".to_owned()
         }
-    } else {
-        let runs = docsrs_runs(&libraries);
-        let wanted: Vec<String> = runs
-            .iter()
-            .filter_map(|(target, _)| target.clone())
-            .collect();
-        let installed = if has_nightly(&listing) {
-            rustup(&["target", "list", "--installed", "--toolchain", "nightly"])
-        } else {
-            String::new()
-        };
-        let verdict = nightly_verdict(&listing, &installed, &wanted);
-        if let Some(failure) = nightly_failure(&verdict) {
-            problems.push(failure);
-            "nightly docs.rs run FAILED (toolchain or target missing)".to_owned()
-        } else {
+        NightlyPlan::Targets => {
             let mut built = Vec::new();
             for (target, members) in &runs {
                 let (features, flags) = docsrs_request(members);

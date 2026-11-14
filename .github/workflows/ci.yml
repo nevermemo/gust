@@ -82,6 +82,9 @@ jobs:
           cargo --version
           cargo build --manifest-path "$consumer/Cargo.toml"
           cargo build --manifest-path "$consumer/Cargo.toml" --features gust-dev
+          # What the MSRV-aware resolver chose, for the log.
+          cargo tree --manifest-path "$consumer/Cargo.toml" --depth 1
+          grep -c '^name = ' "$consumer/Cargo.lock"
 
   cpu-target:
     # The production CPU target (D21, D51; slice m5.e2): `GUST_PROFILE=cpu` builds the fixture tests/cpu-target in

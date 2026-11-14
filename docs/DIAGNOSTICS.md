@@ -1799,7 +1799,9 @@ Decision: D138.
 E0737, E0738, E0739 and E0752 are not assigned and have no heading: the range was set aside for M8's slices, and they
 ended without needing them (E0752 was the planned refusal of a CPU route on a web profile; spike S0 ended in the
 answer that the route is allowed, D151). A number is never reused for something else, so they stay free for a later
-check of the same family, and a code appears on this page only when the macro reports it.
+check of the same family, and a code appears on this page only when the macro reports it. E0322 and E0420 are two
+more numbers that were never assigned (the E03xx and E04xx ranges skip them); the same rule holds, and they stay
+unassigned when the codes freeze at the first crates.io release (D33).
 
 The driver (`cargo gust build`, `check`, `run`, `test` with a `gust.toml`, D151) reports its mistakes as plain errors
 with the file, the line and the tag (an unknown tag, a target outside the tag's `targets`, a route that names a

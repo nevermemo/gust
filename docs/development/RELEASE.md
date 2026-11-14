@@ -173,6 +173,12 @@ pre-release, so the development line names the pre-release and the release must 
   on the release commit and update its run id and counts;
 - the `semver` job's baseline, as the next section says.
 
+The list above misses these literals (audit of slice m10.r0): the comment of `crates/cargo-gust/Cargo.toml` that says
+the pin is `=0.2.0-dev` until the release (line 23), the comment of the `semver` job in `.github/workflows/ci.yml` that
+says "0.1.0 to 0.2.0-dev" (line 279), the "(0.2.0-dev)" label of the M9 entry in `docs/DIAGNOSTICS.md` (line 34), and
+the first sentence of "Release lines" above. The doc comment of `crates/cargo-gust/src/main.rs` is at line 134 now, not
+130.
+
 R7 cannot see most of this, with one exception: when the workspace version has no pre-release part, it fails if the
 `hello-gust` fixture still names a pre-release requirement. That is the guard against a missed edit; search the
 repository for `0.2.0-dev` and for `~0.1` as well.

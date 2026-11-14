@@ -444,8 +444,13 @@ fn the_real_lookup_finds_a_slangc_that_a_missed_stripping_leaves_on_the_path() {
             list.push((OsString::from("SystemRoot"), system_root.clone()));
         }
     }
+    // The Slang case must fail because `slangc` was found, not because the lookup itself could not run.
     let error = slangc_cannot_be_found(&with_slang).unwrap_err();
-    assert!(error.contains("slangc"), "{error}");
+    assert!(
+        error.contains("is found with the stripped environment"),
+        "{error}"
+    );
+    assert!(!error.contains("could not run"), "{error}");
     assert_eq!(slangc_cannot_be_found(&clean), Ok(()));
     let _ = fs::remove_dir_all(&root);
 }

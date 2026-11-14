@@ -90,14 +90,42 @@ pub(crate) fn route_environment(
 /// aid of the `spirv-route` feature; it is read when the variable is set, whatever the caller).
 pub(crate) const ROUTE_LOG_VARIABLE: &str = "GUST_SPIRV_ROUTE_LOG";
 
-/// The route counts of a log and what is wrong with it: `(spirv, wgsl, problems)`. A route run is evidence only if the
-/// log is not empty and every line says `Spirv`; each other line is named with its reason.
-pub(crate) fn judge_route_log(text: &str) -> (usize, usize, Vec<String>) {
+/// What [`judge_route_log`] found: the kernel builds on each route, the programs that took the SPIR-V route, and the
+/// problems.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RouteLogJudgement {
+    pub(crate) spirv: usize,
+    pub(crate) wgsl: usize,
+    /// The distinct programs (the module of a qualified kernel name, `s<seed>_a<attempt>` in the corpus) with at least
+    /// one `Spirv` line.
+    pub(crate) programs_on_spirv: usize,
+    pub(crate) problems: Vec<String>,
+}
+
+/// The module part of the qualified kernel name that starts a log line: what comes before the last `::`.
+fn log_line_module(line: &str) -> Option<&str> {
+    let name = line.split_whitespace().next()?;
+    name.rsplit_once("::").map(|(module, _)| module)
+}
+
+/// The route counts of a log and what is wrong with it. A route run is evidence only if the log is not empty, every
+/// line says `Spirv` (each other line is named with its reason), and, when the run says how many programs it built
+/// (`programs`, the `programs_executed` of the batch report), at least that many distinct programs have a `Spirv` line:
+/// a program that built its kernels without writing an event would otherwise pass unnoticed (Codex sanity pass at
+/// `f613b32`, item 9). The identity is the program (the module of the kernel), because the log and the generated crate
+/// both know it and the report counts programs; a program with several kernels or shapes counts once.
+pub(crate) fn judge_route_log(text: &str, programs: Option<u64>) -> RouteLogJudgement {
     let (mut spirv, mut wgsl) = (0, 0);
+    let mut seen = std::collections::BTreeSet::new();
     let mut problems = Vec::new();
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
         match line.split_whitespace().nth(1) {
-            Some("Spirv") => spirv += 1,
+            Some("Spirv") => {
+                spirv += 1;
+                if let Some(module) = log_line_module(line) {
+                    seen.insert(module.to_owned());
+                }
+            }
             _ => {
                 wgsl += 1;
                 if problems.len() < 5 {
@@ -109,7 +137,20 @@ pub(crate) fn judge_route_log(text: &str) -> (usize, usize, Vec<String>) {
     if spirv + wgsl == 0 {
         problems.push("the route log has no line: no kernel took any route".to_owned());
     }
-    (spirv, wgsl, problems)
+    if let Some(expected) = programs
+        && (seen.len() as u64) < expected
+    {
+        problems.push(format!(
+            "the run built {expected} program(s) but the route log has a SPIR-V line for {} of them: a program built its kernels without a route event",
+            seen.len()
+        ));
+    }
+    RouteLogJudgement {
+        spirv,
+        wgsl,
+        programs_on_spirv: seen.len(),
+        problems,
+    }
 }
 
 /// The decision after an attempt to delete the route log of an earlier run (m9.rt2 review, R2): a log that was never
@@ -132,14 +173,21 @@ fn remove_stale_log(log: &Path) -> Result<(), String> {
 }
 
 /// Read the route log of `what` and judge it; prints the counts. A missing log is a problem.
-fn route_log_problems(what: &str, log: &Path) -> Vec<String> {
+fn route_log_problems(what: &str, log: &Path, programs: Option<u64>) -> Vec<String> {
     let text = fs::read_to_string(log).unwrap_or_default();
-    let (spirv, wgsl, problems) = judge_route_log(&text);
+    let judgement = judge_route_log(&text, programs);
     println!(
-        "check-difftest: route of {what}: {spirv} kernel build(s) on SPIR-V, {wgsl} on WGSL ({})",
+        "check-difftest: route of {what}: {} kernel build(s) on SPIR-V in {} program(s), {} on WGSL{} ({})",
+        judgement.spirv,
+        judgement.programs_on_spirv,
+        judgement.wgsl,
+        programs.map_or(String::new(), |programs| format!(
+            "; the report counts {programs} program(s) executed"
+        )),
         log.display()
     );
-    problems
+    judgement
+        .problems
         .into_iter()
         .map(|problem| format!("{what}: {problem}"))
         .collect()
@@ -1479,7 +1527,9 @@ fn run_batch(
     let report = fs::read_to_string(report_path)
         .map_err(|error| format!("{}: {error}", report_path.display()));
     let mut judgement = judge_batch(options, status.code(), report.clone());
+    let mut executed = None;
     if let Ok(parsed) = report.and_then(|source| parse_report(&source)) {
+        executed = Some(parsed.programs_executed);
         judgement
             .problems
             .extend(profile_problems(&parsed, profile));
@@ -1488,9 +1538,11 @@ fn run_batch(
             .extend(capability_problems(&parsed, profile));
     }
     if let Some(log) = &route_log {
-        judgement
-            .problems
-            .extend(route_log_problems(&format!("the `{profile}` batch"), log));
+        judgement.problems.extend(route_log_problems(
+            &format!("the `{profile}` batch"),
+            log,
+            executed,
+        ));
     }
     Ok(judgement)
 }
@@ -1523,7 +1575,7 @@ fn run_short_circuit(root: &Path, target: &Path) -> Result<Vec<String>, String> 
     print!("{stdout}");
     let mut problems = short_circuit_problems(&args, &stdout);
     if let Some(log) = &route_log {
-        problems.extend(route_log_problems("the short_circuit test", log));
+        problems.extend(route_log_problems("the short_circuit test", log, None));
     }
     if !output.status.success() {
         problems.push(format!(
@@ -1738,18 +1790,47 @@ mod route_environment_tests {
 
     #[test]
     fn the_route_log_passes_only_when_every_line_is_spirv() {
-        let (spirv, wgsl, problems) = judge_route_log("a::k Spirv \nb::k Spirv \n");
-        assert_eq!((spirv, wgsl), (2, 0));
-        assert!(problems.is_empty(), "{problems:?}");
-        let (spirv, wgsl, problems) =
-            judge_route_log("a::k Spirv \nb::k Wgsl backend is not Vulkan\n");
-        assert_eq!((spirv, wgsl), (1, 1));
-        assert_eq!(problems.len(), 1);
+        let judged = judge_route_log("a::k Spirv \nb::k Spirv \n", None);
+        assert_eq!((judged.spirv, judged.wgsl), (2, 0));
+        assert!(judged.problems.is_empty(), "{:?}", judged.problems);
+        let judged = judge_route_log("a::k Spirv \nb::k Wgsl backend is not Vulkan\n", None);
+        assert_eq!((judged.spirv, judged.wgsl), (1, 1));
+        assert_eq!(judged.problems.len(), 1);
         assert!(
-            problems[0].contains("b::k Wgsl backend is not Vulkan"),
-            "{problems:?}"
+            judged.problems[0].contains("b::k Wgsl backend is not Vulkan"),
+            "{:?}",
+            judged.problems
         );
-        let (_, _, problems) = judge_route_log("");
-        assert_eq!(problems.len(), 1, "{problems:?}");
+        let judged = judge_route_log("", None);
+        assert_eq!(judged.problems.len(), 1, "{:?}", judged.problems);
+    }
+
+    #[test]
+    fn the_route_log_must_have_a_spirv_line_for_every_program_the_run_built() {
+        // Three programs executed (s1_a1, s1_a2, s2_a1), two kernels in the first.
+        let full = "s1_a1::k Spirv \ns1_a1::k2 Spirv \ns1_a2::k Spirv \ns2_a1::k Spirv \n";
+        let judged = judge_route_log(full, Some(3));
+        assert_eq!(judged.programs_on_spirv, 3);
+        assert!(judged.problems.is_empty(), "{:?}", judged.problems);
+        // A run in which one program wrote no event is not evidence, however many lines the others wrote.
+        let missing = "s1_a1::k Spirv \ns1_a1::k2 Spirv \ns1_a2::k Spirv \n";
+        let judged = judge_route_log(missing, Some(3));
+        assert_eq!(judged.programs_on_spirv, 2);
+        assert_eq!(judged.problems.len(), 1, "{:?}", judged.problems);
+        assert!(
+            judged.problems[0].contains("3 program(s)")
+                && judged.problems[0].contains("for 2 of them"),
+            "{:?}",
+            judged.problems
+        );
+        // A WGSL line does not count as a program on SPIR-V.
+        let judged = judge_route_log(
+            "s1_a1::k Spirv \ns1_a2::k Wgsl backend is not Vulkan\n",
+            Some(2),
+        );
+        assert_eq!(judged.programs_on_spirv, 1);
+        assert_eq!(judged.problems.len(), 2, "{:?}", judged.problems);
+        // No count (the short_circuit test) asks only for a non-empty log.
+        assert!(judge_route_log(missing, None).problems.is_empty());
     }
 }

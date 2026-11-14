@@ -1461,15 +1461,18 @@ the index of those first, where 2026.20 called first, so the order of Slang for 
 versions and GUST refuses the form rather than rely on it. Before this round slice a2 accepted the storage forms, which
 gave another element than the CPU twin on the GPU with the pinned Slang.
 
-**Known difference: two atomics on one cell in an assignment (m9.z, the edge-case policy, D39).** `E0421` looks for
-`&mut self` calls of the module, not for atomics, so
+**Known departure from Rust: two atomics on one cell in an assignment (m9.z).** This is a deterministic difference of
+evaluation order between the CPU twin and the GPU, not an out-of-bounds edge case and not a race, and it is left
+unrefused by a coordinator ruling (atomics are outside the `&mut self` rule of `E0421`, which looks for `&mut self`
+calls of the module, not for atomics), so
 `out[atomic_add(&mut c[i], 1u32) as usize] = atomic_add(&mut c[i], 10u32);` is accepted, and when both atomics name the
 same cell the two orders give different values. Rust runs the value first (Rust Reference, assignment expressions: the
 right operand, then the place); slangc 2026.22 runs the index first (read on the CPU: the WGSL has
 `_S1 = atomicAdd(c[i], 1)`, then `_S2 = atomicAdd(c[i], 10)`, then `o[_S1] = _S2`; the form was not run on a GPU in
 this slice). On a cell that starts at 0 Rust stores 0 at `out[10]` and the GPU stores 1 at `out[0]`. With one cell per
-invocation nothing races, so the difference is deterministic, not a data race; it is the same class as the other
-orders above, but GUST neither refuses nor reorders it. Write instead `let v = atomic_add(&mut c[i], 10u32);
+invocation nothing races, so the difference is deterministic, not a data race; it is the same kind of departure as
+the other orders above, but GUST neither refuses nor reorders it, so a program that relies on it gets different values
+on the two targets. Write instead `let v = atomic_add(&mut c[i], 10u32);
 out[atomic_add(&mut c[i], 1u32) as usize] = v;`, which has one order on both targets. Atomics on different cells
 do not interact, so they are not affected.
 

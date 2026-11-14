@@ -192,7 +192,10 @@ fn rw_buffer_element_type(ty: &syn::Type) -> Option<String> {
     let syn::Type::Path(element_path) = element else {
         return None;
     };
-    element_path.path.get_ident().map(ToString::to_string)
+    element_path
+        .path
+        .get_ident()
+        .map(|ident| ident.unraw().to_string())
 }
 
 /// `Some(identifier)` in an `if let`, the only pattern with a direct Slang lowering.
@@ -316,7 +319,7 @@ pub fn result_match_arms(
 
 /// The atomic operation name if the path is a recognized atomic intrinsic.
 fn atomic_operation_name(path: &syn::ExprPath) -> Option<&'static str> {
-    match path.path.get_ident()?.to_string().as_str() {
+    match path.path.get_ident()?.unraw().to_string().as_str() {
         "atomic_add" => Some("atomic_add"),
         "atomic_min" => Some("atomic_min"),
         "atomic_max" => Some("atomic_max"),
@@ -556,7 +559,7 @@ pub(crate) fn helper_names(module: &syn::ItemMod) -> HashSet<String> {
                     .iter()
                     .any(|attribute| attribute.path().is_ident("kernel")) =>
             {
-                Some(function.sig.ident.to_string())
+                Some(function.sig.ident.unraw().to_string())
             }
             _ => None,
         })
@@ -608,7 +611,7 @@ pub(crate) fn validate_module_in(
             syn::Item::Fn(function)
                 if matches!(&function.sig.output, syn::ReturnType::Type(_, ty) if matches!(ty.as_ref(), syn::Type::Path(path) if result_payload(path).is_some())) =>
             {
-                Some(function.sig.ident.to_string())
+                Some(function.sig.ident.unraw().to_string())
             }
             _ => None,
         })
@@ -958,7 +961,7 @@ fn method_table(items: &[syn::Item]) -> MethodTable {
             if let Some(name) = enum_type_name(ty, &table.enums) {
                 table
                     .enum_returns
-                    .insert(function.sig.ident.to_string(), name);
+                    .insert(function.sig.ident.unraw().to_string(), name);
             }
             if is_tuple_type(ty) {
                 table
@@ -1772,7 +1775,7 @@ fn validate_enum(item: &syn::ItemEnum) -> syn::Result<()> {
                 let last = path
                     .segments
                     .last()
-                    .map(|segment| segment.ident.to_string());
+                    .map(|segment| segment.ident.unraw().to_string());
                 match last.as_deref() {
                     Some("Clone" | "Copy") => {
                         return Err(diagnostics::error(
@@ -2150,7 +2153,7 @@ fn validate_function(
     let is_kernel = crate::expand::kernel_attribute_in(stage, function)?.is_some();
     // The names of the subgroup operations are the dialect's: a call of one is that operation (the emitter and the
     // classifier read the name), so a function of the module cannot take the name (m8.s, D140).
-    if barrier::subgroup_arity(&function.sig.ident.to_string()).is_some() {
+    if barrier::subgroup_arity(&function.sig.ident.unraw().to_string()).is_some() {
         return Err(diagnostics::error(
             Code::SubgroupNotAllowed,
             &function.sig.ident,
@@ -2298,13 +2301,13 @@ fn validate_function(
             }
             match parameter_flavor_in(stage, &argument.ty) {
                 ParameterFlavor::Invocation => {
-                    visitor.invocations.insert(name.ident.to_string());
+                    visitor.invocations.insert(name.ident.unraw().to_string());
                 }
                 ParameterFlavor::LocalId | ParameterFlavor::GroupId => {
-                    visitor.derived_ids.insert(name.ident.to_string());
+                    visitor.derived_ids.insert(name.ident.unraw().to_string());
                 }
                 ParameterFlavor::Workgroup => {
-                    visitor.derived_ids.insert(name.ident.to_string());
+                    visitor.derived_ids.insert(name.ident.unraw().to_string());
                     if let syn::Type::Path(path) = argument.ty.as_ref() {
                         visitor
                             .workgroup_types
@@ -2315,10 +2318,10 @@ fn validate_function(
                     }
                 }
                 ParameterFlavor::StorageRead => {
-                    visitor.resources.insert(name.ident.to_string());
+                    visitor.resources.insert(name.ident.unraw().to_string());
                 }
                 ParameterFlavor::Uniform => {
-                    visitor.uniforms.insert(name.ident.to_string());
+                    visitor.uniforms.insert(name.ident.unraw().to_string());
                     // A constant buffer is read-only: a `mut` binding would let the twin's copy be written.
                     if name.mutability.is_some() {
                         visitor.reject(
@@ -2329,17 +2332,17 @@ fn validate_function(
                     }
                 }
                 ParameterFlavor::StorageReadWrite => {
-                    visitor.resources.insert(name.ident.to_string());
+                    visitor.resources.insert(name.ident.unraw().to_string());
                     if let Some(element) = rw_buffer_element_type(&argument.ty) {
                         visitor
                             .read_write_buffers
-                            .insert(name.ident.to_string(), element);
+                            .insert(name.ident.unraw().to_string(), element);
                     }
                 }
                 flavor @ (ParameterFlavor::SampledTexture
                 | ParameterFlavor::StorageTexture
                 | ParameterFlavor::WriteTexture) => {
-                    let name = name.ident.to_string();
+                    let name = name.ident.unraw().to_string();
                     match texture::texture_spec(flavor, &argument.ty) {
                         Ok(spec) => {
                             visitor.textures.insert(
@@ -2368,7 +2371,7 @@ fn validate_function(
                     }
                 }
                 ParameterFlavor::Sampler => {
-                    visitor.samplers.insert(name.ident.to_string());
+                    visitor.samplers.insert(name.ident.unraw().to_string());
                     if !texture::sampler_has_no_arguments(&argument.ty) {
                         visitor.reject(
                             Code::TextureType,
@@ -2384,7 +2387,7 @@ fn validate_function(
                 }
                 ParameterFlavor::Value if matches!(argument.ty.as_ref(), syn::Type::Path(path) if result_payload(path).is_some()) =>
                 {
-                    visitor.result_values.insert(name.ident.to_string());
+                    visitor.result_values.insert(name.ident.unraw().to_string());
                 }
                 _ => {}
             }
@@ -3017,7 +3020,7 @@ impl<'ast> Visit<'ast> for AtomicBufferUsage {
             && let syn::Expr::Path(path) = index.expr.as_ref()
             && let Some(name) = path.path.get_ident()
         {
-            self.0.insert(name.to_string());
+            self.0.insert(name.unraw().to_string());
         }
         visit::visit_expr_call(self, call);
     }
@@ -3078,7 +3081,7 @@ fn tuple_element_problem(element: &syn::Type) -> Option<&'static str> {
         syn::Type::Group(inner) => tuple_element_problem(&inner.elem),
         syn::Type::Tuple(_) => None,
         syn::Type::Path(path) => {
-            let last = path.path.segments.last()?.ident.to_string();
+            let last = path.path.segments.last()?.ident.unraw().to_string();
             matches!(last.as_str(), "Option" | "Result").then_some(
                 "a tuple element cannot be an `Option` or a `Result`: keep the optional value in its own local",
             )
@@ -3097,7 +3100,7 @@ fn array_element_problem(element: &syn::Type) -> Option<&'static str> {
             "an array element cannot be an array: nested arrays are not supported, use one flat array and index `i * N + j`",
         ),
         syn::Type::Path(path) => {
-            let last = path.path.segments.last()?.ident.to_string();
+            let last = path.path.segments.last()?.ident.unraw().to_string();
             if matches!(last.as_str(), "Option" | "Result") {
                 Some(
                     "an array element cannot be an `Option` or a `Result`: keep the optional value in its own local",
@@ -3491,7 +3494,7 @@ impl RestrictedVisitor {
             let syn::Pat::Ident(ident) = element else {
                 continue;
             };
-            let name = ident.ident.to_string();
+            let name = ident.ident.unraw().to_string();
             if self.is_parameter_name(&name) {
                 self.reject(
                     Code::ShadowedParameter,
@@ -3502,7 +3505,7 @@ impl RestrictedVisitor {
             }
             let key = ident.ident.unraw().to_string();
             self.value_params.remove(&key);
-            self.result_values.remove(&ident.ident.to_string());
+            self.result_values.remove(&ident.ident.unraw().to_string());
             // What is not visible stays unknown: an enum held in a tuple is not tracked (documented limitation).
             match ty.and_then(|ty| enum_type_name(ty, &self.methods.enums)) {
                 Some(enum_name) => {
@@ -3537,7 +3540,7 @@ impl RestrictedVisitor {
                 let syn::Expr::Path(path) = call.func.as_ref() else {
                     return None;
                 };
-                let name = path.path.get_ident()?.to_string();
+                let name = path.path.get_ident()?.unraw().to_string();
                 self.methods.enum_returns.get(&name).cloned()
             }
             _ => None,
@@ -3847,7 +3850,7 @@ impl RestrictedVisitor {
                     && path
                         .path
                         .get_ident()
-                        .is_some_and(|name| self.uniforms.contains(&name.to_string()))
+                        .is_some_and(|name| self.uniforms.contains(&name.unraw().to_string()))
             }
             syn::Expr::Paren(paren) => self.is_uniform_parameter(&paren.expr),
             syn::Expr::Group(group) => self.is_uniform_parameter(&group.expr),
@@ -3859,7 +3862,7 @@ impl RestrictedVisitor {
     fn direct_name(expression: &syn::Expr) -> Option<String> {
         match expression {
             syn::Expr::Path(path) if path.qself.is_none() => {
-                path.path.get_ident().map(ToString::to_string)
+                path.path.get_ident().map(|ident| ident.unraw().to_string())
             }
             syn::Expr::Paren(paren) => Self::direct_name(&paren.expr),
             syn::Expr::Group(group) => Self::direct_name(&group.expr),
@@ -3889,7 +3892,7 @@ impl RestrictedVisitor {
         let Some(facts) = self.textures.get(&receiver).copied() else {
             return false;
         };
-        let method = call.method.to_string();
+        let method = call.method.unraw().to_string();
         if call.turbofish.is_some() {
             self.reject(
                 Code::BuiltinTypeArguments,
@@ -4008,7 +4011,7 @@ impl RestrictedVisitor {
     fn place_root(expression: &syn::Expr) -> Option<String> {
         match expression {
             syn::Expr::Path(path) if path.qself.is_none() => {
-                path.path.get_ident().map(ToString::to_string)
+                path.path.get_ident().map(|ident| ident.unraw().to_string())
             }
             syn::Expr::Field(field) => Self::place_root(&field.base),
             syn::Expr::Index(index) => Self::place_root(&index.expr),
@@ -4117,7 +4120,7 @@ impl RestrictedVisitor {
     }
 
     fn check_module_method_call(&mut self, call: &syn::ExprMethodCall, facts: MethodFacts) {
-        let method = call.method.to_string();
+        let method = call.method.unraw().to_string();
         if call.turbofish.is_some() {
             self.reject(
                 Code::TurbofishOnGenericCall,
@@ -4191,12 +4194,12 @@ impl RestrictedVisitor {
             syn::Expr::Path(path) => path
                 .path
                 .get_ident()
-                .is_some_and(|name| self.result_values.contains(&name.to_string())),
+                .is_some_and(|name| self.result_values.contains(&name.unraw().to_string())),
             syn::Expr::Call(call) => match call.func.as_ref() {
                 syn::Expr::Path(path) => path
                     .path
                     .get_ident()
-                    .is_some_and(|name| self.result_helpers.contains(&name.to_string())),
+                    .is_some_and(|name| self.result_helpers.contains(&name.unraw().to_string())),
                 _ => false,
             },
             syn::Expr::Paren(paren) => self.is_known_result(&paren.expr),
@@ -4291,7 +4294,10 @@ impl RestrictedVisitor {
             );
             return;
         };
-        let buffer_name = buffer_path.path.get_ident().map(ToString::to_string);
+        let buffer_name = buffer_path
+            .path
+            .get_ident()
+            .map(|ident| ident.unraw().to_string());
         let element = match buffer_name
             .as_ref()
             .and_then(|name| self.read_write_buffers.get(name))
@@ -4381,7 +4387,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         for segment in &path.segments {
-            if BANNED_NAMES.contains(&segment.ident.to_string().as_str()) {
+            if BANNED_NAMES.contains(&segment.ident.unraw().to_string().as_str()) {
                 self.reject(
                     Code::CpuOnlyName,
                     path,
@@ -4522,7 +4528,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         if let Some(ident) = ty.path.get_ident() {
-            let name = ident.to_string();
+            let name = ident.unraw().to_string();
             if name == "usize" {
                 self.reject(
                     Code::UsizeOutsideIndex,
@@ -4592,7 +4598,9 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         if let Some(enum_name) = self.enum_of(&cast.expr) {
             let repr = self.methods.enums[&enum_name].repr_name();
             let target = match cast.ty.as_ref() {
-                syn::Type::Path(path) => path.path.get_ident().map(|ident| ident.to_string()),
+                syn::Type::Path(path) => {
+                    path.path.get_ident().map(|ident| ident.unraw().to_string())
+                }
                 _ => None,
             };
             let matches_repr = target.as_deref().is_some_and(|target| {
@@ -4617,7 +4625,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             syn::Type::Path(path) => path
                 .path
                 .get_ident()
-                .is_some_and(|ident| CAST_TARGETS.contains(&ident.to_string().as_str())),
+                .is_some_and(|ident| CAST_TARGETS.contains(&ident.unraw().to_string().as_str())),
             _ => false,
         };
         if !supported {
@@ -4662,11 +4670,10 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         if let syn::Expr::Path(path) = call.func.as_ref() {
-            let contains_banned_name = path
-                .path
-                .segments
-                .iter()
-                .any(|segment| BANNED_NAMES.contains(&segment.ident.to_string().as_str()));
+            let contains_banned_name =
+                path.path.segments.iter().any(|segment| {
+                    BANNED_NAMES.contains(&segment.ident.unraw().to_string().as_str())
+                });
             if contains_banned_name {
                 self.reject(
                     Code::CpuOnlyName,
@@ -4829,7 +4836,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             && !path.path.segments[0].arguments.is_none()
             && self
                 .function_names
-                .contains(&path.path.segments[0].ident.to_string())
+                .contains(&path.path.segments[0].ident.unraw().to_string())
         {
             self.reject(
                 Code::TurbofishOnGenericCall,
@@ -4842,7 +4849,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             syn::Expr::Path(path) => path
                 .path
                 .get_ident()
-                .is_some_and(|ident| self.function_names.contains(&ident.to_string())),
+                .is_some_and(|ident| self.function_names.contains(&ident.unraw().to_string())),
             _ => false,
         };
         if allowed
@@ -4874,7 +4881,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     fn visit_expr_index(&mut self, index: &'ast syn::ExprIndex) {
         if let syn::Expr::Path(path) = index.expr.as_ref()
             && let Some(name) = path.path.get_ident()
-            && self.atomic_buffers.contains(&name.to_string())
+            && self.atomic_buffers.contains(&name.unraw().to_string())
         {
             self.reject(
                 Code::AtomicDirectAccess,
@@ -5131,7 +5138,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         if self.check_texture_call(call) {
             return;
         }
-        let method = call.method.to_string();
+        let method = call.method.unraw().to_string();
         let in_dialect = matches!(
             method.as_str(),
             "global_id"
@@ -5253,7 +5260,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         let receiver = match call.receiver.as_ref() {
-            syn::Expr::Path(path) => path.path.get_ident().map(ToString::to_string),
+            syn::Expr::Path(path) => path.path.get_ident().map(|ident| ident.unraw().to_string()),
             _ => None,
         };
         // The `.len()` of an array is its `N` (slice m9.r1): a `usize` in Rust, so it stands inside an index or directly
@@ -5455,7 +5462,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         // A texture or a sampler is the receiver of a texture method (or the sampler argument of `sample`) and
         // nothing else; those uses never reach this function (`check_texture_call`).
         if path.qself.is_none()
-            && let Some(name) = path.path.get_ident().map(ToString::to_string)
+            && let Some(name) = path.path.get_ident().map(|ident| ident.unraw().to_string())
             && (self.textures.contains_key(&name) || self.samplers.contains(&name))
         {
             let uses = if self.samplers.contains(&name) {
@@ -5482,7 +5489,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             && path
                 .path
                 .get_ident()
-                .is_some_and(|name| self.uniforms.contains(&name.to_string()))
+                .is_some_and(|name| self.uniforms.contains(&name.unraw().to_string()))
         {
             self.reject(
                 Code::UniformWholeValue,
@@ -5561,7 +5568,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             );
             return;
         };
-        let text = name.ident.to_string();
+        let text = name.ident.unraw().to_string();
         if self.is_parameter_name(&text) {
             self.reject(
                 Code::ShadowedParameter,
@@ -5699,7 +5706,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             }
         };
         if let Some(variable) = variable {
-            let name = variable.ident.to_string();
+            let name = variable.ident.unraw().to_string();
             if self.is_parameter_name(&name) {
                 self.reject(
                     Code::ShadowedParameter,
@@ -5771,14 +5778,17 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_block(&mut self, block: &'ast syn::Block) {
-        // An enum local lives to the end of its block: a `let` inside it that shadows an outer name is forgotten after.
+        // An enum local lives to the end of its block: a `let` inside it that shadows an outer name is forgotten after,
+        // and a shadow of a value parameter ends with its block too (the parameter is a by-value `in` again).
         let outer = self.enum_values.clone();
         let outer_tuples = self.tuple_values.clone();
         let outer_closures = self.closures.clone();
+        let outer_value_params = self.value_params.clone();
         visit::visit_block(self, block);
         self.enum_values = outer;
         self.tuple_values = outer_tuples;
         self.closures = outer_closures;
+        self.value_params = outer_value_params;
     }
 
     fn visit_expr_while(&mut self, expression: &'ast syn::ExprWhile) {
@@ -5846,7 +5856,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                     return;
                 }
                 for name in [ok_name, err_name] {
-                    let text = name.ident.to_string();
+                    let text = name.ident.unraw().to_string();
                     if self.is_parameter_name(&text) {
                         self.reject(
                             Code::ShadowedParameter,
@@ -5966,7 +5976,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         if let Ok((pattern, _)) = crate::slang::local_binding(&local.pat) {
-            let name = pattern.ident.to_string();
+            let name = pattern.ident.unraw().to_string();
             if self.is_parameter_name(&name) {
                 self.reject(
                     Code::ShadowedParameter,
@@ -5976,7 +5986,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 return;
             }
             // A local of the name of a value parameter is a binding of its own: `let mut p = p;` is how a `&mut self`
-            // method gets a place to work on (the rule is by name, so a scope that ends is not tracked).
+            // method gets a place to work on (the rule is by name; `visit_block` restores the set when the block of the shadow ends).
             self.value_params.remove(&pattern.ident.unraw().to_string());
         }
         if crate::slang::local_binding(&local.pat).is_err() {
@@ -6106,7 +6116,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             .as_ref()
             .is_some_and(|initial| self.is_known_result(&initial.expr));
         if annotated_result || initialized_result {
-            self.result_values.insert(pattern.ident.to_string());
+            self.result_values.insert(pattern.ident.unraw().to_string());
         }
     }
 }

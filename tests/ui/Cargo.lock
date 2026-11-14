@@ -95,6 +95,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "array-order-place-raw"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "array-order-storage"
 version = "0.0.0"
 dependencies = [

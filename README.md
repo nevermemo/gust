@@ -447,9 +447,12 @@ a `gust.toml`.
 Without a `gust.toml`, nothing changes and plain cargo's rules apply. Plain `cargo build` sets no variable, and no
 `cargo gust` command yet builds a routed release binary: only `run` and `test` compile a binary under the driver.
 Changing the `gust.toml` rebuilds the crates that use a tag, in both directions (measured by `cargo xtask
-check-routing`: a route that goes from unset to set recompiles too). A route flip is a call-site change: a kernel call
-names its device, so a kernel routed to the CPU is called on `CpuDevice` and one routed to the GPU on `HeadlessDevice`,
-and only the generated element-wise map (`name::map`) is the same on both ("Upgrading from 0.1.0 to 0.2.0").
+check-routing`: a route that goes from unset to set recompiles too).
+A route flip is a call-site change when a kernel call names its device: a kernel routed to the CPU is called on
+`CpuDevice` and one routed to the GPU on `HeadlessDevice`, and only the generated element-wise map (`name::map`) is
+the same on both ("Upgrading from 0.1.0 to 0.2.0"). A `gust::routed::RoutedDevice` (M9, D165) is the exception: one
+handle whose calls run each kernel on the target its build resolved, so the same call-site source covers a flip
+(storage-buffer kernels only, and not with a GPU on wasm32; see `gust::routed`).
 `cargo xtask check-routing` is the evidence (see the command table near the top); everything it runs but its `gpu`
 case is `Cpu` evidence.
 

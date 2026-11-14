@@ -89,7 +89,7 @@ pub(crate) fn subgroup_operation(call: &syn::ExprCall) -> Option<&'static str> {
     if path.qself.is_some() {
         return None;
     }
-    let ident = path.path.get_ident()?.to_string();
+    let ident = path.path.get_ident()?.unraw().to_string();
     SUBGROUP_OPERATIONS
         .iter()
         .find(|(operation, _)| *operation == ident)

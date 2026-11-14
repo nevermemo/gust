@@ -860,6 +860,7 @@ A method that takes `&mut self` or `self` would write through its receiver. On a
 Reached through `#[gpu]`.
 Rejected: `out[0].bump()` and `out[i].bump()` for a storage parameter `out`, `u.bump()` for a uniform, `scratch[l].bump()` for a workgroup array, when a method `bump` takes `&mut self`; `lid.bump()` and `gid.bump()` (invocation ids) too. A texture receiver (`tex.bump()`) is GUST-E0735 instead, because the texture methods are checked first.
 Write instead: copy the element to a local, call the method on the local and store the result, `let mut c = out[i]; c.bump(); out[i] = c;`.
+Names are compared without a raw prefix (`r#out[0].bump()` is the same root as `out`), and a `let mut p = p;` in a block ends with that block: after it, `p` is the by-value parameter again (round 3 of m9.z; Codex sanity pass, item 4).
 A `&mut self` or `self` method of a trait impl counts like an inherent one (slice m9.g1), and so does a trait path call, which is the method call before the check runs: `Shape::grow(&mut bufs[i], 1u32)` is this code.
 Fixture: `tests/ui/method-mut-on-storage` and `tests/ui/trait-mut-on-storage` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D154 (M9 plan 2.1, X1 of spike M9.s0, slice m9.a1).
@@ -1068,11 +1069,13 @@ A call of a `&mut self` method is refused where the GPU would evaluate it in ano
 - the value of `*=` in a module that names `Mat2`, `Mat3` or `Mat4`: it is lowered to `place = __gust_mul(place, value)`, which reads the place before the call and loses the method's write.
 - the value of `/=`, `%=` or `^=` on an indexed place: these three lower to `inout` helpers (`__gust_div_assign`, `__gust_rem_assign`, `__gust_xor_assign`) and Slang computes the index before the call, so `out[c.n] /= c.next()` changes another element than Rust (a place with no index, `e.n /= e.bump()`, has no address to compute early; no other operator lowers through a helper).
 
+A raw identifier is the same name as the plain one (`a[r#s.n as usize] = r#s.bump()` and the mixed spellings are refused like `a[s.n as usize] = s.bump()`; `GUST-E0421` fixture `tests/ui/array-order-place-raw`).
+
 Forms that already match Rust stay accepted: `c.n += c.bump()`, `e.n /= e.bump()` (a place with no index has no address to compute early), a struct literal that holds a call, an index that names no mutated root (`a[k as usize] = s.bump()`), and `*=` with a call in a module without a matrix.
 Reached through `#[gpu]`.
 Rejected: `for i in 0u32..c.next() { .. }`, `for i in c.n..c.next() { .. }`, `out[c.next()] = v;`, `out[c.next()] += v;`, `out[c.n] /= c.next();` (also `%=`, `^=`), `c.n *= c.bump();` (with a matrix in the module), when `next` and `bump` take `&mut self`.
 Write instead: call the method before the statement and use the value, `let n = c.next(); for i in 0u32..n { .. }` or `let k = c.next(); out[k] = v;`.
-Fixture: `tests/ui/for-bound-mutating`, `tests/ui/method-mutating-in-assignee`, `tests/ui/array-order-place` and `tests/ui/array-order-storage` and `tests/ui/array-order-field` (`cargo xtask check-ui`, `code: none` plus the message).
+Fixture: `tests/ui/for-bound-mutating`, `tests/ui/method-mutating-in-assignee`, `tests/ui/array-order-place` (and `array-order-place-raw`, the raw spelling `a[r#s.n as usize] = r#s.bump()`) and `tests/ui/array-order-storage` and `tests/ui/array-order-field` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D154 (M9 plan 2.1, spike M9.s0 P9, slice m9.a2).
 
 ## E05xx: Option and Result

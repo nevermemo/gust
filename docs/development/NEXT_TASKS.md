@@ -442,11 +442,9 @@ test module; do not mix that mechanical move with behavior changes.
   `semver`, above, D132) and still open `cargo-release` or `release-plz` for the four-way version bump RELEASE.md does
   by hand; `cargo-msrv` adds nothing the MSRV gate lacks. check-release stays the gate: no tool builds the README
   recipe from the unpacked crates.
-- check-release R5 against docs.rs: R5 builds the host target only, and skips the nightly run with a note when no
-  nightly toolchain is installed. docs.rs also builds gust-compute-wgpu for `wasm32-unknown-unknown`, where probe mr.e
-  found the 19 unresolved links mr.f fixed. Run the metadata's targets in R5's nightly run, and make a missing nightly
-  a failure of the full run. The manifests' `--cfg docsrs` rustdoc arguments are inert (no source reads `docsrs`):
-  drop them or add `doc(cfg)`. Nightly cargo warns that `crates/gust-macros/Cargo.toml` has no `[lints]`; the opt-out
+- check-release R5 against docs.rs: closed by m10.r1 (R5's full run builds each docs.rs target on nightly, wasm32 for
+  gust-compute-wgpu included, and fails without the nightly or a target; `doc(cfg)` makes `--cfg docsrs` do something).
+  Still open: nightly cargo warns that `crates/gust-macros/Cargo.toml` has no `[lints]`; the opt-out
   from the workspace lints is deliberate, and an empty `[lints]` table would say so, but the gust-macros test
   `only_this_file_allows_the_barred_syn_items` bars any lints table there, so that test changes with it.
 - The README recipe prints no adapter name, so a run of RELEASE.md step 5 does not say which adapter ran it (probe

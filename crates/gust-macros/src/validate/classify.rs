@@ -328,7 +328,7 @@ pub(crate) fn classify(
         };
         match parameter_flavor_in(stage, &argument.ty) {
             ParameterFlavor::Invocation => {
-                invocation.get_or_insert_with(|| name.ident.to_string());
+                invocation.get_or_insert_with(|| name.ident.unraw().to_string());
                 if name.mutability.is_some() {
                     found.exclude(Why::MutableInvocation, argument, "makes mutable");
                 }
@@ -338,7 +338,7 @@ pub(crate) fn classify(
             }
             ParameterFlavor::Workgroup => found.exclude(Why::WorkgroupMemory, argument, ""),
             ParameterFlavor::StorageReadWrite => outputs.push(Output {
-                name: name.ident.to_string(),
+                name: name.ident.unraw().to_string(),
                 argument,
             }),
             // A storage texture is written at texel addresses the own-index rules cannot see (mx.t3); a sampled
@@ -505,7 +505,7 @@ pub(crate) fn check_pin(
         .filter(|other| other.shape == pin.shape)
         .count()
         - 1;
-    let mut message = exclusion.message(&function.sig.ident.to_string());
+    let mut message = exclusion.message(&function.sig.ident.unraw().to_string());
     if others > 0 {
         let plural = if others == 1 { "" } else { "s" };
         message.push_str(&format!(" and {others} more construct{plural} rule it out"));
@@ -624,7 +624,7 @@ fn peel(mut expression: &syn::Expr) -> &syn::Expr {
 
 /// Whether `expression` is the plain name `name`.
 fn is_name(expression: &syn::Expr, name: &str) -> bool {
-    matches!(peel(expression), syn::Expr::Path(path) if path.qself.is_none() && path.path.is_ident(name))
+    matches!(peel(expression), syn::Expr::Path(path) if path.qself.is_none() && crate::names::path_is(&path.path, name))
 }
 
 /// Whether `expression` is `id.x` or `id.global_id().x` for the invocation parameter `id`.
@@ -636,7 +636,7 @@ fn is_direct_own(expression: &syn::Expr, id: &str) -> bool {
         return false;
     }
     match peel(&field.base) {
-        syn::Expr::Path(path) => path.qself.is_none() && path.path.is_ident(id),
+        syn::Expr::Path(path) => path.qself.is_none() && crate::names::path_is(&path.path, id),
         syn::Expr::MethodCall(call) => {
             call.method == "global_id"
                 && call.args.is_empty()
@@ -651,7 +651,7 @@ fn is_direct_own(expression: &syn::Expr, id: &str) -> bool {
 fn root_name(expression: &syn::Expr) -> Option<String> {
     match peel(expression) {
         syn::Expr::Path(path) if path.qself.is_none() => {
-            path.path.get_ident().map(ToString::to_string)
+            path.path.get_ident().map(|ident| ident.unraw().to_string())
         }
         syn::Expr::Field(field) => root_name(&field.base),
         syn::Expr::Index(index) => root_name(&index.expr),
@@ -756,7 +756,7 @@ impl<'ast> Visit<'ast> for BodyScan {
             && let Ok((pattern, _)) = local_binding(&local.pat)
         {
             self.aliases.push(Alias {
-                name: pattern.ident.to_string(),
+                name: pattern.ident.unraw().to_string(),
                 mutable: pattern.mutability.is_some(),
                 statement: local.to_token_stream(),
             });
@@ -766,7 +766,7 @@ impl<'ast> Visit<'ast> for BodyScan {
 
     fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
         self.bindings
-            .push((pattern.ident.to_string(), pattern.to_token_stream()));
+            .push((pattern.ident.unraw().to_string(), pattern.to_token_stream()));
         visit::visit_pat_ident(self, pattern);
     }
 }
@@ -902,7 +902,7 @@ impl<'ast> Visit<'ast> for OutputScan<'_> {
     }
 
     fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
-        if path.qself.is_none() && path.path.is_ident(self.name) {
+        if path.qself.is_none() && crate::names::path_is(&path.path, self.name) {
             self.find(Why::OutputOther, path);
         }
     }
@@ -989,7 +989,7 @@ impl Definite<'_> {
                 && call.args.is_empty()
                 && matches!(peel(&call.receiver), syn::Expr::Path(path)
                     if path.qself.is_none()
-                        && path.path.get_ident().is_some_and(|name| self.outputs.contains(&name.to_string()))))
+                        && path.path.get_ident().is_some_and(|name| self.outputs.contains(&name.unraw().to_string()))))
     }
 
     // The construct to name when the body does not definitely write the output.

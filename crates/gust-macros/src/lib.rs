@@ -33,6 +33,7 @@ mod expand;
 mod manifest;
 mod math_types;
 mod mul_impls;
+mod names;
 mod par_for;
 mod profile;
 mod recover;

@@ -154,6 +154,12 @@ pub const COLLISIONS: &[Collision] = &[
     // M6 (`Vec4::dot`).
     emitted("dot"),
     hard("enum", &[Struct, Global]),
+    // `extension S : Trait { .. }` is emitted for every trait impl (slice m9.g1). Measured 2026-11-14 on slangc 2026.22
+    // (WGSL and SPIR-V, slice m9.z): the word is an ordinary identifier as a local, a field, a helper, a parameter or a
+    // struct name (none of the six positions fails, so it is not class 1), but a user struct, helper or global of that
+    // name declared before an `extension` declaration shadows the keyword there (E20001 at the next `extension`). That
+    // is the capture the table test compiles (a struct, before the trait impl).
+    emitted("extension"),
     // The boolean literals: a local `r#false` or `r#true` is a variable, not a literal, to every `true` and `false`
     // GUST writes after it, and slangc takes the program with the other value (measured 2026-11-01: `var true = false;
     // var x = true;` stores 9 where Rust gives 7). A silent change, not a failure, so the capture test compares code.
@@ -171,6 +177,10 @@ pub const COLLISIONS: &[Collision] = &[
     // M6 emits `int2` and `int4` for `IVec2` and `IVec4` (R1-A.4: `ok` in all four S6.3 positions today).
     emitted("int2"),
     emitted("int4"),
+    // `interface Trait { .. }` is emitted for every trait (slice m9.g1); same measurement as `extension` above (user
+    // struct, helper or global of that name before an `interface` declaration: E20001 at the declaration; a local, a
+    // field, a parameter and a struct used on their own compile).
+    emitted("interface"),
     // The constructor of a tuple value `(a, b)` (slice m9.t).
     emitted("makeTuple"),
     // Slang's generic `matrix<T, R, C>`, in case the M6 lowering needs it.
@@ -390,6 +400,23 @@ pub fn capture_source(entry: &str, spelled: &str) -> Option<String> {
             "Tuple<uint, float> t = makeTuple(1u, 2.0); ob[gid.x] = t._0;",
         ),
         "makeTuple" => local("Tuple<uint, float> t = makeTuple(1u, 2.0); ob[gid.x] = t._0;"),
+        // A user struct named like the keyword, declared before the trait and the impl GUST emits after it (slice m9.z:
+        // slangc 2026.22 then fails at the keyword, E20001, on both targets).
+        "interface" => in_struct(
+            concat!(
+                "interface Shape { float area(); };\n",
+                "struct Rect : Shape { float w; float area() { return w; } };\n"
+            ),
+            "Rect r; r.w = 1.0; ob[gid.x] = uint(r.area());",
+        ),
+        "extension" => in_struct(
+            concat!(
+                "interface Shape { float area(); };\n",
+                "struct Rect { float w; };\n",
+                "extension Rect : Shape { float area() { return w; } };\n"
+            ),
+            "Rect r; r.w = 1.0; ob[gid.x] = uint(r.area());",
+        ),
         "bool" => local("bool b = bool(ob[gid.x]); ob[gid.x] = b ? 1u : 0u;"),
         "int" => local("int i = int(ob[gid.x]); ob[gid.x] = uint(i);"),
         "uint" => local("ob[gid.x] = uint(2.0);"),

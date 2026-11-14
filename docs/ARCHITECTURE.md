@@ -120,7 +120,8 @@ graph runs after the per-item checks, the trait desugaring before validation, th
   specialises it per instantiation. The CPU twin keeps the generic as Rust. A type parameter named like an item of the
   module is GUST-E0328 (`name_problem`).
 - Name collisions (`slang/collisions.rs`, D81). The table of reserved Slang names, now with `Tuple`, `makeTuple`,
-  `this` and the 46 interface names of Slang's standard module, renames a colliding user name to `__gust_r_<name>`.
+  `this`, `interface`, `extension` and the 46 interface names of Slang's standard module,
+  renames a colliding user name to `__gust_r_<name>`.
 
 The SPIR-V route has a macro half and a runtime half (D172, D174). `slang/guards.rs` makes the emitter write the guards
 that naga adds on the WGSL route (array index clamp, `__gust_div` and `__gust_rem` for a zero divisor and signed

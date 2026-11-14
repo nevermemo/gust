@@ -504,7 +504,7 @@ fn expand_validated_with(
         .iter()
         .flat_map(|(_, items)| items)
         .filter_map(|item| match item {
-            syn::Item::Struct(item) => Some((item.ident.to_string(), item)),
+            syn::Item::Struct(item) => Some((item.ident.unraw().to_string(), item)),
             _ => None,
         })
         .collect();

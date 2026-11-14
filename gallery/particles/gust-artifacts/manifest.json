@@ -1,0 +1,36 @@
+{
+  "kernels": [
+    {
+      "clean_sha256": "3ad1a8f6e777e0d4f64fc109993706f45f15ff426766b8e9ac25b84e2ac032cf",
+      "entry_point": "gpu_particles_step",
+      "formats": [
+        {
+          "file": "428433cac853545d.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "bf4d5b2a1fd52eec25807951636913e46b654e2fa21a017a20c62aebe5c8a569",
+          "sha256": "89cc29f518c140e8aa2a615ec3f29fe9c271e858c82fb8c5b7a970399ea07b5e"
+        }
+      ],
+      "key": "428433cac853545d",
+      "module": "particles",
+      "name": "step"
+    },
+    {
+      "clean_sha256": "c2b6f6f2f236ebcaac87745d833e49a635e170206ea865ca418c2ba122e03c6c",
+      "entry_point": "gpu___gust_pf_1d64e20300ef72a8_run",
+      "formats": [
+        {
+          "file": "6c2fad7a1ff39287.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "9b19e4da9575b5c61d08f83e44f841e823e4cc10d31a376e730907fc23d40b0f",
+          "sha256": "65b8446879973b0d25aa78debb71ff21d223939c4b68bb833d1bd4c843818d1e"
+        }
+      ],
+      "key": "6c2fad7a1ff39287",
+      "module": "__gust_pf_1d64e20300ef72a8",
+      "name": "run"
+    }
+  ],
+  "schema": 1,
+  "slang": "2026.22"
+}

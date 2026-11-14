@@ -1,0 +1,21 @@
+{
+  "kernels": [
+    {
+      "clean_sha256": "1fabbd5f74e4e96e48e887fb79f8684d263568a0a9c7d169e73f977f4f77f1c3",
+      "entry_point": "gpu_histogram_count",
+      "formats": [
+        {
+          "file": "be39104acabbe743.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "8c3245f2f24c0231b206aa4be7c0e1c062666dcdffd0c993ef01897d1e45392d",
+          "sha256": "2042d0a3696742aae50e73c5b2dfc64e9ea8d0d6ea0873eadf5e20c2c173ccae"
+        }
+      ],
+      "key": "be39104acabbe743",
+      "module": "histogram",
+      "name": "count"
+    }
+  ],
+  "schema": 1,
+  "slang": "2026.22"
+}

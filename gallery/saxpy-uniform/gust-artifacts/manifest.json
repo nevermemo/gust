@@ -1,0 +1,21 @@
+{
+  "kernels": [
+    {
+      "clean_sha256": "8d29fb63fa807b656b97813d8e3b5d92e159b65297b3674296555b0bcd35e927",
+      "entry_point": "gpu_saxpy_apply",
+      "formats": [
+        {
+          "file": "b2bf27fc68678ee7.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "e1c66b8f61eb81b7c323e44403c73f6e5132aed8acad9efea8619ce242a2d486",
+          "sha256": "f82f87919ed1100613a5e2e341db0203d9741c9c889d0a66ff7941e9da52c282"
+        }
+      ],
+      "key": "b2bf27fc68678ee7",
+      "module": "saxpy",
+      "name": "apply"
+    }
+  ],
+  "schema": 1,
+  "slang": "2026.22"
+}

@@ -1,0 +1,17 @@
+[package]
+name = "saxpy-uniform"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# The shape of a user's crate (README "A first program"), with path dependencies in place of the registry versions.
+[dependencies]
+gust = { package = "gust-compute", path = "../../crates/gust" }
+gust-wgpu = { package = "gust-compute-wgpu", path = "../../crates/gust-wgpu" }
+
+[features]
+# Run-time compile through the Slang toolchain, for development only (`cargo run --features gust-dev`).
+gust-dev = ["gust-wgpu/slang-runtime"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }

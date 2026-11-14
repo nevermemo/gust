@@ -29,7 +29,7 @@ pub(crate) fn same_ident(a: &syn::Ident, b: &syn::Ident) -> bool {
 }
 
 /// `name` as it is written in a suggestion for the user: a keyword needs its `r#` back (`r#type`). `self`, `Self`,
-/// `super`, `crate` and `_` cannot be raw, so they print bare (syn refuses them as an `Ident`, which is not the test
+/// `super`, `crate` and `_` cannot be raw, so they print bare (syn 2.0.119, from Cargo.lock, refuses them as an `Ident`, which is not the test
 /// for a raw prefix). `gen` is reserved in edition 2024, and syn's list does not have it.
 pub(crate) fn spelling(name: &str) -> String {
     if matches!(name, "self" | "Self" | "super" | "crate" | "_") {

@@ -632,7 +632,7 @@ fn is_direct_own(expression: &syn::Expr, id: &str) -> bool {
     let syn::Expr::Field(field) = peel(expression) else {
         return false;
     };
-    if !matches!(&field.member, syn::Member::Named(member) if member == "x") {
+    if !matches!(&field.member, syn::Member::Named(member) if crate::names::ident_is(member, "x")) {
         return false;
     }
     match peel(&field.base) {

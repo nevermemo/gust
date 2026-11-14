@@ -9972,3 +9972,87 @@ fn a_raw_method_name_emits_the_slang_of_the_plain_one() {
         assert_eq!(plain, raw, "{method}");
     }
 }
+
+#[test]
+fn a_raw_member_x_of_the_invocation_is_the_own_index() {
+    // Opus round 5 S1: `member == "x"` kept the `r#`, so `out[id.r#x] = ..` was refused as OwnIndexWrite.
+    let pixel_source = |body: &str| {
+        format!(
+            "mod shade {{ #[kernel(shape = pixel)] pub fn run(id: SV_DispatchThreadID, input: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>) {{ {body} }} }}"
+        )
+    };
+    let plain = expanded_pixel_kernel("out[id.x] = input[id.x];");
+    assert!(!plain.contains("compile_error"), "{plain}");
+    let plain_slang = translate(&pixel_source("out[id.x] = input[id.x];")).unwrap();
+    for body in [
+        "out[id.r#x] = input[id.x];",
+        "out[id.r#x] = input[id.r#x];",
+        "out[id.r#global_id().r#x] = input[id.x];",
+    ] {
+        let raw = expanded_pixel_kernel(body);
+        assert!(!raw.contains("compile_error"), "{body}: {raw}");
+        assert_eq!(
+            plain_slang,
+            translate(&pixel_source(body)).unwrap(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn raw_global_id_len_option_and_result_methods_are_the_plain_ones() {
+    // Opus round 5 N3: the Option and Result usage scans and the classify checks compare method names.
+    let pixel_source = |body: &str| {
+        format!(
+            "mod shade {{ #[kernel(shape = pixel)] pub fn run(id: SV_DispatchThreadID, input: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>) {{ {body} }} }}"
+        )
+    };
+    let plain_body = "out[id.global_id().x] = input[id.x] + (out.len() as f32);";
+    assert!(!expanded_pixel_kernel(plain_body).contains("compile_error"));
+    let raw_body = "out[id.r#global_id().x] = input[id.x] + (out.r#len() as f32);";
+    assert!(!expanded_pixel_kernel(raw_body).contains("compile_error"));
+    assert_eq!(
+        translate(&pixel_source(plain_body)).unwrap(),
+        translate(&pixel_source(raw_body)).unwrap()
+    );
+    // A guard `own < out.len()` is transparent (classify's `is_output_length`): the raw spelling must be too.
+    for body in [
+        "if id.x < out.len() { out[id.x] = input[id.x]; }",
+        "if id.x < out.r#len() { out[id.x] = input[id.x]; }",
+    ] {
+        let text = expanded_pixel_kernel(body);
+        assert!(!text.contains("compile_error"), "{body}: {text}");
+    }
+    let items =
+        "fn f(x: u32) -> Option<u32> { Some(x) } fn g(x: u32) -> Result<u32, u32> { Ok(x) }";
+    let cases = [
+        (
+            "is_some",
+            "let o = f(id.x); if o.is_some() { out[id.x] = 1u32; }",
+        ),
+        (
+            "is_none",
+            "let o = f(id.x); if o.is_none() { out[id.x] = 1u32; }",
+        ),
+        (
+            "unwrap_or",
+            "let o = f(id.x); out[id.x] = o.unwrap_or(7u32);",
+        ),
+        (
+            "is_ok",
+            "let r = g(id.x); if r.is_ok() { out[id.x] = 1u32; }",
+        ),
+        (
+            "is_err",
+            "let r = g(id.x); if r.is_err() { out[id.x] = 1u32; }",
+        ),
+    ];
+    for (method, body) in cases {
+        let plain_source = with_kernel(items, body);
+        let raw_source = plain_source.replace(&format!(".{method}("), &format!(".r#{method}("));
+        assert_ne!(plain_source, raw_source, "{method}");
+        let plain = translate(&plain_source).unwrap_or_else(|error| panic!("{method}: {error}"));
+        let raw = translate(&raw_source).unwrap_or_else(|error| panic!("{method} (raw): {error}"));
+        assert_eq!(plain, raw, "{method}");
+    }
+}

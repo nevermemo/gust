@@ -381,7 +381,7 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
 - M10 plan adopted (2026-11-14; D177 to D183). Revision 1.1 (Fable), reviewed by Opus in the Codex slot (Codex
   was out of quota): "adopt with changes", every finding accepted. The guide is rustdoc on docs.rs (mdBook's
   MPL-2.0 would need an exception to D46); the read-only API audit runs before the first publish; `release/0.2`
-  is cut at the publish. D177 (0.2.0 first, 0.1.0 never published) is provisional until the owner chooses.
+  is cut at the publish. D177 (0.2.0 first, 0.1.0 never published) is the owner's choice (2026-11-14).
   First slices: m10.r0 (release literals and the diagnostic-code freeze review), m10.b0 (the bench harness onto
   main and the premise re-measurement), m10.g0 (the gallery skeleton).
 

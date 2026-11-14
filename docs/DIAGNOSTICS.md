@@ -19,7 +19,7 @@ This page is not part of the published packages. If you installed GUST from crat
 codes come from the `#[gpu]` macro of the package `gust-compute-macros`, which you get by adding `gust-compute` (see
 "Install from crates.io" in the [README](../README.md)).
 
-The promise starts with the first crates.io release, 0.1.0 (D33). Until then a code may still be
+The promise starts with the first crates.io release, 0.2.0 (D33, D177). Until then a code may still be
 split or renumbered, and each change is listed here:
 
 - Slice mx.p1a: E0730 ("pinned shape not available yet", D63) is retired: the `pixel` profile exists, so a

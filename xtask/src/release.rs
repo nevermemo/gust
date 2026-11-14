@@ -23,8 +23,10 @@
 //! - **R4**: no member outside `crates/` is publishable, and no publishable member depends on an unpublished one.
 //! - **R5**: `cargo doc --no-deps` of every library crate, every rustdoc warning an error ([`KNOWN_DOC_DEBT`] lists
 //!   the ones admitted, each by text, none since mr.b2; a listed warning that disappears fails the check), on
-//!   stable; and, when a nightly toolchain is installed, with the docs.rs features and `--cfg docsrs`. Without
-//!   nightly the second run is printed as skipped.
+//!   stable; and on nightly with the docs.rs features and `--cfg docsrs`, once for each target a library's docs.rs
+//!   metadata names (`x86_64-unknown-linux-gnu`, as docs.rs does, when it names none; `gust-compute-wgpu` adds wasm32). The full run fails when no nightly
+//!   toolchain or one of those targets is installed, and says how to install it ([`nightly_verdict`]); `--check-only`
+//!   runs the nightly pass when a nightly is installed and prints it as skipped otherwise, as before.
 //! - **R6**: each `.crate` file is under 2 MiB.
 //! - **R7**: the README recipe, word for word. The packages are unpacked into the work directory; `hello-gust`, whose
 //!   `Cargo.toml` and `src/main.rs` are the README's "Install from crates.io" code blocks (see
@@ -318,6 +320,8 @@ pub(crate) struct Member {
     /// `[package.metadata.docs.rs] features` and `rustdoc-args`.
     pub(crate) docs_features: Vec<String>,
     pub(crate) docs_rustdoc_args: Vec<String>,
+    /// `[package.metadata.docs.rs] targets`: the targets docs.rs builds this package for (empty: the host only).
+    pub(crate) docs_targets: Vec<String>,
 }
 
 impl Member {
@@ -466,6 +470,7 @@ pub(crate) fn parse_metadata(output: &str) -> Result<Metadata, String> {
             dependencies,
             docs_features: strings(docs.and_then(|docs| docs.get("features"))),
             docs_rustdoc_args: strings(docs.and_then(|docs| docs.get("rustdoc-args"))),
+            docs_targets: strings(docs.and_then(|docs| docs.get("targets"))),
             name,
         });
     }
@@ -1074,6 +1079,121 @@ pub(crate) fn has_nightly(listing: &str) -> bool {
         .any(|line| line.trim().starts_with("nightly"))
 }
 
+/// What the docs.rs-shaped run of R5 finds on this machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NightlyVerdict {
+    /// A nightly toolchain with every target the docs.rs metadata names.
+    Ready,
+    /// No nightly toolchain is installed.
+    NoNightly,
+    /// A nightly is installed but these targets are not installed for it.
+    MissingTargets(Vec<String>),
+}
+
+/// Decides from the output of `rustup toolchain list` and of `rustup target list --installed --toolchain nightly`
+/// (one target per line; ignored when there is no nightly) whether the docs.rs-shaped run can build every wanted target.
+pub(crate) fn nightly_verdict(
+    toolchains: &str,
+    installed_targets: &str,
+    wanted: &[String],
+) -> NightlyVerdict {
+    if !has_nightly(toolchains) {
+        return NightlyVerdict::NoNightly;
+    }
+    let missing: Vec<String> = wanted
+        .iter()
+        .filter(|target| {
+            !installed_targets
+                .lines()
+                .any(|line| line.split_whitespace().next() == Some(target.as_str()))
+        })
+        .cloned()
+        .collect();
+    if missing.is_empty() {
+        NightlyVerdict::Ready
+    } else {
+        NightlyVerdict::MissingTargets(missing)
+    }
+}
+
+/// The failure of the full run for a verdict that is not [`NightlyVerdict::Ready`], with the install commands.
+pub(crate) fn nightly_failure(verdict: &NightlyVerdict) -> Option<String> {
+    match verdict {
+        NightlyVerdict::Ready => None,
+        NightlyVerdict::NoNightly => Some(
+            "check-release R5: no nightly toolchain is installed, so the docs.rs-shaped run (nightly, the docs.rs \
+             features, `--cfg docsrs`) cannot run; install it with `rustup toolchain install nightly --profile \
+             minimal`"
+                .to_owned(),
+        ),
+        NightlyVerdict::MissingTargets(targets) => Some(format!(
+            "check-release R5: the nightly toolchain lacks the docs.rs target{} {}; install with `rustup target add \
+             --toolchain nightly {}`",
+            if targets.len() == 1 { "" } else { "s" },
+            targets.join(", "),
+            targets.join(" ")
+        )),
+    }
+}
+
+/// What the nightly part of R5 does in a mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NightlyPlan {
+    /// `--check-only` without a nightly: printed as skipped.
+    Skip,
+    /// `--check-only` with a nightly: one run for the host, without `--target`.
+    Host,
+    /// The full run with everything installed: one run per named target.
+    Targets,
+    /// The full run without the nightly or a target: the failure text.
+    Fail(String),
+}
+
+/// The mode decision of R5's nightly part, from the rustup listings: `--check-only` keeps its old behaviour (skip
+/// without a nightly, else the host run); the full run must have the nightly and every wanted target, or fails.
+pub(crate) fn r5_nightly_plan(
+    check_only: bool,
+    toolchains: &str,
+    installed_targets: &str,
+    wanted: &[String],
+) -> NightlyPlan {
+    if check_only {
+        return if has_nightly(toolchains) {
+            NightlyPlan::Host
+        } else {
+            NightlyPlan::Skip
+        };
+    }
+    match nightly_failure(&nightly_verdict(toolchains, installed_targets, wanted)) {
+        Some(failure) => NightlyPlan::Fail(failure),
+        None => NightlyPlan::Targets,
+    }
+}
+
+/// The target docs.rs builds a package for when its metadata names none.
+pub(crate) const DOCS_RS_DEFAULT_TARGET: &str = "x86_64-unknown-linux-gnu";
+
+/// The docs.rs-shaped runs of R5: one per target that a library's metadata names, with the libraries that name it, and
+/// one for `x86_64-unknown-linux-gnu` (what docs.rs builds) with the libraries that name none. Targets keep the order
+/// of first mention.
+pub(crate) fn docsrs_runs<'a>(libraries: &[&'a Member]) -> Vec<(Option<String>, Vec<&'a Member>)> {
+    let mut runs: Vec<(Option<String>, Vec<&'a Member>)> = Vec::new();
+    for library in libraries {
+        let targets: Vec<Option<String>> = if library.docs_targets.is_empty() {
+            vec![Some(DOCS_RS_DEFAULT_TARGET.to_owned())]
+        } else {
+            library.docs_targets.iter().cloned().map(Some).collect()
+        };
+        for target in targets {
+            match runs.iter_mut().find(|(known, _)| *known == target) {
+                Some((_, members)) => members.push(library),
+                None => runs.push((target, vec![library])),
+            }
+        }
+    }
+    runs
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // The run
 
@@ -1647,11 +1767,15 @@ fn release_steps(
 
 /// R1, R2, R5 to R8; the summary up to R8.
 fn all_steps(run: &Run, metadata: &Metadata, publishable: &[&Member]) -> Result<String, String> {
+    let plan = r5_plan(run, publishable);
+    if let NightlyPlan::Fail(failure) = &plan {
+        return Err(failure.clone());
+    }
     let listing = r2_lists(run, publishable)?;
     let crates = r1_package(run, publishable)?;
     let unpacked = r2_unpacked(run, publishable)?;
     let sizes = r6_sizes(&crates, publishable)?;
-    let docs = r5_docs(run, publishable)?;
+    let docs = r5_docs(run, publishable, &plan)?;
     let recipe = r7_recipe(run, &metadata.members, publishable, &unpacked)?;
     let dry = r8_dry_run(run, publishable)?;
 
@@ -1828,6 +1952,7 @@ fn doc_run(
     run: &Run,
     label: &str,
     nightly: bool,
+    target: Option<&str>,
     flags: &str,
     libraries: &[&Member],
     features: &[String],
@@ -1853,6 +1978,9 @@ fn doc_run(
     if !features.is_empty() {
         args.extend(["--features".to_owned(), features.join(",")]);
     }
+    if let Some(target) = target {
+        args.extend(["--target".to_owned(), target.to_owned()]);
+    }
     let program = if nightly {
         OsString::from("cargo")
     } else {
@@ -1867,8 +1995,39 @@ fn doc_run(
     Ok(doc_messages(&String::from_utf8_lossy(&output.stdout)))
 }
 
+/// Reads the rustup listings and decides the nightly part of R5 ([`r5_nightly_plan`]). The full run calls it before R1
+/// so that a missing nightly or target fails at once, not after the packaging.
+fn r5_plan(run: &Run, publishable: &[&Member]) -> NightlyPlan {
+    let libraries: Vec<&Member> = publishable
+        .iter()
+        .copied()
+        .filter(|member| member.has_library)
+        .collect();
+    let rustup = |args: &[&str]| -> String {
+        Command::new("rustup")
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .unwrap_or_default()
+    };
+    let listing = rustup(&["toolchain", "list"]);
+    let wanted: Vec<String> = docsrs_runs(&libraries)
+        .into_iter()
+        .filter_map(|(target, _)| target)
+        .collect();
+    let installed = if has_nightly(&listing) {
+        rustup(&["target", "list", "--installed", "--toolchain", "nightly"])
+    } else {
+        String::new()
+    };
+    r5_nightly_plan(run.check_only, &listing, &installed, &wanted)
+}
+
 /// R5: rustdoc.
-fn r5_docs(run: &Run, publishable: &[&Member]) -> Result<String, String> {
+fn r5_docs(run: &Run, publishable: &[&Member], plan: &NightlyPlan) -> Result<String, String> {
     let libraries: Vec<&Member> = publishable
         .iter()
         .copied()
@@ -1880,36 +2039,66 @@ fn r5_docs(run: &Run, publishable: &[&Member]) -> Result<String, String> {
         );
     }
     let mut problems = Vec::new();
-    let stable = doc_run(run, "stable", false, "", &libraries, &[])?;
+    let stable = doc_run(run, "stable", false, None, "", &libraries, &[])?;
     problems.extend(doc_problems("stable", &stable, false, &KNOWN_DOC_DEBT));
     let known = stable
         .iter()
         .filter(|message| message.level == "warning")
         .count();
 
-    let listing = Command::new("rustup")
-        .args(["toolchain", "list"])
-        .stdin(Stdio::null())
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-        .unwrap_or_default();
-    let nightly = if has_nightly(&listing) {
-        let (features, flags) = docsrs_request(&libraries);
-        let messages = doc_run(run, "nightly docsrs", true, &flags, &libraries, &features)?;
-        problems.extend(doc_problems(
-            "nightly docsrs",
-            &messages,
-            true,
-            &KNOWN_DOC_DEBT,
-        ));
-        "nightly with the docs.rs features and --cfg docsrs"
-    } else {
-        println!(
-            "check-release R5: no nightly toolchain is installed; the docs.rs-shaped run is SKIPPED"
-        );
-        "nightly docs.rs run SKIPPED (no nightly toolchain installed)"
+    let runs = docsrs_runs(&libraries);
+    let nightly = match plan {
+        NightlyPlan::Fail(failure) => return Err(failure.clone()),
+        NightlyPlan::Skip => {
+            println!(
+                "check-release R5: no nightly toolchain is installed; the docs.rs-shaped run is SKIPPED"
+            );
+            "nightly docs.rs run SKIPPED (no nightly toolchain installed)".to_owned()
+        }
+        NightlyPlan::Host => {
+            let (features, flags) = docsrs_request(&libraries);
+            let messages = doc_run(
+                run,
+                "nightly docsrs",
+                true,
+                None,
+                &flags,
+                &libraries,
+                &features,
+            )?;
+            problems.extend(doc_problems(
+                "nightly docsrs",
+                &messages,
+                true,
+                &KNOWN_DOC_DEBT,
+            ));
+            "nightly with the docs.rs features and --cfg docsrs (host only)".to_owned()
+        }
+        NightlyPlan::Targets => {
+            let mut built = Vec::new();
+            for (target, members) in &runs {
+                let (features, flags) = docsrs_request(members);
+                let label = match target {
+                    Some(target) => format!("nightly docsrs {target}"),
+                    None => "nightly docsrs".to_owned(),
+                };
+                let messages = doc_run(
+                    run,
+                    &label,
+                    true,
+                    target.as_deref(),
+                    &flags,
+                    members,
+                    &features,
+                )?;
+                problems.extend(doc_problems(&label, &messages, true, &KNOWN_DOC_DEBT));
+                built.push(target.clone().unwrap_or_else(|| "host".to_owned()));
+            }
+            format!(
+                "nightly with the docs.rs features and --cfg docsrs for {}",
+                built.join(", ")
+            )
+        }
     };
     problems_to_error("R5", &problems)?;
     Ok(format!(

@@ -7,11 +7,16 @@
 //!   directory without the committed `gust-artifacts/`, runs `cargo gust build` there, `cargo gust check` on the fresh
 //!   artifacts, and compares them byte for byte with the committed ones; `cargo gust check` also runs on the committed
 //!   artifacts in place.
-//! - **No-Slang part**: `cargo build --release` and `cargo test` with Slang proven absent (no `PATH` entry holds a
-//!   `slangc`, and the Slang variables are removed), the anchor check of every gallery source, and the guide-listing sync
-//!   check (a packaged listing is byte-identical to the anchored region of its gallery file).
-//! - **GPU part**: `cargo run --release` per entry on an adapter, and the output must contain the entry's expected line.
-//!   It uses the release build of the no-Slang part, so the binary that runs is the one built without Slang.
+//! - **No-Slang part**: `cargo build --release` and `cargo test` in the environment of `check-precompiled` E1 (no
+//!   variable that names Slang, no `PATH` folder with `slangc` or `gust-slang-reflect`, `GUST_SLANG_HOME` an empty
+//!   directory so the default cache is not consulted), which is asserted Slang-free, including a lookup of `slangc` by the
+//!   shell; the entry and the library crates are cleaned first, and `cargo tree -e features` must show no
+//!   `slang-runtime`. The children run without `GUST_PROFILE`. Then the anchor check of every gallery source and the guide-listing sync check (a packaged listing
+//!   equals the anchored region of its gallery file, both with LF line ends).
+//! - **GPU part**: `cargo run --release` per entry on an adapter; the output must contain the entry's expected line and an
+//!   `adapter:` line, which is printed. It reuses the release build of the no-Slang part when that ran before in the same
+//!   target directory; run alone (as `check-full` does) it builds with whatever the environment holds, and says nothing
+//!   about Slang.
 //!
 //! Children never inherit `GUST_PROFILE`, `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS`: a gallery crate is built the way a
 //! user builds it (release is the strict `native` profile, tests are `dev`).
@@ -26,6 +31,7 @@ use std::{
 };
 
 use crate::{
+    precompiled::{StripReport, child_environment, directory_has_slang_tool, slang_free_problems},
     process::{exit_code, set_workspace_profile, without_colors},
     workspace::{cargo_target_dir, workspace_root},
 };
@@ -56,9 +62,6 @@ pub(crate) struct Listing {
 
 /// The guide listings. Empty in slice m10.g0: the check runs and says "0 listings".
 pub(crate) const LISTINGS: [Listing; 0] = [];
-
-/// The variables removed from every child that must not see Slang.
-const SLANG_VARIABLES: [&str; 3] = ["GUST_SLANG_HOME", "SLANG_SDK", "GUST_SLANG_REFLECT"];
 
 /// The variables removed from every gallery child (see the module comment).
 const CLEARED: [&str; 3] = ["GUST_PROFILE", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"];
@@ -215,9 +218,23 @@ pub(crate) fn anchored_region(text: &str, name: &str) -> Result<String, String> 
     Ok(region)
 }
 
-/// Whether a packaged listing equals the anchored region byte for byte.
+/// `bytes` with every CRLF replaced by LF (a lone CR stays).
+pub(crate) fn lf_line_ends(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+            continue;
+        }
+        out.push(*byte);
+    }
+    out
+}
+
+/// Whether a packaged listing equals the anchored region. Both sides have LF line ends before the comparison (the
+/// region already has them; the packaged file is normalised here), so a checkout with `core.autocrlf=true` gives the
+/// same verdict as one without; every other byte must be the same.
 pub(crate) fn listing_matches(packaged: &[u8], region: &str) -> bool {
-    packaged == region.as_bytes()
+    lf_line_ends(packaged) == lf_line_ends(region.as_bytes())
 }
 
 /// Checks every listing of `listings` against its gallery file under `root`; returns how many were checked.
@@ -330,45 +347,136 @@ fn check_entries(root: &Path) -> Result<(), String> {
 // ---------------------------------------------------------------------------------------------------------------------
 // The environment of the children
 
-/// The folders of `path` that do not hold a Slang compiler: those for which `has_slangc` is false. Pure, so a test can
-/// feed it a fake file system.
-pub(crate) fn path_without_slang(
-    folders: &[PathBuf],
-    has_slangc: impl Fn(&Path) -> bool,
-) -> Vec<PathBuf> {
-    folders
-        .iter()
-        .filter(|folder| !has_slangc(folder))
-        .cloned()
-        .collect()
+/// Tools that must stay reachable for a build: the cargo and rust toolchain and a linker. A `PATH` folder that holds
+/// one of them and also a Slang tool cannot be dropped without breaking the build.
+const BUILD_TOOLS: [&str; 8] = [
+    "cargo", "rustc", "cc", "gcc", "clang", "link", "ld", "rust-lld",
+];
+
+/// Whether `folder` holds the file `name`, with or without the executable suffix.
+pub(crate) fn folder_holds(folder: &Path, name: &str) -> bool {
+    folder.join(name).is_file() || folder.join(format!("{name}.exe")).is_file()
 }
 
-/// Whether `folder` holds a `slangc` (with or without the executable suffix, in any letter case).
-fn holds_slangc(folder: &Path) -> bool {
-    let Ok(entries) = fs::read_dir(folder) else {
-        return false;
+/// The problems of dropping `dropped` folders from `PATH`: a folder that also holds a build tool (`holds` says
+/// whether a folder holds a file). Dropping `/usr/bin` because a `slangc` lives there would leave a build that cannot
+/// find its linker, so the part refuses instead of running it.
+pub(crate) fn shared_folder_problems(
+    dropped: &[PathBuf],
+    holds: &dyn Fn(&Path, &str) -> bool,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for folder in dropped {
+        for tool in BUILD_TOOLS {
+            if holds(folder, tool) {
+                problems.push(format!(
+                    "the PATH folder {} holds a Slang tool and also `{tool}`: dropping it would leave a build that cannot find `{tool}`; move the Slang tools to a folder of their own and run again",
+                    folder.display()
+                ));
+            }
+        }
+    }
+    problems
+}
+
+/// A problem with the directory that `GUST_SLANG_HOME` will name: it must be an existing, empty directory, so that
+/// the default cache (`<CARGO_HOME>/gust/slang`) is not consulted and nothing is found in its place.
+pub(crate) fn slang_home_problem(directory: &Path) -> Option<String> {
+    match fs::read_dir(directory) {
+        Err(error) => Some(format!(
+            "the scratch Slang home {} cannot be read: {error}",
+            directory.display()
+        )),
+        Ok(mut entries) => entries.next().map(|_| {
+            format!(
+                "the scratch Slang home {} is not empty",
+                directory.display()
+            )
+        }),
+    }
+}
+
+/// Whether the shell of the platform finds `slangc` with the `PATH` of `environment`: `Ok(())` when it does not. The
+/// logic of `slangc_cannot_be_found` in `precompiled.rs` (private there, and that file is not this slice's), run
+/// through a shell because `Command::new("slangc")` would fall back to the parent's `PATH` on Windows.
+/// On Unix the shell is `/bin/sh` by absolute path, because std would look up a bare `sh` in the child's own (stripped)
+/// `PATH`.
+fn slangc_cannot_be_found(environment: &[(OsString, OsString)]) -> Result<(), String> {
+    let mut probe = if cfg!(windows) {
+        let mut probe = Command::new("cmd");
+        probe.args(["/d", "/c", "where", "slangc"]);
+        probe
+    } else {
+        let mut probe = Command::new("/bin/sh");
+        probe.args(["-c", "command -v slangc"]);
+        probe
     };
-    entries.flatten().any(|entry| {
-        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-        name == "slangc" || name == "slangc.exe"
-    })
-}
-
-/// A `PATH` without any folder that holds a `slangc`. Fails when one is still found afterwards: the absence is proved
-/// on the value the children get, never assumed.
-fn path_for_no_slang() -> Result<(OsString, usize), String> {
-    let current = env::var_os("PATH").unwrap_or_default();
-    let folders = env::split_paths(&current).collect::<Vec<_>>();
-    let kept = path_without_slang(&folders, holds_slangc);
-    if let Some(left) = kept.iter().find(|folder| holds_slangc(folder)) {
+    probe
+        .env_clear()
+        .envs(environment.iter().map(|(name, value)| (name, value)))
+        .stdin(Stdio::null());
+    let output = probe
+        .output()
+        .map_err(|error| format!("could not run the lookup of `slangc`: {error}"))?;
+    let code = output.status.code();
+    // `where` answers 1 when it finds nothing and 2 for an error; `command -v` answers non-zero when it finds nothing.
+    let absent = if cfg!(windows) {
+        code == Some(1)
+    } else {
+        !output.status.success()
+    };
+    if absent {
+        return Ok(());
+    }
+    if output.status.success() {
         return Err(format!(
-            "Slang is still on the PATH of the no-Slang children: {}",
-            left.display()
+            "`slangc` is found with the stripped environment: {}",
+            String::from_utf8_lossy(&output.stdout).trim()
         ));
     }
-    let path = env::join_paths(&kept)
-        .map_err(|error| format!("cannot build a PATH without Slang: {error}"))?;
-    Ok((path, folders.len() - kept.len()))
+    Err(format!(
+        "the lookup of `slangc` failed (exit {}): {}",
+        exit_code(output.status),
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
+}
+
+/// The variables of a child, as `(name, value)` pairs.
+pub(crate) type Environment = [(OsString, OsString)];
+
+/// The environment of the no-Slang children: the parent's, stripped as `check-precompiled` E1 strips it
+/// (`child_environment`: no variable that names Slang, `VULKAN_SDK`, `VK_SDK_PATH`, `GUST_EXPORT_DIR`, no `PATH` folder
+/// that holds `slangc` or `gust-slang-reflect`, `GUST_PROFILE=native`), then asserted Slang-free by
+/// `slang_free_problems` and by `find` (an independent lookup of `slangc` with the child's `PATH`), and only then
+/// given `GUST_SLANG_HOME`, the empty directory `home`, which keeps the toolchain away from the default cache.
+/// `has_tool`, `holds` and `find` are parameters so that a test can make each check fail. Returns the environment and
+/// what was stripped.
+pub(crate) fn no_slang_environment(
+    parent: &[(OsString, OsString)],
+    home: &Path,
+    has_tool: &dyn Fn(&Path) -> bool,
+    holds: &dyn Fn(&Path, &str) -> bool,
+    find: &dyn Fn(&Environment) -> Result<(), String>,
+) -> Result<(Vec<(OsString, OsString)>, StripReport), String> {
+    let mut report = StripReport::default();
+    let mut environment = child_environment(parent, has_tool, &mut report);
+    let mut problems = shared_folder_problems(&report.directories, holds);
+    problems.extend(slang_free_problems(&environment, has_tool));
+    problems.extend(slang_home_problem(home));
+    if let Err(error) = find(&environment) {
+        problems.push(error);
+    }
+    if !problems.is_empty() {
+        return Err(format!(
+            "the environment of the no-Slang children is not Slang-free: {}",
+            problems.join("; ")
+        ));
+    }
+    environment.push((
+        OsString::from("GUST_SLANG_HOME"),
+        home.as_os_str().to_owned(),
+    ));
+    Ok((environment, report))
 }
 
 /// The cargo to run: `$CARGO` when set (as `cargo xtask` does), else the first `cargo` of the current `PATH`, resolved
@@ -642,38 +750,103 @@ fn slang_part(root: &Path) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
+/// A cargo command for the no-Slang part: only `environment`, with the target directory and no colour.
+fn no_slang_cargo(
+    directory: &Path,
+    target: &Path,
+    environment: &[(OsString, OsString)],
+) -> Result<Command, String> {
+    let mut command = Command::new(cargo_program()?);
+    command
+        .env_clear()
+        .envs(environment.iter().map(|(name, value)| (name, value)))
+        .current_dir(directory)
+        .env("CARGO_TARGET_DIR", target)
+        .env("CARGO_TERM_COLOR", "never");
+    Ok(command)
+}
+
+/// Whether the output of `cargo tree -e features` shows the run-time Slang bridge.
+pub(crate) fn tree_has_slang_runtime(output: &str) -> bool {
+    output.contains("slang-runtime")
+}
+
 /// The no-Slang part.
 fn no_slang_part(root: &Path) -> Result<String, String> {
     let gallery = root.join(GALLERY_DIR);
-    let (path, dropped) = path_for_no_slang()?;
     let target = gallery_target(root, "no-slang");
-    let no_slang = |mut command: Command| {
-        command.env("PATH", &path);
-        for name in SLANG_VARIABLES {
-            command.env_remove(name);
-        }
-        command
-    };
-    let mut lines = vec![format!(
-        "Slang absent: {dropped} PATH folder(s) holding a slangc dropped, none left; the Slang variables are removed"
-    )];
-    // A build that an earlier run made with Slang present must not stand in for this one.
-    for entry in &ENTRIES {
-        let mut clean = no_slang(gallery_cargo(&gallery, &target)?);
-        clean.args(["clean", "--release", "-p", entry.dir]);
-        require(
-            exec(clean, "cargo clean --release -p <entry>")?,
-            "cargo clean",
-        )?;
+    let home = root
+        .join(cargo_target_dir(root))
+        .join("gallery")
+        .join("empty-slang-home");
+    if home.exists() {
+        fs::remove_dir_all(&home)
+            .map_err(|error| format!("cannot remove {}: {error}", home.display()))?;
     }
-    let mut build = no_slang(gallery_cargo(&gallery, &target)?);
+    fs::create_dir_all(&home)
+        .map_err(|error| format!("cannot create {}: {error}", home.display()))?;
+    let parent = env::vars_os().collect::<Vec<_>>();
+    let (checked_environment, report) = no_slang_environment(
+        &parent,
+        &home,
+        &directory_has_slang_tool,
+        &folder_holds,
+        &slangc_cannot_be_found,
+    )?;
+    // The environment was checked with `GUST_PROFILE=native`; every child runs without the `CLEARED` variables (a plain
+    // `cargo build --release`, as the README says), so the GPU part reuses this very build.
+    let environment = checked_environment
+        .iter()
+        .filter(|(name, _)| {
+            !CLEARED
+                .iter()
+                .any(|cleared| name.to_string_lossy().eq_ignore_ascii_case(cleared))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut lines = vec![format!(
+        "Slang absent: {} variable(s) and {} PATH folder(s) taken out, the environment checked Slang-free and `slangc` not found by the shell; GUST_SLANG_HOME is an empty directory",
+        report.variables.len(),
+        report.directories.len()
+    )];
+    // A build that an earlier run made with Slang present must not stand in for this one: clean the entries and the
+    // library crates whose build scripts and macros read the environment (the E1 list of `check-precompiled`).
+    let mut clean = no_slang_cargo(&gallery, &target, &environment)?;
+    clean.args(["clean", "--release"]);
+    for entry in &ENTRIES {
+        clean.args(["-p", entry.dir]);
+    }
+    clean.args(["-p", "gust-compute", "-p", "gust-compute-macros"]);
+    require(
+        exec(
+            clean,
+            "cargo clean --release -p <entries> -p gust-compute -p gust-compute-macros",
+        )?,
+        "cargo clean",
+    )?;
+    let mut build = no_slang_cargo(&gallery, &target, &environment)?;
     build.args(["build", "--release", "--locked", "--workspace"]);
     require(
         exec(build, "cargo build --release --locked (no Slang)")?,
         "cargo build --release",
     )?;
     lines.push("cargo build --release: ok".to_owned());
-    let mut test = no_slang(gallery_cargo(&gallery, &target)?);
+    for entry in &ENTRIES {
+        let mut tree = no_slang_cargo(&gallery, &target, &environment)?;
+        tree.args(["tree", "--locked", "-e", "features", "-p", entry.dir]);
+        let label = format!("cargo tree -e features -p {}", entry.dir);
+        let done = require(exec(tree, &label)?, &label)?;
+        if tree_has_slang_runtime(&done.stdout) {
+            return Err(format!(
+                "{label} shows the `slang-runtime` feature in a build without `gust-dev`"
+            ));
+        }
+        lines.push(format!(
+            "{}: no slang-runtime in the release build",
+            entry.dir
+        ));
+    }
+    let mut test = no_slang_cargo(&gallery, &target, &environment)?;
     test.args(["test", "--locked", "--workspace"]);
     let done = require(exec(test, "cargo test --locked (no Slang)")?, "cargo test")?;
     let passed = crate::process::sum_test_results(&done.stdout);
@@ -714,9 +887,30 @@ fn gpu_part(root: &Path) -> Result<String, String> {
                 entry.expected_line
             ));
         }
-        lines.push(format!("{}: printed `{}`", entry.dir, entry.expected_line));
+        let Some(adapter) = adapter_name(&done.stdout) else {
+            return Err(format!(
+                "{label} printed no `{ADAPTER_PREFIX}` line, so the output does not say which GPU it ran on:\n{}",
+                tail(&done.stdout, 10)
+            ));
+        };
+        lines.push(format!(
+            "{}: printed `{}` on adapter `{adapter}`",
+            entry.dir, entry.expected_line
+        ));
     }
     Ok(lines.join("\n"))
+}
+
+/// The line of an entry that names the adapter it ran on.
+const ADAPTER_PREFIX: &str = "adapter: ";
+
+/// The adapter named by the first `adapter: <name>` line of `output`, if it names one.
+pub(crate) fn adapter_name(output: &str) -> Option<&str> {
+    output
+        .lines()
+        .find_map(|line| line.trim_end().strip_prefix(ADAPTER_PREFIX))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
 }
 
 /// `cargo xtask check-gallery [--slang] [--no-slang] [--gpu]`.

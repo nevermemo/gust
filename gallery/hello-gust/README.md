@@ -21,6 +21,6 @@ cargo build --release             # no Slang needed: the kernel is embedded from
 cargo run --release               # needs a Vulkan compute adapter
 ```
 
-It prints `hello-gust: [11.0, 22.0, 33.0, 44.0]`.
+It prints `hello-gust: [11.0, 22.0, 33.0, 44.0]` and a line `adapter: <name>` with the GPU it ran on.
 
 `cargo xtask check-gallery` (from the repository root) runs all of this and compares the artifacts byte for byte.

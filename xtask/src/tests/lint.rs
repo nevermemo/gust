@@ -1,7 +1,8 @@
 use super::{
     Member, TagCheck, carries_compiler_tag, carries_line_documents, compiler_tag_check,
     compiler_tag_problems, find_machine_path, is_forbidden_script, licence_problem,
-    machine_path_problems, member_field_problems, parse_members, path_dependency_problems,
+    lint_tracked_files, machine_path_problems, member_field_problems, parse_members,
+    path_dependency_problems,
 };
 
 #[test]
@@ -951,4 +952,83 @@ fn a_whole_file_document_counts_once_and_a_file_without_a_tag_is_not_judged() {
     ] {
         assert_eq!(compiler_tag_check(path, &[0xff, 0, 1], PIN), None, "{path}");
     }
+}
+
+#[test]
+fn machine_paths_under_bench_are_caught_in_every_kind_of_file() {
+    // Sources, manifests, the methods page, a results file and its samples sidecar: all are tracked text, and none of
+    // them is a fixture, so even a placeholder user name is a leak there.
+    for path in [
+        "bench/gust-bench/src/main.rs",
+        "bench/gust-bench/Cargo.toml",
+        "bench/README.md",
+        "bench/results/rtx-5090/0123abc-wgsl.json",
+        "bench/results/rtx-5090/0123abc-wgsl.samples.json",
+    ] {
+        let text = "{\n  \"note\": \"built in C:\\Users\\someone\\work\\gust\"\n}\n";
+        let problems = machine_path_problems(path, text);
+        assert_eq!(problems.len(), 1, "{path}: {problems:?}");
+        assert!(
+            problems[0].starts_with(&format!("{path}:2: machine-specific path `")),
+            "{problems:?}"
+        );
+        assert_eq!(
+            machine_path_problems(path, "C:/Users/someone/gust\n").len(),
+            1,
+            "{path}"
+        );
+        assert!(machine_path_problems(path, "bench/results/<adapter>/x.json\n").is_empty());
+    }
+}
+
+/// A scratch git repository holding the tracked `files` (path, text), removed again by the caller.
+fn tracked_scratch_repo(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("gust-lint-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&dir)
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    for (path, text) in files {
+        let file = dir.join(path);
+        std::fs::create_dir_all(file.parent().expect("a parent")).expect("directories");
+        std::fs::write(&file, text).expect("file");
+        git(&["-c", "core.autocrlf=false", "add", path]);
+    }
+    dir
+}
+
+#[test]
+fn the_lint_run_reads_tracked_bench_files_and_fails_on_a_machine_path_there() {
+    let dir = tracked_scratch_repo(
+        "bench",
+        &[
+            (
+                "bench/results/rtx-5090/0123abc-wgsl.samples.json",
+                "{\"cwd\": \"C:\\Users\\someone\\gust\"}\n",
+            ),
+            ("bench/gust-bench/src/clean.rs", "fn main() {}\n"),
+        ],
+    );
+    let result = lint_tracked_files(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    // The scratch repository has no compiler pin, so the run fails anyway; what matters is which problems it names.
+    let problems = result.expect_err("a machine path under bench/ fails the lint");
+    let bench = problems
+        .iter()
+        .filter(|p| p.starts_with("bench/"))
+        .collect::<Vec<_>>();
+    assert_eq!(bench.len(), 1, "{problems:?}");
+    assert!(
+        bench[0].starts_with(
+            "bench/results/rtx-5090/0123abc-wgsl.samples.json:1: machine-specific path `"
+        ),
+        "{bench:?}"
+    );
 }

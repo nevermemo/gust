@@ -1,13 +1,19 @@
 use std::{
+    ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
 };
 
 use super::{
-    ENTRIES, Listing, Parts, anchor_names, anchored_region, check_listings, listing_matches,
-    output_has_line, path_without_slang, tail, tree_difference, workspace_members,
+    ENTRIES, Listing, Parts, adapter_name, anchor_names, anchored_region, check_listings,
+    folder_holds, lf_line_ends, listing_matches, no_slang_environment, output_has_line,
+    shared_folder_problems, slang_home_problem, slangc_cannot_be_found, tail, tree_difference,
+    tree_has_slang_runtime, workspace_members,
 };
-use crate::workspace::workspace_root;
+use crate::{
+    precompiled::{StripReport, child_environment, directory_has_slang_tool, slang_free_problems},
+    workspace::workspace_root,
+};
 
 fn args(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| (*word).to_owned()).collect()
@@ -202,7 +208,6 @@ fn a_listing_matches_only_when_every_byte_is_the_region() {
     let region = "fn one() {}\n";
     assert!(listing_matches(b"fn one() {}\n", region));
     assert!(!listing_matches(b"fn one() {}", region), "no final newline");
-    assert!(!listing_matches(b"fn one() {}\r\n", region), "CRLF");
     assert!(!listing_matches(b"fn one() { }\n", region));
     assert!(!listing_matches(b"fn two() {}\n", region), "same length");
     assert!(!listing_matches(b"", region));
@@ -288,36 +293,258 @@ fn workspace_members_reads_a_multi_line_array_and_ignores_comments() {
     assert!(workspace_members("[workspace]\nresolver = \"3\"\n").is_err());
 }
 
-#[test]
-fn slang_folders_are_dropped_from_the_path_and_the_others_kept_in_order() {
-    let folders = ["/a", "/slang/bin", "/b", "/other/slang/bin"]
-        .map(PathBuf::from)
-        .to_vec();
-    let kept = path_without_slang(&folders, |folder| {
-        folder.to_string_lossy().contains("slang")
-    });
-    assert_eq!(kept, [PathBuf::from("/a"), PathBuf::from("/b")]);
-    assert_eq!(path_without_slang(&folders, |_| false), folders);
-    assert!(path_without_slang(&folders, |_| true).is_empty());
+fn environment(pairs: &[(&str, &OsStr)]) -> Vec<(OsString, OsString)> {
+    pairs
+        .iter()
+        .map(|(name, value)| (OsString::from(*name), (*value).to_owned()))
+        .collect()
+}
+
+fn never_found(_: &[(OsString, OsString)]) -> Result<(), String> {
+    Ok(())
+}
+
+/// A scratch tree: `slang/` holds a `slangc`, `helper/` a `gust-slang-reflect`, `shared/` a `slangc` and a `cargo`,
+/// `plain/` a `cargo`; `home/` is empty. The path is `plain`, `slang`, `helper`.
+fn fake_machine(name: &str) -> (PathBuf, OsString) {
+    let root = scratch(name);
+    for (folder, files) in [
+        ("slang", &["slangc", "slangc.exe"][..]),
+        (
+            "helper",
+            &["gust-slang-reflect", "gust-slang-reflect.exe"][..],
+        ),
+        (
+            "shared",
+            &["slangc", "slangc.exe", "cargo", "cargo.exe"][..],
+        ),
+        ("plain", &["cargo", "cargo.exe"][..]),
+        ("home", &[][..]),
+    ] {
+        fs::create_dir_all(root.join(folder)).unwrap();
+        for file in files {
+            write(&root.join(folder), file, "");
+        }
+    }
+    let path =
+        std::env::join_paths(["plain", "slang", "helper"].map(|folder| root.join(folder))).unwrap();
+    (root, path)
 }
 
 #[test]
-fn a_folder_with_a_slangc_is_recognised_in_either_spelling_and_a_neighbour_is_not() {
-    let root = scratch("slangc");
-    for (folder, file) in [
-        ("plain", "slangc"),
-        ("exe", "slangc.exe"),
-        ("upper", "SLANGC.EXE"),
-        ("none", "slangd"),
-        ("also", "slangc.txt"),
+fn the_slang_folders_and_variables_are_taken_out_and_the_rest_is_kept() {
+    let (root, path) = fake_machine("strip");
+    let parent = environment(&[
+        ("PATH", &path),
+        ("KEEP", OsStr::new("1")),
+        ("GUST_SLANG_HOME", OsStr::new("/cache")),
+        ("VULKAN_SDK", OsStr::new("/sdk")),
+        ("VK_SDK_PATH", OsStr::new("/sdk")),
+        ("GUST_EXPORT_DIR", OsStr::new("/export")),
+        ("MY_SLANG_THING", OsStr::new("x")),
+        ("GUST_PROFILE", OsStr::new("dev")),
+    ]);
+    let (child, report) = no_slang_environment(
+        &parent,
+        &root.join("home"),
+        &directory_has_slang_tool,
+        &folder_holds,
+        &never_found,
+    )
+    .unwrap();
+    let value = |name: &str| {
+        child
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+    };
+    assert_eq!(
+        std::env::split_paths(&value("PATH").unwrap()).collect::<Vec<_>>(),
+        [root.join("plain")]
+    );
+    assert_eq!(value("KEEP"), Some(OsString::from("1")));
+    assert_eq!(value("GUST_PROFILE"), Some(OsString::from("native")));
+    for name in [
+        "VULKAN_SDK",
+        "VK_SDK_PATH",
+        "GUST_EXPORT_DIR",
+        "MY_SLANG_THING",
     ] {
-        fs::create_dir_all(root.join(folder)).unwrap();
-        write(&root.join(folder), file, "");
+        assert_eq!(value(name), None, "{name}");
     }
-    let held = |folder: &str| super::holds_slangc(&root.join(folder));
-    assert!(held("plain") && held("exe") && held("upper"));
-    assert!(!held("none") && !held("also"));
-    assert!(!held("does-not-exist"));
+    // The only Slang variable left is the empty scratch home.
+    assert_eq!(
+        value("GUST_SLANG_HOME"),
+        Some(root.join("home").into_os_string())
+    );
+    assert_eq!(
+        report.directories,
+        [root.join("slang"), root.join("helper")]
+    );
+    assert_eq!(report.variables.len(), 5, "{:?}", report.variables);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_post_check_can_fail_when_the_stripping_missed_a_slang_folder() {
+    let (root, path) = fake_machine("missed");
+    let parent = environment(&[("PATH", &path)]);
+    // A stripping that lies (it sees no Slang tool anywhere) leaves the folders in; `slang_free_problems` with the
+    // honest predicate must then name them.
+    let mut report = StripReport::default();
+    let child = child_environment(&parent, &|_: &Path| false, &mut report);
+    assert!(report.directories.is_empty());
+    let problems = slang_free_problems(&child, &directory_has_slang_tool);
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(
+        problems.iter().all(|p| p.contains("holds a Slang tool")),
+        "{problems:?}"
+    );
+    // The assembled check fails the same way when the independent lookup finds slangc.
+    let finds = |_: &[(OsString, OsString)]| Err("`slangc` is found".to_owned());
+    let error = no_slang_environment(
+        &parent,
+        &root.join("home"),
+        &directory_has_slang_tool,
+        &folder_holds,
+        &finds,
+    )
+    .unwrap_err();
+    assert!(error.contains("`slangc` is found"), "{error}");
+    // And when the predicate used for the stripping misses the folders (the post-check uses the same one, so only the
+    // lookup can catch this): the real lookup is exercised in the next test.
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_real_lookup_finds_a_slangc_that_a_missed_stripping_leaves_on_the_path() {
+    let (root, path) = fake_machine("lookup");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for file in ["slang/slangc", "shared/slangc"] {
+            fs::set_permissions(root.join(file), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    // `cmd` needs SystemRoot and `where` lives in System32, which is on both paths; the folders under test come first.
+    let mut with_slang = environment(&[("PATH", &path)]);
+    let mut clean = environment(&[("PATH", root.join("plain").as_os_str())]);
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+        let system32 = PathBuf::from(&system_root).join("System32");
+        for (list, folders) in [
+            (
+                &mut with_slang,
+                std::env::split_paths(&path).collect::<Vec<_>>(),
+            ),
+            (&mut clean, vec![root.join("plain")]),
+        ] {
+            let mut folders = folders;
+            folders.push(system32.clone());
+            list[0].1 = std::env::join_paths(folders).unwrap();
+            list.push((OsString::from("SystemRoot"), system_root.clone()));
+        }
+    }
+    // The Slang case must fail because `slangc` was found, not because the lookup itself could not run.
+    let error = slangc_cannot_be_found(&with_slang).unwrap_err();
+    assert!(
+        error.contains("is found with the stripped environment"),
+        "{error}"
+    );
+    assert!(!error.contains("could not run"), "{error}");
+    assert_eq!(slangc_cannot_be_found(&clean), Ok(()));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_cache_that_holds_slang_or_is_missing_is_refused() {
+    let (root, path) = fake_machine("cache");
+    let parent = environment(&[("PATH", &path)]);
+    assert_eq!(slang_home_problem(&root.join("home")), None);
+    // A fake cache with an installed Slang in it (`<home>/<version>/bin/slangc`).
+    fs::create_dir_all(root.join("cache/2026.22/bin")).unwrap();
+    write(&root.join("cache/2026.22/bin"), "slangc", "");
+    let problem = slang_home_problem(&root.join("cache")).unwrap();
+    assert!(problem.contains("is not empty"), "{problem}");
+    let error = no_slang_environment(
+        &parent,
+        &root.join("cache"),
+        &directory_has_slang_tool,
+        &folder_holds,
+        &never_found,
+    )
+    .unwrap_err();
+    assert!(error.contains("is not empty"), "{error}");
+    let missing = slang_home_problem(&root.join("absent")).unwrap();
+    assert!(missing.contains("cannot be read"), "{missing}");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_slang_folder_that_also_holds_the_cargo_is_refused_not_dropped() {
+    let (root, _) = fake_machine("shared");
+    let shared = std::env::join_paths([root.join("shared"), root.join("plain")]).unwrap();
+    let parent = environment(&[("PATH", &shared)]);
+    let error = no_slang_environment(
+        &parent,
+        &root.join("home"),
+        &directory_has_slang_tool,
+        &folder_holds,
+        &never_found,
+    )
+    .unwrap_err();
+    assert!(error.contains("`cargo`"), "{error}");
+    assert!(error.contains("shared"), "{error}");
+    assert!(shared_folder_problems(&[root.join("slang")], &folder_holds).is_empty());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_tree_with_the_run_time_bridge_is_recognised() {
+    assert!(tree_has_slang_runtime(
+        "hello-gust\n└── gust-compute-wgpu feature \"slang-runtime\"\n"
+    ));
+    assert!(!tree_has_slang_runtime(
+        "hello-gust\n└── gust-compute-wgpu feature \"default\"\n"
+    ));
+}
+
+#[test]
+fn the_adapter_is_the_name_after_the_prefix() {
+    assert_eq!(
+        adapter_name("hello-gust: [1.0]\nadapter: NVIDIA GeForce RTX 5090 \n"),
+        Some("NVIDIA GeForce RTX 5090")
+    );
+    assert_eq!(adapter_name("hello-gust: [1.0]\n"), None);
+    assert_eq!(adapter_name("adapter: \n"), None);
+    assert_eq!(adapter_name("an adapter: x\n"), None);
+}
+
+#[test]
+fn a_crlf_packaged_listing_matches_and_any_other_difference_does_not() {
+    let region = "fn one() {}\n\nfn two() {}\n";
+    assert!(listing_matches(
+        b"fn one() {}\r\n\r\nfn two() {}\r\n",
+        region
+    ));
+    assert!(listing_matches(b"fn one() {}\n\nfn two() {}\n", region));
+    assert!(!listing_matches(b"fn one() {}\r\n\r\nfn two() {}", region));
+    assert!(
+        !listing_matches(b"fn one() {}\r\r\nfn two() {}\n", region),
+        "a lone CR is text"
+    );
+    assert_eq!(lf_line_ends(b"a\r\nb\rc\r\n"), b"a\nb\rc\n");
+    // The file check: a CRLF copy of the region passes, and the same file with a changed byte fails.
+    let root = scratch("crlf");
+    write(&root, "source.rs", &SOURCE.replace('\n', "\r\n"));
+    write(&root, "good.rs", "fn three() {}\r\n");
+    write(&root, "bad.rs", "fn three() {x}\r\n");
+    let listing = |packaged| Listing {
+        packaged,
+        source: "source.rs",
+        anchor: "second",
+    };
+    assert_eq!(check_listings(&root, &[listing("good.rs")]), Ok(1));
+    assert!(check_listings(&root, &[listing("bad.rs")]).is_err());
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -437,6 +664,23 @@ fn ci_runs_the_slang_part_in_the_slang_job_and_the_no_slang_part_in_the_unit_job
 fn check_full_runs_only_the_gpu_part_of_the_gallery() {
     let source = repository_file("xtask/src/verify.rs");
     assert!(source.contains("check_gallery_gpu_report()"));
+    // The call sits directly inside the Full-mode branch, so no other mode runs it.
+    let call = source
+        .find("check_gallery_gpu_report().map")
+        .expect("the call");
+    assert!(
+        source[..call]
+            .trim_end()
+            .trim_end_matches("let outcome =")
+            .trim_end()
+            .ends_with("if mode == VerifyMode::Full {"),
+        "the gallery step is not the first statement of `if mode == VerifyMode::Full`"
+    );
+    let usage = repository_file("xtask/src/main.rs");
+    assert!(
+        usage.contains("`check-full` runs the GPU part only"),
+        "usage"
+    );
     assert!(!source.contains("check_gallery_report"));
     let gallery = repository_file("xtask/src/gallery.rs");
     let gpu = gallery

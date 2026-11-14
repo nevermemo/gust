@@ -77,6 +77,7 @@
 //! wrote.
 
 #![warn(missing_docs)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]
 
 use std::{
@@ -114,6 +115,10 @@ mod map_host;
 #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
 mod passthrough;
 #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "spirv-route", not(target_arch = "wasm32"))))
+)]
 pub use passthrough::{Route, RouteEvent};
 
 /// Whether this build has the opt-in SPIR-V route (the Cargo feature `spirv-route`, m9.rt2): the kernels are then emitted with
@@ -2889,6 +2894,10 @@ impl HeadlessDevice {
     /// With the environment variable `GUST_SPIRV_ROUTE_LOG=<file>` set, every event is also appended to that file as a line
     /// `<kernel> <Spirv|Wgsl> <reason>`, which is how `check-difftest` shows the route of generated crates.
     #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(all(feature = "spirv-route", not(target_arch = "wasm32"))))
+    )]
     pub fn route_events(&self) -> Vec<RouteEvent> {
         self.route_events
             .lock()

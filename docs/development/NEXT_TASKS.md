@@ -554,29 +554,26 @@ test module; do not mix that mechanical move with behavior changes.
   refuse an atomic in both the index and the value, or record it).
 - Remove `__gust_xor`: with Slang 2026.22 (#14324) bool `^` is valid WGSL from naga's view; emit `^` directly and
   re-bless the goldens that change (D173).
-- A check that every committed compiler tag (`compiler`, `slang` fields of the reflection documents and manifests)
-  equals `SLANG_PIN`; m9.p's regeneration script does it by hand (examples/subgroup-reduce was missed: check-artifacts
-  skips example artifacts).
-- m9.d2 nits: DIFFTEST.md says the probes "always include" one helper with two types (it is the program, not the
-  probes); "a generic method returning `T`" is refused by the harness's `Program::check`, not the compiler: move it
-  to "accepted but not generated"; the shape "arguments call the receiver's root" counts calls whose arguments
-  change the enclosing method's `self`: rename it and its doc; thin floors (mut-through-T 1 of 3 executing,
-  self-root 2 of 5); DIFFTEST.md should name the five vector forms newly lost to the slot cut; the harness `fmt` gate
-  rewrites files: run it with `--check`. A lowering that reverses only impl-call arguments may pass G5 and be caught
-  only by the wide run.
-- m9.rt2 nits: `spirv_route.rs` header still calls the feature-off build an empty test target; `check-difftest`
-  ignores a failed delete of an old route log (`let _ = fs::remove_file`), so stale lines could pass the all-SPIR-V
-  check: fail instead; the DX12 fallback test always returns early because the workspace builds wgpu with Vulkan
-  only (say so, or enable DX12 in a test-only build); route-log lines can tear across threads (a false failure,
-  never a false pass: buffer each line); three code lines over 120 columns (review R5's other
-  imprecisions were fixed in m9.x2).
+- m9.x1 nits: the compiler-tag check in `cargo xtask lint` does not read
+  `crates/cargo-gust/src/testdata/schema3/expected.txt`, whose five SPIR-V reflection lines no other check compares
+  (its WGSL lines are compared with the checked fixtures): check its `{` lines or name it as an exclusion. A tagged
+  file that is not UTF-8 or holds a NUL is counted as skipped, not checked, and a JSON top level that is not an object
+  passes; no test shows that `lint_tracked_files` calls the check; exact equality would reject artifacts of a future
+  `VALIDATED_BUILDS` entry (say so in the help). A test process left from a killed run could append to the new route
+  log after the delete (a per-run log name closes it; the delete's doc comment gives another reason). New lines over
+  120 columns in driver_sentinel.rs, spirv_route.rs, lint.rs and DIFFTEST.md. DIFFTEST.md: cite the gust-macros
+  regression test that expands a generic method returning `T` (the compiler accepts it), write "rustc's E0499 /
+  E0502", say that `--shrink` refuses `--export-dir`, and `bump_once` is a result field of the m9_arrays GPU test.
+- m9.d2 nits (the DIFFTEST.md wording, the shape rename and the five lost vector forms were done in m9.x1): thin
+  floors (mut-through-T 1 of 3 executing, self-root 2 of 5). A lowering that reverses only impl-call arguments may
+  pass G5 and be caught only by the wide run.
 - m9.g2 nits (the documentation ones were fixed in m9.x2). Left from round 1: `T::m(&t)` gets E0302's generic text
   (suggest `t.m()`; pin a unit case); a kernel with a `where` clause and no generics is still accepted; no fixture has a
   generic inherent method on an enum impl.
 - m9.p nits: the licence evidence names its search strings. (SEMANTICS's "131 of 131" count now says how it was counted
   and gives 133 for the current tree, m9.x2.)
-- m9.g1 nits: a garbled comment on `pack_both` in tests/fixtures/traits.rs; `tests/ui/trait-enum-mut-self/
-  expected.txt` matches a prefix only. Review N4-N6 (plans/m9/review-m9g1-opus.md) left as reasoned there.
+- m9.g1 nits: the review's N4-N6 were left as reasoned there (the garbled comment and the prefix-only UI expectation
+  were fixed in m9.x1).
 - m9.pa nits: the array testdata records are pinned by key and layouts, not byte for byte, and `check-precompiled`
   does not regenerate them; a struct with tail padding after an array gets no macro layout (the fill supplies it).
 - m9.r2a re-check 2 nits: the component-name exemption of the E0811 array comparison takes any 1 to 4 letters of
@@ -584,8 +581,7 @@ test module; do not mix that mechanical move with behavior changes.
   comparison where only one side resolves to an array reaches slangc, m9.x2).
 - The NVIDIA array defect (D168, D169): the expected-failure sentinel landed (m9.sen,
   `crates/gust-wgpu/tests/driver_sentinel.rs`). Left: a run on the RTX 3070 (another NVIDIA architecture) to scope it,
-  recorded in D168/D169's envelope; the sentinel's message names the local investigation folders (`arrbug`, `arrbug2`),
-  which a reader of the public repository cannot open, so name D168/D169 instead; the NVIDIA report is the owner's call
+  recorded in D168/D169's envelope; the NVIDIA report is the owner's call
   (a draft can be prepared); the difftest's guard is removed when a fixed driver is measured. Partly settled in M9:
   slangc's own SPIR-V, passed to Vulkan, computed the right values on the RTX 5090 where slangc's WGSL through naga did
   not, and the opt-in `spirv-route` feature (m9.rt2, D172, D174) takes that route, but only with run-time compilation: a
@@ -599,8 +595,8 @@ test module; do not mix that mechanical move with behavior changes.
   read, not a changed value.
 - m9.d1d re-check 2 nits: make the place-first order count causal (a mutant only on indexed places) and require at
   least 1 batch program; print and pin value differences apart from `Violation` counts in `ARRAY-MUTANT`; cite
-  m9.r1's GPU test `bump_once` (`m9_arrays.rs`) in DIFFTEST.md as the GPU coverage of repeat-once (the batch observes
-  it 0 times); the key shape `SHAPE_ARRAY_SET_CALL` fell to 1 batch program, and struct-field `|=` sets on arrays of
+  m9.r1's GPU test `bump_once` (`m9_arrays.rs`) in DIFFTEST.md as the GPU coverage of repeat-once (done in m9.x1); the
+  key shape `SHAPE_ARRAY_SET_CALL` fell to 1 batch program, and struct-field `|=` sets on arrays of
   length 3 or 5 always take a literal index (the wide uniformity set is not needed for fresh struct variables); a
   periodic array-space-only wide run.
 - m9.c re-check nits: a helper named as a value in a closure body is E0329 with capture text (and the same form
@@ -609,8 +605,7 @@ test module; do not mix that mechanical move with behavior changes.
   a closure body (N3).
 - Difftest set-aside fix nits: `prepare_rebuild`'s doc should name the run crate's validated package name
   (`lock_for`) as the delete's guard, not xtask's fresh export directory; document the discard on
-  `execute_shapes` and `Options.export_dir`; `--shrink` with `--export-dir` reuses one record directory for every
-  candidate (reject the pair or discard per candidate). GUST-E0712's message says "same Slang text" when only
+  `execute_shapes` and `Options.export_dir` (`--shrink` with `--export-dir` is refused since m9.x1). GUST-E0712's message says "same Slang text" when only
   the `.kernel.json` record differs (gust-macros `collision_message`).
 
 - `interface` and `extension` are emitted by M9 (traits) but are in neither `COLLISIONS` nor `STDLIB_INTERFACES`; a user

@@ -333,6 +333,21 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   value coverage is unchanged and no shape row lost programs. Wide run 1-64: 1024 of 1024, 0 mismatches. 33 lane
   gates green on 2026.22 ending 19:19Z on 2026-11-13 on the tree rebased onto m9.rt2, which equals this merge
   apart from main's records docs, including format 13 through the SPIR-V route (128/128 SPIR-V, 0 mismatches).
+- m9.x2 (merge `cfc5241`; Opus review MERGE AFTER FIXES, two fix rounds): the M9 tidy pass, prose half. README's
+  current subset, stability and the opt-in `spirv-route` feature; SEMANTICS's M9 sections and a new section on
+  methods; DIAGNOSTICS for every code M9 added or changed; CHANGELOG 0.2.0 with break B4 (the identifiers `Tuple`,
+  `makeTuple`, `this` and 46 Slang standard interface names are renamed `__gust_r_*`, which changes artifact content
+  keys; no B5, the routed device handle is additive); ARCHITECTURE, five skills and NEXT_TASKS. Code changes are
+  comments only. Gates on the lane: docs-check, lint, check-fast, fmt and clippy after the last edit.
+- m9.x1 (merge `ce0cf5c`; Opus review MERGE, one should-fix filed): the M9 tidy pass, code half. `check-difftest`
+  fails when an old SPIR-V route log cannot be deleted (anything but NotFound), and each route-log line is one
+  write; the format 13 shape that counts calls changing the enclosing method's `self` is renamed, and DIFFTEST.md
+  fixes the format 13 wording; the driver sentinel and difftest comments cite D168/D169; the m9.g1 nits;
+  `cargo xtask lint` checks that the `compiler` and `slang` tags of the 41 tracked reflection documents and artifact
+  manifests equal `SLANG_PIN`; `difftest-run` refuses `--shrink` with `--export-dir`. 34 lane gates green on 2026.22
+  ending 00:32Z on 2026-11-14 (pin 452/49), including both difftest runs and the gust-compute-wgpu tests through the
+  SPIR-V route on the RTX 5090; the merge adds only m9.x2's files (prose and comments), and docs-check, lint and
+  check-arch passed on it.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

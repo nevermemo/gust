@@ -1930,7 +1930,8 @@ mod route_environment_tests {
     #[test]
     fn a_program_the_run_did_not_build_in_the_route_log_fails_too() {
         // Two programs of seed 1 built, three modules of seed 1 with a SPIR-V line: the count alone passed this
-        // (Opus round 3 S1), and so would a swapped module.
+        // (Opus round 3 S1). A swap within a seed (`s1_a3` in place of `s1_a2`) still passes: the report has per-seed
+        // counts only (Opus round 4 N-a).
         let expected = per_seed(&[(1, 2)]);
         let extra = "s1_a1::k Spirv \ns1_a2::k Spirv \ns1_a3::k Spirv \n";
         let judged = judge_route_log(extra, Some(&expected));

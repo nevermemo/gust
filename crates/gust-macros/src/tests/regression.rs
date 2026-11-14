@@ -7802,10 +7802,16 @@ fn a_raw_type_name_is_read_like_the_plain_one() {
     // Option and Result in a helper signature, and a raw `Workgroup`.
     let result = "fn f(x: u32) -> Option<u32> { Some(x) }";
     let raw_result = "fn f(x: u32) -> r#Option<u32> { r#Some(x) }";
-    assert_eq!(
-        translate(&with_kernel(result, "out[id.x] = 1u32;")).is_ok(),
-        translate(&with_kernel(raw_result, "out[id.x] = 1u32;")).is_ok()
-    );
+    // Each result is checked on its own (Opus round 4 N-d): `is_ok() == is_ok()` would pass if both failed.
+    let plain_result = translate(&with_kernel(result, "out[id.x] = 1u32;")).unwrap();
+    let raw_result = translate(&with_kernel(raw_result, "out[id.x] = 1u32;")).unwrap();
+    assert_eq!(plain_result, raw_result);
+    // And a raw `Workgroup` is the workgroup parameter it names (barrier.rs, validate/mod.rs).
+    let workgroup = "mod m { #[kernel(workgroup_size(64, 1, 1), cpu = \"unsupported\")] \
+                     pub fn run(id: SV_DispatchThreadID, mut wg: Workgroup<[uint; 4]>) { wg[0u32] = 1u32; } }";
+    let plain = translate(workgroup).unwrap();
+    let raw = translate(&workgroup.replace("Workgroup<", "r#Workgroup<")).unwrap();
+    assert_eq!(plain, raw);
 }
 
 #[test]
@@ -9896,4 +9902,73 @@ fn operators_on_a_type_parameter_are_rustcs_to_refuse() {
         "out[id.x] = 1u32;",
     ))
     .unwrap();
+}
+
+#[test]
+fn the_e0421_hint_prints_a_self_receiver_bare() {
+    // Opus round 4 S-b: `self` cannot be written `r#self`, so the suggestion must not print it that way.
+    let counter = "pub struct C { pub n: u32 } impl C { fn bump(&mut self) -> u32 { self.n += 1u32; self.n } \
+                   fn run(&mut self) -> u32 { let mut a: [u32; 4] = [0u32; 4]; a[self.n as usize] = self.bump(); a[1] } }";
+    let error = translate(&with_kernel(
+        counter,
+        "let mut c = C { n: 0u32 }; out[id.x] = c.run();",
+    ))
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("`let v = self.bump(..); a[i] = v;`"),
+        "{error}"
+    );
+    assert!(!error.contains("r#self"), "{error}");
+}
+
+#[test]
+fn a_raw_method_name_emits_the_slang_of_the_plain_one() {
+    // Opus round 4 S-a: the validator dispatches on the unraw name, so the emitter must too (`out.r#len()` is `out.len()`).
+    let texture = "mod m { #[kernel(workgroup_size(8, 8, 1))] pub fn run(id: SV_DispatchThreadID, mut out: WriteTexture2D<Rgba32Float>) { \
+                   let w = out.width(); if id.x < w { out.store(id.x, id.y, Vec4::splat(1.0f32)); } } }";
+    let cases = [
+        (
+            "len",
+            with_kernel(
+                "",
+                "let a: [u32; 4] = [0u32; 4]; out[id.x] = a.len() as u32;",
+            ),
+        ),
+        (
+            "len",
+            with_kernel("", "let n = out.len(); out[id.x] = n as u32;"),
+        ),
+        (
+            "wrapping_add",
+            with_kernel("", "out[id.x] = id.x.wrapping_add(1u32);"),
+        ),
+        (
+            "wrapping_neg",
+            with_kernel("", "out[id.x] = id.x.wrapping_neg();"),
+        ),
+        (
+            "xy",
+            vector_module(
+                "",
+                "let v = Vec4::splat(1.0); let w = v.xy(); out[i] = w.x;",
+            ),
+        ),
+        (
+            "dot",
+            vector_module("", "let v = Vec4::splat(1.0); out[i] = v.dot(v);"),
+        ),
+        ("width", texture.to_owned()),
+        ("store", texture.to_owned()),
+    ];
+    for (method, plain_source) in cases {
+        let raw_source = plain_source.replace(&format!(".{method}("), &format!(".r#{method}("));
+        assert_ne!(
+            plain_source, raw_source,
+            "{method}: the case has no `.{method}(`"
+        );
+        let plain = translate(&plain_source).unwrap_or_else(|error| panic!("{method}: {error}"));
+        let raw = translate(&raw_source).unwrap_or_else(|error| panic!("{method} (raw): {error}"));
+        assert_eq!(plain, raw, "{method}");
+    }
 }

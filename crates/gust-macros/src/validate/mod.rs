@@ -463,7 +463,9 @@ fn unsuffixed_literal_only(expression: &syn::Expr) -> Option<&syn::Expr> {
         }
         // `Some(7).unwrap_or(0)`: the receiver is an `Option<{integer}>`, which rustc accepts, and the default is
         // the same unconstrained integer. (On a bare integer receiver rustc itself refuses the method call.)
-        syn::Expr::MethodCall(call) if call.method == "unwrap_or" && call.args.len() == 1 => {
+        syn::Expr::MethodCall(call)
+            if crate::names::ident_is(&call.method, "unwrap_or") && call.args.len() == 1 =>
+        {
             let receiver = unsuffixed_literal_only(&call.receiver)?;
             unsuffixed_literal_only(&call.args[0])?;
             Some(receiver)
@@ -4609,7 +4611,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         }
         // `a.len() as u32`: the one place the `usize` length of an array may stand outside an index.
         if let syn::Expr::MethodCall(call) = strip_parens(&cast.expr)
-            && call.method == "len"
+            && crate::names::ident_is(&call.method, "len")
         {
             self.len_casts.insert(std::ptr::from_ref(call) as usize);
         }
@@ -4934,7 +4936,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                     | syn::Expr::Path(_)
                     | syn::Expr::Index(_)
             )
-            && !matches!(expression, syn::Expr::MethodCall(call) if call.method == "len")
+            && !matches!(expression, syn::Expr::MethodCall(call) if crate::names::ident_is(&call.method, "len"))
         {
             let outer = std::mem::replace(&mut self.index_depth, 0);
             visit::visit_expr(self, expression);

@@ -502,7 +502,7 @@ impl Method {
 /// Whether `call` is spelled like a texture method. The validator has already refused every such call whose receiver
 /// is not a texture parameter, so the emitter needs the name only.
 pub(crate) fn is_texture_method(call: &syn::ExprMethodCall) -> bool {
-    Method::from_name(&call.method.to_string())
+    Method::from_name(&crate::names::name_of(&call.method))
         .is_some_and(|method| method.arity() == call.args.len())
 }
 
@@ -520,7 +520,8 @@ fn receiver_ident(expression: &syn::Expr) -> Option<&syn::Ident> {
 
 /// The Slang of a texture method call (the table in the module comment).
 pub(crate) fn emit_method(call: &syn::ExprMethodCall) -> syn::Result<String> {
-    let method = Method::from_name(&call.method.to_string()).expect("guarded by is_texture_method");
+    let method = Method::from_name(&crate::names::name_of(&call.method))
+        .expect("guarded by is_texture_method");
     let receiver = super::emit_expression(&call.receiver)?;
     // The size of a texture is a local named after the parameter (the prologue), so it is lowered from the stripped
     // identifier and a parenthesised receiver gives the same name as a bare one.
@@ -563,8 +564,10 @@ struct DimensionUses<'a> {
 
 impl<'ast> Visit<'ast> for DimensionUses<'_> {
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        if matches!(call.method.to_string().as_str(), "width" | "height")
-            && let Some(ident) = receiver_ident(&call.receiver)
+        if matches!(
+            crate::names::name_of(&call.method).as_str(),
+            "width" | "height"
+        ) && let Some(ident) = receiver_ident(&call.receiver)
         {
             let name = super::emit_ident(ident);
             if self.textures.contains(&name) && !self.used.contains(&name) {

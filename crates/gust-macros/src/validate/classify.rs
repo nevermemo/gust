@@ -638,7 +638,7 @@ fn is_direct_own(expression: &syn::Expr, id: &str) -> bool {
     match peel(&field.base) {
         syn::Expr::Path(path) => path.qself.is_none() && crate::names::path_is(&path.path, id),
         syn::Expr::MethodCall(call) => {
-            call.method == "global_id"
+            crate::names::ident_is(&call.method, "global_id")
                 && call.args.is_empty()
                 && call.turbofish.is_none()
                 && is_name(&call.receiver, id)
@@ -895,7 +895,10 @@ impl<'ast> Visit<'ast> for OutputScan<'_> {
     }
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        if call.method == "len" && call.args.is_empty() && is_name(&call.receiver, self.name) {
+        if crate::names::ident_is(&call.method, "len")
+            && call.args.is_empty()
+            && is_name(&call.receiver, self.name)
+        {
             return;
         }
         visit::visit_expr_method_call(self, call);
@@ -985,7 +988,7 @@ impl Definite<'_> {
 
     fn is_output_length(&self, expression: &syn::Expr) -> bool {
         matches!(peel(expression), syn::Expr::MethodCall(call)
-            if call.method == "len"
+            if crate::names::ident_is(&call.method, "len")
                 && call.args.is_empty()
                 && matches!(peel(&call.receiver), syn::Expr::Path(path)
                     if path.qself.is_none()

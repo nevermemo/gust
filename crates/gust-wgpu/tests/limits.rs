@@ -1063,6 +1063,12 @@ fn assigning_element_count_to_a_dispatch_still_sets_what_runs() {
 fn create_typed_buffer_above_max_buffer_size_panics_in_wgpu() {
     let device = device();
     let maximum = device.limits().max_buffer_size;
+    // wgpu's default limit: a switch to adapter limits must fail here, not abort on a failed `vec!` allocation.
+    assert_eq!(
+        maximum,
+        256 << 20,
+        "max_buffer_size is no longer the 256 MiB default"
+    );
     let values = vec![0_u32; (maximum / 4) as usize + 1];
     let _ = device.create_typed_buffer(
         "o5 above max_buffer_size",

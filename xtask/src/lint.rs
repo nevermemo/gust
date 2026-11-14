@@ -40,6 +40,14 @@ fn lint_tracked_files(root: &Path) -> Result<String, Vec<String>> {
     let mut text_files = 0usize;
     let mut skipped = 0usize;
     let mut manifests: Vec<(String, String)> = Vec::new();
+    let mut tagged_documents = 0usize;
+    let pin = match crate::verify::pin_rule(root) {
+        Ok(rule) => Some(rule.pin),
+        Err(error) => {
+            problems.push(format!("compiler tags cannot be checked: {error}"));
+            None
+        }
+    };
     for relative in &files {
         // A path in the index whose file is missing from the working tree (deleted, deletion
         // not yet staged) is skipped: there is nothing to read. A plain `git commit` would
@@ -68,6 +76,10 @@ fn lint_tracked_files(root: &Path) -> Result<String, Vec<String>> {
         };
         text_files += 1;
         problems.extend(machine_path_problems(relative, text));
+        if let (Some(pin), true) = (&pin, carries_compiler_tag(relative)) {
+            tagged_documents += 1;
+            problems.extend(compiler_tag_problems(relative, text, pin));
+        }
         if relative.rsplit('/').next() == Some("Cargo.toml") {
             manifests.push((relative.clone(), text.to_owned()));
         }
@@ -80,12 +92,49 @@ fn lint_tracked_files(root: &Path) -> Result<String, Vec<String>> {
             "Lint passed: {scanned} tracked files have no shell scripts; {text_files} text files have no \
              machine-specific paths ({skipped} binary or non-UTF-8 files were skipped, not scanned); {} manifests \
              name the crates/ packages they depend on by path; {publishable} publishable packages carry the \
-             release metadata, a README and the licence copies.\n",
+             release metadata, a README and the licence copies; the compiler tags of {tagged_documents} reflection \
+             documents and artifact manifests equal SLANG_PIN.\n",
             manifests.len()
         ))
     } else {
         Err(problems)
     }
+}
+
+/// Whether the tracked file `relative` (a `/` path) is a reflection document or an artifact manifest, the files whose
+/// `compiler` and `slang` fields name the Slang build that made them: `*.reflection.json` (artifacts, examples
+/// included), `*.wgsl.json` (the schema fixtures of `gust`) and `manifest.json`.
+fn carries_compiler_tag(relative: &str) -> bool {
+    let name = relative.rsplit('/').next().unwrap_or(relative);
+    name == "manifest.json" || name.ends_with(".reflection.json") || name.ends_with(".wgsl.json")
+}
+
+/// The problems of one tagged document: a top-level `compiler` or `slang` that is not `pin` (the `SLANG_PIN` of
+/// `gust::toolchain`). `slang` may be `null` (a manifest with no kernels says so); a missing field is not checked, and a
+/// file that is not JSON is a problem, so that a broken document cannot hide a stale tag. A stale committed tag means
+/// the artifact was made by another compiler: regenerate it, never edit the tag by hand.
+pub(crate) fn compiler_tag_problems(path: &str, text: &str, pin: &str) -> Vec<String> {
+    let document = match json::parse(text) {
+        Ok(document) => document,
+        Err(error) => {
+            return vec![format!(
+                "{path}: not JSON, so its compiler tag was not checked: {error}"
+            )];
+        }
+    };
+    let mut problems = Vec::new();
+    for key in ["compiler", "slang"] {
+        match document.get(key) {
+            None => {}
+            Some(Json::String(tag)) if tag == pin => {}
+            Some(Json::Null) if key == "slang" => {}
+            Some(Json::String(tag)) => problems.push(format!(
+                "{path}: `{key}` is `{tag}` but SLANG_PIN is `{pin}`; regenerate the artifact with the pinned compiler"
+            )),
+            Some(_) => problems.push(format!("{path}: `{key}` is not a string")),
+        }
+    }
+    problems
 }
 
 fn tracked_files(root: &Path) -> Result<Vec<String>, String> {

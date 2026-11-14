@@ -8,7 +8,7 @@
 //! `cl<N>`, N the program-wide variable id, so it is distinct from `m<k>` (functions), `v<n>` (variables), `i`, `id`,
 //! `S<j>`, `E<j>`, `f<k>` and every `__gust_` name.
 //!
-//! D168 (the NVIDIA hole, plans/m9/arrbug.md): the guard of format 11 stays on every array a closure touches. A closure
+//! D168 (the NVIDIA hole): the guard of format 11 stays on every array a closure touches. A closure
 //! writes an array parameter only through `array_param_uses` (a literal index, or a literal modulo `.len()`, the same
 //! indices as a helper's array parameter: no dynamic index and no array local inside a closure). An array a closure
 //! returns is a call result, registered with `uniform` and `equal` like a helper's, so the kernel's compound sets on it

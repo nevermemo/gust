@@ -1,4 +1,4 @@
-//! The program forms of the NVIDIA array mismatch (plans/m9/arrbug.md and arrbug2.md, D168, D169, driver 610.88), kept
+//! The program forms of the NVIDIA array mismatch (D168, D169, driver 610.88), kept
 //! covered on the host side. This is NOT GPU coverage: the GPU is deliberately not run here.
 //!
 //! The shrunk seed 40 program (attempt 5000008) is
@@ -137,7 +137,7 @@ fn options() -> Options {
     }
 }
 
-/// The seed 53 minimal program of arrbug2.md.
+/// The seed 53 minimal program of the investigation that D169 records.
 fn seed_53_program() -> Program {
     let arr = Ty::Array(ArrTy::new(Elem::U32, 4));
     let at = |var: u32, index: Expr| Place {

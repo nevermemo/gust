@@ -521,17 +521,17 @@ array space of seeds 1 to 64 the mutant changes at least: `ArrayLitRightToLeft` 
 shape `set with a call on the array in the value`** (the enum and method programs have same-root sets that the mutant
 changes too; they are not counted). A mutant run that ends in a `Violation` counts as a change. In the 128-program batch
 the measured counts are 2, 0, 3 and 1, and the test pins exactly those as floors (before D169: 1, 0, 2 and 1; the space
-floors were 5, 5, 10 and 13): **a GPU run of the batch does not observe the repeat-once rule at all by itself**, and
-observes each other order by one to three programs. The observability is low because the generated methods often return
+floors were 5, 5, 10 and 13): **a GPU run of the batch does not observe the repeat-once rule at all by itself** (the GPU
+coverage of repeat-once is m9.r1's test `bump_once` in `crates/gust-wgpu/tests/m9_arrays.rs`, the repeat `[s.bump(); 4]`
+on the adapter), and observes each other order by one to three programs. The observability is low because the generated methods often return
 values that do not depend on their writes; the bias changes that were cheap (reads of written fields in literals, same-element
 calls and written fields in element sets, more array-argument calls) raised the space counts but moved the batch counts only
 by the luck of the draw. A periodic array-space-only wide run (16 array programs per seed) would add weight and is not
 scheduled. `IndexBeforeValue` is not asked of generated programs: an accepted program cannot show it (E0421 refuses the
 only case where an index could see the value), so only the hand vectors, written past the checker, pin that rule.
 
-**Known driver hole (guard).** Decisions D168 and D169 (coordinator, to be recorded at merge) record it; the
-investigations (arrbug.md, arrbug2.md) and the reproduction modules are kept with the project's run notes, not in this
-repository. It is a defect of the NVIDIA shader compiler, not of GUST: GUST's Slang, slangc's WGSL and naga's SPIR-V are
+**Known driver hole (guard).** Decisions D168 and D169 (docs/DECISIONS.md) record it; the two investigations and the
+reproduction modules are kept with the project's run notes, not in this repository. It is a defect of the NVIDIA shader compiler, not of GUST: GUST's Slang, slangc's WGSL and naga's SPIR-V are
 correct (a `spirv-val`-clean module reproduces it), and the Radeon 890M computes the interpreter's values on every variant.
 
 *The envelope (RTX 5090, Vulkan driver 610.88).* A load of an element at a dynamic index into a function-local array and
@@ -1565,7 +1565,9 @@ the float batch programs fall from 3 to 2 a seed and the vector ones from 4 to 3
 recalibrated and no other: the float corpus test reads 24 seeds (48 float programs, as 3 over 16 seeds before; with 32
 programs `> f32` was not written), and the vector tests: the 64-seed batch writes 62 of the 72 writable vector forms
 (67 in format 12; the ten not written are `* IVec2 i32`, `* Mat4 f32`, `* UVec4 UVec4`, `* f32 Mat2`, `* f32 Mat4`,
-`+ UVec2 UVec2`, `- Mat2 Mat2`, `- Mat4 Mat4`, `- UVec2 UVec2`, `- UVec4 UVec4`; the floor is 62), and the 20-form test
+`+ UVec2 UVec2`, `- Mat2 Mat2`, `- Mat4 Mat4`, `- UVec2 UVec2`, `- UVec4 UVec4`; five of them were already missing in
+format 12 (`* f32 Mat2`, `- Mat2 Mat2`, `- Mat4 Mat4`, `- UVec2 UVec2`, `- UVec4 UVec4`) and the slot cut newly lost five:
+`* IVec2 i32`, `* Mat4 f32`, `* UVec4 UVec4`, `* f32 Mat4`, `+ UVec2 UVec2`; the floor is 62), and the 20-form test
 reads seeds 1 to 20 (60 vector programs; `new UVec4` was not written within 11). The older spaces' shape rows on the
 GPU batch are not lower than in the format 12 wide run: of the 88 rows of that run's report, none has 10 % fewer programs
 now (the trait programs add to the enum rows), and the tuple rows that the first draft halved are as before (tuple
@@ -1588,9 +1590,11 @@ that `T` afterwards), and returns an integer or (helpers only) a `T`. An integer
 every `T`, every integer `let` of the body, the weighted integer parameters and, for a method, the weighted integer
 fields of `self`; a generic function with an integer result is the form whose arguments' order shows.
 
-**Two instantiations per program (M3).** The trait probes that join the kernel's result always include one generic
-helper with an integer result called once with each of two different implementing types for its first type parameter, and
-at least one trait-impl call. All probes are integer-valued and joined with `^`, so none is dropped or short-circuited (a
+**Two instantiations per program (M3).** A trait program (not each of its probes) always includes one generic helper
+with an integer result called once with each of two different implementing types for its first type parameter: the
+generator draws the pair by construction where the bounds leave two implementing types, and the `has_trait_forms`
+filter below guarantees it by discarding a program without one. The probes that join the kernel's result include at
+least one trait-impl call. All probes are integer-valued and joined with `^`, so none is dropped or short-circuited (a
 trait program's result is never `bool`; a `bool` impl result is not probed). `has_trait_forms` now runs the program
 (`Coverage::instantiations`): a program is kept only if it executes a trait call, a generic call and one generic function
 with two types. The trait space reports its own attempts (`difftest-gen stats`): seeds 1 to 64 took 841 attempts for 128
@@ -1602,10 +1606,10 @@ generic call: 0 programs without.
 **Refused by the compiler (not written, by construction):** a turbofish, a std bound, a bound-less or only-`Copy` type
 parameter (E0125), a type parameter named like an id type (E0328, the parameters are `T` and `U`), a generic trait
 method, recursion, a `&mut self` method implemented by an enum (E0124), a `T` used by value twice without `Copy`, a path
-call `Tr::m(&mut v, ..)` (E0503: no two-phase borrow) and a path call on a bare `self`. A generic method returning `T`
-is refused by `Program::check` (not generated).
+call `Tr::m(&mut v, ..)` (E0503: no two-phase borrow) and a path call on a bare `self`.
 
-**Accepted but not generated:** generic methods of enums (and the `&self`-only enum case the review names); path calls on
+**Accepted but not generated:** a generic method returning `T` (refused by the harness's `Program::check`, so no program
+has one; no compiler error code is cited because the harness never asks the compiler); generic methods of enums (and the `&self`-only enum case the review names); path calls on
 a `T` or an element, and with `&mut`; trait parameters and results that are not scalars (P16: `float[4]`, tuples,
 structs); a `T` with an array field (P12) and any array (D168/D169: the trait space has none, so there is nothing for the
 hole guard to guard; this is a coverage hole of what g1 and g2 accept, not a guard); floats; a default method body; a
@@ -1623,7 +1627,10 @@ source an argument mutates` counts a by-value struct impl with an integer result
 call, by-value T whose source a later argument mutates` counts a generic function with an integer result that reads that
 `T`; `shape &mut self through a type parameter` counts a statement `c.m(..)` with no result, which the generator writes
 only when `c` is read or returned afterwards (`a_changed_type_parameter_is_read_or_returned`); `shape call through a type
-parameter, arguments call the receiver's root` is now reachable through generic methods of `&mut self`. Counts below are
+parameter, arguments change the enclosing method's self` counts a call `c.m(self.bump())` through a type parameter inside
+a generic `&mut self` method, where the receiver is `c` and the arguments change the enclosing method's `self` (the
+receiver's own root cannot be an argument root: E0499 / E0502); it is reachable only through generic methods of
+`&mut self`. Counts below are
 static (programs / in text) and executed (programs), over the 128 trait programs of seeds 1 to 64 (RTX 5090, `dev` and
 `dev+subgroups`; 1024 of 1024 programs executed, 0 mismatches in both):
 
@@ -1643,7 +1650,7 @@ static (programs / in text) and executed (programs), over the 128 trait programs
 | `shape trait call, by-value self whose source an argument mutates` | 36 / 51 / 36 |
 | `shape generic call, by-value T whose source a later argument mutates` | 40 / 65 / 40 |
 | `shape &mut self through a type parameter` | 4 / 9 / 3 |
-| `shape call through a type parameter, arguments call the receiver's root` | 14 / 31 / 5 |
+| `shape call through a type parameter, arguments change the enclosing method's self` | 14 / 31 / 5 |
 
 Discards over the 64 seeds (all spaces): 5259, 19 of them `no-trait`. The batch of seeds 1 to 4 (G5; 8 trait programs):
 `generic call` 8 / 24 / 8, `generic method call` 1 / 1 / 1, `trait call` 8 / 66 / 8, the two by-value shapes 1 / 2 / 1 and

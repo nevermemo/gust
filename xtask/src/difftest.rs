@@ -112,6 +112,25 @@ pub(crate) fn judge_route_log(text: &str) -> (usize, usize, Vec<String>) {
     (spirv, wgsl, problems)
 }
 
+/// The decision after an attempt to delete the route log of an earlier run (m9.rt2 review, R2): a log that was never
+/// there is fine, any other failure is an error, because an old log that stays (a process of a killed run still holds
+/// it open, say) could let a run that wrote no line pass on stale evidence.
+pub(crate) fn stale_log_removal(result: std::io::Result<()>, log: &Path) -> Result<(), String> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "check-difftest: cannot delete the old route log {}: {error}",
+            log.display()
+        )),
+    }
+}
+
+/// Delete the route log of an earlier run before a run that writes a new one (see [`stale_log_removal`]).
+fn remove_stale_log(log: &Path) -> Result<(), String> {
+    stale_log_removal(fs::remove_file(log), log)
+}
+
 /// Read the route log of `what` and judge it; prints the counts. A missing log is a problem.
 fn route_log_problems(what: &str, log: &Path) -> Vec<String> {
     let text = fs::read_to_string(log).unwrap_or_default();
@@ -1439,7 +1458,7 @@ fn run_batch(
     // judged below (Opus S1 of m9.rt2): a silent fallback to WGSL must not pass as route evidence.
     let route_log = (!route.is_empty()).then(|| report_path.with_extension("route.log"));
     if let Some(log) = &route_log {
-        let _ = fs::remove_file(log);
+        remove_stale_log(log)?;
     }
     println!("-- cargo {}", args.join(" "));
     let mut command = workspace_command("cargo");
@@ -1484,7 +1503,7 @@ fn run_short_circuit(root: &Path, target: &Path) -> Result<Vec<String>, String> 
     // the whole dependency tree again under its own `target/tmp`).
     let route_log = (!route.is_empty()).then(|| target.join("short-circuit.route.log"));
     if let Some(log) = &route_log {
-        let _ = fs::remove_file(log);
+        remove_stale_log(log)?;
     }
     let mut command = workspace_command("cargo");
     command

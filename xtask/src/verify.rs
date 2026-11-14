@@ -481,7 +481,7 @@ pub(crate) fn pin_rule_of(source: &str) -> Result<PinRule, String> {
     })
 }
 
-fn pin_rule(root: &Path) -> Result<PinRule, String> {
+pub(crate) fn pin_rule(root: &Path) -> Result<PinRule, String> {
     let source = fs::read_to_string(root.join(PIN_SOURCE))
         .map_err(|error| format!("cannot read {PIN_SOURCE}: {}", error.kind()))?;
     pin_rule_of(&source)

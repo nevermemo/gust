@@ -1,11 +1,12 @@
 //! The opt-in SPIR-V route (slice m9.rt2; D172, D174), on a real adapter. Compiled only with the Cargo feature
-//! `spirv-route`; the feature-off Gpu suite does not see this file (it builds as an empty test target).
+//! `spirv-route`; the target has `required-features` in Cargo.toml, so a feature-off build does not build it at all
+//! and the feature-off Gpu suite does not see this file.
 //!
 //! Three things: the sparse binding layouts that crashed passthrough in the spike (binding 3, 999 and `{0, 999}`), the
-//! guards of the emitted Slang (index clamp, division helpers, the
-//! literal `%`; D39 limitations pinned at the values naga's guards give), and the fallback record
-//! (`HeadlessDevice::route_events`). The workgroup zero-initialisation probes (D174a) are in `workgroup_zero.rs`, which runs on both routes. On a hardware adapter every kernel here must take the SPIR-V route; on a software
-//! adapter (lavapipe) either route is accepted as long as the record says why.
+//! guards of the emitted Slang (index clamp, division helpers, the literal `%`; D39 limitations pinned at the values
+//! naga's guards give), and the fallback record (`HeadlessDevice::route_events`). The workgroup zero-initialisation
+//! probes (D174a) are in `workgroup_zero.rs`, which runs on both routes. On a hardware adapter every kernel here must
+//! take the SPIR-V route; on a software adapter (lavapipe) either route is accepted as long as the record says why.
 #![cfg(feature = "spirv-route")]
 
 use gust::{
@@ -369,13 +370,19 @@ fn a_kernel_the_route_took_is_recorded_once_per_device() {
 }
 
 /// A backend that is not Vulkan stays on the WGSL route and says why (review M1): DX12, Metal and GL advertise
-/// `PASSTHROUGH_SHADERS` but take no SPIR-V, so asking for the feature there would panic at the first kernel. Runs where
-/// a DX12 adapter exists (Windows) and says so where it does not.
+/// `PASSTHROUGH_SHADERS` but take no SPIR-V, so asking for the feature there would panic at the first kernel. This end
+/// to end test can run only where wgpu itself is built with a non-Vulkan backend: this workspace builds wgpu with
+/// `vulkan` only (`std`, `vulkan`, `wgsl`), so no DX12 adapter can open on any machine of the project and the test
+/// returns early. The decision itself (a backend that is not Vulkan stays on WGSL) is covered by the unit test in
+/// `passthrough.rs`; this test matters to a downstream build whose own wgpu dependency enables `dx12`, `metal` or `gles`.
 #[test]
 fn a_dx12_device_falls_back_to_wgsl_with_the_backend_reason() {
     let options = gust_wgpu::DeviceOptions::default().with_backends(wgpu::Backends::DX12);
     let Ok(device) = HeadlessDevice::with_options(options) else {
-        eprintln!("spirv_route: no DX12 adapter here, the fallback was not run");
+        eprintln!(
+            "spirv_route: no DX12 adapter can open: the workspace builds wgpu with Vulkan only, so the end-to-end \
+             fallback was not run (the decision is covered by the unit test)"
+        );
         return;
     };
     eprintln!(

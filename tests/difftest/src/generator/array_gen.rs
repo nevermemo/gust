@@ -381,7 +381,7 @@ impl Gen<'_> {
         }
     }
 
-    /// The known driver hole (plans/m9/arrbug.md and arrbug2.md, D168, D169; NVIDIA 610.88): a load and store-back of
+    /// The known driver hole (D168, D169; NVIDIA 610.88): a load and store-back of
     /// an unchanged value at a dynamic index into any function-local array (any length, uniform or not) can zero
     /// elements. `place op= value` at a dynamic index therefore gets a provably non-identity operand for
     /// `+= -= ^= <<= >>= *= /=` (every operand: a call or `%` that folds to 0 after inlining triggered it) and a

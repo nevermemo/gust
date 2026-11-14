@@ -812,6 +812,7 @@ fn expectations(sampled_tag: &str, fragment_tag: &str) -> String {
 fn only_the_reflection_probe_expectations_are_read_line_by_line() {
     assert!(carries_line_documents(EXPECTATIONS));
     assert!(carries_line_documents("a/testdata/b/expected.txt"));
+    assert!(carries_line_documents("testdata/schema3/expected.txt"));
     for no in [
         "tests/ui/array-barrier/expected.txt",
         "tests/dual/e1-expected.txt",
@@ -820,6 +821,7 @@ fn only_the_reflection_probe_expectations_are_read_line_by_line() {
         "crates/cargo-gust/src/testdata/schema3/not-expected.txt",
         "expected.txt",
         "docs/testdata.md",
+        "mytestdata/expected.txt",
     ] {
         assert!(!carries_line_documents(no), "{no}");
     }

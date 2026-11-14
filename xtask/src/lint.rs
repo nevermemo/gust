@@ -120,9 +120,11 @@ fn carries_compiler_tag(relative: &str) -> bool {
 /// checked `.wgsl.json` fixtures by `crates/gust/tests/reflection.rs`, but nothing compares its SPIR-V lines, so a pin
 /// bump that regenerates the other artifacts could leave their tags stale and lint green. The other tracked
 /// `expected.txt` files (`tests/ui`, `tests/dual`, `tests/cpu-target`, `tests/precompiled`) hold compiler or driver
-/// diagnostics, never a reflection document.
+/// diagnostics, never a reflection document. A future `testdata/**/expected.txt` with no `{` line is a lint
+/// problem by design (an empty expectation checks nothing), and the match takes a top-level `testdata/` folder too.
 fn carries_line_documents(relative: &str) -> bool {
-    relative.rsplit('/').next() == Some("expected.txt") && relative.contains("/testdata/")
+    relative.rsplit('/').next() == Some("expected.txt")
+        && (relative.starts_with("testdata/") || relative.contains("/testdata/"))
 }
 
 /// What the compiler-tag check found in one tracked file: the number of documents whose tags were read, and the

@@ -475,10 +475,12 @@ case is `Cpu` evidence.
   to WGSL, recording the reason in `HeadlessDevice::route_events`, on any other backend, on a device without passthrough
   shaders, for a precompiled WGSL artifact (so a `native` or `web` build, which has no run-time compiler, never takes
   the route) and for a module with push constants. The measurements of the route name the RTX 5090 and the Radeon 890M
-  ([SEMANTICS](docs/SEMANTICS.md) section 15). Mesa lavapipe ran the route's tests in CI (the non-blocking
-  `spirv-route` workflow); the only failing test target was the scalar coretests, where `(x as f32) as i32` for
-  `x = 16777217` and `-16777217` gives `x` itself and not the neighbour Rust gives (the WGSL route on lavapipe is
-  right). That is a documented limitation, not chased (SEMANTICS section 15); no other adapter is measured.
+  ([SEMANTICS](docs/SEMANTICS.md) section 15). Mesa lavapipe ran the route's tests in CI (the `spirv-route`
+  workflow, not a required check; its first green run, 43561965483, ran the route tests and the coretests with
+  `GUST_REQUIRE_SPIRV_ROUTE=1`, so no route test passed by falling back to WGSL). The earlier run had one failing test
+  target, the scalar coretests, where `(x as f32) as i32` for `x = 16777217` and `-16777217` gives `x` itself and
+  not the neighbour Rust gives (the WGSL route on lavapipe is right).
+  That is a documented limitation, not chased (SEMANTICS section 15); no other adapter is measured.
 
 ## Stability
 

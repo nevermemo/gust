@@ -1,6 +1,7 @@
-# The opt-in SPIR-V route (Cargo feature `spirv-route`, slice m9.rt2, D172, D174) on Mesa lavapipe. NON-BLOCKING: the job
-# has `continue-on-error: true` and is never a required check, until it has run green on lavapipe (the spike m9.rt1
-# could not measure lavapipe). It runs the tests of gust-compute-wgpu and gust-algo with the feature on, which pins the
+# The opt-in SPIR-V route (Cargo feature `spirv-route`, slice m9.rt2, D172, D174) on Mesa lavapipe. Never a required
+# check, but a red run now fails the job: `continue-on-error` was removed after the first green lavapipe run (run
+# 43561965483, with GUST_REQUIRE_SPIRV_ROUTE=1, m9.z), the trigger this header used to name (the spike m9.rt1 could not
+# measure lavapipe). It runs the tests of gust-compute-wgpu and gust-algo with the feature on, which pins the
 # route's own tests (tests/spirv_route.rs) and the route-specific goldens. It does not check the pinned counts of the
 # default Gpu suite (that is the `gpu-software` job, with the feature off) and says nothing about the default route.
 # The setup steps are those of gpu-software.yml (the same Mesa snapshot, Slang pin and helper); GitHub Actions has no
@@ -37,8 +38,7 @@ env:
 jobs:
   spirv-route:
     runs-on: ubuntu-24.04
-    # Not a required check, and a red run blocks nothing (see the head of this file).
-    continue-on-error: true
+    # Not a required check in the branch rules, but a red run now shows as a failed job (see the head of this file).
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -207,6 +207,8 @@ jobs:
           set -o pipefail
           cargo --locked test --no-fail-fast -p gust-compute-wgpu --features spirv-route 2>&1 | tee "$RUNNER_TEMP/spirv-route-wgpu.log"
       - name: gust-algo with the SPIR-V route on lavapipe
+        # GUST_REQUIRE_SPIRV_ROUTE is not set here: no gust-algo test reads it (only spirv_route.rs and workgroup_zero.rs
+        # of gust-wgpu do), so it would change nothing. gust-algo checks values, which hold on either route.
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail

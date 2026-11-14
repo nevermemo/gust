@@ -1002,7 +1002,8 @@ pub(crate) struct GpuSuitePin {
 ///
 /// Slice m9.z: 452 over 49 became 453 over 49. One new test in `tests/coretests.rs`, which checks that the known route
 /// limitation widens only the `CastInt` slots of CT-80 and CT-84 by the source integer (it needs no adapter and runs
-/// with the feature off too). The two route tests that changed (`spirv_route.rs`, `workgroup_zero.rs`) keep their count.
+/// with the feature off too). The two route tests that changed (`spirv_route.rs`, `workgroup_zero.rs`) keep their
+/// count.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
     passed: 453,
     result_lines: 49,

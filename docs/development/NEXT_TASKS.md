@@ -527,9 +527,11 @@ test module; do not mix that mechanical move with behavior changes.
   `x`. Policy (D39, the edge-case policy): a documented limitation (SEMANTICS section 15, README), not chased; the
   coretests accept `x` itself for those two slots only on a software adapter with the route taken. What would close
   it: a one-kernel probe of the pair on lavapipe alone, the same module through `spirv-opt` and `spirv-reduce`, a
-  Mesa report if the fold is confirmed; and then the `spirv-route` workflow's `continue-on-error` can go once a run is
-  green (the coordinator's call). The same run is the first lavapipe measurement of the route: only the coretests
-  target failed.
+  Mesa report if the fold is confirmed.
+  The `continue-on-error` of the `spirv-route` workflow is gone since the first green run (43561965483, m9.z round 2).
+  The earlier run was the first lavapipe measurement of the route: only the coretests target failed. Filed, not fixed:
+  the variable rule is repeated in `workgroup_zero.rs` instead of shared with `software_adapter_verdict`, and the wiring
+  of the variable has no test (only lavapipe CI runs it).
 - No browser (Tint) run of any M9 fixture (methods, enums and `match`, tuples, arrays, closures, traits and generics)
   exists, although `web` is a target (Opus sanity check of M9): one `check-web` of the M9 fixtures would show whether
   Tint takes the WGSL as naga does. Not started in m9.z.

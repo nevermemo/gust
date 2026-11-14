@@ -1,6 +1,6 @@
 # Current status
 
-## Active: roadmap M10 (2026-11-14; M9 closed, D176)
+## Active: roadmap M10 (2026-11-14; M9 closed, D176; M10 plan adopted, D177 to D183)
 
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
 2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done; M0.15
@@ -378,6 +378,12 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   raw-name comparison left that escapes a rule or miscompiles (attribute paths, variant targets and repr names fail
   closed); the stale VALIDATION, HANDOFF, ROADMAP and STATUS lines and a CHANGELOG line for the same-cell atomic
   order are fixed in these records. (iv) What carries out of M9 is in NEXT_TASKS, "M9 follow-ups".
+- M10 plan adopted (2026-11-14; D177 to D183). Revision 1.1 (Fable), reviewed by Opus in the Codex slot (Codex
+  was out of quota): "adopt with changes", every finding accepted. The guide is rustdoc on docs.rs (mdBook's
+  MPL-2.0 would need an exception to D46); the read-only API audit runs before the first publish; `release/0.2`
+  is cut at the publish. D177 (0.2.0 first, 0.1.0 never published) is provisional until the owner chooses.
+  First slices: m10.r0 (release literals and the diagnostic-code freeze review), m10.b0 (the bench harness onto
+  main and the premise re-measurement), m10.g0 (the gallery skeleton).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

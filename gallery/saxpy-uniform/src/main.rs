@@ -69,6 +69,7 @@ fn main() {
     assert_eq!(second, [13.0, 26.0, 39.0, 52.0]);
 
     println!("saxpy-uniform: a=2 {first:?}, a=3 {second:?}");
+    println!("adapter: {}", device.adapter_info().name);
 }
 // ANCHOR_END: main
 

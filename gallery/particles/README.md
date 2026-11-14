@@ -24,6 +24,8 @@ all but 64); a hand-computed first step; a guard that some particles do bounce; 
 against the host sum. The twin has no batch, so its tests loop over single dispatches; the batch itself is GPU evidence
 (`cargo run --release`, which `cargo xtask check-gallery` runs and compares; `main` also asserts every particle against the host simulation before it prints).
 
+It prints `particles: 1000 particles, 16 steps, 1129 bounces, energy 20272.84375` and a line `adapter: <name>` with the GPU it ran on.
+
 Edge case (D39): `par_for!` runs its iterations in no defined order on a GPU and in ascending order on the twin. This body
 reads and writes distinct elements, so the order does not matter; a body that reads what another iteration writes would
 differ between the two, and the dialect does not diagnose it (see SEMANTICS).

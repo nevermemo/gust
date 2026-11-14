@@ -135,6 +135,7 @@ fn main() {
     let bounces: u32 = after.iter().map(|p| p.bounces).sum();
     let energy = total_energy(&after, &device);
     println!("particles: {n} particles, {STEPS} steps, {bounces} bounces, energy {energy}");
+    println!("adapter: {}", device.adapter_info().name);
 }
 // ANCHOR_END: main
 

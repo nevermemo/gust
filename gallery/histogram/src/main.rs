@@ -58,6 +58,7 @@ fn main() {
     let counts = device.read_typed_buffer(&bins).expect("read back");
     assert_eq!(counts, host_count(&keys, BINS), "an atomic count is exact");
     println!("histogram: {} keys in {BINS} bins {counts:?}", keys.len());
+    println!("adapter: {}", device.adapter_info().name);
 }
 // ANCHOR_END: main
 

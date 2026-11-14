@@ -32,4 +32,4 @@ cargo run --release               # no Slang needed; needs a Vulkan compute adap
 ```
 
 It prints the line `histogram: 100000 keys in 8 bins [..]` with the eight counts (the keys are fixed, so the counts are
-too).
+too), then a line `adapter: <name>` with the GPU it ran on.

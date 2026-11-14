@@ -34,7 +34,7 @@ cargo gust check                  # fails when gust-artifacts/ no longer matches
 cargo run --release               # no Slang needed; needs a Vulkan compute adapter
 ```
 
-`main` asserts both results before it prints (the values are small integers, exact in `f32`). It prints `saxpy-uniform: a=2 [12.0, 24.0, 36.0, 48.0], a=3 [13.0, 26.0, 39.0, 52.0]`.
+`main` asserts both results before it prints (the values are small integers, exact in `f32`). It prints `saxpy-uniform: a=2 [12.0, 24.0, 36.0, 48.0], a=3 [13.0, 26.0, 39.0, 52.0]` and a line `adapter: <name>` with the GPU it ran on.
 
 Edge case (D39): the kernel guards `i < out.len()`. A kernel without that guard panics on the twin where the GPU's robust
 buffer access drops the write; that difference is documented in SEMANTICS, not chased here.

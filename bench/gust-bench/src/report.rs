@@ -86,14 +86,15 @@ fn load(paths: &[String]) -> BenchResult<Vec<Value>> {
         .collect()
 }
 
-/// The three labels every run must agree on: an aggregate of a WGSL and a SPIR-V run, or of two adapters, is not one
+/// The labels every run must agree on (route, build with its commit, adapter, and the config: quick or full, sizes,
+/// workloads, backends with their ablations): an aggregate of a WGSL and a SPIR-V run, or of two adapters, is not one
 /// measurement, so a mismatch is an error rather than being labelled by the first run.
 fn check_labels(runs: &[Value]) -> BenchResult<()> {
     let Some(first) = runs.first() else {
         return Err("no run files to aggregate".into());
     };
     for (index, run) in runs.iter().enumerate().skip(1) {
-        for key in ["route", "build", "adapter"] {
+        for key in ["route", "build", "adapter", "config"] {
             if run[key] != first[key] {
                 return Err(format!(
                     "run {} disagrees with run 0 on `{key}`: {} against {}",
@@ -596,6 +597,31 @@ mod tests {
         build["build"] = json!({ "profile": "debug" });
         assert!(check_labels(&[run("wgsl", "GPU A", "a.json"), build]).is_err());
         assert!(check_labels(&[]).is_err());
+    }
+
+    #[test]
+    fn a_config_or_commit_mismatch_between_runs_is_an_error() {
+        let base = run("wgsl", "GPU A", "a.json");
+        let mut quick = run("wgsl", "GPU A", "b.json");
+        quick["config"] =
+            json!({ "samples": 5, "sizes": [4096], "workloads": ["W1"], "backends": [] });
+        let full = {
+            let mut v = run("wgsl", "GPU A", "c.json");
+            v["config"] =
+                json!({ "samples": 30, "sizes": [4096], "workloads": ["W1"], "backends": [] });
+            v
+        };
+        let error = check_labels(&[full.clone(), quick]).unwrap_err();
+        assert!(error.to_string().contains("`config`"), "{error}");
+        let mut ablated = full.clone();
+        ablated["config"]["backends"] = json!([{ "id": "wgsl-percall+staging-reuse" }]);
+        assert!(check_labels(&[full, ablated]).is_err());
+        let mut other_commit = run("wgsl", "GPU A", "d.json");
+        other_commit["build"] = json!({ "profile": "release", "commit": "other" });
+        let mut with_commit = run("wgsl", "GPU A", "e.json");
+        with_commit["build"] = json!({ "profile": "release", "commit": "abc" });
+        assert!(check_labels(&[with_commit, other_commit]).is_err());
+        assert!(check_labels(&[base.clone(), base]).is_ok());
     }
 
     #[test]

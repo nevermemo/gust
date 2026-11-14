@@ -273,6 +273,31 @@ pub fn walk_truncation(hresult: i32) -> Option<String> {
     })
 }
 
+/// The process table of a finished walk. `end` is the HRESULT the walk ended with (`None` when the last call
+/// succeeded, which cannot end a walk). A walk that ends normally but returned no rows at all is recorded as such
+/// instead of looking like a quiet machine.
+pub fn table_from_walk(rows: Vec<Proc>, end: Option<i32>) -> ProcTable {
+    let mut truncated = end.and_then(walk_truncation);
+    if truncated.is_none() && rows.is_empty() {
+        truncated = Some("process walk returned no rows: the table is empty, not quiet".to_owned());
+    }
+    ProcTable { rows, truncated }
+}
+
+/// Waits out the settle interval through `sleep`, then takes the `nvidia-smi` snapshot through `smi`, and returns it
+/// with the instant the window may start (taken after the snapshot). So the snapshot's utilisation, clocks and power
+/// describe the machine just before the window it sits beside, not the previous cell's tail, and no helper process
+/// is spawned inside the window.
+pub fn settle_then_snapshot(
+    settle: Duration,
+    sleep: impl FnOnce(Duration),
+    smi: impl FnOnce() -> Value,
+) -> (Value, Instant) {
+    sleep(settle);
+    let snapshot = smi();
+    (snapshot, Instant::now())
+}
+
 /// A DXGI adapter as the sampler sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DxgiAdapter {
@@ -502,11 +527,10 @@ impl Sampler {
 
     #[cfg(windows)]
     fn sample_windows(&self, cell: Value) -> Value {
-        // `nvidia-smi` (a helper process) runs inside the settle interval, so no helper is spawned in the window.
-        let settle_started = Instant::now();
-        let smi = crate::meta::gpu_snapshot();
-        thread::sleep(self.timing.settle.saturating_sub(settle_started.elapsed()));
-        let window_started = Instant::now();
+        // `nvidia-smi` (a helper process) runs after the settle sleep and before the window starts: it describes the
+        // machine just before this window, and no helper is spawned inside the window.
+        let (smi, window_started) =
+            settle_then_snapshot(self.timing.settle, thread::sleep, crate::meta::gpu_snapshot);
         let start_table = win::process_table();
         let pdh = win::Pdh::open();
         let mut samples = Vec::new();
@@ -560,6 +584,7 @@ impl Sampler {
                 "samples": samples,
             },
             "nvidia_smi": smi,
+            "nvidia_smi_taken": "after the settle sleep, before the window",
             "processes_start": start_table.as_ref().map_or(Value::Null, process_rows),
             "processes_start_error": start_table.as_ref().err(),
             "processes_start_truncated": start_table.as_ref().ok().and_then(|t| t.truncated.clone()),
@@ -911,6 +936,47 @@ mod tests {
             let note = walk_truncation(code as i32).expect("truncated");
             assert!(note.contains(&format!("{code:#010x}")), "{note}");
         }
+    }
+
+    #[test]
+    fn an_empty_process_walk_is_recorded_as_empty() {
+        let proc = Proc {
+            pid: 1,
+            ppid: 0,
+            name: "a.exe".to_owned(),
+            cpu_100ns: None,
+            created: None,
+        };
+        let normal_end = Some(0x8007_0012u32 as i32);
+        let full = table_from_walk(vec![proc], normal_end);
+        assert_eq!(full.truncated, None);
+        let empty = table_from_walk(Vec::new(), normal_end);
+        assert!(empty.rows.is_empty());
+        assert!(empty.truncated.expect("noted").contains("no rows"));
+        let broken = table_from_walk(Vec::new(), Some(0x8007_0005u32 as i32));
+        assert!(broken.truncated.expect("noted").contains("0x80070005"));
+    }
+
+    #[test]
+    fn nvidia_smi_runs_after_the_settle_sleep_and_before_the_window_starts() {
+        use std::cell::RefCell;
+        let log = RefCell::new(Vec::new());
+        let smi_done = RefCell::new(None);
+        let (snapshot, window_started) = settle_then_snapshot(
+            Duration::from_millis(1),
+            |settle| {
+                assert_eq!(settle, Duration::from_millis(1));
+                log.borrow_mut().push("sleep");
+            },
+            || {
+                log.borrow_mut().push("smi");
+                *smi_done.borrow_mut() = Some(Instant::now());
+                json!({ "utilization_pct": 3.0 })
+            },
+        );
+        assert_eq!(*log.borrow(), ["sleep", "smi"]);
+        assert_eq!(snapshot["utilization_pct"], 3.0);
+        assert!(window_started >= smi_done.borrow().expect("smi ran"));
     }
 
     #[test]

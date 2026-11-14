@@ -65,6 +65,20 @@ fn commit() -> String {
     }
 }
 
+/// Whether the working tree has uncommitted or untracked changes (`None` when git cannot say). A commit named
+/// without this would read as clean.
+fn tree_dirty() -> Option<bool> {
+    let output = Command::new("git")
+        .args(["-c", "safe.directory=*", "status", "--porcelain"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| !output.stdout.iter().all(u8::is_ascii_whitespace))
+}
+
 /// Everything about the machine and the build that a reader needs to reproduce the table.
 pub fn machine(
     adapter: &wgpu::AdapterInfo,
@@ -91,7 +105,7 @@ pub fn machine(
         "nvidia_driver": capture("nvidia-smi", &["--query-gpu=driver_version", "--format=csv,noheader"]),
         "versions": {
             "rustc": capture("rustc", &["--version"]),
-            "wgpu": "30.0.1",
+            "wgpu": "30.0.2",
             "rayon": "1.12.0",
             "gust_commit": commit(),
             "gust_bench": env!("CARGO_PKG_VERSION"),
@@ -199,10 +213,18 @@ pub fn provenance(adapter: &wgpu::AdapterInfo) -> Value {
         &format!("{:?}", adapter.backend),
         &adapter.driver,
         &adapter.driver_info,
+        (&commit(), tree_dirty()),
     )
 }
 
-fn provenance_of(route: &str, name: &str, backend: &str, driver: &str, driver_info: &str) -> Value {
+fn provenance_of(
+    route: &str,
+    name: &str,
+    backend: &str,
+    driver: &str,
+    driver_info: &str,
+    (commit, dirty): (&str, Option<bool>),
+) -> Value {
     let release = !cfg!(debug_assertions);
     let mut cfgs = Vec::new();
     if cfg!(gust_dual) {
@@ -215,6 +237,8 @@ fn provenance_of(route: &str, name: &str, backend: &str, driver: &str, driver_in
             "profile": if release { "release" } else { "debug" },
             "features": ["slang-runtime"],
             "cfgs": cfgs,
+            "commit": commit,
+            "tree_dirty": dirty,
         },
         "adapter": { "name": name, "backend": backend, "driver": driver, "driver_info": driver_info },
     })
@@ -236,7 +260,16 @@ mod tests {
 
     #[test]
     fn provenance_pins_route_build_and_adapter() {
-        let value = provenance_of("wgsl", "Test GPU", "Vulkan", "555.55", "driver 1");
+        let value = provenance_of(
+            "wgsl",
+            "Test GPU",
+            "Vulkan",
+            "555.55",
+            "driver 1",
+            ("0123456789ab", Some(true)),
+        );
+        assert_eq!(value["build"]["commit"], "0123456789ab");
+        assert_eq!(value["build"]["tree_dirty"], true);
         assert_eq!(value["route"], "wgsl");
         assert_eq!(value["build"]["release"], !cfg!(debug_assertions));
         assert_eq!(

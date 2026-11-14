@@ -153,6 +153,50 @@ fn all_backends(
     backends
 }
 
+/// Everything a results file holds, before it is written. Its own type so that a test can build the file the way
+/// `run` does and read the real output.
+struct RunRecord {
+    label: String,
+    sampler: serde_json::Value,
+    machine: serde_json::Value,
+    config: serde_json::Value,
+    load_before: serde_json::Value,
+    load_after: serde_json::Value,
+    gpu_before: serde_json::Value,
+    gpu_after: serde_json::Value,
+    wall_s: f64,
+    cells: Vec<serde_json::Value>,
+    failures: Vec<String>,
+    /// Route, build and adapter (plan 2.5 item 8), merged into the top level.
+    provenance: serde_json::Value,
+}
+
+impl RunRecord {
+    fn into_document(self) -> serde_json::Value {
+        let mut document = json!({
+            "label": self.label,
+            "banner": "shared machine, not publishable",
+            // The publishable judgement (plan 2.4) is b1b's; until then no file is publishable, and says why.
+            "publishable": meta::PUBLISHABLE,
+            "publishable_reason": meta::PUBLISHABLE_REASON,
+            "sampler": self.sampler,
+            "meta": self.machine,
+            "config": self.config,
+            "load_before": self.load_before,
+            "load_after": self.load_after,
+            "gpu_before": self.gpu_before,
+            "gpu_after": self.gpu_after,
+            "wall_s": self.wall_s,
+            "cells": self.cells,
+            "failures": self.failures,
+        });
+        if let (Some(top), Some(extra)) = (document.as_object_mut(), self.provenance.as_object()) {
+            top.extend(extra.clone());
+        }
+        document
+    }
+}
+
 fn run(options: &Options) -> BenchResult<bool> {
     let out = options.out.as_deref().ok_or("--out is required")?;
     let gust_device = Rc::new(HeadlessDevice::new()?);
@@ -287,15 +331,11 @@ fn run(options: &Options) -> BenchResult<bool> {
         }
         None => json!({ "enabled": false }),
     };
-    let mut document = json!({
-        "label": options.label.clone().unwrap_or_else(|| "run".to_owned()),
-        "banner": "shared machine, not publishable",
-        // The publishable judgement (plan 2.4) is b1b's; until then no file is publishable, and says why.
-        "publishable": meta::PUBLISHABLE,
-        "publishable_reason": meta::PUBLISHABLE_REASON,
-        "sampler": sampler_json,
-        "meta": machine,
-        "config": {
+    let document = RunRecord {
+        label: options.label.clone().unwrap_or_else(|| "run".to_owned()),
+        sampler: sampler_json,
+        machine,
+        config: json!({
             "samples": config.samples, "min_samples": config.min_samples,
             "cap_s": config.cap.as_secs_f64(), "batch": config.batch,
             "warmup_end_to_end": config.warmup_end_to_end, "warmup_dispatch": config.warmup_dispatch,
@@ -303,27 +343,39 @@ fn run(options: &Options) -> BenchResult<bool> {
             "workloads": workload_list.iter().map(|w| w.id()).collect::<Vec<_>>(),
             "backends": backends.iter().map(|b| json!({ "id": b.id(), "description": b.description() })).collect::<Vec<_>>(),
             "hand_wgsl_adapter": ctx.info.name,
-        },
-        "load_before": load_before,
-        "load_after": meta::load_snapshot(),
-        "gpu_before": gpu_before,
-        "gpu_after": meta::gpu_snapshot(),
-        "wall_s": started.elapsed().as_secs_f64(),
-        "cells": cells,
-        "failures": failures,
-    });
-    // Route, build and adapter at the top level of every results file (plan 2.5 item 8).
-    if let (Some(top), Some(extra)) = (
-        document.as_object_mut(),
-        meta::provenance(adapter).as_object(),
-    ) {
-        top.extend(extra.clone());
+            // Which shader source gust-gpu's cold start used (plan 2.3): a kernel with embedded artifacts is loaded
+            // from them, otherwise it is compiled at run time. A run of one kind does not aggregate with the other.
+            "shader_source": shader_source(),
+        }),
+        load_before,
+        load_after: meta::load_snapshot(),
+        gpu_before,
+        gpu_after: meta::gpu_snapshot(),
+        wall_s: started.elapsed().as_secs_f64(),
+        cells,
+        failures: failures.clone(),
+        provenance: meta::provenance(adapter),
     }
+    .into_document();
     std::fs::write(out, serde_json::to_string_pretty(&document)? + "\n")?;
     for failure in &failures {
         eprintln!("FAILURE: {failure}");
     }
     Ok(failures.is_empty())
+}
+
+/// `precompiled` when every benchmark kernel carries an embedded artifact, `run-time compile` when none does.
+fn shader_source() -> &'static str {
+    let kernels = [
+        &workloads::vector_add::kernel::add::DESCRIPTOR,
+        &workloads::saxpy::kernel::saxpy::DESCRIPTOR,
+    ];
+    let with = kernels.iter().filter(|k| !k.artifacts.is_empty()).count();
+    match with {
+        0 => "run-time compile",
+        n if n == kernels.len() => "precompiled",
+        _ => "mixed",
+    }
 }
 
 fn dump_wgsl() -> BenchResult<()> {
@@ -437,5 +489,36 @@ fn main() -> ExitCode {
             eprintln!("error: {error}");
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_per_run_file_says_not_publishable_with_the_reason_and_carries_the_provenance() {
+        let document = RunRecord {
+            label: "t".to_owned(),
+            sampler: json!({ "enabled": false }),
+            machine: json!({}),
+            config: json!({ "samples": 5 }),
+            load_before: json!(null),
+            load_after: json!(null),
+            gpu_before: json!(null),
+            gpu_after: json!(null),
+            wall_s: 1.0,
+            cells: Vec::new(),
+            failures: Vec::new(),
+            provenance: json!({ "route": "wgsl", "build": { "commit": "abc" }, "adapter": { "name": "A" } }),
+        }
+        .into_document();
+        assert_eq!(document["publishable"], false);
+        assert_eq!(document["publishable_reason"], meta::PUBLISHABLE_REASON);
+        assert_eq!(document["banner"], "shared machine, not publishable");
+        assert_eq!(document["route"], "wgsl");
+        assert_eq!(document["build"]["commit"], "abc");
+        assert_eq!(document["adapter"]["name"], "A");
+        assert_eq!(document["config"]["samples"], 5);
     }
 }

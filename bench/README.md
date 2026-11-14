@@ -59,7 +59,10 @@ header says so and every adapter's activity is recorded. `gust-bench probe-adapt
 it keeps the adapter busy and reports on which LUID this process's own utilisation appears.
 
 Every results file also carries `route` (`wgsl` or `spirv`, read from the build), `build` (release, profile, features,
-cfgs) and `adapter` (name, backend, driver) at its top level.
+cfgs, the commit and whether the tree was dirty) and `adapter` (name, backend, driver) at its top level. `aggregate`
+refuses runs that disagree on route, build, adapter or config (quick against full, sizes, workloads, backends and
+their ablations). The `nvidia-smi` cross-check of a window is taken after the settle sleep and before the window
+starts.
 
 Exit status is 0 only when every correctness check and every cache assertion passed.
 

@@ -227,6 +227,7 @@ fn valid_tags_map_to_distinct_variables() {
 
 fn parse(arguments: &str) -> syn::Result<Tag> {
     routing::parse_attribute(arguments.parse().unwrap())
+        .map(|attribute| attribute.tag.expect("the arguments name a route"))
 }
 
 #[test]
@@ -1643,5 +1644,34 @@ fn the_guard_does_not_change_the_target_a_tag_resolves_to() {
             variables,
         );
         assert!(routed.contains("Target :: Cpu"), "{variables:?}: {routed}");
+    }
+}
+
+#[test]
+fn a_routed_module_forwards_the_facade_under_each_route() {
+    // The happy path of `route = ".."` with `crate = ..` (audit S6): the routed expansion (the GPU form, the declared
+    // CPU default and the `cpu` profile) goes through the forwarder and differs from the plain one only in the facade.
+    let facade: syn::Path = parse_str("::inner::gust").unwrap();
+    for (routes, profile) in [
+        ("physics = {}", Profile::Other),
+        ("physics = { default = \"cpu\" }", Profile::Other),
+        ("physics = {}", Profile::Cpu),
+    ] {
+        let scratch = Crate::new("forwarded", routes);
+        let expansion = expand(VECTOR_ADD, scratch.path(), profile, Some("physics"), &[]).unwrap();
+        let plain = expansion.to_string();
+        let forwarded = crate::forward::forward_crate(expansion, &facade).to_string();
+        assert!(plain.contains(":: gust ::"), "{plain}");
+        assert_eq!(
+            forwarded,
+            plain.replace(":: gust ::", ":: inner :: gust ::"),
+            "{routes}"
+        );
+        assert!(
+            !forwarded
+                .replace(":: inner :: gust", "")
+                .contains(":: gust"),
+            "{forwarded}"
+        );
     }
 }

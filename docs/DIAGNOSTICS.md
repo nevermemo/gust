@@ -1344,13 +1344,13 @@ Decision: T10.
 
 ## E07xx: macro entry and `#[kernel]` options
 
-### GUST-E0701 `#[gpu]` takes one argument, `route = "<tag>"`
+### GUST-E0701 `#[gpu]` takes `route = "<tag>"` and `crate = <path>`
 
-The attribute has one option, `route = "<tag>"` (build-time routing, M8: GUST-E0748, GUST-E0749); anything else, a second argument included, is this error.
-Reached through `#[gpu]`.
-Rejected: `#[gpu(debug)] mod shaders { ... }`, `#[gpu(route = 5)]`, `#[gpu(route = "a", "b")]`.
-Write instead: `#[gpu] mod shaders { ... }`, or `#[gpu(route = "physics")] mod shaders { ... }` with the tag declared in `Cargo.toml`.
-Decision: D02, D65.
+The attribute has two options, each at most once and in either order: `route = "<tag>"` (build-time routing, M8: GUST-E0748, GUST-E0749) and `crate = <path>`, where `gust` is for a crate that reaches it through another crate's `pub use gust;` (the path starts with `::` or `crate::`, has plain segments only and no generic arguments). Anything else, a repeated option and a malformed path included, is this error.
+Reached through `#[gpu]`. A malformed `crate(..);` clause of `par_for!` is GUST-E0719 instead.
+Rejected: `#[gpu(debug)] mod shaders { ... }`, `#[gpu(route = 5)]`, `#[gpu(route = "a", "b")]`, `#[gpu(route = "a", route = "b")]`, `#[gpu(crate = inner::gust)]`, `#[gpu(crate = ::inner::gust, crate = ::inner::gust)]`.
+Write instead: `#[gpu] mod shaders { ... }`, `#[gpu(route = "physics")] mod shaders { ... }` with the tag declared in `Cargo.toml`, or `#[gpu(crate = ::inner::gust)] mod shaders { ... }`.
+Decision: D02, D65, D48.
 
 ### GUST-E0702 item is not a module or a function, or does not parse as one
 
@@ -1516,9 +1516,9 @@ Decision: D42 (M7 plan 4.1, slice m7.g1).
 
 ### GUST-E0719 `par_for!` call that is not one of its forms
 
-A `par_for!` call is `par_for!([workgroup_size(x, y, z);] PATTERN in RANGES, [bindings] { body })`. The pattern is `i`, `(x, y)` or `(x, y, z)`, each name an identifier or `_` and each named once; the ranges are `0..n` for one variable or a tuple of them, one per variable, each starting at the literal 0 and ending before an extent expression; the bindings are a bracketed list; the body is one block and ends the call. A `workgroup_size` option has the codes of the same option on a kernel (E0704, E0705, E0706). The hidden options `on(device);` and `descriptor;` come before the pattern and are read the same way.
+A `par_for!` call is `par_for!([workgroup_size(x, y, z);] PATTERN in RANGES, [bindings] { body })`. The pattern is `i`, `(x, y)` or `(x, y, z)`, each name an identifier or `_` and each named once; the ranges are `0..n` for one variable or a tuple of them, one per variable, each starting at the literal 0 and ending before an extent expression; the bindings are a bracketed list; the body is one block and ends the call. A `workgroup_size` option has the codes of the same option on a kernel (E0704, E0705, E0706). The hidden options `on(device);` and `descriptor;` come before the pattern and are read the same way. So does the clause `crate(<path>);` (the path of `gust` for a crate that reaches it through another crate, as `#[gpu(crate = ..)]` takes it; the path starts with `::` or `crate::` and has plain segments and no generic arguments): it is at most once among the clauses, and a malformed path is this error too (GUST-E0701 is the same mistake on `#[gpu]`).
 Reached through `#[gpu]`, raised by `par_for!` only (the function-like macro that shares the validator of `#[gpu]`).
-Rejected: `par_for!(i in 0..n, [])` (no body), `par_for!((x) in 0..n, [] { })`, `par_for!((x, y) in 0..n, [] { })`, `par_for!(i in 1..n, [] { })`, `par_for!(i in 0..=n, [] { })`, `par_for!((x, x) in (0..w, 0..h), [] { })`, `par_for!(i in 0..n, [] { } { })`.
+Rejected: `par_for!(crate(inner::gust); i in 0..n, [] { })`, `par_for!(crate(::inner::gust); crate(::inner::gust); i in 0..n, [] { })`, `par_for!(i in 0..n, [])` (no body), `par_for!((x) in 0..n, [] { })`, `par_for!((x, y) in 0..n, [] { })`, `par_for!(i in 1..n, [] { })`, `par_for!(i in 0..=n, [] { })`, `par_for!((x, x) in (0..w, 0..h), [] { })`, `par_for!(i in 0..n, [] { } { })`.
 Write instead: one of the forms of the plan (section 3.1), for example `par_for!((x, y) in (0..w, 0..h), [out: &mut [f32], w: u32] { out[y * w + x] = 1.0; })`.
 Decision: M7 plan 3.1 (slice m7.p).
 

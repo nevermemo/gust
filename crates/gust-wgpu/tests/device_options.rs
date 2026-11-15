@@ -283,9 +283,9 @@ fn coherent_storage_is_reported_only_when_the_adapter_offers_it() {
         .expect("the adapter the device was opened on")
         .features()
         .contains(wgpu::Features::MEMORY_DECORATION_COHERENT);
-    // A device cannot have a feature its adapter lacks.
-    assert!(
-        !supported || offered,
-        "supported={supported} offered={offered}"
+    // The device requests coherent storage whenever its adapter offers it, so the two agree.
+    assert_eq!(
+        supported, offered,
+        "the device requests coherent storage exactly when the adapter offers it"
     );
 }

@@ -523,7 +523,7 @@ fn workgroup_count_through_a_one_node_graph() {
     assert_eq!(
         format!("{dispatch:?}"),
         format!(
-            "BufferDispatch {{ kernel: {:?}, element_count: {over}, extent_yz: [1, 1], bindings: 1, samplers: 0 }}",
+            "BufferDispatch {{ kernel: {:?}, element_count: {over}, extent_yz: [1, 1], bindings: 1, samplers: 0, .. }}",
             descriptor.name
         )
     );

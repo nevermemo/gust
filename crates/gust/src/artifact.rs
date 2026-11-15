@@ -130,17 +130,6 @@ pub struct Verified {
     pub cross_checks: Vec<PodCrossCheck>,
 }
 
-impl Verified {
-    /// A result with `compiled` and `cross_checks`. [`verify_artifact`] is what produces one; the struct is
-    /// `#[non_exhaustive]` (0.2.0), so a literal is no longer possible outside this crate.
-    pub const fn new(compiled: CompiledReflection, cross_checks: Vec<PodCrossCheck>) -> Self {
-        Self {
-            compiled,
-            cross_checks,
-        }
-    }
-}
-
 /// Verify `artifact` against `kernel` without starting any process: the stored identity
 /// (target, entry point, hash of `kernel.slang_source`, hash of the bytes), the workgroup
 /// size, and the complete stored layouts against the descriptor's parameters.

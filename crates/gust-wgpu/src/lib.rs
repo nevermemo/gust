@@ -650,7 +650,7 @@ impl std::fmt::Debug for BufferDispatch<'_> {
             .field("extent_yz", &self.extent_yz)
             .field("bindings", &self.bindings.len())
             .field("samplers", &self.samplers.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

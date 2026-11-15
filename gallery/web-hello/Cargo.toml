@@ -1,0 +1,28 @@
+[package]
+name = "web-hello"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# A browser module: the crate is built as a `cdylib` for `wasm32-unknown-unknown` and run with `wasm-bindgen --target web`.
+# On the host it is a library whose tests run the same kernel on the CPU twin, so `cargo test` needs no browser.
+[lib]
+crate-type = ["cdylib"]
+
+# The shape of a user's crate (README "A first program"): the same dependency keys, with path dependencies in place of
+# the registry versions.
+[dependencies]
+gust-compute = { path = "../../crates/gust" }
+gust-compute-wgpu = { path = "../../crates/gust-wgpu" }
+
+# The browser glue, in the target-scoped table so that a host build compiles none of it. `wasm-bindgen` is pinned to the
+# version of the `wasm-bindgen` CLI that `cargo xtask check-gallery` requires (it compares the CLI with `Cargo.lock`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "=0.2.127"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["console"] }
+
+[features]
+# Run-time compile through the Slang toolchain, for development only (`cargo test --features gust-dev` on the host).
+gust-dev = ["gust-compute-wgpu/slang-runtime"]

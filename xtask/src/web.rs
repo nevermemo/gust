@@ -51,6 +51,33 @@ const EXAMPLE_DIR: &str = "examples/web-vector-add";
 const PACKAGE: &str = "web-vector-add";
 const OUT_NAME: &str = "web_vector_add";
 
+/// One page the runner builds and runs in Chrome: `check-web`'s own ([`WEB_VECTOR_ADD`]) and the gallery's `web-hello`
+/// (`check-gallery`'s GPU part, m10.g9) go through the same functions, with their own constants.
+pub(crate) struct Example {
+    /// The folder of the page's `index.html`, relative to the repository root.
+    pub(crate) dir: &'static str,
+    /// The folder the cargo commands run in (the workspace of the package, which holds its `Cargo.lock`), relative to the
+    /// repository root; empty for the root workspace.
+    pub(crate) workspace: &'static str,
+    /// The cargo package, and the stem of its wasm output (`-` becomes `_`).
+    pub(crate) package: &'static str,
+    pub(crate) out_name: &'static str,
+    /// The committed manifest the page's selected kernels are compared with, relative to the repository root.
+    pub(crate) manifest: &'static str,
+    /// The last part of the page's `GUST_OK` label (after the adapter words and the selected kernels).
+    pub(crate) closing: &'static str,
+}
+
+/// The page of `cargo xtask check-web`.
+pub(crate) const WEB_VECTOR_ADD: Example = Example {
+    dir: EXAMPLE_DIR,
+    workspace: "",
+    package: PACKAGE,
+    out_name: OUT_NAME,
+    manifest: MANIFEST_PATH,
+    closing: SUBGROUPS_REFUSED,
+};
+
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
 
 /// The profile of the build: strict, so the committed artifact is embedded and Slang never runs (R4.2).
@@ -163,9 +190,14 @@ struct Tools {
 
 /// The lookups of `check-web` that can fail for a missing tool: the locked `wasm-bindgen` version and a CLI of that
 /// version, Chrome, and the wasm32 standard library. `path_var` is the `PATH` the CLI is looked up in.
-fn find_tools(root: &Path, options: &Options, path_var: Option<OsString>) -> Result<Tools, String> {
+fn find_tools(
+    root: &Path,
+    example: &Example,
+    options: &Options,
+    path_var: Option<OsString>,
+) -> Result<Tools, String> {
     let wanted = locked_wasm_bindgen_version(
-        &fs::read_to_string(root.join("Cargo.lock"))
+        &fs::read_to_string(root.join(example.workspace).join("Cargo.lock"))
             .map_err(|error| format!("check-web: could not read Cargo.lock: {error}"))?,
     )?;
     let bindgen = locate_wasm_bindgen(options, &wanted, path_var)?;
@@ -181,7 +213,13 @@ fn find_tools(root: &Path, options: &Options, path_var: Option<OsString>) -> Res
 /// The tool lookups of a default `check-web` run, and nothing else: no build, no Chrome. `check-full` calls this
 /// first, so a missing tool fails in seconds and not after the long steps.
 pub(crate) fn preflight_tools() -> Result<(), String> {
-    find_tools(&workspace_root()?, &Options::default(), env::var_os("PATH")).map(|_| ())
+    find_tools(
+        &workspace_root()?,
+        &WEB_VECTOR_ADD,
+        &Options::default(),
+        env::var_os("PATH"),
+    )
+    .map(|_| ())
 }
 
 /// [`check_web`] that returns its passing summary (empty for `--tree-only`, which has printed its one line) instead of
@@ -197,11 +235,53 @@ pub(crate) fn check_web_report(args: &[String]) -> Result<String, String> {
         return Ok(String::new());
     }
 
+    let run = run_example(
+        &root,
+        &WEB_VECTOR_ADD,
+        &options,
+        &cargo_target_dir(&root),
+        started,
+    )?;
+    Ok(format!(
+        "check-web passed: the page logged `{OK_PREFIX}{}`: the real gust-wgpu vector-add (1000 and 8197 elements) ran in both forms, grid and pixel, on the browser GPU, and each equalled the host reference and the other bit for bit. The job contract of the browser held for each submission (status Pending right after the submit and Complete after the awaited readback; wait, wait_timeout and the generated dispatch return Error::WouldBlock), and map_gpu read back the host's result through to_vec_async. The key each of the {} kernels selected is one the committed manifest lists, none needs a capability, and a device opened with the subgroups capability was refused with Error::MissingCapability.\n  evidence: {}\n  {}",
+        run.label,
+        run.selected.len(),
+        evidence_label(run.chrome_version.as_deref(), &run.adapter),
+        run.timings
+    ))
+}
+
+/// What a passing run of an [`Example`] reports.
+pub(crate) struct ExampleRun {
+    /// The page's whole `GUST_OK` label.
+    pub(crate) label: String,
+    /// The adapter words (`<vendor> <architecture>`) the page named.
+    pub(crate) adapter: String,
+    /// The kernels the page's build selected, already checked against the committed manifest.
+    pub(crate) selected: Vec<SelectedKernel>,
+    pub(crate) chrome_version: Option<String>,
+    /// The `timings: ...` line.
+    pub(crate) timings: String,
+}
+
+/// Builds `example` for `wasm32-unknown-unknown` under `GUST_PROFILE=web`, runs `wasm-bindgen`, serves the site from a
+/// loopback server (`127.0.0.1`, an ephemeral port), opens it in headless Chrome and requires the page's `GUST_OK` line,
+/// whose last part must be `example.closing` and whose selected kernels must match the committed manifest. Every
+/// failure, a missing Chrome or wasm-bindgen included, is an error: nothing is skipped. `target_dir` is the cargo
+/// target directory of the build (it also holds the scratch site and Chrome's profile); `started` is when the caller's
+/// check began, for the total in the timings.
+pub(crate) fn run_example(
+    root: &Path,
+    example: &Example,
+    options: &Options,
+    target_dir: &Path,
+    started: Instant,
+) -> Result<ExampleRun, String> {
     let Tools {
         wanted,
         bindgen,
         chrome,
-    } = find_tools(&root, &options, env::var_os("PATH"))?;
+    } = find_tools(root, example, options, env::var_os("PATH"))?;
     let chrome_version = chrome_version(&chrome);
     println!(
         "check-web: Chrome {} ({}), wasm-bindgen {wanted} ({}), page deadline {} s",
@@ -211,19 +291,20 @@ pub(crate) fn check_web_report(args: &[String]) -> Result<String, String> {
         options.timeout().as_secs(),
     );
 
-    let target_dir = cargo_target_dir(&root);
+    // Absolute, so that the cargo command (which runs in the example's workspace) and this process agree on it.
+    let target_dir = root.join(target_dir);
     let out_dir = target_dir.join("web-check").join("site");
 
     let build_started = Instant::now();
-    let wasm = build_example(&root, &target_dir)?;
+    let wasm = build_example(root, example, &target_dir)?;
     let build_time = build_started.elapsed();
 
     let bindgen_started = Instant::now();
-    prepare_site(&root, &bindgen, &wasm, &out_dir)?;
+    prepare_site(root, example, &bindgen, &wasm, &out_dir)?;
     let bindgen_time = bindgen_started.elapsed();
 
     let page_started = Instant::now();
-    let outcome = run_in_chrome(&chrome, &options, &target_dir, &out_dir)?;
+    let outcome = run_in_chrome(&chrome, options, &target_dir, &out_dir)?;
     let page_time = page_started.elapsed();
 
     let timings = format!(
@@ -235,10 +316,10 @@ pub(crate) fn check_web_report(args: &[String]) -> Result<String, String> {
     );
     match outcome {
         Outcome::Result(PageResult::Ok { label }) => {
-            let (adapter, selected) = split_page_label(&label).map_err(|error| {
+            let (adapter, selected) = split_label(&label, example.closing).map_err(|error| {
                 format!("check-web: the page logged `{OK_PREFIX}{label}`: {error}\n  {timings}")
             })?;
-            let manifest_path = root.join(MANIFEST_PATH);
+            let manifest_path = root.join(example.manifest);
             let manifest = fs::read_to_string(&manifest_path)
                 .map_err(|error| format!("check-web: {}: {error}", manifest_path.display()))?;
             let problems = selected_key_problems(&selected, &manifest);
@@ -248,11 +329,13 @@ pub(crate) fn check_web_report(args: &[String]) -> Result<String, String> {
                     problems.join("\n  ")
                 ));
             }
-            Ok(format!(
-                "check-web passed: the page logged `{OK_PREFIX}{label}`: the real gust-wgpu vector-add (1000 and 8197 elements) ran in both forms, grid and pixel, on the browser GPU, and each equalled the host reference and the other bit for bit. The job contract of the browser held for each submission (status Pending right after the submit and Complete after the awaited readback; wait, wait_timeout and the generated dispatch return Error::WouldBlock), and map_gpu read back the host's result through to_vec_async. The key each of the {} kernels selected is one the committed manifest lists, none needs a capability, and a device opened with the subgroups capability was refused with Error::MissingCapability.\n  evidence: {}\n  {timings}",
-                selected.len(),
-                evidence_label(chrome_version.as_deref(), &adapter)
-            ))
+            Ok(ExampleRun {
+                label,
+                adapter,
+                selected,
+                chrome_version,
+                timings,
+            })
         }
         Outcome::Result(PageResult::Fail { reason }) => Err(format!(
             "check-web: the page logged `{FAIL_PREFIX}{reason}`\n  {timings}"
@@ -338,18 +421,31 @@ pub(crate) struct SelectedKernel {
 /// Splits the label of the page's `GUST_OK` line, `<vendor> <architecture> | selected <kernel=key:variant:n ...> |
 /// subgroups MissingCapability`, into the adapter words and the kernels the build selected. An OK line without the
 /// selected kernels, or without the refusal of the `subgroups` capability, is an error: the page did not prove them.
+#[cfg(test)]
 pub(crate) fn split_page_label(label: &str) -> Result<(String, Vec<SelectedKernel>), String> {
+    split_label(label, SUBGROUPS_REFUSED)
+}
+
+/// [`split_page_label`] for a page whose last part is `closing` (`check-web`'s is [`SUBGROUPS_REFUSED`]).
+pub(crate) fn split_label(
+    label: &str,
+    closing: &str,
+) -> Result<(String, Vec<SelectedKernel>), String> {
     let parts: Vec<&str> = label.split(" | ").collect();
     let [adapter, selected, refusal] = parts.as_slice() else {
         return Err(format!(
-            "the OK line has {} part(s) separated by ` | `, expected 3: the adapter words, `selected ...` and `{SUBGROUPS_REFUSED}`",
+            "the OK line has {} part(s) separated by ` | `, expected 3: the adapter words, `selected ...` and `{closing}`",
             parts.len()
         ));
     };
-    if *refusal != SUBGROUPS_REFUSED {
-        return Err(format!(
-            "the OK line does not say `{SUBGROUPS_REFUSED}` (the refusal of a device opened with the subgroups capability): {refusal:?}"
-        ));
+    if *refusal != closing {
+        return Err(if closing == SUBGROUPS_REFUSED {
+            format!(
+                "the OK line does not say `{SUBGROUPS_REFUSED}` (the refusal of a device opened with the subgroups capability): {refusal:?}"
+            )
+        } else {
+            format!("the OK line does not say `{closing}`: {refusal:?}")
+        });
     }
     let Some(list) = (*selected == "selected")
         .then_some("")
@@ -864,7 +960,8 @@ fn require_wasm_target() -> Result<(), String> {
 // ---------------------------------------------------------------------------------------------------------------
 // Build
 
-fn build_example(root: &Path, target_dir: &Path) -> Result<PathBuf, String> {
+fn build_example(root: &Path, example: &Example, target_dir: &Path) -> Result<PathBuf, String> {
+    let (package, out_name) = (example.package, example.out_name);
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let status = Command::new(cargo)
         .args([
@@ -874,36 +971,43 @@ fn build_example(root: &Path, target_dir: &Path) -> Result<PathBuf, String> {
             "--target",
             WASM_TARGET,
             "-p",
-            PACKAGE,
+            package,
             "--target-dir",
         ])
         .arg(target_dir)
         .env(crate::process::PROFILE_VARIABLE, WEB_PROFILE)
-        .current_dir(root)
+        .current_dir(root.join(example.workspace))
         .stdin(Stdio::null())
         .status()
         .map_err(|error| format!("check-web: could not launch cargo: {error}"))?;
     if !status.success() {
         return Err(format!(
-            "check-web: `cargo build --release --target {WASM_TARGET} -p {PACKAGE}` under {}={WEB_PROFILE} failed ({status})",
+            "check-web: `cargo build --release --target {WASM_TARGET} -p {package}` under {}={WEB_PROFILE} failed ({status})",
             crate::process::PROFILE_VARIABLE
         ));
     }
     let wasm = target_dir
         .join(WASM_TARGET)
         .join("release")
-        .join(format!("{OUT_NAME}.wasm"));
+        .join(format!("{out_name}.wasm"));
     if wasm.is_file() {
         Ok(wasm)
     } else {
         Err(format!(
-            "check-web: the build succeeded but produced no {OUT_NAME}.wasm"
+            "check-web: the build succeeded but produced no {out_name}.wasm"
         ))
     }
 }
 
 /// Recreates `out_dir` with the bindgen output and the page.
-fn prepare_site(root: &Path, bindgen: &Path, wasm: &Path, out_dir: &Path) -> Result<(), String> {
+fn prepare_site(
+    root: &Path,
+    example: &Example,
+    bindgen: &Path,
+    wasm: &Path,
+    out_dir: &Path,
+) -> Result<(), String> {
+    let out_name = example.out_name;
     if out_dir.exists() {
         fs::remove_dir_all(out_dir).map_err(|error| {
             format!("check-web: could not clear the previous output directory: {error}")
@@ -912,7 +1016,7 @@ fn prepare_site(root: &Path, bindgen: &Path, wasm: &Path, out_dir: &Path) -> Res
     fs::create_dir_all(out_dir)
         .map_err(|error| format!("check-web: could not create the output directory: {error}"))?;
     let status = Command::new(bindgen)
-        .args(["--target", "web", "--no-typescript", "--out-name", OUT_NAME])
+        .args(["--target", "web", "--no-typescript", "--out-name", out_name])
         .arg("--out-dir")
         .arg(out_dir)
         .arg(wasm)
@@ -923,11 +1027,11 @@ fn prepare_site(root: &Path, bindgen: &Path, wasm: &Path, out_dir: &Path) -> Res
         return Err(format!("check-web: wasm-bindgen failed ({status})"));
     }
     fs::copy(
-        root.join(EXAMPLE_DIR).join("index.html"),
+        root.join(example.dir).join("index.html"),
         out_dir.join("index.html"),
     )
     .map_err(|error| format!("check-web: could not copy index.html: {error}"))?;
-    for name in [format!("{OUT_NAME}.js"), format!("{OUT_NAME}_bg.wasm")] {
+    for name in [format!("{out_name}.js"), format!("{out_name}_bg.wasm")] {
         if !out_dir.join(&name).is_file() {
             return Err(format!("check-web: wasm-bindgen produced no {name}"));
         }

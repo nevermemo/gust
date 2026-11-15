@@ -227,6 +227,26 @@ proof.
   (m10.api2a.1): the constructors that the `#[non_exhaustive]` structs of B6 need (B5's record structs get none; only
   the crate builds them).
 
+### Deprecated
+
+- The f32/u32 compatibility family (m10.api2a.2, audit W3): 13 functions and 6 types are `#[deprecated(since = "0.2.0")]`.
+  They still work and are **removed at 1.0**. A call or a `use` of one warns, so a build with `-D warnings` needs the
+  typed call. Each has a typed replacement that already exists:
+
+  | Deprecated | Use instead |
+  | --- | --- |
+  | `HeadlessDevice::create_f32_buffer` | `create_typed_buffer` |
+  | `write_f32_buffer`, `write_f32_buffer_timed` | `write_typed_buffer`, `write_typed_buffer_timed` |
+  | `read_f32_buffer`, `read_f32_buffer_timed` | `read_typed_buffer`, `read_typed_buffer_timed` |
+  | `submit_f32_buffers` | `submit_buffers` with `BufferBinding` |
+  | `dispatch_f32_buffers`, `dispatch_f32_buffers_timed` | `dispatch_buffers`, `dispatch_buffers_timed` |
+  | `submit_f32_batch` | `submit_batch` with `BufferDispatch` |
+  | `dispatch_f32_batch`, `dispatch_f32_batch_timed` | `dispatch_batch`, `dispatch_batch_timed` |
+  | `dispatch_f32`, `dispatch_u32` | `create_typed_buffer`, then `dispatch_buffers` (or the kernel's typed `dispatch`), then `read_typed_buffer` |
+  | `F32Binding`, `U32Binding`, `F32BufferBinding` | a `GpuBuffer<T>` and `BufferBinding` |
+  | `F32BufferDispatch` | `BufferDispatch` |
+  | `DispatchOutput`, `U32DispatchOutput` | `read_typed_buffer` on the buffers |
+
 ### Changed, and may break code written for 0.1.0
 
 - **B1, part 1: `KernelDescriptor` is `#[non_exhaustive]`** and has new fields (`variant`, `requires`, `target`).

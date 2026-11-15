@@ -12,6 +12,8 @@ use gust::{
     Access, Extent, GpuPod, KernelDescriptor, ParameterDescriptor, ParameterKind, ResourceBinding,
     ResourceLayout, TypeLayout,
 };
+// The names below are the compatibility path, which these tests exercise until 1.0.
+#[allow(deprecated)]
 use gust_wgpu::{
     BufferBinding, BufferDispatch, Error, F32Binding, GpuBufferAccess, HeadlessDevice, StagedGraph,
     U32Binding,
@@ -304,7 +306,7 @@ fn with_limits_rejects_a_raised_maximum() {
 fn workgroup_width_above_the_limit_is_an_error_before_compilation() {
     let device = device();
     let maximum = device.limits().max_compute_workgroup_size_x;
-    let output = device.create_f32_buffer("width", &[3.0], GpuBufferAccess::ReadWrite);
+    let output = device.create_typed_buffer("width", &[3.0], GpuBufferAccess::ReadWrite);
     let descriptor = kernel(Element::F32, maximum + 1, 1);
     let error = device
         .dispatch_buffers(&descriptor, 1, &[BufferBinding::read_write(&output)])
@@ -316,7 +318,7 @@ fn workgroup_width_above_the_limit_is_an_error_before_compilation() {
         u64::from(maximum),
     );
     assert_cold(&device);
-    assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0]);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
 }
 
 #[test]
@@ -324,7 +326,7 @@ fn invocations_per_workgroup_above_the_limit_is_an_error_before_compilation() {
     let device = lowered(device(), |limits| {
         limits.max_compute_invocations_per_workgroup = 32;
     });
-    let output = device.create_f32_buffer("invocations", &[3.0], GpuBufferAccess::ReadWrite);
+    let output = device.create_typed_buffer("invocations", &[3.0], GpuBufferAccess::ReadWrite);
     let error = device
         .dispatch_buffers(
             &kernel(Element::F32, 64, 1),
@@ -334,7 +336,7 @@ fn invocations_per_workgroup_above_the_limit_is_an_error_before_compilation() {
         .expect_err("64 invocations exceed the lowered limit of 32");
     assert_limit(error, "max_compute_invocations_per_workgroup", 64, 32);
     assert_cold(&device);
-    assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0]);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
 }
 
 #[test]
@@ -344,7 +346,7 @@ fn storage_buffers_above_the_limit_are_an_error_before_compilation() {
     let count = maximum as usize + 1;
     let buffers = (0..count)
         .map(|index| {
-            device.create_f32_buffer(&format!("p{index}"), &[3.0], GpuBufferAccess::ReadWrite)
+            device.create_typed_buffer(&format!("p{index}"), &[3.0], GpuBufferAccess::ReadWrite)
         })
         .collect::<Vec<_>>();
     let bindings = buffers
@@ -362,7 +364,7 @@ fn storage_buffers_above_the_limit_are_an_error_before_compilation() {
     );
     assert_cold(&device);
     for buffer in &buffers {
-        assert_eq!(device.read_f32_buffer(buffer).unwrap(), [3.0]);
+        assert_eq!(device.read_typed_buffer(buffer).unwrap(), [3.0]);
     }
 }
 
@@ -370,16 +372,16 @@ fn storage_buffers_above_the_limit_are_an_error_before_compilation() {
 fn lowering_limits_after_the_cache_is_warm_still_rejects() {
     let device = device();
     let opened = device.limits().clone();
-    let output = device.create_f32_buffer("warm", &[3.0], GpuBufferAccess::ReadWrite);
+    let output = device.create_typed_buffer("warm", &[3.0], GpuBufferAccess::ReadWrite);
     let descriptor = kernel(Element::F32, 64, 1);
     let bindings = [BufferBinding::read_write(&output)];
     device.dispatch_buffers(&descriptor, 1, &bindings).unwrap();
-    assert_eq!(device.read_f32_buffer(&output).unwrap(), [17.0]);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), [17.0]);
     let stats = device.pipeline_cache_stats();
     assert_eq!((stats.entries, stats.misses, stats.hits), (1, 1, 0));
 
     let device = lowered(device, |limits| limits.max_compute_workgroup_size_x = 32);
-    device.write_f32_buffer(&output, &[3.0]).unwrap();
+    device.write_typed_buffer(&output, &[3.0]).unwrap();
     let error = device
         .dispatch_buffers(&descriptor, 1, &bindings)
         .expect_err("the cached pipeline must not authorize a launch the limits forbid");
@@ -390,11 +392,11 @@ fn lowering_limits_after_the_cache_is_warm_still_rejects() {
         (1, 1, 0),
         "the limit check runs before the cache lookup, so no hit is counted"
     );
-    assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0]);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
 
     let device = device.with_limits(opened).unwrap();
     device.dispatch_buffers(&descriptor, 1, &bindings).unwrap();
-    assert_eq!(device.read_f32_buffer(&output).unwrap(), [17.0]);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), [17.0]);
     assert_eq!(device.pipeline_cache_stats().hits, 1);
 }
 
@@ -402,7 +404,7 @@ fn lowering_limits_after_the_cache_is_warm_still_rejects() {
 fn an_empty_dispatch_is_not_limit_checked() {
     let device = device();
     let maximum = device.limits().max_compute_workgroup_size_x;
-    let output = device.create_f32_buffer("empty", &[], GpuBufferAccess::ReadWrite);
+    let output = device.create_typed_buffer::<f32>("empty", &[], GpuBufferAccess::ReadWrite);
     device
         .dispatch_buffers(
             &kernel(Element::F32, maximum + 1, 1),
@@ -429,7 +431,7 @@ fn count_cases(device: &HeadlessDevice) -> (u32, u32, u32) {
 fn workgroup_count_through_dispatch_buffers() {
     let device = device();
     let (maximum, over, exact) = count_cases(&device);
-    let output = device.create_f32_buffer("count", &[3.0], GpuBufferAccess::ReadWrite);
+    let output = device.create_typed_buffer("count", &[3.0], GpuBufferAccess::ReadWrite);
     let descriptor = kernel(Element::F32, 64, 1);
     let bindings = [BufferBinding::read_write(&output).independent_length()];
     let error = device
@@ -442,15 +444,17 @@ fn workgroup_count_through_dispatch_buffers() {
         u64::from(maximum),
     );
     assert_cold(&device);
-    assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0]);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
 
     device
         .dispatch_buffers(&descriptor, exact, &bindings)
         .unwrap();
-    assert_eq!(device.read_f32_buffer(&output).unwrap(), [17.0]);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), [17.0]);
 }
 
 #[test]
+// Tests the deprecated compatibility path until 1.0.
+#[allow(deprecated)]
 fn workgroup_count_through_dispatch_f32() {
     let device = device();
     let (maximum, over, exact) = count_cases(&device);
@@ -481,6 +485,8 @@ fn workgroup_count_through_dispatch_f32() {
 }
 
 #[test]
+// Tests the deprecated compatibility path until 1.0.
+#[allow(deprecated)]
 fn workgroup_count_through_dispatch_u32() {
     let device = device();
     let (maximum, over, exact) = count_cases(&device);
@@ -514,7 +520,7 @@ fn workgroup_count_through_dispatch_u32() {
 fn workgroup_count_through_a_one_node_graph() {
     let device = device();
     let (maximum, over, exact) = count_cases(&device);
-    let output = device.create_f32_buffer("graph", &[3.0], GpuBufferAccess::ReadWrite);
+    let output = device.create_typed_buffer("graph", &[3.0], GpuBufferAccess::ReadWrite);
     let descriptor = kernel(Element::F32, 64, 1);
     let bindings = [BufferBinding::read_write(&output).independent_length()];
 
@@ -540,12 +546,12 @@ fn workgroup_count_through_a_one_node_graph() {
         u64::from(maximum),
     );
     assert_cold(&device);
-    assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0]);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
 
     let mut graph = StagedGraph::new();
     graph.dispatch(BufferDispatch::new(&descriptor, exact, &bindings), &[]);
     device.execute_graph(&graph).unwrap();
-    assert_eq!(device.read_f32_buffer(&output).unwrap(), [17.0]);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), [17.0]);
 }
 
 /// Four elements are 16 bytes, exactly the lowered binding limit; five are 20.
@@ -575,6 +581,8 @@ fn binding_size_through_dispatch_buffers() {
 }
 
 #[test]
+// Tests the deprecated compatibility path until 1.0.
+#[allow(deprecated)]
 fn binding_size_through_dispatch_f32() {
     let device = small_binding_device();
     let descriptor = kernel(Element::F32, 64, 1);
@@ -591,6 +599,8 @@ fn binding_size_through_dispatch_f32() {
 }
 
 #[test]
+// Tests the deprecated compatibility path until 1.0.
+#[allow(deprecated)]
 fn binding_size_through_dispatch_u32() {
     let device = small_binding_device();
     let descriptor = kernel(Element::U32, 64, 1);
@@ -829,7 +839,7 @@ fn dispatch_extent(
 fn workgroup_size_y_and_z_above_the_limit_are_errors_before_compilation() {
     let device = device();
     let limits = device.limits().clone();
-    let output = device.create_f32_buffer("axes", &[3.0], GpuBufferAccess::ReadWrite);
+    let output = device.create_typed_buffer("axes", &[3.0], GpuBufferAccess::ReadWrite);
     for (axis, name, maximum) in [
         (
             1,
@@ -853,7 +863,7 @@ fn workgroup_size_y_and_z_above_the_limit_are_errors_before_compilation() {
             .expect_err("a workgroup deeper than the device allows must fail");
         assert_limit(error, name, u64::from(maximum) + 1, u64::from(maximum));
         assert_cold(&device);
-        assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0], "{name}");
+        assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0], "{name}");
     }
 }
 
@@ -871,7 +881,7 @@ fn workgroup_size_y_and_z_at_the_limit_still_run() {
         if u64::from(maximum) > u64::from(limits.max_compute_invocations_per_workgroup) {
             continue;
         }
-        let output = device.create_f32_buffer("exact", &[3.0], GpuBufferAccess::ReadWrite);
+        let output = device.create_typed_buffer("exact", &[3.0], GpuBufferAccess::ReadWrite);
         device
             .dispatch_buffers(
                 &kernel_sized(Element::F32, size, 1),
@@ -880,7 +890,7 @@ fn workgroup_size_y_and_z_at_the_limit_still_run() {
             )
             .unwrap_or_else(|error| panic!("axis {axis} at its limit {maximum}: {error:?}"));
         assert_eq!(
-            device.read_f32_buffer(&output).unwrap(),
+            device.read_typed_buffer(&output).unwrap(),
             [17.0],
             "axis {axis}"
         );
@@ -892,7 +902,7 @@ fn the_workgroup_counts_of_every_axis_are_checked_against_the_per_dimension_limi
     let device = lowered(device(), |limits| {
         limits.max_compute_workgroups_per_dimension = 3;
     });
-    let output = device.create_f32_buffer("counts", &[3.0], GpuBufferAccess::ReadWrite);
+    let output = device.create_typed_buffer("counts", &[3.0], GpuBufferAccess::ReadWrite);
     let descriptor = kernel_sized(Element::F32, [4, 4, 4], 1);
     let bindings = [BufferBinding::read_write(&output).independent_length()];
     // Each over-limit axis is named in the error. The first one over is the one reported: x, then y, then z.
@@ -923,17 +933,17 @@ fn the_workgroup_counts_of_every_axis_are_checked_against_the_per_dimension_limi
         assert_limit(error, limit, 4, 3);
         assert_cold(&device);
         assert_eq!(
-            device.read_f32_buffer(&output).unwrap(),
+            device.read_typed_buffer(&output).unwrap(),
             [3.0],
             "{extent:?}"
         );
     }
     // Three workgroups on every axis, and a ragged extent that rounds up to three on every axis, both run.
     for extent in [Extent::new(12, 12, 12), Extent::new(9, 9, 9)] {
-        device.write_f32_buffer(&output, &[3.0]).unwrap();
+        device.write_typed_buffer(&output, &[3.0]).unwrap();
         dispatch_extent(&device, &descriptor, extent, &bindings).unwrap();
         assert_eq!(
-            device.read_f32_buffer(&output).unwrap(),
+            device.read_typed_buffer(&output).unwrap(),
             [17.0],
             "{extent:?}"
         );
@@ -943,7 +953,7 @@ fn the_workgroup_counts_of_every_axis_are_checked_against_the_per_dimension_limi
 #[test]
 fn an_extent_with_a_zero_dimension_is_ok_and_not_limit_checked() {
     let device = device();
-    let output = device.create_f32_buffer("zero", &[3.0], GpuBufferAccess::ReadWrite);
+    let output = device.create_typed_buffer("zero", &[3.0], GpuBufferAccess::ReadWrite);
     // A workgroup too deep for the device: any dispatch of it that is not empty is an error.
     let too_deep = device.limits().max_compute_workgroup_size_z + 1;
     let descriptor = kernel_sized(Element::F32, [1, 1, too_deep], 1);
@@ -959,7 +969,7 @@ fn an_extent_with_a_zero_dimension_is_ok_and_not_limit_checked() {
             .unwrap_or_else(|error| panic!("{extent:?} is empty and must be Ok: {error:?}"));
     }
     assert_cold(&device);
-    assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0]);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
     // The same kernel over one invocation is the error the empty launches did not report.
     let error = dispatch_extent(&device, &descriptor, Extent::new(1, 1, 1), &bindings).unwrap_err();
     assert_limit(
@@ -973,7 +983,7 @@ fn an_extent_with_a_zero_dimension_is_ok_and_not_limit_checked() {
 #[test]
 fn an_extent_product_beyond_a_u64_is_an_extent_error_before_compilation() {
     let device = device();
-    let output = device.create_f32_buffer("overflow", &[3.0], GpuBufferAccess::ReadWrite);
+    let output = device.create_typed_buffer("overflow", &[3.0], GpuBufferAccess::ReadWrite);
     let descriptor = kernel_sized(Element::F32, [4, 4, 4], 1);
     let bindings = [BufferBinding::read_write(&output).independent_length()];
     let everything = Extent::new(u32::MAX, u32::MAX, u32::MAX);
@@ -982,13 +992,13 @@ fn an_extent_product_beyond_a_u64_is_an_extent_error_before_compilation() {
         other => panic!("expected Error::Extent, got {other:?}"),
     }
     assert_cold(&device);
-    assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0]);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
 }
 
 #[test]
 fn a_staged_graph_refuses_a_dispatch_with_a_y_or_z_extent() {
     let device = device();
-    let output = device.create_f32_buffer("graph", &[3.0], GpuBufferAccess::ReadWrite);
+    let output = device.create_typed_buffer("graph", &[3.0], GpuBufferAccess::ReadWrite);
     let descriptor = kernel_sized(Element::F32, [4, 4, 4], 1);
     let bindings = [BufferBinding::read_write(&output).independent_length()];
     for extent in [Extent::new(8, 2, 1), Extent::new(8, 1, 2)] {
@@ -1009,7 +1019,7 @@ fn a_staged_graph_refuses_a_dispatch_with_a_y_or_z_extent() {
             ),
         }
         assert_cold(&device);
-        assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0]);
+        assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
     }
     // A linear extent is the one-dimensional dispatch it always was.
     let mut graph = StagedGraph::new();
@@ -1018,13 +1028,13 @@ fn a_staged_graph_refuses_a_dispatch_with_a_y_or_z_extent() {
         &[],
     );
     device.execute_graph(&graph).unwrap();
-    assert_eq!(device.read_f32_buffer(&output).unwrap(), [17.0]);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), [17.0]);
 }
 
 #[test]
 fn assigning_element_count_to_a_dispatch_still_sets_what_runs() {
     let device = device();
-    let output = device.create_f32_buffer("assign", &[3.0], GpuBufferAccess::ReadWrite);
+    let output = device.create_typed_buffer("assign", &[3.0], GpuBufferAccess::ReadWrite);
     let descriptor = kernel(Element::F32, 64, 1);
     let bindings = [BufferBinding::read_write(&output).independent_length()];
     // The pattern of code written before the extent existed: build with a count, then assign the real one.
@@ -1032,7 +1042,7 @@ fn assigning_element_count_to_a_dispatch_still_sets_what_runs() {
     dispatch.element_count = 64;
     assert_eq!(dispatch.extent(), Extent::linear(64));
     device.dispatch_batch(&[dispatch]).unwrap();
-    assert_eq!(device.read_f32_buffer(&output).unwrap(), [17.0]);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), [17.0]);
 
     // The same on a dispatch built over an extent: x follows the assignment, y and z stay.
     let mut dispatch = BufferDispatch::new_extent(&descriptor, Extent::new(0, 2, 3), &bindings);
@@ -1046,11 +1056,11 @@ fn assigning_element_count_to_a_dispatch_still_sets_what_runs() {
     );
 
     // A count assigned to a zero count dispatches nothing when it is assigned zero, too.
-    device.write_f32_buffer(&output, &[3.0]).unwrap();
+    device.write_typed_buffer(&output, &[3.0]).unwrap();
     let mut dispatch = BufferDispatch::new(&descriptor, 64, &bindings);
     dispatch.element_count = 0;
     device.dispatch_batch(&[dispatch]).unwrap();
-    assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0]);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
 }
 
 // ---- O5 (m10.api1): the infallible `create_typed_buffer` above `max_buffer_size` ----

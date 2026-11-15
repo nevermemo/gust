@@ -343,11 +343,11 @@ fn main() {
     let a = [1.0f32, 2.0, 3.0, 4.0];
     let b = [10.0f32, 20.0, 30.0, 40.0];
     let device = HeadlessDevice::new().expect("a Vulkan compute adapter");
-    let ga = device.create_f32_buffer("a", &a, GpuBufferAccess::ReadOnly);
-    let gb = device.create_f32_buffer("b", &b, GpuBufferAccess::ReadOnly);
-    let out = device.create_f32_buffer("out", &[0.0; 4], GpuBufferAccess::ReadWrite);
+    let ga = device.create_typed_buffer("a", &a, GpuBufferAccess::ReadOnly);
+    let gb = device.create_typed_buffer("b", &b, GpuBufferAccess::ReadOnly);
+    let out = device.create_typed_buffer("out", &[0.0; 4], GpuBufferAccess::ReadWrite);
     vector_add::add::dispatch(&device, 4, &ga, &gb, &out).expect("dispatch");
-    let result = device.read_f32_buffer(&out).expect("read back");
+    let result = device.read_typed_buffer(&out).expect("read back");
     println!("hello-gust: {result:?}");
 }
 ```
@@ -754,11 +754,11 @@ a buffer where a uniform is expected, or the reverse, is a compile error (E0271)
 This is `add_on_gpu` from `examples/vector-add` for the kernel above:
 
 ```rust
-let a = device.create_f32_buffer("vector add a", a, GpuBufferAccess::ReadOnly);
-let b = device.create_f32_buffer("vector add b", b, GpuBufferAccess::ReadOnly);
-let out = device.create_f32_buffer("vector add out", seed, GpuBufferAccess::ReadWrite);
+let a = device.create_typed_buffer("vector add a", a, GpuBufferAccess::ReadOnly);
+let b = device.create_typed_buffer("vector add b", b, GpuBufferAccess::ReadOnly);
+let out = device.create_typed_buffer("vector add out", seed, GpuBufferAccess::ReadWrite);
 vector_add::add::dispatch(device, seed.len() as u32, &a, &b, &out)?;
-let result = device.read_f32_buffer(&out)?;
+let result = device.read_typed_buffer(&out)?;
 ```
 
 The generated functions check these things when the program is compiled: every
@@ -816,8 +816,9 @@ the GPU and the twin.
 test only, not a hardware run). The infallible `create_typed_buffer` does not
 check it.
 
-The older slice paths (`dispatch_f32`, `dispatch_u32`, `F32Binding`,
-`U32Binding`, `BufferDispatch` built by hand) still work and are not deprecated.
+The older slice paths (`dispatch_f32`, `dispatch_u32`, `F32Binding`, `U32Binding`) and the `*_f32_*` helpers
+(`create_f32_buffer`, `read_f32_buffer` and the rest) are deprecated since 0.2.0: they still work and the typed calls
+above replace them. A `BufferDispatch` built by hand is not deprecated.
 
 ## Generated Slang
 

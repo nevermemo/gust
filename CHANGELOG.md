@@ -29,6 +29,10 @@ proof.
 
 ### Added
 
+- `#[gpu(crate = <path>)]` and the `crate(<path>);` clause of `par_for!` (audit S6, D48): for a crate that reaches
+  `gust` through another crate's `pub use gust;`, the macro rewrites the `::gust::` paths of its output to the given
+  path (`::inner::gust`). `::gust_wgpu` stays literal, so the function form and `par_for!` still need a direct
+  `gust-compute-wgpu` dependency. An addition, not a break; a malformed or repeated `crate = ..` is `GUST-E0701`.
 - The SPIR-V route (m9.rt2, D172, D174): the opt-in Cargo feature `spirv-route` of `gust-compute-wgpu` and
   `gust-compute` builds Vulkan compute and pixel pipelines from slangc's SPIR-V (wgpu passthrough shaders) and falls
   back to WGSL, with a recorded reason (`HeadlessDevice::route_events`, `Route`, `RouteEvent`, `SPIRV_ROUTE`), when the

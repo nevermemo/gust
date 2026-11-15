@@ -1107,44 +1107,85 @@ pub(crate) mod routing {
         pub span: Span,
     }
 
-    /// The one argument `#[gpu]` takes: `route = "<tag>"`, with an optional trailing comma.
-    struct Argument(syn::LitStr);
+    /// What `#[gpu(..)]` says: the route tag and the facade path, each of them optional.
+    pub(crate) struct Attribute {
+        /// `route = "<tag>"`.
+        pub tag: Option<Tag>,
+        /// `crate = <path>` (audit S6, D48): where `gust` is, for a crate that has no `::gust` of its own.
+        pub krate: Option<syn::Path>,
+    }
 
-    impl Parse for Argument {
+    /// The arguments `#[gpu]` takes: `route = "<tag>"` and `crate = <path>`, in either order, each at most once, with
+    /// an optional trailing comma.
+    struct Arguments(Attribute);
+
+    const ARGUMENTS_TEXT: &str = "#[gpu] takes `route = \"<tag>\"` and `crate = <path>` (for example `crate = ::inner::gust`), \
+                                  each at most once, separated by commas";
+
+    impl Parse for Arguments {
         fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-            let name: syn::Ident = input.parse()?;
-            if name != "route" {
-                return Err(diagnostics::error_at(
-                    Code::GpuArguments,
-                    name.span(),
-                    format!(
-                        "#[gpu] takes one argument, `route = \"<tag>\"`, in the current Rust-to-Slang subset; `{name}` is not it"
-                    ),
-                ));
-            }
-            input.parse::<syn::Token![=]>()?;
-            let literal: syn::LitStr = input.parse()?;
-            if input.peek(syn::Token![,]) {
+            let mut attribute = Attribute {
+                tag: None,
+                krate: None,
+            };
+            while !input.is_empty() {
+                if input.peek(syn::Token![crate]) {
+                    let keyword: syn::Token![crate] = input.parse()?;
+                    if attribute.krate.is_some() {
+                        return Err(diagnostics::error(
+                            Code::GpuArguments,
+                            keyword,
+                            "#[gpu] takes `crate = <path>` at most once",
+                        ));
+                    }
+                    input.parse::<syn::Token![=]>()?;
+                    attribute.krate =
+                        Some(crate::forward::parse_facade(input, Code::GpuArguments)?);
+                } else {
+                    let name: syn::Ident = input.parse()?;
+                    if name != "route" {
+                        return Err(diagnostics::error_at(
+                            Code::GpuArguments,
+                            name.span(),
+                            format!(
+                                "{ARGUMENTS_TEXT}, in the current Rust-to-Slang subset; `{name}` is not one of them"
+                            ),
+                        ));
+                    }
+                    if attribute.tag.is_some() {
+                        return Err(diagnostics::error(
+                            Code::GpuArguments,
+                            name,
+                            "#[gpu] takes `route = \"<tag>\"` at most once",
+                        ));
+                    }
+                    input.parse::<syn::Token![=]>()?;
+                    let literal: syn::LitStr = input.parse()?;
+                    attribute.tag = Some(Tag {
+                        text: literal.value(),
+                        span: literal.span(),
+                    });
+                }
+                if input.is_empty() {
+                    break;
+                }
+                if !input.peek(syn::Token![,]) {
+                    return Err(diagnostics::error_at(
+                        Code::GpuArguments,
+                        input.span(),
+                        format!("{ARGUMENTS_TEXT}; an argument is followed by a comma or nothing"),
+                    ));
+                }
                 input.parse::<syn::Token![,]>()?;
             }
-            if !input.is_empty() {
-                return Err(diagnostics::error_at(
-                    Code::GpuArguments,
-                    input.span(),
-                    "#[gpu] takes one argument, `route = \"<tag>\"`, and nothing after it",
-                ));
-            }
-            Ok(Self(literal))
+            Ok(Self(attribute))
         }
     }
 
-    /// The tag in the arguments of `#[gpu(..)]`; GUST-E0701 for anything but `route = "<tag>"`.
-    pub(crate) fn parse_attribute(arguments: TokenStream) -> syn::Result<Tag> {
-        let Argument(literal) = diagnostics::parse2(Code::GpuArguments, arguments)?;
-        Ok(Tag {
-            text: literal.value(),
-            span: literal.span(),
-        })
+    /// The arguments of `#[gpu(..)]`; GUST-E0701 for anything but `route = "<tag>"` and `crate = <path>`.
+    pub(crate) fn parse_attribute(arguments: TokenStream) -> syn::Result<Attribute> {
+        let Arguments(attribute) = diagnostics::parse2(Code::GpuArguments, arguments)?;
+        Ok(attribute)
     }
 
     /// What reaches the expansion of a route: the tag the attribute named, if any, and where the route variables are

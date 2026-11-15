@@ -274,6 +274,43 @@ fn is_indirect_args_layout(layout: gust::TypeLayout) -> bool {
 }
 
 /// Host data for one reflected `Storage<f32>` or `StorageMut<f32>` parameter.
+///
+/// Deprecated with the v1 `dispatch_f32`, which uploads the data on every call and reads every read-write binding
+/// back; new code creates a buffer once and binds it with [`BufferBinding`]:
+///
+/// ```
+/// # #![allow(deprecated)]
+/// use gust::gpu;
+/// use gust_wgpu::{F32Binding, HeadlessDevice};
+///
+/// #[gpu]
+/// mod vector_add {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn add(
+///         id: SV_DispatchThreadID,
+///         a: StructuredBuffer<float>,
+///         b: StructuredBuffer<float>,
+///         mut out: RWStructuredBuffer<float>,
+///     ) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = a[i] + b[i];
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), gust_wgpu::Error> {
+///     let device = HeadlessDevice::new()?;
+///     let bindings = [
+///         F32Binding::ReadOnly(&[1.0, 2.0]),
+///         F32Binding::ReadOnly(&[10.0, 20.0]),
+///         F32Binding::ReadWrite(&[0.0, 0.0]),
+///     ];
+///     let output = device.dispatch_f32(&vector_add::add::DESCRIPTOR, 2, &bindings)?;
+///     assert_eq!(output.writable_buffers, [vec![11.0, 22.0]]);
+///     Ok(())
+/// }
+/// ```
 #[derive(Clone, Copy, Debug)]
 #[deprecated(
     since = "0.2.0",
@@ -306,6 +343,32 @@ impl<'a> F32Binding<'a> {
 }
 
 /// Host data for one reflected `Storage<u32>` or `StorageMut<u32>` parameter.
+///
+/// Deprecated with the v1 `dispatch_u32`; new code binds a `GpuBuffer<u32>` with [`BufferBinding`]:
+///
+/// ```
+/// # #![allow(deprecated)]
+/// use gust::gpu;
+/// use gust_wgpu::{HeadlessDevice, U32Binding};
+///
+/// #[gpu]
+/// mod counting {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn add_index(id: SV_DispatchThreadID, mut data: RWStructuredBuffer<uint>) {
+///         let i = id.x;
+///         if i < data.len() {
+///             data[i] = data[i] + i;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), gust_wgpu::Error> {
+///     let device = HeadlessDevice::new()?;
+///     let output = device.dispatch_u32(&counting::add_index::DESCRIPTOR, 3, &[U32Binding::ReadWrite(&[10, 10, 10])])?;
+///     assert_eq!(output.writable_buffers, [vec![10, 11, 12]]);
+///     Ok(())
+/// }
+/// ```
 #[derive(Clone, Copy, Debug)]
 #[deprecated(
     since = "0.2.0",
@@ -338,6 +401,25 @@ impl<'a> U32Binding<'a> {
 }
 
 /// Logical shader access assigned to a persistent GPU buffer.
+///
+/// A buffer remembers the access it was created with. A read-only buffer cannot be read back, and a binding that
+/// asks for more access than the buffer has is refused too, at dispatch, with `Error::PersistentBufferAccess`:
+///
+/// ```
+/// use gust_wgpu::{Error, GpuBufferAccess, HeadlessDevice};
+///
+/// let device = HeadlessDevice::new()?;
+/// let input = device.create_typed_buffer("input", &[1u32, 2], GpuBufferAccess::ReadOnly);
+/// let output = device.create_typed_buffer("output", &[0u32; 2], GpuBufferAccess::ReadWrite);
+/// // Only a read-write buffer can be read back; a read-only one refuses.
+/// assert_eq!(device.read_typed_buffer(&output)?, [0, 0]);
+/// assert!(matches!(
+///     device.read_typed_buffer(&input),
+///     Err(Error::PersistentBufferNotReadable)
+/// ));
+/// assert_eq!(input.access(), GpuBufferAccess::ReadOnly);
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GpuBufferAccess {
     /// Kernels only read the buffer, and the host cannot read it back.
@@ -357,6 +439,24 @@ impl GpuBufferAccess {
 }
 
 /// A device-owned, element-typed allocation that remains resident across dispatches.
+///
+/// Create one with [`HeadlessDevice::create_typed_buffer`], update it with `write_typed_buffer`, and read it with
+/// `read_typed_buffer`:
+///
+/// ```
+/// use gust_wgpu::{GpuBuffer, GpuBufferAccess, HeadlessDevice};
+///
+/// let device = HeadlessDevice::new()?;
+/// let buffer: GpuBuffer<f32> =
+///     device.create_typed_buffer("values", &[1.0, 2.0, 3.0], GpuBufferAccess::ReadWrite);
+/// assert_eq!(buffer.len(), 3);
+/// assert!(!buffer.is_empty());
+/// assert_eq!(buffer.layout().size, 4);
+///
+/// device.write_typed_buffer(&buffer, &[4.0, 5.0, 6.0])?;
+/// assert_eq!(device.read_typed_buffer(&buffer)?, [4.0, 5.0, 6.0]);
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 pub struct GpuBuffer<T> {
     raw: wgpu::Buffer,
     len: usize,
@@ -432,6 +532,47 @@ impl<T> GpuBuffer<T> {
 /// and before the next one, so every dispatch of one later submission, a `submit_batch` or a graph, sees the last
 /// value written) or, between the dispatches of one submission, with `StagedGraph::write_uniform`, which encodes a
 /// copy in the command stream.
+///
+/// ```
+/// use gust::gpu;
+/// use gust_wgpu::{GpuBufferAccess, GpuUniform, HeadlessDevice};
+///
+/// #[gpu]
+/// mod scale {
+///     /// A uniform is a struct with no implicit padding and a size that is a multiple of 16 bytes.
+///     pub struct Params {
+///         pub factor: f32,
+///         pub pad0: f32,
+///         pub pad1: f32,
+///         pub pad2: f32,
+///     }
+///
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn apply(id: SV_DispatchThreadID, p: Uniform<Params>, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * p.factor;
+///         }
+///     }
+/// }
+///
+/// fn params(factor: f32) -> scale::Params {
+///     scale::Params { factor, pad0: 0.0, pad1: 0.0, pad2: 0.0 }
+/// }
+///
+/// fn main() -> Result<(), gust_wgpu::Error> {
+///     let device = HeadlessDevice::new()?;
+///     let out = device.create_typed_buffer("out", &[1.0f32, 2.0], GpuBufferAccess::ReadWrite);
+///     let uniform: GpuUniform<scale::Params> = device.create_uniform("params", &params(3.0))?;
+///     assert_eq!(uniform.layout().size, 16);
+///
+///     scale::apply::dispatch(&device, 2, &uniform, &out)?;
+///     device.write_uniform(&uniform, &params(10.0))?;
+///     scale::apply::dispatch(&device, 2, &uniform, &out)?;
+///     assert_eq!(device.read_typed_buffer(&out)?, [30.0, 60.0]);
+///     Ok(())
+/// }
+/// ```
 pub struct GpuUniform<T> {
     raw: wgpu::Buffer,
     layout: gust::TypeLayout,
@@ -461,6 +602,45 @@ impl<T> GpuUniform<T> {
 }
 
 /// One persistent buffer bound to an `f32` storage parameter.
+///
+/// Deprecated with `F32BufferDispatch`; [`BufferBinding`] binds a buffer of any element type:
+///
+/// ```
+/// # #![allow(deprecated)]
+/// use gust::gpu;
+/// use gust_wgpu::{F32BufferBinding, GpuBufferAccess, HeadlessDevice};
+///
+/// #[gpu]
+/// mod vector_add {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn add(
+///         id: SV_DispatchThreadID,
+///         a: StructuredBuffer<float>,
+///         b: StructuredBuffer<float>,
+///         mut out: RWStructuredBuffer<float>,
+///     ) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = a[i] + b[i];
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), gust_wgpu::Error> {
+///     let device = HeadlessDevice::new()?;
+///     let a = device.create_f32_buffer("a", &[1.0, 2.0], GpuBufferAccess::ReadOnly);
+///     let b = device.create_f32_buffer("b", &[10.0, 20.0], GpuBufferAccess::ReadOnly);
+///     let out = device.create_f32_buffer("out", &[0.0, 0.0], GpuBufferAccess::ReadWrite);
+///     let bindings = [
+///         F32BufferBinding::ReadOnly(&a),
+///         F32BufferBinding::ReadOnly(&b),
+///         F32BufferBinding::ReadWrite(&out),
+///     ];
+///     device.dispatch_f32_buffers(&vector_add::add::DESCRIPTOR, 2, &bindings)?;
+///     assert_eq!(device.read_f32_buffer(&out)?, [11.0, 22.0]);
+///     Ok(())
+/// }
+/// ```
 #[derive(Clone, Copy)]
 #[deprecated(since = "0.2.0", note = "use `BufferBinding`")]
 pub enum F32BufferBinding<'a> {
@@ -488,6 +668,44 @@ impl<'a> F32BufferBinding<'a> {
 
 /// A checked view of a typed allocation for one heterogeneous storage binding.
 /// Construct through `read_only` or `read_write`; the original element ABI is retained.
+///
+/// A small settings buffer, which has its own length, opts out of the length rule with `independent_length`:
+///
+/// ```
+/// use gust::gpu;
+/// use gust_wgpu::{BufferBinding, BufferDispatch, GpuBufferAccess, HeadlessDevice};
+///
+/// #[gpu]
+/// mod scale {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn by(
+///         id: SV_DispatchThreadID,
+///         factor: StructuredBuffer<float>,
+///         x: StructuredBuffer<float>,
+///         mut out: RWStructuredBuffer<float>,
+///     ) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = factor[0] * x[i];
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), gust_wgpu::Error> {
+///     let device = HeadlessDevice::new()?;
+///     let factor = device.create_typed_buffer("factor", &[3.0f32], GpuBufferAccess::ReadOnly);
+///     let x = device.create_typed_buffer("x", &[1.0f32, 2.0, 3.0], GpuBufferAccess::ReadOnly);
+///     let out = device.create_typed_buffer("out", &[0.0f32; 3], GpuBufferAccess::ReadWrite);
+///     let bindings = [
+///         BufferBinding::read_only(&factor).independent_length(),
+///         BufferBinding::read_only(&x),
+///         BufferBinding::read_write(&out),
+///     ];
+///     device.dispatch_batch(&[BufferDispatch::new(&scale::by::DESCRIPTOR, 3, &bindings)])?;
+///     assert_eq!(device.read_typed_buffer(&out)?, [3.0, 6.0, 9.0]);
+///     Ok(())
+/// }
+/// ```
 #[derive(Clone, Copy)]
 pub struct BufferBinding<'a> {
     /// What the binding stands for in the aliasing rule and the staged graph's hazard check: its buffer, or its texture.
@@ -641,6 +859,38 @@ impl<'a> From<F32BufferBinding<'a>> for BufferBinding<'a> {
 /// so `dispatch.element_count = n` on a dispatch from [`BufferDispatch::new`] dispatches `n` invocations, as it always
 /// did. The staged graph runs one-dimensional dispatches only (a node with a y or z extent above 1 is refused with
 /// [`Error::Extent`] when the graph runs), and reads `element_count`.
+///
+/// ```
+/// use gust::{Extent, gpu};
+/// use gust_wgpu::{BufferBinding, BufferDispatch, GpuBufferAccess, HeadlessDevice};
+///
+/// #[gpu]
+/// mod double {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), gust_wgpu::Error> {
+///     let device = HeadlessDevice::new()?;
+///     let out = device.create_typed_buffer("out", &[1.0f32, 2.0, 3.0], GpuBufferAccess::ReadWrite);
+///     let bindings = [BufferBinding::read_write(&out)];
+///     let mut dispatch = BufferDispatch::new(&double::run::DESCRIPTOR, 3, &bindings);
+///     assert_eq!(dispatch.extent(), Extent::linear(3));
+///
+///     // Batches run in order inside one submission.
+///     device.dispatch_batch(&[dispatch, dispatch])?;
+///     assert_eq!(device.read_typed_buffer(&out)?, [4.0, 8.0, 12.0]);
+///
+///     dispatch.set_extent(Extent::linear(1));
+///     assert_eq!(dispatch.element_count, 1);
+///     Ok(())
+/// }
+/// ```
 #[derive(Clone, Copy)]
 pub struct BufferDispatch<'a> {
     /// The kernel to run.
@@ -721,6 +971,35 @@ impl<'a> BufferDispatch<'a> {
 }
 
 /// One persistent-buffer dispatch to encode as part of a batch.
+///
+/// Deprecated; [`BufferDispatch`] takes bindings of any element type:
+///
+/// ```
+/// # #![allow(deprecated)]
+/// use gust::gpu;
+/// use gust_wgpu::{F32BufferBinding, F32BufferDispatch, GpuBufferAccess, HeadlessDevice};
+///
+/// #[gpu]
+/// mod double {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), gust_wgpu::Error> {
+///     let device = HeadlessDevice::new()?;
+///     let out = device.create_f32_buffer("out", &[1.0, 2.0], GpuBufferAccess::ReadWrite);
+///     let bindings = [F32BufferBinding::ReadWrite(&out)];
+///     let dispatch = F32BufferDispatch::new(&double::run::DESCRIPTOR, 2, &bindings);
+///     device.dispatch_f32_batch(&[dispatch, dispatch])?;
+///     assert_eq!(device.read_f32_buffer(&out)?, [4.0, 8.0]);
+///     Ok(())
+/// }
+/// ```
 #[derive(Clone, Copy)]
 #[deprecated(since = "0.2.0", note = "use `BufferDispatch`")]
 #[allow(deprecated)]
@@ -750,6 +1029,33 @@ impl<'a> F32BufferDispatch<'a> {
 }
 
 /// Result of a completed dispatch. Writable buffers are returned in binding order.
+///
+/// `dispatch_f32` returns one (see [`F32Binding`]); it is deprecated in favour of `read_typed_buffer`:
+///
+/// ```
+/// # #![allow(deprecated)]
+/// use gust::gpu;
+/// use gust_wgpu::{F32Binding, HeadlessDevice};
+///
+/// #[gpu]
+/// mod double {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), gust_wgpu::Error> {
+///     let device = HeadlessDevice::new()?;
+///     let output = device.dispatch_f32(&double::run::DESCRIPTOR, 2, &[F32Binding::ReadWrite(&[1.0, 2.0])])?;
+///     // One entry per read-write binding, in binding order.
+///     assert_eq!(output.writable_buffers, vec![vec![2.0, 4.0]]);
+///     Ok(())
+/// }
+/// ```
 #[derive(Debug, PartialEq)]
 #[deprecated(
     since = "0.2.0",
@@ -761,6 +1067,32 @@ pub struct DispatchOutput {
 }
 
 /// Result of a completed `u32` dispatch. Writable buffers are returned in binding order.
+///
+/// `dispatch_u32` returns one (see [`U32Binding`]); it is deprecated in favour of `read_typed_buffer`:
+///
+/// ```
+/// # #![allow(deprecated)]
+/// use gust::gpu;
+/// use gust_wgpu::{HeadlessDevice, U32Binding};
+///
+/// #[gpu]
+/// mod bump {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn run(id: SV_DispatchThreadID, mut data: RWStructuredBuffer<uint>) {
+///         let i = id.x;
+///         if i < data.len() {
+///             data[i] = data[i] + 1;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), gust_wgpu::Error> {
+///     let device = HeadlessDevice::new()?;
+///     let output = device.dispatch_u32(&bump::run::DESCRIPTOR, 3, &[U32Binding::ReadWrite(&[1, 2, 3])])?;
+///     assert_eq!(output.writable_buffers, vec![vec![2, 3, 4]]);
+///     Ok(())
+/// }
+/// ```
 #[derive(Debug, PartialEq)]
 #[deprecated(
     since = "0.2.0",
@@ -772,6 +1104,21 @@ pub struct U32DispatchOutput {
 }
 
 /// Host-observed time for an explicit transfer boundary.
+///
+/// The `_timed` transfer functions return one (they do not exist on `wasm32`):
+///
+/// ```
+/// use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
+///
+/// let device = HeadlessDevice::new()?;
+/// let buffer = device.create_typed_buffer("values", &[0u32; 4], GpuBufferAccess::ReadWrite);
+/// let timing = device.write_typed_buffer_timed(&buffer, &[1, 2, 3, 4])?;
+/// assert_eq!(timing.bytes, 16);
+/// let (values, read) = device.read_typed_buffer_timed(&buffer)?;
+/// assert_eq!(values, [1, 2, 3, 4]);
+/// assert_eq!(read.bytes, 16);
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TransferTiming {
@@ -782,6 +1129,33 @@ pub struct TransferTiming {
 }
 
 /// Host and device measurements for one synchronous persistent submission.
+///
+/// ```
+/// use gust::gpu;
+/// use gust_wgpu::{BufferBinding, BufferDispatch, GpuBufferAccess, HeadlessDevice};
+///
+/// #[gpu]
+/// mod double {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), gust_wgpu::Error> {
+///     let device = HeadlessDevice::new()?;
+///     let out = device.create_typed_buffer("out", &[1.0f32, 2.0], GpuBufferAccess::ReadWrite);
+///     let bindings = [BufferBinding::read_write(&out)];
+///     let timing = device.dispatch_batch_timed(&[BufferDispatch::new(&double::run::DESCRIPTOR, 2, &bindings)])?;
+///     // The device time is there only on an adapter with timestamp queries.
+///     assert_eq!(timing.gpu_elapsed.is_some(), device.supports_gpu_timestamps());
+///     assert_eq!(device.read_typed_buffer(&out)?, [2.0, 4.0]);
+///     Ok(())
+/// }
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DispatchTiming {
@@ -811,6 +1185,35 @@ pub struct DispatchTiming {
 /// generated `dispatch` and `dispatch_extent` of a kernel, `gust::Run::dispatch_call` and `gust::Device::dispatch`
 /// return that error at run time (use `submit` and an awaited readback there), and the `HeadlessDevice` helpers that
 /// wait are compiled out.
+///
+/// On native, `submit` starts a call and returns the job; `wait` blocks until that submission is done:
+///
+/// ```
+/// use gust::{JobStatus, gpu};
+/// use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
+///
+/// #[gpu]
+/// mod double {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), gust_wgpu::Error> {
+///     let device = HeadlessDevice::new()?;
+///     let out = device.create_typed_buffer("out", &[1.0f32, 2.0], GpuBufferAccess::ReadWrite);
+///     let job = double::run::submit(&device, 2, &out)?;
+///     job.wait()?;
+///     assert!(job.is_complete()?);
+///     assert_eq!(job.status()?, JobStatus::Complete);
+///     assert_eq!(device.read_typed_buffer(&out)?, [2.0, 4.0]);
+///     Ok(())
+/// }
+/// ```
 #[must_use = "GPU work is asynchronous; poll, await a readback or wait on the returned job when completion matters"]
 pub struct WgpuJob<'device> {
     // Only the native `poll_with_timeout` reads these two.
@@ -1385,6 +1788,33 @@ impl Future for MappingReady<'_> {
 }
 
 /// A logical device selected without creating a window or presentation surface.
+///
+/// Open one, create buffers on it, run a kernel and read the result back:
+///
+/// ```
+/// use gust::gpu;
+/// use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
+///
+/// #[gpu]
+/// mod double {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), gust_wgpu::Error> {
+///     let device = HeadlessDevice::new()?;
+///     println!("running on {}", device.adapter_info().name);
+///     let out = device.create_typed_buffer("out", &[1.0f32, 2.0, 3.0], GpuBufferAccess::ReadWrite);
+///     double::run::dispatch(&device, 3, &out)?;
+///     assert_eq!(device.read_typed_buffer(&out)?, [2.0, 4.0, 6.0]);
+///     Ok(())
+/// }
+/// ```
 pub struct HeadlessDevice {
     id: u64,
     device: wgpu::Device,

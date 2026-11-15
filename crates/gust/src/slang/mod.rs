@@ -113,6 +113,18 @@ pub(crate) const KERNEL_FILE: &str = "kernel.slang";
 const EXPORT_FILE: &str = "kernel.export.slang";
 
 /// A compile target of the Slang compiler.
+///
+/// ```
+/// use gust::slang::Target;
+///
+/// // The enum is non-exhaustive: match it with a wildcard arm.
+/// let name = match Target::Wgsl {
+///     Target::Spirv => "spirv",
+///     Target::Wgsl => "wgsl",
+///     _ => "other",
+/// };
+/// assert_eq!(name, "wgsl");
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Target {
@@ -143,6 +155,19 @@ impl Target {
 ///
 /// The enum is `#[non_exhaustive]`: a later release can add a variant without a breaking change, so a `match` in
 /// another crate needs a wildcard arm.
+///
+/// ```
+/// use gust::slang::Error;
+///
+/// let error = Error::CompilerNotFound;
+/// assert!(error.to_string().starts_with("could not launch `slangc`"));
+/// // The enum is non-exhaustive: match it with a wildcard arm.
+/// let missing = match error {
+///     Error::CompilerNotFound => true,
+///     _ => false,
+/// };
+/// assert!(missing);
+/// ```
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
@@ -241,6 +266,29 @@ impl From<std::io::Error> for Error {
 /// or asked, and with [`Error::Io`] when a file cannot be read or written.
 #[cfg(feature = "slang-runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
+///
+/// ```
+/// use gust::gpu;
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     use gust::slang::{Target, compile};
+///
+///     let wgsl = compile(&ops::double::DESCRIPTOR, Target::Wgsl)?;
+///     assert!(String::from_utf8(wgsl)?.contains("double"));
+///     Ok(())
+/// }
+/// ```
 pub fn compile(kernel: &KernelDescriptor, target: Target) -> Result<Vec<u8>, Error> {
     compile_with_origin(
         kernel.slang_source,
@@ -256,6 +304,30 @@ pub fn compile(kernel: &KernelDescriptor, target: Target) -> Result<Vec<u8>, Err
 /// structural check.
 #[cfg(feature = "slang-runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
+///
+/// ```
+/// use gust::gpu;
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     use gust::slang::compile_spirv;
+///
+///     let words = compile_spirv(&ops::double::DESCRIPTOR)?;
+///     // A SPIR-V module starts with its magic number.
+///     assert_eq!(words[0], 0x0723_0203);
+///     Ok(())
+/// }
+/// ```
 pub fn compile_spirv(kernel: &KernelDescriptor) -> Result<Vec<u32>, Error> {
     let bytes = compile(kernel, Target::Spirv)?;
     decode_spirv(&bytes)
@@ -277,6 +349,29 @@ pub(crate) fn decode_spirv(bytes: &[u8]) -> Result<Vec<u32>, Error> {
 /// [`Error::Io`].
 #[cfg(feature = "slang-runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
+///
+/// ```
+/// use gust::gpu;
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     use gust::slang::compile_wgsl;
+///
+///     let wgsl = compile_wgsl(&ops::double::DESCRIPTOR)?;
+///     assert!(wgsl.contains("@compute"));
+///     Ok(())
+/// }
+/// ```
 pub fn compile_wgsl(kernel: &KernelDescriptor) -> Result<String, Error> {
     let bytes = compile(kernel, Target::Wgsl)?;
     String::from_utf8(bytes)
@@ -287,6 +382,30 @@ pub fn compile_wgsl(kernel: &KernelDescriptor) -> Result<String, Error> {
 /// another shape goes through [`compile_source_as`].
 #[cfg(feature = "slang-runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
+///
+/// ```
+/// use gust::gpu;
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     use gust::slang::{Target, compile_source};
+///
+///     let kernel = &ops::double::DESCRIPTOR;
+///     let wgsl = compile_source(kernel.slang_source, kernel.entry_point, Target::Wgsl)?;
+///     assert!(!wgsl.is_empty());
+///     Ok(())
+/// }
+/// ```
 pub fn compile_source(source: &str, entry: &str, target: Target) -> Result<Vec<u8>, Error> {
     compile_source_as(source, entry, Shape::Grid, target)
 }
@@ -294,6 +413,30 @@ pub fn compile_source(source: &str, entry: &str, target: Target) -> Result<Vec<u
 /// [`compile_source`] for an entry point of `shape`: slangc gets that shape's `-stage`.
 #[cfg(feature = "slang-runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
+///
+/// ```
+/// use gust::gpu;
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     use gust::slang::{Target, compile_source_as};
+///
+///     let kernel = &ops::double::DESCRIPTOR;
+///     let wgsl = compile_source_as(kernel.slang_source, kernel.entry_point, kernel.shape, Target::Wgsl)?;
+///     assert!(!wgsl.is_empty());
+///     Ok(())
+/// }
+/// ```
 pub fn compile_source_as(
     source: &str,
     entry: &str,
@@ -788,6 +931,22 @@ fn positive_coordinate(value: &str) -> Option<usize> {
 /// A directory under the system temporary directory for one compiler run. It is removed with its contents when dropped.
 #[cfg(feature = "slang-runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
+///
+/// ```
+/// # #[cfg(feature = "slang-runtime")]
+/// # {
+/// use gust::slang::TemporaryDirectory;
+///
+/// let path = {
+///     let directory = TemporaryDirectory::create()?;
+///     std::fs::write(directory.path().join("note.txt"), "hello")?;
+///     directory.path().to_path_buf()
+/// };
+/// // The directory is removed with its contents when the value is dropped.
+/// assert!(!path.exists());
+/// # }
+/// # Ok::<(), std::io::Error>(())
+/// ```
 pub struct TemporaryDirectory(PathBuf);
 
 #[cfg(feature = "slang-runtime")]
@@ -833,6 +992,27 @@ impl Drop for TemporaryDirectory {
 }
 
 /// Write the Slang source of `kernel` to `path`. Fails with [`Error::Io`] when the file cannot be written.
+///
+/// ```
+/// use gust::gpu;
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// let path = std::env::temp_dir().join(format!("gust-doc-write-source-{}.slang", std::process::id()));
+/// gust::slang::write_source(&ops::double::DESCRIPTOR, &path)?;
+/// assert_eq!(std::fs::read_to_string(&path)?, ops::double::DESCRIPTOR.slang_source);
+/// std::fs::remove_file(&path)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn write_source(kernel: &KernelDescriptor, path: impl AsRef<Path>) -> Result<(), Error> {
     fs::write(path, kernel.slang_source).map_err(Error::Io)
 }

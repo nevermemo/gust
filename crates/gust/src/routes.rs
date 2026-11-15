@@ -49,6 +49,15 @@ pub fn variable_name(package: &str, tag: &str) -> String {
 
 /// Whether `tag` is a well-formed route tag: segments of `[a-z0-9_]+` joined by single `.`, with no `__` anywhere
 /// (the variable's separator), no segment that begins or ends with `_`, and no leading, trailing or doubled `.`.
+///
+/// ```
+/// use gust::routes::is_valid_tag;
+///
+/// assert!(is_valid_tag("physics.broadphase"));
+/// assert!(!is_valid_tag("Physics"));
+/// assert!(!is_valid_tag("a__b"));
+/// assert!(!is_valid_tag("a..b"));
+/// ```
 pub fn is_valid_tag(tag: &str) -> bool {
     !tag.is_empty()
         && tag.split('.').all(|segment| {

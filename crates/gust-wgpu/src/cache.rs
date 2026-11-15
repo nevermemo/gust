@@ -3,6 +3,39 @@ use std::{collections::HashMap, sync::Arc};
 use gust::{Artifact, Format, KernelDescriptor, Shape, capability::Capability};
 
 /// Observable state of one device's compiled-kernel cache.
+///
+/// [`HeadlessDevice::pipeline_cache_stats`](crate::HeadlessDevice::pipeline_cache_stats) returns one. The first
+/// dispatch of a kernel compiles it (a miss); the next dispatch of the same kernel finds it (a hit):
+///
+/// ```
+/// use gust::gpu;
+/// use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
+///
+/// #[gpu]
+/// mod double {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), gust_wgpu::Error> {
+///     let device = HeadlessDevice::new()?;
+///     let out = device.create_typed_buffer("out", &[1.0f32, 2.0], GpuBufferAccess::ReadWrite);
+///     let stats = device.pipeline_cache_stats();
+///     assert_eq!((stats.entries, stats.hits, stats.misses), (0, 0, 0));
+///
+///     double::run::dispatch(&device, 2, &out)?;
+///     double::run::dispatch(&device, 2, &out)?;
+///     let stats = device.pipeline_cache_stats();
+///     assert_eq!((stats.entries, stats.hits, stats.misses), (1, 1, 1));
+///     assert_eq!(device.read_typed_buffer(&out)?, [4.0, 8.0]);
+///     Ok(())
+/// }
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PipelineCacheStats {

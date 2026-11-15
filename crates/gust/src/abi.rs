@@ -1,6 +1,13 @@
 use core::{mem, slice};
 
 /// Scalar formats that have an identical Rust and GPU storage representation.
+///
+/// ```
+/// use gust::{GpuPod, ScalarKind, TypeLayoutKind};
+///
+/// assert_eq!(ScalarKind::ALL, [ScalarKind::U32, ScalarKind::I32, ScalarKind::F32]);
+/// assert_eq!(<f32 as GpuPod>::LAYOUT.kind, TypeLayoutKind::Scalar(ScalarKind::F32));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ScalarKind {
@@ -22,6 +29,15 @@ impl ScalarKind {
 ///
 /// Column-major means that each column is contiguous, so the column stride is the size of one column (padded to 8 or
 /// 16 bytes) and a Rust matrix of vector columns has the same bytes (slice m6.a1, plan F5).
+///
+/// ```
+/// use gust::{MATRIX_LAYOUT, MatrixLayout};
+///
+/// assert_eq!(MATRIX_LAYOUT, MatrixLayout::Column);
+/// assert_eq!(MatrixLayout::Column.as_str(), "column");
+/// assert_eq!(MatrixLayout::parse("row"), Some(MatrixLayout::Row));
+/// assert_eq!(MatrixLayout::parse("diagonal"), None);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MatrixLayout {
     /// Each column is contiguous (the layout GUST uses).
@@ -53,6 +69,19 @@ impl MatrixLayout {
 pub const MATRIX_LAYOUT: MatrixLayout = MatrixLayout::Column;
 
 /// Structural category for one host-shareable type.
+///
+/// The enum is `#[non_exhaustive]`, so a `match` outside this crate needs a wildcard arm:
+///
+/// ```
+/// use gust::{GpuPod, TypeLayoutKind};
+/// use gust::math::Vec4;
+///
+/// let words = match <Vec4 as GpuPod>::LAYOUT.kind {
+///     TypeLayoutKind::Vector { count, .. } => count,
+///     _ => 0,
+/// };
+/// assert_eq!(words, 4);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TypeLayoutKind {
@@ -91,6 +120,19 @@ pub enum TypeLayoutKind {
 }
 
 /// Complete storage-buffer ABI for one element type.
+///
+/// The constructors build the layouts of the scalars, vectors, matrices and arrays; a `GpuPod` type carries its own:
+///
+/// ```
+/// use gust::{GpuPod, ScalarKind, TypeLayout};
+///
+/// let float = TypeLayout::scalar("f32", ScalarKind::F32);
+/// assert_eq!((float.size, float.alignment, float.stride), (4, 4, 4));
+/// let pair = TypeLayout::vector("Vec2", ScalarKind::F32, 2);
+/// assert_eq!((pair.size, pair.alignment), (8, 8));
+/// assert!(pair.is_storage_v2());
+/// assert_eq!(pair, <gust::math::Vec2 as GpuPod>::LAYOUT);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TypeLayout {
     /// The type's name (a Rust type name such as `u32`, or the struct's own name). Descriptive: the byte layout is
@@ -345,6 +387,19 @@ impl TypeLayout {
 }
 
 /// One field in a macro-described host/GPU structure layout.
+///
+/// ```
+/// use gust::{ScalarKind, StructFieldLayout, TypeLayout, TypeLayoutKind};
+///
+/// static FIELDS: [StructFieldLayout; 2] = [
+///     StructFieldLayout { name: "a", offset: 0, ty: TypeLayout::scalar("u32", ScalarKind::U32) },
+///     StructFieldLayout { name: "b", offset: 4, ty: TypeLayout::scalar("f32", ScalarKind::F32) },
+/// ];
+/// let pair = TypeLayout::structure("Pair", 8, 4, &FIELDS);
+/// assert!(pair.is_storage_v1());
+/// let TypeLayoutKind::Struct(fields) = pair.kind else { panic!("a struct") };
+/// assert_eq!((fields[1].name, fields[1].offset), ("b", 4));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StructFieldLayout {
     /// The field's name.
@@ -361,6 +416,19 @@ pub struct StructFieldLayout {
 /// decision D91. The enum is `#[non_exhaustive]`, so a `match` outside this crate needs a wildcard arm
 /// (`gust-compute-wgpu`'s `generated_host.rs` has one). `TextureV1` has no byte layout of its own: the element is the
 /// texel type.
+///
+/// ```
+/// use gust::{GpuPod, ResourceLayout, ShaderLayoutRules};
+///
+/// let layout = ResourceLayout::storage_v1(<u32 as GpuPod>::LAYOUT);
+/// let name = match layout.rules {
+///     ShaderLayoutRules::StorageV1 => "storage v1",
+///     ShaderLayoutRules::StorageV2 => "storage v2",
+///     ShaderLayoutRules::Std140V1 => "std140 v1",
+///     _ => "another rule",
+/// };
+/// assert_eq!(name, "storage v1");
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ShaderLayoutRules {
@@ -380,6 +448,12 @@ pub enum ShaderLayoutRules {
 }
 
 /// The dimensionality of a texture binding. Only 2-D textures exist in the dialect (D62).
+///
+/// ```
+/// use gust::TextureDimension;
+///
+/// assert_eq!(TextureDimension::D2.name(), "2d");
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum TextureDimension {
@@ -397,6 +471,15 @@ impl TextureDimension {
 }
 
 /// How a kernel uses a texture binding, which is also how the reflection spells it (`access`).
+///
+/// ```
+/// use gust::TextureAccess;
+///
+/// assert_eq!(TextureAccess::Sampled.name(), "read");
+/// assert_eq!(TextureAccess::WriteOnly.name(), "write");
+/// assert!(!TextureAccess::Sampled.is_storage());
+/// assert!(TextureAccess::ReadWrite.is_storage());
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum TextureAccess {
@@ -429,6 +512,21 @@ impl TextureAccess {
 /// A **sampled** texture is compared by slot, dimension and sample class: its shader type has no format, so its
 /// `format` is `None` and the concrete format is checked at submit against the bound texture. A **storage** or
 /// **write-only** texture is compared by slot, access, result type and exact `format`, which is `Some`.
+///
+/// ```
+/// use gust::texture::{Format, SampleClass};
+/// use gust::{TextureAccess, TextureDimension, TextureLayout};
+///
+/// // A write-only `R32Float` storage texture.
+/// let layout = TextureLayout {
+///     format: Some(Format::R32Float),
+///     dimension: TextureDimension::D2,
+///     access: TextureAccess::WriteOnly,
+///     class: SampleClass::Float,
+/// };
+/// assert!(layout.access.is_storage());
+/// assert_eq!(layout.format, Some(Format::R32Float));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextureLayout {
     /// The exact texel format of a storage texture; `None` for a sampled one.
@@ -443,6 +541,19 @@ pub struct TextureLayout {
 }
 
 /// Element ABI attached to one shader resource binding.
+///
+/// ```
+/// use gust::{GpuPod, ResourceLayout, ShaderLayoutRules};
+///
+/// let storage = ResourceLayout::storage_v2(<gust::math::Vec4 as GpuPod>::LAYOUT);
+/// assert_eq!(storage.rules, ShaderLayoutRules::StorageV2);
+/// assert_eq!(storage.element_stride, 16);
+///
+/// // A constant buffer holds one element and has no array stride: it is the element's size.
+/// let uniform = ResourceLayout::std140_v1(<gust::math::Vec4 as GpuPod>::LAYOUT);
+/// assert_eq!(uniform.rules, ShaderLayoutRules::Std140V1);
+/// assert_eq!(uniform.element_stride, 16);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResourceLayout {
     /// The ABI that `element` follows.
@@ -672,6 +783,12 @@ impl_gpu_pod_for_arrays!(
 );
 
 /// View a POD slice as its storage-buffer bytes without allocating.
+///
+/// ```
+/// let bytes = gust::pod_slice_as_bytes(&[1u32, 2]);
+/// assert_eq!(bytes.len(), 8);
+/// assert_eq!(bytes, [1u32.to_ne_bytes(), 2u32.to_ne_bytes()].concat());
+/// ```
 pub fn pod_slice_as_bytes<T: GpuPod>(values: &[T]) -> &[u8] {
     let byte_len = mem::size_of_val(values);
     // SAFETY: `GpuPod` guarantees every byte in every value is initialized and

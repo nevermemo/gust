@@ -11,6 +11,14 @@ pub type int = i32;
 pub type uint = u32;
 
 /// A three-component unsigned vector: the Rust shadow of the `uint3` that carries an invocation id.
+///
+/// ```
+/// use gust::UVec3;
+///
+/// let id = UVec3 { x: 5, y: 1, z: 0 };
+/// assert_eq!(id, UVec3 { x: 5, y: 1, z: 0 });
+/// assert_eq!(UVec3::default(), UVec3 { x: 0, y: 0, z: 0 });
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct UVec3 {
@@ -52,6 +60,15 @@ pub type SV_GroupID = UVec3;
 /// [`workgroup_barrier`] must carry `#[kernel(cpu = "unsupported")]` (GUST-E0717): the sequential CPU twin cannot
 /// model it. This type exists so that the shadow body type-checks as ordinary Rust; indexing is by `u32`, as for
 /// buffers.
+///
+/// ```
+/// use gust::Workgroup;
+///
+/// // On the CPU shadow it is a plain array, indexed by `u32`.
+/// let mut shared = Workgroup::new([0_u32; 4]);
+/// shared[2] = 7;
+/// assert_eq!(shared[2], 7);
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct Workgroup<A> {
     values: A,
@@ -81,6 +98,11 @@ impl<T, const N: usize> IndexMut<u32> for Workgroup<[T; N]> {
 /// Rust shadow of the workgroup barrier (Slang `GroupMemoryBarrierWithGroupSync()`, WGSL `workgroupBarrier()`, SPIR-V
 /// `OpControlBarrier`): statement-only in kernels. Every invocation of the workgroup must reach it, which the validator
 /// enforces by position (GUST-E0414 to E0416). It does nothing here: a kernel that calls it has no CPU twin.
+///
+/// ```
+/// // The shadow does nothing; a kernel that calls it has no CPU twin.
+/// gust::workgroup_barrier();
+/// ```
 pub fn workgroup_barrier() {}
 
 mod sealed {
@@ -91,6 +113,13 @@ mod sealed {
 }
 
 /// The scalar types a subgroup operation takes: `u32`, `i32` and `f32` (M8, D140). Sealed.
+///
+/// ```
+/// use gust::SubgroupScalar;
+///
+/// assert_eq!(<u32 as SubgroupScalar>::ADD_IDENTITY, 0);
+/// assert_eq!(<f32 as SubgroupScalar>::MUL_IDENTITY, 1.0);
+/// ```
 pub trait SubgroupScalar: Copy + sealed::Sealed {
     /// The identity of the sum: what the first lane of an exclusive sum gets.
     const ADD_IDENTITY: Self;
@@ -114,6 +143,16 @@ impl SubgroupScalar for f32 {
 }
 
 /// The integer types the bitwise subgroup operations take: `u32` and `i32` (M8, D140). Sealed.
+///
+/// ```
+/// use gust::SubgroupInteger;
+///
+/// fn takes_integer<T: SubgroupInteger>(value: T) -> T {
+///     value
+/// }
+/// assert_eq!(takes_integer(3_u32), 3);
+/// assert_eq!(takes_integer(-3_i32), -3);
+/// ```
 pub trait SubgroupInteger: SubgroupScalar {}
 
 impl SubgroupInteger for u32 {}
@@ -127,52 +166,101 @@ impl SubgroupInteger for i32 {}
 
 /// The sum of `value` over the invocations of the subgroup (Slang `WaveActiveSum`, WGSL `subgroupAdd`). Integers wrap;
 /// an `f32` sum has no defined order. The shadow is the sum over one invocation.
+///
+/// ```
+/// // The shadow is a subgroup of one invocation, so the sum is the value itself.
+/// assert_eq!(gust::subgroup_add(5_u32), 5);
+/// assert_eq!(gust::subgroup_size(), 1);
+/// ```
 pub fn subgroup_add<T: SubgroupScalar>(value: T) -> T {
     value
 }
 
 /// The product of `value` over the invocations of the subgroup (`WaveActiveProduct`, `subgroupMul`).
+///
+/// ```
+/// // The shadow subgroup has one invocation, so the product is the value itself.
+/// assert_eq!(gust::subgroup_mul(3_i32), 3);
+/// ```
 pub fn subgroup_mul<T: SubgroupScalar>(value: T) -> T {
     value
 }
 
 /// The smallest `value` of the subgroup (`WaveActiveMin`, `subgroupMin`).
+///
+/// ```
+/// // On the shadow subgroup of one invocation the minimum is the value itself.
+/// assert_eq!(gust::subgroup_min(2.5_f32), 2.5);
+/// ```
 pub fn subgroup_min<T: SubgroupScalar>(value: T) -> T {
     value
 }
 
 /// The largest `value` of the subgroup (`WaveActiveMax`, `subgroupMax`).
+///
+/// ```
+/// // On the shadow subgroup of one invocation the maximum is the value itself.
+/// assert_eq!(gust::subgroup_max(7_u32), 7);
+/// ```
 pub fn subgroup_max<T: SubgroupScalar>(value: T) -> T {
     value
 }
 
 /// The bitwise AND of `value` over the subgroup (`WaveActiveBitAnd`, `subgroupAnd`).
+///
+/// ```
+/// assert_eq!(gust::subgroup_and(0b1010_u32), 0b1010);
+/// ```
 pub fn subgroup_and<T: SubgroupInteger>(value: T) -> T {
     value
 }
 
 /// The bitwise OR of `value` over the subgroup (`WaveActiveBitOr`, `subgroupOr`).
+///
+/// ```
+/// assert_eq!(gust::subgroup_or(0b0101_u32), 0b0101);
+/// ```
 pub fn subgroup_or<T: SubgroupInteger>(value: T) -> T {
     value
 }
 
 /// The bitwise XOR of `value` over the subgroup (`WaveActiveBitXor`, `subgroupXor`).
+///
+/// ```
+/// assert_eq!(gust::subgroup_xor(6_i32), 6);
+/// ```
 pub fn subgroup_xor<T: SubgroupInteger>(value: T) -> T {
     value
 }
 
 /// Whether `value` is true in every invocation of the subgroup (`WaveActiveAllTrue`, `subgroupAll`).
+///
+/// ```
+/// assert!(gust::subgroup_all(true));
+/// assert!(!gust::subgroup_all(false));
+/// ```
 pub fn subgroup_all(value: bool) -> bool {
     value
 }
 
 /// Whether `value` is true in any invocation of the subgroup (`WaveActiveAnyTrue`, `subgroupAny`).
+///
+/// ```
+/// assert!(gust::subgroup_any(true));
+/// assert!(!gust::subgroup_any(false));
+/// ```
 pub fn subgroup_any(value: bool) -> bool {
     value
 }
 
 /// A bit mask of the invocations of the subgroup whose `value` is true (`WaveActiveBallot`, `subgroupBallot`): bit
 /// `k` of the 128 bits, word `k / 32` bit `k % 32`, is invocation `k`'s. A subgroup is at most 128 invocations wide.
+///
+/// ```
+/// // Bit 0 of the first word is the one invocation of the shadow subgroup.
+/// assert_eq!(gust::subgroup_ballot(true).x, 1);
+/// assert_eq!(gust::subgroup_ballot(false).x, 0);
+/// ```
 pub fn subgroup_ballot(value: bool) -> crate::math::UVec4 {
     crate::math::UVec4::new(u32::from(value), 0, 0, 0)
 }
@@ -180,6 +268,10 @@ pub fn subgroup_ballot(value: bool) -> crate::math::UVec4 {
 /// The `value` of the first active invocation of the subgroup (`WaveReadLaneFirst`, `subgroupBroadcastFirst`). Ran on
 /// the RTX 5090 and on lavapipe for `i32` and `f32`, which spike S3 did not cover (`u32` only); not run on the Radeon
 /// 890M (`docs/SEMANTICS.md`, "Forms beyond S3's cells").
+///
+/// ```
+/// assert_eq!(gust::subgroup_broadcast_first(9_u32), 9);
+/// ```
 pub fn subgroup_broadcast_first<T: SubgroupScalar>(value: T) -> T {
     value
 }
@@ -190,6 +282,12 @@ pub fn subgroup_broadcast_first<T: SubgroupScalar>(value: T) -> T {
 /// `u32`. Beyond it, all four forms ran on the RTX 5090 and on lavapipe: `f32` and `i32` with a literal lane, and `i32`
 /// and `f32` with a computed lane (`i32` with a literal lane and `f32` with a computed lane are the two cells m8.z
 /// added to `tests/subgroup.rs`); none ran on the Radeon 890M (`docs/SEMANTICS.md`, "Forms beyond S3's cells").
+///
+/// ```
+/// // The shadow ignores the lane: there is one invocation.
+/// assert_eq!(gust::subgroup_broadcast(9_u32, 0), 9);
+/// assert_eq!(gust::subgroup_broadcast(2.5_f32, 7), 2.5);
+/// ```
 pub fn subgroup_broadcast<T: SubgroupScalar>(value: T, lane: u32) -> T {
     let _ = lane;
     value
@@ -199,6 +297,10 @@ pub fn subgroup_broadcast<T: SubgroupScalar>(value: T, lane: u32) -> T {
 /// `subgroupShuffle`). A computed `lane` lowers to `WaveShuffle`, where S3's cell was `WaveReadLaneAt`; that form,
 /// and `i32` and `f32` values, ran on the RTX 5090 and on lavapipe, not on the Radeon 890M (`docs/SEMANTICS.md`,
 /// "Forms beyond S3's cells").
+///
+/// ```
+/// assert_eq!(gust::subgroup_shuffle(4.0_f32, 0), 4.0);
+/// ```
 pub fn subgroup_shuffle<T: SubgroupScalar>(value: T, lane: u32) -> T {
     let _ = lane;
     value
@@ -206,6 +308,11 @@ pub fn subgroup_shuffle<T: SubgroupScalar>(value: T, lane: u32) -> T {
 
 /// The sum of `value` over the invocations of the subgroup below this one (`WavePrefixSum`,
 /// `subgroupExclusiveAdd`); the first invocation gets 0.
+///
+/// ```
+/// // An exclusive sum starts from the identity: the first lane gets 0.
+/// assert_eq!(gust::subgroup_exclusive_add(5_u32), 0);
+/// ```
 pub fn subgroup_exclusive_add<T: SubgroupScalar>(value: T) -> T {
     let _ = value;
     T::ADD_IDENTITY
@@ -213,6 +320,10 @@ pub fn subgroup_exclusive_add<T: SubgroupScalar>(value: T) -> T {
 
 /// The product of `value` over the invocations of the subgroup below this one (`WavePrefixProduct`,
 /// `subgroupExclusiveMul`); the first invocation gets 1.
+///
+/// ```
+/// assert_eq!(gust::subgroup_exclusive_mul(5_u32), 1);
+/// ```
 pub fn subgroup_exclusive_mul<T: SubgroupScalar>(value: T) -> T {
     let _ = value;
     T::MUL_IDENTITY
@@ -220,39 +331,74 @@ pub fn subgroup_exclusive_mul<T: SubgroupScalar>(value: T) -> T {
 
 /// The sum of `value` over this invocation and the ones below it: the exclusive sum plus `value`, a derived
 /// operation.
+///
+/// ```
+/// assert_eq!(gust::subgroup_inclusive_add(5_u32), 5);
+/// ```
 pub fn subgroup_inclusive_add<T: SubgroupScalar>(value: T) -> T {
     value
 }
 
 /// The product of `value` over this invocation and the ones below it: the exclusive product times `value`, a derived
 /// operation.
+///
+/// ```
+/// assert_eq!(gust::subgroup_inclusive_mul(5_u32), 5);
+/// ```
 pub fn subgroup_inclusive_mul<T: SubgroupScalar>(value: T) -> T {
     value
 }
 
 /// The number of invocations of the subgroup whose `value` is true: the popcount of the ballot, a derived operation.
+///
+/// ```
+/// assert_eq!(gust::subgroup_count(true), 1);
+/// assert_eq!(gust::subgroup_count(false), 0);
+/// ```
 pub fn subgroup_count(value: bool) -> u32 {
     u32::from(value)
 }
 
 /// Whether this is the first active invocation of the subgroup, a derived operation (`subgroup_broadcast_first` of
 /// the lane equals the lane; the native `subgroupElect` is not in naga 30.0.1).
+///
+/// ```
+/// // The one invocation of the shadow subgroup is its elected lane.
+/// assert!(gust::subgroup_elect());
+/// ```
 pub fn subgroup_elect() -> bool {
     true
 }
 
 /// The number of invocations of the subgroup (`WaveGetLaneCount`): 32, 64 or another power of two the adapter
 /// reports, fixed for a dispatch and not for a device (SEMANTICS section 5). The shadow subgroup has one.
+///
+/// ```
+/// // The shadow subgroup has one invocation, and its only lane is the first.
+/// assert_eq!(gust::subgroup_size(), 1);
+/// assert!(gust::subgroup_lane() < gust::subgroup_size());
+/// ```
 pub fn subgroup_size() -> u32 {
     1
 }
 
 /// This invocation's index in its subgroup, `0..subgroup_size()` (`WaveGetLaneIndex`). The shadow subgroup has lane 0.
+///
+/// ```
+/// assert_eq!(gust::subgroup_lane(), 0);
+/// ```
 pub fn subgroup_lane() -> u32 {
     0
 }
 
 /// GPU invocation metadata. The CPU twin (`gust::cpu`) constructs one per invocation.
+///
+/// ```
+/// use gust::{Invocation, UVec3};
+///
+/// let invocation = Invocation::new(UVec3 { x: 3, y: 0, z: 0 });
+/// assert_eq!(invocation.global_id().x, 3);
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct Invocation {
@@ -272,6 +418,16 @@ impl Invocation {
 }
 
 /// Rust shadow type for Slang's read-only structured buffer.
+///
+/// ```
+/// use gust::Storage;
+///
+/// let values = [10_u32, 20, 30];
+/// let buffer = Storage::new(&values);
+/// assert_eq!(buffer.len(), 3);
+/// assert_eq!(buffer[1], 20);
+/// assert!(!buffer.is_empty());
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct Storage<'a, T> {
     values: &'a [T],
@@ -306,6 +462,16 @@ impl<T> Index<u32> for Storage<'_, T> {
 }
 
 /// Rust shadow type for Slang's read-write structured buffer.
+///
+/// ```
+/// use gust::StorageMut;
+///
+/// let mut values = [0_u32; 3];
+/// let mut buffer = StorageMut::new(&mut values);
+/// buffer[2] = 9;
+/// assert_eq!(buffer.len(), 3);
+/// assert_eq!(buffer[2], 9);
+/// ```
 #[derive(Debug)]
 pub struct StorageMut<'a, T> {
     values: &'a mut [T],
@@ -348,6 +514,17 @@ impl<T> IndexMut<u32> for StorageMut<'_, T> {
 /// The read-only view of a uniform (constant buffer) that a kernel's `Uniform<T>` parameter has: `T` is a struct of the
 /// `#[gpu]` module, read one field at a time (`params.scale`). `Deref` gives that on the CPU twin, which passes
 /// `Uniform(copy)` of the bound value.
+///
+/// ```
+/// use gust::Uniform;
+///
+/// struct Params {
+///     scale: f32,
+/// }
+/// let params = Uniform(Params { scale: 2.5 });
+/// // `Deref` reads a field as the kernel body does.
+/// assert_eq!(params.scale, 2.5);
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[repr(transparent)]
 pub struct Uniform<T>(pub T);
@@ -417,6 +594,13 @@ use atomic_scalar::AtomicScalar;
 /// form is statement-only, so the old value is not observable in a kernel. Only `u32` and `i32` elements are
 /// accepted (a float receiver is a rustc error here, as the validator already makes it a macro error), and the
 /// validator also rejects `i32` for min and max. Add wraps modulo 2^32 on both targets.
+///
+/// ```
+/// let mut counter = 5_u32;
+/// // The shadow returns the old value; on a GPU the old value is not observable.
+/// let old = gust::atomic_add(&mut counter, 2);
+/// assert_eq!((old, counter), (5, 7));
+/// ```
 pub fn atomic_add<T: AtomicScalar>(target: &mut T, operand: T) -> T {
     let old = *target;
     T::add(target, operand);
@@ -424,6 +608,12 @@ pub fn atomic_add<T: AtomicScalar>(target: &mut T, operand: T) -> T {
 }
 
 /// `target = min(target, operand)`; see [`atomic_add`]. Returns the old value.
+///
+/// ```
+/// let mut value = 5_u32;
+/// let old = gust::atomic_min(&mut value, 3);
+/// assert_eq!((old, value), (5, 3));
+/// ```
 pub fn atomic_min<T: AtomicScalar>(target: &mut T, operand: T) -> T {
     let old = *target;
     T::min(target, operand);
@@ -431,6 +621,12 @@ pub fn atomic_min<T: AtomicScalar>(target: &mut T, operand: T) -> T {
 }
 
 /// `target = max(target, operand)`; see [`atomic_add`]. Returns the old value.
+///
+/// ```
+/// let mut value = 5_u32;
+/// let old = gust::atomic_max(&mut value, 9);
+/// assert_eq!((old, value), (5, 9));
+/// ```
 pub fn atomic_max<T: AtomicScalar>(target: &mut T, operand: T) -> T {
     let old = *target;
     T::max(target, operand);
@@ -438,6 +634,12 @@ pub fn atomic_max<T: AtomicScalar>(target: &mut T, operand: T) -> T {
 }
 
 /// `target = operand`; see [`atomic_add`]. Returns the old value.
+///
+/// ```
+/// let mut value = 5_u32;
+/// let old = gust::atomic_exchange(&mut value, 9);
+/// assert_eq!((old, value), (5, 9));
+/// ```
 pub fn atomic_exchange<T: AtomicScalar>(target: &mut T, operand: T) -> T {
     let old = *target;
     T::exchange(target, operand);
@@ -449,6 +651,15 @@ pub fn atomic_exchange<T: AtomicScalar>(target: &mut T, operand: T) -> T {
 /// The GPU form is WGSL's `atomicCompareExchangeWeak`, which may fail spuriously (17.8.5); the twin never does. The
 /// contract stays weak (D47). Whether the Slang of the current pin retries after such a failure is recorded in
 /// `docs/SEMANTICS.md`, section 6.
+///
+/// ```
+/// let mut value = 5_u32;
+/// // The swap happens when the current value equals `compare`.
+/// assert!(gust::atomic_compare_exchange(&mut value, 5, 8));
+/// assert_eq!(value, 8);
+/// assert!(!gust::atomic_compare_exchange(&mut value, 5, 1));
+/// assert_eq!(value, 8);
+/// ```
 pub fn atomic_compare_exchange<T: AtomicScalar>(target: &mut T, compare: T, value: T) -> bool {
     T::compare_exchange(target, compare, value)
 }

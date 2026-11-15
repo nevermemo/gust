@@ -62,6 +62,16 @@ static NEXT_DEVICE: AtomicU32 = AtomicU32::new(1);
 ///
 /// Two instances are different devices even though they share a type: a call that mixes their buffers is rejected
 /// with [`Error::WrongDevice`]. Instance numbers come from a process-wide counter and wrap after 2^32 - 1 devices.
+///
+/// ```
+/// use gust::cpu::CpuDevice;
+///
+/// let device = CpuDevice::new();
+/// let buffer = device.buffer(&[1.0f32, 2.0, 3.0]);
+/// assert_eq!(buffer.read(), [1.0, 2.0, 3.0]);
+/// // Another instance is another device.
+/// assert_ne!(device, CpuDevice::new());
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CpuDevice {
     id: u32,
@@ -222,6 +232,20 @@ impl<T: GpuPod> CpuData for RefCell<Vec<T>> {
 }
 
 /// A typed buffer of one [`CpuDevice`].
+///
+/// ```
+/// use gust::cpu::{CpuDevice, Error};
+///
+/// let device = CpuDevice::new();
+/// let buffer = device.buffer(&[1u32, 2, 3]);
+/// assert_eq!(buffer.len(), 3);
+/// buffer.write(&[4, 5, 6])?;
+/// assert_eq!(buffer.read(), [4, 5, 6]);
+/// // The length cannot change, and a refused write leaves the contents alone.
+/// assert!(matches!(buffer.write(&[7]), Err(Error::BufferLength { .. })));
+/// assert_eq!(buffer.read(), [4, 5, 6]);
+/// # Ok::<(), Error>(())
+/// ```
 #[derive(Debug)]
 pub struct CpuBuffer<T: GpuPod> {
     owner: u32,
@@ -281,6 +305,19 @@ impl<T: GpuPod> CpuBuffer<T> {
 /// The counterpart of `gust_wgpu::GpuUniform`: it is a [`Resource`] of kind [`kind::Uniform`], so a call takes it where
 /// a kernel has a `Uniform<T>` parameter and rejects it where the kernel has a buffer. It has no element count, so it
 /// is bound with an independent length whatever the argument says.
+///
+/// ```
+/// use gust::cpu::{CpuDevice, Error};
+/// use gust::math::Vec4;
+///
+/// let device = CpuDevice::new();
+/// // A uniform type is padding-free and a multiple of 16 bytes: a four-wide vector qualifies.
+/// let uniform = device.uniform(Vec4::new(1.0, 2.0, 3.0, 4.0))?;
+/// assert_eq!(uniform.read().w, 4.0);
+/// uniform.write(Vec4::splat(9.0))?;
+/// assert_eq!(uniform.read().x, 9.0);
+/// # Ok::<(), Error>(())
+/// ```
 pub struct CpuUniform<T: GpuPod> {
     owner: u32,
     cell: UniformCell<T>,
@@ -322,6 +359,18 @@ impl<T: GpuPod + fmt::Debug> fmt::Debug for CpuUniform<T> {
 }
 
 /// Erased view of one bound [`CpuBuffer`] or [`CpuUniform`]. It records no length: the backend measures it at submit.
+///
+/// `Resource::bind` makes one; a typed call does that for you:
+///
+/// ```
+/// use gust::cpu::CpuDevice;
+/// use gust::{Access, LengthRule, Resource};
+///
+/// let device = CpuDevice::new();
+/// let buffer = device.buffer(&[1u32, 2, 3]);
+/// let binding = buffer.bind(Access::ReadOnly, LengthRule::Shared);
+/// assert!(format!("{binding:?}").starts_with("CpuBinding"));
+/// ```
 #[derive(Clone, Copy)]
 pub struct CpuBinding<'r> {
     data: &'r dyn CpuData,
@@ -345,6 +394,18 @@ impl fmt::Debug for CpuBinding<'_> {
 }
 
 /// A completed CPU submission: CPU work finishes inside `submit_call`, so there is nothing left to wait for.
+///
+/// ```
+/// use gust::cpu::CpuDevice;
+/// use gust::{Device, Job, JobStatus};
+///
+/// let device = CpuDevice::new();
+/// // An empty batch is the one thing the erased `submit` takes; a typed call returns the same kind of job.
+/// let job = device.submit(&[])?;
+/// assert_eq!(job.status()?, JobStatus::Complete);
+/// job.wait()?;
+/// # Ok::<(), gust::cpu::Error>(())
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct CpuJob {
     _complete: (),
@@ -375,6 +436,19 @@ impl Job for CpuJob {
 }
 
 /// Why a CPU call was rejected. The wording follows `gust_wgpu::Error` where the cases are shared.
+///
+/// ```
+/// use gust::cpu::{CpuDevice, Error};
+///
+/// let buffer = CpuDevice::new().buffer(&[1u32, 2]);
+/// let error = buffer.write(&[1, 2, 3]).unwrap_err();
+/// match &error {
+///     Error::BufferLength { expected, actual, .. } => assert_eq!((*expected, *actual), (2, 3)),
+///     // The enum is `#[non_exhaustive]`: a match outside this crate needs a wildcard arm.
+///     other => panic!("unexpected error: {other}"),
+/// }
+/// println!("{error}");
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
@@ -1142,6 +1216,15 @@ impl FromGlobalId for Invocation {
 /// sides of zero are counted through zero, and the distance is `u64::MAX` if either value is NaN.
 ///
 /// The comparison assertions of the twin tests use it instead of per-example copies.
+///
+/// ```
+/// use gust::cpu::ulps;
+///
+/// let next = f32::from_bits(1.0f32.to_bits() + 1);
+/// assert_eq!(ulps(1.0, next), 1);
+/// assert_eq!(ulps(0.0, -0.0), 0);
+/// assert_eq!(ulps(f32::NAN, 1.0), u64::MAX);
+/// ```
 pub fn ulps(a: f32, b: f32) -> u64 {
     if a.is_nan() || b.is_nan() {
         return u64::MAX;
@@ -1159,6 +1242,18 @@ pub fn ulps(a: f32, b: f32) -> u64 {
 }
 
 /// Whether integer `+ - *` and negation panic on overflow in a given crate.
+///
+/// ```
+/// use gust::cpu::{OverflowChecks, overflow_checks};
+///
+/// // Twin tests key their expectations on the mode of the crate that holds the kernel.
+/// let expected = match overflow_checks!() {
+///     OverflowChecks::Checked => "overflow panics",
+///     OverflowChecks::Wrapping => "overflow wraps",
+///     _ => "another mode",
+/// };
+/// println!("{expected}");
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OverflowChecks {
@@ -1199,6 +1294,15 @@ fn probe_overflow_checks() -> OverflowChecks {
 ///
 /// In this workspace, `cargo test` (dev profile) is `Checked` and `cargo test --release` is `Wrapping`, because
 /// the root `Cargo.toml` sets no `overflow-checks`; that is a fact about these profiles, not a general rule.
+///
+/// ```
+/// use gust::cpu::{OverflowChecks, overflow_checks};
+///
+/// // The answer is for `gust` itself and is the same on every call.
+/// let mode = overflow_checks();
+/// assert!(matches!(mode, OverflowChecks::Checked | OverflowChecks::Wrapping));
+/// assert_eq!(overflow_checks(), mode);
+/// ```
 pub fn overflow_checks() -> OverflowChecks {
     static MODE: OnceLock<OverflowChecks> = OnceLock::new();
     *MODE.get_or_init(|| {

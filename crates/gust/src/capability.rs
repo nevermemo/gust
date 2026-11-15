@@ -9,6 +9,17 @@
 //! (`GUST_PROFILE=native+subgroups`). The build script of this crate turns each into `cfg(gust_capability = "..")`.
 
 /// A device capability. The enum is `#[non_exhaustive]`: a later release may add one.
+///
+/// ```
+/// use gust::capability::{Capability, enabled};
+///
+/// assert_eq!(Capability::Subgroups.name(), "subgroups");
+/// assert_eq!(Capability::from_name("subgroups"), Some(Capability::Subgroups));
+/// assert_eq!(Capability::from_name("Subgroups"), None);
+/// assert!(Capability::ALL.contains(&Capability::Subgroups));
+/// // A build under the plain `dev` profile names none: `enabled()` is empty.
+/// assert!(enabled().iter().all(|capability| Capability::ALL.contains(capability)));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Capability {
@@ -44,6 +55,17 @@ const ENABLED: &[Capability] = &[];
 /// The capabilities this build was compiled for: those that `GUST_PROFILE` named after its target
 /// (`GUST_PROFILE=dev+subgroups`), in the order of [`Capability::ALL`]. Empty when the variable names none, and for an
 /// inferred profile. A device that runs the build's kernels has to provide every one of them (M8, `gust-compute-wgpu`).
+///
+/// ```
+/// use gust::capability::{Capability, enabled};
+///
+/// // Under `GUST_PROFILE=dev+subgroups` the set is `[Subgroups]`; under any other profile it is empty.
+/// let names: Vec<&str> = enabled().iter().map(|capability| capability.name()).collect();
+/// assert!(names.is_empty() || names == ["subgroups"]);
+/// for capability in enabled() {
+///     println!("this build needs {}", capability.name());
+/// }
+/// ```
 pub const fn enabled() -> &'static [Capability] {
     ENABLED
 }

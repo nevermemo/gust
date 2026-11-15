@@ -126,6 +126,14 @@ pub(crate) fn sample_2d<T: Filterable>(
 
 /// The spacing of `f32` values at the magnitude of `x`: the gap from `|x|` to the next larger magnitude. For a
 /// non-finite `x` it is infinite or NaN (outside the domain).
+///
+/// ```
+/// use gust::cpu::texture::ulp;
+///
+/// assert_eq!(ulp(1.0), f32::EPSILON);
+/// assert_eq!(ulp(-1.0), ulp(1.0));
+/// assert_eq!(ulp(2.0), 2.0 * f32::EPSILON);
+/// ```
 pub fn ulp(x: f32) -> f32 {
     let magnitude = x.abs();
     f32::from_bits(magnitude.to_bits().wrapping_add(1)) - magnitude
@@ -140,6 +148,15 @@ pub fn ulp(x: f32) -> f32 {
 /// at least 4 in core and at least 8 of Vulkan 1.4 and Roadmap 2022), so a sampler that quantises worse can leave the
 /// bound (SEMANTICS, section 4; D52).
 /// The second is the rounding of the interpolation itself. A nearest read has no tolerance: compare it exactly.
+///
+/// ```
+/// use gust::cpu::texture::{linear_error_bound, ulp};
+///
+/// // Four equal texels: only the rounding term is left.
+/// assert_eq!(linear_error_bound([1.0; 4]), 2.0 * ulp(1.0));
+/// // A range of 256 adds one unit.
+/// assert_eq!(linear_error_bound([0.0, 256.0, 0.0, 0.0]), 1.0 + 2.0 * ulp(256.0));
+/// ```
 pub fn linear_error_bound(corners: [f32; 4]) -> f32 {
     let mut lowest = corners[0];
     let mut highest = corners[0];
@@ -183,6 +200,22 @@ impl<T: GpuPod> CpuData for TextureCell<T> {
 /// where a kernel has a `Texture2D`, `StorageTexture2D` or `WriteTexture2D` parameter and rejects it where the kernel
 /// has a buffer. It has no element count and is bound with an independent length. It belongs to the device that
 /// created it.
+///
+/// ```
+/// use gust::TextureUse;
+/// use gust::cpu::CpuDevice;
+/// use gust::texture::R32Float;
+///
+/// let device = CpuDevice::new();
+/// let texture = device.texture_2d::<R32Float>(2, 2, TextureUse::SAMPLED)?;
+/// assert_eq!((texture.width(), texture.height()), (2, 2));
+/// assert_eq!(texture.read(), [0.0; 4]);
+/// texture.write(&[1.0, 2.0, 3.0, 4.0])?;
+/// // Row-major, (0, 0) at the top left.
+/// assert_eq!(texture.load(1, 0)?, 2.0);
+/// assert_eq!(texture.load(0, 1)?, 3.0);
+/// # Ok::<(), gust::cpu::Error>(())
+/// ```
 pub struct CpuTexture2d<F: TextureFormat> {
     owner: u32,
     cell: TextureCell<F::Texel>,
@@ -391,6 +424,22 @@ impl CpuDevice {
 // ---- the sampler ----
 
 /// A sampler of one [`CpuDevice`]: the [`SamplerArg`] a call passes for a kernel's `Sampler` parameter.
+///
+/// ```
+/// use gust::TextureUse;
+/// use gust::cpu::CpuDevice;
+/// use gust::texture::{Address, Filter, R32Float, SamplerOptions};
+///
+/// let device = CpuDevice::new();
+/// let texture = device.texture_2d::<R32Float>(2, 1, TextureUse::SAMPLED)?;
+/// texture.write(&[10.0, 20.0])?;
+/// let sampler = device.sampler(SamplerOptions::new(Filter::Nearest, Address::ClampToEdge));
+/// // The centre of texel 0 is u = 0.25 and of texel 1 is u = 0.75.
+/// assert_eq!(sampler.sample(&texture, 0.25, 0.5)?, 10.0);
+/// assert_eq!(sampler.sample(&texture, 0.75, 0.5)?, 20.0);
+/// assert_eq!(sampler.options().filter, Filter::Nearest);
+/// # Ok::<(), gust::cpu::Error>(())
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct CpuSampler {
     owner: u32,
@@ -435,6 +484,17 @@ impl CpuSampler {
 }
 
 /// Erased view of one bound [`CpuSampler`].
+///
+/// ```
+/// use gust::SamplerArg;
+/// use gust::cpu::CpuDevice;
+/// use gust::texture::SamplerOptions;
+///
+/// let sampler = CpuDevice::new().sampler(SamplerOptions::default());
+/// // `SamplerArg::bind` makes one; a typed call of a kernel with a sampler parameter does that for you.
+/// let binding = sampler.bind();
+/// assert!(format!("{binding:?}").starts_with("CpuSamplerBinding"));
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct CpuSamplerBinding<'r> {
     options: SamplerOptions,

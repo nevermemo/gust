@@ -57,31 +57,87 @@ macro_rules! vector_struct {
 
 vector_struct!(
     /// A pair of `f32` (Slang `float2`); size 8, alignment 8.
+    ///
+    /// ```
+    /// use gust::math::Vec2;
+    ///
+    /// let v = Vec2::new(1.0, 2.0) + Vec2::splat(0.5);
+    /// assert_eq!((v.x, v.y), (1.5, 2.5));
+    /// assert_eq!(Vec2::new(3.0, 4.0).dot(Vec2::new(1.0, 2.0)), 11.0);
+    /// ```
     Vec2, f32, 8; x, y
 );
 vector_struct!(
     /// Three `f32` (Slang `float3`); size 12, alignment 4. Locals and helper parameters only: it has no layout that
     /// matches Slang in every buffer position.
+    ///
+    /// ```
+    /// use gust::math::Vec3;
+    ///
+    /// let v = Vec3::new(1.0, 2.0, 3.0) - Vec3::splat(1.0);
+    /// assert_eq!((v.x, v.y, v.z), (0.0, 1.0, 2.0));
+    /// assert_eq!(Vec3::new(1.0, 2.0, 3.0).dot(Vec3::new(4.0, 5.0, 6.0)), 32.0);
+    /// ```
     Vec3, f32, 4; x, y, z
 );
 vector_struct!(
     /// Four `f32` (Slang `float4`); size 16, alignment 16.
+    ///
+    /// ```
+    /// use gust::math::Vec4;
+    ///
+    /// let v = -Vec4::new(1.0, 2.0, 3.0, 4.0);
+    /// assert_eq!((v.x, v.w), (-1.0, -4.0));
+    /// assert_eq!(Vec4::splat(2.0).dot(Vec4::new(1.0, 2.0, 3.0, 4.0)), 20.0);
+    /// ```
     Vec4, f32, 16; x, y, z, w
 );
 vector_struct!(
     /// A pair of `i32` (Slang `int2`); size 8, alignment 8.
+    ///
+    /// ```
+    /// use gust::math::IVec2;
+    ///
+    /// let v = IVec2::new(7, -3) + IVec2::splat(1);
+    /// assert_eq!((v.x, v.y), (8, -2));
+    /// assert_eq!(IVec2::new(2, 3).dot(IVec2::new(4, 5)), 23);
+    /// ```
     IVec2, i32, 8; x, y
 );
 vector_struct!(
     /// Four `i32` (Slang `int4`); size 16, alignment 16.
+    ///
+    /// ```
+    /// use gust::math::IVec4;
+    ///
+    /// let v = IVec4::new(1, 2, 3, 4) - IVec4::splat(1);
+    /// assert_eq!((v.x, v.y, v.z, v.w), (0, 1, 2, 3));
+    /// assert_eq!(IVec4::new(1, 2, 3, 4).dot(IVec4::splat(2)), 20);
+    /// ```
     IVec4, i32, 16; x, y, z, w
 );
 vector_struct!(
     /// A pair of `u32` (Slang `uint2`); size 8, alignment 8.
+    ///
+    /// ```
+    /// use gust::math::UVec2;
+    ///
+    /// let v = UVec2::new(7, 9) + UVec2::splat(1);
+    /// assert_eq!((v.x, v.y), (8, 10));
+    /// assert_eq!(UVec2::new(2, 3).dot(UVec2::new(4, 5)), 23);
+    /// ```
     UVec2, u32, 8; x, y
 );
 vector_struct!(
     /// Four `u32` (Slang `uint4`); size 16, alignment 16.
+    ///
+    /// ```
+    /// use gust::math::UVec4;
+    ///
+    /// let v = UVec4::new(1, 2, 3, 4) + UVec4::splat(1);
+    /// assert_eq!((v.x, v.y, v.z, v.w), (2, 3, 4, 5));
+    /// assert_eq!(UVec4::new(1, 2, 3, 4).dot(UVec4::splat(2)), 20);
+    /// ```
     UVec4, u32, 16; x, y, z, w
 );
 
@@ -260,6 +316,19 @@ macro_rules! matrix_ops {
 }
 
 /// A 2x2 `f32` matrix, column-major (Slang `float2x2`); size 16, alignment 8.
+///
+/// ```
+/// use gust::math::{Mat2, Vec2};
+///
+/// // A quarter turn: the first column is where (1, 0) goes, the second where (0, 1) goes.
+/// let turn = Mat2::from_cols(Vec2::new(0.0, 1.0), Vec2::new(-1.0, 0.0));
+/// let v = turn.mul_vec2(Vec2::new(2.0, 3.0));
+/// assert_eq!((v.x, v.y), (-3.0, 2.0));
+/// let back = turn.transpose().mul_vec2(v);
+/// assert_eq!((back.x, back.y), (2.0, 3.0));
+/// let same = Mat2::IDENTITY.mul_mat2(turn).mul_vec2(Vec2::new(2.0, 3.0));
+/// assert_eq!((same.x, same.y), (-3.0, 2.0));
+/// ```
 #[derive(Clone, Copy, Debug)]
 #[repr(C, align(8))]
 pub struct Mat2 {
@@ -267,6 +336,17 @@ pub struct Mat2 {
 }
 
 /// A 3x3 `f32` matrix, column-major (Slang `float3x3`); size 36, alignment 4. Locals and helper parameters only.
+///
+/// ```
+/// use gust::math::{Mat3, Vec3};
+///
+/// // Scales x by 2, y by 3 and z by 4.
+/// let scale = Mat3::from_cols(Vec3::new(2.0, 0.0, 0.0), Vec3::new(0.0, 3.0, 0.0), Vec3::new(0.0, 0.0, 4.0));
+/// let v = scale.mul_vec3(Vec3::new(1.0, 1.0, 1.0));
+/// assert_eq!((v.x, v.y, v.z), (2.0, 3.0, 4.0));
+/// let twice = scale.mul_mat3(scale).mul_vec3(Vec3::new(1.0, 1.0, 1.0));
+/// assert_eq!((twice.x, twice.y, twice.z), (4.0, 9.0, 16.0));
+/// ```
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct Mat3 {
@@ -274,6 +354,22 @@ pub struct Mat3 {
 }
 
 /// A 4x4 `f32` matrix, column-major (Slang `float4x4`); size 64, alignment 16.
+///
+/// ```
+/// use gust::math::{Mat4, Vec4};
+///
+/// // A translation by (5, 6, 7): the offset sits in the fourth column.
+/// let translate = Mat4::from_cols(
+///     Vec4::new(1.0, 0.0, 0.0, 0.0),
+///     Vec4::new(0.0, 1.0, 0.0, 0.0),
+///     Vec4::new(0.0, 0.0, 1.0, 0.0),
+///     Vec4::new(5.0, 6.0, 7.0, 1.0),
+/// );
+/// let p = translate.mul_vec4(Vec4::new(1.0, 2.0, 3.0, 1.0));
+/// assert_eq!((p.x, p.y, p.z, p.w), (6.0, 8.0, 10.0, 1.0));
+/// let q = translate.mul_mat4(Mat4::IDENTITY).mul_vec4(Vec4::new(0.0, 0.0, 0.0, 1.0));
+/// assert_eq!((q.x, q.y, q.z), (5.0, 6.0, 7.0));
+/// ```
 #[derive(Clone, Copy, Debug)]
 #[repr(C, align(16))]
 pub struct Mat4 {

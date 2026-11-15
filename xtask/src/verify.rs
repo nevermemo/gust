@@ -1042,8 +1042,13 @@ pub(crate) struct GpuSuitePin {
 /// Slice m10.k1: 464 over 49 became 465 over 49. One new doctest in `gust_wgpu`, on the same result line: the first
 /// block of guide chapter 9 (the kernel and host reference of the browser page, a `rust` block with an empty `main`,
 /// compiled and run). The browser-side listing of that chapter is a plain-text block, not an ignored test.
+///
+/// Slice m10.k2: 465 over 49 became 504 over 49. Thirty-nine new doctests in `gust_wgpu`, on the same result line: one
+/// example for each public host type of the crate (the device and policy types, the buffer, uniform, texture and
+/// sampler types, the pool, graph and report types, the error and the job). They compile and run on the adapter, like
+/// the other doctests of the crate.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 465,
+    passed: 504,
     result_lines: 49,
 };
 

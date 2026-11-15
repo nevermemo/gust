@@ -79,12 +79,34 @@ use crate::{
 };
 
 /// Which target a kernel is built for, as a type. Implemented by [`OnCpu`] and [`OnGpu`] only.
+///
+/// ```
+/// use gust::routed::{OnCpu, OnGpu, Side};
+///
+/// fn takes_side<S: Side>() {}
+/// takes_side::<OnCpu>();
+/// takes_side::<OnGpu>();
+/// ```
 pub trait Side: sealed::Sealed {}
 
 /// The kernel runs on the CPU in this build.
+///
+/// ```
+/// use gust::routed::{OnCpu, Side};
+///
+/// fn takes_side<S: Side>(_: S) {}
+/// takes_side(OnCpu);
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct OnCpu;
 /// The kernel runs on a GPU in this build.
+///
+/// ```
+/// use gust::routed::{OnGpu, Side};
+///
+/// fn takes_side<S: Side>(_: S) {}
+/// takes_side(OnGpu);
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct OnGpu;
 
@@ -166,6 +188,14 @@ pub trait Routed: Kernel {
 /// by user code. It may grow when the handle learns uniforms, textures and samplers; a new method gets a default body
 /// wherever one exists, so an implementation outside this workspace can stay unchanged, but that is a goal and not a
 /// promise for every method.
+///
+/// ```
+/// use gust::routed::{GpuBackend, NoGpu};
+///
+/// // `NoGpu` is the backend of a handle without a GPU runtime.
+/// fn is_backend<G: GpuBackend>() {}
+/// is_backend::<NoGpu>();
+/// ```
 pub trait GpuBackend:
     DeviceTrait<Error: std::error::Error + Send + Sync + 'static> + TypedDevice + Sized + 'static
 {
@@ -193,10 +223,27 @@ pub trait GpuBackend:
 /// The backend of a handle that has no GPU runtime: `RoutedDevice::<NoGpu>::cpu_only()`. A GPU-routed kernel called on
 /// such a handle is [`Error::NoGpu`]. The type has no values, so it cannot be handed to [`RoutedDevice::with_gpu`] and
 /// none of its methods can run.
+///
+/// ```
+/// use gust::routed::{NoGpu, RoutedDevice};
+///
+/// let device = RoutedDevice::<NoGpu>::cpu_only();
+/// assert!(device.gpu().is_none());
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub enum NoGpu {}
 
 /// The buffer type of [`NoGpu`]; it cannot be constructed.
+///
+/// ```
+/// use gust::routed::{GpuBackend, NoGpu, NoGpuBuffer};
+///
+/// // It has no values; only the type exists, as the buffer type of `NoGpu`.
+/// fn buffer_type<G: GpuBackend>() -> &'static str {
+///     std::any::type_name::<G::Buffer<f32>>()
+/// }
+/// assert_eq!(buffer_type::<NoGpu>(), std::any::type_name::<NoGpuBuffer<f32>>());
+/// ```
 #[derive(Debug)]
 pub struct NoGpuBuffer<T>(Infallible, PhantomData<T>);
 
@@ -211,6 +258,14 @@ impl DeviceTrait for NoGpu {
 }
 
 /// The job type of [`NoGpu`].
+///
+/// ```
+/// use gust::routed::NoGpuJob;
+/// use gust::{Job, JobStatus};
+///
+/// assert_eq!(NoGpuJob.status(), Ok(JobStatus::Complete));
+/// assert_eq!(NoGpuJob.wait(), Ok(()));
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct NoGpuJob;
 
@@ -264,6 +319,20 @@ impl GpuBackend for NoGpu {
 }
 
 /// Why a call or a transfer on the handle failed.
+///
+/// ```
+/// use gust::routed::Error;
+///
+/// let error = Error::NoGpu { kernel: "demo::add".to_string() };
+/// assert_eq!(
+///     error.to_string(),
+///     "the kernel `demo::add` runs on a GPU in this build, and this device handle has no GPU"
+/// );
+/// // Only `Error::Gpu` holds a backend error to downcast.
+/// assert!(error.downcast_gpu::<std::fmt::Error>().is_none());
+/// let gpu = Error::Gpu(Box::new(std::fmt::Error));
+/// assert!(gpu.downcast_gpu::<std::fmt::Error>().is_some());
+/// ```
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
@@ -334,6 +403,15 @@ fn gpu_error<G: GpuBackend>(error: <G as DeviceTrait>::Error) -> Error {
 }
 
 /// A finished submission (the handle's calls complete inside `submit_call`).
+///
+/// ```
+/// use gust::routed::RoutedJob;
+/// use gust::Job;
+///
+/// assert!(RoutedJob.is_complete()?);
+/// RoutedJob.wait()?;
+/// # Ok::<(), gust::routed::Error>(())
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct RoutedJob;
 
@@ -351,6 +429,17 @@ impl JobTrait for RoutedJob {
 }
 
 /// The device handle: a [`CpuDevice`] and, optionally, a GPU device `G`.
+///
+/// ```
+/// use gust::routed::{NoGpu, RoutedDevice};
+///
+/// let device = RoutedDevice::<NoGpu>::cpu_only();
+/// assert!(device.gpu().is_none());
+/// let buffer = device.buffer(&[1.0_f32, 2.0])?;
+/// assert_eq!(buffer.read(&device)?, [1.0, 2.0]);
+/// let _cpu = device.cpu();
+/// # Ok::<(), gust::routed::Error>(())
+/// ```
 pub struct RoutedDevice<G> {
     cpu: CpuDevice,
     gpu: Option<G>,
@@ -431,6 +520,16 @@ enum Valid {
 }
 
 /// A typed storage buffer of a [`RoutedDevice`]. It is not `Sync` (its residency is in a `Cell`).
+///
+/// ```
+/// use gust::routed::{NoGpu, RoutedDevice};
+///
+/// let device = RoutedDevice::<NoGpu>::cpu_only();
+/// let buffer = device.buffer(&[1_u32, 2, 3])?;
+/// buffer.write(&[4, 5, 6])?;
+/// assert_eq!(buffer.read(&device)?, [4, 5, 6]);
+/// # Ok::<(), gust::routed::Error>(())
+/// ```
 pub struct RoutedBuffer<T: GpuPod, G: GpuBackend> {
     cpu: CpuBuffer<T>,
     gpu: Option<G::Buffer<T>>,
@@ -516,6 +615,19 @@ impl<T: GpuPod, G: GpuBackend> Mirror<G> for RoutedBuffer<T, G> {
 }
 
 /// The erased view of one bound [`RoutedBuffer`]: both sides' bindings and the means to move the buffer between them.
+///
+/// ```
+/// use gust::routed::{NoGpu, RoutedDevice};
+/// use gust::{Access, LengthRule, Resource};
+///
+/// let device = RoutedDevice::<NoGpu>::cpu_only();
+/// let buffer = device.buffer(&[1_u32, 2, 3])?;
+/// let binding = buffer.bind(Access::ReadOnly, LengthRule::Shared);
+/// // A binding is `Copy`.
+/// let copy = binding;
+/// assert!(format!("{copy:?}").contains("RoutedBinding"));
+/// # Ok::<(), gust::routed::Error>(())
+/// ```
 pub struct RoutedBinding<'r, G: GpuBackend> {
     cpu: CpuBinding<'r>,
     gpu: Option<G::Binding<'r>>,
@@ -564,6 +676,18 @@ impl<T: GpuPod, G: GpuBackend> Resource for RoutedBuffer<T, G> {
     note = "an `OnCpu` kernel needs a CPU body here (`CpuDevice: Run<{K}, N>`): a kernel marked `#[kernel(cpu = \"unsupported\")]` has none, and a `#[gpu]` kernel gets one in test builds, under `--cfg gust_dual` and under `GUST_PROFILE=cpu`",
     note = "an `OnGpu` kernel needs a GPU backend that implements `Run<{K}, N>` and the `GpuKernel` marker"
 )]
+///
+/// ```
+/// use gust::routed::{GpuBackend, OnCpu, SideRun};
+/// use gust::Kernel;
+///
+/// // It appears in the bound of the handle's `Run` impl; only `OnCpu` and `OnGpu` implement it.
+/// fn runs_on_cpu<K: Kernel, G: GpuBackend>()
+/// where
+///     OnCpu: SideRun<K, 1, G>,
+/// {
+/// }
+/// ```
 pub trait SideRun<K: Kernel, const N: usize, G: GpuBackend>: private::Sealed<K, N, G> {
     /// Run `call` on this side of `device`.
     #[doc(hidden)]

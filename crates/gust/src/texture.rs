@@ -39,6 +39,13 @@ mod sealed {
 
 /// The class of value a texture format yields when it is read: what a sampled `Texture2D<T>` parameter's `T` must
 /// agree with (`f32` forms for [`Float`](Self::Float), `u32` for [`Uint`](Self::Uint), `i32` for [`Sint`](Self::Sint)).
+///
+/// ```
+/// use gust::texture::{Format, SampleClass};
+///
+/// assert_eq!(Format::Rgba32Float.sample_class(), SampleClass::Float);
+/// assert_eq!(SampleClass::Uint.name(), "u32");
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum SampleClass {
@@ -66,6 +73,19 @@ impl SampleClass {
 ///
 /// The names follow WebGPU's format names, so `gust-compute-wgpu` maps a variant to a `wgpu::TextureFormat` with one
 /// `match` arm each. The enum is `#[non_exhaustive]`: a later format is not a breaking change.
+///
+/// ```
+/// use gust::texture::Format;
+///
+/// assert_eq!(Format::Rg32Float.name(), "rg32float");
+/// assert_eq!(Format::from_name("r32uint"), Some(Format::R32Uint));
+/// assert_eq!(Format::Rgba32Float.channels(), 4);
+/// assert_eq!(Format::Rgba32Float.texel_bytes(), 16);
+/// // Only the one-channel formats are readable and writable by a kernel.
+/// assert!(Format::R32Float.read_write());
+/// assert!(!Format::Rg32Float.read_write());
+/// assert_eq!(Format::ALL.len(), 9);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Format {
@@ -179,6 +199,17 @@ impl fmt::Display for Format {
 
 /// The marker type of one [`Format`]: it ties the format to the Rust type of one texel. Sealed: the nine markers of
 /// this module ([`R32Uint`] to [`Rgba32Float`]) are the only implementors.
+///
+/// ```
+/// use gust::texture::{Format, R32Float, TextureFormat};
+///
+/// assert_eq!(R32Float::FORMAT, Format::R32Float);
+/// assert_eq!(R32Float::BYTES, 4);
+/// assert_eq!(R32Float::SLANG, "r32f");
+/// assert!(R32Float::READ_WRITE);
+/// let texel: <R32Float as TextureFormat>::Texel = 0.5;
+/// assert_eq!(texel, 0.5_f32);
+/// ```
 pub trait TextureFormat: sealed::Sealed + 'static {
     /// The Rust type of one texel (`u32`, `Vec2`, `UVec4`, ...). It is the `Element` of the texture as a typed-call
     /// resource, and so a `GpuPod` of a non-zero size.
@@ -197,11 +228,22 @@ pub trait TextureFormat: sealed::Sealed + 'static {
 ///
 /// A wider format is write-only in the dialect (D120), so `StorageTexture2D<Rg32Float>` is a compile error and
 /// `WriteTexture2D<Rg32Float>` is the spelling.
+///
+/// ```
+/// use gust::texture::{R32Uint, ReadWriteFormat};
+///
+/// fn readable_and_writable<F: ReadWriteFormat>() {}
+/// readable_and_writable::<R32Uint>();
+/// ```
 pub trait ReadWriteFormat: TextureFormat {}
 
 macro_rules! texture_formats {
     ($($(#[$meta:meta])* $Marker:ident => $Texel:ty;)+) => {$(
         $(#[$meta])*
+        #[doc = concat!(
+            "\n```\nuse gust::texture::{Format, TextureFormat, ", stringify!($Marker), "};\n\n",
+            "assert_eq!(<", stringify!($Marker), " as TextureFormat>::FORMAT, Format::", stringify!($Marker), ");\n```"
+        )]
         #[derive(Clone, Copy, Debug)]
         pub enum $Marker {}
 
@@ -249,6 +291,12 @@ impl ReadWriteFormat for R32Float {}
 
 /// A texel type that can be filtered: `f32`, [`Vec2`] and [`Vec4`] (the float formats). Sealed. `Texture2D<u32>` and
 /// `Texture2D<i32>` have no `sample`: integer texels are never filtered.
+///
+/// ```
+/// use gust::texture::Filterable;
+///
+/// assert_eq!(f32::lerp(0.0, 10.0, 0.25), 2.5);
+/// ```
 pub trait Filterable: sealed::Sealed + Copy {
     /// `a + (b - a) * t` per channel, in `f32` (the interpolation of the twin's linear filter, written in
     /// [`cpu::texture`](crate::cpu::texture)).
@@ -290,6 +338,17 @@ impl Filterable for Vec4 {
 /// [`TARGET`](Self::TARGET), combined with `|`. A host texture always can be copied from and to; the flags are the
 /// uses a backend must enable when it creates the texture. A backend checks the use of a bound texture against the
 /// kernel parameter at submit (`TextureUse` errors).
+///
+/// ```
+/// use gust::TextureUse;
+///
+/// let both = TextureUse::SAMPLED | TextureUse::STORAGE;
+/// assert!(both.contains(TextureUse::SAMPLED));
+/// assert!(!both.contains(TextureUse::TARGET));
+/// assert_eq!(both.bits(), 3);
+/// assert!(TextureUse::NONE.is_empty());
+/// assert_eq!(TextureUse::SAMPLED.union(TextureUse::TARGET).bits(), 5);
+/// ```
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct TextureUse(u8);
 
@@ -353,6 +412,20 @@ impl fmt::Debug for TextureUse {
 }
 
 /// How a sampler reads between texels.
+///
+/// ```
+/// use gust::texture::{Address, Filter};
+/// use gust::{Sampler, SamplerOptions, Texture2D};
+///
+/// assert_eq!(Filter::default(), Filter::Nearest);
+/// let texels = [1.0_f32, 2.0];
+/// let texture = Texture2D::new(&texels, 2, 1);
+/// // Halfway between the two texel centres: `Linear` blends them, and `Nearest` takes the texel `0.4` falls in.
+/// let linear = Sampler::new(SamplerOptions::new(Filter::Linear, Address::ClampToEdge));
+/// let nearest = Sampler::new(SamplerOptions::new(Filter::Nearest, Address::ClampToEdge));
+/// assert_eq!(texture.sample(linear, 0.5, 0.5), 1.5);
+/// assert_eq!(texture.sample(nearest, 0.4, 0.5), 1.0);
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Filter {
@@ -366,6 +439,20 @@ pub enum Filter {
 }
 
 /// What a sampler does with a coordinate outside `[0, 1]`.
+///
+/// ```
+/// use gust::texture::{Address, Filter};
+/// use gust::{Sampler, SamplerOptions, Texture2D};
+///
+/// assert_eq!(Address::default(), Address::ClampToEdge);
+/// let texels = [1.0_f32, 2.0];
+/// let texture = Texture2D::new(&texels, 2, 1);
+/// // `1.2` is past the right edge: `ClampToEdge` reads the last texel, `Repeat` wraps to `0.2`, in the first.
+/// let clamp = Sampler::new(SamplerOptions::new(Filter::Nearest, Address::ClampToEdge));
+/// let repeat = Sampler::new(SamplerOptions::new(Filter::Nearest, Address::Repeat));
+/// assert_eq!(texture.sample(clamp, 1.2, 0.5), 2.0);
+/// assert_eq!(texture.sample(repeat, 1.2, 0.5), 1.0);
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Address {
@@ -381,6 +468,17 @@ pub enum Address {
 /// The struct is `#[non_exhaustive]`, so a later release can add a field (a border colour, an anisotropy) without
 /// breaking a caller. Build one with [`new`](Self::new), or from [`SamplerOptions::default()`](Default::default) and
 /// [`with_filter`](Self::with_filter) and [`with_address`](Self::with_address); the fields stay public to read.
+///
+/// ```
+/// use gust::SamplerOptions;
+/// use gust::texture::{Address, Filter};
+///
+/// let options = SamplerOptions::default()
+///     .with_filter(Filter::Linear)
+///     .with_address(Address::Repeat);
+/// assert_eq!(options, SamplerOptions::new(Filter::Linear, Address::Repeat));
+/// assert_eq!(options.filter, Filter::Linear);
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct SamplerOptions {
@@ -413,6 +511,17 @@ impl SamplerOptions {
 
 /// Rust shadow of Slang's `SamplerState`: the `Sampler` parameter of a kernel, the argument of
 /// [`Texture2D::sample`]. It is `Copy`, carries its [`SamplerOptions`] and does nothing else.
+///
+/// ```
+/// use gust::{Sampler, SamplerOptions, Texture2D};
+///
+/// let texels = [1.0_f32, 2.0];
+/// let texture = Texture2D::new(&texels, 2, 1);
+/// let sampler = Sampler::new(SamplerOptions::default());
+/// assert_eq!(sampler.options(), SamplerOptions::default());
+/// // Nearest filtering, clamped: a coordinate past the right edge reads the last texel.
+/// assert_eq!(texture.sample(sampler, 1.2, 0.5), 2.0);
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Sampler {
     options: SamplerOptions,
@@ -445,6 +554,15 @@ fn check_view(len: usize, width: u32, height: u32) {
 /// Row-major: texel `(x, y)` is `texels[y * width + x]`. [`load`](Self::load) reads one texel at integer
 /// coordinates (level 0) and panics outside the texture; [`sample`](Self::sample) is the filtered read of a float
 /// texture.
+///
+/// ```
+/// use gust::Texture2D;
+///
+/// let texels = [1_u32, 2, 3, 4, 5, 6];
+/// let texture = Texture2D::new(&texels, 3, 2);
+/// assert_eq!((texture.width(), texture.height()), (3, 2));
+/// assert_eq!(texture.load(1, 1), 5);
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct Texture2D<'a, T> {
     texels: &'a [T],
@@ -495,6 +613,17 @@ impl<T: Filterable> Texture2D<'_, T> {
 /// Rust shadow of a Slang read-write storage texture (`[format("..")] RWTexture2D<T>`): the
 /// `StorageTexture2D<F>` parameter of a kernel, with `F` one of [`R32Uint`], [`R32Sint`] and [`R32Float`]
 /// ([`ReadWriteFormat`]).
+///
+/// ```
+/// use gust::StorageTexture2D;
+/// use gust::texture::R32Uint;
+///
+/// let mut texels = [0_u32; 4];
+/// let mut texture = StorageTexture2D::<R32Uint>::new(&mut texels, 2, 2);
+/// texture.store(1, 0, 7);
+/// assert_eq!(texture.load(1, 0), 7);
+/// assert_eq!((texture.width(), texture.height()), (2, 2));
+/// ```
 pub struct StorageTexture2D<'a, F: ReadWriteFormat> {
     texels: &'a mut [F::Texel],
     width: u32,
@@ -548,6 +677,18 @@ impl<F: ReadWriteFormat> fmt::Debug for StorageTexture2D<'_, F> {
 /// Rust shadow of a Slang write-only storage texture (`[format("..")] WTexture2D<T>` with `.Store`): the
 /// `WriteTexture2D<F>` parameter of a kernel, with `F` any format of the dialect. It has no `load`: a wider format
 /// than the `r32` ones cannot be read and written (D120).
+///
+/// ```
+/// use gust::WriteTexture2D;
+/// use gust::math::Vec2;
+/// use gust::texture::Rg32Float;
+///
+/// let mut texels = [Vec2::new(0.0, 0.0); 2];
+/// let mut texture = WriteTexture2D::<Rg32Float>::new(&mut texels, 2, 1);
+/// texture.store(1, 0, Vec2::new(3.0, 4.0));
+/// assert_eq!((texture.width(), texture.height()), (2, 1));
+/// assert_eq!((texels[1].x, texels[1].y), (3.0, 4.0));
+/// ```
 pub struct WriteTexture2D<'a, F: TextureFormat> {
     texels: &'a mut [F::Texel],
     width: u32,

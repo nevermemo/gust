@@ -31,6 +31,38 @@ use crate::{
 /// hatch ([`as_buffer`](Self::as_buffer) and `GpuBuffer::as_wgpu_buffer`) does not: it is the whole class, with the
 /// previous owner's bytes past the logical length, and commands you record in an encoder of your own and submit after
 /// the `GpuVec` dropped may run after the pool has cleared or reused the buffer. Submit them before the drop.
+///
+/// ```
+/// use gust::gpu;
+/// use gust_wgpu::GpuVec;
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn add_one(id: SV_DispatchThreadID, src: StructuredBuffer<float>, mut dst: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < dst.len() {
+///             dst[i] = src[i] + 1.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), gust_wgpu::Error> {
+///     // `from_slice` and `zeroed` use the process's default device.
+///     let src = GpuVec::from_slice(&[1.0f32, 2.0, 3.0])?;
+///     let dst = GpuVec::<f32>::zeroed(3)?;
+///     assert_eq!((src.len(), dst.len()), (3, 3));
+///     assert!(!src.is_empty());
+///
+///     // `device()` is the vector's device handle; the dispatch wants the `HeadlessDevice` the handle points to.
+///     let handle = src.device();
+///     let device: &gust_wgpu::HeadlessDevice = handle;
+///     ops::add_one::dispatch(device, 3, &src, &dst)?;
+///     assert_eq!(dst.to_vec()?, [2.0, 3.0, 4.0]);
+///     assert_eq!(src.to_vec()?, [1.0, 2.0, 3.0]);
+///     Ok(())
+/// }
+/// ```
 pub struct GpuVec<T: GpuPod> {
     buffer: GpuBuffer<T>,
     device: DeviceHandle,

@@ -2,8 +2,8 @@
 //!
 //! ```text
 //! gust-bench run --out run1.json [--label NAME] [--quick] [--workloads W1,W2] [--sizes N,N] [--backends a,b]
-//!                [--samples N] [--cap-secs S] [--ablation bind-group-reuse,staging-reuse,one-submission|all]
-//!                [--settle-secs S] [--window-secs S] [--no-sampler]
+//!                [--samples N] [--cap-secs S] [--ablation bind-group-reuse,staging-reuse,one-submission,all-on|all]
+//!                [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N]
 //! gust-bench aggregate --json out.json --md out.md run1.json run2.json run3.json
 //! gust-bench dump-wgsl            # the WGSL GUST generates for each kernel, on stdout
 //! gust-bench probe-adapters       # DXGI adapters, the LUID mapping, and which LUID this process's GPU work shows on
@@ -30,13 +30,13 @@ use std::{process::ExitCode, rc::Rc, time::Duration, time::Instant};
 
 use backend::{Backend, BenchResult};
 use gust_wgpu::HeadlessDevice;
-use harness::{CellInput, Config, prepare_case, run_cell};
+use harness::{CellInput, Config, prepare_case, run_cell, run_gpu_group};
 use sampler::Sampler;
 use serde_json::json;
 use wgsl_wgpu::{HandWgsl, Mode, Switch, WgpuContext};
 use workloads::{SIZES, Workload};
 
-const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples N] [--cap-secs S] [--ablation LIST|all] [--settle-secs S] [--window-secs S] [--no-sampler]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench probe-adapters\n       gust-bench list";
+const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples N] [--cap-secs S] [--ablation LIST|all-on|all] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench probe-adapters\n       gust-bench list";
 
 #[derive(Default)]
 struct Options {
@@ -52,10 +52,40 @@ struct Options {
     cap_secs: Option<f64>,
     /// Ablation backends to add (`wgsl-percall` with one switch on each).
     ablation: Vec<Switch>,
+    /// Also add `wgsl-percall+all-on` (every switch on, result `Vec` still fresh per call).
+    ablation_all_on: bool,
     settle_secs: Option<f64>,
     window_secs: Option<f64>,
     no_sampler: bool,
+    cold_only: bool,
+    cold_repeats: Option<usize>,
+    seed: Option<u64>,
+    warmup_secs: Option<f64>,
     positional: Vec<String>,
+}
+
+/// The `--ablation` list: switch names, `all-on` (every switch on, result `Vec` still fresh per call) and `all`,
+/// which is each switch alone plus `all-on`: the whole ablation table.
+fn parse_ablation(list: &str) -> Result<(Vec<Switch>, bool), String> {
+    let mut switches = Vec::new();
+    let mut all_on = false;
+    for item in list.split(',') {
+        match item {
+            "all" => {
+                switches = Switch::ALL.to_vec();
+                all_on = true;
+            }
+            "all-on" => all_on = true,
+            other => {
+                let switch =
+                    Switch::parse(other).ok_or_else(|| format!("unknown switch {other}"))?;
+                if !switches.contains(&switch) {
+                    switches.push(switch);
+                }
+            }
+        }
+    }
+    Ok((switches, all_on))
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
@@ -101,13 +131,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--ablation" => {
                 let list = value("--ablation")?;
-                options.ablation = if list == "all" {
-                    Switch::ALL.to_vec()
-                } else {
-                    list.split(',')
-                        .map(|s| Switch::parse(s).ok_or_else(|| format!("unknown switch {s}")))
-                        .collect::<Result<_, _>>()?
-                };
+                (options.ablation, options.ablation_all_on) = parse_ablation(&list)?;
             }
             "--settle-secs" => {
                 options.settle_secs = Some(
@@ -124,6 +148,24 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 );
             }
             "--no-sampler" => options.no_sampler = true,
+            "--cold-only" => options.cold_only = true,
+            "--cold-repeats" => {
+                options.cold_repeats = Some(
+                    value("--cold-repeats")?
+                        .parse()
+                        .map_err(|e| format!("{e}"))?,
+                );
+            }
+            "--seed" => {
+                options.seed = Some(value("--seed")?.parse().map_err(|e| format!("{e}"))?);
+            }
+            "--warmup-secs" => {
+                options.warmup_secs = Some(
+                    value("--warmup-secs")?
+                        .parse()
+                        .map_err(|e| format!("{e}"))?,
+                );
+            }
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),
             other => options.positional.push(other.to_owned()),
         }
@@ -136,6 +178,7 @@ fn all_backends(
     ctx: &Rc<WgpuContext>,
     threads: usize,
     ablation: &[Switch],
+    all_on: bool,
 ) -> Vec<Box<dyn Backend>> {
     let mut backends: Vec<Box<dyn Backend>> = vec![
         Box::new(gust_gpu::GustGpu::new(Rc::clone(device))),
@@ -145,12 +188,61 @@ fn all_backends(
     for switch in ablation {
         backends.push(Box::new(HandWgsl::ablation(Rc::clone(ctx), *switch)));
     }
+    if all_on {
+        backends.push(Box::new(HandWgsl::all_on(Rc::clone(ctx))));
+    }
     #[cfg(gust_dual)]
     backends.push(Box::new(gust_twin::GustTwin::new()));
     backends.push(Box::new(rayon_cpu::CpuLoop::rayon(1)));
     backends.push(Box::new(rayon_cpu::CpuLoop::rayon(threads)));
     backends.push(Box::new(rayon_cpu::CpuLoop::serial()));
     backends
+}
+
+/// Everything a results file holds, before it is written. Its own type so that a test can build the file the way
+/// `run` does and read the real output.
+struct RunRecord {
+    label: String,
+    run_seed: u64,
+    sampler: serde_json::Value,
+    machine: serde_json::Value,
+    config: serde_json::Value,
+    load_before: serde_json::Value,
+    load_after: serde_json::Value,
+    gpu_before: serde_json::Value,
+    gpu_after: serde_json::Value,
+    wall_s: f64,
+    cells: Vec<serde_json::Value>,
+    failures: Vec<String>,
+    /// Route, build and adapter (plan 2.5 item 8), merged into the top level.
+    provenance: serde_json::Value,
+}
+
+impl RunRecord {
+    fn into_document(self) -> serde_json::Value {
+        let mut document = json!({
+            "label": self.label,
+            "run_seed": self.run_seed,
+            "banner": "shared machine, not publishable",
+            // The publishable judgement (plan 2.4) is b1b's; until then no file is publishable, and says why.
+            "publishable": meta::PUBLISHABLE,
+            "publishable_reason": meta::PUBLISHABLE_REASON,
+            "sampler": self.sampler,
+            "meta": self.machine,
+            "config": self.config,
+            "load_before": self.load_before,
+            "load_after": self.load_after,
+            "gpu_before": self.gpu_before,
+            "gpu_after": self.gpu_after,
+            "wall_s": self.wall_s,
+            "cells": self.cells,
+            "failures": self.failures,
+        });
+        if let (Some(top), Some(extra)) = (document.as_object_mut(), self.provenance.as_object()) {
+            top.extend(extra.clone());
+        }
+        document
+    }
 }
 
 fn run(options: &Options) -> BenchResult<bool> {
@@ -177,6 +269,19 @@ fn run(options: &Options) -> BenchResult<bool> {
         config.cap = Duration::from_secs(2);
         config.cold_repeats = 1;
     }
+    if let Some(secs) = options.warmup_secs {
+        config.warmup_cap = Duration::from_secs_f64(secs);
+    }
+    // The run seed fixes every rotation order of the run (recorded in the file); the default comes from the clock.
+    config.run_seed = options.seed.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(1, |d| d.as_nanos() as u64)
+    });
+    config.cold_only = options.cold_only;
+    if let Some(repeats) = options.cold_repeats {
+        config.cold_repeats = repeats;
+    }
     if let Some(samples) = options.samples {
         config.samples = samples;
     }
@@ -194,7 +299,13 @@ fn run(options: &Options) -> BenchResult<bool> {
         .workloads
         .clone()
         .unwrap_or_else(|| Workload::ALL.to_vec());
-    let mut backends = all_backends(&gust_device, &ctx, threads, &options.ablation);
+    let mut backends = all_backends(
+        &gust_device,
+        &ctx,
+        threads,
+        &options.ablation,
+        options.ablation_all_on,
+    );
     if let Some(wanted) = &options.backends {
         for name in wanted {
             if !backends.iter().any(|b| b.id() == name) {
@@ -233,28 +344,52 @@ fn run(options: &Options) -> BenchResult<bool> {
     for workload in &workload_list {
         for (size_index, n) in sizes.iter().enumerate() {
             let (inputs, want) = prepare_case(*n, *workload);
-            for backend in &mut backends {
+            let input = CellInput {
+                workload: *workload,
+                inputs: &inputs,
+                reference: &want,
+                cold: size_index == 0,
+            };
+            // The GPU backends are one paired group: one idle window, one shared warm-up, interleaved samples.
+            let mut gpu: Vec<&mut dyn Backend> = backends
+                .iter_mut()
+                .filter(|b| b.kind() == backend::Kind::Gpu)
+                .map(|b| -> &mut dyn Backend { b.as_mut() })
+                .collect();
+            let mut produced = Vec::new();
+            if !gpu.is_empty() {
+                if let Some(sampler) = &sampler {
+                    window_records.push(sampler.sample_cell(json!({
+                        "backend": "gpu-group", "workload": workload.id(), "n": n,
+                    })));
+                }
+                produced.extend(run_gpu_group(&mut gpu, &input, &config));
+            }
+            for backend in backends
+                .iter_mut()
+                .filter(|b| b.kind() != backend::Kind::Gpu)
+            {
                 if let Some(sampler) = &sampler {
                     window_records.push(sampler.sample_cell(json!({
                         "backend": backend.id(), "workload": workload.id(), "n": n,
                     })));
                 }
-                let input = CellInput {
-                    workload: *workload,
-                    inputs: &inputs,
-                    reference: &want,
-                    cold: size_index == 0,
-                };
-                let cell = run_cell(backend.as_mut(), &input, &config);
+                produced.push(run_cell(backend.as_mut(), &input, &config));
+            }
+            for cell in produced {
                 let summary = ["end_to_end", "dispatch_host", "gpu_single"].map(|metric| {
                     cell.json["metrics"][metric]["median_ms"]
                         .as_f64()
                         .map_or("-".to_owned(), |v| format!("{v:.4}"))
                 });
+                let paired =
+                    cell.json["metrics"]["end_to_end"]["paired_vs_prebuilt"]["median_ratio"]
+                        .as_f64()
+                        .map_or(String::new(), |r| format!(", e2e paired {r:.3}x prebuilt"));
                 eprintln!(
-                    "{} n={n} {}: e2e {} ms, dispatch {} ms, gpu {} ms, checks {}{}",
+                    "{} n={n} {}: e2e {} ms, dispatch {} ms, gpu {} ms, checks {}{paired}{}",
                     workload.id(),
-                    backend.id(),
+                    cell.json["backend"].as_str().unwrap_or("?"),
                     summary[0],
                     summary[1],
                     summary[2],
@@ -287,43 +422,55 @@ fn run(options: &Options) -> BenchResult<bool> {
         }
         None => json!({ "enabled": false }),
     };
-    let mut document = json!({
-        "label": options.label.clone().unwrap_or_else(|| "run".to_owned()),
-        "banner": "shared machine, not publishable",
-        // The publishable judgement (plan 2.4) is b1b's; until then no file is publishable, and says why.
-        "publishable": meta::PUBLISHABLE,
-        "publishable_reason": meta::PUBLISHABLE_REASON,
-        "sampler": sampler_json,
-        "meta": machine,
-        "config": {
+    let document = RunRecord {
+        label: options.label.clone().unwrap_or_else(|| "run".to_owned()),
+        run_seed: config.run_seed,
+        sampler: sampler_json,
+        machine,
+        config: json!({
             "samples": config.samples, "min_samples": config.min_samples,
             "cap_s": config.cap.as_secs_f64(), "batch": config.batch,
             "warmup_end_to_end": config.warmup_end_to_end, "warmup_dispatch": config.warmup_dispatch,
             "workgroup_size": workloads::WORKGROUP, "sizes": sizes,
+            "warmup_cap_s": config.warmup_cap.as_secs_f64(), "warmup_batch": config.warmup_batch,
+            "sampling": "gpu backends interleaved in rotation, paired against wgsl-prebuilt", "cold_only": config.cold_only,
+            "cold_repeats": config.cold_repeats,
             "workloads": workload_list.iter().map(|w| w.id()).collect::<Vec<_>>(),
             "backends": backends.iter().map(|b| json!({ "id": b.id(), "description": b.description() })).collect::<Vec<_>>(),
             "hand_wgsl_adapter": ctx.info.name,
-        },
-        "load_before": load_before,
-        "load_after": meta::load_snapshot(),
-        "gpu_before": gpu_before,
-        "gpu_after": meta::gpu_snapshot(),
-        "wall_s": started.elapsed().as_secs_f64(),
-        "cells": cells,
-        "failures": failures,
-    });
-    // Route, build and adapter at the top level of every results file (plan 2.5 item 8).
-    if let (Some(top), Some(extra)) = (
-        document.as_object_mut(),
-        meta::provenance(adapter).as_object(),
-    ) {
-        top.extend(extra.clone());
+            // Which shader source gust-gpu's cold start used (plan 2.3): a kernel with embedded artifacts is loaded
+            // from them, otherwise it is compiled at run time. A run of one kind does not aggregate with the other.
+            "shader_source": shader_source(),
+        }),
+        load_before,
+        load_after: meta::load_snapshot(),
+        gpu_before,
+        gpu_after: meta::gpu_snapshot(),
+        wall_s: started.elapsed().as_secs_f64(),
+        cells,
+        failures: failures.clone(),
+        provenance: meta::provenance(adapter),
     }
+    .into_document();
     std::fs::write(out, serde_json::to_string_pretty(&document)? + "\n")?;
     for failure in &failures {
         eprintln!("FAILURE: {failure}");
     }
     Ok(failures.is_empty())
+}
+
+/// `precompiled` when every benchmark kernel carries an embedded artifact, `run-time compile` when none does.
+fn shader_source() -> &'static str {
+    let kernels = [
+        &workloads::vector_add::kernel::add::DESCRIPTOR,
+        &workloads::saxpy::kernel::saxpy::DESCRIPTOR,
+    ];
+    let with = kernels.iter().filter(|k| !k.artifacts.is_empty()).count();
+    match with {
+        0 => "run-time compile",
+        n if n == kernels.len() => "precompiled",
+        _ => "mixed",
+    }
 }
 
 fn dump_wgsl() -> BenchResult<()> {
@@ -437,5 +584,50 @@ fn main() -> ExitCode {
             eprintln!("error: {error}");
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ablation_lists_parse_and_all_is_the_whole_table() {
+        let (switches, all_on) = parse_ablation("all").unwrap();
+        assert_eq!(switches, Switch::ALL.to_vec());
+        assert!(all_on);
+        let (switches, all_on) = parse_ablation("all-on").unwrap();
+        assert!(switches.is_empty() && all_on);
+        let (switches, all_on) = parse_ablation("staging-reuse,staging-reuse").unwrap();
+        assert_eq!(switches, vec![Switch::StagingReuse]);
+        assert!(!all_on);
+        assert!(parse_ablation("nope").is_err());
+    }
+
+    #[test]
+    fn the_per_run_file_says_not_publishable_with_the_reason_and_carries_the_provenance() {
+        let document = RunRecord {
+            label: "t".to_owned(),
+            run_seed: 7,
+            sampler: json!({ "enabled": false }),
+            machine: json!({}),
+            config: json!({ "samples": 5 }),
+            load_before: json!(null),
+            load_after: json!(null),
+            gpu_before: json!(null),
+            gpu_after: json!(null),
+            wall_s: 1.0,
+            cells: Vec::new(),
+            failures: Vec::new(),
+            provenance: json!({ "route": "wgsl", "build": { "commit": "abc" }, "adapter": { "name": "A" } }),
+        }
+        .into_document();
+        assert_eq!(document["publishable"], false);
+        assert_eq!(document["publishable_reason"], meta::PUBLISHABLE_REASON);
+        assert_eq!(document["banner"], "shared machine, not publishable");
+        assert_eq!(document["route"], "wgsl");
+        assert_eq!(document["build"]["commit"], "abc");
+        assert_eq!(document["adapter"]["name"], "A");
+        assert_eq!(document["config"]["samples"], 5);
     }
 }

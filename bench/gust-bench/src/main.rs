@@ -30,7 +30,7 @@ use std::{process::ExitCode, rc::Rc, time::Duration, time::Instant};
 
 use backend::{Backend, BenchResult};
 use gust_wgpu::HeadlessDevice;
-use harness::{CellInput, Config, prepare_case, run_cell};
+use harness::{CellInput, Config, prepare_case, run_cell, run_gpu_group};
 use sampler::Sampler;
 use serde_json::json;
 use wgsl_wgpu::{HandWgsl, Mode, Switch, WgpuContext};
@@ -262,7 +262,6 @@ fn run(options: &Options) -> BenchResult<bool> {
         config.min_samples = 3;
         config.cap = Duration::from_secs(2);
         config.cold_repeats = 1;
-        config.warmup_cap = Duration::from_secs(3);
     }
     if let Some(secs) = options.warmup_secs {
         config.warmup_cap = Duration::from_secs_f64(secs);
@@ -333,28 +332,52 @@ fn run(options: &Options) -> BenchResult<bool> {
     for workload in &workload_list {
         for (size_index, n) in sizes.iter().enumerate() {
             let (inputs, want) = prepare_case(*n, *workload);
-            for backend in &mut backends {
+            let input = CellInput {
+                workload: *workload,
+                inputs: &inputs,
+                reference: &want,
+                cold: size_index == 0,
+            };
+            // The GPU backends are one paired group: one idle window, one shared warm-up, interleaved samples.
+            let mut gpu: Vec<&mut dyn Backend> = backends
+                .iter_mut()
+                .filter(|b| b.kind() == backend::Kind::Gpu)
+                .map(|b| -> &mut dyn Backend { b.as_mut() })
+                .collect();
+            let mut produced = Vec::new();
+            if !gpu.is_empty() {
+                if let Some(sampler) = &sampler {
+                    window_records.push(sampler.sample_cell(json!({
+                        "backend": "gpu-group", "workload": workload.id(), "n": n,
+                    })));
+                }
+                produced.extend(run_gpu_group(&mut gpu, &input, &config));
+            }
+            for backend in backends
+                .iter_mut()
+                .filter(|b| b.kind() != backend::Kind::Gpu)
+            {
                 if let Some(sampler) = &sampler {
                     window_records.push(sampler.sample_cell(json!({
                         "backend": backend.id(), "workload": workload.id(), "n": n,
                     })));
                 }
-                let input = CellInput {
-                    workload: *workload,
-                    inputs: &inputs,
-                    reference: &want,
-                    cold: size_index == 0,
-                };
-                let cell = run_cell(backend.as_mut(), &input, &config);
+                produced.push(run_cell(backend.as_mut(), &input, &config));
+            }
+            for cell in produced {
                 let summary = ["end_to_end", "dispatch_host", "gpu_single"].map(|metric| {
                     cell.json["metrics"][metric]["median_ms"]
                         .as_f64()
                         .map_or("-".to_owned(), |v| format!("{v:.4}"))
                 });
+                let paired =
+                    cell.json["metrics"]["end_to_end"]["paired_vs_prebuilt"]["median_ratio"]
+                        .as_f64()
+                        .map_or(String::new(), |r| format!(", e2e paired {r:.3}x prebuilt"));
                 eprintln!(
-                    "{} n={n} {}: e2e {} ms, dispatch {} ms, gpu {} ms, checks {}{}",
+                    "{} n={n} {}: e2e {} ms, dispatch {} ms, gpu {} ms, checks {}{paired}{}",
                     workload.id(),
-                    backend.id(),
+                    cell.json["backend"].as_str().unwrap_or("?"),
                     summary[0],
                     summary[1],
                     summary[2],
@@ -396,7 +419,8 @@ fn run(options: &Options) -> BenchResult<bool> {
             "cap_s": config.cap.as_secs_f64(), "batch": config.batch,
             "warmup_end_to_end": config.warmup_end_to_end, "warmup_dispatch": config.warmup_dispatch,
             "workgroup_size": workloads::WORKGROUP, "sizes": sizes,
-            "warmup_cap_s": config.warmup_cap.as_secs_f64(), "cold_only": config.cold_only,
+            "warmup_cap_s": config.warmup_cap.as_secs_f64(), "warmup_batch": config.warmup_batch,
+            "sampling": "gpu backends interleaved in rotation, paired against wgsl-prebuilt", "cold_only": config.cold_only,
             "cold_repeats": config.cold_repeats,
             "workloads": workload_list.iter().map(|w| w.id()).collect::<Vec<_>>(),
             "backends": backends.iter().map(|b| json!({ "id": b.id(), "description": b.description() })).collect::<Vec<_>>(),

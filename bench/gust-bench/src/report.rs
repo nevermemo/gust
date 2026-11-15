@@ -67,6 +67,68 @@ impl Point {
     }
 }
 
+/// The paired ratios of one (workload, size, backend, metric) to `wgsl-prebuilt` over the runs: each run contributes the
+/// median of its per-rotation ratios and the p5 and p95 of them (the spread inside the run).
+#[derive(Default)]
+struct PairedPoint {
+    run_medians: Vec<f64>,
+    run_p5: Vec<f64>,
+    run_p95: Vec<f64>,
+}
+
+impl PairedPoint {
+    fn median(&self) -> f64 {
+        median(&self.run_medians)
+    }
+
+    fn lowest(&self) -> f64 {
+        self.run_medians.iter().copied().fold(f64::MAX, f64::min)
+    }
+
+    fn highest(&self) -> f64 {
+        self.run_medians.iter().copied().fold(0.0, f64::max)
+    }
+}
+
+type PairedTable = BTreeMap<(String, u64, String, String), PairedPoint>;
+
+fn gather_paired(runs: &[Value]) -> PairedTable {
+    let mut table = PairedTable::new();
+    for run in runs {
+        for cell in run["cells"].as_array().into_iter().flatten() {
+            let (Some(workload), Some(n), Some(backend)) = (
+                cell["workload"].as_str(),
+                cell["n"].as_u64(),
+                cell["backend"].as_str(),
+            ) else {
+                continue;
+            };
+            for (metric, _) in METRICS {
+                let paired = &cell["metrics"][metric]["paired_vs_prebuilt"];
+                let Some(ratio) = paired["median_ratio"].as_f64() else {
+                    continue;
+                };
+                let point = table
+                    .entry((
+                        workload.to_owned(),
+                        n,
+                        backend.to_owned(),
+                        metric.to_owned(),
+                    ))
+                    .or_default();
+                point.run_medians.push(ratio);
+                point
+                    .run_p5
+                    .push(paired["p5_ratio"].as_f64().unwrap_or(ratio));
+                point
+                    .run_p95
+                    .push(paired["p95_ratio"].as_f64().unwrap_or(ratio));
+            }
+        }
+    }
+    table
+}
+
 /// (workload, n, backend, metric) -> point
 type Table = BTreeMap<(String, u64, String, String), Point>;
 
@@ -348,6 +410,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     let runs = load(inputs)?;
     check_labels(&runs)?;
     let table = gather(&runs);
+    let paired = gather_paired(&runs);
     let cold = cold_starts(&runs);
 
     let mut sizes: BTreeMap<String, Vec<u64>> = BTreeMap::new();
@@ -391,6 +454,13 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                 "median_ms": point.median(), "min_run_median_ms": point.min(),
                 "max_run_median_ms": point.max(), "spread_pct": point.spread_pct(),
                 "per_run_median_ms": point.per_run_median, "samples_per_run": point.samples,
+                "paired_vs_prebuilt": paired
+                    .get(&(workload.clone(), *n, backend.clone(), metric.clone()))
+                    .map(|p| json!({
+                        "median_ratio": p.median(), "run_min_ratio": p.lowest(), "run_max_ratio": p.highest(),
+                        "per_run_median_ratio": p.run_medians, "per_run_p5_ratio": p.run_p5,
+                        "per_run_p95_ratio": p.run_p95,
+                    })),
                 "pcie_link": (metric == "end_to_end").then(|| link_of(workload, *n)),
             })
         })
@@ -600,6 +670,54 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                 "-".to_owned()
             },
         )?;
+    }
+
+    // Paired ratios: the GPU backends were sampled in rotation, so these ratios saw the same power state.
+    writeln!(
+        md,
+        "\n## Paired ratios to wgsl-prebuilt (GPU backends sampled in rotation, one shared warm-up)\n"
+    )?;
+    writeln!(
+        md,
+        "Each run takes the samples of all GPU backends of a (workload, size) in rotation, so a P-state drift hits every backend alike. The ratio of a rotation is the backend's sample over wgsl-prebuilt's sample of the same rotation; a cell shows the median over runs of the per-run median ratio, then [lowest to highest run median] and (mean of the within-run p5 to p95). A ratio of 1.00 means no gap to wgsl-prebuilt.\n"
+    )?;
+    for metric in ["end_to_end", "dispatch_host"] {
+        for workload in sizes.keys() {
+            writeln!(md, "### {workload}, {metric}\n")?;
+            write!(md, "| elements |")?;
+            for backend in ABLATION {
+                write!(md, " {backend} |")?;
+            }
+            writeln!(md)?;
+            write!(md, "|---|")?;
+            for _ in ABLATION {
+                write!(md, "---|")?;
+            }
+            writeln!(md)?;
+            for n in &sizes[workload] {
+                write!(md, "| {n} |")?;
+                for backend in ABLATION {
+                    match paired.get(&(workload.clone(), *n, backend.to_owned(), metric.to_owned()))
+                    {
+                        Some(p) => {
+                            let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+                            write!(
+                                md,
+                                " {:.3} [{:.3}-{:.3}] ({:.2}-{:.2}) |",
+                                p.median(),
+                                p.lowest(),
+                                p.highest(),
+                                mean(&p.run_p5),
+                                mean(&p.run_p95)
+                            )?;
+                        }
+                        None => write!(md, " - |")?,
+                    }
+                }
+                writeln!(md)?;
+            }
+            writeln!(md)?;
+        }
     }
 
     // The ablation table: medians of the per-run medians; each cell shows the ratio to wgsl-prebuilt.
@@ -1003,7 +1121,7 @@ mod tests {
     fn gpu_cell(backend: &str, ms: f64, first: bool, sm: f64) -> Value {
         json!({
             "workload": "W1", "n": 4096, "backend": backend,
-            "metrics": { "end_to_end": { "median_ms": ms, "n": 30 } },
+            "metrics": { "end_to_end": { "median_ms": ms, "n": 30, "paired_vs_prebuilt": { "reference": "wgsl-prebuilt", "n": 30, "median_ratio": ms / 2.0, "p5_ratio": 0.9, "p95_ratio": 1.1 } } },
             "cold_start_ms": [10.0 + ms, 5.0 + ms], "cold_start_first_in_process": first,
             "cold_start_note": "note",
             "warmup": { "actual_s": 0.8, "p0_reached": sm > 2500.0, "clocks": { "sm_mhz": sm, "pstate": "P0", "pcie_gen_now": 4.0, "pcie_gen_max": 5.0, "pcie_width": 4.0, "mem_mhz": 1.0 } },
@@ -1068,6 +1186,8 @@ mod tests {
         assert!(md.contains("wgsl-percall+all-on"));
         assert!(md.contains("## GPU clocks at the start of timing"));
         assert!(md.contains("first in process"));
+        assert!(md.contains("## Paired ratios to wgsl-prebuilt"));
+        assert!(md.contains("1.000 [1.000-1.000]"), "paired cell missing");
         assert!(
             md.contains("1 of 2 GPU cells reached P0"),
             "P0 count missing"

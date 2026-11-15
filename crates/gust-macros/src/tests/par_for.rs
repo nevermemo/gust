@@ -13,7 +13,7 @@ use proc_macro2::{TokenStream, TokenTree};
 use crate::{
     diagnostics::{Code, testing::assert_rendered_code},
     expand::{Environment, Profile, TWIN_TEXT},
-    par_for::{expand_input, par_for_in},
+    par_for::{Form, expand_input, par_for_in},
     regression_tests::assert_golden,
 };
 
@@ -558,7 +558,7 @@ fn error_line(input: &str) -> (String, usize) {
         &environment(&scratch, "src/lib.rs"),
         Profile::Other,
         1,
-        &mut false,
+        &mut Form::default(),
     )
     .expect_err(input);
     (error.to_string(), error.span().start().line)

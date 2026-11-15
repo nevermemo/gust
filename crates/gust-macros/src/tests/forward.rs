@@ -477,3 +477,28 @@ fn an_error_after_a_clause_names_the_forwarded_facade_when_the_loop_does_not_par
         "{output}"
     );
 }
+
+#[test]
+fn a_comparison_after_an_unmatched_operator_is_left_as_written() {
+    // The back-count treats every `<` as an opener, an operator too (the documented rule), so the `>` here matches
+    // the `<` of `a < b`, and the path is left literal; `d > (::gust::K)` is the way to write it.
+    for source in [
+        "let c = a < b && d > ::gust::K;",
+        "let x = a < b; let y = c > ::gust::K;",
+        "let c = a << b > ::gust::K;",
+    ] {
+        assert_eq!(forwarded(source), tokens(source), "{source}");
+    }
+    assert_eq!(
+        forwarded("let c = a < b && d > (::gust::K);"),
+        tokens("let c = a < b && d > (::inner::gust::K);")
+    );
+}
+
+#[test]
+fn spacing_is_ignored() {
+    // `S<T> ::gust::x` and `S<T>::gust::x` differ only in whitespace, which is no token: neither is rewritten.
+    for source in ["S<T> ::gust::x", "S<T>::gust::x"] {
+        assert_eq!(forwarded(source), tokens(source), "{source}");
+    }
+}

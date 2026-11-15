@@ -395,8 +395,12 @@ called `gust` and `gust_wgpu`. Two things follow.
   own: name the path with `#[inner::gust::gpu(crate = ::inner::gust)]`, in either order with `route = ".."`, or with
   `crate(::inner::gust);` as one of the clauses before the loop of `par_for!` (any order, each at most once). The
   macro then rewrites each `::gust::` of its output that begins a path to that path: one after a path segment (as in
-  `::inner::gust::`) or in a qualified path (`<T as X>::gust::`) is left alone; one after a keyword, `->`, a lifetime, a
-  comparison or the end of generics is rewritten, and so are tokens you wrote yourself that spell one. The `::gust_wgpu::` paths
+  `::inner::gust::`) or in a qualified path (`<T as X>::gust::`) is left alone; one after a keyword, `->`, a lifetime or
+  the end of generics (`impl<T> ::gust::Tr`) is rewritten, and so is one after a `>` with no `<` before it in the same
+  group, and so are tokens you wrote yourself that spell one. A `::gust` right after any other `>` is left as written,
+  which includes a comparison when an earlier `<` (an operator too, in this or an earlier statement of the block) is
+  still unmatched, as in `a < b && d > ::gust::K`: rustc then reports E0433 for it, and `d > (::gust::K)` avoids that.
+  Spacing is ignored (`S<T> ::gust::x` and `S<T>::gust::x` are alike). The `::gust_wgpu::` paths
   stay literal, so the function form of `#[gpu]` and `par_for!` still need a direct dependency on `gust-compute-wgpu`;
   the module form does not. `tests/reexport` compiles all four forms this way.
 

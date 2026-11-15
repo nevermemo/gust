@@ -166,7 +166,13 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
     }
     // The re-export fixture: one more `cargo check`, which must succeed.
     let reexport_started = std::time::Instant::now();
-    let reexport_output = reexport_command(root).output();
+    let mut reexport = reexport_command(root);
+    // What the record shows is the command line actually run, `--target-dir` included.
+    let reexport_arguments: Vec<String> = reexport
+        .get_args()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect();
+    let reexport_output = reexport.output();
     let reexport_seconds = reexport_started.elapsed().as_secs();
     match reexport_output {
         Ok(output) => {
@@ -174,7 +180,7 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
             problems.extend(reexport_problems(output.status.success(), &stderr));
             checks.push(CheckRecord {
                 program: "cargo".to_owned(),
-                arguments: reexport_args(),
+                arguments: reexport_arguments,
                 exit_code: output.status.code(),
                 stdout: String::new(),
                 stderr,

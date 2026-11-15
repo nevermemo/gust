@@ -102,8 +102,12 @@ mod forward_tests;
 /// direct dependency on `gust-compute` named `gust` has; a crate that reaches it through another crate's
 /// `pub use gust;` says where with `#[gpu(crate = ::inner::gust)]` (the path starts with `::` or `crate::`). A final
 /// pass then rewrites each `::gust::` of the output that begins a path to that path: not one after a path segment (as
-/// in `::inner::gust::`) or in a qualified path (`<T as X>::gust::`); one after a keyword, `->`, a lifetime, a
-/// comparison or the end of a list of generics is rewritten. Tokens you wrote yourself inside the module that spell
+/// in `::inner::gust::`) or in a qualified path (`<T as X>::gust::`); one after a keyword, `->`, a lifetime or the end
+/// of a list of generics (`impl<T> ::gust::Tr`) is rewritten, and so is one after a `>` with no `<` before it in the
+/// same group. A `::gust` right after any other `>` is left as written, which includes a comparison when an earlier `<`
+/// (an operator too, in this or an earlier statement of the block) is still unmatched, as in `a < b && d > ::gust::K`:
+/// rustc then reports E0433 for it, and writing `d > (::gust::K)` avoids that. Spacing is ignored, so `S<T> ::gust::x`
+/// and `S<T>::gust::x` are alike. Tokens you wrote yourself inside the module that spell
 /// one are rewritten too. Without the argument nothing is rewritten. The
 /// function-map form still names `::gust_wgpu` literally, so it needs a direct dependency on `gust-compute-wgpu`
 /// (the module form does not).

@@ -7,7 +7,9 @@
 //!
 //! The pass is syntactic, which has two consequences, documented for users in the README:
 //!
-//! - It rewrites **every** path-leading `::gust::` in the output, the user's own tokens that spell one included.
+//! - It rewrites each `::gust::` in the output that begins a path (the exact rule is on `continues_a_path`: not one
+//!   after a path segment, and not one after a `>` that is taken to close a path's arguments, a comparison after an
+//!   unmatched `<` operator included), the user's own tokens that spell one included.
 //! - It leaves `::gust_wgpu` alone: the function-map form of `#[gpu]` and `par_for!` still need a direct dependency
 //!   on `gust-compute-wgpu`.
 
@@ -96,16 +98,19 @@ fn leads_the_facade(tokens: &[TokenTree], index: usize) -> bool {
         && !continues_a_path(tokens, index)
 }
 
-/// Whether the token in front of `tokens[index]` makes a `::` a separator. The rule, exactly as implemented:
+/// Whether the token in front of `tokens[index]` makes a `::` a separator. The rule, exactly as implemented (spacing
+/// is ignored: `S<T> ::gust::x` and `S<T>::gust::x` are the same token stream, and neither is rewritten):
 ///
 /// - an identifier is a path segment unless it is a keyword after which a path may begin (`impl`, `as`, `for`, ..) or
 ///   the name of a lifetime (`&'a ::gust::X`);
 /// - a `>` that is part of `->` or `=>` is not a separator;
-/// - any other `>` is looked at with its matching `<` (counted back in the same group): if there is none, the `>` is a
-///   comparison or a shift (`a > ::gust::K`) and a path begins; if the `<` follows `impl`, `for`, `fn`, `struct`,
-///   `enum`, `trait` or `type`, the `>` ends a list of generics (`impl<T> ::gust::Tr`) and a path begins; otherwise it
-///   closes the arguments of a path (`Vec<T>::gust::..`, `Vec::<T>::gust::..`) or a qualified path
-///   (`<T as X>::gust::..`) and the `::` is a separator.
+/// - any other `>` is matched with the nearest unmatched earlier `<` in the same group, any `<` counting as an opener,
+///   the operators `<`, `<=` and `<<` included, in this statement or an earlier one of the block. If there is none, the
+///   `>` is a comparison or a shift (`a > ::gust::K`) and a path begins. If that `<` follows `impl` or `for`, the `>`
+///   ends a list of generics (`impl<T> ::gust::Tr`) and a path begins. Otherwise the `>` is taken to close the
+///   arguments of a path (`Vec<T>::gust::..`, `Vec::<T>::gust::..`) or a qualified path (`<T as X>::gust::..`), and the
+///   `::` is a separator: so `a < b && d > ::gust::K` is left as written (rustc then reports E0433 for it, never wrong
+///   code); write `d > (::gust::K)` instead, where the path begins a group and is rewritten.
 fn continues_a_path(tokens: &[TokenTree], index: usize) -> bool {
     let Some(previous) = index.checked_sub(1).and_then(|at| tokens.get(at)) else {
         return false;
@@ -127,10 +132,9 @@ fn continues_a_path(tokens: &[TokenTree], index: usize) -> bool {
             match matching_open(tokens, index - 1) {
                 None => false,
                 Some(open) => match open.checked_sub(1).and_then(|at| tokens.get(at)) {
-                    Some(TokenTree::Ident(keyword)) => !matches!(
-                        keyword.to_string().as_str(),
-                        "impl" | "for" | "fn" | "struct" | "enum" | "trait" | "type"
-                    ),
+                    Some(TokenTree::Ident(keyword)) => {
+                        !matches!(keyword.to_string().as_str(), "impl" | "for")
+                    }
                     _ => true,
                 },
             }

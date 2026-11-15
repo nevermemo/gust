@@ -143,9 +143,9 @@ of an element-wise map (`#[gpu]` on a function) run in parallel chunks of the ou
 
 Capabilities (D138). `GUST_PROFILE` may name capabilities after its target, `<target>(+<capability>)*`, for example
 `native+subgroups`. The one capability of this release is `subgroups`. `f16` and `atomics64` are reserved names that
-the build script refuses as not supported, `cpu` takes none, and `web+subgroups` is refused because the pinned wgpu
-(30.0.1) cannot request the feature in a browser. The build script sets `cfg(gust_capability = "subgroups")`, and
-`gust::capability::enabled()` lists the capabilities of the build. `dev+subgroups` is the profile that the tests of
+the build script refuses as not supported, `cpu` takes none, and `web+subgroups` is refused because wgpu 30.0 (the
+requirement is 30.0.1 or newer in that line, a floor and not a pin) cannot request the feature in a browser. The build
+script sets `cfg(gust_capability = "subgroups")`, and `gust::capability::enabled()` lists the capabilities of the build. `dev+subgroups` is the profile that the tests of
 subgroup kernels use, because `dev` keeps the run-time compiler that a strict profile refuses; `native+subgroups` is the
 strict form that ships. A crate declares what it builds for under `[package.metadata.gust]` in its own `Cargo.toml`:
 `profiles` (the build profiles it supports, `["native", "web", "cpu"]` when absent), `limits = "portable"` and `routes`
@@ -472,13 +472,17 @@ case is `Cpu` evidence.
 
 - **Supported:** Vulkan on Windows and Linux. The native backend asks wgpu for Vulkan only, so
   `HeadlessDevice::new()` needs a Vulkan compute adapter. In the browser the backend uses WebGPU through
-  `wasm32-unknown-unknown` (`examples/web-vector-add`, the strict `web` profile, `cargo xtask check-web`).
+  `wasm32-unknown-unknown` (`examples/web-vector-add`, which is the default page of `cargo xtask check-web`, and
+  `gallery/web-hello`, a second page that `cargo xtask check-gallery` runs through the same runner; both use the strict
+  `web` profile). A browser cannot block: the generated `map` and `map_on` are not emitted on `wasm32` (use
+  `map_async`; `map_gpu` and `map_gpu_on` exist there and return once the work is submitted), and the generated
+  `dispatch` exists there but returns its wait error after submitting.
 - **Subgroups (M8):** a `+subgroups` build needs a Vulkan adapter that offers subgroup operations. Its tests ran on the
   RTX 5090 (subgroup size 32) and on lavapipe in CI (size 8), the two m8.z forms of `subgroup_broadcast`
   included (gpu-software run 42573264225, `dev+subgroups` step); the Radeon 890M is a spike and `gust-algo`
   observation, not a test run
   ([SEMANTICS](docs/SEMANTICS.md)). In the browser `web+subgroups` is refused at build time, and a device
-  opened with a capability there is `Error::MissingCapability`: the pinned wgpu cannot request the feature, so a web
+  opened with a capability there is `Error::MissingCapability`: wgpu 30.0 cannot request the feature, so a web
   build runs the portable body. `check-web` shows that refusal in Chrome 156; it says nothing about the adapter.
 - **Not supported as of 0.2.0:** macOS and Metal (no Metal backend is compiled), and DX12 is not claimed (the spike
   S3 probe ran DX12, but `gust-compute-wgpu` does not compile it). Software adapters such as Mesa lavapipe run the GPU
@@ -1134,7 +1138,7 @@ pub fn double_subgroups(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mu
 - On the host, `HeadlessDevice::new()` and `DeviceOptions::default()` open the device with the capabilities of the build
   (`gust::capability::enabled()`), and `DeviceOptions::with_capabilities` chooses another set. An adapter that lacks a
   requested capability gives `Error::MissingCapability` when the device is opened; in a browser any non-empty set is
-  that refusal, because the pinned wgpu cannot request it there. A kernel whose `requires` the device was not opened
+  that refusal, because wgpu 30.0 cannot request it there. A kernel whose `requires` the device was not opened
   with is the same error at launch, and a workgroup that is not whole subgroups is `Error::SubgroupSize`.
   `HeadlessDevice::subgroup_sizes()` is the adapter's range as wgpu reports it.
 - Evidence is narrow and labelled *measured*: a subgroup body has no CPU twin. The tests of `gust-compute-wgpu` ran on
@@ -1152,7 +1156,10 @@ pub fn double_subgroups(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mu
 ## Examples
 
 The workspace contains twelve runnable programs (every directory of `examples/` but `web-vector-add`, which is a
-browser module run by `cargo xtask check-web`, and which also runs a `pixel` form of its kernel):
+browser module run by `cargo xtask check-web`, and which also runs a `pixel` form of its kernel).
+Beside them, `gallery/` holds ten complete programs shaped like a user's crate, in a workspace of its own (`hello-gust`
+to `web-hello`, the browser page; each has a README, and `cargo xtask check-gallery` checks them), and the rustdoc guide
+(`gust::guide` and `gust_wgpu::guide`, documentation only) walks the same ground in chapters. The twelve programs:
 
 - `vector-add` uses the preferred Slang-shaped Rust vocabulary, runs through the
   generated typed `dispatch`, and demonstrates artifact export.
@@ -1391,7 +1398,9 @@ Around the translator, the host side currently provides:
   `capabilities.rs`;
 - fallible buffer constructors (m7.a0, D84): `try_create_typed_buffer`, `create_zeroed_buffer` and `GpuVec` check
   `max_buffer_size` before any wgpu call (`Error::DeviceLimit`), and on native an allocation the adapter cannot serve is
-  `Error::OutOfMemory` (a unit test only, no hardware run); `create_typed_buffer` stays infallible and unchecked;
+  `Error::OutOfMemory` (a unit test only, no hardware run); `create_typed_buffer` stays infallible and unchecked (it
+  keeps its signature, with no `max_buffer_size` pre-check: an allocation the adapter cannot serve panics in wgpu's
+  uncaptured-error handler);
 - textures and the `pixel` runtime (MX): `GpuTexture2d<F>` and `GpuSampler` with the errors `TextureUse`, `TextureFormat`,
   `TextureFilter`, `TextureSize` and `SamplerOptions`, and bind-group layouts built per device with or without
   `float32-filterable`. A `pixel` call is one render pass of its own, in batch order, over an 8192-wide `r8unorm`
@@ -1447,7 +1456,7 @@ crates/
   gust/                 shadow types, descriptors, ABI metadata, slangc bridge, reflection
   gust-macros/          validation and direct syn AST -> Slang translation
   gust-wgpu/            cached headless wgpu execution, buffers, StagedGraph, GpuPool
-  cargo-gust/           the `cargo gust` subcommand: init, build, check, doctor and the pinned-Slang manager
+  cargo-gust/           the `cargo gust` subcommand: init, build, check, run, test, doctor and the pinned-Slang manager
   gust-algo/            device-resident algorithms on GUST kernels over GpuVec (reduce: sum, min, max, sum_wrapping; scan: inclusive, exclusive; compact: count, indices, gather_u32/i32/f32); publish = false
 examples/
   vector-add/
@@ -1463,7 +1472,10 @@ examples/
   web-vector-add/
   shape-bench/          the same kernels as grid and pixel kernels: bit identity and timing (cargo run -p shape-bench)
   subgroup-reduce/      a subgroup kernel under the strict native+subgroups profile (D138)
+gallery/                workspace of its own: ten complete programs shaped like a user's crate (cargo xtask check-gallery)
+bench/                  workspace of its own: the benchmark harness (unpublished)
 tests/fixtures/         reviewed golden Slang and GPU semantics fixtures
+tests/reexport/         workspace of its own: the facade-path check (a crate that re-exports `gust-compute`; cargo xtask check-ui)
 tests/routing/          workspace of its own: the routing driver check (cargo xtask check-routing)
 tests/ui/               compile-fail fixtures for the stable diagnostics (check-ui)
 tests/dual/             workspace of its own: the dual-build (CPU twin) check

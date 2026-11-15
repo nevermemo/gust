@@ -34,7 +34,7 @@ The package is `gust-compute-wgpu`; the library is named `gust_wgpu`, so code wr
 
 A complete first program (the manifest with a `gust-dev` feature, `cargo run`, and the release build with `cargo gust
 build`) is in the root README: <https://github.com/nevermemo/gust/blob/v0.2.0/README.md#install-from-cratesio>.
-Minimum supported Rust: 1.90. Platforms: Vulkan on Windows and Linux, WebGPU in the browser; no macOS or Metal.
+Minimum supported Rust: 1.90. Platforms: Vulkan on Windows and Linux, WebGPU in Chrome; no macOS or Metal.
 
 Documentation: <https://docs.rs/gust-compute-wgpu>. The project, its platforms and its status:
 <https://github.com/nevermemo/gust/blob/v0.2.0/README.md>.

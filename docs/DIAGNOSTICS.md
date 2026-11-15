@@ -1344,13 +1344,13 @@ Decision: T10.
 
 ## E07xx: macro entry and `#[kernel]` options
 
-### GUST-E0701 `#[gpu]` takes one argument, `route = "<tag>"`
+### GUST-E0701 `#[gpu]` takes `route = "<tag>"` and `crate = <path>`
 
-The attribute has one option, `route = "<tag>"` (build-time routing, M8: GUST-E0748, GUST-E0749); anything else, a second argument included, is this error.
-Reached through `#[gpu]`.
-Rejected: `#[gpu(debug)] mod shaders { ... }`, `#[gpu(route = 5)]`, `#[gpu(route = "a", "b")]`.
-Write instead: `#[gpu] mod shaders { ... }`, or `#[gpu(route = "physics")] mod shaders { ... }` with the tag declared in `Cargo.toml`.
-Decision: D02, D65.
+The attribute has two options, each at most once and in either order: `route = "<tag>"` (build-time routing, M8: GUST-E0748, GUST-E0749) and `crate = <path>`, where `gust` is for a crate that reaches it through another crate's `pub use gust;` (the path starts with `::` or `crate::`, has plain segments only and no generic arguments). Anything else, a repeated option and a malformed path included, is this error.
+Reached through `#[gpu]`. A malformed `crate(..);` clause of `par_for!` is GUST-E0719 instead.
+Rejected: `#[gpu(debug)] mod shaders { ... }`, `#[gpu(route = 5)]`, `#[gpu(route = "a", "b")]`, `#[gpu(route = "a", route = "b")]`, `#[gpu(crate = inner::gust)]`, `#[gpu(crate = ::inner::gust, crate = ::inner::gust)]`.
+Write instead: `#[gpu] mod shaders { ... }`, `#[gpu(route = "physics")] mod shaders { ... }` with the tag declared in `Cargo.toml`, or `#[gpu(crate = ::inner::gust)] mod shaders { ... }`.
+Decision: D02, D65, D48.
 
 ### GUST-E0702 item is not a module or a function, or does not parse as one
 

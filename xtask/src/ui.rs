@@ -15,6 +15,14 @@ use crate::{
 /// and is not a member of the root workspace, so `cargo test --workspace` never builds it.
 pub(crate) const UI_DIR: &str = "tests/ui";
 
+/// The two-crate fixture of the facade-path option (`#[gpu(crate = ..)]`, audit S6, D48), relative to the repository
+/// root: a workspace of its own (`inner` re-exports `gust`; `outer` does not depend on it), whose package `outer` must
+/// compile. It is no case of `tests/ui` because it has two crates and no expected error.
+pub(crate) const REEXPORT_DIR: &str = "tests/reexport";
+
+/// The package of [`REEXPORT_DIR`] that `cargo check` builds.
+pub(crate) const REEXPORT_PACKAGE: &str = "outer";
+
 /// The value of `code:` for an error that has no rustc code (`"code": null`), such as the
 /// `compile_error!` of a proc macro. Exact, lower case; no rustc code is spelled this way.
 pub(crate) const NO_CODE: &str = "none";
@@ -156,6 +164,21 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
             stderr,
         });
     }
+    // The re-export fixture: one more `cargo check`, which must succeed.
+    match reexport_command(root).output() {
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            problems.extend(reexport_problems(output.status.success(), &stderr));
+            checks.push(CheckRecord {
+                program: "cargo".to_owned(),
+                arguments: reexport_args(),
+                exit_code: output.status.code(),
+                stdout: String::new(),
+                stderr,
+            });
+        }
+        Err(error) => problems.push(format!("{REEXPORT_DIR}: could not launch cargo: {error}")),
+    }
     if !problems.is_empty() {
         return Err(problems);
     }
@@ -169,7 +192,7 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
         .count();
     let with_env = cases.iter().filter(|case| !case.env.is_empty()).count();
     Ok(format!(
-        "UI check passed: {failing} fixture crate(s) failed to compile with exactly the expected rustc error, {refused} failed in the build script of gust with the expected text and {} compiled cleanly (tests/ui, `cargo check --locked --message-format json`; {with_env} with variables of their own from env.txt). Only the keys of each expected.txt (code, file, line, message and label) are compared, all within the one error of the crate itself (warnings and other crates are ignored, a second error fails) read from cargo's JSON, not the whole rustc output; a `build-error:` text is looked up in cargo's stderr; no slangc and no GPU were involved.\n",
+        "UI check passed: {failing} fixture crate(s) failed to compile with exactly the expected rustc error, {refused} failed in the build script of gust with the expected text and {} compiled cleanly (tests/ui, `cargo check --locked --message-format json`; {with_env} with variables of their own from env.txt). The re-export fixture ({REEXPORT_DIR}, `#[gpu(crate = ..)]`) also compiled, with no direct dependency on gust. Only the keys of each expected.txt (code, file, line, message and label) are compared, all within the one error of the crate itself (warnings and other crates are ignored, a second error fails) read from cargo's JSON, not the whole rustc output; a `build-error:` text is looked up in cargo's stderr; no slangc and no GPU were involved.\n",
         cases.len() - failing - refused
     ))
 }
@@ -189,6 +212,45 @@ pub(crate) fn case_command(root: &Path, case: &str, fixture_env: &[(String, Stri
         command.env(name, value);
     }
     command
+}
+
+/// The cargo child that checks the re-export fixture (see [`REEXPORT_DIR`]), under the same profile as the cases.
+pub(crate) fn reexport_command(root: &Path) -> Command {
+    let mut command = Command::new(env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")));
+    command
+        .args(reexport_args())
+        .current_dir(root)
+        .stdin(Stdio::null());
+    set_workspace_profile(&mut command);
+    command
+}
+
+/// The arguments after `cargo` that check the package `outer` of the re-export fixture.
+pub(crate) fn reexport_args() -> Vec<String> {
+    [
+        "check",
+        "--locked",
+        "--color",
+        "never",
+        "--manifest-path",
+        "tests/reexport/Cargo.toml",
+        "-p",
+        REEXPORT_PACKAGE,
+    ]
+    .iter()
+    .map(|arg| (*arg).to_owned())
+    .collect()
+}
+
+/// What is wrong with the outcome of the re-export check: it must succeed, and a failure reports cargo's text.
+pub(crate) fn reexport_problems(success: bool, stderr: &str) -> Vec<String> {
+    if success {
+        return Vec::new();
+    }
+    vec![format!(
+        "{REEXPORT_DIR}: `cargo check -p {REEXPORT_PACKAGE}` failed, but `outer` has no direct dependency on gust and must compile through `::inner::gust`:
+{stderr}"
+    )]
 }
 
 /// The arguments after `cargo` that check one fixture crate. `--locked` keeps the fixture's own

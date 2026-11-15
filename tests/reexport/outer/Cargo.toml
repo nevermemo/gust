@@ -1,0 +1,19 @@
+[package]
+name = "outer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# `physics` is the tag of the routed module; its default routes it to the CPU, so plain `cargo check` builds the CPU
+# form (which names `::gust::cpu` and the routed markers, all of which the option must forward).
+[package.metadata.gust.routes]
+physics = { default = "cpu" }
+
+# No `gust-compute` here: the facade comes from `inner`. `gust-compute-wgpu` is needed by the map function and
+# `par_for!`, which name `::gust_wgpu` literally; the module form does not.
+[dependencies]
+inner = { path = "../inner" }
+gust-wgpu = { package = "gust-compute-wgpu", path = "../../../crates/gust-wgpu" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }

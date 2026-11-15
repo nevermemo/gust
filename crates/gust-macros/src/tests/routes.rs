@@ -227,6 +227,7 @@ fn valid_tags_map_to_distinct_variables() {
 
 fn parse(arguments: &str) -> syn::Result<Tag> {
     routing::parse_attribute(arguments.parse().unwrap())
+        .map(|attribute| attribute.tag.expect("the arguments name a route"))
 }
 
 #[test]

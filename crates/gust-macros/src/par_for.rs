@@ -97,6 +97,18 @@ struct Options {
     /// follow-up that runs the naga gate over `par_for!` kernels (the fixtures are skipped there until then); it is
     /// not public API and has no entry in the documentation of the macro.
     descriptor: bool,
+    /// `crate(<path>);`: where `gust` is for a crate that reaches it through another (audit S6). It is applied by
+    /// [`par_for_in`] to the whole output, the error value included.
+    krate: Option<syn::Path>,
+}
+
+/// What [`expand_input`] learned about the call besides its expansion, for the value that follows an error.
+#[derive(Default)]
+pub(crate) struct Form {
+    /// The hidden `descriptor;` form was read.
+    pub(crate) descriptor: bool,
+    /// The `crate(<path>);` clause was read.
+    pub(crate) krate: Option<syn::Path>,
 }
 
 struct RawBinding {
@@ -180,6 +192,27 @@ impl Parse for Raw {
                     ));
                 }
                 options.on = Some(device);
+            } else if text == "crate" && input.peek2(syn::token::Paren) {
+                let keyword: Token![crate] = input.parse()?;
+                let content;
+                syn::parenthesized!(content in input);
+                let facade = crate::forward::parse_facade(&content, Code::ParForForm)?;
+                if !content.is_empty() {
+                    return Err(diagnostics::error(
+                        Code::ParForForm,
+                        content.cursor().token_stream(),
+                        "`crate(..)` takes one path",
+                    ));
+                }
+                input.parse::<Token![;]>()?;
+                if options.krate.is_some() {
+                    return Err(diagnostics::error(
+                        Code::ParForForm,
+                        keyword,
+                        "`crate(..)` given twice",
+                    ));
+                }
+                options.krate = Some(facade);
             } else if text == "descriptor" && input.peek2(Token![;]) {
                 input.parse::<syn::Ident>()?;
                 input.parse::<Token![;]>()?;
@@ -1027,31 +1060,37 @@ pub(crate) fn par_for_in(
     profile: Profile,
     call_line: u32,
 ) -> TokenStream {
-    let mut descriptor = false;
-    match expand_input(input, environment, profile, call_line, &mut descriptor) {
+    let mut form = Form::default();
+    let tokens = match expand_input(input, environment, profile, call_line, &mut form) {
         Ok(tokens) => tokens,
         Err(error) => {
             // The errors, then a value of the type the call would have had, so that one mistake is one error.
             let errors = error.to_compile_error();
-            if descriptor {
+            if form.descriptor {
                 quote!({ #errors ::core::unreachable!() })
             } else {
                 quote!({ #errors ::core::result::Result::<(), ::gust::map::Error>::Ok(()) })
             }
         }
+    };
+    // The facade clause, when the call has one: the last pass of the expansion (audit S6).
+    match &form.krate {
+        Some(path) => crate::forward::forward_crate(tokens, path),
+        None => tokens,
     }
 }
 
-/// The expansion, or the first error. `descriptor` says whether the hidden `descriptor;` form was read, which decides
-/// what value follows an error.
+/// The expansion, or the first error. `form` says what the call's clauses were (the hidden `descriptor;` form, which
+/// decides what value follows an error, and the `crate(..)` path), as far as they were read.
 pub(crate) fn expand_input(
     input: TokenStream,
     environment: &Environment,
     profile: Profile,
     call_line: u32,
-    descriptor: &mut bool,
+    form: &mut Form,
 ) -> syn::Result<TokenStream> {
     let raw = diagnostics::parse2::<Raw>(Code::ParForForm, input)?;
-    *descriptor = raw.options.descriptor;
+    form.descriptor = raw.options.descriptor;
+    form.krate.clone_from(&raw.options.krate);
     Plan::new(raw, profile)?.expand(environment, call_line)
 }

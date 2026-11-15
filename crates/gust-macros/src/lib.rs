@@ -30,6 +30,7 @@ use proc_macro::TokenStream;
 
 mod diagnostics;
 mod expand;
+mod forward;
 mod manifest;
 mod math_types;
 mod mul_impls;
@@ -83,6 +84,10 @@ mod subgroup_tests;
 #[path = "tests/routes.rs"]
 mod routes_tests;
 
+#[cfg(test)]
+#[path = "tests/forward.rs"]
+mod forward_tests;
+
 /// Marks an inline Rust module as GUST GPU code, or a free scalar function as an element-wise map (D60).
 ///
 /// On a module, the macro validates a deliberately small Rust subset, translates each
@@ -91,6 +96,15 @@ mod routes_tests;
 /// as written and the macro adds a module of the same name with a generated grid-stride
 /// kernel and the calls `map`, `map_on`, `map_gpu`, `map_gpu_on`, `map_async` and
 /// `map_on_async` (under `GUST_PROFILE=cpu`: `map`, `map_on` and `map_on_async`).
+///
+/// Two optional arguments, in either order and each at most once (anything else is GUST-E0701): `route = "<tag>"`
+/// (build-time routing) and `crate = <path>`. The expansion names the facade as `::gust`, which only a crate with a
+/// direct dependency on `gust-compute` named `gust` has; a crate that reaches it through another crate's
+/// `pub use gust;` says where with `#[gpu(crate = ::inner::gust)]` (the path starts with `::` or `crate::`). A final
+/// pass then rewrites every path-leading `::gust::` in the output to that path, tokens you wrote yourself inside the
+/// module that spell one included; `::inner::gust::` is not touched. Without the argument nothing is rewritten. The
+/// function-map form still names `::gust_wgpu` literally, so it needs a direct dependency on `gust-compute-wgpu`
+/// (the module form does not).
 #[proc_macro_attribute]
 pub fn gpu(attribute: TokenStream, item: TokenStream) -> TokenStream {
     // The one place that reads the build profile (D44, R1-9): everything below takes it as an argument, so tests
@@ -125,6 +139,12 @@ pub fn gpu(attribute: TokenStream, item: TokenStream) -> TokenStream {
 /// the device to run on (a `gust_wgpu::HeadlessDevice`, or a `gust::cpu::CpuDevice` under `GUST_PROFILE=cpu`); without
 /// it the call opens the default device. The iterations run in no defined order and in parallel, so a body whose
 /// iteration depends on another is a bug in the body that nothing diagnoses (docs/SEMANTICS.md).
+///
+/// A third clause, `crate(<path>);`, goes with the others (before the loop, each at most
+/// once) and names where `gust` is for a crate that reaches it through another crate (`crate(::inner::gust);`, as
+/// `#[gpu(crate = ..)]` does); the path starts with `::` or `crate::`. It rewrites every path-leading `::gust::` of the
+/// expansion, in your body too. The expansion names `::gust_wgpu` literally, so a call still needs a direct dependency
+/// on `gust-compute-wgpu`. The clause is the grammar's own: `crate` followed by `(` cannot begin a loop pattern.
 ///
 /// ```text
 /// gust::par_for!(workgroup_size(8, 8, 1); on(&device); (x, y) in (0..w, 0..h), [out: &mut [u32], w: u32] {
@@ -177,8 +197,10 @@ pub(crate) fn gpu_impl_with(
     gpu_impl_routed(attribute, item, profile, &|_| None)
 }
 
-/// [`gpu_impl_with`] with the place the route variables are read from (the process for the macro, M8, D66). The one
-/// argument `#[gpu]` takes is `route = "<tag>"`; anything else is GUST-E0701.
+/// [`gpu_impl_with`] with the place the route variables are read from (the process for the macro, M8, D66). The
+/// arguments `#[gpu]` takes are `route = "<tag>"` and `crate = <path>` (audit S6); anything else is GUST-E0701. With a
+/// `crate` the whole output, errors and the user's own code beside them included, goes through
+/// [`forward::forward_crate`].
 pub(crate) fn gpu_impl_routed(
     attribute: proc_macro2::TokenStream,
     item: proc_macro2::TokenStream,
@@ -187,11 +209,11 @@ pub(crate) fn gpu_impl_routed(
 ) -> proc_macro2::TokenStream {
     // `syn` words the parse failure itself; the code is added in front.
     let parsed = diagnostics::parse2::<syn::Item>(Code::ItemNotModule, item.clone());
-    let tag = if attribute.is_empty() {
-        None
+    let (tag, krate) = if attribute.is_empty() {
+        (None, None)
     } else {
         match expand::routing::parse_attribute(attribute) {
-            Ok(tag) => Some(tag),
+            Ok(attribute) => (attribute.tag, attribute.krate),
             Err(error) => {
                 let module = match parsed {
                     Ok(syn::Item::Mod(module)) => Some(without_nested_gpu(module)),
@@ -202,11 +224,25 @@ pub(crate) fn gpu_impl_routed(
         }
     };
     let request = expand::routing::Request { tag, variables };
+    let expansion = expand_item(parsed, &item, profile, &request);
+    match krate {
+        Some(path) => forward::forward_crate(expansion, &path),
+        None => expansion,
+    }
+}
+
+/// The expansion of the item `#[gpu]` is on, before the facade path is forwarded.
+fn expand_item(
+    parsed: syn::Result<syn::Item>,
+    item: &proc_macro2::TokenStream,
+    profile: expand::Profile,
+    request: &expand::routing::Request<'_>,
+) -> proc_macro2::TokenStream {
     match parsed {
         Ok(syn::Item::Mod(module)) => {
-            match expand::expand_with_routed(module.clone(), profile, &request) {
+            match expand::expand_with_routed(module.clone(), profile, request) {
                 Ok(tokens) => tokens,
-                Err(error) => recover::beside_error(error, &item, Some(without_nested_gpu(module))),
+                Err(error) => recover::beside_error(error, item, Some(without_nested_gpu(module))),
             }
         }
         // A free function: the element-wise map calls of D60 (m7.a1). On error the function follows the error as
@@ -222,9 +258,9 @@ pub(crate) fn gpu_impl_routed(
                     None,
                 );
             }
-            match expand::expand_map_routed(function, profile, &request) {
+            match expand::expand_map_routed(function, profile, request) {
                 Ok(tokens) => tokens,
-                Err(error) => recover::beside_error(error, &item, None),
+                Err(error) => recover::beside_error(error, item, None),
             }
         }
         Ok(other) => {
@@ -234,9 +270,9 @@ pub(crate) fn gpu_impl_routed(
                 "#[gpu] goes on an inline module (`#[gpu] mod name { .. }`) or on a free scalar function \
                  (`#[gpu] fn name(..) -> T { .. }`)",
             );
-            recover::beside_error(error, &item, None)
+            recover::beside_error(error, item, None)
         }
-        Err(error) => recover::beside_error(error, &item, None),
+        Err(error) => recover::beside_error(error, item, None),
     }
 }
 

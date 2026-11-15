@@ -1,8 +1,9 @@
 use std::fs;
 
 use super::{
-    Expectation, Expected, UI_DIR, cargo_args, case_command, discover_cases, judge,
-    parse_diagnostics, parse_env, parse_expectation, parse_expected,
+    Expectation, Expected, REEXPORT_DIR, UI_DIR, cargo_args, case_command, discover_cases, judge,
+    parse_diagnostics, parse_env, parse_expectation, parse_expected, reexport_args,
+    reexport_command, reexport_problems,
 };
 use crate::workspace::workspace_root;
 
@@ -2085,4 +2086,61 @@ fn the_repository_fixture_set_is_pinned_by_name() {
     for name in PINNED_FIXTURES {
         assert!(manifest.contains(&format!("\"{name}\"")), "{name}");
     }
+}
+
+#[test]
+fn the_reexport_fixture_is_checked_locked_under_the_dev_profile() {
+    // The facade-path option's two-crate fixture (audit S6): `outer` has no direct dependency on gust, and its check
+    // is part of `check-ui` rather than a case of `tests/ui`.
+    let args = reexport_args();
+    assert_eq!(args[0], "check");
+    assert!(args.iter().any(|arg| arg == "--locked"), "{args:?}");
+    let pair = |key: &str, value: &str| args.windows(2).any(|w| w[0] == key && w[1] == value);
+    assert!(
+        pair("--manifest-path", &format!("{REEXPORT_DIR}/Cargo.toml")),
+        "{args:?}"
+    );
+    assert!(pair("-p", "outer"), "{args:?}");
+    let command = reexport_command(std::path::Path::new("ROOT"));
+    let profile: Vec<_> = command
+        .get_envs()
+        .filter(|(name, _)| *name == "GUST_PROFILE")
+        .map(|(_, value)| value.map(ToOwned::to_owned))
+        .collect();
+    assert_eq!(profile, [Some(std::ffi::OsString::from("dev"))]);
+}
+
+#[test]
+fn the_reexport_check_must_succeed_and_a_failure_shows_cargos_text() {
+    assert!(reexport_problems(true, "warning: unused").is_empty());
+    let problems = reexport_problems(
+        false,
+        "error[E0433]: cannot find `gust` in the list of imported crates",
+    );
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].starts_with("tests/reexport: "), "{problems:?}");
+    assert!(problems[0].contains("E0433"), "{problems:?}");
+}
+
+#[test]
+fn the_reexport_fixture_has_no_direct_dependency_on_gust() {
+    // The point of the fixture: `outer` reaches `gust` only through `inner`. A dependency added to `outer` would make
+    // every `::gust` resolve without the option and the fixture would prove nothing.
+    let root = workspace_root().unwrap();
+    let outer = fs::read_to_string(root.join(REEXPORT_DIR).join("outer/Cargo.toml")).unwrap();
+    let dependencies = outer.split("[dependencies]").nth(1).unwrap();
+    let dependencies = dependencies.split("\n[").next().unwrap();
+    let names: Vec<&str> = dependencies
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+        .filter_map(|line| line.split('=').next())
+        .map(str::trim)
+        .collect();
+    assert_eq!(names, ["inner", "gust-wgpu"], "{outer}");
+    assert!(
+        !dependencies.contains("package = \"gust-compute\""),
+        "{outer}"
+    );
+    let inner = fs::read_to_string(root.join(REEXPORT_DIR).join("inner/src/lib.rs")).unwrap();
+    assert!(inner.contains("pub use gust;"), "{inner}");
 }

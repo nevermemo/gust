@@ -391,6 +391,12 @@ called `gust` and `gust_wgpu`. Two things follow.
   manifest; the spike measured the error, not that remedy. With a stand-in crate named `gust` (the real one does not
   build on current stable for an unrelated reason), a transitive dependency on it built, and `cargo doc` of both only
   warned about an output filename collision.
+- A crate that reaches `gust` only through another crate (the other one says `pub use gust;`) has no `::gust` of its
+  own: name the path with `#[inner::gust::gpu(crate = ::inner::gust)]`, in either order with `route = ".."`, or with
+  `crate(::inner::gust);` as the first clause of `par_for!`. The macro then rewrites every path-leading `::gust::` of
+  its output to that path, tokens you wrote yourself in the module that spell one included. The `::gust_wgpu::` paths
+  stay literal, so the function form of `#[gpu]` and `par_for!` still need a direct dependency on `gust-compute-wgpu`;
+  the module form does not. `tests/reexport` compiles all four forms this way.
 
 ## Routing kernels to the CPU or the GPU at build time
 

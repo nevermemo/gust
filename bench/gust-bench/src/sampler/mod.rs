@@ -14,15 +14,20 @@
 //! quiet (thresholds in `judge.rs`). Everything goes to the `<results>.samples.json` sidecar, each window with its
 //! attempt number and verdict. On a platform without the counters the record says so and carries no samples.
 
+// The counter, process-walk and mapping helpers run on Windows only; their unit tests run everywhere.
+#![cfg_attr(not(windows), allow(dead_code))]
+
 #[cfg(windows)]
 mod win;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    thread,
     time::{Duration, Instant},
 };
+
+#[cfg(windows)]
+use std::thread;
 
 use serde_json::{Value, json};
 
@@ -460,7 +465,8 @@ impl Sampler {
         #[cfg(windows)]
         let adapters = win::dxgi_adapters();
         #[cfg(not(windows))]
-        let adapters = Err("the GPU-engine counters exist on Windows only".to_owned());
+        let adapters: Result<Vec<DxgiAdapter>, String> =
+            Err("the GPU-engine counters exist on Windows only".to_owned());
         let mapping = match (&adapters, &adapter) {
             (Err(reason), _) => Mapping::Failed(format!("DXGI enumeration failed: {reason}")),
             (Ok(_), None) => Mapping::Failed("no adapter under test in this build".to_owned()),

@@ -44,8 +44,8 @@ test module; do not mix that mechanical move with behavior changes.
   buffer is still a wgpu panic. Take the error-scope route (`push_error_scope` /
   `on_uncaptured_error`) rather than another host pre-check, with a test that pins
   today's panic first. M10 API pass at the latest.
-- O8: deprecate the `F32Binding`/`U32Binding` slice paths once typed calls cover every
-  example's use (M10 API pass).
+- O8: done in M10 (m10.api2a.2, `09dbc47`): the f32/u32 compatibility calls and the
+  `F32Binding`/`U32Binding` types are deprecated since 0.2.0, removal planned for 1.0.
 - O4: access typestate on `GpuBuffer` (`GpuBuffer<T, A>`) so a read-only buffer passed
   as read-write fails at compile time; changes every `create_*` signature and the pool.
 - O3: a `#[gpu]` parameter attribute for independent length, if D15's call-site

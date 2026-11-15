@@ -141,12 +141,12 @@ crates.io keeps every uploaded version forever: nothing published can be retract
   already published.
 - A failure that needs a change (a packaging error, a broken crate, a half-finished publish):
   - Before any crate is published, the candidate is still on `main`: fix it there, merge, and run the gate again.
-  - After the publish (0.2.0 is up, in whole or in part), tag `v0.2.0` on `<C>` at once if it is not tagged yet (the
-    READMEs and the `documentation` URL of the crates already up link to that tag, and crates.io cannot change them),
-    then the coordinator cuts `release/0.2` at `<C>` first if it does not exist yet (next section). Make the fix on
-    `release/0.2`, release 0.2.1 from there for all four crates, and forward-port the fix to `main`. The four packages
-    share one version and pin each other exactly (D107), so 0.2.1 is published for the remaining crates and for the ones
-    already up, and the procedure restarts at step 1 on `release/0.2`.
+  - After the publish (0.2.0 is up, in whole or in part), the owner tags `v0.2.0` on `<C>` at once if it is not tagged
+    yet (the READMEs and the `documentation` URL of the crates already up link to that tag, and crates.io cannot change
+    them), then the coordinator cuts `release/0.2` at `<C>` first if it does not exist yet (next section). Make the fix
+    on `release/0.2`, release 0.2.1 from there for all four crates, and forward-port the fix to `main`. The four
+    packages share one version and pin each other exactly (D107), so 0.2.1 is published for the remaining crates and for
+    the ones already up, and the procedure restarts at step 1 on `release/0.2`.
   - Never fix a published 0.2.0 on `main` and publish from `main`: `main` has moved on to the next `-dev` version.
 - Yank a version only when that crate is broken for users, and for the 0.0.0 placeholders. Never yank to fix a name or
   a metadata mistake; a patch release fixes those.
@@ -156,8 +156,8 @@ crates.io keeps every uploaded version forever: nothing published can be retract
 0.2.0 is the first public release (D177, owner, 2026-11-14). 0.1.0 is never published: `release/0.1` stays a branch
 with no tag and no `v0.1.0`, and nothing below uses it except as the semver baseline until 0.2.0 is on the registry.
 
-- **Before the publish**, `main` is the development line (`0.2.0-dev` until the release candidate merges, `0.2.0` from then until
-  the publish) and the release candidate lives on it. Lanes keep
+- **Before the publish**, `main` is the development line (`0.2.0-dev` until the release candidate merges, `0.2.0`
+  from then until the publish) and the release candidate lives on it. Lanes keep
   merging into `main` while the candidate is prepared (slice m10.r3); the packages are published from the candidate
   commit `<C>` on `main`, and that commit is the one the gate ran on.
 - **After the owner's publish**, the coordinator cuts `release/0.2` at the published commit (a push, pre-approved) and
@@ -174,8 +174,8 @@ with no tag and no `v0.1.0`, and nothing below uses it except as the semver base
 ## Later releases
 
 A later release repeats steps 1 to 8 with the new version: bump `[workspace.package]` and the three exact pins in
-`[workspace.dependencies]` together, move the per-release literals (the `blob/v<version>` links of the crate READMEs, the
-`documentation` URL of `cargo-gust` and the version note of the README; `rg -n 'blob/v[0-9]'` finds them), add the
+`[workspace.dependencies]` together, move the per-release literals (the `blob/v<version>` links of the crate READMEs,
+the `documentation` URL of `cargo-gust` and the version note of the README; `rg -n 'blob/v[0-9]'` finds them), add the
 `CHANGELOG.md` entry, run the full gate on the commit, and publish in the
 same order. A breaking change bumps the minor version of all four (D111). A patch comes from the release branch of its
 line (`release/0.2` for 0.2.x), a minor from `main`.
@@ -218,8 +218,8 @@ line) shows up in the `rg` proof too: read each hit and keep only the ones that 
 bump also regenerates every committed `Cargo.lock` that names the GUST packages, nine besides the root one
 (`bench`, `gallery`, `tests/cpu-target`, `tests/difftest/template`, `tests/dual`, `tests/precompiled`,
 `tests/reexport`, `tests/routing` and `tests/ui`; `bench`, `gallery` and `tests/reexport` were missing from the list of
-m10.r2), since their suites and `bench/README.md` run with `--locked`, as the m8.v bump did. Find them with `rg -l
-'name = "gust-compute' --glob 'Cargo.lock'`.
+m10.r2), since their suites, and the build that `bench/README.md` gives, use `--locked`, as the m8.v bump did. Find
+them with `rg -l 'name = "gust-compute' --glob 'Cargo.lock'`.
 
 R7 cannot see most of this, with one exception: when the workspace version has no pre-release part, it fails if the
 `hello-gust` fixture still names a pre-release requirement. That is the guard against a missed edit; search the

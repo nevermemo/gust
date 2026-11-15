@@ -769,8 +769,9 @@ let mask = device.read_texture(&mask)?;
 The linear bound assumes a sampler that quantises the sub-texel position and the filter weights to 8 bits, rounded to
 the nearest step. No specification gives that: WebGPU states no number, and Vulkan requires `subTexelPrecisionBits` of
 at least 4 in core and of at least 8 of a Vulkan 1.4 or Roadmap 2022 implementation, so the exposure is a device that
-reports fewer than 8 (the value is what the device reports). The bound was measured on one adapter (the RTX 5090), and an adapter
-that quantises worse can exceed the bound; the test enforces the bound and fails there. That is a known limit of 0.2.0.
+reports fewer than 8 (the value is what the device reports). The bound was measured on one adapter (the RTX 5090),
+and an adapter that quantises worse can exceed the bound; the test enforces the bound and fails there. That is a known
+limit of 0.2.0.
 
 A linear sample of an `f32` texture needs the device feature `float32-filterable`, which a native
 `DeviceOptions::default()` requests when the adapter has it and `HeadlessDevice::new()` and the browser do not; without

@@ -107,10 +107,10 @@ proof.
   take value parameters and return a value; a call `recv.m(args)` works on a storage element (a read-write one
   included), a field of a uniform or a local (the method reads a copy); a whole uniform is `GUST-E0321`. In Slang the
   methods are members of the struct. Part 2 below adds the rest. In this first part (a1): `&mut self` and `self`
-  methods are `GUST-E0116` in this part (part 2 below accepts them), a call of one on a storage, uniform or workgroup place is
-  `GUST-E0333` (a texture receiver is `GUST-E0735`), an `impl` for a type the module does not define is `GUST-E0121`
-  and a method named like a built-in method, a swizzle, a Slang member keyword or a field of its struct is
-  `GUST-E0328`.
+  methods are `GUST-E0116` in this part (part 2 below accepts them), a call of one on a storage, uniform or
+  workgroup place is `GUST-E0333` (a texture receiver is `GUST-E0735`), an `impl` for a type the module does not
+  define is `GUST-E0121` and a method named like a built-in method, a swizzle, a Slang member keyword or a field of
+  its struct is `GUST-E0328`.
 - A device handle that follows the route. `gust::routed::RoutedDevice` is one device type whose calls run each kernel on
   the target its build resolved, so a kernel call is the same source whether `gust.toml` routes the kernel to the CPU or
   to the GPU (`RoutedDevice::with_gpu(HeadlessDevice::new()?)`, or `RoutedDevice::<NoGpu>::cpu_only()`; buffers from

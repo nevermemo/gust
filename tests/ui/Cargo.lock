@@ -583,14 +583,14 @@ dependencies = [
 
 [[package]]
 name = "gust-compute"
-version = "0.2.0-dev"
+version = "0.2.0"
 dependencies = [
  "gust-compute-macros",
 ]
 
 [[package]]
 name = "gust-compute-macros"
-version = "0.2.0-dev"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -600,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "gust-compute-wgpu"
-version = "0.2.0-dev"
+version = "0.2.0"
 dependencies = [
  "gust-compute",
  "pollster",

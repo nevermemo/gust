@@ -5,14 +5,13 @@ All notable changes to the published packages `gust-compute`, `gust-compute-macr
 breaks existing code bumps the minor version, and the promise is described in the
 [README](README.md#stability).
 
-## Unreleased (0.2.0)
+## 0.2.0
 
 0.2.0 is the first public release of GUST (D177). A 0.1.0 was prepared on the branch `release/0.1` and was never
 published: it has no tag and is not on crates.io, so there is nothing to upgrade from, and a reader who meets 0.2.0 on
 crates.io can skip "Changed, and may break code written for the unpublished 0.1.0 line" and "Compatibility with the
 unpublished 0.1.0 line" below. Those two parts are kept for this repository's own fixtures and for anyone who built
-from `release/0.1`. The workspace version is `0.2.0-dev` until the release commit. Work for 0.2.0 lands on `main`. This
-list is what the milestones M8 and M9 and the first slices of M10 have merged.
+from `release/0.1`. This list is what the milestones M8, M9 and M10 merged, up to the release commit.
 Against `release/0.1` the tree has four listed breaks, and the API audit of m10.api1 adds B5 to B7 (below; they break
 no released version, because none exists). B1, below, in two
 parts (the descriptor constructor and setters, and the `GpuKernel` bound), is the last of its kind: the descriptor is
@@ -107,11 +106,11 @@ proof.
 - Methods (M9, slice a1). A `#[gpu]` module may hold one `impl S { .. }` block per struct, with `&self` methods that
   take value parameters and return a value; a call `recv.m(args)` works on a storage element (a read-write one
   included), a field of a uniform or a local (the method reads a copy); a whole uniform is `GUST-E0321`. In Slang the
-  methods are members of the struct. Part 2 below adds the rest. Until then (a1): `&mut self` and `self`
-  methods are `GUST-E0116` until the next slice, a call of one on a storage, uniform or workgroup place is
-  `GUST-E0333` (a texture receiver is `GUST-E0735`), an `impl` for a type the module does not define is `GUST-E0121`
-  and a method named like a built-in method, a swizzle, a Slang member keyword or a field of its struct is
-  `GUST-E0328`.
+  methods are members of the struct. Part 2 below adds the rest. In this first part (a1): `&mut self` and `self`
+  methods are `GUST-E0116` in this part (part 2 below accepts them), a call of one on a storage, uniform or
+  workgroup place is `GUST-E0333` (a texture receiver is `GUST-E0735`), an `impl` for a type the module does not
+  define is `GUST-E0121` and a method named like a built-in method, a swizzle, a Slang member keyword or a field of
+  its struct is `GUST-E0328`.
 - A device handle that follows the route. `gust::routed::RoutedDevice` is one device type whose calls run each kernel on
   the target its build resolved, so a kernel call is the same source whether `gust.toml` routes the kernel to the CPU or
   to the GPU (`RoutedDevice::with_gpu(HeadlessDevice::new()?)`, or `RoutedDevice::<NoGpu>::cpu_only()`; buffers from
@@ -365,14 +364,18 @@ form that was written by hand would refuse the form a published crate carries. T
 ### Compatibility with the unpublished 0.1.0 line
 
 The `semver` job of CI compares `gust-compute` and `gust-compute-wgpu` with the branch `release/0.1` (the unpublished
-0.1.0; it is the baseline until 0.2.0 is on crates.io) with `cargo-semver-checks` 0.51.0. On the merge of m8.x1 into `main` (`ci.yml` run 42518513308, job `semver`; the job treats
-its findings as expected and stays green; run 42518612375 on `main` at `85d62fd` was green too, and `c245266..85d62fd`
-changed documentation only, so the counts hold), the job found:
+0.1.0; it is the baseline until 0.2.0 is on crates.io) with `cargo-semver-checks` 0.51.0, `--release-type patch`. On
+the release candidate (`ci.yml` run 43719222853, job `semver`, at `9895659`; the job treats its findings as expected and
+stays green; the commit after it changed this record only, so the counts hold), the job found:
 
-- `gust-compute`: 229 checks, 228 passed, 31 skipped, 1 failed. The failure is `struct_marked_non_exhaustive` for
-  `KernelDescriptor` (`crates/gust/src/descriptor.rs`), which is B1, so the tool says a new major version is required
-  (for 0.x, a minor bump).
-- `gust-compute-wgpu`: 229 checks, all passed, 31 skipped, no version update required.
+- `gust-compute`: 229 checks, 228 passed, 31 skipped, 1 failed: `struct_marked_non_exhaustive` for `KernelDescriptor`
+  (B1), `ModuleDescriptor`, `Artifact` and `Verified` (B6). The tool says a new major version is required (for 0.x,
+  a minor bump).
+- `gust-compute-wgpu`: 229 checks, 224 passed, 31 skipped, 5 failed: `struct_marked_non_exhaustive` for the six record
+  structs of B5; `inherent_method_now_doc_hidden` for `HeadlessDevice::check_same_device` and
+  `pub_module_level_const_now_doc_hidden` for `EXACT_CLASS_BYTES` (B7); `type_marked_deprecated` (six types) and
+  `type_method_marked_deprecated` (13 methods) for the f32/u32 compatibility family, which is deprecated, not removed
+  (a warning, not a break).
 - What the job cannot see: the `GpuKernel` bound (hidden from the docs), the changed defaults above, the `toml`
   dependency, and `cargo-gust` (a binary).
 
@@ -391,8 +394,8 @@ which gate of `main` builds it (`check-examples` builds the examples but `web-ve
     `typed-call-buffer-for-sampler`, `typed-call-buffer-for-texture`, `typed-call-sampler-for-buffer` and
     `typed-call-texture-ok` wrote a `KernelDescriptor` literal and now call `KernelDescriptor::new(..)` and add `impl
     gust::target::GpuKernel for Blur {}` (three of the `expected.txt` files only change a line number).
-  - One is a version literal: `tests/precompiled/kernels` names its `gust` path dependency `0.2.0-dev` (RELEASE.md lists
-    it for the release); its manifest and one reflection file are also written again by the new Slang.
+  - One is a version literal: `tests/precompiled/kernels` named its `gust` path dependency `0.2.0-dev` (it is `0.2.0`
+    in the release); its manifest and one reflection file are also written again by the new Slang.
   - Ten only gained things (and `tests/difftest` a re-stamped seed file): `crates/gust-algo` (the `evidence` module and
     an example, additive; not published), `examples/web-vector-add` (an added `check-web` assertion that a subgroup
     request is refused, and re-written artifacts), `tests/cpu-target` and its `kernels` (a `routed` crate and a

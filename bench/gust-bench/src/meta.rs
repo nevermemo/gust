@@ -91,6 +91,13 @@ pub fn build_features() -> Vec<&'static str> {
     if cfg!(feature = "spirv-route") {
         features.push("spirv-route");
     }
+    // The counting allocator is active in a `profile-counts` build, so a timing run from it would be tainted.
+    if cfg!(feature = "profile-counts") {
+        features.push("profile-counts");
+    }
+    if cfg!(feature = "wgpu-trace") {
+        features.push("wgpu-trace");
+    }
     features
 }
 
@@ -393,6 +400,14 @@ mod tests {
         assert_eq!(
             features.contains(&"spirv-route"),
             cfg!(feature = "spirv-route")
+        );
+        assert_eq!(
+            features.contains(&"profile-counts"),
+            cfg!(feature = "profile-counts")
+        );
+        assert_eq!(
+            features.contains(&"wgpu-trace"),
+            cfg!(feature = "wgpu-trace")
         );
     }
 }

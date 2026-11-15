@@ -833,7 +833,7 @@ fn section_entries<'a>(manifest: &'a str, section: &str) -> Vec<(&'a str, &'a st
 }
 
 /// The problems of the fixture's `[dependencies]`: there is at least one, and each is a publishable member of the
-/// workspace with the plain or caret requirement that D107 gives users (`"0.1"`) and that the version being released
+/// workspace with the plain or caret requirement that D107 gives users (`"0.2"`) and that the version being released
 /// satisfies. A pre-release requirement (`"0.2.0-dev"`, which the development line needs because a caret requirement
 /// does not match a pre-release) is refused when that version is not a pre-release: it is the edit that a release
 /// must make. Whether the fixture names every crate a user needs is for R7's build to show.
@@ -859,7 +859,7 @@ pub(crate) fn fixture_dependency_problems(manifest: &str, members: &[Member]) ->
                     .is_some_and(|requirement| caret_satisfied(requirement, &member.version));
                 if !satisfied {
                     problems.push(format!(
-                        "R7: the fixture's `{key}` line must give a caret requirement such as \"0.1\" that the \
+                        "R7: the fixture's `{key}` line must give a caret requirement such as \"0.2\" that the \
                          version being released ({}) satisfies",
                         member.version
                     ));

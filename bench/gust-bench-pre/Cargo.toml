@@ -22,18 +22,21 @@ wgpu = { version = "=30.0.2", default-features = false, features = ["std", "vulk
 # One line on purpose: `cargo xtask lint` reads one dependency per line.
 windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Performance", "Win32_System_Threading"] }
 
-# The harness sources are gust-bench's own and read these three features by name. Here they are inert: this package is
+# The harness sources are gust-bench's own and read these features by name. Here they are inert: this package is
 # always a GPU build, and it is the precompiled, no-Slang variant, so the run-time compiler and the SPIR-V route (which
 # needs it) are never on. It is built with GUST_PROFILE=native, which refuses `slang-runtime` and requires an artifact
 # for every kernel: the build itself guarantees that a kernel can only come from its embedded artifact, and the harness
 # reads that guarantee (`gust::profile::STRICT`) into the route event of a cold start.
 # `spirv-route` is declared only so the shared sources' `cfg(feature = "spirv-route")` is a known cfg; it stays off here
-# (an artifact build has no SPIR-V route).
+# (an artifact build has no SPIR-V route). `profile-counts` and `wgpu-trace` are declared for the same reason and stay
+# off: the `profile` and `trace` subcommands are gust-bench's.
 [features]
 default = ["gpu"]
 gpu = []
 slang-runtime = []
 spirv-route = []
+profile-counts = []
+wgpu-trace = []
 
 [lints]
 workspace = true

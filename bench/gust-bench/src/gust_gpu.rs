@@ -123,7 +123,7 @@ impl GustGpu {
         let d = &self.device;
         Ok(match &self.resident().data {
             Data::Add { out, .. } | Data::Saxpy { out, .. } | Data::Poly { out, .. } => {
-                d.read_f32_buffer(out)?
+                d.read_typed_buffer(out)?
             }
             Data::Hist { bins, .. } => counts_as_words(d.read_typed_buffer(bins)?),
         })
@@ -194,26 +194,26 @@ impl Backend for GustGpu {
         let (data, nan, zeros) = match workload.family() {
             "W1" | "W2" => {
                 let nan = vec![f32::NAN; n];
-                let x = d.create_f32_buffer("bench x", &inputs.x, read_only);
-                let y = d.create_f32_buffer("bench y", &inputs.y, read_only);
-                let out = d.create_f32_buffer("bench out", &nan, read_write);
+                let x = d.create_typed_buffer("bench x", &inputs.x, read_only);
+                let y = d.create_typed_buffer("bench y", &inputs.y, read_only);
+                let out = d.create_typed_buffer("bench out", &nan, read_write);
                 // Flush the initial uploads so no later timed submission carries them.
-                d.write_f32_buffer_timed(&x, &inputs.x)?;
-                d.write_f32_buffer_timed(&y, &inputs.y)?;
+                d.write_typed_buffer_timed(&x, &inputs.x)?;
+                d.write_typed_buffer_timed(&y, &inputs.y)?;
                 let data = if workload == Workload::VectorAdd {
                     Data::Add { x, y, out }
                 } else {
-                    let scale = d.create_f32_buffer("bench scale", &[inputs.scale], read_only);
+                    let scale = d.create_typed_buffer("bench scale", &[inputs.scale], read_only);
                     Data::Saxpy { scale, x, y, out }
                 };
                 (data, nan, Vec::new())
             }
             "W3" => {
                 let nan = vec![f32::NAN; n];
-                let coeffs = d.create_f32_buffer("bench coeffs", &inputs.coeffs, read_only);
-                let x = d.create_f32_buffer("bench x", &inputs.x, read_only);
-                let out = d.create_f32_buffer("bench out", &nan, read_write);
-                d.write_f32_buffer_timed(&x, &inputs.x)?;
+                let coeffs = d.create_typed_buffer("bench coeffs", &inputs.coeffs, read_only);
+                let x = d.create_typed_buffer("bench x", &inputs.x, read_only);
+                let out = d.create_typed_buffer("bench out", &nan, read_write);
+                d.write_typed_buffer_timed(&x, &inputs.x)?;
                 (Data::Poly { coeffs, x, out }, nan, Vec::new())
             }
             _ => {
@@ -240,7 +240,7 @@ impl Backend for GustGpu {
         // The timed variants wait for the upload, so the copy cannot land inside a timed submission.
         match &r.data {
             Data::Add { out, .. } | Data::Saxpy { out, .. } | Data::Poly { out, .. } => {
-                self.device.write_f32_buffer_timed(out, &r.nan)?;
+                self.device.write_typed_buffer_timed(out, &r.nan)?;
             }
             Data::Hist { bins, .. } => {
                 self.device.write_typed_buffer_timed(bins, &r.zeros)?;
@@ -254,10 +254,10 @@ impl Backend for GustGpu {
         let r = self.resident();
         match &r.data {
             Data::Add { x, y, .. } | Data::Saxpy { x, y, .. } => {
-                self.device.write_f32_buffer(x, &inputs.x)?;
-                self.device.write_f32_buffer(y, &inputs.y)?;
+                self.device.write_typed_buffer(x, &inputs.x)?;
+                self.device.write_typed_buffer(y, &inputs.y)?;
             }
-            Data::Poly { x, .. } => self.device.write_f32_buffer(x, &inputs.x)?,
+            Data::Poly { x, .. } => self.device.write_typed_buffer(x, &inputs.x)?,
             Data::Hist { keys, bins } => {
                 self.device.write_typed_buffer(keys, &inputs.keys)?;
                 self.device.write_typed_buffer(bins, &r.zeros)?;

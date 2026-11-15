@@ -5,9 +5,8 @@ is split over two crates because the running chapters need the backend, and `gus
 `gust-compute-wgpu` (the backend depends on it).
 
 - This crate, `gust-compute` (library `gust`), holds the concept, language, semantics and stability chapters.
-- The sibling guide, [`gust_wgpu::guide`](https://docs.rs/gust-compute-wgpu/latest/gust_wgpu/guide/index.html) in
-  `gust-compute-wgpu`, holds the chapters about running kernels, routing, benchmarks and the browser, and the
-  compile-checked version of the first program.
+- The sibling guide, `gust_wgpu::guide` in `gust-compute-wgpu` (linked at the end of this page), holds the chapters about running kernels, routing, benchmarks
+  and the browser. The doctests of that crate also compile the whole first program of chapter 2.
 
 ## Chapters
 
@@ -16,7 +15,7 @@ is split over two crates because the running chapters need the backend, and `gus
 3. The authoring model: `#[gpu]` modules, kernels, the accepted subset and the diagnostic codes. Not yet written.
 4. Running kernels: typed calls, buffers, jobs, read-back and staged graphs. Not yet written; it will live in
    `gust_wgpu::guide`.
-5. GPU concepts in Rust: `par_for!`, workgroup memory, barriers, subgroups, shapes and textures. Not yet written.
+5. GPU concepts in Rust: `par_for!`, workgroup memory, barriers, subgroups, shapes and textures. Not yet written; its running halves will live in `gust_wgpu::guide`.
 6. Build profiles, artifacts and routing. Not yet written; it will live in `gust_wgpu::guide`.
 7. Semantics and the twin: the contract, the defined domain and the known limitations. Not yet written.
 8. The newer language features: methods, enums, tuples, arrays, closures, traits and generics. Not yet written.

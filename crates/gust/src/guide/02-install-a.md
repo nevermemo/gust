@@ -11,8 +11,9 @@ GUST is published as four packages that always share one version:
 
 The package name and the library name differ, so you add one and write the other: `cargo add gust-compute
 gust-compute-wgpu`, then `use gust::gpu;` and `use gust_wgpu::...` in the code. Do not run `cargo add gust`: that name
-belongs to an unrelated crate. While a version is a pre-release (`0.2.0-dev`, say), a caret requirement does not match
-it, so name the exact version in your manifest; the library crates pin each other to one exact version.
+belongs to an unrelated crate. While a version is a pre-release (`0.2.0-dev`, say), a requirement such as `0.2` does not
+match it, so name the pre-release version in full in your manifest; the library crates pin each other to one exact
+version.
 
 A kernel runs in one of two ways. During development it is compiled at run time through Slang, which needs the pinned
 Slang release and a native helper. In a release build it was compiled ahead of time by `cargo gust build` and is
@@ -21,7 +22,7 @@ embedded from the committed `gust-artifacts/` directory.
 ## Set up the tools
 
 ```sh
-cargo install cargo-gust --locked
+cargo install cargo-gust --locked --version <the version of gust-compute you depend on>
 cargo gust slang install        # downloads the pinned Slang, checks its SHA-256, unpacks it into the cargo home
 cargo gust slang build-helper   # compiles the native reflection helper against that Slang and prints its path
 cargo gust doctor               # names whatever is still missing

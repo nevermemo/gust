@@ -290,9 +290,44 @@ fn the_list_of_entries_is_the_members_of_the_gallery_workspace() {
             "image-threshold",
             "particles",
             "reduce-scan",
-            "saxpy-uniform"
+            "routed",
+            "saxpy-uniform",
+            "state-machine",
+            "variants"
         ]
     );
+}
+
+#[test]
+fn only_variants_runs_a_second_time_under_a_profile_and_its_two_lines_name_their_bodies() {
+    for entry in &ENTRIES {
+        match (&entry.profile_run, entry.dir) {
+            (None, "variants") => panic!("variants must run under native+subgroups too"),
+            (None, _) => {}
+            (Some(run), dir) => {
+                assert_eq!(dir, "variants", "only variants has a second run");
+                assert_eq!(run.profile, "native+subgroups");
+                assert!(
+                    entry.expected_line.starts_with("variants: body=portable, "),
+                    "{}",
+                    entry.expected_line
+                );
+                assert!(
+                    run.expected_line.starts_with("variants: body=subgroups, "),
+                    "{}",
+                    run.expected_line
+                );
+                // Both bodies compute the same three cells, so the lines agree after the body name.
+                assert_eq!(
+                    entry
+                        .expected_line
+                        .trim_start_matches("variants: body=portable, "),
+                    run.expected_line
+                        .trim_start_matches("variants: body=subgroups, ")
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -598,6 +633,41 @@ fn artifact_trees_differ_by_name_set_or_by_one_byte() {
         .as_deref(),
         Some("manifest.json differs from the fresh build")
     );
+}
+
+#[test]
+fn a_driver_output_is_not_an_artifact() {
+    // `routes.json` is written by `cargo gust build` and `run` for the profile of the run: present on one side only, or
+    // different, it is no difference; any other file still is.
+    let committed = files(&[("a.wgsl", "x"), ("manifest.json", "{}")]);
+    let fresh = files(&[
+        ("a.wgsl", "x"),
+        ("manifest.json", "{}"),
+        ("routes.json", "{\"profile\": \"dev\"}"),
+    ]);
+    assert_eq!(tree_difference(&committed, &fresh), None);
+    assert_eq!(tree_difference(&fresh, &committed), None);
+    let other = files(&[
+        ("a.wgsl", "x"),
+        ("manifest.json", "{}"),
+        ("routes.json", "{\"profile\": \"native\"}"),
+    ]);
+    assert_eq!(tree_difference(&fresh, &other), None);
+    assert!(
+        tree_difference(
+            &committed,
+            &files(&[("a.wgsl", "x"), ("routes.json.bak", "")])
+        )
+        .unwrap()
+        .contains("file lists differ")
+    );
+}
+
+#[test]
+fn only_routed_runs_through_the_driver() {
+    for entry in &ENTRIES {
+        assert_eq!(entry.via_driver, entry.dir == "routed", "{}", entry.dir);
+    }
 }
 
 #[test]

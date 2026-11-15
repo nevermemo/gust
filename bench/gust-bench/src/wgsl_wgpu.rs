@@ -28,7 +28,7 @@ use bytemuck::cast_slice;
 
 use crate::{
     backend::{Backend, BenchResult, Kind},
-    workloads::{Inputs, WORKGROUP, Workload},
+    workloads::{self, Inputs, WORKGROUP, Workload, hist_threads, normalize_counts},
 };
 
 /// A wgpu device and queue.
@@ -215,17 +215,24 @@ struct Pipeline {
 
 struct Resident {
     workload: Workload,
-    n: usize,
+    /// Words of the output buffer.
+    out_len: usize,
+    /// Bytes of the output buffer.
     bytes: u64,
-    /// In binding order: `[a, b, out]` for vector-add, `[scale, x, y, out]` for saxpy.
+    /// In binding order: `[a, b, out]` for vector-add, `[scale, x, y, out]` for saxpy, `[coeffs, x, out]` for the
+    /// polynomial, `[keys, bins]` for the histogram. The output is always last.
     buffers: Vec<wgpu::Buffer>,
+    /// The buffers (indexes into `buffers`) an end-to-end sample uploads from the host inputs, in the order of
+    /// [`HandWgsl::input_bytes`].
+    uploads: Vec<usize>,
     staging: wgpu::Buffer,
     pipeline: Pipeline,
     bind_group: wgpu::BindGroup,
     query_set: Option<wgpu::QuerySet>,
     resolve: wgpu::Buffer,
     timestamp_read: wgpu::Buffer,
-    nan: Vec<f32>,
+    /// The output's poison words (NaN, or zero for the histogram, which is also what a histogram clears to).
+    poison: Vec<f32>,
     groups: u32,
 }
 
@@ -240,6 +247,8 @@ pub struct HandWgsl {
     all_on: bool,
     counters: Counters,
     resident: Option<Resident>,
+    /// Dispatches since the bins were last cleared (a histogram accumulates; see `Backend::dispatch`).
+    passes: Cell<u32>,
 }
 
 impl HandWgsl {
@@ -256,6 +265,7 @@ impl HandWgsl {
             all_on: false,
             counters: Counters::default(),
             resident: None,
+            passes: Cell::new(0),
         }
     }
 
@@ -313,25 +323,44 @@ impl HandWgsl {
     }
 
     fn source(workload: Workload) -> &'static str {
-        match workload {
-            Workload::VectorAdd => include_str!("../../shaders/vector_add.wgsl"),
-            Workload::Saxpy => include_str!("../../shaders/saxpy.wgsl"),
+        match workload.family() {
+            "W1" => include_str!("../../shaders/vector_add.wgsl"),
+            "W2" => include_str!("../../shaders/saxpy.wgsl"),
+            "W3" => include_str!("../../shaders/polynomial.wgsl"),
+            _ => include_str!("../../shaders/histogram.wgsl"),
         }
     }
 
-    /// Whether binding `index` of the workload is written by the kernel.
+    /// Whether binding `index` of the workload is written by the kernel: the last one, in every workload.
     fn writable(workload: Workload, index: usize) -> bool {
-        match workload {
-            Workload::VectorAdd => index == 2,
-            Workload::Saxpy => index == 3,
-        }
+        index + 1 == Self::binding_count(workload)
     }
 
     fn binding_count(workload: Workload) -> usize {
-        match workload {
-            Workload::VectorAdd => 3,
-            Workload::Saxpy => 4,
+        match workload.family() {
+            "W1" | "W3" => 3,
+            "W2" => 4,
+            _ => 2,
         }
+    }
+
+    /// The per-sample host inputs an end-to-end sample uploads, as bytes, in the order of [`Resident::uploads`].
+    fn input_bytes(workload: Workload, inputs: &Inputs) -> Vec<&[u8]> {
+        match workload.family() {
+            "W1" | "W2" => vec![cast_slice(&inputs.x), cast_slice(&inputs.y)],
+            "W3" => vec![cast_slice(&inputs.x)],
+            _ => vec![cast_slice(&inputs.keys)],
+        }
+    }
+
+    /// Invocations of a launch: one per element, or one per [`workloads::KEYS_PER_THREAD`] keys.
+    fn groups(workload: Workload, n: usize) -> u32 {
+        let threads = if workload.bins().is_some() {
+            hist_threads(n)
+        } else {
+            n
+        };
+        threads.div_ceil(WORKGROUP) as u32
     }
 
     /// The same objects `gust-wgpu` creates for a kernel: bind group layout, pipeline layout, shader module,
@@ -492,19 +521,30 @@ impl Backend for HandWgsl {
     fn prepare(&mut self, workload: Workload, inputs: &Inputs) -> BenchResult<()> {
         self.resident = None;
         let ctx = &self.ctx;
-        let n = inputs.x.len();
-        let bytes = (n * size_of::<f32>()) as u64;
+        let n = inputs.n;
+        let out_len = workload.out_len(n);
+        let bytes = (out_len * size_of::<f32>()) as u64;
         let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         let mut buffers = Vec::new();
-        if workload == Workload::Saxpy {
-            let scale = ctx.buffer("bench scale", 4, storage);
-            ctx.queue
-                .write_buffer(&scale, 0, cast_slice(&[inputs.scale]));
-            buffers.push(scale);
-        }
-        for (label, values) in [("bench x", &inputs.x), ("bench y", &inputs.y)] {
-            let buffer = ctx.buffer(label, bytes, storage);
+        // A one-element or short read-only buffer that is not re-uploaded per sample: the scalar, the coefficients.
+        let fixed: Option<(&str, &[f32])> = match workload.family() {
+            "W2" => Some(("bench scale", std::slice::from_ref(&inputs.scale))),
+            "W3" => Some(("bench coeffs", &inputs.coeffs)),
+            _ => None,
+        };
+        if let Some((label, values)) = fixed {
+            let buffer = ctx.buffer(label, size_of_val(values) as u64, storage);
             ctx.queue.write_buffer(&buffer, 0, cast_slice(values));
+            buffers.push(buffer);
+        }
+        let mut uploads = Vec::new();
+        for (label, values) in ["bench x", "bench y"]
+            .into_iter()
+            .zip(Self::input_bytes(workload, inputs))
+        {
+            let buffer = ctx.buffer(label, values.len() as u64, storage);
+            ctx.queue.write_buffer(&buffer, 0, values);
+            uploads.push(buffers.len());
             buffers.push(buffer);
         }
         buffers.push(ctx.buffer("bench out", bytes, storage | wgpu::BufferUsages::COPY_SRC));
@@ -533,19 +573,21 @@ impl Backend for HandWgsl {
             wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         );
         ctx.flush()?;
+        self.passes.set(0);
         self.resident = Some(Resident {
             workload,
-            n,
+            out_len,
             bytes,
             buffers,
+            uploads,
             staging,
             pipeline,
             bind_group,
             query_set,
             resolve,
             timestamp_read,
-            nan: vec![f32::NAN; n],
-            groups: n.div_ceil(WORKGROUP) as u32,
+            poison: vec![workload.poison_word(); out_len],
+            groups: Self::groups(workload, n),
         });
         Ok(())
     }
@@ -554,18 +596,23 @@ impl Backend for HandWgsl {
         let r = self.resident();
         self.ctx
             .queue
-            .write_buffer(Self::out_buffer(r), 0, cast_slice(&r.nan));
+            .write_buffer(Self::out_buffer(r), 0, cast_slice(&r.poison));
+        self.passes.set(0);
         self.ctx.flush()
     }
 
     fn end_to_end(&mut self, inputs: &Inputs, out: &mut Vec<f32>) -> BenchResult<()> {
         let r = self.resident();
         let ctx = &self.ctx;
-        let x = r.buffers.len() - 3;
-        ctx.queue
-            .write_buffer(&r.buffers[x], 0, cast_slice(&inputs.x));
-        ctx.queue
-            .write_buffer(&r.buffers[x + 1], 0, cast_slice(&inputs.y));
+        for (index, values) in r.uploads.iter().zip(Self::input_bytes(r.workload, inputs)) {
+            ctx.queue.write_buffer(&r.buffers[*index], 0, values);
+        }
+        if r.workload.kind() == workloads::Kind::U32 {
+            // A histogram adds into its bins: a host call starts from clean bins, so the clear is part of the sample.
+            ctx.queue
+                .write_buffer(Self::out_buffer(r), 0, cast_slice(&r.poison));
+        }
+        self.passes.set(1);
         let mut encoder = self.encoder();
         self.record(&mut encoder, r, 1, false);
         if !self.switches.one_submission {
@@ -587,7 +634,7 @@ impl Backend for HandWgsl {
         self.submit(encoder.finish());
         match self.mode {
             Mode::Prebuilt => ctx.map_read(staging, |bytes| {
-                out.resize(r.n, 0.0);
+                out.resize(r.out_len, 0.0);
                 out.copy_from_slice(cast_slice(bytes));
             })?,
             Mode::PerCall => {
@@ -602,6 +649,7 @@ impl Backend for HandWgsl {
         let mut encoder = self.encoder();
         self.record(&mut encoder, r, 1, false);
         let submission = self.submit(encoder.finish());
+        self.passes.set(self.passes.get().wrapping_add(1));
         self.ctx.wait(submission)
     }
 
@@ -616,6 +664,8 @@ impl Backend for HandWgsl {
         encoder.resolve_query_set(query_set, 0..2, &r.resolve, 0);
         encoder.copy_buffer_to_buffer(&r.resolve, 0, &r.timestamp_read, 0, 16);
         let submission = self.submit(encoder.finish());
+        self.passes
+            .set(self.passes.get().wrapping_add(batch as u32));
         let (sender, receiver) = mpsc::channel();
         r.timestamp_read
             .map_async(wgpu::MapMode::Read, .., move |result| {
@@ -643,9 +693,13 @@ impl Backend for HandWgsl {
         encoder.copy_buffer_to_buffer(Self::out_buffer(r), 0, &r.staging, 0, r.bytes);
         self.submit(encoder.finish());
         self.ctx.map_read(&r.staging, |bytes| {
-            out.resize(r.n, 0.0);
+            out.resize(r.out_len, 0.0);
             out.copy_from_slice(cast_slice(bytes));
-        })
+        })?;
+        if r.workload.kind() == workloads::Kind::U32 {
+            normalize_counts(out, self.passes.get());
+        }
+        Ok(())
     }
 
     fn cold_start(&mut self) -> BenchResult<Option<Duration>> {
@@ -677,7 +731,7 @@ mod tests {
     /// Runs one end-to-end sample and one 16-pass batch on a fresh backend and returns the counts of each, after
     /// checking the output (an ablation must not change what is computed).
     fn counts_of(mut backend: HandWgsl) -> (Counts, Counts) {
-        let inputs = gen_inputs(N);
+        let inputs = gen_inputs(Workload::VectorAdd, N);
         let want = reference(Workload::VectorAdd, &inputs);
         backend.prepare(Workload::VectorAdd, &inputs).unwrap();
         assert_eq!(
@@ -705,6 +759,45 @@ mod tests {
             bind_groups,
             staging_buffers,
             submissions,
+        }
+    }
+
+    /// Every workload on the hand-written WGSL, in both host shapes: end to end, a resident dispatch and a 16-pass
+    /// batch match the reference, and the poison alone fails the check.
+    #[test]
+    fn every_workload_passes_its_bound_on_hand_wgsl_in_both_modes() {
+        let (_gpu, ctx) = gpu_context();
+        for mode in [Mode::Prebuilt, Mode::PerCall] {
+            for w in Workload::ALL {
+                let n = if w.family() == "W4" { 5000 } else { 4096 + 7 };
+                let inputs = gen_inputs(w, n);
+                let reference = reference(w, &inputs);
+                let mut backend = HandWgsl::new(Rc::clone(&ctx), mode);
+                backend.prepare(w, &inputs).unwrap();
+                let mut out = Vec::new();
+                backend.poison().unwrap();
+                backend.read_back(&mut out).unwrap();
+                assert!(
+                    check(w, &inputs, &reference, &out).is_err(),
+                    "{} poison",
+                    w.id()
+                );
+                backend.poison().unwrap();
+                backend.end_to_end(&inputs, &mut out).unwrap();
+                check(w, &inputs, &reference, &out)
+                    .unwrap_or_else(|e| panic!("{} {mode:?} end to end: {e}", w.id()));
+                backend.poison().unwrap();
+                backend.dispatch().unwrap();
+                backend.read_back(&mut out).unwrap();
+                check(w, &inputs, &reference, &out)
+                    .unwrap_or_else(|e| panic!("{} {mode:?} dispatch: {e}", w.id()));
+                backend.poison().unwrap();
+                if backend.gpu_time(16).unwrap().is_some() {
+                    backend.read_back(&mut out).unwrap();
+                    check(w, &inputs, &reference, &out)
+                        .unwrap_or_else(|e| panic!("{} {mode:?} batch: {e}", w.id()));
+                }
+            }
         }
     }
 

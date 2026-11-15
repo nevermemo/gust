@@ -582,6 +582,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
+name = "routed"
+version = "0.1.0"
+dependencies = [
+ "gust-compute",
+ "gust-compute-wgpu",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -665,6 +673,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9571ea910ebd84c86af4b3ed27f9dbdc6ad06f17c5f96146b2b671e2976744f"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "state-machine"
+version = "0.1.0"
+dependencies = [
+ "gust-compute",
+ "gust-compute-wgpu",
 ]
 
 [[package]]
@@ -783,6 +799,14 @@ name = "unicode-width"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
+
+[[package]]
+name = "variants"
+version = "0.1.0"
+dependencies = [
+ "gust-compute",
+ "gust-compute-wgpu",
+]
 
 [[package]]
 name = "wasm-bindgen"

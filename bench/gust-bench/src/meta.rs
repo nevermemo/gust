@@ -79,15 +79,62 @@ fn tree_dirty() -> Option<bool> {
         .then(|| !output.stdout.iter().all(u8::is_ascii_whitespace))
 }
 
+/// The cargo features this binary was built with, as the results file records them.
+pub fn build_features() -> Vec<&'static str> {
+    let mut features = Vec::new();
+    if cfg!(feature = "gpu") {
+        features.push("gpu");
+    }
+    if cfg!(feature = "slang-runtime") {
+        features.push("slang-runtime");
+    }
+    if cfg!(feature = "spirv-route") {
+        features.push("spirv-route");
+    }
+    features
+}
+
+/// The parts of the machine and build record that do not need a GPU.
+fn machine_common(rayon_threads: usize) -> serde_json::Map<String, Value> {
+    let value = json!({
+        "os": os_name(),
+        "cpu": cpu_name(),
+        "logical_cores": std::thread::available_parallelism().map_or(0, |n| n.get()),
+        "rayon_threads_n": rayon_threads,
+        "power_plan": power_plan(),
+        "versions": {
+            "rustc": capture("rustc", &["--version"]),
+            "wgpu": if cfg!(feature = "gpu") { json!("30.0.2") } else { Value::Null },
+            "rayon": "1.12.0",
+            "gust_commit": commit(),
+            "gust_bench": env!("CARGO_PKG_VERSION"),
+        },
+        "build": {
+            "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+            "gust_profile": gust::profile::NAME,
+            "gust_dual": cfg!(gust_dual),
+            "debug_assertions": cfg!(debug_assertions),
+            "features": build_features(),
+        },
+    });
+    match value {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    }
+}
+
 /// Everything about the machine and the build that a reader needs to reproduce the table.
+#[cfg(feature = "gpu")]
 pub fn machine(
     adapter: &wgpu::AdapterInfo,
     timestamps: bool,
     rayon_threads: usize,
     limits: &wgpu::Limits,
 ) -> Value {
-    json!({
-        "adapter": {
+    let mut map = machine_common(rayon_threads);
+    map.insert(
+        "adapter".to_owned(),
+        json!({
             "name": adapter.name,
             "vendor_id": adapter.vendor,
             "device_id": adapter.device,
@@ -96,31 +143,32 @@ pub fn machine(
             "driver": adapter.driver,
             "driver_info": adapter.driver_info,
             "gpu_timestamps": timestamps,
-        },
-        "os": os_name(),
-        "cpu": cpu_name(),
-        "logical_cores": std::thread::available_parallelism().map_or(0, |n| n.get()),
-        "rayon_threads_n": rayon_threads,
-        "power_plan": power_plan(),
-        "nvidia_driver": capture("nvidia-smi", &["--query-gpu=driver_version", "--format=csv,noheader"]),
-        "versions": {
-            "rustc": capture("rustc", &["--version"]),
-            "wgpu": "30.0.2",
-            "rayon": "1.12.0",
-            "gust_commit": commit(),
-            "gust_bench": env!("CARGO_PKG_VERSION"),
-        },
-        "build": {
-            "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
-            "gust_dual": cfg!(gust_dual),
-            "debug_assertions": cfg!(debug_assertions),
-        },
-        "wgpu_limits": {
+        }),
+    );
+    map.insert(
+        "nvidia_driver".to_owned(),
+        json!(capture(
+            "nvidia-smi",
+            &["--query-gpu=driver_version", "--format=csv,noheader"]
+        )),
+    );
+    map.insert(
+        "wgpu_limits".to_owned(),
+        json!({
             "max_compute_workgroups_per_dimension": limits.max_compute_workgroups_per_dimension,
             "max_storage_buffer_binding_size": limits.max_storage_buffer_binding_size,
             "max_compute_invocations_per_workgroup": limits.max_compute_invocations_per_workgroup,
-        },
-    })
+        }),
+    );
+    Value::Object(map)
+}
+
+/// The machine record of a build without a GPU runtime (`GUST_PROFILE=cpu`): no adapter, no limits.
+#[cfg(not(feature = "gpu"))]
+pub fn machine_cpu(rayon_threads: usize) -> Value {
+    let mut map = machine_common(rayon_threads);
+    map.insert("adapter".to_owned(), Value::Null);
+    Value::Object(map)
 }
 
 /// `nvidia-smi --query-gpu=utilization.gpu,clocks.sm,clocks.mem` plus a few more fields, as numbers.
@@ -227,6 +275,7 @@ pub const PUBLISHABLE_REASON: &str =
 
 /// The provenance fields every results file carries at its top level (plan 2.5 item 8): the route, the build and the
 /// adapter under test. The route is read from the build (`gust_wgpu::SPIRV_ROUTE`), never from a flag.
+#[cfg(feature = "gpu")]
 pub fn provenance(adapter: &wgpu::AdapterInfo) -> Value {
     let route = if gust_wgpu::SPIRV_ROUTE {
         "spirv"
@@ -235,22 +284,21 @@ pub fn provenance(adapter: &wgpu::AdapterInfo) -> Value {
     };
     provenance_of(
         route,
-        &adapter.name,
-        &format!("{:?}", adapter.backend),
-        &adapter.driver,
-        &adapter.driver_info,
+        json!({
+            "name": adapter.name, "backend": format!("{:?}", adapter.backend),
+            "driver": adapter.driver, "driver_info": adapter.driver_info,
+        }),
         (&commit(), tree_dirty()),
     )
 }
 
-fn provenance_of(
-    route: &str,
-    name: &str,
-    backend: &str,
-    driver: &str,
-    driver_info: &str,
-    (commit, dirty): (&str, Option<bool>),
-) -> Value {
+/// The provenance of a build without a GPU runtime: route `cpu`, no adapter.
+#[cfg(not(feature = "gpu"))]
+pub fn provenance_cpu() -> Value {
+    provenance_of("cpu", Value::Null, (&commit(), tree_dirty()))
+}
+
+fn provenance_of(route: &str, adapter: Value, (commit, dirty): (&str, Option<bool>)) -> Value {
     let release = !cfg!(debug_assertions);
     let mut cfgs = Vec::new();
     if cfg!(gust_dual) {
@@ -261,12 +309,13 @@ fn provenance_of(
         "build": {
             "release": release,
             "profile": if release { "release" } else { "debug" },
-            "features": ["slang-runtime"],
+            "gust_profile": gust::profile::NAME,
+            "features": build_features(),
             "cfgs": cfgs,
             "commit": commit,
             "tree_dirty": dirty,
         },
-        "adapter": { "name": name, "backend": backend, "driver": driver, "driver_info": driver_info },
+        "adapter": adapter,
     })
 }
 
@@ -301,10 +350,7 @@ mod tests {
     fn provenance_pins_route_build_and_adapter() {
         let value = provenance_of(
             "wgsl",
-            "Test GPU",
-            "Vulkan",
-            "555.55",
-            "driver 1",
+            json!({ "name": "Test GPU", "backend": "Vulkan", "driver": "555.55", "driver_info": "driver 1" }),
             ("0123456789ab", Some(true)),
         );
         assert_eq!(value["build"]["commit"], "0123456789ab");
@@ -319,7 +365,8 @@ mod tests {
                 "release"
             }
         );
-        assert_eq!(value["build"]["features"], json!(["slang-runtime"]));
+        assert_eq!(value["build"]["features"], json!(build_features()));
+        assert_eq!(value["build"]["gust_profile"], gust::profile::NAME);
         assert_eq!(value["adapter"]["name"], "Test GPU");
         assert_eq!(value["adapter"]["backend"], "Vulkan");
         assert_eq!(value["adapter"]["driver"], "555.55");
@@ -331,5 +378,21 @@ mod tests {
             .collect::<Vec<_>>();
         keys.sort_unstable();
         assert_eq!(keys, ["adapter", "build", "route"]);
+    }
+
+    /// The features list names what the binary was built with: a `cpu`-profile build (no `gpu`) says so, and a run of
+    /// one build never reads as the other.
+    #[test]
+    fn the_features_list_follows_the_build() {
+        let features = build_features();
+        assert_eq!(features.contains(&"gpu"), cfg!(feature = "gpu"));
+        assert_eq!(
+            features.contains(&"slang-runtime"),
+            cfg!(feature = "slang-runtime")
+        );
+        assert_eq!(
+            features.contains(&"spirv-route"),
+            cfg!(feature = "spirv-route")
+        );
     }
 }

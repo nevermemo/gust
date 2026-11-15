@@ -8,19 +8,30 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-gust = { package = "gust-compute", path = "../../crates/gust", features = ["slang-runtime"] }
-gust-wgpu = { package = "gust-compute-wgpu", path = "../../crates/gust-wgpu", features = ["slang-runtime"] }
+gust = { package = "gust-compute", path = "../../crates/gust" }
+gust-wgpu = { package = "gust-compute-wgpu", path = "../../crates/gust-wgpu", optional = true }
 bytemuck = "=1.25.2"
-pollster = "=0.4.0"
+pollster = { version = "=0.4.0", optional = true }
 rayon = "=1.12.0"
 serde_json = "=1.0.145"
-wgpu = { version = "=30.0.2", default-features = false, features = ["std", "vulkan", "wgsl"] }
+wgpu = { version = "=30.0.2", default-features = false, features = ["std", "vulkan", "wgsl"], optional = true }
 
 # Windows only: the sampler reads the GPU-engine performance counters (PDH), the process table (ToolHelp) and the
 # adapter LUIDs (DXGI). windows 0.62.2 is MIT OR Apache-2.0 and is already in the lock through wgpu-hal.
 [target.'cfg(windows)'.dependencies]
 # One line on purpose: `cargo xtask lint` reads one dependency per line.
 windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Performance", "Win32_System_Threading"] }
+
+# Builds of one harness (plan 2.2). `gpu` (default) is the GPU runtime and the hand-WGSL paths; `slang-runtime` is the
+# run-time compiler (the default build compiles its kernels at run time, so it needs GUST_PROFILE=dev); `spirv-route` is
+# the opt-in SPIR-V route of GUST, a build-time property of `gust-wgpu` (D172), so it is a build of its own and names
+# itself `gust-gpu-spirv`. `--no-default-features` with GUST_PROFILE=cpu is the production CPU target: no GPU runtime,
+# no wgpu and no Slang bridge (D21); its GUST backend is `gust-cpu`.
+[features]
+default = ["gpu", "slang-runtime"]
+gpu = ["dep:gust-wgpu", "dep:wgpu", "dep:pollster"]
+slang-runtime = ["gpu", "gust/slang-runtime", "gust-wgpu/slang-runtime"]
+spirv-route = ["gpu", "gust-wgpu/spirv-route"]
 
 [lints]
 workspace = true

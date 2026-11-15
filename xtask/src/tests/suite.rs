@@ -18,7 +18,7 @@ use crate::{
 };
 use std::{cell::RefCell, path::Path};
 
-const UNIT: [Step; 25] = [
+const UNIT: [Step; 26] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-compute-macros"]),
     Step::Cargo(&["test", "--locked", "-p", "xtask"]),
     Step::Lint,
@@ -106,7 +106,24 @@ const UNIT: [Step; 25] = [
         "--test",
         "toolchain",
     ]),
-    Step::CountedCargo(&["test", "--locked", "-p", "gust-compute", "--doc"]),
+    Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
+        "--features",
+        "slang-runtime",
+        "--doc",
+    ]),
+    Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute-wgpu",
+        "--features",
+        "slang-runtime",
+        "--doc",
+    ]),
     Step::CountedCargo(&[
         "test",
         "--locked",

@@ -82,8 +82,41 @@ pub(crate) struct Listing {
     pub(crate) anchor: &'static str,
 }
 
-/// The guide listings. Empty in slice m10.g0: the check runs and says "0 listings".
-pub(crate) const LISTINGS: [Listing; 0] = [];
+/// The guide listings: chapter 2 of `gust::guide` includes G1's three regions from `crates/gust`, and the compile check of
+/// the whole program in `gust_wgpu::guide` from its own copies in `crates/gust-wgpu` (a packaged crate cannot include a
+/// file outside its directory).
+pub(crate) const LISTINGS: [Listing; 6] = [
+    Listing {
+        packaged: "crates/gust/src/guide/listings/hello-gust-imports.rs",
+        source: "gallery/hello-gust/src/main.rs",
+        anchor: "imports",
+    },
+    Listing {
+        packaged: "crates/gust/src/guide/listings/hello-gust-kernel.rs",
+        source: "gallery/hello-gust/src/main.rs",
+        anchor: "kernel",
+    },
+    Listing {
+        packaged: "crates/gust/src/guide/listings/hello-gust-main.rs",
+        source: "gallery/hello-gust/src/main.rs",
+        anchor: "main",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/hello-gust-imports.rs",
+        source: "gallery/hello-gust/src/main.rs",
+        anchor: "imports",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/hello-gust-kernel.rs",
+        source: "gallery/hello-gust/src/main.rs",
+        anchor: "kernel",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/hello-gust-main.rs",
+        source: "gallery/hello-gust/src/main.rs",
+        anchor: "main",
+    },
+];
 
 /// The variables removed from every gallery child (see the module comment).
 const CLEARED: [&str; 3] = ["GUST_PROFILE", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"];

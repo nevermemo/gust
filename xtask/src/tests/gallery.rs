@@ -5,7 +5,7 @@ use std::{
 };
 
 use super::{
-    ENTRIES, Listing, Parts, adapter_name, anchor_names, anchored_region, check_listings,
+    ENTRIES, LISTINGS, Listing, Parts, adapter_name, anchor_names, anchored_region, check_listings,
     folder_holds, lf_line_ends, listing_matches, no_slang_environment, output_has_line,
     shared_folder_problems, slang_home_problem, slangc_cannot_be_found, tail, tree_difference,
     tree_has_slang_runtime, workspace_members,
@@ -703,4 +703,85 @@ fn check_full_runs_only_the_gpu_part_of_the_gallery() {
             && body.contains("no_slang: false")
             && body.contains("gpu: true")
     );
+}
+
+#[test]
+fn the_registered_guide_listings_match_the_real_gallery_and_a_changed_gallery_line_fails_them() {
+    let root = workspace_root().expect("the repository root");
+    assert_eq!(check_listings(&root, &LISTINGS), Ok(6));
+    // The same listings against a copy of G1's source with one changed line of each region: each change must fail the check.
+    let source = repository_file("gallery/hello-gust/src/main.rs");
+    let scratch_root = scratch("guide-listings");
+    for listing in &LISTINGS {
+        let target = scratch_root.join(listing.packaged);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(root.join(listing.packaged), &target).unwrap();
+    }
+    let gallery_file = scratch_root.join("gallery/hello-gust/src/main.rs");
+    fs::create_dir_all(gallery_file.parent().unwrap()).unwrap();
+    fs::write(&gallery_file, &source).unwrap();
+    assert_eq!(
+        check_listings(&scratch_root, &LISTINGS),
+        Ok(6),
+        "an unchanged copy"
+    );
+    for (needle, replacement) in [
+        ("use gust::gpu;", "use gust::gpu as g;"),
+        ("let i = id.x;", "let i = id.y;"),
+        (
+            "println!(\"hello-gust: {result:?}\");",
+            "println!(\"hello: {result:?}\");",
+        ),
+    ] {
+        assert_eq!(source.matches(needle).count(), 1, "{needle}");
+        fs::write(&gallery_file, source.replace(needle, replacement)).unwrap();
+        let error = check_listings(&scratch_root, &LISTINGS).unwrap_err();
+        assert!(
+            error.contains("is not byte-identical to region"),
+            "{needle}: {error}"
+        );
+    }
+    // Every copy on its own: a changed copy, with the gallery and every other copy intact, fails and names that copy
+    // (the check stops at the first mismatch, so a run over all copies at once names only the first one that differs).
+    fs::write(&gallery_file, &source).unwrap();
+    for listing in &LISTINGS {
+        let copy = scratch_root.join(listing.packaged);
+        let original = fs::read_to_string(&copy).unwrap();
+        fs::write(&copy, format!("{original}// drift\n")).unwrap();
+        let error = check_listings(&scratch_root, &LISTINGS).unwrap_err();
+        assert!(
+            error.contains(&format!(
+                "packaged listing {} is not byte-identical",
+                listing.packaged
+            )),
+            "{}: {error}",
+            listing.packaged
+        );
+        fs::write(&copy, original).unwrap();
+        assert_eq!(check_listings(&scratch_root, &LISTINGS), Ok(6));
+    }
+    let _ = fs::remove_dir_all(&scratch_root);
+}
+
+#[test]
+fn every_registered_guide_listing_is_included_by_the_chapter_that_shows_it() {
+    for (guide, crate_dir) in [
+        ("crates/gust/src/guide/mod.rs", "crates/gust/src/guide/"),
+        (
+            "crates/gust-wgpu/src/guide/mod.rs",
+            "crates/gust-wgpu/src/guide/",
+        ),
+    ] {
+        let text = repository_file(guide);
+        for listing in LISTINGS
+            .iter()
+            .filter(|l| l.packaged.starts_with(crate_dir))
+        {
+            let relative = listing.packaged.strip_prefix(crate_dir).unwrap();
+            assert!(
+                text.contains(&format!("include_str!(\"{relative}\")")),
+                "{guide} does not include {relative}"
+            );
+        }
+    }
 }

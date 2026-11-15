@@ -10,6 +10,8 @@
 include!("../../../tests/fixtures/pixel.rs");
 
 use gust::{Extent, Independent, PIXEL_MAX_ELEMENTS, Shape, cpu::CpuDevice};
+// The names below are the compatibility path, which these tests exercise until 1.0.
+#[allow(deprecated)]
 use gust_wgpu::{
     BufferBinding, BufferDispatch, DeviceOptions, Error, F32Binding, GpuBuffer, GpuBufferAccess,
     HeadlessDevice, StagedGraph, U32Binding, render_wgpu_source,
@@ -48,8 +50,8 @@ fn shade() -> &'static gust::KernelDescriptor {
 /// The three buffers of one `shade` call of `n` elements: an input and the two outputs.
 fn buffers(device: &HeadlessDevice, n: usize) -> (GpuBuffer<f32>, GpuBuffer<f32>, GpuBuffer<u32>) {
     (
-        device.create_f32_buffer("input", &vec![0.0; n], GpuBufferAccess::ReadOnly),
-        device.create_f32_buffer("scaled", &vec![0.0; n], GpuBufferAccess::ReadWrite),
+        device.create_typed_buffer("input", &vec![0.0; n], GpuBufferAccess::ReadOnly),
+        device.create_typed_buffer("scaled", &vec![0.0; n], GpuBufferAccess::ReadWrite),
         device.create_typed_buffer("flags", &vec![0u32; n], GpuBufferAccess::ReadWrite),
     )
 }
@@ -294,6 +296,8 @@ fn an_indirect_launch_is_refused_before_anything_else() {
 
 /// The one-shot v1 functions run compute passes: a `pixel` kernel is refused by both, before any buffer is touched.
 #[test]
+// Tests the deprecated compatibility path until 1.0.
+#[allow(deprecated)]
 fn the_one_shot_functions_refuse_a_pixel_kernel() {
     let device = device();
     let host = [0.0f32; 4];

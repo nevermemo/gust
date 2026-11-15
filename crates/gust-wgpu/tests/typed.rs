@@ -14,6 +14,8 @@ use gust::{
     Access, Arg, Call, Extent, GpuPod, Independent, Kernel, KernelDescriptor, LengthRule,
     ParameterDescriptor, ParameterKind, Resource, ResourceBinding, ResourceLayout, Run,
 };
+// The names below are the compatibility path, which these tests exercise until 1.0.
+#[allow(deprecated)]
 use gust_wgpu::{
     BufferBinding, BufferDispatch, Error, F32Binding, GpuBuffer, GpuBufferAccess, HeadlessDevice,
     StagedGraph, U32Binding,
@@ -896,6 +898,8 @@ fn lowered_binding_limits_apply_to_the_binding_index_not_the_binding_count() {
 }
 
 #[test]
+// Tests the deprecated compatibility path until 1.0.
+#[allow(deprecated)]
 fn the_binding_index_limit_applies_to_the_slice_paths_too() {
     let device = device();
     let maximum = u64::from(device.limits().max_bindings_per_bind_group);

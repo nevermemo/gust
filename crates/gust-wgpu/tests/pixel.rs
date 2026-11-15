@@ -32,6 +32,8 @@ use gust::{
     pod_slice_as_bytes,
     texture::{Address, Filter, Rgba32Float, SamplerOptions, TextureUse},
 };
+// The names below are the compatibility path, which these tests exercise until 1.0.
+#[allow(deprecated)]
 use gust_wgpu::{
     BufferDispatch, DeviceOptions, Error, F32BufferBinding, GpuBuffer, GpuBufferAccess,
     HeadlessDevice, StagedGraph,
@@ -764,6 +766,8 @@ fn descriptor(name: &str) -> &'static gust::KernelDescriptor {
 
 /// A `pixel` kernel through the f32 compatibility path (`dispatch_f32_buffers`) writes what the `grid` kernel does.
 #[test]
+// Tests the deprecated compatibility path until 1.0.
+#[allow(deprecated)]
 fn a_pixel_kernel_through_the_f32_buffer_path_matches_the_grid_kernel() {
     let device = device();
     for n in [1u32, 8191, 8193, 100_003] {

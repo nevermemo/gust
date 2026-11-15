@@ -181,7 +181,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         device.create_typed_buffer("updated particles", &input, GpuBufferAccess::ReadWrite);
     let gpu_snapshot = device.create_typed_buffer("snapshot", &input, GpuBufferAccess::ReadWrite);
     let gpu_energy =
-        device.create_f32_buffer("energy", &vec![0.0; count], GpuBufferAccess::ReadWrite);
+        device.create_typed_buffer("energy", &vec![0.0; count], GpuBufferAccess::ReadWrite);
     // Typed calls are locals; the batch entries borrow them. `snapshot` reads what `step` wrote, so the
     // batch order carries the dependency.
     let step = particles::step::call(
@@ -196,7 +196,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     device.dispatch_batch(&batch)?; // Warm the compiled-kernel cache and complete initial uploads.
     let timing = device.dispatch_batch_timed(&batch)?;
     let actual = device.read_typed_buffer(&gpu_snapshot)?;
-    let energy = device.read_f32_buffer(&gpu_energy)?;
+    let energy = device.read_typed_buffer(&gpu_energy)?;
     assert_matches(&actual, &energy, &expected, &expected_energy);
     // The trait method submits a whole batch (a generated `submit` covers one kernel); this is the
     // example that runs a two-kernel batch through the backend-neutral `gust::Device`.
@@ -499,12 +499,12 @@ mod tests {
             let (input, _) = data(count);
             let zeros = vec![0.0f32; count];
 
-            let out = device.create_f32_buffer("out", &zeros, GpuBufferAccess::ReadWrite);
-            let echo = device.create_f32_buffer("echo", &zeros, GpuBufferAccess::ReadWrite);
+            let out = device.create_typed_buffer("out", &zeros, GpuBufferAccess::ReadWrite);
+            let echo = device.create_typed_buffer("echo", &zeros, GpuBufferAccess::ReadWrite);
             particles::scalar_order::dispatch(&device, count as u32, &out, &echo).unwrap();
             let gpu = (
-                device.read_f32_buffer(&out).unwrap(),
-                device.read_f32_buffer(&echo).unwrap(),
+                device.read_typed_buffer(&out).unwrap(),
+                device.read_typed_buffer(&echo).unwrap(),
             );
             let host = (vec![3.0f32; count], vec![3.0f32; count]);
             assert_eq!(gpu, host, "scalar_order GPU versus reference, {count}");
@@ -520,11 +520,11 @@ mod tests {
                 &vec![blank(); count],
                 GpuBufferAccess::ReadWrite,
             );
-            let echo = device.create_f32_buffer("echo", &zeros, GpuBufferAccess::ReadWrite);
+            let echo = device.create_typed_buffer("echo", &zeros, GpuBufferAccess::ReadWrite);
             particles::field_order::dispatch(&device, count as u32, &source, &out, &echo).unwrap();
             let gpu = (
                 device.read_typed_buffer(&out).unwrap(),
-                device.read_f32_buffer(&echo).unwrap(),
+                device.read_typed_buffer(&echo).unwrap(),
             );
             let host = field_order_reference(&input);
             assert_eq!(gpu, host, "field_order GPU versus reference, {count}");
@@ -566,10 +566,10 @@ mod tests {
         let force = device.create_typed_buffer("force", &acceleration, GpuBufferAccess::ReadOnly);
         let out = device.create_typed_buffer("out", &input, GpuBufferAccess::ReadWrite);
         let energy =
-            device.create_f32_buffer("energy", &vec![0.0; count], GpuBufferAccess::ReadWrite);
+            device.create_typed_buffer("energy", &vec![0.0; count], GpuBufferAccess::ReadWrite);
         particles::step::dispatch(&device, count as u32, &source, &force, &out, &energy).unwrap();
         let gpu = device.read_typed_buffer(&out).unwrap();
-        let gpu_energy = device.read_f32_buffer(&energy).unwrap();
+        let gpu_energy = device.read_typed_buffer(&energy).unwrap();
         let (twin, twin_energy) = step_on_cpu(&input, &acceleration).expect("step twin");
 
         let gpu_host = step_differences((&gpu, &gpu_energy), (&host, &host_energy));
@@ -653,11 +653,11 @@ mod tests {
     #[ignore = "example validation runs only in full verification"]
     fn scalar_read_after_write() {
         let device = device();
-        let out = device.create_f32_buffer("out", &[0.0], GpuBufferAccess::ReadWrite);
-        let echo = device.create_f32_buffer("echo", &[0.0], GpuBufferAccess::ReadWrite);
+        let out = device.create_typed_buffer("out", &[0.0], GpuBufferAccess::ReadWrite);
+        let echo = device.create_typed_buffer("echo", &[0.0], GpuBufferAccess::ReadWrite);
         particles::scalar_order::dispatch(&device, 1, &out, &echo).unwrap();
-        assert_eq!(device.read_f32_buffer(&out).unwrap(), vec![3.0]);
-        assert_eq!(device.read_f32_buffer(&echo).unwrap(), vec![3.0]);
+        assert_eq!(device.read_typed_buffer(&out).unwrap(), vec![3.0]);
+        assert_eq!(device.read_typed_buffer(&echo).unwrap(), vec![3.0]);
     }
 
     #[test]
@@ -666,10 +666,10 @@ mod tests {
         let device = device();
         let out = device.create_typed_buffer("particle", &data(1).0, GpuBufferAccess::ReadWrite);
         let input = device.create_typed_buffer("input", &data(1).0, GpuBufferAccess::ReadOnly);
-        let echo = device.create_f32_buffer("echo", &[0.0], GpuBufferAccess::ReadWrite);
+        let echo = device.create_typed_buffer("echo", &[0.0], GpuBufferAccess::ReadWrite);
         particles::field_order::dispatch(&device, 1, &input, &out, &echo).unwrap();
         assert_eq!(device.read_typed_buffer(&out).unwrap()[0].velocity.y, 3.0);
-        assert_eq!(device.read_f32_buffer(&echo).unwrap(), vec![3.0]);
+        assert_eq!(device.read_typed_buffer(&echo).unwrap(), vec![3.0]);
     }
 
     #[test]
@@ -698,7 +698,7 @@ mod tests {
             let snapshot =
                 device.create_typed_buffer("snapshot", &input, GpuBufferAccess::ReadWrite);
             let energy =
-                device.create_f32_buffer("energy", &vec![0.0; count], GpuBufferAccess::ReadWrite);
+                device.create_typed_buffer("energy", &vec![0.0; count], GpuBufferAccess::ReadWrite);
             let step = particles::step::call(count as u32, &source, &force, &out, &energy);
             let snapshot_call = particles::snapshot::call(count as u32, &out, &snapshot);
             let batch = [
@@ -711,7 +711,7 @@ mod tests {
                 .unwrap();
             assert_matches(
                 &device.read_typed_buffer(&snapshot).unwrap(),
-                &device.read_f32_buffer(&energy).unwrap(),
+                &device.read_typed_buffer(&energy).unwrap(),
                 &expected,
                 &expected_energy,
             );
@@ -722,7 +722,7 @@ mod tests {
             );
             assert_matches(
                 &device.read_typed_buffer(&snapshot).unwrap(),
-                &device.read_f32_buffer(&energy).unwrap(),
+                &device.read_typed_buffer(&energy).unwrap(),
                 &expected,
                 &expected_energy,
             );

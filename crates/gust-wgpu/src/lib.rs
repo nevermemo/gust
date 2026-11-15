@@ -39,8 +39,8 @@
 //! In the browser (`wasm32-unknown-unknown`, wgpu's `webgpu` backend) nothing may block or read a clock, so the
 //! crate offers only what can run there: `new_async`, the buffer, upload and typed `submit` functions, and
 //! `read_typed_buffer_async`. These are compiled out on `wasm32`: the blocking readbacks, the `_timed` functions
-//! (`std::time::Instant` panics in the browser), `dispatch_f32`/`dispatch_u32`, the blocking `dispatch_batch`,
-//! `dispatch_buffers`, `dispatch_f32_batch` and `dispatch_f32_buffers`, the timestamp readback (one-shot channels), the
+//! (`std::time::Instant` panics in the browser), `dispatch_f32`/`dispatch_u32` (deprecated), the blocking `dispatch_batch`,
+//! `dispatch_buffers`, `dispatch_f32_batch` and `dispatch_f32_buffers` (both deprecated), the timestamp readback (one-shot channels), the
 //! `graph` module and `HeadlessDevice::pool_read`. A call to one of them fails to compile.
 //!
 //! A [`WgpuJob`] cannot block there either: its `status` reports `Pending` until wgpu's `on_submitted_work_done`
@@ -64,7 +64,7 @@
 //! the public fields of the plain record types (`BufferDispatch`, `DeviceOptions` and the like).
 //! Every public enum is `#[non_exhaustive]` ([`Error`], `AdapterChoice`, `LimitsPolicy` and `FeaturesPolicy` among
 //! them) except `TransferDirection`, `GpuBufferAccess` and the binding enums (`F32Binding`, `U32Binding` and
-//! `F32BufferBinding`), which are closed sets: a new variant of the others is not a breaking change and a `match`
+//! `F32BufferBinding`, all deprecated), which are closed sets: a new variant of the others is not a breaking change and a `match`
 //! outside this crate needs a wildcard arm; the variants themselves are not, so adding a field to a struct variant is a
 //! breaking change and comes only in a minor bump. The statistics and timing records (`PipelineCacheStats`, `PoolStats`,
 //! `GrowthRecord`, `TransferRecord`, `TransferTiming`, `DispatchTiming` and `RouteEvent`) and `GraphReport` are
@@ -275,6 +275,10 @@ fn is_indirect_args_layout(layout: gust::TypeLayout) -> bool {
 
 /// Host data for one reflected `Storage<f32>` or `StorageMut<f32>` parameter.
 #[derive(Clone, Copy, Debug)]
+#[deprecated(
+    since = "0.2.0",
+    note = "use a `GpuBuffer<f32>` from `create_typed_buffer` with `BufferBinding`"
+)]
 pub enum F32Binding<'a> {
     /// A read-only storage buffer with these contents.
     ReadOnly(&'a [f32]),
@@ -283,6 +287,7 @@ pub enum F32Binding<'a> {
     ReadWrite(&'a [f32]),
 }
 
+#[allow(deprecated)]
 impl<'a> F32Binding<'a> {
     #[cfg(not(target_arch = "wasm32"))]
     fn values(self) -> &'a [f32] {
@@ -302,6 +307,10 @@ impl<'a> F32Binding<'a> {
 
 /// Host data for one reflected `Storage<u32>` or `StorageMut<u32>` parameter.
 #[derive(Clone, Copy, Debug)]
+#[deprecated(
+    since = "0.2.0",
+    note = "use a `GpuBuffer<u32>` from `create_typed_buffer` with `BufferBinding`"
+)]
 pub enum U32Binding<'a> {
     /// A read-only storage buffer with these contents.
     ReadOnly(&'a [u32]),
@@ -310,6 +319,7 @@ pub enum U32Binding<'a> {
     ReadWrite(&'a [u32]),
 }
 
+#[allow(deprecated)]
 impl<'a> U32Binding<'a> {
     #[cfg(not(target_arch = "wasm32"))]
     fn values(self) -> &'a [u32] {
@@ -452,6 +462,7 @@ impl<T> GpuUniform<T> {
 
 /// One persistent buffer bound to an `f32` storage parameter.
 #[derive(Clone, Copy)]
+#[deprecated(since = "0.2.0", note = "use `BufferBinding`")]
 pub enum F32BufferBinding<'a> {
     /// The buffer is bound read-only.
     ReadOnly(&'a GpuBuffer<f32>),
@@ -459,6 +470,7 @@ pub enum F32BufferBinding<'a> {
     ReadWrite(&'a GpuBuffer<f32>),
 }
 
+#[allow(deprecated)]
 impl<'a> F32BufferBinding<'a> {
     fn buffer(self) -> &'a GpuBuffer<f32> {
         match self {
@@ -615,6 +627,7 @@ fn logical_bytes<T>(buffer: &GpuBuffer<T>) -> u64 {
     wanted.min(buffer.raw.size())
 }
 
+#[allow(deprecated)]
 impl<'a> From<F32BufferBinding<'a>> for BufferBinding<'a> {
     fn from(binding: F32BufferBinding<'a>) -> Self {
         Self::new(binding.buffer(), binding.access())
@@ -709,6 +722,8 @@ impl<'a> BufferDispatch<'a> {
 
 /// One persistent-buffer dispatch to encode as part of a batch.
 #[derive(Clone, Copy)]
+#[deprecated(since = "0.2.0", note = "use `BufferDispatch`")]
+#[allow(deprecated)]
 pub struct F32BufferDispatch<'a> {
     /// The kernel to run.
     pub kernel: &'a KernelDescriptor,
@@ -718,6 +733,7 @@ pub struct F32BufferDispatch<'a> {
     pub bindings: &'a [F32BufferBinding<'a>],
 }
 
+#[allow(deprecated)]
 impl<'a> F32BufferDispatch<'a> {
     /// A dispatch of `kernel` over `element_count` elements with `bindings`.
     pub const fn new(
@@ -735,6 +751,10 @@ impl<'a> F32BufferDispatch<'a> {
 
 /// Result of a completed dispatch. Writable buffers are returned in binding order.
 #[derive(Debug, PartialEq)]
+#[deprecated(
+    since = "0.2.0",
+    note = "read the buffers back with `read_typed_buffer`"
+)]
 pub struct DispatchOutput {
     /// The final contents of the writable buffers, in binding order.
     pub writable_buffers: Vec<Vec<f32>>,
@@ -742,6 +762,10 @@ pub struct DispatchOutput {
 
 /// Result of a completed `u32` dispatch. Writable buffers are returned in binding order.
 #[derive(Debug, PartialEq)]
+#[deprecated(
+    since = "0.2.0",
+    note = "read the buffers back with `read_typed_buffer`"
+)]
 pub struct U32DispatchOutput {
     /// The final contents of the writable buffers, in binding order.
     pub writable_buffers: Vec<Vec<u32>>,
@@ -1679,6 +1703,7 @@ impl HeadlessDevice {
     }
 
     /// [`HeadlessDevice::create_typed_buffer`] for `f32` values.
+    #[deprecated(since = "0.2.0", note = "use `create_typed_buffer`")]
     pub fn create_f32_buffer(
         &self,
         label: &str,
@@ -1757,6 +1782,7 @@ impl HeadlessDevice {
     }
 
     /// [`HeadlessDevice::write_typed_buffer`] for an `f32` buffer.
+    #[deprecated(since = "0.2.0", note = "use `write_typed_buffer`")]
     pub fn write_f32_buffer(&self, buffer: &GpuBuffer<f32>, values: &[f32]) -> Result<(), Error> {
         self.write_typed_buffer(buffer, values)
     }
@@ -1782,6 +1808,7 @@ impl HeadlessDevice {
 
     /// [`HeadlessDevice::write_typed_buffer_timed`] for an `f32` buffer.
     #[cfg(not(target_arch = "wasm32"))]
+    #[deprecated(since = "0.2.0", note = "use `write_typed_buffer_timed`")]
     pub fn write_f32_buffer_timed(
         &self,
         buffer: &GpuBuffer<f32>,
@@ -1802,6 +1829,7 @@ impl HeadlessDevice {
 
     /// [`HeadlessDevice::read_typed_buffer`] for an `f32` buffer.
     #[cfg(not(target_arch = "wasm32"))]
+    #[deprecated(since = "0.2.0", note = "use `read_typed_buffer`")]
     pub fn read_f32_buffer(&self, buffer: &GpuBuffer<f32>) -> Result<Vec<f32>, Error> {
         self.read_typed_buffer(buffer)
     }
@@ -1917,6 +1945,7 @@ impl HeadlessDevice {
 
     /// [`HeadlessDevice::read_typed_buffer_timed`] for an `f32` buffer.
     #[cfg(not(target_arch = "wasm32"))]
+    #[deprecated(since = "0.2.0", note = "use `read_typed_buffer_timed`")]
     pub fn read_f32_buffer_timed(
         &self,
         buffer: &GpuBuffer<f32>,
@@ -1925,6 +1954,8 @@ impl HeadlessDevice {
     }
 
     /// Compatibility wrapper for an all-f32 persistent dispatch.
+    #[deprecated(since = "0.2.0", note = "use `submit_buffers` with `BufferBinding`")]
+    #[allow(deprecated)]
     pub fn submit_f32_buffers<'device>(
         &'device self,
         kernel: &KernelDescriptor,
@@ -1936,6 +1967,8 @@ impl HeadlessDevice {
 
     /// Dispatch `kernel` over `element_count` elements with `bindings` and wait until it has completed.
     #[cfg(not(target_arch = "wasm32"))]
+    #[deprecated(since = "0.2.0", note = "use `dispatch_buffers` with `BufferBinding`")]
+    #[allow(deprecated)]
     pub fn dispatch_f32_buffers(
         &self,
         kernel: &KernelDescriptor,
@@ -1948,6 +1981,11 @@ impl HeadlessDevice {
 
     /// [`HeadlessDevice::dispatch_f32_buffers`], returning the host timing of the dispatch.
     #[cfg(not(target_arch = "wasm32"))]
+    #[deprecated(
+        since = "0.2.0",
+        note = "use `dispatch_buffers_timed` with `BufferBinding`"
+    )]
+    #[allow(deprecated)]
     pub fn dispatch_f32_buffers_timed(
         &self,
         kernel: &KernelDescriptor,
@@ -1958,6 +1996,8 @@ impl HeadlessDevice {
     }
 
     /// Submit `dispatches` as one command buffer and return its job without waiting.
+    #[deprecated(since = "0.2.0", note = "use `submit_batch` with `BufferDispatch`")]
+    #[allow(deprecated)]
     pub fn submit_f32_batch<'device>(
         &'device self,
         dispatches: &[F32BufferDispatch<'_>],
@@ -1967,12 +2007,19 @@ impl HeadlessDevice {
 
     /// Submit `dispatches` as one command buffer and wait until it has completed.
     #[cfg(not(target_arch = "wasm32"))]
+    #[deprecated(since = "0.2.0", note = "use `dispatch_batch` with `BufferDispatch`")]
+    #[allow(deprecated)]
     pub fn dispatch_f32_batch(&self, dispatches: &[F32BufferDispatch<'_>]) -> Result<(), Error> {
         self.submit_f32_batch(dispatches)?.wait()
     }
 
     /// [`HeadlessDevice::dispatch_f32_batch`], returning the host timing of the batch.
     #[cfg(not(target_arch = "wasm32"))]
+    #[deprecated(
+        since = "0.2.0",
+        note = "use `dispatch_batch_timed` with `BufferDispatch`"
+    )]
+    #[allow(deprecated)]
     pub fn dispatch_f32_batch_timed(
         &self,
         dispatches: &[F32BufferDispatch<'_>],
@@ -2150,6 +2197,11 @@ impl HeadlessDevice {
     /// This v1 slice accepts one host binding for each storage parameter and reads
     /// every read-write binding back after the dispatch completes.
     #[cfg(not(target_arch = "wasm32"))]
+    #[deprecated(
+        since = "0.2.0",
+        note = "create `GpuBuffer<f32>`s with `create_typed_buffer`, call `dispatch_buffers` and read back with `read_typed_buffer`"
+    )]
+    #[allow(deprecated)]
     pub fn dispatch_f32(
         &self,
         kernel: &KernelDescriptor,
@@ -2289,6 +2341,11 @@ impl HeadlessDevice {
     /// Dispatch an executable kernel over `element_count` one-dimensional invocations
     /// using `u32` storage buffers.
     #[cfg(not(target_arch = "wasm32"))]
+    #[deprecated(
+        since = "0.2.0",
+        note = "create `GpuBuffer<u32>`s with `create_typed_buffer`, call `dispatch_buffers` and read back with `read_typed_buffer`"
+    )]
+    #[allow(deprecated)]
     pub fn dispatch_u32(
         &self,
         kernel: &KernelDescriptor,
@@ -3031,6 +3088,7 @@ impl HeadlessDevice {
     }
 }
 
+#[allow(deprecated)]
 fn with_f32_dispatches<R>(
     dispatches: &[F32BufferDispatch<'_>],
     run: impl FnOnce(&[BufferDispatch<'_>]) -> R,
@@ -3361,6 +3419,7 @@ fn validate_binding_layout(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(deprecated)]
 fn validate_dispatch(
     kernel: &KernelDescriptor,
     element_count: u32,
@@ -3398,6 +3457,7 @@ fn validate_dispatch(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(deprecated)]
 fn validate_u32_dispatch(
     kernel: &KernelDescriptor,
     element_count: u32,
@@ -4071,7 +4131,7 @@ mod tests {
         "#;
         let device = HeadlessDevice::new().expect("Vulkan adapter required");
         let buffer =
-            device.create_f32_buffer("entrypoint identity", &[0.0], GpuBufferAccess::ReadWrite);
+            device.create_typed_buffer("entrypoint identity", &[0.0], GpuBufferAccess::ReadWrite);
         for (entry, expected) in [
             ("first", 11.0),
             ("second", 22.0),
@@ -4082,7 +4142,7 @@ mod tests {
             device
                 .dispatch_buffers(&descriptor, 1, &[BufferBinding::read_write(&buffer)])
                 .unwrap();
-            assert_eq!(device.read_f32_buffer(&buffer).unwrap(), [expected]);
+            assert_eq!(device.read_typed_buffer(&buffer).unwrap(), [expected]);
         }
         let stats = device.pipeline_cache_stats();
         assert_eq!((stats.entries, stats.misses, stats.hits), (2, 2, 2));
@@ -4091,9 +4151,10 @@ mod tests {
     #[test]
     fn same_buffer_compares_the_allocation_not_the_handle_address() {
         let device = HeadlessDevice::new().expect("Vulkan adapter required");
-        let first = device.create_f32_buffer("identity first", &[0.0], GpuBufferAccess::ReadWrite);
+        let first =
+            device.create_typed_buffer("identity first", &[0.0], GpuBufferAccess::ReadWrite);
         let second =
-            device.create_f32_buffer("identity second", &[0.0], GpuBufferAccess::ReadWrite);
+            device.create_typed_buffer("identity second", &[0.0], GpuBufferAccess::ReadWrite);
         let cloned = first.raw.clone();
         assert!(
             !std::ptr::eq(&first.raw, &cloned),
@@ -4119,6 +4180,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn rejects_resource_layout_that_does_not_match_f32_backend() {
         let parameters = Box::leak(Box::new([ParameterDescriptor {
             resource_layout: Some(ResourceLayout::storage_v1(<u32 as GpuPod>::LAYOUT)),
@@ -4588,8 +4650,8 @@ mod tests {
     #[test]
     fn raw_compares_the_resource_and_a_buffer_never_equals_a_texture() {
         let device = HeadlessDevice::new().expect("a GPU adapter");
-        let first = device.create_f32_buffer("raw first", &[0.0], GpuBufferAccess::ReadWrite);
-        let second = device.create_f32_buffer("raw second", &[0.0], GpuBufferAccess::ReadWrite);
+        let first = device.create_typed_buffer("raw first", &[0.0], GpuBufferAccess::ReadWrite);
+        let second = device.create_typed_buffer("raw second", &[0.0], GpuBufferAccess::ReadWrite);
         let texture = device
             .create_texture_2d::<gust::texture::R32Float>(2, 2, gust::texture::TextureUse::SAMPLED)
             .expect("a texture");
@@ -4629,6 +4691,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn a_vector_buffer_does_not_match_the_f32_backend() {
         let descriptor = descriptor_with(ResourceLayout::storage_v2(
             <gust::math::Vec4 as GpuPod>::LAYOUT,

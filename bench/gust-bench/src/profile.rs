@@ -465,6 +465,7 @@ pub fn run(options: &Options) -> BenchResult<bool> {
         &ctx,
         &Switch::ALL,
         true,
+        &[],
     ));
     if let Some(wanted) = &options.backends {
         for name in wanted {

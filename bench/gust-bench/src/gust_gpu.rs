@@ -58,12 +58,51 @@ struct Resident {
     zeros: Vec<u32>,
 }
 
+/// The events a cell produced: those after the `before` that were on the device when its `prepare` began.
+#[cfg(any(test, feature = "spirv-route"))]
+fn own_events<'a>(events: &'a [&'static str], before: usize) -> &'a [&'static str] {
+    &events[before.min(events.len())..]
+}
+
+/// The route check of a cell. Route events arise only when a pipeline is compiled, and the pipeline cache is keyed by
+/// kernel, so a warm cell (every cell after a workload's first size) has no events of its own: it runs the pipeline an
+/// earlier cell built. The cell therefore fails on any event of its own that is off the build's route; otherwise the
+/// kernel's latest event over the device's life (`latest`) must exist and be on the route, which for a warm cell is the
+/// build of the cached pipeline it ran.
+#[cfg(any(test, feature = "spirv-route"))]
+fn route_verdict(
+    kernel: &str,
+    want: &str,
+    own: &[&str],
+    latest: Option<&str>,
+) -> Result<(), String> {
+    if let Some(other) = own.iter().find(|route| **route != want) {
+        return Err(format!(
+            "kernel {kernel} ran on the `{other}` route, but this build's route is `{want}` ({} events of this cell)",
+            own.len()
+        ));
+    }
+    match latest {
+        None => Err(format!(
+            "no route event for {kernel}: the build route `{want}` could not be confirmed"
+        )),
+        Some(other) if other != want => Err(format!(
+            "kernel {kernel} last compiled on the `{other}` route, but this build's route is `{want}`"
+        )),
+        Some(_) => Ok(()),
+    }
+}
+
 pub struct GustGpu {
     device: Rc<HeadlessDevice>,
     resident: Option<Resident>,
     /// Dispatches since the bins were last cleared (a histogram accumulates; see `Backend::dispatch`).
     passes: Cell<u32>,
     route: RefCell<Option<Value>>,
+    /// Route events of the cell's kernel already on the device when `prepare` began: the events are cumulative over the
+    /// device's life (the W3 cells share `kernel::horner`), so a cell's own share is the total minus this.
+    #[cfg(feature = "spirv-route")]
+    events_before_prepare: Cell<usize>,
 }
 
 /// The id of this backend in the build: the route is part of it.
@@ -82,6 +121,8 @@ impl GustGpu {
             resident: None,
             passes: Cell::new(0),
             route: RefCell::new(None),
+            #[cfg(feature = "spirv-route")]
+            events_before_prepare: Cell::new(0),
         }
     }
 
@@ -187,6 +228,12 @@ impl Backend for GustGpu {
 
     fn prepare(&mut self, workload: Workload, inputs: &Inputs) -> BenchResult<()> {
         self.resident = None;
+        #[cfg(feature = "spirv-route")]
+        {
+            let kernel = workloads::descriptor(workload).qualified_name().to_string();
+            self.events_before_prepare
+                .set(self.route_events_of(&kernel).len());
+        }
         let d = &self.device;
         let n = inputs.n;
         let read_only = GpuBufferAccess::ReadOnly;
@@ -304,18 +351,39 @@ impl Backend for GustGpu {
         } else {
             "wgsl"
         };
-        if events.is_empty() {
-            return Err(format!(
-                "no route event for {kernel}: the build route `{want}` could not be confirmed"
-            ));
-        }
-        match events.iter().find(|route| **route != want) {
-            Some(other) => Err(format!(
-                "kernel {kernel} ran on the `{other}` route, but this build's route is `{want}` ({} events)",
-                events.len()
-            )),
-            None => Ok(()),
-        }
+        route_verdict(
+            &kernel,
+            want,
+            own_events(&events, self.events_before_prepare.get()),
+            events.last().copied(),
+        )
+    }
+
+    #[cfg(feature = "spirv-route")]
+    fn route_evidence(&self) -> Option<Value> {
+        let kernel = workloads::descriptor(self.resident().workload)
+            .qualified_name()
+            .to_string();
+        let events = self.route_events_of(&kernel);
+        let want = if gust_wgpu::SPIRV_ROUTE {
+            "spirv"
+        } else {
+            "wgsl"
+        };
+        let own = own_events(&events, self.events_before_prepare.get());
+        let on_build_route = own.iter().filter(|route| **route == want).count();
+        let last = self.last_event(&kernel);
+        Some(serde_json::json!({
+            "kernel": kernel,
+            "build_route": want,
+            "events": own.len(),
+            "events_on_build_route": on_build_route,
+            "events_off_build_route": own.len() - on_build_route,
+            "events_cumulative": events.len(),
+            "last_route": last.as_ref().map(|event| event.route),
+            "last_reason": last.and_then(|event| event.reason),
+            "source": "HeadlessDevice::route_events, read after the cell (the same events route_check reads); the three `events` counts are this cell's own (since its prepare; 0 for a warm cell, which runs the pipeline an earlier cell built, and route_check then judges it on the kernel's latest event), `events_cumulative` is the device's whole life",
+        }))
     }
 
     fn cold_start(&mut self) -> BenchResult<Option<Duration>> {
@@ -348,6 +416,33 @@ impl Backend for GustGpu {
 mod tests {
     use super::*;
     use crate::workloads::{check, gen_inputs, reference};
+
+    #[test]
+    fn the_route_check_judges_a_warm_cell_on_the_latest_event_and_a_cold_cell_on_its_own() {
+        // Warm cell: it began with 1 event on the device and made none; the earlier on-route event is the pipeline it ran.
+        let events = ["spirv"];
+        let own = own_events(&events, 1);
+        assert!(own.is_empty());
+        assert!(route_verdict("horner", "spirv", own, events.last().copied()).is_ok());
+        // No event over the device's life: the route cannot be confirmed.
+        assert!(route_verdict("horner", "spirv", &[], None).is_err());
+        // A cell's own event off the route fails it, even when the latest event is on the route.
+        let mixed = ["wgsl", "spirv"];
+        assert!(
+            route_verdict(
+                "horner",
+                "spirv",
+                own_events(&mixed, 0),
+                mixed.last().copied()
+            )
+            .is_err()
+        );
+        // A warm cell whose cached pipeline was last built off the route fails too.
+        let off = ["spirv", "wgsl"];
+        assert!(
+            route_verdict("horner", "spirv", own_events(&off, 2), off.last().copied()).is_err()
+        );
+    }
 
     /// The GPU tests take turns: creating several Vulkan instances at once made adapter discovery fail now and then.
     fn gpu() -> (std::sync::MutexGuard<'static, ()>, Rc<HeadlessDevice>) {

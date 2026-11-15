@@ -116,7 +116,9 @@ the ones that R7 builds from the packaged files; if they do not build against th
 the registry disagree, so stop and tell the coordinator.
 
 ```sh
-# 6. Tag the published commit after all four crates are up, then the GitHub release (owner decision Q6; public acts)
+# 6. Tag the published commit as soon as any crate of the release is on the registry (do not wait for all four: the
+#    READMEs and the `documentation` URL of the published crates link to this tag), then the GitHub release (owner
+#    decision Q6; public acts)
 git tag -a v0.2.0 -m "GUST 0.2.0: first public release"
 git push origin v0.2.0
 #    Create the GitHub release v0.2.0 with the text of the 0.2.0 entry of CHANGELOG.md.
@@ -139,8 +141,9 @@ crates.io keeps every uploaded version forever: nothing published can be retract
   already published.
 - A failure that needs a change (a packaging error, a broken crate, a half-finished publish):
   - Before any crate is published, the candidate is still on `main`: fix it there, merge, and run the gate again.
-  - After the publish (0.2.0 is up, in whole or in part), the coordinator cuts `release/0.2` at `<C>` first if it
-    does not exist yet (next section). Make the fix on
+  - After the publish (0.2.0 is up, in whole or in part), tag `v0.2.0` on `<C>` at once if it is not tagged yet (the
+    READMEs and the `documentation` URL of the crates already up link to that tag, and crates.io cannot change them),
+    then the coordinator cuts `release/0.2` at `<C>` first if it does not exist yet (next section). Make the fix on
     `release/0.2`, release 0.2.1 from there for all four crates, and forward-port the fix to `main`. The four packages
     share one version and pin each other exactly (D107), so 0.2.1 is published for the remaining crates and for the ones
     already up, and the procedure restarts at step 1 on `release/0.2`.
@@ -153,11 +156,14 @@ crates.io keeps every uploaded version forever: nothing published can be retract
 0.2.0 is the first public release (D177, owner, 2026-11-14). 0.1.0 is never published: `release/0.1` stays a branch
 with no tag and no `v0.1.0`, and nothing below uses it except as the semver baseline until 0.2.0 is on the registry.
 
-- **Before the publish**, `main` is the development line (`0.2.0-dev`) and the release candidate lives on it. Lanes keep
+- **Before the publish**, `main` is the development line (`0.2.0-dev` until the release candidate merges, `0.2.0` from then until
+  the publish) and the release candidate lives on it. Lanes keep
   merging into `main` while the candidate is prepared (slice m10.r3); the packages are published from the candidate
   commit `<C>` on `main`, and that commit is the one the gate ran on.
 - **After the owner's publish**, the coordinator cuts `release/0.2` at the published commit (a push, pre-approved) and
-  moves `main` to `0.3.0-dev`: the `-dev` version literals and the three exact pins, the lockfiles, and the semver
+  moves `main` to `0.3.0-dev`: the `-dev` version literals and the three exact pins, the lockfiles, the per-release
+  literals (the `blob/v0.2.0` links of the four crate READMEs, the `documentation` URL of `crates/cargo-gust/Cargo.toml`
+  and the "This is 0.2.0" note of the README, which must not say 0.2.0 on a `0.3.0-dev` tree), and the semver
   baseline (`--baseline-version 0.2.0`, next section). The line is cut at the published commit, not at `main`'s tip,
   because lanes may have merged after `<C>`.
 - **A 0.2.x fix** (docs.rs, the first-user path, a half-finished publish) is made on `release/0.2`, released from there as
@@ -168,7 +174,9 @@ with no tag and no `v0.1.0`, and nothing below uses it except as the semver base
 ## Later releases
 
 A later release repeats steps 1 to 8 with the new version: bump `[workspace.package]` and the three exact pins in
-`[workspace.dependencies]` together, add the `CHANGELOG.md` entry, run the full gate on the commit, and publish in the
+`[workspace.dependencies]` together, move the per-release literals (the `blob/v<version>` links of the crate READMEs, the
+`documentation` URL of `cargo-gust` and the version note of the README; `rg -n 'blob/v[0-9]'` finds them), add the
+`CHANGELOG.md` entry, run the full gate on the commit, and publish in the
 same order. A breaking change bumps the minor version of all four (D111). A patch comes from the release branch of its
 line (`release/0.2` for 0.2.x), a minor from `main`.
 
@@ -176,7 +184,9 @@ line (`release/0.2` for 0.2.x), a minor from `main`.
 
 This is the checklist of slice m10.r3. Besides the bump, change every `0.2.0-dev` requirement to the released form (a
 caret requirement does not match a pre-release, so the development line names the pre-release and the release must not).
-The proof that none is left is `rg -n '0\.2\.0-dev|~0\.1' --glob '!target'`:
+The proof that none is left is `rg -n '0\.2\.0-dev|~0\.1' --glob '!target'`; the per-release literals that name
+`v0.2.0` (the crate READMEs' links and `cargo-gust`'s `documentation`) are listed by `rg -n 'blob/v0\.2\.0' --glob
+'!target'`:
 
 - the `toml` block of the README's "A first program" and `xtask/src/release/hello-gust/Cargo.toml` (the same text,
   which a unit test compares) go from `"0.2.0-dev"` to `"0.2"`, and the sentence under that block is reworded;
@@ -205,10 +215,11 @@ The list above misses these literals (audit of slice m10.r0): the comment of `cr
 the pin is `=0.2.0-dev` until the release and the "(0.2.0-dev)" label of the M9 entry in `docs/DIAGNOSTICS.md`.
 Prose that names the literal `0.2.0-dev` on purpose (this file, the CHANGELOG, the README's description of the development
 line) shows up in the `rg` proof too: read each hit and keep only the ones that are true of the release. The version
-bump also regenerates the eight fixture lockfiles that name `0.2.0-dev` (`gallery`, `tests/cpu-target`,
-`tests/difftest/template`, `tests/dual`, `tests/precompiled`, `tests/reexport`, `tests/routing` and `tests/ui`; the
-`gallery` and `tests/reexport` ones were missing from the list of m10.r2), since their suites run with `--locked`, as
-the m8.v bump did.
+bump also regenerates every committed `Cargo.lock` that names the GUST packages, nine besides the root one
+(`bench`, `gallery`, `tests/cpu-target`, `tests/difftest/template`, `tests/dual`, `tests/precompiled`,
+`tests/reexport`, `tests/routing` and `tests/ui`; `bench`, `gallery` and `tests/reexport` were missing from the list of
+m10.r2), since their suites and `bench/README.md` run with `--locked`, as the m8.v bump did. Find them with `rg -l
+'name = "gust-compute' --glob 'Cargo.lock'`.
 
 R7 cannot see most of this, with one exception: when the workspace version has no pre-release part, it fails if the
 `hello-gust` fixture still names a pre-release requirement. That is the guard against a missed edit; search the

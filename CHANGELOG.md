@@ -11,8 +11,7 @@ breaks existing code bumps the minor version, and the promise is described in th
 published: it has no tag and is not on crates.io, so there is nothing to upgrade from, and a reader who meets 0.2.0 on
 crates.io can skip "Changed, and may break code written for the unpublished 0.1.0 line" and "Compatibility with the
 unpublished 0.1.0 line" below. Those two parts are kept for this repository's own fixtures and for anyone who built
-from `release/0.1`. Work for 0.2.0 lands on `main`. This
-list is what the milestones M8 and M9 and the first slices of M10 have merged.
+from `release/0.1`. This list is what the milestones M8, M9 and M10 merged, up to the release commit.
 Against `release/0.1` the tree has four listed breaks, and the API audit of m10.api1 adds B5 to B7 (below; they break
 no released version, because none exists). B1, below, in two
 parts (the descriptor constructor and setters, and the `GpuKernel` bound), is the last of its kind: the descriptor is
@@ -107,8 +106,8 @@ proof.
 - Methods (M9, slice a1). A `#[gpu]` module may hold one `impl S { .. }` block per struct, with `&self` methods that
   take value parameters and return a value; a call `recv.m(args)` works on a storage element (a read-write one
   included), a field of a uniform or a local (the method reads a copy); a whole uniform is `GUST-E0321`. In Slang the
-  methods are members of the struct. Part 2 below adds the rest. Until then (a1): `&mut self` and `self`
-  methods are `GUST-E0116` until the next slice, a call of one on a storage, uniform or workgroup place is
+  methods are members of the struct. Part 2 below adds the rest. In this first part (a1): `&mut self` and `self`
+  methods are `GUST-E0116` in this part (part 2 below accepts them), a call of one on a storage, uniform or workgroup place is
   `GUST-E0333` (a texture receiver is `GUST-E0735`), an `impl` for a type the module does not define is `GUST-E0121`
   and a method named like a built-in method, a swizzle, a Slang member keyword or a field of its struct is
   `GUST-E0328`.
@@ -391,8 +390,8 @@ which gate of `main` builds it (`check-examples` builds the examples but `web-ve
     `typed-call-buffer-for-sampler`, `typed-call-buffer-for-texture`, `typed-call-sampler-for-buffer` and
     `typed-call-texture-ok` wrote a `KernelDescriptor` literal and now call `KernelDescriptor::new(..)` and add `impl
     gust::target::GpuKernel for Blur {}` (three of the `expected.txt` files only change a line number).
-  - One is a version literal: `tests/precompiled/kernels` names its `gust` path dependency `0.2.0-dev` (RELEASE.md lists
-    it for the release); its manifest and one reflection file are also written again by the new Slang.
+  - One is a version literal: `tests/precompiled/kernels` named its `gust` path dependency `0.2.0-dev` (it is `0.2.0`
+    in the release); its manifest and one reflection file are also written again by the new Slang.
   - Ten only gained things (and `tests/difftest` a re-stamped seed file): `crates/gust-algo` (the `evidence` module and
     an example, additive; not published), `examples/web-vector-add` (an added `check-web` assertion that a subgroup
     request is refused, and re-written artifacts), `tests/cpu-target` and its `kernels` (a `routed` crate and a

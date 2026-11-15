@@ -3,7 +3,9 @@
 // written and have no module until they have text.
 //
 // The listings are packaged copies of regions of the gallery entries (`check-gallery` keeps them identical to the
-// regions), each compiled by this crate's doctests against the real backend. The first program of chapter 2 of
+// regions). The programs of chapters 4 and 5 are compiled by this crate's doctests against the real backend; chapter
+// 6's `routed` program is `ignore` (a route tag must be declared in the crate that uses it, GUST-E0748) and is built
+// by `check-gallery` as the gallery entry. The first program of chapter 2 of
 // `gust::guide` is compiled by the private module below, which exists only in `cargo test --doc`.
 #[cfg(doctest)]
 #[doc = "```no_run"]

@@ -1,10 +1,11 @@
 # The newer language features
 
-Milestone 9 grew the dialect from "functions and structs of scalars" to a useful part of everyday Rust: methods, field-less
-enums with `match`, tuples, fixed-size arrays, closures that capture nothing, traits with static dispatch, and generic
-helpers with trait bounds. Each is checked by rustc as ordinary Rust and then translated to Slang, and each runs on the
-GPU and on the CPU twin. This chapter says what each form is and where its limits are, with one program that uses most of
-them. The full forms, with every rejected shape and its code, are in the README ("Current subset"), in
+The dialect has grown from "functions and structs of scalars" to a useful part of everyday Rust: methods,
+field-less enums with `match`, tuples, fixed-size arrays, closures that capture nothing, traits with static dispatch,
+and generic helpers with trait bounds. Each is checked by rustc as ordinary Rust and then translated to Slang, and each
+runs on the GPU and on the CPU twin. This chapter says what each form is and where its limits are, with one program that
+uses most of them. The full forms, with every rejected shape and its code, are in the README
+(["Current subset"](https://github.com/nevermemo/gust/blob/main/README.md)), in
 [DIAGNOSTICS](https://github.com/nevermemo/gust/blob/main/docs/DIAGNOSTICS.md) and in sections 9 to 14 and 16 of
 [SEMANTICS](https://github.com/nevermemo/gust/blob/main/docs/SEMANTICS.md).
 
@@ -74,11 +75,12 @@ mod window {
 
 G7, `state-machine`, is a tokenizer: a stream of ASCII symbols is cut into records of 16, and one invocation scans one
 record with two finite-state machines at once, one that finds words and one that finds numbers. It uses an enum with
-`match` (`State`, `Class`), a tuple result (`transition`, `totals`), two traits with static dispatch (`Classify`, `Rules`),
-a generic method with two bounds (`Machine::feed`, instantiated twice) and methods with `&mut self` and `&self`. The
-workarounds in the source are the limits above, shown in use: an enum cannot be a struct field, so `Machine` keeps its
-state as the integer `State as u32`; a struct literal is a `let` initializer or the right side of an assignment, so the
-arguments of `feed` are bound to locals first; a struct needs a field, so the two rule types carry an unused `tag`.
+`match` (`State`, `Class`), a tuple result (`transition`, `totals`), two traits with static dispatch (`Classify`,
+`Rules`), a generic method with two bounds (`Machine::feed`, instantiated twice) and methods with `&mut self` and
+`&self`. The workarounds in the source are the limits above, shown in use: an enum cannot be a struct field, so
+`Machine` keeps its state as the integer `State as u32`; a struct literal is a `let` initializer or the right side of an
+assignment, so the arguments of `feed` are bound to locals first; a struct needs a field, so the two rule types carry an
+unused `tag`.
 
 ```rust,no_run
 # use gust::gpu;

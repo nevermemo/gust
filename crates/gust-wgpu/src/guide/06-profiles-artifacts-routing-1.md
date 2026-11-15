@@ -1,10 +1,10 @@
 # Build profiles, artifacts and routing
 
 A kernel reaches the GPU as Slang text compiled to a shader. When that happens, and what a build is allowed to contain,
-is chosen by the build profile; `cargo gust` is the tool that does the compiling ahead of time and checks the result; and
-a `gust.toml` can send a kernel to the CPU or the GPU for a whole build. This chapter is the summary of those three; the
-README sections "Try it", "Install from crates.io" and "Routing kernels to the CPU or the GPU at build time" are the
-reference.
+is chosen by the build profile; `cargo gust` is the tool that does the compiling ahead of time and checks the result;
+and a `gust.toml` can send a kernel to the CPU or the GPU for a whole build. This chapter is the summary of those three;
+the [README](https://github.com/nevermemo/gust/blob/main/README.md) sections "Try it", "Install from crates.io" and
+"Routing kernels to the CPU or the GPU at build time" are the reference.
 
 ## Profiles
 
@@ -19,11 +19,12 @@ and any other value, including an empty one, fails the build.
 | `cpu` | The production CPU target: no Slang, no GPU runtime. See below. |
 
 With `GUST_PROFILE` unset, `cargo build --release` of a crate with `#[gpu]` kernels is `native` (`web` on `wasm32`) and
-prints a warning that says so. The CPU is never inferred. A profile may name a capability
-after its target, `<target>(+<capability>)*`, as in `native+subgroups`; the one capability of this release is
-`subgroups`, and `cpu` takes none. A crate says what it builds for under `[package.metadata.gust]` in its `Cargo.toml`:
-`profiles` (`["native", "web", "cpu"]` when absent), `limits = "portable"` to check every kernel against WebGPU's default
-limits (GUST-E0746), and `routes`.
+the build script prints a warning that says so; cargo shows a build script's warning only for path and workspace
+packages, or with `-vv`, so a crate that depends on `gust-compute` from crates.io does not see it. The CPU is never
+inferred. A profile may name a capability after its target, `<target>(+<capability>)*`, as in `native+subgroups`; the
+one capability of this release is `subgroups`, and `cpu` takes none. A crate says what it builds for under
+`[package.metadata.gust]` in its `Cargo.toml`: `profiles` (`["native", "web", "cpu"]` when absent), `limits =
+"portable"` to check every kernel against WebGPU's default limits (GUST-E0746), and `routes`.
 
 ## Artifacts and `cargo gust`
 
@@ -35,7 +36,7 @@ runs `cargo clean -p` for it once and says so. The commands:
 
 | Command | Does |
 | --- | --- |
-| `cargo gust slang install` | Downloads the pinned Slang, checks its SHA-256, unpacks it into the cargo home |
+| `cargo gust slang install` | Downloads the pinned Slang, checks its SHA-256, unpacks it into `<CARGO_HOME>/gust/slang` (or `GUST_SLANG_HOME` when set) |
 | `cargo gust slang build-helper` | Compiles the native reflection helper against that Slang (needs a C++ compiler) |
 | `cargo gust doctor` | Names whatever is still missing |
 | `cargo gust build` | Writes `gust-artifacts/` |
@@ -61,23 +62,23 @@ GPU, SEMANTICS lists the limitation and the project does not chase a match (D39)
 Routing sends a kernel to the CPU or the GPU for a whole build, chosen by the application and not by the kernel's
 author. Three pieces:
 
-1. The kernel crate declares route tags in its `Cargo.toml` (`[package.metadata.gust.routes]`), each with the targets it
-   allows and a default, and a module opts in with `#[gpu(route = "tag")]`.
-2. The application chooses in a `gust.toml` beside the `Cargo.toml` of the package that `cargo gust` works on. The key is
-   the Cargo package name and the tag, the value is `"gpu"`, `"cpu"` or a table keyed by build profile.
-3. `cargo gust run` and `cargo gust test` read the `gust.toml` and give cargo one `GUST_ROUTE__<package>__<tag>` variable
-   per tag; `cargo gust build` and `cargo gust check` do the same for the package they work on. Plain `cargo` sets none and
-   builds the declared defaults. A mistake (an unknown tag, a target the tag does not allow) is an error with file, line
-   and tag before cargo builds. Without a `gust.toml`, nothing changes.
+1. The kernel crate declares route tags in its `Cargo.toml` (`[package.metadata.gust.routes]`), each optionally with the
+   targets it allows and a default, and a module opts in with `#[gpu(route = "tag")]`.
+2. The application chooses in a `gust.toml` beside the `Cargo.toml` of the package that `cargo gust` works on. The key
+   is the Cargo package name and the tag, the value is `"gpu"`, `"cpu"` or a table keyed by build profile.
+3. `cargo gust run` and `cargo gust test` read the `gust.toml` and give cargo one `GUST_ROUTE__<package>__<tag>`
+   variable per tag; `cargo gust build` and `cargo gust check` do the same for the package they work on. Plain `cargo`
+   sets none and builds the declared defaults. A mistake (an unknown tag, a target the tag does not allow) is an error
+   with file, line and tag before cargo builds. Without a `gust.toml`, nothing changes.
 
-Under `GUST_PROFILE=cpu` every tag goes to the CPU. Otherwise the order is: the nearest `gust.toml` entry, then the nearest
-default in the declarations, then the GPU. The resolved table is written to `gust-artifacts/routes.json`, a build output
-that is ignored by git.
+Under `GUST_PROFILE=cpu` every tag goes to the CPU. Otherwise the order is: the nearest `gust.toml` entry, then the
+nearest default in the declarations, then the GPU. The resolved table is written to `gust-artifacts/routes.json`, a
+build output that changes with the profile: add it to your `.gitignore`.
 
-G8, `routed`, is a two-stage pipeline: stage one saturates samples at 255 and is routed to the CPU, stage two blends each
-sample with its neighbours and is routed to the GPU. The program holds one `gust::routed::RoutedDevice`, whose calls run
-each kernel on the target its build resolved, so no line of the program names a target, and moving a stage is an edit of
-`gust.toml` and a `cargo gust run`. Its manifest and `gust.toml` are:
+G8, `routed`, is a two-stage pipeline: stage one saturates samples at 255 and is routed to the CPU, stage two blends
+each sample with its neighbours and is routed to the GPU. The program holds one `gust::routed::RoutedDevice`, whose
+calls run each kernel on the target its build resolved, so no line of the program names a target, and moving a stage is
+an edit of `gust.toml` and a `cargo gust run`. Its manifest and `gust.toml` are:
 
 ```toml
 # Cargo.toml of the kernel crate
@@ -93,8 +94,9 @@ smooth = { targets = ["gpu", "cpu"], default = "gpu" }
 "routed::smooth" = "gpu"
 ```
 
-The program is shown with `ignore`. It cannot be compiled as a doctest of this crate, because the route tags it uses
-are declared in the manifest of the crate that defines them, and the manifest of this crate declares none; the gallery
-entry builds it as a real crate under `cargo xtask check-gallery`, and the listing is kept identical to it.
+This is the one program of chapters 4 to 6 that the doctests do not compile, so its block is `ignore`. A route tag must
+be declared in the `Cargo.toml` of the crate that uses it, and the manifest of this crate declares none (the doctest
+fails with GUST-E0748). The listing is compiled instead as the gallery entry `gallery/routed`, a real crate with those
+tags, which `cargo xtask check-gallery` builds and runs, and the same command keeps the listing identical to it.
 
 ```rust,ignore

@@ -1,10 +1,10 @@
 # GPU concepts in Rust, running half
 
 This is the host half of [chapter 5][`gust::guide::gpu_concepts`]: the programs that run the kernels of that chapter's
-shapes, textures, workgroup memory and subgroup variants on a device. Each listing is a complete program, a packaged copy
-of an entry of the repository's `gallery/` directory, compiled by this crate's doctests (`no_run`: running one needs a
-Vulkan compute adapter) and kept identical to its entry by `cargo xtask check-gallery`. The conventions of calls,
-buffers and `Independent` are those of [chapter 4][`crate::guide::running_kernels`].
+shapes, textures, workgroup memory and subgroup variants on a device. Each listing is a complete program, a packaged
+copy of an entry of the repository's `gallery/` directory, compiled by this crate's doctests (`no_run`: running one
+needs a Vulkan compute adapter) and kept identical to its entry by `cargo xtask check-gallery`. The conventions of
+calls, buffers and `Independent` are those of [chapter 4][`crate::guide::running_kernels`].
 
 ## Textures and the two shapes (G5)
 

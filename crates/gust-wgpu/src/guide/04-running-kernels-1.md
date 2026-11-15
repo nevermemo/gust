@@ -12,8 +12,8 @@ identical to the entry.
 `HeadlessDevice::new()` opens a Vulkan compute adapter with wgpu's portable default limits, the ones a browser always
 has. `HeadlessDevice::with_options` takes `DeviceOptions` to choose the adapter (high performance, low power, an index
 or a name) and the limits policy (the portable ones, or the adapter's own, which is the default of
-`default_device()`, the process-wide device used by calls that name none). The native backend asks wgpu for Vulkan
-only.
+`default_device()`, the process-wide device used by calls that name none). By default the native backend asks wgpu for
+Vulkan only; `DeviceOptions::with_backends` changes that.
 
 A typed buffer is created from a slice with `create_typed_buffer(name, &data, access)`, where `access` is
 `GpuBufferAccess::ReadOnly` or `ReadWrite`, and it is read back with `read_typed_buffer`. The element type is any

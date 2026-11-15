@@ -13,8 +13,8 @@ multiple of 64 invocations (GUST-E0751). The lane count is a property of the pip
 `subgroup_size()` and never assumes one. A crate's declared build profiles must each have a body for every kernel
 (GUST-E0744).
 
-G10, `variants`, tallies a stream into three cells. The portable body does one atomic per element; the subgroup body
-combines the values of the subgroup first and lets one lane do the atomics:
+G10, `variants`, tallies a stream into three cells. The portable body does up to three atomic operations per element;
+the subgroup body combines the values of the subgroup first and lets one lane do the atomics:
 
 ```rust,no_run
 # use gust::gpu;

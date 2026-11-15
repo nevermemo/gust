@@ -17,4 +17,6 @@ installation of the tools, is [`gust::guide`].
   yet written, so there is no chapter page.
 
 The first program of chapter 2 of the sibling guide is compiled by this crate's doctests, with the real backend (it is
-not run: running it needs a GPU), and so is every program listed in chapters 4 to 6.
+not run: running it needs a GPU), and so is every program of chapters 4 and 5. Chapter 6's one program, `routed`, is not
+a doctest (a route tag has to be declared in the manifest of the crate that uses it); the gallery entry it is copied
+from is built and run by `cargo xtask check-gallery`.

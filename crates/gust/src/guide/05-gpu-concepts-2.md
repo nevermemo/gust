@@ -1,8 +1,9 @@
 ```
 
 `load` and `store` are exact; `sample` is not, and its bound is in SEMANTICS. A linear sample of an `f32` texture needs
-the device feature `float32-filterable`, which a native default device requests when the adapter has it and a browser
-device does not.
+the device feature `float32-filterable`. `DeviceOptions::default()` (and so `default_device()`) requests it on native
+when the adapter has it; `HeadlessDevice::new()` and a browser device do not, and a linear sampler on such a device is
+`Error::TextureFilter` at submit.
 
 ## `par_for!`
 

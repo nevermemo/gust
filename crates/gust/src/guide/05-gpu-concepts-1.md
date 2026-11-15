@@ -19,14 +19,16 @@ A dispatch launches `element_count` invocations, grouped into workgroups of the 
 
 Dispatches may be one-, two- or three-dimensional.
 
-## Two memory rules the twin cannot check
+## Two memory rules, and what the twin sees of them
 
 A kernel is inside the contract only if every index into a buffer is below its `len()`, and no two invocations of one
 dispatch write the same location or read what another writes, except through atomics. On a GPU a violation of either is
-a dynamic error whose outcome is open, and a race is not reliably detected. The CPU twin hides both: it runs
-invocations one at a time in ascending order and so produces one definite answer. Every reference value in the gallery
-is therefore order-independent by construction (each written index has one writer, or the kernel uses atomics), and the
-race-free rule is yours to keep. Section 5 of SEMANTICS has the details, and chapter 7 the whole contract.
+a dynamic error whose outcome is open. The CPU twin treats the two differently. It panics on an out-of-range index,
+which a GPU need not do (the load may return zero and the store may be dropped), so the twin catches that mistake. It
+hides a race, because it runs invocations one at a time in ascending order and so produces one definite answer: a racy
+kernel gives a clean twin result that proves nothing about the GPU. Every reference value in the gallery is therefore
+order-independent by construction (each written index has one writer, or the kernel uses atomics), and the race-free
+rule is yours to keep. Section 5 of SEMANTICS has the details, and chapter 7 the whole contract.
 
 ## Shapes: `grid` and `pixel`, and textures
 

@@ -7,7 +7,7 @@ every value is exact; a program with arbitrary floats should compare with a tole
 
 ## Staged graphs
 
-`StagedGraph` is the execution-graph slice for programs that mix uploads, dispatches and read-backs. A node is an
+`StagedGraph` is a graph of uploads, dispatches and read-backs, for programs that mix them. A node is an
 upload (`write`), a typed call (`run`), an indirect call (`run_indirect`) or a read-back (`read`), and the graph derives
 each node's edges from the buffers it touches and the access the kernel declares, so a later node waits for the last
 writer of a buffer it reads, and a writer waits for the earlier readers. Explicit edges are available too, and the two
@@ -36,7 +36,7 @@ parameter cannot be a node.
 Failures are `gust_wgpu::Error` values: a missing adapter, `DeviceLimit` (a workgroup size, a workgroup count, a buffer
 or a binding over the device's limit, checked before compilation), `MissingCapability` (a capability the adapter lacks,
 see [chapter 5][`crate::guide::gpu_concepts_running`]), the access and device-instance errors above and the like. The
-earlier slice-based paths (`dispatch_f32`, `dispatch_u32`, `F32Binding`, `U32Binding` and the `*_f32_*` helpers) are
+earlier paths that take slices (`dispatch_f32`, `dispatch_u32`, `F32Binding`, `U32Binding` and the `*_f32_*` helpers) are
 deprecated since 0.2.0 and still work; the typed calls replace them. A `BufferDispatch` built by hand is not
 deprecated.
 

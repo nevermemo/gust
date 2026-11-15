@@ -15,8 +15,7 @@ invocation. Chapter 7 returns to the contract.
 ## The accepted subset
 
 The dialect is a subset of Rust that translates to Slang directly. This is the working summary; the "Current subset"
-section of the
-[README](https://github.com/nevermemo/gust/blob/main/README.md) is the complete, current list.
+section of the [README](https://github.com/nevermemo/gust/blob/main/README.md) is the complete, current list.
 
 - **Types:** `float`/`f32`, `int`/`i32`, `uint`/`u32`, booleans, named-field structs (nested, padding-free for buffers),
   the vector and matrix types of `gust::math` (`Vec2` to `Vec4`, `Mat2` to `Mat4`), and `Option<T>` and `Result<T, T>`
@@ -24,16 +23,17 @@ section of the
   of [chapter 8][`crate::guide::m9_language`].
 - **Statements and expressions:** `let` (with type annotations), arithmetic, comparison and logical operators,
   assignment, indexing, field access, `if`/`else`, casts, `return`, calls to helpers of the same module, and bounded
-  `for i in start..end` loops with `break` and `continue`. Integer literals take 32-bit suffixes (`1u32`); `wrapping_add`,
-  `wrapping_sub`, `wrapping_mul` and `wrapping_neg` are how a kernel asks for wrapping arithmetic.
-- **Resources:** structured buffers, uniforms, the textures and samplers of [chapter 5][`crate::guide::gpu_concepts`], and workgroup memory.
+  `for i in start..end` loops with `break` and `continue`. Integer literals take 32-bit suffixes (`1u32`);
+  `wrapping_add`, `wrapping_sub`, `wrapping_mul` and `wrapping_neg` are how a kernel asks for wrapping arithmetic.
+- **Resources:** structured buffers, uniforms, the textures and samplers of
+  [chapter 5][`crate::guide::gpu_concepts`], and workgroup memory.
 - **Not accepted:** allocation, the standard library, macros, `while` and `loop`, inclusive ranges, `?`, `unwrap` and
   `expect`, `unsafe`, recursion, `dyn` and `impl Trait`, references (apart from an atomic's receiver), arbitrary method
   calls, and calls to functions outside the module. These limits describe the implemented translator, not Slang.
 
-The macro also writes compile-time assertions that every buffer element and struct field has the layout Rust says it has,
-so a mismatch between the Rust type and the buffer layout is a rustc error that names the field, not a wrong answer at
-run time.
+The macro also writes compile-time assertions that every buffer element and struct field has the layout Rust says it
+has, so a mismatch between the Rust type and the buffer layout is a rustc error that names the field, not a wrong answer
+at run time.
 
 ## Diagnostics
 
@@ -80,19 +80,38 @@ mod rejected {
 }
 ```
 
-With `for round in 0u32..6u32 { .. }` in place of the `loop`, the same kernel is accepted. Because the body is
-ordinary Rust to rustc, a type error in a kernel is an ordinary rustc error with an ordinary span. An error that
-`slangc` reports later, in the emitted Slang, is mapped back to the Rust line when the kernel's source file is known.
+The next kernel differs from that one only in using a bounded `for` loop where the other has the `loop`. It is
+compiled by the doctest (`no_run`: nothing runs), so the pair shows that the `loop` is what the macro refuses:
+
+```rust,no_run
+# use gust::gpu;
+#[gpu]
+mod accepted {
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn once(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+        let i = id.x;
+        for _round in 0u32..1u32 {
+            if i < out.len() {
+                out[i] = 1u32;
+            }
+        }
+    }
+}
+```
+
+Because the body is ordinary Rust to rustc, a type error in a kernel is an ordinary rustc error with an ordinary span.
+An error that `slangc` reports later, in the emitted Slang, is mapped back to the Rust line when the kernel's source
+file is known.
 
 ## The twin, in one paragraph
 
 In a test build of the crate that defines the kernel (or with `--cfg gust_dual`), the macro also emits a CPU twin that
 runs the Rust shadow body on `gust::cpu::CpuDevice`, which is how the gallery's tests check a kernel without a GPU. A
 production build contains no twin. A kernel that uses workgroup memory or a barrier has none and says
-`#[kernel(.., cpu = "unsupported")]` ([chapter 5][`crate::guide::gpu_concepts`]). What the twin proves and what it cannot is the subject of
-chapter 7.
+`#[kernel(.., cpu = "unsupported")]` ([chapter 5][`crate::guide::gpu_concepts`]). What the twin proves and what it
+cannot is the subject of chapter 7.
 
 ## Where to go next
 
-[Chapter 4][ch4] runs these kernels. [Chapter 5][`crate::guide::gpu_concepts`] adds shapes, textures, workgroup memory, barriers and subgroups.
-[Chapter 8][`crate::guide::m9_language`] covers the language features of milestone 9.
+[Chapter 4][ch4] runs these kernels. [Chapter 5][`crate::guide::gpu_concepts`] adds shapes, textures, workgroup
+memory, barriers and subgroups. [Chapter 8][`crate::guide::m9_language`] covers the newer language features.

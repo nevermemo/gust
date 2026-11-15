@@ -1,7 +1,7 @@
 ```
 
-`dispatch` returns when the work is done. `submit` returns a `gust::Job` instead, so a program can keep several launches
-in flight or poll one; see `gust::Job` and `gust::JobStatus`.
+`dispatch` returns when the work is done. `submit` returns a value that implements the `gust::Job` trait instead, so a
+program can keep several launches in flight or poll one; see `gust::Job` and `gust::JobStatus`.
 
 ## Several calls in one submission
 

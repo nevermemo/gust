@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use crate::{
     backend::{Backend, BenchResult, Kind},
     meta,
-    workloads::{Inputs, Workload, check, gen_inputs, reference},
+    workloads::{Inputs, Reference, Workload, check, gen_inputs, reference},
 };
 
 #[derive(Clone, Debug)]
@@ -48,6 +48,8 @@ pub struct Config {
     pub run_seed: u64,
     /// Measure only the cold start (GPU cells at the first size), none of the four timings.
     pub cold_only: bool,
+    /// The backend group of the run (`publishable` or `ablation`, see `group`), written into every cell.
+    pub group: &'static str,
 }
 
 impl Default for Config {
@@ -64,6 +66,7 @@ impl Default for Config {
             warmup_batch: 1024,
             run_seed: 0x6a09_e667_f3bc_c908,
             cold_only: false,
+            group: "publishable",
         }
     }
 }
@@ -199,7 +202,7 @@ fn warm_up_to_p0(
     let reached = AtomicBool::new(false);
     let stop = AtomicBool::new(false);
     let mut rounds = 0u64;
-    let mut out = vec![f32::NAN; inputs.x.len()];
+    let mut out = Vec::new();
     let (clocks, polls, time_to_p0) = std::thread::scope(|scope| {
         let poller = scope.spawn(|| {
             let mut last = Value::Null;
@@ -296,7 +299,7 @@ pub struct Cell {
 pub struct CellInput<'a> {
     pub workload: Workload,
     pub inputs: &'a Inputs,
-    pub reference: &'a [f32],
+    pub reference: &'a Reference,
     /// Measure the cold start in this cell (once per workload, at the smallest size).
     pub cold: bool,
 }
@@ -304,7 +307,7 @@ pub struct CellInput<'a> {
 fn verify(
     workload: Workload,
     inputs: &Inputs,
-    want: &[f32],
+    want: &Reference,
     got: &[f32],
     checks: &mut u64,
 ) -> BenchResult<()> {
@@ -316,7 +319,7 @@ fn verify(
 
 /// The full protocol for one cell. A failed correctness check ends the cell and is returned in `failures`.
 pub fn run_cell(backend: &mut dyn Backend, input: &CellInput<'_>, config: &Config) -> Cell {
-    let n = input.inputs.x.len();
+    let n = input.inputs.n;
     let gpu_before = meta::gpu_snapshot();
     let started = Instant::now();
     let mut checks = 0u64;
@@ -324,6 +327,7 @@ pub fn run_cell(backend: &mut dyn Backend, input: &CellInput<'_>, config: &Confi
     let mut metrics = serde_json::Map::new();
     let mut cold_ms = None;
     let mut cold_first = false;
+    let mut cold_routes = Vec::new();
     let mut warmup = Value::Null;
     let mut clocks_after = Value::Null;
     let mut misses = None;
@@ -338,6 +342,7 @@ pub fn run_cell(backend: &mut dyn Backend, input: &CellInput<'_>, config: &Confi
             for _ in 0..config.cold_repeats {
                 if let Some(duration) = backend.cold_start()? {
                     values.push(ms(duration));
+                    cold_routes.extend(backend.cold_route());
                 }
             }
             cold_ms = Some(values);
@@ -347,7 +352,7 @@ pub fn run_cell(backend: &mut dyn Backend, input: &CellInput<'_>, config: &Confi
         }
 
         // Warm-up: real dispatches, so the driver's lazy pipeline work has settled; on a GPU, real load until P0.
-        let mut out = vec![f32::NAN; n];
+        let mut out = Vec::new();
         for _ in 0..config.warmup_end_to_end {
             backend.end_to_end(input.inputs, &mut out)?;
         }
@@ -360,10 +365,10 @@ pub fn run_cell(backend: &mut dyn Backend, input: &CellInput<'_>, config: &Confi
         }
         let misses_before = backend.cache_misses();
 
-        let mut out = vec![f32::NAN; n];
+        let mut out = Vec::new();
         let samples = collect(config, || {
             backend.poison()?;
-            out.fill(f32::NAN);
+            out.fill(input.workload.poison_word());
             let started = Instant::now();
             backend.end_to_end(input.inputs, &mut out)?;
             let elapsed = started.elapsed();
@@ -450,10 +455,13 @@ pub fn run_cell(backend: &mut dyn Backend, input: &CellInput<'_>, config: &Confi
         "workload_name": input.workload.name(),
         "n": n,
         "bytes_per_element": input.workload.bytes_per_element(),
+        "flops_per_element": input.workload.flops_per_element(),
+        "group": config.group,
         "metrics": metrics,
         "checks_passed": checks,
         "cold_start_ms": cold_ms,
         "cold_start_first_in_process": cold_first,
+        "cold_routes": cold_routes,
         "cold_start_note": cold_ms.as_ref().map(|_| cold_note(backend.id())),
         "warmup": warmup,
         "clocks_after_timing": clocks_after,
@@ -476,6 +484,7 @@ struct Member {
     metrics: serde_json::Map<String, Value>,
     cold_ms: Option<Vec<f64>>,
     cold_first: bool,
+    cold_routes: Vec<Value>,
     alive: bool,
     misses_before: Option<u64>,
 }
@@ -652,7 +661,7 @@ pub fn run_gpu_group(
     input: &CellInput<'_>,
     config: &Config,
 ) -> Vec<Cell> {
-    let n = input.inputs.x.len();
+    let n = input.inputs.n;
     let started = Instant::now();
     let gpu_before = meta::gpu_snapshot();
     let mut members = (0..group.len())
@@ -662,6 +671,7 @@ pub fn run_gpu_group(
             metrics: serde_json::Map::new(),
             cold_ms: None,
             cold_first: false,
+            cold_routes: Vec::new(),
             alive: true,
             misses_before: None,
         })
@@ -679,6 +689,7 @@ pub fn run_gpu_group(
                 for _ in 0..config.cold_repeats {
                     if let Some(duration) = backend.cold_start()? {
                         values.push(ms(duration));
+                        member.cold_routes.extend(backend.cold_route());
                     }
                 }
                 member.cold_ms = Some(values);
@@ -696,7 +707,7 @@ pub fn run_gpu_group(
     }
 
     if !config.cold_only {
-        let mut out = vec![f32::NAN; n];
+        let mut out = Vec::new();
         // Per-backend warm-up first (lazy pipeline work), then one shared load warm-up for the group.
         for (backend, member) in group.iter_mut().zip(members.iter_mut()) {
             if !member.alive {
@@ -744,7 +755,7 @@ pub fn run_gpu_group(
             seed("end_to_end"),
             |backend, member| {
                 backend.poison()?;
-                out.fill(f32::NAN);
+                out.fill(workload.poison_word());
                 let started = Instant::now();
                 backend.end_to_end(inputs, &mut out)?;
                 let elapsed = started.elapsed();
@@ -811,6 +822,13 @@ pub fn run_gpu_group(
                 ));
             }
         }
+        if let Err(message) = backend.route_check() {
+            member.failures.push(format!(
+                "{} {} {n}: {message}",
+                backend.id(),
+                input.workload.id()
+            ));
+        }
         let cell = json!({
             "backend": backend.id(),
             "kind": format!("{:?}", backend.kind()),
@@ -818,10 +836,13 @@ pub fn run_gpu_group(
             "workload_name": input.workload.name(),
             "n": n,
             "bytes_per_element": input.workload.bytes_per_element(),
+            "flops_per_element": input.workload.flops_per_element(),
+            "group": config.group,
             "metrics": member.metrics,
             "checks_passed": member.checks,
             "cold_start_ms": member.cold_ms,
             "cold_start_first_in_process": member.cold_first,
+            "cold_routes": member.cold_routes,
             "cold_start_note": member.cold_ms.as_ref().map(|_| cold_note(backend.id())),
             "warmup": warmup,
             "clocks_after_timing": clocks_after,
@@ -841,8 +862,8 @@ pub fn run_gpu_group(
 }
 
 /// Inputs and the serial reference for one (workload, size).
-pub fn prepare_case(n: usize, workload: Workload) -> (Inputs, Vec<f32>) {
-    let inputs = gen_inputs(n);
+pub fn prepare_case(n: usize, workload: Workload) -> (Inputs, Reference) {
+    let inputs = gen_inputs(workload, n);
     let want = reference(workload, &inputs);
     (inputs, want)
 }
@@ -934,6 +955,7 @@ mod tests {
                 metrics: serde_json::Map::new(),
                 cold_ms: None,
                 cold_first: false,
+                cold_routes: Vec::new(),
                 alive: true,
                 misses_before: None,
             })

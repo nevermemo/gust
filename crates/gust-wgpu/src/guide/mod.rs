@@ -1,6 +1,10 @@
-// Compile check of the first program of `gust::guide` (chapter 2): its three listings together, against the real
-// backend. This crate packages its own copies of them (`check-gallery` keeps them identical to the gallery). The module
-// is private and exists only in `cargo test --doc`, so no item reaches the documentation or the API.
+// The chapters of `gust_wgpu::guide`, one empty module each (the semver rule: the guide modules hold nothing but chapter
+// modules, which hold nothing; they exist for their documentation). Chapters 9 and 10 are listed in the index as not yet
+// written and have no module until they have text.
+//
+// The listings are packaged copies of regions of the gallery entries (`check-gallery` keeps them identical to the
+// regions), each compiled by this crate's doctests against the real backend. The first program of chapter 2 of
+// `gust::guide` is compiled by the private module below, which exists only in `cargo test --doc`.
 #[cfg(doctest)]
 #[doc = "```no_run"]
 #[doc = include_str!("listings/hello-gust-imports.rs")]
@@ -10,3 +14,66 @@
 #[doc = include_str!("listings/hello-gust-main.rs")]
 #[doc = "```"]
 mod first_program {}
+
+#[doc = include_str!("04-running-kernels-1.md")]
+#[doc = include_str!("listings/saxpy-imports.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/saxpy-kernel.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/saxpy-params.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/saxpy-main.rs")]
+#[doc = include_str!("04-running-kernels-2.md")]
+#[doc = include_str!("listings/particles-imports.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/particles-kernel.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/particles-setup.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/particles-energy.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/particles-total.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/particles-host.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/particles-main.rs")]
+#[doc = include_str!("04-running-kernels-3.md")]
+pub mod running_kernels {}
+
+#[doc = include_str!("05-gpu-concepts-running-1.md")]
+#[doc = include_str!("listings/image-threshold-imports.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/image-threshold-kernel.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/image-threshold-host.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/image-threshold-main.rs")]
+#[doc = include_str!("05-gpu-concepts-running-2.md")]
+#[doc = include_str!("listings/reduce-scan-imports.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/reduce-scan-kernel.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/reduce-scan-host.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/reduce-scan-main.rs")]
+#[doc = include_str!("05-gpu-concepts-running-3.md")]
+#[doc = include_str!("listings/variants-imports.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/variants-kernel.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/variants-host.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/variants-main.rs")]
+#[doc = include_str!("05-gpu-concepts-running-4.md")]
+pub mod gpu_concepts_running {}
+
+#[doc = include_str!("06-profiles-artifacts-routing-1.md")]
+#[doc = include_str!("listings/routed-imports.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/routed-kernel.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/routed-host.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/routed-main.rs")]
+#[doc = include_str!("06-profiles-artifacts-routing-2.md")]
+pub mod profiles_artifacts_routing {}

@@ -11,9 +11,9 @@ GUST is published as four packages that always share one version:
 
 The package name and the library name differ, so you add one and write the other: `cargo add gust-compute
 gust-compute-wgpu`, then `use gust::gpu;` and `use gust_wgpu::...` in the code. Do not run `cargo add gust`: that name
-belongs to an unrelated crate. While a version is a pre-release (`0.2.0-dev`, say), a requirement such as `0.2` does not
-match it, so name the pre-release version in full in your manifest; the library crates pin each other to one exact
-version.
+belongs to an unrelated crate. From crates.io a requirement such as `0.2` is enough. A pre-release (a `-dev` version
+taken by git or path, say) is not matched by `0.2`, so name it in full in your manifest; the library crates pin each
+other to one exact version.
 
 A kernel runs in one of two ways. During development it is compiled at run time through Slang, which needs the pinned
 Slang release and a native helper. In a release build it was compiled ahead of time by `cargo gust build` and is

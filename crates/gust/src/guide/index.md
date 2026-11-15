@@ -12,13 +12,13 @@ is split over two crates because the running chapters need the backend, and `gus
 
 1. [Why GUST][`crate::guide::why_gust`]: what GUST is, and what it is not.
 2. [Install and the first program][`crate::guide::install_and_first_program`]: the packages, the tools, and a vector add.
-3. The authoring model: `#[gpu]` modules, kernels, the accepted subset and the diagnostic codes. Not yet written.
-4. Running kernels: typed calls, buffers, jobs, read-back and staged graphs. Not yet written; it will live in
-   `gust_wgpu::guide`.
-5. GPU concepts in Rust: `par_for!`, workgroup memory, barriers, subgroups, shapes and textures. Not yet written; its running halves will live in `gust_wgpu::guide`.
-6. Build profiles, artifacts and routing. Not yet written; it will live in `gust_wgpu::guide`.
+3. [The authoring model][`crate::guide::authoring_model`]: `#[gpu]` modules, kernels, the accepted subset and the diagnostic codes.
+4. Running kernels: typed calls, buffers, batches, staged graphs and resident data. Written; it lives in
+   `gust_wgpu::guide` (linked at the end of this page).
+5. [GPU concepts in Rust][`crate::guide::gpu_concepts`]: shapes, textures, `par_for!`, workgroup memory, barriers and subgroup variants. Its running halves are in `gust_wgpu::guide`.
+6. Build profiles, artifacts and routing. Written; it lives in `gust_wgpu::guide`.
 7. Semantics and the twin: the contract, the defined domain and the known limitations. Not yet written.
-8. The newer language features: methods, enums, tuples, arrays, closures, traits and generics. Not yet written.
+8. [The newer language features][`crate::guide::m9_language`]: methods, enums, tuples, arrays, closures, traits and generics.
 9. The browser. Not yet written; it will live in `gust_wgpu::guide`.
 10. Benchmarks: methods, definitions and fairness rules. Not yet written; it will live in `gust_wgpu::guide`.
 11. Stability, versions, platforms and how to report a bug. Not yet written.

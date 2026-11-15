@@ -24,7 +24,7 @@ use windows::{
     core::w,
 };
 
-use super::{DxgiAdapter, Luid, Proc, ProcTable, walk_truncation};
+use super::{DxgiAdapter, Luid, Proc, ProcTable, table_from_walk};
 
 /// A PDH query holding the one wildcard counter `\GPU Engine(*)\Utilization Percentage`.
 pub struct Pdh {
@@ -187,12 +187,10 @@ pub fn process_table() -> Result<ProcTable, String> {
             next = Process32NextW(snapshot, &mut entry);
         }
         // Only ERROR_NO_MORE_FILES is the end of the table; anything else leaves it truncated.
-        let truncated = next.err().and_then(|error| walk_truncation(error.code().0));
+        // A walk that ends at once with no rows is recorded as empty, not as quiet (`table_from_walk`).
+        let end = next.err().map(|error| error.code().0);
         let _ = CloseHandle(snapshot);
-        Ok(ProcTable {
-            rows: table,
-            truncated,
-        })
+        Ok(table_from_walk(table, end))
     }
 }
 

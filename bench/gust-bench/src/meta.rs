@@ -65,6 +65,20 @@ fn commit() -> String {
     }
 }
 
+/// Whether the working tree has uncommitted or untracked changes (`None` when git cannot say). A commit named
+/// without this would read as clean.
+fn tree_dirty() -> Option<bool> {
+    let output = Command::new("git")
+        .args(["-c", "safe.directory=*", "status", "--porcelain"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| !output.stdout.iter().all(u8::is_ascii_whitespace))
+}
+
 /// Everything about the machine and the build that a reader needs to reproduce the table.
 pub fn machine(
     adapter: &wgpu::AdapterInfo,
@@ -91,7 +105,7 @@ pub fn machine(
         "nvidia_driver": capture("nvidia-smi", &["--query-gpu=driver_version", "--format=csv,noheader"]),
         "versions": {
             "rustc": capture("rustc", &["--version"]),
-            "wgpu": "30.0.1",
+            "wgpu": "30.0.2",
             "rayon": "1.12.0",
             "gust_commit": commit(),
             "gust_bench": env!("CARGO_PKG_VERSION"),
@@ -136,6 +150,32 @@ pub fn gpu_snapshot() -> Value {
         map.insert((*name).to_owned(), json!(value));
     }
     Value::Object(map)
+}
+
+/// The GPU clock state that decides whether a timing is a boost-clock timing: SM and memory clock, performance
+/// state and the PCIe link generation (current, and what the GPU supports now) and width.
+pub fn gpu_clocks() -> Value {
+    let fields = "clocks.sm,clocks.mem,pstate,pcie.link.gen.gpucurrent,pcie.link.gen.max,pcie.link.width.current,clocks.max.sm,clocks.max.mem";
+    let query = format!("--query-gpu={fields}");
+    capture("nvidia-smi", &[&query, "--format=csv,noheader,nounits"])
+        .map_or(Value::Null, |text| parse_clocks(&text))
+}
+
+fn parse_clocks(text: &str) -> Value {
+    let fields = text
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    let number = |index: usize| fields.get(index).and_then(|v| v.parse::<f64>().ok());
+    json!({
+        "sm_mhz": number(0), "mem_mhz": number(1),
+        "pstate": fields.get(2).filter(|v| !v.is_empty()),
+        "pcie_gen_now": number(3), "pcie_gen_max": number(4), "pcie_width": number(5),
+        "max_sm_mhz": number(6), "max_mem_mhz": number(7),
+    })
 }
 
 /// Counts of processes that compete for the shared machine, and the number of processes `nvidia-smi` lists as GPU
@@ -199,10 +239,18 @@ pub fn provenance(adapter: &wgpu::AdapterInfo) -> Value {
         &format!("{:?}", adapter.backend),
         &adapter.driver,
         &adapter.driver_info,
+        (&commit(), tree_dirty()),
     )
 }
 
-fn provenance_of(route: &str, name: &str, backend: &str, driver: &str, driver_info: &str) -> Value {
+fn provenance_of(
+    route: &str,
+    name: &str,
+    backend: &str,
+    driver: &str,
+    driver_info: &str,
+    (commit, dirty): (&str, Option<bool>),
+) -> Value {
     let release = !cfg!(debug_assertions);
     let mut cfgs = Vec::new();
     if cfg!(gust_dual) {
@@ -215,6 +263,8 @@ fn provenance_of(route: &str, name: &str, backend: &str, driver: &str, driver_in
             "profile": if release { "release" } else { "debug" },
             "features": ["slang-runtime"],
             "cfgs": cfgs,
+            "commit": commit,
+            "tree_dirty": dirty,
         },
         "adapter": { "name": name, "backend": backend, "driver": driver, "driver_info": driver_info },
     })
@@ -235,8 +285,30 @@ mod tests {
     }
 
     #[test]
+    fn clocks_parse_into_numbers_and_a_pstate() {
+        let value = parse_clocks("2655, 14001, P0, 4, 5, 16, 3090, 14001\n");
+        assert_eq!(value["sm_mhz"], 2655.0);
+        assert_eq!(value["pstate"], "P0");
+        assert_eq!(value["pcie_gen_now"], 4.0);
+        assert_eq!(value["pcie_width"], 16.0);
+        assert_eq!(value["max_mem_mhz"], 14001.0);
+        let bad = parse_clocks("[N/A], x, P8");
+        assert!(bad["sm_mhz"].is_null() && bad["pstate"].is_string());
+        assert!(parse_clocks("")["sm_mhz"].is_null());
+    }
+
+    #[test]
     fn provenance_pins_route_build_and_adapter() {
-        let value = provenance_of("wgsl", "Test GPU", "Vulkan", "555.55", "driver 1");
+        let value = provenance_of(
+            "wgsl",
+            "Test GPU",
+            "Vulkan",
+            "555.55",
+            "driver 1",
+            ("0123456789ab", Some(true)),
+        );
+        assert_eq!(value["build"]["commit"], "0123456789ab");
+        assert_eq!(value["build"]["tree_dirty"], true);
         assert_eq!(value["route"], "wgsl");
         assert_eq!(value["build"]["release"], !cfg!(debug_assertions));
         assert_eq!(

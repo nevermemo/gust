@@ -1,0 +1,15 @@
+[package]
+name = "image-threshold"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# The shape of a user's crate (README "A first program"): the same dependency keys, with path dependencies in place of
+# the registry versions.
+[dependencies]
+gust-compute = { path = "../../crates/gust" }
+gust-compute-wgpu = { path = "../../crates/gust-wgpu" }
+
+[features]
+# Run-time compile through the Slang toolchain, for development only (`cargo run --features gust-dev`).
+gust-dev = ["gust-compute-wgpu/slang-runtime"]

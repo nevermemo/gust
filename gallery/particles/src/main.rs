@@ -1,5 +1,6 @@
 // ANCHOR: imports
 use gust::gpu;
+// The GPU side is only built outside the tests: the tests run the loop on the CPU twin (see `Dev` below).
 #[cfg(not(test))]
 use gust_wgpu::{BufferDispatch, GpuBufferAccess, HeadlessDevice};
 // ANCHOR_END: imports
@@ -27,8 +28,8 @@ mod particles {
             p.pos[0] += p.vel[0] * 0.125;
             p.pos[1] += p.vel[1] * 0.125;
             if p.pos[1] < 0.0 {
-                p.pos[1] = 0.0 - p.pos[1];
-                p.vel[1] = 0.0 - p.vel[1] * 0.5;
+                p.pos[1] = -p.pos[1];
+                p.vel[1] = -p.vel[1] * 0.5;
                 p.bounces += 1u32;
             }
             ps[i] = p;
@@ -37,7 +38,11 @@ mod particles {
 }
 // ANCHOR_END: kernel
 
-/// The device type the loop below runs on: the GPU in the program, the CPU twin in the tests.
+// ANCHOR: setup
+/// The device type `energies` runs on: the GPU in the program, the CPU twin in the tests. `par_for!` writes its body
+/// as a kernel at the call site and emits that kernel's twin only in test builds, so a program that must also run
+/// `par_for!` in `cargo test` names its device through this alias (and `main`, which needs the GPU, is not built in
+/// tests). A crate that only runs on the GPU needs none of this: it passes the `HeadlessDevice` directly.
 #[cfg(not(test))]
 type Dev = HeadlessDevice;
 #[cfg(test)]
@@ -54,13 +59,14 @@ fn start(i: usize) -> particles::Particle {
         bounces: 0,
     }
 }
+// ANCHOR_END: setup
 
 // ANCHOR: energy
 /// The mechanical energy of every particle (unit mass, gravity 8): `par_for!` writes the loop at the call site, over
 /// flat arrays that the host split out of the particles.
 fn energies(y: &[f32], vy: &[f32], device: &Dev) -> Result<Vec<f32>, gust::map::Error> {
     let mut out = vec![0.0f32; y.len()];
-    let n = y.len() as u32;
+    let n = u32::try_from(y.len()).expect("fewer than 2^32 particles");
     gust::par_for!(on(device); i in 0..n, [y: &[f32], vy: &[f32], out: &mut [f32]] {
         out[i] = 0.5 * vy[i] * vy[i] + 8.0 * y[i];
     })?;
@@ -68,6 +74,7 @@ fn energies(y: &[f32], vy: &[f32], device: &Dev) -> Result<Vec<f32>, gust::map::
 }
 // ANCHOR_END: energy
 
+// ANCHOR: total
 /// The energy of the particles through `par_for!` on `device`, summed on the host in `f64`.
 fn total_energy(ps: &[particles::Particle], device: &Dev) -> f64 {
     let y: Vec<f32> = ps.iter().map(|p| p.pos[1]).collect();
@@ -75,6 +82,7 @@ fn total_energy(ps: &[particles::Particle], device: &Dev) -> f64 {
     let energy = energies(&y, &vy, device).expect("par_for runs");
     energy.iter().map(|e| f64::from(*e)).sum()
 }
+// ANCHOR_END: total
 
 // ANCHOR: host
 /// The host reference: its own particle type and plain Rust in `f64`, which never goes through the kernel (D26,
@@ -114,14 +122,15 @@ fn host_steps(mut p: Host, steps: usize) -> Host {
 /// The program; it runs on the GPU, so it is not part of the test build (which has the CPU twin for `Dev`).
 #[cfg(not(test))]
 fn main() {
-    let n = 1000;
+    let n: usize = 1000;
+    let count = u32::try_from(n).expect("fewer than 2^32 particles");
     let initial: Vec<_> = (0..n).map(start).collect();
     let device = HeadlessDevice::new().expect("a Vulkan compute adapter");
     let buffer = device.create_typed_buffer("particles", &initial, GpuBufferAccess::ReadWrite);
 
     // The same call sixteen times in one batch: one command buffer, one pass per step, each pass sees the last one's
     // writes. The call is built once and borrowed by every entry.
-    let call = particles::step::call(n as u32, &buffer);
+    let call = particles::step::call(count, &buffer);
     let batch: Vec<BufferDispatch<'_>> = (0..STEPS).map(|_| (&call).into()).collect();
     device.dispatch_batch(&batch).expect("dispatch the batch");
 

@@ -7,7 +7,8 @@ use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 #[gpu]
 mod saxpy {
     /// The uniform: one value in a constant buffer, read by every invocation. A uniform is a struct of the module
-    /// whose layout has no implicit padding, so the three `pad` fields are written out to fill the 16 bytes.
+    /// whose layout has no implicit padding and whose size is a multiple of 16 bytes, so the three `pad` fields are
+    /// written out to round the 4-byte `a` up to 16.
     pub struct Params {
         pub a: f32,
         pub pad0: f32,
@@ -31,6 +32,7 @@ mod saxpy {
 }
 // ANCHOR_END: kernel
 
+// ANCHOR: params
 /// The uniform value for `a`; the padding is zero.
 fn params(a: f32) -> saxpy::Params {
     saxpy::Params {
@@ -40,6 +42,7 @@ fn params(a: f32) -> saxpy::Params {
         pad2: 0.0,
     }
 }
+// ANCHOR_END: params
 
 // ANCHOR: main
 fn main() {

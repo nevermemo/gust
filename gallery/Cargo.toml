@@ -5,5 +5,5 @@
 # in release without Slang. `cargo xtask check-gallery` checks every entry (it keeps the list of entries in
 # `xtask/src/gallery.rs`, and a unit test there compares the list with `members`).
 [workspace]
-members = ["hello-gust", "saxpy-uniform", "histogram", "particles"]
+members = ["hello-gust", "saxpy-uniform", "histogram", "particles", "image-threshold", "reduce-scan"]
 resolver = "3"

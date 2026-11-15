@@ -37,5 +37,13 @@ cargo test                        # the CPU twin against the host simulation; no
 cargo run --features gust-dev     # development: compiles the kernels at run time through Slang, needs an adapter
 cargo gust build                  # compiles the kernels with Slang and writes gust-artifacts/ (commit them)
 cargo gust check                  # fails when gust-artifacts/ no longer matches the sources
-cargo run --release               # no Slang needed; needs a Vulkan compute adapter
+cargo build --release             # no Slang needed: the kernels are embedded from gust-artifacts/
+cargo run --release               # needs a Vulkan compute adapter
 ```
+
+Why the source has `#[cfg(not(test))]` on the GPU imports and on `main`, and a `type Dev` that is the `HeadlessDevice` in
+the program and the `CpuDevice` in tests: `par_for!` writes its loop body as a kernel at the call site, and the twin of
+that kernel exists only in test builds, so the one function that runs `par_for!` (`energies`) must be given a device whose
+type differs between the two builds. The alias is that switch, and `main`, which needs the GPU, is not built in tests. It is
+a feature of this example (one function used by both), not something a program needs: a crate that only runs on the GPU
+passes the `HeadlessDevice` directly and has no `cfg` at all, as `histogram` has none.

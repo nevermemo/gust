@@ -37,12 +37,7 @@ const KEY: &str = "52e85c5f03f72272";
 const WGSL: &[u8] = include_bytes!("fixtures/precompiled/52e85c5f03f72272.wgsl");
 const REFLECTION: &str = include_str!("fixtures/precompiled/52e85c5f03f72272.wgsl.reflection.json");
 
-const ARTIFACT: Artifact = Artifact {
-    format: Format::Wgsl,
-    key: KEY,
-    bytes: WGSL,
-    reflection: REFLECTION,
-};
+const ARTIFACT: Artifact = Artifact::new(Format::Wgsl, KEY, WGSL, REFLECTION);
 
 /// The macro's descriptor of the kernel plus the artifact.
 const PRE: KernelDescriptor = vector_add::add::DESCRIPTOR.with_artifacts(&[ARTIFACT]);
@@ -155,19 +150,13 @@ fn a_mutated_artifact_is_the_identity_error_and_never_a_fallback_compile() {
         .expect("the kernel adds");
     let mut flipped = WGSL.to_vec();
     flipped[at] = b'-';
-    let mutated = with_artifact(Artifact {
-        bytes: leaked_bytes(flipped),
-        ..ARTIFACT
-    });
+    let mutated = with_artifact(ARTIFACT.with_bytes(leaked_bytes(flipped)));
     let message =
         identity_message(run(&device, &mutated).expect_err("a flipped byte must not run"));
     assert!(message.contains("artifact hash"), "{message}");
 
     // A truncated artifact and an artifact for another source are the same error.
-    let truncated = with_artifact(Artifact {
-        bytes: &WGSL[..WGSL.len() - 1],
-        ..ARTIFACT
-    });
+    let truncated = with_artifact(ARTIFACT.with_bytes(&WGSL[..WGSL.len() - 1]));
     let message = identity_message(run(&device, &truncated).expect_err("a truncated artifact"));
     assert!(message.contains("artifact hash"), "{message}");
 
@@ -189,10 +178,7 @@ fn a_changed_reflection_is_an_error_not_a_fallback() {
     assert_ne!(other, REFLECTION);
     let error = run(
         &device,
-        &with_artifact(Artifact {
-            reflection: leaked_str(other),
-            ..ARTIFACT
-        }),
+        &with_artifact(ARTIFACT.with_reflection(leaked_str(other))),
     )
     .expect_err("the stored workgroup size disagrees with the descriptor");
     assert!(
@@ -222,11 +208,11 @@ fn the_gpu_runs_the_bytes_of_the_artifact_not_a_recompile_of_the_slang() {
     let old_hash = format!("\"artifactHash\":\"{:016x}\"", fnv1a64(WGSL));
     let new_hash = format!("\"artifactHash\":\"{:016x}\"", fnv1a64(&product));
     assert!(REFLECTION.contains(&old_hash), "{old_hash}");
-    let kernel = with_artifact(Artifact {
-        bytes: leaked_bytes(product),
-        reflection: leaked_str(REFLECTION.replace(&old_hash, &new_hash)),
-        ..ARTIFACT
-    });
+    let kernel = with_artifact(
+        ARTIFACT
+            .with_bytes(leaked_bytes(product))
+            .with_reflection(leaked_str(REFLECTION.replace(&old_hash, &new_hash))),
+    );
     gust::artifact::verify_artifact(&kernel, &kernel.artifacts[0])
         .expect("the multiplying artifact is a verified artifact");
 
@@ -246,14 +232,9 @@ fn the_gpu_runs_the_bytes_of_the_artifact_not_a_recompile_of_the_slang() {
 fn descriptors_with_the_same_fields_and_different_artifacts_get_their_own_verified_pipelines() {
     let device = device();
     let expected = inputs().expected;
-    let same_bytes_elsewhere = with_artifact(Artifact {
-        bytes: leaked_bytes(WGSL.to_vec()),
-        ..ARTIFACT
-    });
-    let same_reflection_elsewhere = with_artifact(Artifact {
-        reflection: leaked_str(REFLECTION.to_string()),
-        ..ARTIFACT
-    });
+    let same_bytes_elsewhere = with_artifact(ARTIFACT.with_bytes(leaked_bytes(WGSL.to_vec())));
+    let same_reflection_elsewhere =
+        with_artifact(ARTIFACT.with_reflection(leaked_str(REFLECTION.to_string())));
     // Equal in every field of the descriptor and in the content of the artifact; the addresses differ.
     for kernel in [&PRE, &same_bytes_elsewhere, &same_reflection_elsewhere] {
         assert_eq!(kernel.slang_source.as_ptr(), PRE.slang_source.as_ptr());
@@ -290,10 +271,7 @@ fn an_unverified_artifact_cannot_borrow_the_pipeline_of_a_verified_one() {
     let at = WGSL.iter().position(|byte| *byte == b'+').unwrap();
     let mut flipped = WGSL.to_vec();
     flipped[at] = b'-';
-    let mutated = with_artifact(Artifact {
-        bytes: leaked_bytes(flipped),
-        ..ARTIFACT
-    });
+    let mutated = with_artifact(ARTIFACT.with_bytes(leaked_bytes(flipped)));
     let message = identity_message(run(&device, &mutated).expect_err("not a cache hit"));
     assert!(message.contains("artifact hash"), "{message}");
     // No hit. A request that fails verification creates no entry and is not counted as a compile (the same rule as
@@ -387,24 +365,24 @@ const ELEMENT_KEY: &str = "54bb2958cc5fe568";
 const FIELD_KEY: &str = "794f2959e8738056";
 const SHAPES_KEY: &str = "baf2462e890b0200";
 
-const ELEMENT: KernelDescriptor = pre_arrays::element::DESCRIPTOR.with_artifacts(&[Artifact {
-    format: Format::Wgsl,
-    key: ELEMENT_KEY,
-    bytes: include_bytes!("fixtures/precompiled/54bb2958cc5fe568.wgsl"),
-    reflection: include_str!("fixtures/precompiled/54bb2958cc5fe568.wgsl.reflection.json"),
-}]);
-const FIELD: KernelDescriptor = pre_arrays::field::DESCRIPTOR.with_artifacts(&[Artifact {
-    format: Format::Wgsl,
-    key: FIELD_KEY,
-    bytes: include_bytes!("fixtures/precompiled/794f2959e8738056.wgsl"),
-    reflection: include_str!("fixtures/precompiled/794f2959e8738056.wgsl.reflection.json"),
-}]);
-const SHAPES: KernelDescriptor = pre_arrays::shapes::DESCRIPTOR.with_artifacts(&[Artifact {
-    format: Format::Wgsl,
-    key: SHAPES_KEY,
-    bytes: include_bytes!("fixtures/precompiled/baf2462e890b0200.wgsl"),
-    reflection: include_str!("fixtures/precompiled/baf2462e890b0200.wgsl.reflection.json"),
-}]);
+const ELEMENT: KernelDescriptor = pre_arrays::element::DESCRIPTOR.with_artifacts(&[Artifact::new(
+    Format::Wgsl,
+    ELEMENT_KEY,
+    include_bytes!("fixtures/precompiled/54bb2958cc5fe568.wgsl"),
+    include_str!("fixtures/precompiled/54bb2958cc5fe568.wgsl.reflection.json"),
+)]);
+const FIELD: KernelDescriptor = pre_arrays::field::DESCRIPTOR.with_artifacts(&[Artifact::new(
+    Format::Wgsl,
+    FIELD_KEY,
+    include_bytes!("fixtures/precompiled/794f2959e8738056.wgsl"),
+    include_str!("fixtures/precompiled/794f2959e8738056.wgsl.reflection.json"),
+)]);
+const SHAPES: KernelDescriptor = pre_arrays::shapes::DESCRIPTOR.with_artifacts(&[Artifact::new(
+    Format::Wgsl,
+    SHAPES_KEY,
+    include_bytes!("fixtures/precompiled/baf2462e890b0200.wgsl"),
+    include_str!("fixtures/precompiled/baf2462e890b0200.wgsl.reflection.json"),
+)]);
 
 /// More than one workgroup of 64, so the second workgroup is checked too.
 const ARRAY_ROWS: u32 = 70;

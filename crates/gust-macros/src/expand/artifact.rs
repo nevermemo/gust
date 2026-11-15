@@ -196,12 +196,12 @@ pub(super) fn artifact_tokens(key: &str, lookup: &Lookup) -> TokenStream {
     let bytes = embedded_path(&wgsl_name(key));
     let reflection = embedded_path(&reflection_name(key));
     quote! {
-        &[::gust::Artifact {
-            format: ::gust::Format::Wgsl,
-            key: #key,
-            bytes: ::core::include_bytes!(#bytes),
-            reflection: ::core::include_str!(#reflection),
-        }]
+        &[::gust::Artifact::new(
+            ::gust::Format::Wgsl,
+            #key,
+            ::core::include_bytes!(#bytes),
+            ::core::include_str!(#reflection),
+        )]
     }
 }
 
@@ -1513,7 +1513,7 @@ pub(super) mod tests {
         let tokens = artifact_tokens("52e85c5f03f72272", &Lookup::Present).to_string();
         assert_eq!(
             tokens,
-            ":: gust :: Artifact { format : :: gust :: Format :: Wgsl , key : \"52e85c5f03f72272\" , bytes : :: core :: include_bytes ! (:: core :: concat ! (:: core :: env ! (\"CARGO_MANIFEST_DIR\") , \"/gust-artifacts/52e85c5f03f72272.wgsl\")) , reflection : :: core :: include_str ! (:: core :: concat ! (:: core :: env ! (\"CARGO_MANIFEST_DIR\") , \"/gust-artifacts/52e85c5f03f72272.wgsl.reflection.json\")) , }]"
+            ":: gust :: Artifact :: new (:: gust :: Format :: Wgsl , \"52e85c5f03f72272\" , :: core :: include_bytes ! (:: core :: concat ! (:: core :: env ! (\"CARGO_MANIFEST_DIR\") , \"/gust-artifacts/52e85c5f03f72272.wgsl\")) , :: core :: include_str ! (:: core :: concat ! (:: core :: env ! (\"CARGO_MANIFEST_DIR\") , \"/gust-artifacts/52e85c5f03f72272.wgsl.reflection.json\")) ,)]"
                 .replacen(":: gust :: Artifact", "& [:: gust :: Artifact", 1)
         );
     }

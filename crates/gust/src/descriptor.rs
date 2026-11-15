@@ -15,11 +15,21 @@ pub trait Kernel {
 
 /// A `#[gpu]` module as the macro describes it: its name and its kernels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ModuleDescriptor {
     /// The module's name.
     pub name: &'static str,
     /// The module's kernels.
     pub kernels: &'static [KernelDescriptor],
+}
+
+impl ModuleDescriptor {
+    /// The descriptor of a module called `name` with `kernels`. The `#[gpu]` macro calls this for
+    /// `MODULE_DESCRIPTOR`; the struct is `#[non_exhaustive]` (0.2.0), so a literal is no longer possible outside this
+    /// crate: `ModuleDescriptor { name, kernels }` becomes `ModuleDescriptor::new(name, kernels)`.
+    pub const fn new(name: &'static str, kernels: &'static [KernelDescriptor]) -> Self {
+        Self { name, kernels }
+    }
 }
 
 /// Everything the host knows about one kernel: where it lives, its Slang source, its workgroup size, its parameters,

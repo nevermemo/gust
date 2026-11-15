@@ -1015,8 +1015,15 @@ pub(crate) struct GpuSuitePin {
 ///
 /// Slice m10.api1: 453 over 49 became 454 over 49. One new test in `tests/limits.rs`, the O5 pin: the infallible
 /// `create_typed_buffer` above `max_buffer_size` panics in wgpu (it needs an adapter).
+///
+/// Slice m10.api2a.1 (W18): 454 over 49 became 458 over 49. Four new tests:
+/// `timed_typed_transfers_report_their_bytes_and_round_trip` and
+/// `pool_reserve_grows_geometrically_and_keeps_the_live_prefix` in `tests/typed.rs`, and
+/// `enumerate_async_lists_the_adapters_enumerate_lists` and
+/// `coherent_storage_is_reported_only_when_the_adapter_offers_it` in `tests/device_options.rs`.
+/// (`create_zeroed_buffer_async` exists on `wasm32` only, so no native test reaches it.)
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 454,
+    passed: 458,
     result_lines: 49,
 };
 

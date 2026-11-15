@@ -290,9 +290,44 @@ fn the_list_of_entries_is_the_members_of_the_gallery_workspace() {
             "image-threshold",
             "particles",
             "reduce-scan",
-            "saxpy-uniform"
+            "routed",
+            "saxpy-uniform",
+            "state-machine",
+            "variants"
         ]
     );
+}
+
+#[test]
+fn only_variants_runs_a_second_time_under_a_profile_and_its_two_lines_name_their_bodies() {
+    for entry in &ENTRIES {
+        match (&entry.profile_run, entry.dir) {
+            (None, "variants") => panic!("variants must run under native+subgroups too"),
+            (None, _) => {}
+            (Some(run), dir) => {
+                assert_eq!(dir, "variants", "only variants has a second run");
+                assert_eq!(run.profile, "native+subgroups");
+                assert!(
+                    entry.expected_line.starts_with("variants: body=portable, "),
+                    "{}",
+                    entry.expected_line
+                );
+                assert!(
+                    run.expected_line.starts_with("variants: body=subgroups, "),
+                    "{}",
+                    run.expected_line
+                );
+                // Both bodies compute the same three cells, so the lines agree after the body name.
+                assert_eq!(
+                    entry
+                        .expected_line
+                        .trim_start_matches("variants: body=portable, "),
+                    run.expected_line
+                        .trim_start_matches("variants: body=subgroups, ")
+                );
+            }
+        }
+    }
 }
 
 #[test]

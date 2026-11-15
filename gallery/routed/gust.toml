@@ -1,0 +1,5 @@
+# The routes of this application, read by `cargo gust run`, `test`, `build` and `check` (the key is the package that declares
+# the tag, then the tag). To move a stage, change its value to "gpu" or "cpu" and run `cargo gust run` (README).
+[routes]
+"routed::tidy" = "cpu"
+"routed::smooth" = "gpu"

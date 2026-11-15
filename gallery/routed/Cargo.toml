@@ -1,0 +1,22 @@
+[package]
+name = "routed"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# The shape of a user's crate (README "A first program"): the same dependency keys, with path dependencies in place of
+# the registry versions.
+[dependencies]
+gust-compute = { path = "../../crates/gust" }
+gust-compute-wgpu = { path = "../../crates/gust-wgpu" }
+
+[features]
+# Run-time compile through the Slang toolchain, for development only (`cargo run --features gust-dev`).
+gust-dev = ["gust-compute-wgpu/slang-runtime"]
+
+# The route tags this crate declares (README "Routing kernels to the CPU or the GPU at build time"). The application
+# chooses among them in `gust.toml`, beside this file; plain `cargo` builds the defaults below, which are the routes that
+# `gust.toml` states, so a plain `cargo run` and a `cargo gust run` build the same program.
+[package.metadata.gust.routes]
+tidy = { targets = ["gpu", "cpu"], default = "cpu" }
+smooth = { targets = ["gpu", "cpu"], default = "gpu" }

@@ -1,0 +1,22 @@
+{
+  "profile": "dev",
+  "routes": [
+    {
+      "from": "routed::smooth",
+      "level": "entry",
+      "package": "routed",
+      "tag": "smooth",
+      "target": "gpu",
+      "variable": "GUST_ROUTE__routed__smooth"
+    },
+    {
+      "from": "routed::tidy",
+      "level": "entry",
+      "package": "routed",
+      "tag": "tidy",
+      "target": "cpu",
+      "variable": "GUST_ROUTE__routed__tidy"
+    }
+  ],
+  "schema": 1
+}

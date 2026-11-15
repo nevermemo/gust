@@ -8,7 +8,7 @@ GUST is an experimental Rust to Slang compute subsystem. It is pre-1.0 and follo
 minor version of all four packages, a patch only adds or fixes, so expect the API to change between 0.x minors.
 
 What this crate promises (the full text is the root README's section
-[Stability](https://github.com/nevermemo/gust/blob/main/README.md#stability)): every item that is not `#[doc(hidden)]`;
+[Stability](https://github.com/nevermemo/gust/blob/v0.2.0/README.md#stability)): every item that is not `#[doc(hidden)]`;
 the `#[gpu]` language, meaning the accepted constructs and their lowering contract, and the `GUST-E....` diagnostic
 codes (a code keeps its meaning, a message may be reworded); the file formats that `cargo gust` writes and this crate
 checks; `gust.toml` and the `[package.metadata.gust]` table; the features `slang-runtime` and `spirv-route` by name; and
@@ -28,15 +28,15 @@ The package is `gust-compute`; the library is named `gust`, so code writes `use 
 
 - The `slang-runtime` feature (off by default) compiles a kernel at run time by launching `slangc` and the native
   reflection helper. A production build leaves it off and ships the artifacts that `cargo gust build` writes.
-- `cargo install cargo-gust --locked --version "~0.1"` installs the tool that writes those artifacts; `cargo gust
+- `cargo install cargo-gust --locked --version "~0.2"` installs the tool that writes those artifacts; `cargo gust
   slang install` then installs the pinned Slang release.
 - The tests of this crate read files of the repository, so they run from a checkout, not from this package.
 
 A complete first program (the manifest with a `gust-dev` feature, `cargo run`, and the release build with `cargo gust
-build`) is in the root README: <https://github.com/nevermemo/gust/blob/main/README.md#install-from-cratesio>.
+build`) is in the root README: <https://github.com/nevermemo/gust/blob/v0.2.0/README.md#install-from-cratesio>.
 Minimum supported Rust: 1.90.
 
 Documentation: <https://docs.rs/gust-compute>. The project, its platforms and its status:
-<https://github.com/nevermemo/gust/blob/main/README.md>.
+<https://github.com/nevermemo/gust/blob/v0.2.0/README.md>.
 
 Licensed under either of MIT or Apache-2.0 at your option (`LICENSE-MIT`, `LICENSE-APACHE`).

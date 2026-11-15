@@ -131,7 +131,7 @@
 //! (the build prints a `cargo:warning` saying so), and no variable is needed:
 //!
 //! ```sh
-//! cargo install cargo-gust --locked --version ~0.1
+//! cargo install cargo-gust --locked --version ~0.2
 //! cargo gust slang install        # the pinned Slang into <CARGO_HOME>/gust/slang/<pin>, SHA-256 checked
 //! cargo gust slang build-helper   # the native reflection helper, compiled against that Slang
 //! cargo gust doctor               # names every gap, and the versions of cargo-gust and gust-compute

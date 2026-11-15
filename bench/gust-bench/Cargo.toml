@@ -11,6 +11,7 @@ publish.workspace = true
 gust = { package = "gust-compute", path = "../../crates/gust" }
 gust-wgpu = { package = "gust-compute-wgpu", path = "../../crates/gust-wgpu", optional = true }
 bytemuck = "=1.25.2"
+log = { version = "=0.4.34", optional = true }
 pollster = { version = "=0.4.0", optional = true }
 rayon = "=1.12.0"
 serde_json = "=1.0.145"
@@ -32,6 +33,11 @@ default = ["gpu", "slang-runtime"]
 gpu = ["dep:gust-wgpu", "dep:wgpu", "dep:pollster"]
 slang-runtime = ["gpu", "gust/slang-runtime", "gust-wgpu/slang-runtime"]
 spirv-route = ["gpu", "gust-wgpu/spirv-route"]
+# The `profile` subcommand: a counting global allocator and a `log` tap on wgpu-core's API log (off by default, so a
+# timing build never pays for either).
+profile-counts = ["gpu", "dep:log"]
+# `gust-bench trace`: wgpu's own API trace of the hand-WGSL device (GUST's device cannot be traced from outside the crate).
+wgpu-trace = ["gpu", "wgpu/trace"]
 
 [lints]
 workspace = true

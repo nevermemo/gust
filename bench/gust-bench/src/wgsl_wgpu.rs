@@ -41,6 +41,15 @@ pub struct WgpuContext {
 
 impl WgpuContext {
     pub fn new() -> BenchResult<Self> {
+        Self::open(None)
+    }
+
+    /// Opens the device; with `trace` (a `wgpu-trace` build) wgpu writes its API trace of this device into that directory.
+    pub fn open(trace: Option<&std::path::Path>) -> BenchResult<Self> {
+        #[cfg(not(feature = "wgpu-trace"))]
+        if trace.is_some() {
+            return Err("a wgpu trace needs a build with the wgpu-trace feature".into());
+        }
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         descriptor.backends = wgpu::Backends::VULKAN;
         let instance = wgpu::Instance::new(descriptor);
@@ -52,6 +61,10 @@ impl WgpuContext {
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("bench hand-WGSL device"),
+                #[cfg(feature = "wgpu-trace")]
+                trace: trace.map_or(wgpu::Trace::Off, |dir| {
+                    wgpu::Trace::Directory(dir.to_path_buf())
+                }),
                 required_features: if timestamps {
                     wgpu::Features::TIMESTAMP_QUERY
                 } else {

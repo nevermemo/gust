@@ -36,6 +36,19 @@ call in every ablation. A test counts bind groups, staging buffers and submissio
 group then reads `wgsl-percall`, each switch alone, `+all-on` and `wgsl-prebuilt`; the step from `+all-on` to
 `wgsl-prebuilt` is the result `Vec`, the step from `wgsl-percall` to `+all-on` is the three switches together.
 
+## Host-side counts and wgpu traces
+
+`gust-bench profile --out p.json [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS]` counts, per call and
+warm, the heap allocations (a counting global allocator) and the wgpu-core API calls (submissions, buffer and bind-group
+creations, polls, map requests; read from wgpu-core's own `log` output, which covers GUST's device too) of `end_to_end`,
+`dispatch_host` and one 16-pass batch, for GUST and every hand-WGSL backend. It needs `--features profile-counts` (the
+allocator is not in a timing build). The numbers are counts, never timings.
+
+`gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall] [--label batch16|end_to_end]`
+writes wgpu's API trace of the hand-WGSL device, one directory per backend, workload, size and operation, in a
+`--features wgpu-trace` build. GUST's device is opened inside `gust-wgpu` with the trace off and `HeadlessDevice` takes no
+trace path, so GUST has no trace from outside the crate.
+
 ## Groups and builds
 
 A run is one **group**, chosen by `--group publishable|ablation` (default `publishable`) and written into the run file

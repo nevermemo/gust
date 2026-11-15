@@ -7,6 +7,8 @@
 //!                [--cold-only] [--cold-repeats N] [--seed N]
 //! gust-bench aggregate --json out.json --md out.md run1.json run2.json run3.json
 //! gust-bench dump-wgsl            # the WGSL GUST generates for each kernel, on stdout (slang-runtime builds)
+//! gust-bench profile --out p.json [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS]
+//!                                 # host-side counts per call (allocations, wgpu API calls); needs --features profile-counts
 //! gust-bench probe-adapters       # DXGI adapters, the LUID mapping, and which LUID this process's GPU work shows on
 //! gust-bench list                 # backends, workloads, sizes, groups
 //! ```
@@ -24,12 +26,16 @@ mod gust_cpu;
 mod gust_gpu;
 mod harness;
 mod meta;
+#[cfg(feature = "profile-counts")]
+mod profile;
 mod rayon_cpu;
 mod report;
 #[cfg(feature = "gpu")]
 mod route;
 #[cfg(feature = "gpu")]
 mod sampler;
+#[cfg(feature = "wgpu-trace")]
+mod trace;
 #[cfg(feature = "gpu")]
 mod wgsl_wgpu;
 mod workloads;
@@ -50,7 +56,7 @@ use serde_json::{Value, json};
 use wgsl_wgpu::{HandWgsl, Mode, Switch, WgpuContext};
 use workloads::Workload;
 
-const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W3,...] [--sizes N,N] [--backends a,b] [--group publishable|ablation] [--ablation LIST|all-on|all] [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench probe-adapters\n       gust-bench list";
+const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W3,...] [--sizes N,N] [--backends a,b] [--group publishable|ablation] [--ablation LIST|all-on|all] [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench probe-adapters\n       gust-bench profile --out FILE [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS] (profile-counts build)\n       gust-bench list";
 
 #[derive(Default)]
 struct Options {
@@ -776,6 +782,27 @@ fn probe_adapters() -> BenchResult<bool> {
     Err("probe-adapters needs the Windows GPU-engine counters and the gpu feature".into())
 }
 
+/// `profile`: host-side counts per call (needs a `profile-counts` build, which carries the counting allocator).
+#[cfg(feature = "profile-counts")]
+fn profile_command(options: &Options) -> BenchResult<bool> {
+    profile::run(options)
+}
+
+#[cfg(not(feature = "profile-counts"))]
+fn profile_command(_options: &Options) -> BenchResult<bool> {
+    Err("profile needs a build with the profile-counts feature (it installs the counting allocator)".into())
+}
+
+#[cfg(feature = "wgpu-trace")]
+fn trace_command(options: &Options) -> BenchResult<bool> {
+    trace::run(options)
+}
+
+#[cfg(not(feature = "wgpu-trace"))]
+fn trace_command(_options: &Options) -> BenchResult<bool> {
+    Err("trace needs a build with the wgpu-trace feature".into())
+}
+
 fn list() {
     println!("workloads and sizes:");
     for workload in Workload::ALL {
@@ -809,6 +836,8 @@ fn real_main() -> BenchResult<bool> {
         }
         "dump-wgsl" => dump_wgsl().map(|()| true),
         "probe-adapters" => probe_adapters(),
+        "profile" => profile_command(&options),
+        "trace" => trace_command(&options),
         "list" => {
             list();
             Ok(true)

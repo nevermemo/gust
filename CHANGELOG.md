@@ -239,7 +239,7 @@ proof.
   | `write_f32_buffer`, `write_f32_buffer_timed` | `write_typed_buffer`, `write_typed_buffer_timed` |
   | `read_f32_buffer`, `read_f32_buffer_timed` | `read_typed_buffer`, `read_typed_buffer_timed` |
   | `submit_f32_buffers` | `submit_buffers` with `BufferBinding` |
-  | `dispatch_f32_buffers`, `dispatch_f32_buffers_timed` | `dispatch_buffers`, `dispatch_buffers_timed` |
+  | `dispatch_f32_buffers`, `dispatch_f32_buffers_timed` | `dispatch_buffers`, `dispatch_buffers_timed` with `BufferBinding` |
   | `submit_f32_batch` | `submit_batch` with `BufferDispatch` |
   | `dispatch_f32_batch`, `dispatch_f32_batch_timed` | `dispatch_batch`, `dispatch_batch_timed` |
   | `dispatch_f32`, `dispatch_u32` | `create_typed_buffer`, then `dispatch_buffers` (or the kernel's typed `dispatch`), then `read_typed_buffer` |

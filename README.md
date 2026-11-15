@@ -679,7 +679,7 @@ A pin the kernel cannot take is a build error that names the construct (GUST-E07
 a shape. The CPU twin and the `cpu` target run `pixel` kernels too.
 
 What a `pixel` call cannot do, each refused before any GPU work: it is one-dimensional (an extent call, an indirect
-launch, the one-shot `dispatch_f32` and `dispatch_u32` and the generated host snippet are `Error::ShapeUnsupported`);
+launch, the one-shot `dispatch_f32` and `dispatch_u32` (deprecated) and the generated host snippet are `Error::ShapeUnsupported`);
 every output is bound `Shared` (an `Independent` read-write output is `Error::ShapeIndependentOutput`); and it covers
 at most 2^26 elements (`gust::PIXEL_MAX_ELEMENTS`) on every device, which `grid` does not (`DeviceLimit` named
 `pixel_max_elements`). It also needs an adapter whose fragment stage can write storage buffers

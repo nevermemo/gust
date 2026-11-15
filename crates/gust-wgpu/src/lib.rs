@@ -39,8 +39,8 @@
 //! In the browser (`wasm32-unknown-unknown`, wgpu's `webgpu` backend) nothing may block or read a clock, so the
 //! crate offers only what can run there: `new_async`, the buffer, upload and typed `submit` functions, and
 //! `read_typed_buffer_async`. These are compiled out on `wasm32`: the blocking readbacks, the `_timed` functions
-//! (`std::time::Instant` panics in the browser), `dispatch_f32`/`dispatch_u32`, the blocking `dispatch_batch`,
-//! `dispatch_buffers`, `dispatch_f32_batch` and `dispatch_f32_buffers`, the timestamp readback (one-shot channels), the
+//! (`std::time::Instant` panics in the browser), `dispatch_f32`/`dispatch_u32` (deprecated), the blocking `dispatch_batch`,
+//! `dispatch_buffers`, `dispatch_f32_batch` and `dispatch_f32_buffers` (both deprecated), the timestamp readback (one-shot channels), the
 //! `graph` module and `HeadlessDevice::pool_read`. A call to one of them fails to compile.
 //!
 //! A [`WgpuJob`] cannot block there either: its `status` reports `Pending` until wgpu's `on_submitted_work_done`
@@ -64,7 +64,7 @@
 //! the public fields of the plain record types (`BufferDispatch`, `DeviceOptions` and the like).
 //! Every public enum is `#[non_exhaustive]` ([`Error`], `AdapterChoice`, `LimitsPolicy` and `FeaturesPolicy` among
 //! them) except `TransferDirection`, `GpuBufferAccess` and the binding enums (`F32Binding`, `U32Binding` and
-//! `F32BufferBinding`), which are closed sets: a new variant of the others is not a breaking change and a `match`
+//! `F32BufferBinding`, all deprecated), which are closed sets: a new variant of the others is not a breaking change and a `match`
 //! outside this crate needs a wildcard arm; the variants themselves are not, so adding a field to a struct variant is a
 //! breaking change and comes only in a minor bump. The statistics and timing records (`PipelineCacheStats`, `PoolStats`,
 //! `GrowthRecord`, `TransferRecord`, `TransferTiming`, `DispatchTiming` and `RouteEvent`) and `GraphReport` are
@@ -1704,7 +1704,6 @@ impl HeadlessDevice {
 
     /// [`HeadlessDevice::create_typed_buffer`] for `f32` values.
     #[deprecated(since = "0.2.0", note = "use `create_typed_buffer`")]
-    #[allow(deprecated)]
     pub fn create_f32_buffer(
         &self,
         label: &str,
@@ -1784,7 +1783,6 @@ impl HeadlessDevice {
 
     /// [`HeadlessDevice::write_typed_buffer`] for an `f32` buffer.
     #[deprecated(since = "0.2.0", note = "use `write_typed_buffer`")]
-    #[allow(deprecated)]
     pub fn write_f32_buffer(&self, buffer: &GpuBuffer<f32>, values: &[f32]) -> Result<(), Error> {
         self.write_typed_buffer(buffer, values)
     }
@@ -1811,7 +1809,6 @@ impl HeadlessDevice {
     /// [`HeadlessDevice::write_typed_buffer_timed`] for an `f32` buffer.
     #[cfg(not(target_arch = "wasm32"))]
     #[deprecated(since = "0.2.0", note = "use `write_typed_buffer_timed`")]
-    #[allow(deprecated)]
     pub fn write_f32_buffer_timed(
         &self,
         buffer: &GpuBuffer<f32>,
@@ -1833,7 +1830,6 @@ impl HeadlessDevice {
     /// [`HeadlessDevice::read_typed_buffer`] for an `f32` buffer.
     #[cfg(not(target_arch = "wasm32"))]
     #[deprecated(since = "0.2.0", note = "use `read_typed_buffer`")]
-    #[allow(deprecated)]
     pub fn read_f32_buffer(&self, buffer: &GpuBuffer<f32>) -> Result<Vec<f32>, Error> {
         self.read_typed_buffer(buffer)
     }
@@ -1950,7 +1946,6 @@ impl HeadlessDevice {
     /// [`HeadlessDevice::read_typed_buffer_timed`] for an `f32` buffer.
     #[cfg(not(target_arch = "wasm32"))]
     #[deprecated(since = "0.2.0", note = "use `read_typed_buffer_timed`")]
-    #[allow(deprecated)]
     pub fn read_f32_buffer_timed(
         &self,
         buffer: &GpuBuffer<f32>,

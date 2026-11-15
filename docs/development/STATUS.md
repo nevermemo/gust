@@ -397,6 +397,22 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   cold start at `6e833ed`, RTX 5090; results and their reading in the work area (plans/m10/probe/b0-results.md,
   b0c/notes.md). Outcome C on one cell, open (SPIR-V step in m10.b1a); the host-side gap stands, B not claimed
   until the profile slice m10.b0p; the precompiled cold start meets 10 ms. The plan is at Revision 1.2.
+- M10 slices merged (2026-11-15), each after an Opus review and the coordinator's gates on the merged tip:
+  m10.k0 (`640415d`, PR #46, the rustdoc guide skeleton `gust_wgpu::guide`, chapters 1 and 2; its `no_run`
+  doctest raised the GPU suite pin to 459 over 49 in `63cf7de`, caught by the lavapipe run on `main`),
+  m10.api2a.3 (`4ee51d4`, PR #47, `#[gpu(crate = ..)]` and `par_for!`'s `crate(..)` clause, D48), m10.g3a
+  (`3f62e99`, PR #48, gallery entries G7 state-machine, G8 routed, G10 variants), m10.b1a (`bb5c0b1`, PR #49,
+  workloads W3 and W4, the cpu and SPIR-V builds, groups and the kill rule), m10.api2a.2 (`09dbc47`, PR #50, the
+  f32/u32 compatibility calls deprecated, every call site on the typed calls), m10.r2 (`9ff1f95`, PR #51, the
+  release texts for 0.2.0 as the first public release: the CHANGELOG, the promise in README "Stability" and the
+  crate READMEs, the NVIDIA known issue, RELEASE.md's 0.2.0 procedure and release lines).
+- The publishable GPU-time run (m10.b1q, D187): a quiet window on 2026-11-15, 08:03 to 09:45Z, `bb5c0b1`, seeds
+  31 to 33, the `wgsl` and `spirv` builds, RTX 5090. The pre-registered kill rule fired in all six runs: batched
+  GPU time on W1 (1048576, 4194304) and W2 (1048576) is 1.10 to 1.24 times the hand-written WGSL on both routes,
+  with the identical-kernel control at 0.99 to 1.00 on those cells and single dispatches at parity; the SPIR-V
+  route is 0.65 to 0.83 on W3-d16 and W3-d64. Outcome C is re-opened; m10.b1c (trace diff of the batch path)
+  comes before b1b; no GPU-time table is published before it reports. The plan is at Revision 1.3. Results in the
+  work area (plans/m10/probe/b1q/, sanity-b1q-ruling-fable.md).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

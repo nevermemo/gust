@@ -5,8 +5,8 @@ use gust_wgpu::HeadlessDevice;
 // ANCHOR_END: imports
 
 // ANCHOR: kernel
-/// Stage one: saturate every sample at 255. The tag `tidy` is declared in `Cargo.toml`, and `gust.toml` routes it to the
-/// CPU: a small, cheap stage that is not worth a trip through the GPU.
+/// Stage one: saturate every sample at 255. The tag `tidy` is declared in `Cargo.toml`, and `gust.toml` routes it to
+/// the CPU: a small, cheap stage that is not worth a trip through the GPU.
 #[gpu(route = "tidy")]
 mod tidy {
     #[kernel(workgroup_size(64, 1, 1))]
@@ -26,8 +26,8 @@ mod tidy {
     }
 }
 
-/// Stage two: a weighted sum of each sample and its two neighbours (weights 1, 2, 1; the ends repeat themselves). The tag
-/// `smooth` is routed to the GPU.
+/// Stage two: a weighted sum of each sample and its two neighbours (weights 1, 2, 1; the ends repeat themselves). The
+/// tag `smooth` is routed to the GPU.
 #[gpu(route = "smooth")]
 mod smooth {
     #[kernel(workgroup_size(64, 1, 1))]
@@ -56,7 +56,9 @@ mod smooth {
 // ANCHOR: host
 /// The samples: some of them over 255, so that the first stage has work to do.
 fn samples(n: usize) -> Vec<u32> {
-    (0..n).map(|i| (i as u32 * 37 + 11) % 400).collect()
+    (0..n)
+        .map(|i| (u32::try_from(i).expect("fewer than 2^32 samples") * 37 + 11) % 400)
+        .collect()
 }
 
 /// The independent host reference: both stages as plain Rust over a slice, never through the kernels (D26, D42).
@@ -78,8 +80,9 @@ fn main() {
     let raw = samples(n);
     let gpu = HeadlessDevice::new().expect("a Vulkan compute adapter");
     println!("adapter: {}", gpu.adapter_info().name);
-    // One handle for both stages: each call runs on the target its kernel was built for, and the buffers move between the
-    // CPU and the GPU as the calls need. Nothing below names a target, so moving a stage in `gust.toml` changes no line.
+    // One handle for both stages: each call runs on the target its kernel was built for, and the buffers move between
+    // the CPU and the GPU as the calls need. Nothing below names a target, so moving a stage in `gust.toml` changes no
+    // line.
     let device = RoutedDevice::with_gpu(gpu);
     let raw_buffer = device.buffer(&raw).expect("input buffer");
     let tidy_buffer = device.buffer(&vec![0u32; n]).expect("middle buffer");
@@ -106,8 +109,8 @@ mod tests {
 
     use super::{host_reference, samples, smooth, tidy};
 
-    /// Both stages on the CPU twin: `tidy` is CPU-routed, so it runs there in every build; `smooth` is GPU-routed, and the
-    /// test build gives it a twin (D26) that runs the same body on `CpuDevice`.
+    /// Both stages on the CPU twin: `tidy` is CPU-routed, so it runs there in every build; `smooth` is GPU-routed, and
+    /// the test build gives it a twin (D26) that runs the same body on `CpuDevice`.
     fn on_twin(raw: &[u32], threads: u32) -> Vec<u32> {
         let device = CpuDevice::new();
         let input = device.buffer(raw);
@@ -137,15 +140,16 @@ mod tests {
 
     #[test]
     fn the_targets_are_the_routes_of_gust_toml() {
-        // Plain `cargo test` builds the declared defaults, which `gust.toml` repeats; `cargo gust test` builds the file.
+        // Plain `cargo test` builds the declared defaults, which `gust.toml` repeats; `cargo gust test` builds the
+        // file.
         assert_eq!(format!("{:?}", tidy::saturate::DESCRIPTOR.target), "Cpu");
         assert_eq!(format!("{:?}", smooth::blur::DESCRIPTOR.target), "Gpu");
     }
 
     #[test]
     fn a_handle_without_a_gpu_runs_the_cpu_stage_and_refuses_the_gpu_one() {
-        // The handle follows the route: no fallback (D65). The CPU-routed stage runs, the GPU-routed one is a typed error
-        // that leaves its output untouched.
+        // The handle follows the route: no fallback (D65). The CPU-routed stage runs, the GPU-routed one is a typed
+        // error that leaves its output untouched.
         let device = RoutedDevice::<NoGpu>::cpu_only();
         let raw = samples(70);
         let input = device.buffer(&raw).expect("input");

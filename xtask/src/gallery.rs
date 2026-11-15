@@ -17,7 +17,7 @@
 //!   `adapter:` line, which is printed. It reuses the release build of the no-Slang part when that ran before in the same
 //!   target directory; run alone (as `check-full` does) it builds with whatever the environment holds, and says nothing
 //!   about Slang. An entry with a `profile_run` (`variants`) runs a second time under that `GUST_PROFILE`, and the output of
-//!   that run must contain its own expected line.
+//!   that run must contain its own expected line; an entry with `via_driver` (`routed`) runs through `cargo gust run`.
 //!
 //! Children never inherit `GUST_PROFILE`, `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS`: a gallery crate is built the way a
 //! user builds it (release is the strict `native` profile, tests are `dev`).
@@ -47,6 +47,9 @@ pub(crate) struct Entry {
     /// A second GPU run of the entry under another `GUST_PROFILE`, for an entry whose behaviour depends on the profile
     /// (`variants` runs its subgroup body under `native+subgroups`): the profile and the line that run prints.
     pub(crate) profile_run: Option<ProfileRun>,
+    /// Whether the GPU part runs the entry through `cargo gust run` (so its `gust.toml` decides the routes) instead of plain
+    /// `cargo run` (`routed`).
+    pub(crate) via_driver: bool,
 }
 
 /// The second GPU run of an [`Entry`]: `cargo run --release` with `GUST_PROFILE` set to `profile`.
@@ -62,41 +65,49 @@ pub(crate) const ENTRIES: [Entry; 9] = [
         dir: "hello-gust",
         expected_line: "hello-gust: [11.0, 22.0, 33.0, 44.0]",
         profile_run: None,
+        via_driver: false,
     },
     Entry {
         dir: "saxpy-uniform",
         expected_line: "saxpy-uniform: a=2 [12.0, 24.0, 36.0, 48.0], a=3 [13.0, 26.0, 39.0, 52.0]",
         profile_run: None,
+        via_driver: false,
     },
     Entry {
         dir: "histogram",
         expected_line: "histogram: 100000 keys in 8 bins [35376, 14623, 11255, 9474, 8348, 7546, 6933, 6445]",
         profile_run: None,
+        via_driver: false,
     },
     Entry {
         dir: "particles",
         expected_line: "particles: 1000 particles, 16 steps, 1129 bounces, energy 20272.84375",
         profile_run: None,
+        via_driver: false,
     },
     Entry {
         dir: "image-threshold",
         expected_line: "image-threshold: 37 x 21 texels, 366 bright by the pixel kernel, 366 by the grid kernel",
         profile_run: None,
+        via_driver: false,
     },
     Entry {
         dir: "reduce-scan",
         expected_line: "reduce-scan: 100000 values in 8 sizes, sum 450000, scan ends at 450000 with checksum 22499850000",
         profile_run: None,
+        via_driver: false,
     },
     Entry {
         dir: "state-machine",
         expected_line: "state-machine: 1000 records of 16 symbols, 1927 words (longest 7), 933 numbers (longest 7)",
         profile_run: None,
+        via_driver: false,
     },
     Entry {
         dir: "routed",
         expected_line: "routed: 1000 samples, tidy on Cpu, smooth on Gpu, checksum 691792",
         profile_run: None,
+        via_driver: true,
     },
     Entry {
         dir: "variants",
@@ -107,6 +118,7 @@ pub(crate) const ENTRIES: [Entry; 9] = [
             profile: "native+subgroups",
             expected_line: "variants: body=subgroups, 100000 values, sum 12499996, 59761 over 100, max 250",
         }),
+        via_driver: false,
     },
 ];
 
@@ -725,6 +737,16 @@ pub(crate) fn tree_difference(
     committed: &[(String, Vec<u8>)],
     fresh: &[(String, Vec<u8>)],
 ) -> Option<String> {
+    // A driver output (`routes.json`, written by `cargo gust build` and `run` for the profile of the run) is not an artifact:
+    // cargo-gust's own check skips it too.
+    let artifacts = |files: &[(String, Vec<u8>)]| -> Vec<(String, Vec<u8>)> {
+        files
+            .iter()
+            .filter(|(name, _)| name.rsplit('/').next() != Some("routes.json"))
+            .cloned()
+            .collect()
+    };
+    let (committed, fresh) = (&artifacts(committed), &artifacts(fresh));
     let names = |files: &[(String, Vec<u8>)]| {
         files
             .iter()
@@ -961,52 +983,90 @@ pub(crate) fn output_has_line(output: &str, expected: &str) -> bool {
     output.lines().any(|line| line.trim_end() == expected)
 }
 
-/// The GPU part.
+/// The GPU part: every entry's default run first, then the second runs under another profile (so the build scripts of
+/// `gust` rebuild once for the profile, whatever the order of [`ENTRIES`]). An entry with `via_driver` runs through
+/// `cargo gust run`, so its `gust.toml` is the route table of the run. A second run under `native+subgroups` needs an
+/// adapter with subgroup operations: on one without them (or with a device that cannot be opened with them) the run
+/// fails, and so does the part; it is never skipped.
 fn gpu_part(root: &Path) -> Result<String, String> {
+    let cargo = cargo_program()?;
     let gallery = root.join(GALLERY_DIR);
     let target = gallery_target(root, "no-slang");
+    // The driver is built only when an entry runs through it.
+    let driver = if ENTRIES.iter().any(|entry| entry.via_driver) {
+        Some(build_driver(root, &cargo)?)
+    } else {
+        None
+    };
     let mut lines = Vec::new();
-    for entry in &ENTRIES {
-        // The default run, then the run under the entry's other profile when it has one (it follows the first, so the
-        // gust build scripts rebuild once for it; `variants` is the last entry, so the entries after it pay nothing).
-        let runs = std::iter::once((None, entry.expected_line)).chain(
+    let runs = ENTRIES
+        .iter()
+        .map(|entry| (entry, None, entry.expected_line))
+        .chain(ENTRIES.iter().filter_map(|entry| {
             entry
                 .profile_run
-                .iter()
-                .map(|run| (Some(run.profile), run.expected_line)),
-        );
-        for (profile, expected_line) in runs {
-            let mut run = gallery_cargo(&gallery, &target)?;
-            run.args(["run", "--release", "--locked", "-q", "-p", entry.dir]);
-            let label = match profile {
-                None => format!("cargo run --release -p {}", entry.dir),
-                Some(profile) => format!(
-                    "GUST_PROFILE={profile} cargo run --release -p {}",
-                    entry.dir
-                ),
-            };
-            if let Some(profile) = profile {
-                run.env("GUST_PROFILE", profile);
+                .as_ref()
+                .map(|run| (entry, Some(run.profile), run.expected_line))
+        }));
+    for (entry, profile, expected_line) in runs {
+        let mut run = match (&driver, entry.via_driver) {
+            (Some(driver), true) => {
+                let mut command = Command::new(driver);
+                command
+                    .current_dir(&gallery)
+                    .env("CARGO_TARGET_DIR", &target)
+                    .env("CARGO_TERM_COLOR", "never")
+                    .env("CARGO", &cargo);
+                for name in CLEARED {
+                    command.env_remove(name);
+                }
+                command.args([
+                    "gust",
+                    "run",
+                    "--release",
+                    "--locked",
+                    "-q",
+                    "-p",
+                    entry.dir,
+                ]);
+                command
             }
-            let done = require(exec(run, &label)?, &label)?;
-            if !output_has_line(&done.stdout, expected_line) {
-                return Err(format!(
-                    "{label} printed\n{}\nbut the line `{expected_line}` is expected",
-                    tail(&done.stdout, 10)
-                ));
+            _ => {
+                let mut command = gallery_cargo(&gallery, &target)?;
+                command.args(["run", "--release", "--locked", "-q", "-p", entry.dir]);
+                command
             }
-            let Some(adapter) = adapter_name(&done.stdout) else {
-                return Err(format!(
-                    "{label} printed no `{ADAPTER_PREFIX}` line, so the output does not say which GPU it ran on:\n{}",
-                    tail(&done.stdout, 10)
-                ));
-            };
-            lines.push(format!(
-                "{}{}: printed `{expected_line}` on adapter `{adapter}`",
-                entry.dir,
-                profile.map_or_else(String::new, |profile| format!(" (GUST_PROFILE={profile})"))
+        };
+        let tool = if entry.via_driver {
+            "cargo gust run"
+        } else {
+            "cargo run"
+        };
+        let label = match profile {
+            None => format!("{tool} --release -p {}", entry.dir),
+            Some(profile) => format!("GUST_PROFILE={profile} {tool} --release -p {}", entry.dir),
+        };
+        if let Some(profile) = profile {
+            run.env("GUST_PROFILE", profile);
+        }
+        let done = require(exec(run, &label)?, &label)?;
+        if !output_has_line(&done.stdout, expected_line) {
+            return Err(format!(
+                "{label} printed\n{}\nbut the line `{expected_line}` is expected",
+                tail(&done.stdout, 10)
             ));
         }
+        let Some(adapter) = adapter_name(&done.stdout) else {
+            return Err(format!(
+                "{label} printed no `{ADAPTER_PREFIX}` line, so the output does not say which GPU it ran on:\n{}",
+                tail(&done.stdout, 10)
+            ));
+        };
+        lines.push(format!(
+            "{}{}: printed `{expected_line}` on adapter `{adapter}`",
+            entry.dir,
+            profile.map_or_else(String::new, |profile| format!(" (GUST_PROFILE={profile})"))
+        ));
     }
     Ok(lines.join("\n"))
 }

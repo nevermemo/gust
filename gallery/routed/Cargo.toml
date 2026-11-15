@@ -15,8 +15,8 @@ gust-compute-wgpu = { path = "../../crates/gust-wgpu" }
 gust-dev = ["gust-compute-wgpu/slang-runtime"]
 
 # The route tags this crate declares (README "Routing kernels to the CPU or the GPU at build time"). The application
-# chooses among them in `gust.toml`, beside this file; plain `cargo` builds the defaults below, which are the routes that
-# `gust.toml` states, so a plain `cargo run` and a `cargo gust run` build the same program.
+# chooses among them in `gust.toml`, beside this file; plain `cargo` builds the defaults below, which are the routes
+# that `gust.toml` states, so a plain `cargo run` and a `cargo gust run` build the same program.
 [package.metadata.gust.routes]
 tidy = { targets = ["gpu", "cpu"], default = "cpu" }
 smooth = { targets = ["gpu", "cpu"], default = "gpu" }

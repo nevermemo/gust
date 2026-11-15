@@ -55,14 +55,16 @@ mod stats {
 // ANCHOR: host
 /// The values: small numbers, a bit under half of them over 100.
 fn values(n: usize) -> Vec<u32> {
-    (0..n).map(|i| (i as u32 * 37 + 11) % 251).collect()
+    (0..n)
+        .map(|i| (u32::try_from(i).expect("fewer than 2^32 values") * 37 + 11) % 251)
+        .collect()
 }
 
 /// The three cells as a host computes them, with plain iterators that never go through the kernel (D26, D42).
 fn host_cells(data: &[u32]) -> [u32; 3] {
     [
         data.iter().sum(),
-        data.iter().filter(|&&x| x > 100).count() as u32,
+        u32::try_from(data.iter().filter(|&&x| x > 100).count()).expect("fewer than 2^32 values"),
         data.iter().copied().max().unwrap_or(0),
     ]
 }
@@ -76,14 +78,28 @@ fn subgroup_body_selected() -> bool {
 // ANCHOR_END: host
 
 // ANCHOR: main
+/// Runs the selected body over `n` values on `device`, asserts the three cells against the host reference and returns
+/// them.
+fn check(device: &HeadlessDevice, n: usize, body: &str) -> Vec<u32> {
+    let data = values(n);
+    let gpu_data = device.create_typed_buffer("data", &data, GpuBufferAccess::ReadOnly);
+    let cells = device.create_typed_buffer("cells", &[0u32; 3], GpuBufferAccess::ReadWrite);
+    let invocations = u32::try_from(n).expect("fewer than 2^32 values");
+    stats::tally::dispatch(device, invocations, &gpu_data, Independent(&cells)).expect("dispatch");
+    let got = device.read_typed_buffer(&cells).expect("read back");
+    assert_eq!(got, host_cells(&data), "the cells of body={body}, n = {n}");
+    got
+}
+
 fn main() {
     let body = if subgroup_body_selected() {
         "subgroups"
     } else {
         "portable"
     };
-    // A device opened with the capabilities of the build. An adapter without subgroup operations cannot open one under
-    // `native+subgroups`: that is a typed error here, never a wrong result. The portable build runs on every adapter.
+    // A device opened with the capabilities of the build. An adapter without subgroup operations cannot open one
+    // under `native+subgroups`: that is a typed error here, never a wrong result. The portable build runs on every
+    // adapter.
     let device = match HeadlessDevice::new() {
         Ok(device) => device,
         Err(error) => {
@@ -91,19 +107,15 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let data = values(100_000);
-    let gpu_data = device.create_typed_buffer("data", &data, GpuBufferAccess::ReadOnly);
-    let cells = device.create_typed_buffer("cells", &[0u32; 3], GpuBufferAccess::ReadWrite);
-    let invocations = u32::try_from(data.len()).expect("fewer than 2^32 values");
-    stats::tally::dispatch(&device, invocations, &gpu_data, Independent(&cells)).expect("dispatch");
-    let got = device.read_typed_buffer(&cells).expect("read back");
-    assert_eq!(got, host_cells(&data), "the cells of body={body}");
+    // Sizes that leave the last workgroup and the last subgroup partly past the end of the data: 1, 37 (a subgroup of
+    // 32 holds 5 real values) and 100 003 (3 real values in the last subgroup of 8 and of 32), then 100 000.
+    for n in [1, 37, 100_003] {
+        check(&device, n, body);
+    }
+    let got = check(&device, 100_000, body);
     println!(
-        "variants: body={body}, {} values, sum {}, {} over 100, max {}",
-        data.len(),
-        got[0],
-        got[1],
-        got[2]
+        "variants: body={body}, 100000 values, sum {}, {} over 100, max {}",
+        got[0], got[1], got[2]
     );
     println!("subgroup sizes: {:?}", device.subgroup_sizes());
     println!("adapter: {}", device.adapter_info().name);
@@ -136,8 +148,8 @@ mod tests {
 
     #[test]
     fn the_twin_matches_the_host_reference_exactly() {
-        // Sizes below, at and above the workgroup size of 64 and the sizes of a subgroup (8 to 128), ones that are not a
-        // multiple of either, and the size of the program.
+        // Sizes below, at and above the workgroup size of 64 and the sizes of a subgroup (8 to 128), ones that are not
+        // a multiple of either, and the size of the program.
         for n in [1usize, 7, 63, 64, 65, 127, 129, 1000, 100_000] {
             let data = values(n);
             let threads = u32::try_from(n).expect("small");
@@ -147,10 +159,12 @@ mod tests {
 
     #[test]
     fn the_data_exercises_every_cell() {
-        // A guard on the example: some values are over the limit and some are not, and the maximum is not the last value.
+        // A guard on the example: some values are over the limit and some are not, and the maximum is not the last
+        // value.
         let data = values(1000);
         let cells = host_cells(&data);
-        assert!(cells[1] > 0 && (cells[1] as usize) < data.len());
+        let over = usize::try_from(cells[1]).expect("small");
+        assert!(over > 0 && over < data.len());
         assert_eq!(cells[2], 250);
     }
 }

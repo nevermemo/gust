@@ -55,6 +55,7 @@ mod scanner {
         fn accepts(&self, class: Class) -> bool;
     }
 
+    // A struct needs a field (an empty one is GUST-E0105), so the two rule types carry an unused `tag`.
     pub struct Words {
         pub tag: u32,
     }
@@ -83,8 +84,8 @@ mod scanner {
         pub longest_number: u32,
     }
 
-    /// A finite-state machine over the symbols of one record. An enum is not a field of a struct (GUST-E0211), so the machine
-    /// keeps its state as the integer `State as u32` and `feed` turns it back into a `State`.
+    /// A finite-state machine over the symbols of one record. An enum is not a field of a struct (GUST-E0211), so the
+    /// machine keeps its state as the integer `State as u32` and `feed` turns it back into a `State`.
     pub struct Machine {
         pub inside: u32,
         pub tokens: u32,
@@ -140,8 +141,8 @@ mod scanner {
         }
     }
 
-    /// One invocation scans one record of 16 symbols. A token cut by the end of a record ends there: every record starts
-    /// with both machines outside a token.
+    /// One invocation scans one record of 16 symbols. A token cut by the end of a record ends there: every record
+    /// starts with both machines outside a token.
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn scan(
         id: SV_DispatchThreadID,
@@ -194,13 +195,14 @@ fn stream(records: usize) -> Vec<u8> {
     let mut text = Vec::with_capacity(records * RECORD + 8);
     while text.len() < records * RECORD {
         seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        let length = 1 + (seed >> 24) as usize % 7;
+        let length = 1 + usize::try_from((seed >> 24) % 7).expect("below 7");
         let kind = (seed >> 16) % 8;
         for step in 0..length {
-            let pick = ((seed >> (step % 16)) as usize + step) % 26;
+            let pick = (usize::try_from(seed >> (step % 16)).expect("a u32") + step) % 26;
+            let letter = u8::try_from(pick).expect("below 26");
             text.push(match kind {
-                0..=3 => b'a' + pick as u8,
-                4 | 5 => b'0' + (pick % 10) as u8,
+                0..=3 => b'a' + letter,
+                4 | 5 => b'0' + letter % 10,
                 6 => b' ',
                 _ => b"-_./,;"[pick % 6],
             });
@@ -229,9 +231,10 @@ fn host_counts(record: &[u8]) -> Counts {
             .map(<[u8]>::len)
             .filter(|&length| length > 0)
             .collect();
+        let to_u32 = |n: usize| u32::try_from(n).expect("a record has 16 symbols");
         (
-            lengths.len() as u32,
-            lengths.iter().copied().max().unwrap_or(0) as u32,
+            to_u32(lengths.len()),
+            to_u32(lengths.iter().copied().max().unwrap_or(0)),
         )
     };
     let (words, longest_word) = tokens(u8::is_ascii_alphabetic);

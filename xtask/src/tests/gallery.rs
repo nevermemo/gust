@@ -636,6 +636,41 @@ fn artifact_trees_differ_by_name_set_or_by_one_byte() {
 }
 
 #[test]
+fn a_driver_output_is_not_an_artifact() {
+    // `routes.json` is written by `cargo gust build` and `run` for the profile of the run: present on one side only, or
+    // different, it is no difference; any other file still is.
+    let committed = files(&[("a.wgsl", "x"), ("manifest.json", "{}")]);
+    let fresh = files(&[
+        ("a.wgsl", "x"),
+        ("manifest.json", "{}"),
+        ("routes.json", "{\"profile\": \"dev\"}"),
+    ]);
+    assert_eq!(tree_difference(&committed, &fresh), None);
+    assert_eq!(tree_difference(&fresh, &committed), None);
+    let other = files(&[
+        ("a.wgsl", "x"),
+        ("manifest.json", "{}"),
+        ("routes.json", "{\"profile\": \"native\"}"),
+    ]);
+    assert_eq!(tree_difference(&fresh, &other), None);
+    assert!(
+        tree_difference(
+            &committed,
+            &files(&[("a.wgsl", "x"), ("routes.json.bak", "")])
+        )
+        .unwrap()
+        .contains("file lists differ")
+    );
+}
+
+#[test]
+fn only_routed_runs_through_the_driver() {
+    for entry in &ENTRIES {
+        assert_eq!(entry.via_driver, entry.dir == "routed", "{}", entry.dir);
+    }
+}
+
+#[test]
 fn the_expected_line_must_be_a_whole_line_of_the_output() {
     let line = ENTRIES[0].expected_line;
     assert!(output_has_line(&format!("{line}\n"), line));

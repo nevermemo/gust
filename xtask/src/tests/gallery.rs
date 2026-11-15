@@ -284,7 +284,14 @@ fn the_list_of_entries_is_the_members_of_the_gallery_workspace() {
     assert_eq!(members, entries);
     assert_eq!(
         entries,
-        ["hello-gust", "histogram", "particles", "saxpy-uniform"]
+        [
+            "hello-gust",
+            "histogram",
+            "image-threshold",
+            "particles",
+            "reduce-scan",
+            "saxpy-uniform"
+        ]
     );
 }
 

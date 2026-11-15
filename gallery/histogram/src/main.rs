@@ -23,7 +23,9 @@ mod histogram {
 }
 // ANCHOR_END: kernel
 
-/// The number of bins, kept small on purpose: with 100 000 keys every bin is hit by about ten thousand invocations.
+// ANCHOR: host
+/// The number of bins, kept small on purpose: with 100 000 keys every bin is hit by thousands of invocations (between
+/// about six and thirty-five thousand, because the keys are skewed).
 const BINS: usize = 8;
 
 /// The keys: a multiplicative hash of the index, squared so that the bins are far from equally likely (the counts
@@ -45,6 +47,7 @@ fn host_count(keys: &[u32], bins: usize) -> Vec<u32> {
     }
     counts
 }
+// ANCHOR_END: host
 
 // ANCHOR: main
 fn main() {
@@ -53,7 +56,8 @@ fn main() {
     let gpu_keys = device.create_typed_buffer("keys", &keys, GpuBufferAccess::ReadOnly);
     let bins = device.create_typed_buffer("bins", &[0u32; BINS], GpuBufferAccess::ReadWrite);
     // One invocation per key; `bins` is shorter than the dispatch, which `Independent` says is meant.
-    histogram::count::dispatch(&device, keys.len() as u32, &gpu_keys, Independent(&bins))
+    let invocations = u32::try_from(keys.len()).expect("fewer than 2^32 keys");
+    histogram::count::dispatch(&device, invocations, &gpu_keys, Independent(&bins))
         .expect("dispatch");
     let counts = device.read_typed_buffer(&bins).expect("read back");
     assert_eq!(counts, host_count(&keys, BINS), "an atomic count is exact");
@@ -110,7 +114,8 @@ mod tests {
     fn the_keys_are_skewed() {
         // A guard on the example itself: with equal bins the demonstration of contention would be weaker.
         let counts = host_count(&keys(100_000), BINS);
-        let (max, min) = (counts.iter().max().unwrap(), counts.iter().min().unwrap());
+        let max = counts.iter().max().expect("there are bins");
+        let min = counts.iter().min().expect("there are bins");
         assert!(*max > 4 * *min, "{counts:?}");
     }
 }

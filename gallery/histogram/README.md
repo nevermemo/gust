@@ -1,9 +1,9 @@
 # histogram (gallery G3)
 
 A count of keys into bins, where every invocation adds one to the bin of its key with `atomic_add`. With 100 000 keys in
-8 bins, about ten thousand invocations hit each bin, and the keys are skewed (the busiest bin holds many times the least
-busy one), so the example is contention on purpose. A plain `bins[k] += 1` would lose counts on a GPU; the atomic does
-not, and the result is checked **exactly** against a host count.
+8 bins, between about six and thirty-five thousand invocations hit each bin, and the keys are skewed (the busiest bin
+holds several times the least busy one), so the example is contention on purpose. A plain `bins[k] += 1` would lose
+counts on a GPU; the atomic does not, and the result is checked **exactly** against a host count.
 
 What it shows: atomics on a `RWStructuredBuffer<uint>`; a dispatch whose output is shorter than its element count
 (`Independent(&bins)` is the call-site statement that the bins are not one per invocation); an exact check of an integer
@@ -28,7 +28,8 @@ cargo test                        # the CPU twin against the host count; no GPU,
 cargo run --features gust-dev     # development: compiles the kernel at run time through Slang, needs an adapter
 cargo gust build                  # compiles the kernel with Slang and writes gust-artifacts/ (commit them)
 cargo gust check                  # fails when gust-artifacts/ no longer matches the sources
-cargo run --release               # no Slang needed; needs a Vulkan compute adapter
+cargo build --release             # no Slang needed: the kernel is embedded from gust-artifacts/
+cargo run --release               # needs a Vulkan compute adapter
 ```
 
 It prints the line `histogram: 100000 keys in 8 bins [..]` with the eight counts (the keys are fixed, so the counts are

@@ -1,0 +1,51 @@
+{
+  "kernels": [
+    {
+      "clean_sha256": "51c2ec56cbc1f4842d68ef1a87a3f2192fdf04d41a6814d589704bd8741669eb",
+      "entry_point": "gpu_blocks_tile_sum",
+      "formats": [
+        {
+          "file": "2ffde1e1d0a69d58.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "52684a44b7182c323196b3425d4377a7459c8b872f656254eceadfba091e0989",
+          "sha256": "7bcda7fa97292f2b94b78fccebf5278baac4da8f7a6565f700b85f93f8fe893b"
+        }
+      ],
+      "key": "2ffde1e1d0a69d58",
+      "module": "blocks",
+      "name": "tile_sum"
+    },
+    {
+      "clean_sha256": "86d2997a87048b0827473b14581250dc9e9f6beae2e9a9b0e36f1cb09b39091c",
+      "entry_point": "gpu_blocks_tile_scan",
+      "formats": [
+        {
+          "file": "62d8d3fc7802b74c.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "95e8475126c187de5ad594c0df3ce6139304654e3ede12041dfc1e070b69db58",
+          "sha256": "5b7163f47cb978d5c3cadcfaaaba14c88992a234695e84089aabe99a8c07c9e7"
+        }
+      ],
+      "key": "62d8d3fc7802b74c",
+      "module": "blocks",
+      "name": "tile_scan"
+    },
+    {
+      "clean_sha256": "ac0aa37ae840673270bf3ccfa3f152c7abb488ff9f73f6605f7583eb790682f8",
+      "entry_point": "gpu_blocks_add_offsets",
+      "formats": [
+        {
+          "file": "b19d20efc1b03d2a.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "efb45540661fa5ef09faab849b3ffff62f62efa8d26fa9ccc0deccbba85a2580",
+          "sha256": "17bd43847cb9685fcacacf2c4df785776fc4137d81b8de56713d770ce771b19e"
+        }
+      ],
+      "key": "b19d20efc1b03d2a",
+      "module": "blocks",
+      "name": "add_offsets"
+    }
+  ],
+  "schema": 1,
+  "slang": "2026.22"
+}

@@ -1,0 +1,21 @@
+{
+  "kernels": [
+    {
+      "clean_sha256": "bc13a4efe4a00e9cee00e833850d5fed799a5a800927f0bc5c503381920271c1",
+      "entry_point": "gpu_scanner_scan",
+      "formats": [
+        {
+          "file": "bacf6392c8bb91c0.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "b5d1f96a27f33d60fb95d9a74fb83bf44e6fcbc3dbc8d8bf784cd8684e3e24cd",
+          "sha256": "44b5015cdadaef4391e74886201c208955b40fb84920e6a407eab5afbb589bc0"
+        }
+      ],
+      "key": "bacf6392c8bb91c0",
+      "module": "scanner",
+      "name": "scan"
+    }
+  ],
+  "schema": 1,
+  "slang": "2026.22"
+}

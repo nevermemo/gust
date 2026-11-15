@@ -80,8 +80,9 @@ mod rejected {
 }
 ```
 
-The next kernel differs from that one only in using a bounded `for` loop where the other has the `loop`. It is
-compiled by the doctest (`no_run`: nothing runs), so the pair shows that the `loop` is what the macro refuses:
+The next kernel differs from that one only in using a bounded `for` loop (which needs no `break`) where the other
+has the `loop`. It is compiled by the doctest (`no_run`: nothing runs), so the pair shows that the `loop` is what the
+macro refuses:
 
 ```rust,no_run
 # use gust::gpu;

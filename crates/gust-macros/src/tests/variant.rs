@@ -1051,7 +1051,7 @@ fn only_the_selected_bodys_artifact_is_embedded() {
         );
         // One artifact in the descriptor, and one `require_artifact(true)` for the selected body only.
         assert_eq!(
-            text.matches("::gust::Artifact{").count(),
+            text.matches("::gust::Artifact::new(").count(),
             1,
             "{value}: {text}"
         );

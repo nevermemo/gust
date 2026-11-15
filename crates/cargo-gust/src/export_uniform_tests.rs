@@ -142,12 +142,7 @@ impl Stored {
     fn reflection(&self) -> Reflection {
         verify_artifact(
             self.kernel,
-            &Artifact {
-                format: Format::Wgsl,
-                key: self.key,
-                bytes: self.wgsl,
-                reflection: self.reflection,
-            },
+            &Artifact::new(Format::Wgsl, self.key, self.wgsl, self.reflection),
         )
         .unwrap()
         .compiled
@@ -513,12 +508,7 @@ fn a_std140_valid_difference_from_the_macro_is_now_caught_at_export() {
         // the field name.
         let error = verify_artifact(
             stored.kernel,
-            &Artifact {
-                format: Format::Wgsl,
-                key: stored.key,
-                bytes: stored.wgsl,
-                reflection: leak_str(&renamed),
-            },
+            &Artifact::new(Format::Wgsl, stored.key, stored.wgsl, leak_str(&renamed)),
         )
         .unwrap_err();
         assert!(
@@ -587,12 +577,7 @@ fn the_helper_builds_the_stored_artifacts() {
     for stored in [SCALE, SHIFTED] {
         verify_artifact(
             stored.kernel,
-            &Artifact {
-                format: Format::Wgsl,
-                key: stored.key,
-                bytes: stored.wgsl,
-                reflection: stored.reflection,
-            },
+            &Artifact::new(Format::Wgsl, stored.key, stored.wgsl, stored.reflection),
         )
         .unwrap();
     }

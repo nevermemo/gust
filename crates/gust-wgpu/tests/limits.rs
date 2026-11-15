@@ -518,8 +518,17 @@ fn workgroup_count_through_a_one_node_graph() {
     let descriptor = kernel(Element::F32, 64, 1);
     let bindings = [BufferBinding::read_write(&output).independent_length()];
 
+    let dispatch = BufferDispatch::new(&descriptor, over, &bindings);
+    // The `Debug` form names the kernel and the extent, never a wgpu handle.
+    assert_eq!(
+        format!("{dispatch:?}"),
+        format!(
+            "BufferDispatch {{ kernel: {:?}, element_count: {over}, extent_yz: [1, 1], bindings: 1, samplers: 0 }}",
+            descriptor.name
+        )
+    );
     let mut graph = StagedGraph::new();
-    graph.dispatch(BufferDispatch::new(&descriptor, over, &bindings), &[]);
+    graph.dispatch(dispatch, &[]);
     let error = device
         .execute_graph(&graph)
         .err()
@@ -707,8 +716,7 @@ fn a_zeroed_buffer_above_max_buffer_size_is_a_device_limit_with_default_limits()
     // 1 GiB of u32.
     let error = device
         .create_zeroed_buffer::<u32>("one gib", 1 << 28, GpuBufferAccess::ReadWrite)
-        .err()
-        .expect("1 GiB is above 256 MiB");
+        .expect_err("1 GiB is above 256 MiB");
     assert_buffer_limit(error, "one gib", 1 << 30, maximum);
     // One element above the limit fails, the limit itself succeeds.
     let error = device
@@ -717,8 +725,7 @@ fn a_zeroed_buffer_above_max_buffer_size_is_a_device_limit_with_default_limits()
             (maximum / 4) as usize + 1,
             GpuBufferAccess::ReadWrite,
         )
-        .err()
-        .expect("four bytes above the limit");
+        .expect_err("four bytes above the limit");
     assert_buffer_limit(error, "just above", maximum + 4, maximum);
     let exact = device
         .create_zeroed_buffer::<u32>("exact", (maximum / 4) as usize, GpuBufferAccess::ReadWrite)
@@ -729,15 +736,13 @@ fn a_zeroed_buffer_above_max_buffer_size_is_a_device_limit_with_default_limits()
     let values = vec![7_u32; (maximum / 4) as usize + 1];
     let error = device
         .try_create_typed_buffer("upload", &values, GpuBufferAccess::ReadOnly)
-        .err()
-        .expect("one element too many");
+        .expect_err("one element too many");
     assert_buffer_limit(error, "upload", maximum + 4, maximum);
     // `with_limits` lowers the limit the pre-check reads.
     let device = lowered(device, |limits| limits.max_buffer_size = 1 << 20);
     let error = device
         .create_zeroed_buffer::<u32>("lowered", (1 << 18) + 1, GpuBufferAccess::ReadWrite)
-        .err()
-        .expect("above the lowered limit");
+        .expect_err("above the lowered limit");
     assert_buffer_limit(error, "lowered", (1 << 20) + 4, 1 << 20);
 }
 
@@ -754,14 +759,12 @@ fn a_64_gib_request_is_a_device_limit_before_any_wgpu_call() {
         let maximum = device.limits().max_buffer_size;
         let error = device
             .create_zeroed_buffer::<u32>("sixty-four gib", 1 << 34, GpuBufferAccess::ReadWrite)
-            .err()
-            .expect("64 GiB is above every max_buffer_size");
+            .expect_err("64 GiB is above every max_buffer_size");
         assert_buffer_limit(error, "sixty-four gib", 1 << 36, maximum);
         // A length whose byte size overflows `u64` saturates and is refused the same way.
         let error = device
             .create_zeroed_buffer::<u32>("overflow", usize::MAX, GpuBufferAccess::ReadWrite)
-            .err()
-            .expect("an absurd length");
+            .expect_err("an absurd length");
         assert_buffer_limit(error, "overflow", u64::MAX, maximum);
         // The pooled path decides the same way, before the pool or wgpu is touched: no miss is counted.
         let handle = std::sync::Arc::new(device);
@@ -801,7 +804,7 @@ fn a_1_gib_zeroed_buffer_is_created_where_the_adapter_allows_it() {
             assert_eq!(buffer.access(), GpuBufferAccess::ReadWrite);
         } else {
             assert_buffer_limit(
-                outcome.err().expect("above the limit"),
+                outcome.expect_err("above the limit"),
                 "one gib",
                 1 << 30,
                 maximum,

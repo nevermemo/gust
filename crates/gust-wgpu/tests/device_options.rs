@@ -258,3 +258,34 @@ fn the_default_device_opens_once_with_the_options_set_before_it() {
     let from_async = pollster::block_on(gust_wgpu::default_device_async()).expect("same device");
     assert!(std::sync::Arc::ptr_eq(&first, &from_async));
 }
+
+#[test]
+fn enumerate_async_lists_the_adapters_enumerate_lists() {
+    let blocking = HeadlessDevice::enumerate(vulkan());
+    let awaited = pollster::block_on(HeadlessDevice::enumerate_async(vulkan()));
+    assert!(!awaited.is_empty(), "a Vulkan adapter is required");
+    assert_eq!(awaited, blocking);
+}
+
+#[test]
+fn coherent_storage_is_reported_only_when_the_adapter_offers_it() {
+    let device =
+        HeadlessDevice::with_options(options(AdapterChoice::Index(0), LimitsPolicy::Default))
+            .expect("the first adapter opens");
+    let supported = device.supports_coherent_storage();
+    // The answer is a property of the opened device: asking twice gives the same one.
+    assert_eq!(supported, device.supports_coherent_storage());
+    let name = device.adapter_info().name.clone();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let offered = pollster::block_on(instance.enumerate_adapters(vulkan()))
+        .into_iter()
+        .find(|adapter| adapter.get_info().name == name)
+        .expect("the adapter the device was opened on")
+        .features()
+        .contains(wgpu::Features::MEMORY_DECORATION_COHERENT);
+    // A device cannot have a feature its adapter lacks.
+    assert!(
+        !supported || offered,
+        "supported={supported} offered={offered}"
+    );
+}

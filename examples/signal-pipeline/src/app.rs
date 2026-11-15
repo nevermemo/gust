@@ -70,12 +70,12 @@ pub fn main() {
         (&persistent_scale, inputs.scale.as_slice()),
     ]
     .into_iter()
-    .try_fold(TransferTiming::default(), |total, (buffer, values)| {
+    .try_fold(TransferTiming::default(), |mut total, (buffer, values)| {
         let timing = device.write_f32_buffer_timed(buffer, values)?;
-        Ok::<_, gust_wgpu::Error>(TransferTiming {
-            bytes: total.bytes + timing.bytes,
-            elapsed: total.elapsed + timing.elapsed,
-        })
+        // `TransferTiming` is `#[non_exhaustive]`: add to the one this code owns, and do not build a literal.
+        total.bytes += timing.bytes;
+        total.elapsed += timing.elapsed;
+        Ok::<_, gust_wgpu::Error>(total)
     })
     .expect("timed signal input uploads");
     signal_pipeline::transform::dispatch(

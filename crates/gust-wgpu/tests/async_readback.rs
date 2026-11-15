@@ -195,6 +195,7 @@ fn an_async_readback_queued_behind_a_busy_kernel_waits_for_the_mapping() {
                 &[BufferBinding::read_write(&buffer)],
             )
             .unwrap();
+        assert_eq!(format!("{job:?}"), "WgpuJob { submitted: true, .. }");
         let started = Instant::now();
         let (read, polls) = drive(device.read_typed_buffer_async(&buffer));
         eprintln!(

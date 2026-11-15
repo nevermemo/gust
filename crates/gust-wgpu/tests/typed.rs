@@ -1646,3 +1646,72 @@ fn a_shared_buffer_holds_the_product_of_the_extent_and_that_product_does_not_wra
         other => panic!("expected BufferLength for the 32-bit wrap, got {other:?}"),
     }
 }
+
+// ---- kept functions that no test reached (m10.api2a.1, W18) ----
+
+#[test]
+fn timed_typed_transfers_report_their_bytes_and_round_trip() {
+    let device = device();
+    let buffer = device.create_typed_buffer("timed", &[0u32; 8], GpuBufferAccess::ReadWrite);
+    let values: Vec<u32> = (1..=8).collect();
+    let written = device
+        .write_typed_buffer_timed(&buffer, &values)
+        .expect("a timed write");
+    assert_eq!(written.bytes, 32);
+    let (read, timing) = device
+        .read_typed_buffer_timed(&buffer)
+        .expect("a timed readback");
+    assert_eq!(read, values);
+    assert_eq!(timing.bytes, 32);
+    // An empty write moves nothing, and reports it.
+    let empty = device.create_typed_buffer::<u32>("empty", &[], GpuBufferAccess::ReadWrite);
+    assert_eq!(
+        device
+            .write_typed_buffer_timed(&empty, &[])
+            .expect("an empty timed write")
+            .bytes,
+        0
+    );
+}
+
+#[test]
+fn pool_reserve_grows_geometrically_and_keeps_the_live_prefix() {
+    let device = device();
+    let mut pool = device.create_pool("reserve", &[1u32, 2, 3], 4);
+    let capacity = pool.capacity();
+    assert_eq!((pool.len(), capacity, pool.generation()), (3, 4, 0));
+    // Within the capacity: nothing grows.
+    assert!(device.pool_reserve(&mut pool, capacity).unwrap().is_none());
+    assert_eq!(pool.generation(), 0);
+    // Past it: the capacity doubles, only the three live elements are copied, and the length does not change.
+    let growth = device
+        .pool_reserve(&mut pool, capacity + 1)
+        .unwrap()
+        .expect("the reserve exceeds the capacity");
+    assert_eq!(
+        (
+            growth.old_capacity,
+            growth.new_capacity,
+            growth.copied_bytes
+        ),
+        (4, 8, 12)
+    );
+    assert_eq!((pool.len(), pool.capacity(), pool.generation()), (3, 8, 1));
+    assert_eq!(pool.growth_history().len(), 1);
+    assert_eq!(device.pool_read(&pool).unwrap(), [1, 2, 3]);
+    // A reserve beyond the doubling takes what it needs.
+    let growth = device
+        .pool_reserve(&mut pool, 70)
+        .unwrap()
+        .expect("70 exceeds the doubled capacity");
+    assert_eq!((growth.old_capacity, growth.new_capacity), (8, 70));
+    assert_eq!(device.pool_read(&pool).unwrap(), [1, 2, 3]);
+    // `Debug` (W2): the counts and the device, never a wgpu handle.
+    assert_eq!(
+        format!("{pool:?}"),
+        format!(
+            "GpuPool {{ len: 3, capacity: 70, generation: 2, device_id: {}, growths: 2, .. }}",
+            device.id()
+        )
+    );
+}

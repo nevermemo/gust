@@ -18,6 +18,10 @@
 //!   target directory; run alone (as `check-full` does) it builds with whatever the environment holds, and says nothing
 //!   about Slang. An entry with a `profile_run` (`variants`) runs a second time under that `GUST_PROFILE`, and the output of
 //!   that run must contain its own expected line; an entry with `via_driver` (`routed`) runs through `cargo gust run`.
+//!   An entry with `browser` (`web-hello`) is a wasm32 page: the part builds it under `GUST_PROFILE=web`, runs
+//!   `wasm-bindgen` and opens it in headless Chrome through the runner of `check-web` (one loopback server on an
+//!   ephemeral port, the page's `GUST_OK` line read from Chrome's console). That needs Chrome, a `wasm-bindgen` CLI of
+//!   the locked version and the wasm32 standard library, and the part fails when one is missing: it is never skipped.
 //!
 //! Children never inherit `GUST_PROFILE`, `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS`: a gallery crate is built the way a
 //! user builds it (release is the strict `native` profile, tests are `dev`).
@@ -29,11 +33,13 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    time::Instant,
 };
 
 use crate::{
     precompiled::{StripReport, child_environment, directory_has_slang_tool, slang_free_problems},
     process::{exit_code, set_workspace_profile, without_colors},
+    web::{Example, Options as WebOptions, evidence_label, run_example},
     workspace::{cargo_target_dir, workspace_root},
 };
 
@@ -50,6 +56,10 @@ pub(crate) struct Entry {
     /// Whether the GPU part runs the entry through `cargo gust run` (so its `gust.toml` decides the routes) instead of plain
     /// `cargo run` (`routed`).
     pub(crate) via_driver: bool,
+    /// Whether the entry is a browser module (`web-hello`): a library built for `wasm32-unknown-unknown` with an
+    /// `index.html`, no `main`. Its GPU run is the page, through the runner of `check-web` ([`crate::web::run_example`]),
+    /// and `expected_line` is the last part of the page's `GUST_OK` line, not a line a `main` prints.
+    pub(crate) browser: bool,
 }
 
 /// The second GPU run of an [`Entry`]: `cargo run --release` with `GUST_PROFILE` set to `profile`.
@@ -60,54 +70,62 @@ pub(crate) struct ProfileRun {
 
 /// Every entry of the gallery. A unit test and the check itself compare this list with the `members` of
 /// `gallery/Cargo.toml`, so an entry cannot be added to one and forgotten in the other.
-pub(crate) const ENTRIES: [Entry; 9] = [
+pub(crate) const ENTRIES: [Entry; 10] = [
     Entry {
         dir: "hello-gust",
         expected_line: "hello-gust: [11.0, 22.0, 33.0, 44.0]",
         profile_run: None,
         via_driver: false,
+        browser: false,
     },
     Entry {
         dir: "saxpy-uniform",
         expected_line: "saxpy-uniform: a=2 [12.0, 24.0, 36.0, 48.0], a=3 [13.0, 26.0, 39.0, 52.0]",
         profile_run: None,
         via_driver: false,
+        browser: false,
     },
     Entry {
         dir: "histogram",
         expected_line: "histogram: 100000 keys in 8 bins [35376, 14623, 11255, 9474, 8348, 7546, 6933, 6445]",
         profile_run: None,
         via_driver: false,
+        browser: false,
     },
     Entry {
         dir: "particles",
         expected_line: "particles: 1000 particles, 16 steps, 1129 bounces, energy 20272.84375",
         profile_run: None,
         via_driver: false,
+        browser: false,
     },
     Entry {
         dir: "image-threshold",
         expected_line: "image-threshold: 37 x 21 texels, 366 bright by the pixel kernel, 366 by the grid kernel",
         profile_run: None,
         via_driver: false,
+        browser: false,
     },
     Entry {
         dir: "reduce-scan",
         expected_line: "reduce-scan: 100000 values in 8 sizes, sum 450000, scan ends at 450000 with checksum 22499850000",
         profile_run: None,
         via_driver: false,
+        browser: false,
     },
     Entry {
         dir: "state-machine",
         expected_line: "state-machine: 1000 records of 16 symbols, 1927 words (longest 7), 933 numbers (longest 7)",
         profile_run: None,
         via_driver: false,
+        browser: false,
     },
     Entry {
         dir: "routed",
         expected_line: "routed: 1000 samples, tidy on Cpu, smooth on Gpu, checksum 691792",
         profile_run: None,
         via_driver: true,
+        browser: false,
     },
     Entry {
         dir: "variants",
@@ -119,8 +137,29 @@ pub(crate) const ENTRIES: [Entry; 9] = [
             expected_line: "variants: body=subgroups, 100000 values, sum 12499996, 59761 over 100, max 250",
         }),
         via_driver: false,
+        browser: false,
+    },
+    Entry {
+        dir: "web-hello",
+        // The last part of the page's `GUST_OK` line (`gallery/web-hello/src/lib.rs` logs it; a unit test finds it there).
+        expected_line: WEB_HELLO.closing,
+        profile_run: None,
+        via_driver: false,
+        browser: true,
     },
 ];
+
+/// The browser page of the gallery: `web-hello` through the runner of `check-web` (plan M10 section 3.1, G9).
+pub(crate) const WEB_HELLO: Example = Example {
+    dir: "gallery/web-hello",
+    workspace: GALLERY_DIR,
+    package: "web-hello",
+    out_name: "web_hello",
+    manifest: "gallery/web-hello/gust-artifacts/manifest.json",
+    closing: "map_async exact against the host reference",
+    // A gallery crate is built the way a user builds it: no flag variables of the caller.
+    cleared_env: &["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"],
+};
 
 /// A guide listing: a packaged file (path relative to the repository root) that must be byte-identical to the region
 /// `anchor` of the gallery file `source` (also relative to the root). The guide's chapters add theirs in later slices.
@@ -420,6 +459,16 @@ pub(crate) fn workspace_members(manifest: &str) -> Result<Vec<String>, String> {
     Ok(members)
 }
 
+/// The files an entry must have (relative to its directory): a program has a `main`, a browser module (`web-hello`) a
+/// library and the page that loads it.
+pub(crate) fn required_files(entry: &Entry) -> &'static [&'static str] {
+    if entry.browser {
+        &["Cargo.toml", "README.md", "src/lib.rs", "index.html"]
+    } else {
+        &["Cargo.toml", "README.md", "src/main.rs"]
+    }
+}
+
 /// Fails unless [`ENTRIES`] and the workspace members are the same set, and every entry has its files.
 fn check_entries(root: &Path) -> Result<(), String> {
     let manifest = fs::read_to_string(root.join(GALLERY_DIR).join("Cargo.toml"))
@@ -437,7 +486,7 @@ fn check_entries(root: &Path) -> Result<(), String> {
         ));
     }
     for entry in &ENTRIES {
-        for file in ["Cargo.toml", "README.md", "src/main.rs"] {
+        for file in required_files(entry) {
             let path = root.join(GALLERY_DIR).join(entry.dir).join(file);
             if !path.is_file() {
                 return Err(format!("gallery/{}/{file} is missing", entry.dir));
@@ -987,8 +1036,11 @@ pub(crate) fn output_has_line(output: &str, expected: &str) -> bool {
 /// `gust` rebuild once for the profile, whatever the order of [`ENTRIES`]). An entry with `via_driver` runs through
 /// `cargo gust run`, so its `gust.toml` is the route table of the run. A second run under `native+subgroups` needs an
 /// adapter with subgroup operations: on one without them (or with a device that cannot be opened with them) the run
-/// fails, and so does the part; it is never skipped.
-fn gpu_part(root: &Path) -> Result<String, String> {
+/// fails, and so does the part; it is never skipped. An entry with `browser` (`web-hello`) is not run by cargo: its page is built
+/// for `wasm32-unknown-unknown`, served from a loopback server and run in headless Chrome through the runner of
+/// `check-web` (`web::run_example`), so the part also needs Chrome, a `wasm-bindgen` CLI of the locked version and the
+/// wasm32 target; a missing one fails the part, and so does a page that does not log its `GUST_OK` line.
+fn gpu_part(root: &Path, browser: bool) -> Result<String, String> {
     let cargo = cargo_program()?;
     let gallery = root.join(GALLERY_DIR);
     let target = gallery_target(root, "no-slang");
@@ -1009,6 +1061,14 @@ fn gpu_part(root: &Path) -> Result<String, String> {
                 .map(|run| (entry, Some(run.profile), run.expected_line))
         }));
     for (entry, profile, expected_line) in runs {
+        if entry.browser {
+            lines.push(if browser {
+                browser_run(root, entry)?
+            } else {
+                browser_skipped_line(entry)
+            });
+            continue;
+        }
         let mut run = match (&driver, entry.via_driver) {
             (Some(driver), true) => {
                 let mut command = Command::new(driver);
@@ -1071,6 +1131,57 @@ fn gpu_part(root: &Path) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
+/// What the part prints for a browser entry it was asked to leave out (`check-full --skip-web`), so that the skip is
+/// visible in the output and not silent.
+pub(crate) fn browser_skipped_line(entry: &Entry) -> String {
+    format!(
+        "{}: browser run SKIPPED on request (check-full --skip-web); no evidence for the page in a browser",
+        entry.dir
+    )
+}
+
+/// The page of a browser entry in headless Chrome, through the runner of `check-web`. The page's `GUST_OK` line must name the
+/// adapter words, the kernel its build selected (compared with the committed manifest) and end with the entry's
+/// `expected_line`; the returned line names the Chrome version and the adapter.
+fn browser_run(root: &Path, entry: &Entry) -> Result<String, String> {
+    let example = match entry.dir {
+        "web-hello" => &WEB_HELLO,
+        other => {
+            return Err(format!(
+                "gallery/{other} is a browser entry with no page registered"
+            ));
+        }
+    };
+    let label = format!(
+        "{} page in headless Chrome ({} through the runner of check-web)",
+        entry.dir, example.dir
+    );
+    println!("  $ {label}");
+    let run = run_example(
+        root,
+        example,
+        &WebOptions::default(),
+        &gallery_target(root, "web"),
+        Instant::now(),
+    )
+    .map_err(|error| {
+        // The runner's messages name the flags of `check-web`; this check has none.
+        let note = if error.contains("--chrome") || error.contains("--wasm-bindgen") {
+            "
+  check-gallery takes no --chrome or --wasm-bindgen flag: it looks for Chrome in its standard install locations and for a `wasm-bindgen` CLI of the locked version on PATH"
+        } else {
+            ""
+        };
+        format!("{label}: {error}{note}")
+    })?;
+    Ok(format!(
+        "{}: the page logged `GUST_OK {}`, evidence: {}",
+        entry.dir,
+        run.label,
+        evidence_label(run.chrome_version.as_deref(), &run.adapter)
+    ))
+}
+
 /// The line of an entry that names the adapter it ran on.
 const ADAPTER_PREFIX: &str = "adapter: ";
 
@@ -1086,7 +1197,7 @@ pub(crate) fn adapter_name(output: &str) -> Option<&str> {
 /// `cargo xtask check-gallery [--slang] [--no-slang] [--gpu]`.
 pub(crate) fn check_gallery(args: &[String]) -> Result<(), String> {
     let parts = Parts::parse(args)?;
-    run_parts(&workspace_root()?, parts)?;
+    run_parts(&workspace_root()?, parts, true)?;
     println!(
         "check-gallery passed (parts run: {})",
         parts.run_names().join(", ")
@@ -1094,8 +1205,9 @@ pub(crate) fn check_gallery(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The GPU part alone, which `check-full` runs (`verify.rs`).
-pub(crate) fn check_gallery_gpu_report() -> Result<String, String> {
+/// The GPU part alone, which `check-full` runs (`verify.rs`). `browser` is false only for `check-full --skip-web`: the
+/// browser entries are then left out, the output says so and `check-full` records the skip.
+pub(crate) fn check_gallery_gpu_report(browser: bool) -> Result<String, String> {
     run_parts(
         &workspace_root()?,
         Parts {
@@ -1103,10 +1215,14 @@ pub(crate) fn check_gallery_gpu_report() -> Result<String, String> {
             no_slang: false,
             gpu: true,
         },
+        browser,
     )
 }
 
-fn run_parts(root: &Path, parts: Parts) -> Result<String, String> {
+/// A part of the check, as [`run_parts`] calls it.
+type PartFn<'a> = dyn Fn(&Path) -> Result<String, String> + 'a;
+
+fn run_parts(root: &Path, parts: Parts, browser: bool) -> Result<String, String> {
     println!(
         "check-gallery: parts that run: {}",
         parts.run_names().join(", ")
@@ -1128,15 +1244,13 @@ fn run_parts(root: &Path, parts: Parts) -> Result<String, String> {
             parts.not_run_names().join(", ")
         ));
     }
-    for (selected, name, part) in [
-        (
-            parts.slang,
-            "slang",
-            slang_part as fn(&Path) -> Result<String, String>,
-        ),
-        (parts.no_slang, "no-slang", no_slang_part),
-        (parts.gpu, "gpu", gpu_part),
-    ] {
+    let gpu = |root: &Path| gpu_part(root, browser);
+    let parts_to_run: [(bool, &str, &PartFn<'_>); 3] = [
+        (parts.slang, "slang", &slang_part),
+        (parts.no_slang, "no-slang", &no_slang_part),
+        (parts.gpu, "gpu", &gpu),
+    ];
+    for (selected, name, part) in parts_to_run {
         if !selected {
             continue;
         }

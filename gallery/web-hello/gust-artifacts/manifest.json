@@ -1,0 +1,21 @@
+{
+  "kernels": [
+    {
+      "clean_sha256": "a5f3a358a0ca1871739952869d6d5e1026fd77b2d4200d4fce33a1f08271d5fd",
+      "entry_point": "gpu_add_map_kernel",
+      "formats": [
+        {
+          "file": "193e4e282d7e14bd.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "37a07f53bfac6f0806e4eb67ece7dda2d36e69630a9fd8cfc2d668c12c7d8ec7",
+          "sha256": "bdc82dd4816ee107f2fa444d970db045dce554936b75d2f46e7629f44aa95a4d"
+        }
+      ],
+      "key": "193e4e282d7e14bd",
+      "module": "add",
+      "name": "map_kernel"
+    }
+  ],
+  "schema": 1,
+  "slang": "2026.22"
+}

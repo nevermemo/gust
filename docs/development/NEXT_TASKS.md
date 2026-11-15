@@ -466,7 +466,7 @@ test module; do not mix that mechanical move with behavior changes.
 - For the 0.2.0 release (the m8.v re-check; done in m8.x2): RELEASE.md's "Releasing 0.2.0 from main" now lists every
   version literal (the README's renamed-dependency example, "Not supported in 0.1.0" and "known limit of 0.1.0", the two
   crate READMEs' `~0.1`, the doc comment of `cargo-gust`'s `main.rs`), and CHANGELOG's `toml` text left "may break" for
-  its own section. Open at release: rerun the `semver` job and update the "Compatibility with 0.1.0" part of the
+  its own section. Open at release: rerun the `semver` job and update the "Compatibility with the unpublished 0.1.0 line" part of the
   CHANGELOG entry (run id and counts).
 - The routed device handle (D136, D137; spike m9.h, built in m9.h1 as `gust::routed::RoutedDevice`, additive, `Run` and
   `Call` unchanged) is built for storage buffers only. What remains: uniforms, textures and samplers through the handle

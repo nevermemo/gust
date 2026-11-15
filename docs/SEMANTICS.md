@@ -11,7 +11,8 @@ a typed call (slice m3.c). The fixture tests assert the twin next to the GPU and
 atomic functions run for real on the twin, and the ledger has a twin column (slice m3.d). `cargo xtask check-cpu`
 (slice m3.c2) is a step of the Unit suite and runs the locked, GPU-free tests of the vector-add, polynomial,
 signal-pipeline, particle-step, typed-pipeline, atomic-counter (slice m3.e1), staged-graph and component-pool (slice
-m3.e2) examples, and of map-chain (slice m7.a2), whose twin runs the plain bodies of its three `#[gpu] fn` maps.
+m3.e2) examples, of map-chain (slice m7.a2), whose twin runs the plain bodies of its three `#[gpu] fn` maps, and of
+texture-threshold (slice mx.t4) and shape-bench (slice mx.p1c) (the list is `CPU_TESTS` in `xtask/src/checks.rs`).
 `cargo xtask check-dual` (slices m3.f1 and m3.f2) proves across crates that the twin is absent from a
 production build and present in a `--cfg gust_dual` build, and, with an integer kernel whose `+` overflows, that a twin
 runs in the overflow mode of the package that defines its kernel: the twin of a dependency's kernel panics when the
@@ -1461,20 +1462,16 @@ the index of those first, where 2026.20 called first, so the order of Slang for 
 versions and GUST refuses the form rather than rely on it. Before this round slice a2 accepted the storage forms, which
 gave another element than the CPU twin on the GPU with the pinned Slang.
 
-**Known departure from Rust: two atomics on one cell in an assignment (m9.z).** This is a deterministic difference of
-evaluation order between the CPU twin and the GPU, not an out-of-bounds edge case and not a race, and it is left
-unrefused by a coordinator ruling (atomics are outside the `&mut self` rule of `E0421`, which looks for `&mut self`
-calls of the module, not for atomics), so
-`out[atomic_add(&mut c[i], 1u32) as usize] = atomic_add(&mut c[i], 10u32);` is accepted, and when both atomics name the
-same cell the two orders give different values. Rust runs the value first (Rust Reference, assignment expressions: the
-right operand, then the place); slangc 2026.22 runs the index first (read on the CPU: the WGSL has
-`_S1 = atomicAdd(c[i], 1)`, then `_S2 = atomicAdd(c[i], 10)`, then `o[_S1] = _S2`; the form was not run on a GPU in
-this slice). On a cell that starts at 0 Rust stores 0 at `out[10]` and the GPU stores 1 at `out[0]`. With one cell per
-invocation nothing races, so the difference is deterministic, not a data race; it is the same kind of departure as
-the other orders above, but GUST neither refuses nor reorders it, so a program that relies on it gets different values
-on the two targets. Write instead `let v = atomic_add(&mut c[i], 10u32);
-out[atomic_add(&mut c[i], 1u32) as usize] = v;`, which has one order on both targets. Atomics on different cells
-do not interact, so they are not affected.
+**Two atomics on one cell in an assignment are refused (m9.z).** The old value of an atomic cannot be used in a `#[gpu]`
+body (the CPU twin returns it; section 6), so `out[atomic_add(&mut c[i], 1u32) as usize] = atomic_add(&mut c[i], 10u32);`
+and `let i = atomic_add(&mut c[i], 1u32);` are refused with `GUST-E0606` (an atomic as a value). Any ordinary read or
+write of a buffer that the kernel also uses atomically, an index that reads the atomic cell among them, is refused with
+`GUST-E0607`; the regression test
+`an_atomic_operation_never_stands_in_an_order_sensitive_value` pins both. The form never reaches the order rules, which
+matters because the two orders differ: Rust runs the value first (Rust Reference, assignment expressions: the right
+operand, then the place), while slangc 2026.22 runs the index first (read on the CPU in m9.z: the WGSL has
+`_S1 = atomicAdd(c[i], 1)`, then `_S2 = atomicAdd(c[i], 10)`, then `o[_S1] = _S2`; not run on a GPU). The statement
+form `atomic_add(&mut c[i], 10u32);` has one order on both targets, and atomics on different cells do not interact.
 
 **Out of bounds (D39).** An index outside `0..N` panics in Rust; on the GPU the access is clamped or undefined by
 target, so such a program is outside the defined domain of section 3 (KM-11 is the observation for a buffer index; no

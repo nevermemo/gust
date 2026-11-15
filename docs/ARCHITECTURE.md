@@ -889,7 +889,8 @@ since M9, SEMANTICS sections 10 and 11).
 `as` casts accept only the proven
 32-bit scalar targets (`f32`/`float`, `i32`/`int`, `u32`/`uint`); Rust primitives
 outside the four-byte subset (`u8`, `i64`, `usize`, `f64`, `char`, ...) are rejected
-in every type position, and inline `const { .. }` blocks are rejected by name. These
+in every type position (`usize` has exceptions: it is accepted as the cast of an index, and `GUST-E0334` in
+DIAGNOSTICS.md lists the accepted `.len()` and index casts in full), and inline `const { .. }` blocks are rejected by name. These
 names are not shadowed by the prelude, so rustc accepts them in the shadow body and
 the translator previously passed the Rust spelling through to a `slangc` failure at
 pipeline creation. `bool` remains a supported type but not a cast target: rustc
@@ -905,7 +906,7 @@ a reserved `__gust_opt_N` temporary and binds the payload inside the taken branc
 payload must be a supported scalar or a module struct. Option is a local/helper value
 only: it is rejected in struct fields and resource element types because it has no
 proven storage layout, and `.unwrap()`/`.expect()` are rejected because Rust panics
-there while GPU code cannot. `match` on Option, `?`, let chains, and other patterns
+there while GPU code cannot. `match` on Option (`GUST-E0515`), `?`, let chains, and other patterns
 remain rejected (a `match` on an enum or an integer has its own lowering since M9, SEMANTICS section 9). `Result<T, T>` is also lowered deterministically as a local/helper-only
 tagged `__GustResult<T>`: `Ok`/`Err`, `is_ok`/`is_err`, `unwrap_or`, `if let Ok`, and
 statement-only exhaustive `match` with `Ok(identifier)` / `Err(identifier)` block arms

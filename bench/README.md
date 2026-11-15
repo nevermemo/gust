@@ -22,11 +22,15 @@ result `Vec` stays per call in every ablation. A test counts bind groups, stagin
 then reads `wgsl-percall`, each switch alone, `+all-on`, `wgsl-prebuilt` and `gust-gpu`; the step from `+all-on` to
 `wgsl-prebuilt` is the result `Vec`, the step from `wgsl-percall` to `+all-on` is the three switches together.
 
-Before the timed samples of a GPU cell the harness warms the cell up by time (0.75 s of its own dispatches, 0.5 s with
-`--quick`, `--warmup-secs S` to change it), because the sampler idles the GPU for the settle and window before every
-cell and the clocks would otherwise still be low. The SM clock, memory clock, pstate and PCIe link generation are read
-while that warm-up is running and stored in the cell (`warmup.clocks`); the aggregate lists them. `--cold-only` skips
-the four timings and measures only the cold start (`--cold-repeats N`).
+Before the timed samples of a GPU cell the harness warms the cell up with real load (end-to-end samples alternating
+with 1024-pass batches) until the clock query reports P0 with the memory clock within 90 % and the SM clock within 50 %
+of their maxima, capped at 3 s (`--warmup-secs S` changes the cap), because the sampler idles the GPU for the settle and
+window before every cell and the clocks would otherwise still be low. A cell that hits the cap is kept and marked
+`p0_not_reached`. The clocks at the end of the warm-up (`warmup.clocks`) and right after the timed samples
+(`clocks_after_timing`), the PCIe link and the P0 counts are in the aggregate; every end-to-end table carries the PCIe
+link. `--cold-only` skips the four timings and measures only the cold start (`--cold-repeats N`). The precompiled
+package must pass `cargo gust check -p gust-bench-pre` (measure.sh --build-only runs it): a stale artifact otherwise
+falls back to a run-time compile under dev.
 
 The first cold start of each kernel on a backend in a process is flagged (`cold_start_first_in_process`) and the aggregate lists it
 apart from the rest: it also pays one-time costs. A hand-WGSL cold start is labelled "driver shader cache warm" (its

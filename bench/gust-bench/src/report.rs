@@ -197,6 +197,11 @@ struct ClockSpan {
     pstates: std::collections::BTreeSet<String>,
     gen_now: Vec<f64>,
     gen_max: Vec<f64>,
+    mem: Vec<f64>,
+    after_pstates: std::collections::BTreeSet<String>,
+    after_mem: Vec<f64>,
+    cells: usize,
+    p0_reached: usize,
 }
 
 /// The ablation order of the table: the per-call shape, each switch alone, all three on (result `Vec` still fresh),
@@ -243,7 +248,7 @@ fn ablation_rows(table: &Table, sizes: &BTreeMap<String, Vec<u64>>) -> Vec<Value
 /// backend) over the runs.
 fn clock_rows(runs: &[Value]) -> Vec<Value> {
     type Key = (String, u64, String);
-    let mut grouped: BTreeMap<Key, Vec<&Value>> = BTreeMap::new();
+    let mut grouped: BTreeMap<Key, Vec<(&Value, &Value)>> = BTreeMap::new();
     for run in runs {
         for cell in run["cells"].as_array().into_iter().flatten() {
             if cell["warmup"]["clocks"].is_object() {
@@ -252,13 +257,18 @@ fn clock_rows(runs: &[Value]) -> Vec<Value> {
                     cell["n"].as_u64().unwrap_or(0),
                     cell["backend"].as_str().unwrap_or("").to_owned(),
                 );
-                grouped.entry(key).or_default().push(&cell["warmup"]);
+                grouped
+                    .entry(key)
+                    .or_default()
+                    .push((&cell["warmup"], &cell["clocks_after_timing"]));
             }
         }
     }
     grouped
         .into_iter()
-        .map(|((workload, n, backend), warmups)| {
+        .map(|((workload, n, backend), pairs)| {
+            let warmups = pairs.iter().map(|p| p.0).collect::<Vec<_>>();
+            let afters = pairs.iter().map(|p| p.1).collect::<Vec<_>>();
             let field = |name: &str| {
                 warmups
                     .iter()
@@ -269,8 +279,67 @@ fn clock_rows(runs: &[Value]) -> Vec<Value> {
                 "workload": workload, "n": n, "backend": backend,
                 "sm_mhz": field("sm_mhz"), "mem_mhz": field("mem_mhz"), "pstate": field("pstate"),
                 "pcie_gen_now": field("pcie_gen_now"), "pcie_gen_max": field("pcie_gen_max"),
+                "pcie_width": field("pcie_width"),
                 "warmup_actual_s": warmups.iter().map(|w| w["actual_s"].clone()).collect::<Vec<_>>(),
+                "p0_reached": warmups.iter().map(|w| w["p0_reached"].clone()).collect::<Vec<_>>(),
+                "pstate_after_timing": afters.iter().map(|a| a["pstate"].clone()).collect::<Vec<_>>(),
+                "sm_mhz_after_timing": afters.iter().map(|a| a["sm_mhz"].clone()).collect::<Vec<_>>(),
+                "mem_mhz_after_timing": afters.iter().map(|a| a["mem_mhz"].clone()).collect::<Vec<_>>(),
             })
+        })
+        .collect()
+}
+
+/// The PCIe link seen in the GPU cells of each (workload, size): generation now (and the maximum) and width, from the
+/// clock readings at the end of the warm-up and after the timed samples. Printed next to every end-to-end number,
+/// because the 5090 may sit on a narrower or slower link than the card supports.
+fn link_map(runs: &[Value]) -> BTreeMap<(String, u64), String> {
+    #[derive(Default)]
+    struct Seen {
+        gen_now: std::collections::BTreeSet<u64>,
+        gen_max: std::collections::BTreeSet<u64>,
+        width: std::collections::BTreeSet<u64>,
+    }
+    let mut seen: BTreeMap<(String, u64), Seen> = BTreeMap::new();
+    for run in runs {
+        for cell in run["cells"].as_array().into_iter().flatten() {
+            let key = (
+                cell["workload"].as_str().unwrap_or("").to_owned(),
+                cell["n"].as_u64().unwrap_or(0),
+            );
+            for clocks in [&cell["warmup"]["clocks"], &cell["clocks_after_timing"]] {
+                if !clocks.is_object() {
+                    continue;
+                }
+                let slot = seen.entry(key.clone()).or_default();
+                if let Some(v) = clocks["pcie_gen_now"].as_f64() {
+                    slot.gen_now.insert(v as u64);
+                }
+                if let Some(v) = clocks["pcie_gen_max"].as_f64() {
+                    slot.gen_max.insert(v as u64);
+                }
+                if let Some(v) = clocks["pcie_width"].as_f64() {
+                    slot.width.insert(v as u64);
+                }
+            }
+        }
+    }
+    let list = |set: &std::collections::BTreeSet<u64>| {
+        if set.is_empty() {
+            "?".to_owned()
+        } else {
+            set.iter().map(u64::to_string).collect::<Vec<_>>().join("/")
+        }
+    };
+    seen.into_iter()
+        .map(|(key, s)| {
+            let text = format!(
+                "gen {} (max {}) x{}",
+                list(&s.gen_now),
+                list(&s.gen_max),
+                list(&s.width)
+            );
+            (key, text)
         })
         .collect()
 }
@@ -305,6 +374,14 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         .filter_map(|cell| cell["checks_passed"].as_u64())
         .sum();
 
+    let links = link_map(&runs);
+    let link_of = |workload: &str, n: u64| {
+        links
+            .get(&(workload.to_owned(), n))
+            .cloned()
+            .unwrap_or_else(|| "?".to_owned())
+    };
+
     // ---- JSON ----
     let points = table
         .iter()
@@ -314,6 +391,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                 "median_ms": point.median(), "min_run_median_ms": point.min(),
                 "max_run_median_ms": point.max(), "spread_pct": point.spread_pct(),
                 "per_run_median_ms": point.per_run_median, "samples_per_run": point.samples,
+                "pcie_link": (metric == "end_to_end").then(|| link_of(workload, *n)),
             })
         })
         .collect::<Vec<_>>();
@@ -329,6 +407,16 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         .collect::<Vec<_>>();
     let ablation = ablation_rows(&table, &sizes);
     let clocks = clock_rows(&runs);
+    let (gpu_cells, p0_cells) = runs
+        .iter()
+        .flat_map(|run| run["cells"].as_array().into_iter().flatten())
+        .filter(|cell| cell["warmup"]["p0_reached"].is_boolean())
+        .fold((0usize, 0usize), |(all, reached), cell| {
+            (
+                all + 1,
+                reached + usize::from(cell["warmup"]["p0_reached"] == true),
+            )
+        });
     let summary = json!({
         "banner": BANNER,
         "publishable": crate::meta::PUBLISHABLE,
@@ -349,6 +437,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         "gust_vs_hand_overhead": overhead,
         "ablation": ablation,
         "clocks_at_timing_start": clocks,
+        "p0": { "gpu_cells": gpu_cells, "p0_reached": p0_cells, "p0_not_reached": gpu_cells - p0_cells },
         "cold_start": cold_json,
     });
     fs::write(out_json, serde_json::to_string_pretty(&summary)? + "\n")?;
@@ -363,9 +452,9 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     )?;
     writeln!(
         md,
-        "Shader source of gust-gpu's cold start: {}. Time-based warm-up before each GPU cell: {} s.\n",
+        "Shader source of gust-gpu's cold start: {}. Warm-up with load to P0 before each GPU cell, capped at {} s.\n",
         runs[0]["config"]["shader_source"].as_str().unwrap_or("?"),
-        runs[0]["config"]["warmup_time_s"]
+        runs[0]["config"]["warmup_cap_s"]
     )?;
     writeln!(
         md,
@@ -405,9 +494,15 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             for c in &columns {
                 write!(md, " {c} (ms) |")?;
             }
+            if metric == "end_to_end" {
+                write!(md, " PCIe link |")?;
+            }
             writeln!(md)?;
             write!(md, "|---|")?;
             for _ in &columns {
+                write!(md, "---|")?;
+            }
+            if metric == "end_to_end" {
                 write!(md, "---|")?;
             }
             writeln!(md)?;
@@ -425,6 +520,9 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                         None => write!(md, " - |")?,
                     }
                 }
+                if metric == "end_to_end" {
+                    write!(md, " {} |", link_of(workload, *n))?;
+                }
                 writeln!(md)?;
             }
             writeln!(md)?;
@@ -436,9 +534,9 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         )?;
         writeln!(
             md,
-            "| elements | gust-gpu batch | wgsl-prebuilt batch | wgsl-percall batch | gust-gpu e2e | wgsl-prebuilt e2e | rayon-N e2e |"
+            "| elements | gust-gpu batch | wgsl-prebuilt batch | wgsl-percall batch | gust-gpu e2e | wgsl-prebuilt e2e | rayon-N e2e | PCIe link (GPU e2e) |"
         )?;
-        writeln!(md, "|---|---|---|---|---|---|---|")?;
+        writeln!(md, "|---|---|---|---|---|---|---|---|")?;
         for n in list {
             let gbps = |backend: &str, metric: &str| {
                 table
@@ -454,18 +552,19 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             };
             writeln!(
                 md,
-                "| {n} | {} | {} | {} | {} | {} | {} |",
+                "| {n} | {} | {} | {} | {} | {} | {} | {} |",
                 gbps("gust-gpu", "gpu_batch_per_dispatch"),
                 gbps("wgsl-prebuilt", "gpu_batch_per_dispatch"),
                 gbps("wgsl-percall", "gpu_batch_per_dispatch"),
                 gbps("gust-gpu", "end_to_end"),
                 gbps("wgsl-prebuilt", "end_to_end"),
                 gbps("rayon-N", "end_to_end"),
+                link_of(workload, *n),
             )?;
         }
         writeln!(md)?;
 
-        crossover(&mut md, &table, workload, list)?;
+        crossover(&mut md, &table, workload, list, &link_of)?;
     }
 
     writeln!(
@@ -474,13 +573,13 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     )?;
     writeln!(
         md,
-        "| workload | elements | timing | gust-gpu (ms) | wgsl-prebuilt (ms) | ratio | difference (us) | wgsl-percall (ms) | ratio |"
+        "| workload | elements | timing | gust-gpu (ms) | wgsl-prebuilt (ms) | ratio | difference (us) | wgsl-percall (ms) | ratio | PCIe link (end to end) |"
     )?;
-    writeln!(md, "|---|---|---|---|---|---|---|---|---|")?;
+    writeln!(md, "|---|---|---|---|---|---|---|---|---|---|")?;
     for row in &overhead {
         writeln!(
             md,
-            "| {} | {} | {} | {} | {} | {:.3} | {:+.1} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {:.3} | {:+.1} | {} | {} | {} |",
             row["workload"].as_str().unwrap_or(""),
             row["n"],
             row["metric"].as_str().unwrap_or(""),
@@ -492,6 +591,14 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             row["ratio_vs_percall"]
                 .as_f64()
                 .map_or("-".to_owned(), |r| format!("{r:.3}")),
+            if row["metric"] == "end_to_end" {
+                link_of(
+                    row["workload"].as_str().unwrap_or(""),
+                    row["n"].as_u64().unwrap_or(0),
+                )
+            } else {
+                "-".to_owned()
+            },
         )?;
     }
 
@@ -511,9 +618,15 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             for backend in ABLATION {
                 write!(md, " {backend} |")?;
             }
+            if metric == "end_to_end" {
+                write!(md, " PCIe link |")?;
+            }
             writeln!(md)?;
             write!(md, "|---|")?;
             for _ in ABLATION {
+                write!(md, "---|")?;
+            }
+            if metric == "end_to_end" {
                 write!(md, "---|")?;
             }
             writeln!(md)?;
@@ -538,6 +651,9 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                         None => write!(md, " - |")?,
                     }
                 }
+                if metric == "end_to_end" {
+                    write!(md, " {} |", link_of(workload, *n))?;
+                }
                 writeln!(md)?;
             }
             writeln!(md)?;
@@ -547,13 +663,17 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     // GPU clocks at the start of timing: per (workload, size) the range over backends and runs.
     writeln!(
         md,
-        "\n## GPU clocks at the start of timing (read while the time-based warm-up was running)\n"
+        "\n## GPU clocks at the start of timing and after it (P0 warm-up)\n"
     )?;
     writeln!(
         md,
-        "| workload | elements | SM MHz (min to max over backends and runs) | pstates | PCIe gen now (max gen) |"
+        "Start: the last clock reading of the warm-up (real load until P0, capped). After: read right after the timed samples. A cell that hit the cap is marked `p0_not_reached`, not dropped: {p0_cells} of {gpu_cells} GPU cells reached P0.\n"
     )?;
-    writeln!(md, "|---|---|---|---|---|")?;
+    writeln!(
+        md,
+        "| workload | elements | cells reaching P0 | SM MHz at start (min to max) | memory MHz at start | pstates at start | pstates after | memory MHz after | PCIe gen now (max gen) |"
+    )?;
+    writeln!(md, "|---|---|---|---|---|---|---|---|---|")?;
     let mut by_size: BTreeMap<(String, u64), ClockSpan> = BTreeMap::new();
     for row in &clocks {
         let key = (
@@ -570,6 +690,16 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                 .collect::<Vec<_>>()
         };
         slot.sm.extend(numbers("sm_mhz"));
+        slot.mem.extend(numbers("mem_mhz"));
+        slot.after_mem.extend(numbers("mem_mhz_after_timing"));
+        for pstate in row["pstate_after_timing"].as_array().into_iter().flatten() {
+            slot.after_pstates
+                .insert(pstate.as_str().unwrap_or("?").to_owned());
+        }
+        for flag in row["p0_reached"].as_array().into_iter().flatten() {
+            slot.cells += 1;
+            slot.p0_reached += usize::from(*flag == true);
+        }
         for pstate in row["pstate"].as_array().into_iter().flatten() {
             slot.pstates
                 .insert(pstate.as_str().unwrap_or("?").to_owned());
@@ -590,9 +720,19 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         };
         writeln!(
             md,
-            "| {workload} | {n} | {} | {} | {} ({}) |",
+            "| {workload} | {n} | {}/{} | {} | {} | {} | {} | {} | {} ({}) |",
+            spans.p0_reached,
+            spans.cells,
             span(sm),
+            span(&spans.mem),
             spans.pstates.iter().cloned().collect::<Vec<_>>().join(", "),
+            spans
+                .after_pstates
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", "),
+            span(&spans.after_mem),
             span(gen_now),
             span(gen_max)
         )?;
@@ -735,7 +875,13 @@ fn machine_block(md: &mut String, meta: &Value, build: &Value) -> BenchResult<()
 }
 
 /// The smallest size where the GPU's end-to-end median beats rayon-N's, per GPU backend.
-fn crossover(md: &mut String, table: &Table, workload: &str, sizes: &[u64]) -> BenchResult<()> {
+fn crossover(
+    md: &mut String,
+    table: &Table,
+    workload: &str,
+    sizes: &[u64],
+    link_of: &dyn Fn(&str, u64) -> String,
+) -> BenchResult<()> {
     let get = |n: u64, backend: &str| {
         table
             .get(&(
@@ -754,11 +900,15 @@ fn crossover(md: &mut String, table: &Table, workload: &str, sizes: &[u64]) -> B
         match winner {
             Some(n) => writeln!(
                 md,
-                "End-to-end break-even, {gpu} against rayon-N: first faster at {n} elements."
+                "End-to-end break-even, {gpu} against rayon-N: first faster at {n} elements (PCIe link {}).",
+                link_of(workload, n)
             )?,
             None => writeln!(
                 md,
-                "End-to-end break-even, {gpu} against rayon-N: never faster on this ladder."
+                "End-to-end break-even, {gpu} against rayon-N: never faster on this ladder (PCIe link {}).",
+                sizes
+                    .last()
+                    .map_or("?".to_owned(), |n| link_of(workload, *n))
             )?,
         }
     }
@@ -856,7 +1006,8 @@ mod tests {
             "metrics": { "end_to_end": { "median_ms": ms, "n": 30 } },
             "cold_start_ms": [10.0 + ms, 5.0 + ms], "cold_start_first_in_process": first,
             "cold_start_note": "note",
-            "warmup": { "actual_s": 0.8, "clocks": { "sm_mhz": sm, "pstate": "P0", "pcie_gen_now": 4.0, "pcie_gen_max": 5.0, "mem_mhz": 1.0 } },
+            "warmup": { "actual_s": 0.8, "p0_reached": sm > 2500.0, "clocks": { "sm_mhz": sm, "pstate": "P0", "pcie_gen_now": 4.0, "pcie_gen_max": 5.0, "pcie_width": 4.0, "mem_mhz": 1.0 } },
+            "clocks_after_timing": { "sm_mhz": sm, "pstate": "P5", "pcie_gen_now": 4.0, "pcie_gen_max": 5.0, "pcie_width": 4.0, "mem_mhz": 810.0 },
         })
     }
 
@@ -917,6 +1068,24 @@ mod tests {
         assert!(md.contains("wgsl-percall+all-on"));
         assert!(md.contains("## GPU clocks at the start of timing"));
         assert!(md.contains("first in process"));
+        assert!(
+            md.contains("1 of 2 GPU cells reached P0"),
+            "P0 count missing"
+        );
+        assert!(
+            md.contains("| PCIe link |") && md.contains("gen 4 (max 5) x4"),
+            "the link must stand next to the end-to-end numbers"
+        );
+        let summary: Value = serde_json::from_str(&fs::read_to_string(&out_json).unwrap()).unwrap();
+        assert_eq!(summary["p0"]["p0_not_reached"], 1);
+        assert!(
+            summary["points"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|p| p["metric"] == "end_to_end")
+                .all(|p| p["pcie_link"] == "gen 4 (max 5) x4")
+        );
         assert!(!md.contains("Other lanes"), "stale text");
         assert!(!md.contains("uncommitted bench"), "stale text");
         let _ = fs::remove_dir_all(&dir);

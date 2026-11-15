@@ -155,7 +155,7 @@ pub fn gpu_snapshot() -> Value {
 /// The GPU clock state that decides whether a timing is a boost-clock timing: SM and memory clock, performance
 /// state and the PCIe link generation (current, and what the GPU supports now) and width.
 pub fn gpu_clocks() -> Value {
-    let fields = "clocks.sm,clocks.mem,pstate,pcie.link.gen.gpucurrent,pcie.link.gen.max,pcie.link.width.current";
+    let fields = "clocks.sm,clocks.mem,pstate,pcie.link.gen.gpucurrent,pcie.link.gen.max,pcie.link.width.current,clocks.max.sm,clocks.max.mem";
     let query = format!("--query-gpu={fields}");
     capture("nvidia-smi", &[&query, "--format=csv,noheader,nounits"])
         .map_or(Value::Null, |text| parse_clocks(&text))
@@ -174,6 +174,7 @@ fn parse_clocks(text: &str) -> Value {
         "sm_mhz": number(0), "mem_mhz": number(1),
         "pstate": fields.get(2).filter(|v| !v.is_empty()),
         "pcie_gen_now": number(3), "pcie_gen_max": number(4), "pcie_width": number(5),
+        "max_sm_mhz": number(6), "max_mem_mhz": number(7),
     })
 }
 
@@ -285,11 +286,12 @@ mod tests {
 
     #[test]
     fn clocks_parse_into_numbers_and_a_pstate() {
-        let value = parse_clocks("2655, 14001, P0, 4, 5, 16\n");
+        let value = parse_clocks("2655, 14001, P0, 4, 5, 16, 3090, 14001\n");
         assert_eq!(value["sm_mhz"], 2655.0);
         assert_eq!(value["pstate"], "P0");
         assert_eq!(value["pcie_gen_now"], 4.0);
         assert_eq!(value["pcie_width"], 16.0);
+        assert_eq!(value["max_mem_mhz"], 14001.0);
         let bad = parse_clocks("[N/A], x, P8");
         assert!(bad["sm_mhz"].is_null() && bad["pstate"].is_string());
         assert!(parse_clocks("")["sm_mhz"].is_null());

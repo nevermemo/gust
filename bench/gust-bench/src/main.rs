@@ -262,10 +262,10 @@ fn run(options: &Options) -> BenchResult<bool> {
         config.min_samples = 3;
         config.cap = Duration::from_secs(2);
         config.cold_repeats = 1;
-        config.warmup_time = Duration::from_millis(500);
+        config.warmup_cap = Duration::from_secs(3);
     }
     if let Some(secs) = options.warmup_secs {
-        config.warmup_time = Duration::from_secs_f64(secs);
+        config.warmup_cap = Duration::from_secs_f64(secs);
     }
     config.cold_only = options.cold_only;
     if let Some(repeats) = options.cold_repeats {
@@ -396,7 +396,7 @@ fn run(options: &Options) -> BenchResult<bool> {
             "cap_s": config.cap.as_secs_f64(), "batch": config.batch,
             "warmup_end_to_end": config.warmup_end_to_end, "warmup_dispatch": config.warmup_dispatch,
             "workgroup_size": workloads::WORKGROUP, "sizes": sizes,
-            "warmup_time_s": config.warmup_time.as_secs_f64(), "cold_only": config.cold_only,
+            "warmup_cap_s": config.warmup_cap.as_secs_f64(), "cold_only": config.cold_only,
             "cold_repeats": config.cold_repeats,
             "workloads": workload_list.iter().map(|w| w.id()).collect::<Vec<_>>(),
             "backends": backends.iter().map(|b| json!({ "id": b.id(), "description": b.description() })).collect::<Vec<_>>(),

@@ -65,9 +65,9 @@ fn own_events<'a>(events: &'a [&'static str], before: usize) -> &'a [&'static st
 }
 
 /// The route check of a cell. Route events arise only when a pipeline is compiled, and the pipeline cache is keyed by
-/// kernel, so a warm cell (every cell after a workload's first size) has no events of its own: it runs the pipeline an
+/// kernel, so a cell that compiles nothing (for example every cell after a workload's first size) has no events of its own: it runs the pipeline an
 /// earlier cell built. The cell therefore fails on any event of its own that is off the build's route; otherwise the
-/// kernel's latest event over the device's life (`latest`) must exist and be on the route, which for a warm cell is the
+/// kernel's latest event over the device's life (`latest`) must exist and be on the route, which for such a cell is the
 /// build of the cached pipeline it ran.
 #[cfg(any(test, feature = "spirv-route"))]
 fn route_verdict(
@@ -437,6 +437,8 @@ mod tests {
             )
             .is_err()
         );
+        // A cold cell whose own event is on the route passes.
+        assert!(route_verdict("horner", "spirv", own_events(&["spirv"], 0), Some("spirv")).is_ok());
         // A warm cell whose cached pipeline was last built off the route fails too.
         let off = ["spirv", "wgsl"];
         assert!(

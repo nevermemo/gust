@@ -73,7 +73,7 @@ pub trait Backend {
 
     /// The route check after a cell: no route event of the cell's own may be off the route of the build, and the
     /// kernel's latest event over the device's life must exist and be on the route (for a warm cell, which compiles
-    /// nothing, that event is the build of the cached pipeline it ran). An `Err` names both routes and fails the cell.
+    /// nothing, that event is the build of the cached pipeline it ran). An `Err` names only the build route and fails the cell.
     /// Backends without route events pass.
     fn route_check(&self) -> Result<(), String> {
         Ok(())

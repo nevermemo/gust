@@ -55,9 +55,9 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            samples: 30,
-            min_samples: 5,
-            cap: Duration::from_secs(8),
+            samples: crate::judge::SAMPLES_TARGET,
+            min_samples: crate::judge::SAMPLES_FLOOR,
+            cap: Duration::from_secs_f64(crate::judge::SAMPLE_CAP_SECS),
             batch: 16,
             warmup_end_to_end: 3,
             warmup_dispatch: 5,

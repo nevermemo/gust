@@ -1009,3 +1009,120 @@ fn a_variant_key_is_judged_by_the_capabilities_the_manifest_lists_for_it() {
     );
     assert!(!selected_key_problems(&selected("aaaaaaaaaaaaaaaa", "-", 0), "{").is_empty());
 }
+
+// ---- a second page through the same runner (m10.g9) ----
+
+const HELLO_LABEL: &str = "nvidia blackwell | selected add.map_kernel=193e4e282d7e14bd:-:0 | map_async exact against the host reference";
+
+/// The committed manifest of `gallery/web-hello`.
+fn hello_manifest() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join(crate::gallery::WEB_HELLO.manifest);
+    fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+        .replace("\r\n", "\n")
+}
+
+#[test]
+fn a_page_with_its_own_closing_part_is_split_and_any_other_closing_part_is_refused() {
+    let closing = crate::gallery::WEB_HELLO.closing;
+    let (adapter, selected) = super::split_label(HELLO_LABEL, closing).unwrap();
+    assert_eq!(adapter, "nvidia blackwell");
+    assert_eq!(selected.len(), 1);
+    assert_eq!(
+        (
+            selected[0].module.as_str(),
+            selected[0].name.as_str(),
+            selected[0].key.as_str()
+        ),
+        ("add", "map_kernel", "193e4e282d7e14bd")
+    );
+    // The closing part must be exactly the page's: the subgroup refusal of check-web does not stand in for it, and its
+    // own text does not stand in for the refusal.
+    let refusal = HELLO_LABEL.replace(closing, "subgroups MissingCapability");
+    assert_eq!(
+        super::split_label(&refusal, closing).unwrap_err(),
+        "the OK line does not say `map_async exact against the host reference`: \"subgroups MissingCapability\""
+    );
+    assert!(
+        super::split_page_label(HELLO_LABEL)
+            .unwrap_err()
+            .contains("does not say `subgroups MissingCapability`")
+    );
+    assert!(super::split_label(HELLO_LABEL, "something else").is_err());
+    // Two parts only (no closing part) is refused too.
+    let short = "nvidia blackwell | selected add.map_kernel=193e4e282d7e14bd:-:0";
+    assert!(
+        super::split_label(short, closing)
+            .unwrap_err()
+            .contains("expected 3")
+    );
+}
+
+#[test]
+fn the_kernel_of_web_hello_matches_its_committed_manifest_and_a_wrong_key_does_not() {
+    let closing = crate::gallery::WEB_HELLO.closing;
+    let (_, selected) = super::split_label(HELLO_LABEL, closing).unwrap();
+    let manifest = hello_manifest();
+    assert_eq!(
+        selected_key_problems(&selected, &manifest),
+        Vec::<String>::new()
+    );
+    let wrong = HELLO_LABEL.replace("193e4e282d7e14bd", "0000000000000000");
+    let (_, wrong) = super::split_label(&wrong, closing).unwrap();
+    let problems = selected_key_problems(&wrong, &manifest);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("add.map_kernel: the selected key 0000000000000000"),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn the_two_pages_name_their_own_files_and_check_web_keeps_its_constants() {
+    let web = &super::WEB_VECTOR_ADD;
+    assert_eq!(
+        (
+            web.dir,
+            web.workspace,
+            web.package,
+            web.out_name,
+            web.manifest,
+            web.closing
+        ),
+        (
+            "examples/web-vector-add",
+            "",
+            "web-vector-add",
+            "web_vector_add",
+            "examples/web-vector-add/gust-artifacts/manifest.json",
+            "subgroups MissingCapability"
+        )
+    );
+    let hello = &crate::gallery::WEB_HELLO;
+    assert_eq!(
+        (
+            hello.dir,
+            hello.workspace,
+            hello.package,
+            hello.out_name,
+            hello.manifest
+        ),
+        (
+            "gallery/web-hello",
+            "gallery",
+            "web-hello",
+            "web_hello",
+            "gallery/web-hello/gust-artifacts/manifest.json"
+        )
+    );
+    // The wasm file is named after the package with `-` turned into `_`, and the page imports that module.
+    assert_eq!(hello.package.replace('-', "_"), hello.out_name);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let page = fs::read_to_string(root.join(hello.dir).join("index.html")).unwrap();
+    assert!(
+        page.contains(&format!("from \"./{}.js\"", hello.out_name)),
+        "{page}"
+    );
+}

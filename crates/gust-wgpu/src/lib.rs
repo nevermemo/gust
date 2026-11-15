@@ -111,6 +111,8 @@ mod error;
 mod generated_host;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod graph;
+#[doc = include_str!("guide/index.md")]
+pub mod guide;
 mod map_host;
 // The SPIR-V route (m9.rt2, D172): native Vulkan only, and only with the feature.
 #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]

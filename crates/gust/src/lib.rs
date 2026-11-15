@@ -199,6 +199,8 @@ pub mod capability;
 pub mod cpu;
 mod descriptor;
 mod dispatch;
+#[doc = include_str!("guide/index.md")]
+pub mod guide;
 mod job;
 pub mod limits;
 pub mod map;

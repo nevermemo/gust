@@ -1034,8 +1034,12 @@ pub(crate) struct GpuSuitePin {
 /// Slice m10.k0: 458 over 49 became 459 over 49. One new doctest in `gust_wgpu`: the `gust_wgpu::guide` page compiles
 /// the whole hello-gust program (`no_run`), counted on the existing `Doc-tests gust_wgpu` result line. The merge of k0
 /// missed it because its PR did not run the lavapipe workflow; the push run on `main` caught it.
+///
+/// Slice m10.g3b: 459 over 49 became 464 over 49. Five new doctests in `gust_wgpu`, on the same result line: the
+/// programs of guide chapters 4 (G2, G4) and 5 (G5, G6, G10), compiled `no_run`. Chapter 6's program is a plain-text
+/// block, not an ignored test (the suite requires 0 ignored).
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 459,
+    passed: 464,
     result_lines: 49,
 };
 

@@ -781,21 +781,29 @@ fn check_full_runs_only_the_gpu_part_of_the_gallery() {
 #[test]
 fn the_registered_guide_listings_match_the_real_gallery_and_a_changed_gallery_line_fails_them() {
     let root = workspace_root().expect("the repository root");
-    assert_eq!(check_listings(&root, &LISTINGS), Ok(6));
-    // The same listings against a copy of G1's source with one changed line of each region: each change must fail the check.
+    assert_eq!(
+        LISTINGS.len(),
+        39,
+        "the guide's listings: chapter 2 (6), chapters 3, 5 and 8 (6), chapters 4 to 6 (27)"
+    );
+    assert_eq!(check_listings(&root, &LISTINGS), Ok(LISTINGS.len()));
+    // The same listings against copies of the gallery sources, G1's with one changed line of each region: each change must fail the check.
     let source = repository_file("gallery/hello-gust/src/main.rs");
     let scratch_root = scratch("guide-listings");
     for listing in &LISTINGS {
         let target = scratch_root.join(listing.packaged);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::copy(root.join(listing.packaged), &target).unwrap();
+        let source_copy = scratch_root.join(listing.source);
+        fs::create_dir_all(source_copy.parent().unwrap()).unwrap();
+        fs::copy(root.join(listing.source), &source_copy).unwrap();
     }
     let gallery_file = scratch_root.join("gallery/hello-gust/src/main.rs");
     fs::create_dir_all(gallery_file.parent().unwrap()).unwrap();
     fs::write(&gallery_file, &source).unwrap();
     assert_eq!(
         check_listings(&scratch_root, &LISTINGS),
-        Ok(6),
+        Ok(LISTINGS.len()),
         "an unchanged copy"
     );
     for (needle, replacement) in [
@@ -831,7 +839,7 @@ fn the_registered_guide_listings_match_the_real_gallery_and_a_changed_gallery_li
             listing.packaged
         );
         fs::write(&copy, original).unwrap();
-        assert_eq!(check_listings(&scratch_root, &LISTINGS), Ok(6));
+        assert_eq!(check_listings(&scratch_root, &LISTINGS), Ok(LISTINGS.len()));
     }
     let _ = fs::remove_dir_all(&scratch_root);
 }

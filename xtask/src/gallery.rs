@@ -162,7 +162,7 @@ pub(crate) const WEB_HELLO: Example = Example {
 };
 
 /// A guide listing: a packaged file (path relative to the repository root) that must be byte-identical to the region
-/// `anchor` of the gallery file `source` (also relative to the root). The guide's chapters add theirs in later slices.
+/// `anchor` of the gallery file `source` (also relative to the root). Each chapter of the guide adds its own.
 pub(crate) struct Listing {
     pub(crate) packaged: &'static str,
     pub(crate) source: &'static str,
@@ -171,8 +171,10 @@ pub(crate) struct Listing {
 
 /// The guide listings: chapter 2 of `gust::guide` includes G1's three regions from `crates/gust`, and the compile check of
 /// the whole program in `gust_wgpu::guide` from its own copies in `crates/gust-wgpu` (a packaged crate cannot include a
-/// file outside its directory).
-pub(crate) const LISTINGS: [Listing; 6] = [
+/// file outside its directory). Chapters 3, 5 and 8 of `gust::guide` include the kernel region of G2, G3, G5 to G7 and G10
+/// from `crates/gust`; chapters 4 to 6 of `gust_wgpu::guide` include the regions of the whole programs of G2, G4 to G6,
+/// G8 and G10 from `crates/gust-wgpu`.
+pub(crate) const LISTINGS: [Listing; 39] = [
     Listing {
         packaged: "crates/gust/src/guide/listings/hello-gust-imports.rs",
         source: "gallery/hello-gust/src/main.rs",
@@ -201,6 +203,171 @@ pub(crate) const LISTINGS: [Listing; 6] = [
     Listing {
         packaged: "crates/gust-wgpu/src/guide/listings/hello-gust-main.rs",
         source: "gallery/hello-gust/src/main.rs",
+        anchor: "main",
+    },
+    Listing {
+        packaged: "crates/gust/src/guide/listings/saxpy-kernel.rs",
+        source: "gallery/saxpy-uniform/src/main.rs",
+        anchor: "kernel",
+    },
+    Listing {
+        packaged: "crates/gust/src/guide/listings/histogram-kernel.rs",
+        source: "gallery/histogram/src/main.rs",
+        anchor: "kernel",
+    },
+    Listing {
+        packaged: "crates/gust/src/guide/listings/image-threshold-kernel.rs",
+        source: "gallery/image-threshold/src/main.rs",
+        anchor: "kernel",
+    },
+    Listing {
+        packaged: "crates/gust/src/guide/listings/reduce-scan-kernel.rs",
+        source: "gallery/reduce-scan/src/main.rs",
+        anchor: "kernel",
+    },
+    Listing {
+        packaged: "crates/gust/src/guide/listings/variants-kernel.rs",
+        source: "gallery/variants/src/main.rs",
+        anchor: "kernel",
+    },
+    Listing {
+        packaged: "crates/gust/src/guide/listings/state-machine-kernel.rs",
+        source: "gallery/state-machine/src/main.rs",
+        anchor: "kernel",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/saxpy-imports.rs",
+        source: "gallery/saxpy-uniform/src/main.rs",
+        anchor: "imports",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/saxpy-kernel.rs",
+        source: "gallery/saxpy-uniform/src/main.rs",
+        anchor: "kernel",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/saxpy-params.rs",
+        source: "gallery/saxpy-uniform/src/main.rs",
+        anchor: "params",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/saxpy-main.rs",
+        source: "gallery/saxpy-uniform/src/main.rs",
+        anchor: "main",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/particles-imports.rs",
+        source: "gallery/particles/src/main.rs",
+        anchor: "imports",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/particles-kernel.rs",
+        source: "gallery/particles/src/main.rs",
+        anchor: "kernel",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/particles-setup.rs",
+        source: "gallery/particles/src/main.rs",
+        anchor: "setup",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/particles-energy.rs",
+        source: "gallery/particles/src/main.rs",
+        anchor: "energy",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/particles-total.rs",
+        source: "gallery/particles/src/main.rs",
+        anchor: "total",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/particles-host.rs",
+        source: "gallery/particles/src/main.rs",
+        anchor: "host",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/particles-main.rs",
+        source: "gallery/particles/src/main.rs",
+        anchor: "main",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/image-threshold-imports.rs",
+        source: "gallery/image-threshold/src/main.rs",
+        anchor: "imports",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/image-threshold-kernel.rs",
+        source: "gallery/image-threshold/src/main.rs",
+        anchor: "kernel",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/image-threshold-host.rs",
+        source: "gallery/image-threshold/src/main.rs",
+        anchor: "host",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/image-threshold-main.rs",
+        source: "gallery/image-threshold/src/main.rs",
+        anchor: "main",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/reduce-scan-imports.rs",
+        source: "gallery/reduce-scan/src/main.rs",
+        anchor: "imports",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/reduce-scan-kernel.rs",
+        source: "gallery/reduce-scan/src/main.rs",
+        anchor: "kernel",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/reduce-scan-host.rs",
+        source: "gallery/reduce-scan/src/main.rs",
+        anchor: "host",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/reduce-scan-main.rs",
+        source: "gallery/reduce-scan/src/main.rs",
+        anchor: "main",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/variants-imports.rs",
+        source: "gallery/variants/src/main.rs",
+        anchor: "imports",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/variants-kernel.rs",
+        source: "gallery/variants/src/main.rs",
+        anchor: "kernel",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/variants-host.rs",
+        source: "gallery/variants/src/main.rs",
+        anchor: "host",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/variants-main.rs",
+        source: "gallery/variants/src/main.rs",
+        anchor: "main",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/routed-imports.rs",
+        source: "gallery/routed/src/main.rs",
+        anchor: "imports",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/routed-kernel.rs",
+        source: "gallery/routed/src/main.rs",
+        anchor: "kernel",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/routed-host.rs",
+        source: "gallery/routed/src/main.rs",
+        anchor: "host",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/routed-main.rs",
+        source: "gallery/routed/src/main.rs",
         anchor: "main",
     },
 ];

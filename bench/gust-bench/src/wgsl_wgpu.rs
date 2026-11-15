@@ -46,6 +46,16 @@ impl WgpuContext {
 
     /// Opens the device; with `trace` (a `wgpu-trace` build) wgpu writes its API trace of this device into that directory.
     pub fn open(trace: Option<&std::path::Path>) -> BenchResult<Self> {
+        Self::open_with(trace, false)
+    }
+
+    /// A device set up the way `HeadlessDevice` sets its own up (the m10.b1c probe `gust-setup`): it also requests
+    /// `MEMORY_DECORATION_COHERENT` when the adapter has it (`gust-wgpu` `lib.rs`, `HeadlessDevice::open`).
+    pub fn open_like_gust() -> BenchResult<Self> {
+        Self::open_with(None, true)
+    }
+
+    fn open_with(trace: Option<&std::path::Path>, like_gust: bool) -> BenchResult<Self> {
         #[cfg(not(feature = "wgpu-trace"))]
         if trace.is_some() {
             return Err("a wgpu trace needs a build with the wgpu-trace feature".into());
@@ -65,8 +75,12 @@ impl WgpuContext {
                 trace: trace.map_or(wgpu::Trace::Off, |dir| {
                     wgpu::Trace::Directory(dir.to_path_buf())
                 }),
-                required_features: if timestamps {
+                required_features: (if timestamps {
                     wgpu::Features::TIMESTAMP_QUERY
+                } else {
+                    wgpu::Features::empty()
+                }) | if like_gust {
+                    adapter.features() & wgpu::Features::MEMORY_DECORATION_COHERENT
                 } else {
                     wgpu::Features::empty()
                 },
@@ -255,6 +269,15 @@ pub struct HandWgsl {
     switches: Switches,
     /// The one switch an ablation backend turned on, for its id and description.
     ablation: Option<Switch>,
+    /// The m10.b1c probes (`--with`): `Prebuilt` plus what the wgpu trace shows differing from GUST. `gust-setup` is all
+    /// of it (GUST's resource creation order, GUST's own generated WGSL as the kernel, and a device that requests what
+    /// `HeadlessDevice` requests, which is the context's); `gust-shader` and `gust-device` are the two halves.
+    gust_shader: bool,
+    gust_order: bool,
+    probe_id: Option<&'static str>,
+    /// The m10.b1c SPIR-V probe `unchecked`: `Prebuilt` with the hand WGSL compiled without wgpu's runtime checks
+    /// (bounds checks, loop bounding), the checks the WGSL route has and the SPIR-V passthrough route does not.
+    unchecked: bool,
     /// All three switches on, the result `Vec` still fresh per call (`Mode::PerCall`): the row between the single
     /// switches and `wgsl-prebuilt`, which also reuses the `Vec`.
     all_on: bool,
@@ -275,6 +298,10 @@ impl HandWgsl {
             mode,
             switches,
             ablation: None,
+            gust_shader: false,
+            gust_order: false,
+            probe_id: None,
+            unchecked: false,
             all_on: false,
             counters: Counters::default(),
             resident: None,
@@ -288,6 +315,33 @@ impl HandWgsl {
             switches: Switches::PER_CALL.with(switch),
             ablation: Some(switch),
             ..Self::new(ctx, Mode::PerCall)
+        }
+    }
+
+    /// The `unchecked` probe: `Prebuilt` with the hand WGSL compiled without wgpu's runtime checks (bounds checks and
+    /// loop bounding), as the SPIR-V route's shaders are, on the shared hand device.
+    pub fn unchecked(ctx: Rc<WgpuContext>) -> Self {
+        Self {
+            unchecked: true,
+            ..Self::new(ctx, Mode::Prebuilt)
+        }
+    }
+
+    /// The GUST-difference probes, each `Prebuilt` plus what the wgpu trace shows differing from GUST. `gust-shader`: on the
+    /// shared hand device, running GUST's generated WGSL. `gust-device`: on a device opened like GUST's (`open_like_gust`,
+    /// which requests `MEMORY_DECORATION_COHERENT`), creating the timestamp objects before the data buffers as
+    /// `HeadlessDevice` does, running the hand WGSL. `gust-setup` (any other name): both.
+    pub fn gust_probe(ctx: Rc<WgpuContext>, name: &str) -> Self {
+        let (gust_shader, gust_order, probe_id) = match name {
+            "gust-shader" => (true, false, "wgsl-prebuilt+gust-shader"),
+            "gust-device" => (false, true, "wgsl-prebuilt+gust-device"),
+            _ => (true, true, "wgsl-prebuilt+gust-setup"),
+        };
+        Self {
+            gust_shader,
+            gust_order,
+            probe_id: Some(probe_id),
+            ..Self::new(ctx, Mode::Prebuilt)
         }
     }
 
@@ -335,6 +389,30 @@ impl HandWgsl {
         self.resident.as_ref().expect("prepare was called")
     }
 
+    /// GUST's own generated WGSL for the workload's kernel and its entry point: the precompiled artifacts that
+    /// `gust-bench-pre` embeds (the text the run-time compile hands to wgpu; byte-checked against the shader module of
+    /// a GUST wgpu trace for W1 and W2).
+    fn gust_source(workload: Workload) -> (&'static str, &'static str) {
+        match workload.family() {
+            "W1" => (
+                include_str!("../../gust-bench-pre/gust-artifacts/2446cbf187eae739.wgsl"),
+                "gpu_kernel_add",
+            ),
+            "W2" => (
+                include_str!("../../gust-bench-pre/gust-artifacts/fe1197ff8b0197e2.wgsl"),
+                "gpu_kernel_saxpy",
+            ),
+            "W3" => (
+                include_str!("../../gust-bench-pre/gust-artifacts/2580c40b11271718.wgsl"),
+                "gpu_kernel_horner",
+            ),
+            _ => (
+                include_str!("../../gust-bench-pre/gust-artifacts/48733ffa27c233fd.wgsl"),
+                "gpu_kernel_histogram",
+            ),
+        }
+    }
+
     fn source(workload: Workload) -> &'static str {
         match workload.family() {
             "W1" => include_str!("../../shaders/vector_add.wgsl"),
@@ -378,7 +456,12 @@ impl HandWgsl {
 
     /// The same objects `gust-wgpu` creates for a kernel: bind group layout, pipeline layout, shader module,
     /// compute pipeline (no driver pipeline cache).
-    fn create_pipeline(ctx: &WgpuContext, workload: Workload) -> Pipeline {
+    fn create_pipeline(
+        ctx: &WgpuContext,
+        workload: Workload,
+        gust_kernel: bool,
+        unchecked: bool,
+    ) -> Pipeline {
         let entries = (0..Self::binding_count(workload))
             .map(|index| wgpu::BindGroupLayoutEntry {
                 binding: index as u32,
@@ -406,19 +489,34 @@ impl HandWgsl {
                 bind_group_layouts: &[Some(&layout)],
                 immediate_size: 0,
             });
-        let module = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("bench hand WGSL"),
-                source: wgpu::ShaderSource::Wgsl(Self::source(workload).into()),
-            });
+        let (text, entry) = if gust_kernel {
+            Self::gust_source(workload)
+        } else {
+            (Self::source(workload), "main")
+        };
+        let descriptor = wgpu::ShaderModuleDescriptor {
+            label: Some("bench hand WGSL"),
+            source: wgpu::ShaderSource::Wgsl(text.into()),
+        };
+        let module = if unchecked {
+            // SAFETY: a probe of a kernel whose indices the harness checks on the host (every sample is verified
+            // against the serial reference), run only to see what wgpu's runtime checks cost.
+            unsafe {
+                ctx.device.create_shader_module_trusted(
+                    descriptor,
+                    wgpu::ShaderRuntimeChecks::unchecked(),
+                )
+            }
+        } else {
+            ctx.device.create_shader_module(descriptor)
+        };
         let pipeline = ctx
             .device
             .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("bench pipeline"),
                 layout: Some(&pipeline_layout),
                 module: &module,
-                entry_point: Some("main"),
+                entry_point: Some(entry),
                 compilation_options: Default::default(),
                 cache: None,
             });
@@ -481,6 +579,30 @@ impl HandWgsl {
         }
     }
 
+    /// The query set and the two 16-byte buffers of the timestamp span.
+    fn timestamp_objects(
+        ctx: &WgpuContext,
+    ) -> (Option<wgpu::QuerySet>, wgpu::Buffer, wgpu::Buffer) {
+        let query_set = ctx.timestamps.then(|| {
+            ctx.device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("bench timestamps"),
+                ty: wgpu::QueryType::Timestamp,
+                count: 2,
+            })
+        });
+        let resolve = ctx.buffer(
+            "bench timestamp resolve",
+            16,
+            wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+        );
+        let timestamp_read = ctx.buffer(
+            "bench timestamp read",
+            16,
+            wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        );
+        (query_set, resolve, timestamp_read)
+    }
+
     fn encoder(&self) -> wgpu::CommandEncoder {
         self.ctx
             .device
@@ -498,6 +620,8 @@ impl Backend for HandWgsl {
     fn id(&self) -> &'static str {
         match (self.mode, self.ablation) {
             _ if self.all_on => "wgsl-percall+all-on",
+            _ if self.probe_id.is_some() => self.probe_id.unwrap_or("wgsl-prebuilt"),
+            _ if self.unchecked => "wgsl-prebuilt+unchecked",
             (Mode::Prebuilt, _) => "wgsl-prebuilt",
             (Mode::PerCall, None) => "wgsl-percall",
             (Mode::PerCall, Some(switch)) => switch.backend_id(),
@@ -506,6 +630,12 @@ impl Backend for HandWgsl {
 
     fn description(&self) -> &'static str {
         match (self.mode, self.ablation) {
+            _ if self.unchecked => {
+                "wgsl-prebuilt with wgpu's shader runtime checks (bounds checks, loop bounding) off, hand WGSL (m10.b1c SPIR-V probe)"
+            }
+            _ if self.probe_id.is_some() => {
+                "wgsl-prebuilt plus what the wgpu trace shows differing from GUST (m10.b1c probe): the device's requested features (gust-setup and gust-device), the timestamp objects created before the data buffers (the same two), GUST's generated WGSL as the kernel (gust-setup and gust-shader)"
+            }
             _ if self.all_on => {
                 "wgsl-percall with all three switches on: bind group and staging buffer built once, one submission; the result Vec is still fresh per call"
             }
@@ -537,6 +667,9 @@ impl Backend for HandWgsl {
         let n = inputs.n;
         let out_len = workload.out_len(n);
         let bytes = (out_len * size_of::<f32>()) as u64;
+        // `gust-setup`: the query set and the two timestamp buffers come before the data buffers, as in
+        // `HeadlessDevice::open` (the wgpu trace of GUST shows that order).
+        let early = self.gust_order.then(|| Self::timestamp_objects(ctx));
         let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         let mut buffers = Vec::new();
         // A one-element or short read-only buffer that is not re-uploaded per sample: the scalar, the coefficients.
@@ -561,30 +694,15 @@ impl Backend for HandWgsl {
             buffers.push(buffer);
         }
         buffers.push(ctx.buffer("bench out", bytes, storage | wgpu::BufferUsages::COPY_SRC));
-        let pipeline = Self::create_pipeline(ctx, workload);
+        let pipeline = Self::create_pipeline(ctx, workload, self.gust_shader, self.unchecked);
         let bind_group = Self::create_bind_group(ctx, &pipeline, &buffers);
         let staging = ctx.buffer(
             "bench staging",
             bytes,
             wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         );
-        let query_set = ctx.timestamps.then(|| {
-            ctx.device.create_query_set(&wgpu::QuerySetDescriptor {
-                label: Some("bench timestamps"),
-                ty: wgpu::QueryType::Timestamp,
-                count: 2,
-            })
-        });
-        let resolve = ctx.buffer(
-            "bench timestamp resolve",
-            16,
-            wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
-        );
-        let timestamp_read = ctx.buffer(
-            "bench timestamp read",
-            16,
-            wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        );
+        let (query_set, resolve, timestamp_read) =
+            early.unwrap_or_else(|| Self::timestamp_objects(ctx));
         ctx.flush()?;
         self.passes.set(0);
         self.resident = Some(Resident {
@@ -718,7 +836,7 @@ impl Backend for HandWgsl {
     fn cold_start(&mut self) -> BenchResult<Option<Duration>> {
         let workload = self.resident().workload;
         let started = Instant::now();
-        let pipeline = Self::create_pipeline(&self.ctx, workload);
+        let pipeline = Self::create_pipeline(&self.ctx, workload, self.gust_shader, self.unchecked);
         let r = self.resident.as_mut().expect("prepare was called");
         r.bind_group = Self::create_bind_group(&self.ctx, &pipeline, &r.buffers);
         r.pipeline = pipeline;

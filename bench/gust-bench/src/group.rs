@@ -130,6 +130,22 @@ pub fn kill_rule(cells: &[Value]) -> Value {
     let missing = with_wgsl.difference(&with_gust).count();
     unpaired += missing * KILL_QUANTITIES.len();
     let judged = checked > 0 && unpaired == 0;
+    // The reproducibility clause (R1.3-4): an offender counts only when it recurs in 3/3 seeds and the control is within
+    // tolerance on that cell in that run. One run file sees one seed, so each offender carries the control's ratio on
+    // its own cell here, and `aggregate` counts the seeds (`kill_rule_reproducibility`).
+    for offender in &mut offenders {
+        let control_ratio = control
+            .iter()
+            .find(|((workload, n), quantity, _)| {
+                offender["workload"].as_str() == Some(workload.as_str())
+                    && offender["n"].as_u64() == Some(*n)
+                    && offender["quantity"].as_str() == Some(*quantity)
+            })
+            .map(|(_, _, ratio)| *ratio);
+        offender["control_median_ratio"] = json!(control_ratio);
+        offender["control_in_tolerance"] =
+            json!(control_ratio.map(|ratio| (ratio - 1.0).abs() <= KILL_TOLERANCE + 1e-12));
+    }
     let control_offenders = control
         .iter()
         .filter(|(_, _, ratio)| (ratio - 1.0).abs() > KILL_TOLERANCE + 1e-12)
@@ -147,8 +163,9 @@ pub fn kill_rule(cells: &[Value]) -> Value {
         "judged": judged,
         "c_reopened": if judged { json!(!offenders.is_empty()) } else { Value::Null },
         "offenders": offenders,
+        "reproducibility_clause": "an offender counts when it recurs in 3/3 seeds with `control_in_tolerance` true on that cell in each of those runs; a single-seed hit is listed, not counted (plan R1.3-4; `aggregate` counts the seeds and needs at least 3 runs with distinct seeds)",
         "control": {
-            "note": "wgsl-percall / wgsl-prebuilt, same quantities and method, same cells; same kernel text, so the distance from 1.0 is the noise floor of the rule. Not an input of the rule.",
+            "note": "wgsl-percall / wgsl-prebuilt, same quantities and method, same cells; same kernel text, so the distance from 1.0 is the noise floor of the rule for gpu_single. For gpu_batch_per_dispatch the control also differs in per-pass bind groups (a fresh one per pass, as GUST does; wgsl-prebuilt reuses one), so it is not a pure noise floor there. Not an input of the rule.",
             "backend": CONTROL_BACKEND,
             "checked": control.len(),
             "outside_tolerance": control_offenders,
@@ -297,5 +314,39 @@ mod tests {
             assert_eq!(Group::parse(group.name()), Some(group));
         }
         assert_eq!(Group::parse("other"), None);
+    }
+}
+
+#[cfg(test)]
+mod reproducibility_tests {
+    use super::*;
+
+    fn cell(backend: &str, batch: f64) -> Value {
+        json!({
+            "backend": backend, "workload": "W1", "n": 1048576,
+            "metrics": {
+                "gpu_single": { "paired_vs_prebuilt": { "median_ratio": 1.0 } },
+                "gpu_batch_per_dispatch": { "paired_vs_prebuilt": { "median_ratio": batch } },
+            },
+        })
+    }
+
+    #[test]
+    fn an_offender_carries_the_control_ratio_of_its_own_cell() {
+        let record = kill_rule(&[
+            cell("gust-gpu", 1.2),
+            cell("wgsl-prebuilt", 1.0),
+            cell("wgsl-percall", 1.02),
+        ]);
+        let offender = &record["offenders"][0];
+        assert_eq!(offender["quantity"], "gpu_batch_per_dispatch");
+        assert_eq!(offender["control_median_ratio"], 1.02);
+        assert_eq!(offender["control_in_tolerance"], true);
+        let noisy = kill_rule(&[
+            cell("gust-gpu", 1.2),
+            cell("wgsl-prebuilt", 1.0),
+            cell("wgsl-percall", 1.15),
+        ]);
+        assert_eq!(noisy["offenders"][0]["control_in_tolerance"], false);
     }
 }

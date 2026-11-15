@@ -497,7 +497,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         "meta": runs[0]["meta"],
         "config": runs[0]["config"],
         "runs": runs.iter().map(|run| json!({
-            "label": run["label"], "sidecar": run["sampler"]["sidecar"], "load_before": run["load_before"], "load_after": run["load_after"],
+            "label": run["label"], "run_seed": run["run_seed"], "sidecar": run["sampler"]["sidecar"], "load_before": run["load_before"], "load_after": run["load_after"],
             "gpu_before": run["gpu_before"], "gpu_after": run["gpu_after"],
             "wall_s": run["wall_s"], "failures": run["failures"],
         })).collect::<Vec<_>>(),
@@ -675,13 +675,13 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     // Paired ratios: the GPU backends were sampled in rotation, so these ratios saw the same power state.
     writeln!(
         md,
-        "\n## Paired ratios to wgsl-prebuilt (GPU backends sampled in rotation, one shared warm-up)\n"
+        "\n## Paired ratios to wgsl-prebuilt (GPU backends sampled in interleaved random-order rounds, one shared warm-up)\n"
     )?;
     writeln!(
         md,
-        "Each run takes the samples of all GPU backends of a (workload, size) in rotation, so a P-state drift hits every backend alike. The ratio of a rotation is the backend's sample over wgsl-prebuilt's sample of the same rotation; a cell shows the median over runs of the per-run median ratio, then [lowest to highest run median] and (mean of the within-run p5 to p95). A ratio of 1.00 means no gap to wgsl-prebuilt.\n"
+        "Each run takes the samples of all GPU backends of a (workload, size) in interleaved rounds, each round in a seeded random order (the run seed, every round's order and every sample's predecessor are in the run file), so a P-state drift hits every backend alike and no backend always follows the same neighbour. The ratio of a rotation is the backend's sample over wgsl-prebuilt's sample of the same rotation; a cell shows the median over runs of the per-run median ratio, then [lowest to highest run median] and (mean of the within-run p5 to p95). A ratio of 1.00 means no gap to wgsl-prebuilt.\n"
     )?;
-    for metric in ["end_to_end", "dispatch_host"] {
+    for (metric, _) in METRICS {
         for workload in sizes.keys() {
             writeln!(md, "### {workload}, {metric}\n")?;
             write!(md, "| elements |")?;

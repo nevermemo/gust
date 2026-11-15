@@ -36,7 +36,7 @@ use serde_json::json;
 use wgsl_wgpu::{HandWgsl, Mode, Switch, WgpuContext};
 use workloads::{SIZES, Workload};
 
-const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples N] [--cap-secs S] [--ablation LIST|all-on|all] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench probe-adapters\n       gust-bench list";
+const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples N] [--cap-secs S] [--ablation LIST|all-on|all] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench probe-adapters\n       gust-bench list";
 
 #[derive(Default)]
 struct Options {
@@ -59,6 +59,7 @@ struct Options {
     no_sampler: bool,
     cold_only: bool,
     cold_repeats: Option<usize>,
+    seed: Option<u64>,
     warmup_secs: Option<f64>,
     positional: Vec<String>,
 }
@@ -155,6 +156,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
                         .map_err(|e| format!("{e}"))?,
                 );
             }
+            "--seed" => {
+                options.seed = Some(value("--seed")?.parse().map_err(|e| format!("{e}"))?);
+            }
             "--warmup-secs" => {
                 options.warmup_secs = Some(
                     value("--warmup-secs")?
@@ -199,6 +203,7 @@ fn all_backends(
 /// `run` does and read the real output.
 struct RunRecord {
     label: String,
+    run_seed: u64,
     sampler: serde_json::Value,
     machine: serde_json::Value,
     config: serde_json::Value,
@@ -217,6 +222,7 @@ impl RunRecord {
     fn into_document(self) -> serde_json::Value {
         let mut document = json!({
             "label": self.label,
+            "run_seed": self.run_seed,
             "banner": "shared machine, not publishable",
             // The publishable judgement (plan 2.4) is b1b's; until then no file is publishable, and says why.
             "publishable": meta::PUBLISHABLE,
@@ -266,6 +272,12 @@ fn run(options: &Options) -> BenchResult<bool> {
     if let Some(secs) = options.warmup_secs {
         config.warmup_cap = Duration::from_secs_f64(secs);
     }
+    // The run seed fixes every rotation order of the run (recorded in the file); the default comes from the clock.
+    config.run_seed = options.seed.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(1, |d| d.as_nanos() as u64)
+    });
     config.cold_only = options.cold_only;
     if let Some(repeats) = options.cold_repeats {
         config.cold_repeats = repeats;
@@ -412,6 +424,7 @@ fn run(options: &Options) -> BenchResult<bool> {
     };
     let document = RunRecord {
         label: options.label.clone().unwrap_or_else(|| "run".to_owned()),
+        run_seed: config.run_seed,
         sampler: sampler_json,
         machine,
         config: json!({
@@ -595,6 +608,7 @@ mod tests {
     fn the_per_run_file_says_not_publishable_with_the_reason_and_carries_the_provenance() {
         let document = RunRecord {
             label: "t".to_owned(),
+            run_seed: 7,
             sampler: json!({ "enabled": false }),
             machine: json!({}),
             config: json!({ "samples": 5 }),

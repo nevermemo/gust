@@ -22,15 +22,26 @@ result `Vec` stays per call in every ablation. A test counts bind groups, stagin
 then reads `wgsl-percall`, each switch alone, `+all-on`, `wgsl-prebuilt` and `gust-gpu`; the step from `+all-on` to
 `wgsl-prebuilt` is the result `Vec`, the step from `wgsl-percall` to `+all-on` is the three switches together.
 
-Before the timed samples of a GPU cell the harness warms the cell up with real load (end-to-end samples alternating
-with 1024-pass batches) until the clock query reports P0 with the memory clock within 90 % and the SM clock within 50 %
-of their maxima, capped at 3 s (`--warmup-secs S` changes the cap), because the sampler idles the GPU for the settle and
-window before every cell and the clocks would otherwise still be low. A cell that hits the cap is kept and marked
-`p0_not_reached`. The clocks at the end of the warm-up (`warmup.clocks`) and right after the timed samples
-(`clocks_after_timing`), the PCIe link and the P0 counts are in the aggregate; every end-to-end table carries the PCIe
-link. `--cold-only` skips the four timings and measures only the cold start (`--cold-repeats N`). The precompiled
-package must pass `cargo gust check -p gust-bench-pre` (measure.sh --build-only runs it): a stale artifact otherwise
-falls back to a run-time compile under dev.
+The GPU backends of one workload and size are measured as a paired group: one idle window, one shared warm-up, then
+every timed quantity in interleaved rounds. Each round visits every GPU backend once, in a seeded random order (a fresh
+permutation per round from the run seed mixed with workload, size and quantity; `--seed N` fixes the run seed, which the
+run file records as `run_seed`). The file records each quantity's seed, every round's order (`round_orders`) and each
+sample's predecessor (`predecessor`), so a carry-over cost between neighbouring backends can be tested for. The
+aggregate reports each backend's paired ratio to `wgsl-prebuilt` (the median of the per-round ratios, with its spread)
+for all four timings.
+
+The shared warm-up uses real load (end-to-end samples alternating with 1024-pass batches) until the clock query reports
+P0 with the memory clock within 90 % and the SM clock within 50 % of their maxima, capped at 1 s (`--warmup-secs S`
+changes the cap; the deadline is checked before every iteration, so it is overrun by at most one, and `warmup.actual_s`
+records the real time). P0 is a record, not a goal: a group that hits the cap is kept and marked `p0_not_reached`; the
+pairing, not P0, is what makes the backends comparable. The clocks at the end of the warm-up (`warmup.clocks`) and right
+after the timed samples (`clocks_after_timing`), the PCIe link and the P0 counts are in the aggregate; every end-to-end
+table carries the PCIe link. `--cold-only` skips the four timings and measures only the cold start (`--cold-repeats
+N`). The precompiled package must pass `cargo gust check -p gust-bench-pre` (measure.sh --build-only runs it): a stale
+artifact otherwise falls back to a run-time compile under dev.
+
+Deviation from D179 (b0): the quiet-window sampler idles the GPU once per GPU group (record `"backend": "gpu-group"`),
+not once before every cell; CPU backends still get one window each.
 
 The first cold start of each kernel on a backend in a process is flagged (`cold_start_first_in_process`) and the aggregate lists it
 apart from the rest: it also pays one-time costs. A hand-WGSL cold start is labelled "driver shader cache warm" (its

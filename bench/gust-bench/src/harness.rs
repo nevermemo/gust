@@ -43,6 +43,9 @@ pub struct Config {
     /// Passes per submission of the warm-up batches. Far above `batch`: the 16-pass batches of the round 3 brief left a
     /// small kernel too short to raise the clocks (the smoke reached P0 in 1 of 4 cells within 3 s).
     pub warmup_batch: usize,
+    /// Seed of the run: every (workload, size, quantity) derives its rotation orders from it (see [`rotation_seed`]).
+    /// Recorded in the run file's top level as `run_seed`; `--seed N` fixes it, otherwise it comes from the clock.
+    pub run_seed: u64,
     /// Measure only the cold start (GPU cells at the first size), none of the four timings.
     pub cold_only: bool,
 }
@@ -59,6 +62,7 @@ impl Default for Config {
             cold_repeats: 3,
             warmup_cap: Duration::from_secs(1),
             warmup_batch: 1024,
+            run_seed: 0x6a09_e667_f3bc_c908,
             cold_only: false,
         }
     }
@@ -164,8 +168,15 @@ fn load_round(
     inputs: &Inputs,
     out: &mut Vec<f32>,
     batch: usize,
+    deadline: Instant,
+    reached: &AtomicBool,
 ) -> BenchResult<()> {
     for (backend, _) in group.iter_mut().zip(alive).filter(|(_, alive)| **alive) {
+        // The deadline is checked before every iteration (one backend's end-to-end sample and batch), so the warm-up
+        // overruns the cap by at most one iteration.
+        if Instant::now() >= deadline || reached.load(Ordering::Relaxed) {
+            break;
+        }
         backend.end_to_end(inputs, out)?;
         backend.gpu_time(batch)?;
     }
@@ -207,7 +218,15 @@ fn warm_up_to_p0(
         });
         let mut result = Ok(());
         while !reached.load(Ordering::Relaxed) && started.elapsed() < config.warmup_cap {
-            if let Err(error) = load_round(group, alive, inputs, &mut out, config.warmup_batch) {
+            if let Err(error) = load_round(
+                group,
+                alive,
+                inputs,
+                &mut out,
+                config.warmup_batch,
+                started + config.warmup_cap,
+                &reached,
+            ) {
                 result = Err(error);
                 break;
             }
@@ -461,6 +480,69 @@ struct Member {
     misses_before: Option<u64>,
 }
 
+/// SplitMix64: a small deterministic generator, enough for shuffling a handful of backends (no dependency).
+pub struct SplitMix64(u64);
+
+impl SplitMix64 {
+    pub fn new(seed: u64) -> Self {
+        Self(seed)
+    }
+
+    pub fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+
+    /// A uniform value in `0..bound` (rejection sampling, so no modulo bias).
+    pub fn below(&mut self, bound: u64) -> u64 {
+        let zone = u64::MAX - u64::MAX % bound;
+        loop {
+            let value = self.next_u64();
+            if value < zone {
+                return value % bound;
+            }
+        }
+    }
+
+    /// Fisher-Yates.
+    pub fn shuffle(&mut self, items: &mut [usize]) {
+        for i in (1..items.len()).rev() {
+            let j = self.below(i as u64 + 1) as usize;
+            items.swap(i, j);
+        }
+    }
+}
+
+/// The seed of one rotation: the run seed mixed (FNV-1a over the text) with the workload id, the size and the quantity,
+/// so every (workload, size, quantity) has its own reproducible orders and a run is reproduced from `run_seed` alone.
+pub fn rotation_seed(run_seed: u64, workload: &str, n: usize, quantity: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64 ^ run_seed;
+    for byte in workload
+        .bytes()
+        .chain(n.to_le_bytes())
+        .chain(quantity.bytes())
+    {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    SplitMix64::new(hash).next_u64()
+}
+
+/// The backend orders of `rounds` rounds for `count` backends: one random permutation per round from `seed`.
+#[cfg(test)]
+pub fn round_orders(seed: u64, count: usize, rounds: usize) -> Vec<Vec<usize>> {
+    let mut rng = SplitMix64::new(seed);
+    (0..rounds)
+        .map(|_| {
+            let mut order = (0..count).collect::<Vec<_>>();
+            rng.shuffle(&mut order);
+            order
+        })
+        .collect()
+}
+
 /// The backend every other one is paired against.
 pub const PAIR_REFERENCE: &str = "wgsl-prebuilt";
 
@@ -485,8 +567,12 @@ fn paired_json(samples: &[f64], reference: &[f64]) -> Option<Value> {
     }))
 }
 
-/// Takes the samples of one quantity for the whole group in rotation (A B C ... A B C, the starting backend shifting
-/// by one each round so no backend always follows the same neighbour), so a P-state drift hits every backend alike.
+/// Takes the samples of one quantity for the whole group in interleaved rounds: every round visits each backend once,
+/// in a seeded random order (a fresh permutation per round, [`round_orders`]), so a P-state drift hits every backend
+/// alike and no backend always follows the same predecessor (a carry-over cost, such as a device switch, then lands on
+/// all of them at equal rates). The orders and each sample's predecessor are recorded in the quantity's JSON entry:
+/// `seed`, `round_orders` (backend indices into the group, one list per round) and per backend `predecessor` (one
+/// entry per sample: the group index of the backend sampled just before it, or null for the very first sample).
 /// `sample` returns one value, or `None` when the backend has no such quantity. A backend that fails is dropped from
 /// the rotation with its failure recorded; the others go on. The cap is per cell, so it scales with the group.
 fn rotate_quantity(
@@ -494,25 +580,35 @@ fn rotate_quantity(
     members: &mut [Member],
     config: &Config,
     name: &str,
+    seed: u64,
     mut sample: impl FnMut(&mut dyn Backend, &mut Member) -> BenchResult<Option<f64>>,
 ) {
     let count = group.len();
     let cap = config.cap * u32::try_from(count.max(1)).unwrap_or(1);
     let started = Instant::now();
     let mut values: Vec<Vec<f64>> = vec![Vec::new(); count];
+    let mut predecessors: Vec<Vec<Value>> = vec![Vec::new(); count];
     let mut absent = vec![false; count];
+    let mut rng = SplitMix64::new(seed);
+    let mut orders: Vec<Vec<usize>> = Vec::new();
+    let mut previous: Option<usize> = None;
     let mut round = 0;
     while round < config.samples {
         if round >= config.min_samples && started.elapsed() > cap {
             break;
         }
-        for step in 0..count {
-            let i = (round + step) % count;
+        let mut order = (0..count).collect::<Vec<_>>();
+        rng.shuffle(&mut order);
+        for &i in &order {
             if !members[i].alive || absent[i] {
                 continue;
             }
             match sample(&mut *group[i], &mut members[i]) {
-                Ok(Some(value)) => values[i].push(value),
+                Ok(Some(value)) => {
+                    values[i].push(value);
+                    predecessors[i].push(previous.map_or(Value::Null, |p| json!(p)));
+                    previous = Some(i);
+                }
                 Ok(None) => absent[i] = true,
                 Err(error) => {
                     members[i]
@@ -522,6 +618,7 @@ fn rotate_quantity(
                 }
             }
         }
+        orders.push(order);
         round += 1;
     }
     let reference = group
@@ -536,6 +633,9 @@ fn rotate_quantity(
         if let Some(paired) = reference.as_ref().and_then(|r| paired_json(&values[i], r)) {
             entry["paired_vs_prebuilt"] = paired;
         }
+        entry["seed"] = json!(seed);
+        entry["round_orders"] = json!(orders);
+        entry["predecessor"] = json!(predecessors[i]);
         members[i].metrics.insert(name.to_owned(), entry);
     }
 }
@@ -635,11 +735,13 @@ pub fn run_gpu_group(
         let batch = config.batch;
         let (inputs, reference) = (input.inputs, input.reference);
         let workload = input.workload;
+        let seed = |quantity: &str| rotation_seed(config.run_seed, workload.id(), n, quantity);
         rotate_quantity(
             group,
             &mut members,
             config,
             "end_to_end",
+            seed("end_to_end"),
             |backend, member| {
                 backend.poison()?;
                 out.fill(f32::NAN);
@@ -655,6 +757,7 @@ pub fn run_gpu_group(
             &mut members,
             config,
             "dispatch_host",
+            seed("dispatch_host"),
             |backend, member| {
                 backend.poison()?;
                 let started = Instant::now();
@@ -666,15 +769,22 @@ pub fn run_gpu_group(
             },
         );
         for (name, passes) in [("gpu_single", 1), ("gpu_batch_per_dispatch", batch)] {
-            rotate_quantity(group, &mut members, config, name, |backend, member| {
-                backend.poison()?;
-                let Some(elapsed) = backend.gpu_time(passes)? else {
-                    return Ok(None);
-                };
-                backend.read_back(&mut out)?;
-                verify(workload, inputs, reference, &out, &mut member.checks)?;
-                Ok(Some(ms(elapsed) / passes as f64))
-            });
+            rotate_quantity(
+                group,
+                &mut members,
+                config,
+                name,
+                seed(name),
+                |backend, member| {
+                    backend.poison()?;
+                    let Some(elapsed) = backend.gpu_time(passes)? else {
+                        return Ok(None);
+                    };
+                    backend.read_back(&mut out)?;
+                    verify(workload, inputs, reference, &out, &mut member.checks)?;
+                    Ok(Some(ms(elapsed) / passes as f64))
+                },
+            );
         }
         if !config.warmup_cap.is_zero()
             && let Some(index) = members.iter().position(|m| m.alive)
@@ -806,12 +916,18 @@ mod tests {
         assert_eq!(w2["cold_start_ms"].as_array().map(Vec::len), Some(2));
     }
 
-    #[test]
-    fn samples_are_taken_in_rotation_and_paired_against_the_reference() {
-        let mut prebuilt = Fake(PAIR_REFERENCE);
-        let mut other = Fake("fake-paired-other");
-        let mut group: Vec<&mut dyn Backend> = vec![&mut prebuilt, &mut other];
-        let mut members = (0..2)
+    const IDS: [&str; 7] = [
+        PAIR_REFERENCE,
+        "fake-a",
+        "fake-b",
+        "fake-c",
+        "fake-d",
+        "fake-e",
+        "fake-f",
+    ];
+
+    fn members(count: usize) -> Vec<Member> {
+        (0..count)
             .map(|_| Member {
                 checks: 0,
                 failures: Vec::new(),
@@ -821,54 +937,127 @@ mod tests {
                 alive: true,
                 misses_before: None,
             })
-            .collect::<Vec<_>>();
+            .collect()
+    }
+
+    /// Runs `rounds` rounds over `count` fakes and returns the quantity's JSON entry of backend `of`.
+    fn run_rounds(count: usize, rounds: usize, seed: u64, of: usize) -> Value {
+        let mut fakes = IDS[..count].iter().map(|id| Fake(id)).collect::<Vec<_>>();
+        let mut group: Vec<&mut dyn Backend> = fakes
+            .iter_mut()
+            .map(|f| -> &mut dyn Backend { f })
+            .collect();
+        let mut members = members(count);
         let config = Config {
-            samples: 4,
-            min_samples: 2,
+            samples: rounds,
+            min_samples: rounds,
+            cap: Duration::from_secs(3600),
             ..Config::default()
         };
-        let mut order = Vec::new();
+        let mut calls = 0.0;
         rotate_quantity(
             &mut group,
             &mut members,
             &config,
             "end_to_end",
+            seed,
             |backend, _| {
-                order.push(backend.id());
-                // A drifting clock: every later sample is slower, the other backend is always 3x the reference.
-                let drift = order.len() as f64;
+                // A drifting clock: every later sample is slower; the others are always 3x the reference.
+                calls += 1.0;
                 Ok(Some(if backend.id() == PAIR_REFERENCE {
-                    drift
+                    calls
                 } else {
-                    drift * 3.0
+                    calls * 3.0
                 }))
             },
         );
-        // The starting backend shifts by one each round: P O, O P, P O, O P.
+        members[of].metrics["end_to_end"].clone()
+    }
+
+    #[test]
+    fn rounds_are_random_permutations_reproducible_from_the_seed() {
+        let first = run_rounds(7, 50, 42, 0);
+        let again = run_rounds(7, 50, 42, 3);
+        let other = run_rounds(7, 50, 43, 0);
+        // The same seed gives the same orders (whichever backend's entry is read); another seed gives other orders.
+        assert_eq!(first["round_orders"], again["round_orders"]);
+        assert_ne!(first["round_orders"], other["round_orders"]);
+        assert_eq!(first["seed"], 42);
+        assert_eq!(first["round_orders"], json!(round_orders(42, 7, 50)));
+        // Every round visits each backend exactly once.
+        for order in first["round_orders"].as_array().unwrap() {
+            let mut sorted = order
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap())
+                .collect::<Vec<_>>();
+            sorted.sort_unstable();
+            assert_eq!(sorted, (0..7).collect::<Vec<u64>>());
+        }
+        // The seed of a rotation depends on the run seed, the workload, the size and the quantity.
+        let base = rotation_seed(1, "W1", 4096, "end_to_end");
+        assert_eq!(base, rotation_seed(1, "W1", 4096, "end_to_end"));
+        assert_ne!(base, rotation_seed(2, "W1", 4096, "end_to_end"));
+        assert_ne!(base, rotation_seed(1, "W2", 4096, "end_to_end"));
+        assert_ne!(base, rotation_seed(1, "W1", 65536, "end_to_end"));
+        assert_ne!(base, rotation_seed(1, "W1", 4096, "dispatch_host"));
+    }
+
+    #[test]
+    fn every_backend_is_preceded_by_every_other_backend_at_about_equal_rates() {
+        let rounds = 7000;
+        let entry_of = |i: usize| run_rounds(7, rounds, 0x5eed, i);
+        // predecessor counts: row = backend, column = predecessor (7 = none, the very first sample only)
+        let mut counts = [[0usize; 8]; 7];
+        for (backend, row) in counts.iter_mut().enumerate() {
+            let entry = entry_of(backend);
+            let predecessors = entry["predecessor"].as_array().unwrap();
+            assert_eq!(predecessors.len(), rounds);
+            for p in predecessors {
+                row[p.as_u64().map_or(7, |v| v as usize)] += 1;
+            }
+        }
+        // Expected per backend over 7000 samples: another backend precedes it with probability 1/7 inside the round
+        // plus 1/49 across a round boundary (8/49, about 1143 times); the backend itself only across a boundary
+        // (1/49, about 143 times). Allow 15 % and 60 counts.
+        for (backend, row) in counts.iter().enumerate() {
+            for (pred, count) in row.iter().enumerate().take(7) {
+                if pred == backend {
+                    assert!(
+                        (*count as f64 - 143.0).abs() < 60.0,
+                        "backend {backend} after itself: {count} of about 143"
+                    );
+                } else {
+                    assert!(
+                        (*count as f64 - 1143.0).abs() < 170.0,
+                        "backend {backend} follows {pred} {count} times of about 1143"
+                    );
+                }
+            }
+        }
         assert_eq!(
-            order,
-            [
-                PAIR_REFERENCE,
-                "fake-paired-other",
-                "fake-paired-other",
-                PAIR_REFERENCE,
-                PAIR_REFERENCE,
-                "fake-paired-other",
-                "fake-paired-other",
-                PAIR_REFERENCE,
-            ]
+            counts.iter().map(|r| r[7]).sum::<usize>(),
+            1,
+            "only the very first sample has no predecessor"
         );
-        let entry = &members[1].metrics["end_to_end"];
+        // The old cyclic shift would have given one predecessor 6 of 7 times; here no single predecessor dominates.
+        for row in &counts {
+            assert!(row.iter().all(|c| *c < 1400));
+        }
+    }
+
+    #[test]
+    fn samples_are_paired_against_the_reference_per_round() {
+        let entry = run_rounds(2, 4, 9, 1);
         assert_eq!(entry["n"], 4);
         let paired = &entry["paired_vs_prebuilt"];
         assert_eq!(paired["n"], 4);
-        // Neighbours in a round differ by one step of drift, so the paired ratio is near 3 only in the mean; it is
-        // never the unpaired ratio of the medians, and it is computed per rotation.
         assert!(paired["min_ratio"].as_f64().unwrap() <= paired["median_ratio"].as_f64().unwrap());
         assert!(paired["median_ratio"].as_f64().unwrap() <= paired["max_ratio"].as_f64().unwrap());
         // The reference paired with itself is exactly 1.
         assert_eq!(
-            members[0].metrics["end_to_end"]["paired_vs_prebuilt"]["median_ratio"],
+            run_rounds(2, 4, 9, 0)["paired_vs_prebuilt"]["median_ratio"],
             1.0
         );
     }

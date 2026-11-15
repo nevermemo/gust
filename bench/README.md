@@ -39,15 +39,25 @@ group then reads `wgsl-percall`, each switch alone, `+all-on` and `wgsl-prebuilt
 ## Host-side counts and wgpu traces
 
 `gust-bench profile --out p.json [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS]` counts, per call and
-warm, the heap allocations (a counting global allocator) and the wgpu-core API calls (submissions, buffer and bind-group
-creations, polls, map requests; read from wgpu-core's own `log` output, which covers GUST's device too) of `end_to_end`,
-`dispatch_host` and one 16-pass batch, for GUST and every hand-WGSL backend. It needs `--features profile-counts` (the
-allocator is not in a timing build). The numbers are counts, never timings.
+warm, the Rust heap allocations (a counting global allocator; the Vulkan driver's own allocations are not seen) and the
+wgpu-core API calls (submissions, buffer and bind-group creations, polls, map requests; read from wgpu-core's own `log`
+output, which covers GUST's device too) of `end_to_end`, `dispatch_host` and one 16-pass batch, for GUST and every
+hand-WGSL backend. It needs `--features profile-counts` (the allocator is not in a timing build; the results file lists
+the feature in `build.features`). The numbers are counts, never timings.
+
+Each cell is measured in two passes. The heap numbers (`heap`) come from a pass with logging off, because at trace level
+wgpu-core copies resource labels into `String`s to build its log arguments, which the allocator would count. The API
+counts and `sequence_of_first_measured_call` come from a second pass with the log tap on; its heap is kept as
+`heap_with_tap` for the difference only. The sequence is the whole wgpu-core log message of each call, and it is **not
+command order**: wgpu-core logs a pass's contents (set_bind_group, dispatch) when the encoder finishes but a copy when it
+is called, and logs no pipeline sets, timestamp writes, `resolve_query_set` or barriers. It cannot show the timestamp
+span of a batch.
 
 `gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall] [--label batch16|end_to_end]`
 writes wgpu's API trace of the hand-WGSL device, one directory per backend, workload, size and operation, in a
 `--features wgpu-trace` build. GUST's device is opened inside `gust-wgpu` with the trace off and `HeadlessDevice` takes no
-trace path, so GUST has no trace from outside the crate.
+trace path, so GUST has no trace from outside the crate; that needs a `DeviceOptions::trace` hook in `crates/gust-wgpu` (an
+api2b candidate, not built here).
 
 ## Groups and builds
 

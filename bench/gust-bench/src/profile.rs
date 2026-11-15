@@ -1,14 +1,16 @@
-//! `gust-bench profile`: host-side counts per call . Counts, not timings.
+//! `gust-bench profile`: host-side counts per call. Counts, not timings.
 //!
 //! Three counters, none of which touches `crates/`:
 //!
-//! - **Heap allocations.** A counting global allocator (this module, only in a `profile-counts` build, so a timing build
+//! - **Rust heap allocations.** (The Vulkan driver's own allocations are invisible.) A counting global allocator (this module, only in a `profile-counts` build, so a timing build
 //!   never pays for it). It counts `alloc`/`alloc_zeroed` calls and bytes, `realloc` calls, `dealloc` calls and the
 //!   largest single request, for every thread of the process.
 //! - **wgpu API calls.** wgpu-core logs every API call it receives at `trace` level through the `log` crate
 //!   (`api_log!`). A `log::Log` installed here counts the calls by name (queue submissions, buffer creations, bind-group
 //!   creations, `write_buffer`, polls, map requests, dispatches) for every device of the process, GUST's included, which
-//!   no public API of `gust-wgpu` exposes. The logger formats into a fixed stack buffer and mutes the allocation counter
+//!   no public API of `gust-wgpu` exposes. Each cell is measured in two passes: heap with logging off (what a timing build
+//!   allocates; wgpu-core copies resource labels into `String`s only to build log arguments), then API calls and the
+//!   sequence with the tap on (its heap is kept as `heap_with_tap`). The logger formats into a fixed stack buffer and mutes the allocation counter
 //!   while it runs, so it adds no allocation to the counts. It also records the ordered call sequence of one call.
 //! - Nothing else: no timer is read.
 //!
@@ -150,7 +152,7 @@ static SEEN: AtomicU64 = AtomicU64::new(0);
 
 /// A fixed buffer that takes what fits and drops the rest, so formatting a log message allocates nothing.
 struct Stack {
-    bytes: [u8; 160],
+    bytes: [u8; 256],
     len: usize,
 }
 
@@ -186,7 +188,7 @@ impl log::Log for Tap {
         }
         let _mute = Mute::on();
         let mut stack = Stack {
-            bytes: [0; 160],
+            bytes: [0; 256],
             len: 0,
         };
         let _ = match record.args().as_str() {
@@ -209,13 +211,8 @@ impl log::Log for Tap {
         if let Ok(mut guard) = SEQUENCE.lock()
             && let Some(sequence) = guard.as_mut()
         {
-            // A buffer creation keeps its label, so the sequence says which buffer it was.
-            let entry = if token == "Device::create_buffer" {
-                text.split(" ->").next().unwrap_or(token)
-            } else {
-                token
-            };
-            sequence.push(entry.to_owned());
+            // The whole message (up to 256 bytes), arguments included: labels, indexes, dispatch and copy sizes.
+            sequence.push(text.to_owned());
         }
     }
 
@@ -226,8 +223,18 @@ static TAP: Tap = Tap;
 
 fn install_tap() -> BenchResult<()> {
     log::set_logger(&TAP).map_err(|e| format!("a logger is already installed: {e}"))?;
-    log::set_max_level(log::LevelFilter::Trace);
+    log::set_max_level(log::LevelFilter::Off);
     Ok(())
+}
+
+/// Heap pass: logging off, so wgpu-core builds no log arguments (its trace-level sites copy resource labels into
+/// `String`s, which the allocator would count). API pass: the tap at `Trace`.
+fn set_logging(on: bool) {
+    log::set_max_level(if on {
+        log::LevelFilter::Trace
+    } else {
+        log::LevelFilter::Off
+    });
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -332,25 +339,30 @@ struct CellSpec<'a> {
     calls: usize,
 }
 
-/// One backend, one workload, one size, one operation: `warm` unmeasured calls, then `calls` measured ones. Before each
-/// call the output is poisoned (as the harness does, outside the counted region).
-fn measure(backend: &mut dyn Backend, cell: &CellSpec<'_>) -> BenchResult<Value> {
-    let out_len = cell.workload.out_len(cell.inputs.n);
-    let mut out: Vec<f32> = vec![cell.workload.poison_word(); out_len];
+/// One pass of one cell: `warm` unmeasured calls, then `calls` measured ones, with logging `on` or off for the whole
+/// pass. Before each call the output is poisoned (as the harness does, outside the counted region). Returns the
+/// per-call deltas and, in a logging pass, the whole-message sequence of the first measured call.
+fn pass(
+    backend: &mut dyn Backend,
+    cell: &CellSpec<'_>,
+    out: &mut Vec<f32>,
+    logging: bool,
+) -> BenchResult<(Vec<Snap>, Vec<String>)> {
+    set_logging(logging);
     let mut deltas: Vec<Snap> = Vec::with_capacity(cell.calls);
     let mut sequence: Vec<String> = Vec::new();
     for i in 0..cell.warm + cell.calls {
         backend.poison()?;
         out.fill(cell.workload.poison_word());
         let measured = i >= cell.warm;
-        let record = i == cell.warm;
+        let record = logging && i == cell.warm;
         if record && let Ok(mut guard) = SEQUENCE.lock() {
             *guard = Some(Vec::with_capacity(256));
         }
         LARGEST.store(0, Relaxed);
         let before = snap();
         match cell.op {
-            Op::EndToEnd => backend.end_to_end(cell.inputs, &mut out)?,
+            Op::EndToEnd => backend.end_to_end(cell.inputs, out)?,
             Op::DispatchHost => backend.dispatch()?,
             Op::Batch16 => {
                 backend.gpu_time(16)?;
@@ -364,6 +376,30 @@ fn measure(backend: &mut dyn Backend, cell: &CellSpec<'_>) -> BenchResult<Value>
             deltas.push(delta(&before, &after));
         }
     }
+    set_logging(false);
+    Ok((deltas, sequence))
+}
+
+fn heap_json(deltas: &[Snap]) -> Value {
+    let column = |f: fn(&Snap) -> u64| deltas.iter().map(f).collect::<Vec<_>>();
+    json!({
+        "allocs": spread(&column(|d| d.allocs)),
+        "reallocs": spread(&column(|d| d.reallocs)),
+        "frees": spread(&column(|d| d.frees)),
+        "bytes": spread(&column(|d| d.bytes)),
+        "largest_single": spread(&column(|d| d.largest)),
+    })
+}
+
+/// One backend, one workload, one size, one operation, in two passes: heap counts with logging **off** (what a
+/// timing build allocates), then API counts and the call sequence with the tap at `Trace`. The second pass also counts
+/// heap (`heap_with_tap`), which includes the `String`s wgpu-core builds for its log arguments, so the difference is
+/// recorded and the first pass is the one to read.
+fn measure(backend: &mut dyn Backend, cell: &CellSpec<'_>) -> BenchResult<Value> {
+    let out_len = cell.workload.out_len(cell.inputs.n);
+    let mut out: Vec<f32> = vec![cell.workload.poison_word(); out_len];
+    let (heap_deltas, _) = pass(backend, cell, &mut out, false)?;
+    let (tap_deltas, sequence) = pass(backend, cell, &mut out, true)?;
     // The measured calls must have done the work: check the last result against the reference, outside the counts.
     if cell.op != Op::EndToEnd {
         backend.read_back(&mut out)?;
@@ -377,10 +413,9 @@ fn measure(backend: &mut dyn Backend, cell: &CellSpec<'_>) -> BenchResult<Value>
         )
     })?;
 
-    let column = |f: fn(&Snap) -> u64| deltas.iter().map(f).collect::<Vec<_>>();
     let mut api = serde_json::Map::new();
     for (index, name) in NAMES.iter().enumerate() {
-        let values = deltas.iter().map(|d| d.api[index]).collect::<Vec<_>>();
+        let values = tap_deltas.iter().map(|d| d.api[index]).collect::<Vec<_>>();
         api.insert((*name).to_owned(), spread(&values));
     }
     Ok(json!({
@@ -390,13 +425,8 @@ fn measure(backend: &mut dyn Backend, cell: &CellSpec<'_>) -> BenchResult<Value>
         "op": cell.op.id(),
         "calls": cell.calls,
         "warm": cell.warm,
-        "heap": {
-            "allocs": spread(&column(|d| d.allocs)),
-            "reallocs": spread(&column(|d| d.reallocs)),
-            "frees": spread(&column(|d| d.frees)),
-            "bytes": spread(&column(|d| d.bytes)),
-            "largest_single": spread(&column(|d| d.largest)),
-        },
+        "heap": heap_json(&heap_deltas),
+        "heap_with_tap": heap_json(&tap_deltas),
         "wgpu_api": Value::Object(api),
         "sequence_of_first_measured_call": fold_sequence(&sequence),
     }))
@@ -500,9 +530,11 @@ pub fn run(options: &Options) -> BenchResult<bool> {
         "log_messages_seen": SEEN.load(Relaxed),
         "notes": [
             "Counts per call, warm; min/median/max over the measured calls. No timer is read; other lanes ran at the same time, which does not affect counts.",
-            "heap: a counting global allocator over all threads of the process; the log tap's own allocations are muted.",
+            "heap: Rust global-allocator counts only (driver allocations unseen), all threads of the process, measured in a pass with logging Off; heap_with_tap is a second pass with the tap at Trace and includes wgpu-core's log-argument Strings (informational, not the number to read).",
             "wgpu_api: wgpu-core api_log messages seen through the log crate; Queue::submit is one wgpu-core call, not one vkQueueSubmit per se.",
             "A Queue::write_buffer's internal staging buffer is not a Device::create_buffer call.",
+            "sequence_of_first_measured_call is not command order: wgpu-core logs pass contents (set_bind_group, dispatch) when the encoder finishes but copies when called; set_pipeline, timestamp writes, resolve_query_set and barriers are not logged. It cannot show the timestamp span.",
+            "The profile binary has wgpu/trace compiled in (trace off at run time) when built with the wgpu-trace feature; the build.features list says which features were on.",
         ],
         "cells": cells,
     });
@@ -533,12 +565,12 @@ mod tests {
     #[test]
     fn the_stack_buffer_truncates_on_a_char_boundary() {
         let mut stack = Stack {
-            bytes: [0; 160],
+            bytes: [0; 256],
             len: 0,
         };
         let long = "é".repeat(100);
         stack.write_str(&long).unwrap();
-        assert!(stack.len <= 160 && stack.text().chars().all(|c| c == 'é'));
+        assert!(stack.len <= 256 && stack.text().chars().all(|c| c == 'é'));
     }
 
     /// The allocator counts a heap allocation (other test threads may add more, never fewer), and the mute flag is

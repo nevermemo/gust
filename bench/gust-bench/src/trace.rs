@@ -1,4 +1,4 @@
-//! `gust-bench trace`: wgpu's own API trace of the hand-WGSL backends , a `wgpu-trace` build.
+//! `gust-bench trace`: wgpu's own API trace of the hand-WGSL backends, a `wgpu-trace` build.
 //!
 //! One directory per (backend, workload, size, operation) under `--out`: a fresh device opened with
 //! `wgpu::Trace::Directory`, the backend prepared and poisoned, then exactly one call (`batch16` is `gpu_time(16)`, the

@@ -169,6 +169,15 @@ fn check_labels(runs: &[Value]) -> BenchResult<()> {
                 .into());
             }
         }
+        // The sampler changes what the machine is doing during a run (it polls the GPU), so runs with and without it
+        // are not one measurement. Only the flag: the sidecar name and the window count differ run to run.
+        if run["sampler"]["enabled"] != first["sampler"]["enabled"] {
+            return Err(format!(
+                "run {} disagrees with run 0 on `sampler.enabled`: {} against {}",
+                index, run["sampler"]["enabled"], first["sampler"]["enabled"]
+            )
+            .into());
+        }
     }
     Ok(())
 }
@@ -636,11 +645,14 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         if run["kill_rule"].is_object() {
             writeln!(
                 md,
-                "- {}: kill rule, C re-opened = {} ({} paired GPU-time ratios checked, offenders: {})",
+                "- {}: kill rule, C re-opened = {} (judged: {}; {} paired GPU-time ratios checked, {} unpaired, offenders: {}; control wgsl-percall/wgsl-prebuilt: {} outside the window)",
                 run["label"].as_str().unwrap_or("run"),
                 run["kill_rule"]["c_reopened"],
+                run["kill_rule"]["judged"],
                 run["kill_rule"]["checked"],
-                run["kill_rule"]["offenders"]
+                run["kill_rule"]["unpaired"],
+                run["kill_rule"]["offenders"],
+                run["kill_rule"]["control"]["outside_tolerance"]
             )?;
         }
     }
@@ -1409,6 +1421,20 @@ mod tests {
         assert!(!out_json.exists());
         let _ = fs::remove_dir_all(&dir);
     }
+    #[test]
+    fn runs_with_and_without_the_sampler_do_not_aggregate() {
+        let mut a = run("wgsl", "GPU A", "a.json");
+        a["sampler"] = json!({ "enabled": true, "sidecar": "a.sampler.json", "windows": 3 });
+        let mut b = run("wgsl", "GPU A", "b.json");
+        b["sampler"] = json!({ "enabled": false });
+        let error = check_labels(&[a.clone(), b]).unwrap_err();
+        assert!(error.to_string().contains("`sampler.enabled`"), "{error}");
+        // Two sampled runs differ in sidecar and windows, and still aggregate.
+        let mut c = run("wgsl", "GPU A", "c.json");
+        c["sampler"] = json!({ "enabled": true, "sidecar": "c.sampler.json", "windows": 5 });
+        assert!(check_labels(&[a, c]).is_ok());
+    }
+
     #[test]
     fn runs_of_different_groups_do_not_aggregate() {
         let mut a = run("wgsl", "GPU A", "a.json");

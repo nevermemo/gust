@@ -233,7 +233,7 @@ pub struct Reference {
     pub want: Vec<f32>,
     /// W3: the exact value of the polynomial at each `x`, in f64.
     pub exact: Vec<f64>,
-    /// W3: the derived worst-case error bound at each `x` (see [`polynomial::bound`]).
+    /// W3: the derived worst-case error bound at each `x` (see `polynomial::exact_and_bound`).
     pub bound: Vec<f64>,
 }
 

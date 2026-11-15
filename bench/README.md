@@ -66,8 +66,9 @@ their own run (the ratio of the two ratios), not through a direct pairing.
 
 **Kill rule** (`group::kill_rule`, in the run file as `kill_rule` for the publishable group): a gust-gpu (or
 gust-gpu-spirv) GPU-time (`gpu_single`, `gpu_batch_per_dispatch`) paired ratio to `wgsl-prebuilt` more than 10 % off 1.0
-on any cell marks the run "C re-opened" (`kill_rule.c_reopened`, with the offending cells listed). The judgement that
-uses it is b1b's.
+on any cell marks the run "C re-opened" (`kill_rule.c_reopened`, with the offending cells listed). It judges only a complete run: every GUST cell and quantity needs a ratio, and any
+cell without one (a failed or dropped backend, a size with no GUST cell) counts in `kill_rule.unpaired`; `kill_rule.judged` is true only when `checked > 0` and `unpaired == 0`, and otherwise `c_reopened` is `null`, never `false`. `kill_rule.control` carries the same ratio for `wgsl-percall` (same kernel text as `wgsl-prebuilt`, so its distance from 1.0 is the noise floor of the method); it is a record beside the rule, not an input, and the rule's threshold and inputs are unchanged. The judgement that
+uses it is b1b's. A `publishable` run refuses a `--backends` list that leaves out `wgsl-prebuilt`, `wgsl-percall` or the build's GUST backend (use `--group ablation` for subsets). After every GUST cell of a `spirv-route` build the device's route events for that kernel are checked: any event off the build's route (or none at all) fails the cell, naming both routes.
 
 **Small-group run conditions.** A small group (one workload and size, e.g. a diagnostic run of W1 at 1 048 576) is run
 with: the GPU idle (check `nvidia-smi` first and write down what else ran), one size, the run-time-compile build, a
@@ -113,7 +114,7 @@ results say `config.shader_source = "precompiled"`. It is built with `GUST_PROFI
 To regenerate them after a kernel changes: `cargo gust build --manifest-path bench/gust-bench-pre/Cargo.toml` (the
 pinned Slang and its helper), check with `cargo gust check --manifest-path bench/gust-bench-pre/Cargo.toml`, then
 commit the directory. Run it with
-`gust-bench-pre run --workloads W1,W2 --sizes 4096 --backends gust-gpu,wgsl-prebuilt --cold-only --cold-repeats 10
+`gust-bench-pre run --workloads W1,W2 --sizes 4096 --backends gust-gpu,wgsl-prebuilt,wgsl-percall --cold-only --cold-repeats 10
 --no-sampler --out FILE`.
 
 **Route event per cold start.** Every cold start of a GUST backend records which route produced its shader, in the
@@ -151,7 +152,7 @@ GUST_PROFILE=dev RUSTFLAGS="--cfg gust_dual" cargo build --release --locked
 `run` options: `--quick` (two small sizes, 5 samples, for smoke tests), `--workloads W1,W2`, `--sizes N,N`,
 `--backends gust-gpu,rayon-N`, `--group publishable|ablation`, `--samples N`, `--cap-secs S`, `--label NAME`,
 `--ablation LIST|all` (ablation group only), `--seed N`, `--settle-secs S`, `--window-secs S`, `--no-sampler`. Every
-path comes from an argument. A build without `--cfg gust_dual` still works and simply has no `gust-twin` row. The builds
+path comes from an argument. `aggregate` also refuses to mix runs with and without the sampler (`sampler.enabled`). A build without `--cfg gust_dual` still works and simply has no `gust-twin` row. The builds
 of the Groups and builds section (spirv-route, precompiled, cpu) take the same options; the `cpu` build runs the CPU
 backends only and has no sampler.
 

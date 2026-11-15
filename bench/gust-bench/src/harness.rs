@@ -822,6 +822,13 @@ pub fn run_gpu_group(
                 ));
             }
         }
+        if let Err(message) = backend.route_check() {
+            member.failures.push(format!(
+                "{} {} {n}: {message}",
+                backend.id(),
+                input.workload.id()
+            ));
+        }
         let cell = json!({
             "backend": backend.id(),
             "kind": format!("{:?}", backend.kind()),

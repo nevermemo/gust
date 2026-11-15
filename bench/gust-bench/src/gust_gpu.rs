@@ -147,6 +147,21 @@ impl GustGpu {
             })
     }
 
+    /// The route of every event of the workload's kernel, in a build that keeps events.
+    #[cfg(feature = "spirv-route")]
+    fn route_events_of(&self, kernel: &str) -> Vec<&'static str> {
+        self.device
+            .route_events()
+            .into_iter()
+            .filter(|event| event.kernel == kernel)
+            .map(|event| match event.route {
+                gust_wgpu::Route::Spirv => "spirv",
+                gust_wgpu::Route::Wgsl => "wgsl",
+                _ => "other",
+            })
+            .collect()
+    }
+
     #[cfg(not(feature = "spirv-route"))]
     fn last_event(&self, _kernel: &str) -> Option<route::Event> {
         None
@@ -278,6 +293,31 @@ impl Backend for GustGpu {
         Ok(())
     }
 
+    #[cfg(feature = "spirv-route")]
+    fn route_check(&self) -> Result<(), String> {
+        let kernel = workloads::descriptor(self.resident().workload)
+            .qualified_name()
+            .to_string();
+        let events = self.route_events_of(&kernel);
+        let want = if gust_wgpu::SPIRV_ROUTE {
+            "spirv"
+        } else {
+            "wgsl"
+        };
+        if events.is_empty() {
+            return Err(format!(
+                "no route event for {kernel}: the build route `{want}` could not be confirmed"
+            ));
+        }
+        match events.iter().find(|route| **route != want) {
+            Some(other) => Err(format!(
+                "kernel {kernel} ran on the `{other}` route, but this build's route is `{want}` ({} events)",
+                events.len()
+            )),
+            None => Ok(()),
+        }
+    }
+
     fn cold_start(&mut self) -> BenchResult<Option<Duration>> {
         self.device.clear_pipeline_cache();
         let started = Instant::now();
@@ -388,7 +428,10 @@ mod tests {
                 record["shown"], true,
                 "the artifact path is shown by the build or an event: {record}"
             );
-            assert!(gust::profile::STRICT || cfg!(feature = "spirv-route"));
+            assert!(
+                gust::profile::STRICT,
+                "an embedded artifact is only possible in a strict-profile build"
+            );
         }
         // A second cold start records again (one record per sample).
         backend.cold_start().unwrap();

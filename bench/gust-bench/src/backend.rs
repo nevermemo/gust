@@ -71,6 +71,12 @@ pub trait Backend {
         None
     }
 
+    /// The route check after a cell: every route event the device holds for this backend's kernel must be on the
+    /// route of the build. An `Err` names both routes and fails the cell. Backends without route events pass.
+    fn route_check(&self) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Pipeline-cache misses so far, where the backend counts them. The harness asserts it does not move while
     /// samples are taken.
     fn cache_misses(&self) -> Option<u64> {

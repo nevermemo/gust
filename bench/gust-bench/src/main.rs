@@ -489,8 +489,14 @@ fn kill_rule_of(group: Group, cells: &[Value]) -> Value {
     }
     let record = group::kill_rule(cells);
     eprintln!(
-        "kill rule: C re-opened = {} ({} paired GPU-time ratios checked, offenders {})",
-        record["c_reopened"], record["checked"], record["offenders"]
+        "kill rule: C re-opened = {} (judged {}: {} paired GPU-time ratios checked, {} unpaired, offenders {}); control {} outside the window, worst {}",
+        record["c_reopened"],
+        record["judged"],
+        record["checked"],
+        record["unpaired"],
+        record["offenders"],
+        record["control"]["outside_tolerance"],
+        record["control"]["worst_abs_deviation"]
     );
     record
 }
@@ -526,6 +532,11 @@ fn run(options: &Options) -> BenchResult<bool> {
     let mut backends = gpu_backends(group, &gust_device, &ctx, &ablation, all_on);
     if group == Group::Publishable {
         backends.extend(cpu_backends(threads));
+    }
+    if group == Group::Publishable
+        && let Some(wanted) = &options.backends
+    {
+        group::require_full_set(wanted, gust_gpu::backend_id())?;
     }
     select_backends(&mut backends, options.backends.as_ref())?;
 

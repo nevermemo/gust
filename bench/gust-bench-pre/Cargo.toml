@@ -27,6 +27,8 @@ windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Graphics
 # needs it) are never on. It is built with GUST_PROFILE=native, which refuses `slang-runtime` and requires an artifact
 # for every kernel: the build itself guarantees that a kernel can only come from its embedded artifact, and the harness
 # reads that guarantee (`gust::profile::STRICT`) into the route event of a cold start.
+# `spirv-route` is declared only so the shared sources' `cfg(feature = "spirv-route")` is a known cfg; it stays off here
+# (an artifact build has no SPIR-V route).
 [features]
 default = ["gpu"]
 gpu = []

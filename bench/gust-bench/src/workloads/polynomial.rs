@@ -17,8 +17,8 @@
 //! for the exact polynomial `p` of the f32 coefficients and the f32 `x` (both exact in f64). The reference is Horner's
 //! rule in f64, which obeys the same theorem with `u64 = 2^-53`, so `|p_f64 - p| <= gamma64_{2d} * S` (`S` itself is
 //! evaluated in f64 by Horner on `|c_k|` and `|x|`, all non-negative, so no cancellation and a relative error of at
-//! most `gamma64_{2d}`; it enters the bound multiplied by a number near `1e-6`, so that is far below anything that
-//! matters and is covered by the `+ eta` slack below). The check compares `p^` with `p_f64`, so
+//! most `gamma64_{2d}`: the computed `S_f64 <= (1 + gamma64_{2d}) S`, and the code scales the bound by that factor,
+//! so the bound holds for the true `S` and not only for the computed one). The check compares `p^` with `p_f64`, so
 //!
 //! ```text
 //! |p^ - p_f64| <= (gamma_{2d} + gamma64_{2d}) * S + 2 d * 2^-126
@@ -79,6 +79,8 @@ pub fn exact_and_bound(coeffs: &[f32], xs: &[f32]) -> (Vec<f64>, Vec<f64>) {
     let degree = coeffs.len() - 1;
     let factor = gamma(2 * degree, U32) + gamma(2 * degree, U64);
     let eta = 2.0 * degree as f64 * f64::from(f32::MIN_POSITIVE);
+    // S is itself computed in f64: `S_f64 <= (1 + gamma64) S`.
+    let s_slack = 1.0 + gamma(2 * degree, U64);
     let mut exact = Vec::with_capacity(xs.len());
     let mut bound = Vec::with_capacity(xs.len());
     for x in xs {
@@ -89,7 +91,7 @@ pub fn exact_and_bound(coeffs: &[f32], xs: &[f32]) -> (Vec<f64>, Vec<f64>) {
             s = s * x.abs() + f64::from(*c).abs();
         }
         exact.push(p);
-        bound.push(factor * s + eta);
+        bound.push(factor * s * s_slack + eta);
     }
     (exact, bound)
 }

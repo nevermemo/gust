@@ -299,9 +299,9 @@ async fn both_forms(device: &HeadlessDevice, length: usize) -> Result<(), String
     let b: Vec<f32> = (0..length).map(|i| 2.0 * i as f32 + 0.5).collect();
     let expected: Vec<f32> = a.iter().zip(&b).map(|(left, right)| left + right).collect();
 
-    let a = device.create_f32_buffer("web a", &a, GpuBufferAccess::ReadOnly);
-    let b = device.create_f32_buffer("web b", &b, GpuBufferAccess::ReadOnly);
-    let out = device.create_f32_buffer("web out", &vec![0.0; length], GpuBufferAccess::ReadWrite);
+    let a = device.create_typed_buffer("web a", &a, GpuBufferAccess::ReadOnly);
+    let b = device.create_typed_buffer("web b", &b, GpuBufferAccess::ReadOnly);
+    let out = device.create_typed_buffer("web out", &vec![0.0; length], GpuBufferAccess::ReadWrite);
     // The job is not waited on: in the browser `WgpuJob::wait` returns an error (see its documentation). The awaited
     // readback below is what resolves when the dispatch and the copy are done.
     let job = vector_add::add::submit(device, length as u32, &a, &b, &out)
@@ -335,7 +335,7 @@ async fn both_forms(device: &HeadlessDevice, length: usize) -> Result<(), String
     // cannot refuse a pixel kernel here with `ShapeUnsupported`. An adapter that cannot write storage from a fragment
     // fails when the pipeline is created, as a WebGPU validation error in the browser's console, and the output keeps
     // its fill: the page then logs the "no fragment wrote" reason below, not a refusal.
-    let pixel_out = device.create_f32_buffer(
+    let pixel_out = device.create_typed_buffer(
         "web pixel out",
         &vec![UNWRITTEN; length],
         GpuBufferAccess::ReadWrite,

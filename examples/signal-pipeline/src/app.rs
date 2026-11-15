@@ -53,15 +53,17 @@ pub fn main() {
     assert!(error <= 2.0e-5, "CPU/GPU error was {error}");
 
     let persistent_signal =
-        device.create_f32_buffer("signal", &inputs.signal, GpuBufferAccess::ReadOnly);
+        device.create_typed_buffer("signal", &inputs.signal, GpuBufferAccess::ReadOnly);
     let persistent_baseline =
-        device.create_f32_buffer("baseline", &inputs.baseline, GpuBufferAccess::ReadOnly);
-    let persistent_gain = device.create_f32_buffer("gain", &inputs.gain, GpuBufferAccess::ReadOnly);
-    let persistent_bias = device.create_f32_buffer("bias", &inputs.bias, GpuBufferAccess::ReadOnly);
+        device.create_typed_buffer("baseline", &inputs.baseline, GpuBufferAccess::ReadOnly);
+    let persistent_gain =
+        device.create_typed_buffer("gain", &inputs.gain, GpuBufferAccess::ReadOnly);
+    let persistent_bias =
+        device.create_typed_buffer("bias", &inputs.bias, GpuBufferAccess::ReadOnly);
     let persistent_scale =
-        device.create_f32_buffer("scale", &inputs.scale, GpuBufferAccess::ReadOnly);
+        device.create_typed_buffer("scale", &inputs.scale, GpuBufferAccess::ReadOnly);
     let persistent_output =
-        device.create_f32_buffer("signal output", &initial_output, GpuBufferAccess::ReadWrite);
+        device.create_typed_buffer("signal output", &initial_output, GpuBufferAccess::ReadWrite);
     let upload_timing = [
         (&persistent_signal, inputs.signal.as_slice()),
         (&persistent_baseline, inputs.baseline.as_slice()),
@@ -71,7 +73,7 @@ pub fn main() {
     ]
     .into_iter()
     .try_fold(TransferTiming::default(), |mut total, (buffer, values)| {
-        let timing = device.write_f32_buffer_timed(buffer, values)?;
+        let timing = device.write_typed_buffer_timed(buffer, values)?;
         // `TransferTiming` is `#[non_exhaustive]`: add to the one this code owns, and do not build a literal.
         total.bytes += timing.bytes;
         total.elapsed += timing.elapsed;
@@ -148,7 +150,7 @@ pub fn main() {
         final_wait: final_wait_elapsed,
     };
     let (persistent_result, readback_timing) = device
-        .read_f32_buffer_timed(&persistent_output)
+        .read_typed_buffer_timed(&persistent_output)
         .expect("timed persistent signal readback");
     let persistent_error = max_abs_error(&cpu_output, &persistent_result);
     assert!(
@@ -236,14 +238,15 @@ fn dispatch_gpu(
     inputs: &Inputs,
     initial_output: &[f32],
 ) -> Result<Vec<f32>, gust_wgpu::Error> {
-    let read_only =
-        |label, values: &[f32]| device.create_f32_buffer(label, values, GpuBufferAccess::ReadOnly);
+    let read_only = |label, values: &[f32]| {
+        device.create_typed_buffer(label, values, GpuBufferAccess::ReadOnly)
+    };
     let signal = read_only("signal one-shot", &inputs.signal);
     let baseline = read_only("baseline one-shot", &inputs.baseline);
     let gain = read_only("gain one-shot", &inputs.gain);
     let bias = read_only("bias one-shot", &inputs.bias);
     let scale = read_only("scale one-shot", &inputs.scale);
-    let output = device.create_f32_buffer(
+    let output = device.create_typed_buffer(
         "signal output one-shot",
         initial_output,
         GpuBufferAccess::ReadWrite,
@@ -258,7 +261,7 @@ fn dispatch_gpu(
         &scale,
         &output,
     )?;
-    device.read_f32_buffer(&output)
+    device.read_typed_buffer(&output)
 }
 
 fn benchmark_element_count() -> usize {

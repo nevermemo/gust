@@ -51,7 +51,7 @@ pub enum Error {
     /// The kernel's execution shape cannot be used the way this call asks (plan §4.3 spells it `UnsupportedShape`).
     /// `grid` runs as compute passes and `pixel` as full-screen fragment passes (slice mx.p1b); a `pixel` kernel is
     /// refused, by `reason`, for an extent call (a pixel call is one-dimensional), an indirect dispatch (the element
-    /// count must be known on the host), the v1 `dispatch_f32`/`dispatch_u32` family, the generated host snippet, and
+    /// count must be known on the host), the v1 `dispatch_f32`/`dispatch_u32` family (deprecated), the generated host snippet, and
     /// on an adapter whose fragment stage cannot write storage buffers. Reported before any pipeline or wgpu object is
     /// created.
     ShapeUnsupported {

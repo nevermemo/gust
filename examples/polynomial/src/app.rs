@@ -54,14 +54,14 @@ pub fn main() {
     assert!(error <= 1.0e-5, "CPU/GPU error was {error}");
 
     let persistent_input =
-        device.create_f32_buffer("polynomial input", &input, GpuBufferAccess::ReadOnly);
-    let persistent_output = device.create_f32_buffer(
+        device.create_typed_buffer("polynomial input", &input, GpuBufferAccess::ReadOnly);
+    let persistent_output = device.create_typed_buffer(
         "polynomial output",
         &initial_output,
         GpuBufferAccess::ReadWrite,
     );
     let upload_timing = device
-        .write_f32_buffer_timed(&persistent_input, &input)
+        .write_typed_buffer_timed(&persistent_input, &input)
         .expect("timed polynomial upload");
     polynomial::evaluate::dispatch(
         &device,
@@ -120,7 +120,7 @@ pub fn main() {
         final_wait: final_wait_elapsed,
     };
     let (persistent_result, readback_timing) = device
-        .read_f32_buffer_timed(&persistent_output)
+        .read_typed_buffer_timed(&persistent_output)
         .expect("timed persistent polynomial readback");
     let persistent_error = max_abs_error(&cpu_output, &persistent_result);
     assert!(
@@ -259,18 +259,18 @@ fn dispatch_gpu(
     input: &[f32],
     initial_output: &[f32],
 ) -> Result<Vec<f32>, gust_wgpu::Error> {
-    let input = device.create_f32_buffer(
+    let input = device.create_typed_buffer(
         "polynomial one-shot input",
         input,
         GpuBufferAccess::ReadOnly,
     );
-    let output = device.create_f32_buffer(
+    let output = device.create_typed_buffer(
         "polynomial one-shot output",
         initial_output,
         GpuBufferAccess::ReadWrite,
     );
     polynomial::evaluate::dispatch(device, initial_output.len() as u32, &input, &output)?;
-    device.read_f32_buffer(&output)
+    device.read_typed_buffer(&output)
 }
 
 fn benchmark_element_count() -> usize {

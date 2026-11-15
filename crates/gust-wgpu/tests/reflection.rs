@@ -41,13 +41,13 @@ fn assert_mismatch(error: Error, expected: &str) {
 #[test]
 fn rejects_workgroup_mismatch_before_dispatch() {
     let device = HeadlessDevice::new().expect("Vulkan adapter required");
-    let output = device.create_f32_buffer("reflection gate", &[3.0], GpuBufferAccess::ReadWrite);
+    let output = device.create_typed_buffer("reflection gate", &[3.0], GpuBufferAccess::ReadWrite);
     let descriptor = KERNEL.with_workgroup_size([32, 1, 1]);
     let error = device
         .dispatch_buffers(&descriptor, 1, &[BufferBinding::read_write(&output)])
         .expect_err("descriptor/shader workgroup mismatch must fail before dispatch");
     assert_mismatch(error, "compute workgroup dimensions differ");
-    assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0]);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
     let stats = device.pipeline_cache_stats();
     assert_eq!((stats.entries, stats.misses, stats.hits), (0, 0, 0));
 }
@@ -55,7 +55,8 @@ fn rejects_workgroup_mismatch_before_dispatch() {
 #[test]
 fn rejects_resource_mismatches_before_dispatch() {
     let device = HeadlessDevice::new().expect("Vulkan adapter required");
-    let floats = device.create_f32_buffer("reflection floats", &[3.0], GpuBufferAccess::ReadWrite);
+    let floats =
+        device.create_typed_buffer("reflection floats", &[3.0], GpuBufferAccess::ReadWrite);
     let integers =
         device.create_typed_buffer("reflection uints", &[5u32], GpuBufferAccess::ReadWrite);
     for (parameter, binding, expected) in [
@@ -106,7 +107,7 @@ fn rejects_resource_mismatches_before_dispatch() {
         device.dispatch_buffers(&descriptor, 1, &[]).unwrap_err(),
         "unexpected compiler resource bindings",
     );
-    assert_eq!(device.read_f32_buffer(&floats).unwrap(), [3.0]);
+    assert_eq!(device.read_typed_buffer(&floats).unwrap(), [3.0]);
     assert_eq!(device.read_typed_buffer(&integers).unwrap(), [5]);
     let stats = device.pipeline_cache_stats();
     assert_eq!((stats.entries, stats.misses, stats.hits), (0, 0, 0));
@@ -115,7 +116,8 @@ fn rejects_resource_mismatches_before_dispatch() {
 #[test]
 fn cached_pipeline_does_not_authorize_a_changed_contract() {
     let device = HeadlessDevice::new().expect("Vulkan adapter required");
-    let output = device.create_f32_buffer("cached reflection", &[3.0], GpuBufferAccess::ReadWrite);
+    let output =
+        device.create_typed_buffer("cached reflection", &[3.0], GpuBufferAccess::ReadWrite);
     let bindings = [BufferBinding::read_write(&output)];
     device.dispatch_buffers(&KERNEL, 1, &bindings).unwrap();
     let descriptor = KERNEL.with_workgroup_size([32, 1, 1]);
@@ -136,7 +138,7 @@ fn cached_pipeline_does_not_authorize_a_changed_contract() {
         "missing compiler binding renamed",
     );
     device.dispatch_buffers(&KERNEL, 1, &bindings).unwrap();
-    assert_eq!(device.read_f32_buffer(&output).unwrap(), [17.0]);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), [17.0]);
     let stats = device.pipeline_cache_stats();
     assert_eq!((stats.entries, stats.misses, stats.hits), (1, 1, 1));
 }

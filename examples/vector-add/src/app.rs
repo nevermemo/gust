@@ -92,11 +92,11 @@ fn add_on_gpu(
     b: &[f32],
     seed: &[f32],
 ) -> Result<Vec<f32>, gust_wgpu::Error> {
-    let a = device.create_f32_buffer("vector add a", a, GpuBufferAccess::ReadOnly);
-    let b = device.create_f32_buffer("vector add b", b, GpuBufferAccess::ReadOnly);
-    let out = device.create_f32_buffer("vector add out", seed, GpuBufferAccess::ReadWrite);
+    let a = device.create_typed_buffer("vector add a", a, GpuBufferAccess::ReadOnly);
+    let b = device.create_typed_buffer("vector add b", b, GpuBufferAccess::ReadOnly);
+    let out = device.create_typed_buffer("vector add out", seed, GpuBufferAccess::ReadWrite);
     vector_add::add::dispatch(device, seed.len() as u32, &a, &b, &out)?;
-    device.read_f32_buffer(&out)
+    device.read_typed_buffer(&out)
 }
 
 fn export_artifacts() -> Result<PathBuf, Box<dyn std::error::Error>> {

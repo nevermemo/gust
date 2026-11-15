@@ -25,6 +25,8 @@ use gust::{
     Access, Arg, Call, GpuPod, Kernel, KernelDescriptor, ParameterDescriptor, ParameterKind,
     Resource, ResourceBinding, ResourceLayout, Run, capability::Capability, target::Target,
 };
+// The names below are the compatibility path, which these tests exercise until 1.0.
+#[allow(deprecated)]
 use gust_wgpu::{
     BufferBinding, DeviceOptions, Error, F32Binding, GpuBuffer, GpuBufferAccess, HeadlessDevice,
     U32Binding,
@@ -209,6 +211,8 @@ fn a_device_opened_without_the_capability_refuses_a_kernel_that_requires_it() {
 /// tested with empty input must not pass where real input would fail. Every path that returns early for no work is
 /// covered: the erased and the typed batch path, and the two one-shot functions.
 #[test]
+// Tests the deprecated compatibility path until 1.0.
+#[allow(deprecated)]
 fn an_empty_launch_of_a_kernel_with_an_unmet_requires_is_refused() {
     let device = without_capabilities();
     let empty = device.create_typed_buffer::<f32>("p", &[], GpuBufferAccess::ReadWrite);

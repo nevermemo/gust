@@ -52,13 +52,13 @@ fn run() -> Result<(), String> {
 
     let device = HeadlessDevice::new().map_err(|error| initialization_message(&error))?;
     println!("adapter: {}", device.adapter_info().name);
-    let a = device.create_f32_buffer("precompiled a", &a, GpuBufferAccess::ReadOnly);
-    let b = device.create_f32_buffer("precompiled b", &b, GpuBufferAccess::ReadOnly);
-    let out = device.create_f32_buffer("precompiled out", &seed, GpuBufferAccess::ReadWrite);
+    let a = device.create_typed_buffer("precompiled a", &a, GpuBufferAccess::ReadOnly);
+    let b = device.create_typed_buffer("precompiled b", &b, GpuBufferAccess::ReadOnly);
+    let out = device.create_typed_buffer("precompiled out", &seed, GpuBufferAccess::ReadWrite);
     vector_add::add::dispatch(&device, LENGTH as u32, &a, &b, &out)
         .map_err(|error| format!("dispatch failed: {error}"))?;
     let result = device
-        .read_f32_buffer(&out)
+        .read_typed_buffer(&out)
         .map_err(|error| format!("read-back failed: {error}"))?;
 
     if result != expected {

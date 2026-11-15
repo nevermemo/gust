@@ -12,8 +12,9 @@ What this crate promises (the full text is the root README's section
 they print, which scripts and CI read; the file formats it writes and reads (`gust-artifacts/manifest.json` schema 3,
 record files schema 4, reflection records, and a newer release reads every older one); `gust.toml` and the
 `[package.metadata.gust]` table; and the environment variables `GUST_PROFILE`, `GUST_SLANG_HOME`,
-`GUST_SLANG_REFLECT`, `GUST_ROUTE__*`, `GUST_EXPORT_DIR` and `GUST_ROUTED_PROFILE` (the last two are set by `cargo
-gust` for the crates' macros; do not set them yourself). It does not promise the internal `cargo-gust-bridge` feature, any other
+`GUST_SLANG_REFLECT`, `GUST_ROUTE__*`, `GUST_CPU_THREADS` (read by the CPU runtime of `gust-compute`, not by this tool),
+`GUST_EXPORT_DIR` and `GUST_ROUTED_PROFILE` (the last two are set by `cargo gust` for the crates' macros; do not set
+them yourself): seven in all, as in the root README. It does not promise the internal `cargo-gust-bridge` feature, any other
 `GUST_*` variable, or the rules for finding Slang that it shares with the run-time bridge. The pinned Slang release is
 named in the CHANGELOG; a pin bump that changes an artifact's content key is a minor release.
 

@@ -3,9 +3,10 @@
 The sum of `hello-gust` in a browser: one `#[gpu]` map function, `add(a, b) = a + b`, run on the browser's GPU through
 `map_async`, and compared in the page, element by element and bit for bit, with a plain Rust host reference.
 
-What it shows: the browser path. A browser cannot block, so the blocking calls (`dispatch`, `map`) do not exist on
-`wasm32`; `add::map_async(&a, &b).await` opens the default device (`gust_wgpu::default_device_async`), uploads the
-slices, runs the generated kernel and awaits the read-back. The crate is a `cdylib` for `wasm32-unknown-unknown`, built
+What it shows: the browser path. A browser cannot block, so the generated `map` and `map_on` do not exist on `wasm32`
+(`map_gpu` and `map_gpu_on` do, and return once the work is submitted), and the generated `dispatch` exists there but
+returns its wait error after submitting; `add::map_async(&a, &b).await` opens the default device
+(`gust_wgpu::default_device_async`), uploads the slices, runs the generated kernel and awaits the read-back. The crate is a `cdylib` for `wasm32-unknown-unknown`, built
 under `GUST_PROFILE=web` (the strict profile: the kernel is the WGSL artifact committed in `gust-artifacts/`, a browser
 build never runs Slang), turned into a module by `wasm-bindgen --target web` and loaded by `index.html`. On the host the
 same crate is a plain library: its `tests` run the kernel on the CPU twin against the host reference, so `cargo test`
@@ -67,7 +68,7 @@ runners have no WebGPU adapter); the browser run belongs to `cargo xtask check-f
 
 - The `web` profile compiles the kernel to WGSL only, and the WGSL goes through the browser's compiler (Tint in Chrome),
   not the one the desktop run uses (wgpu's Naga). `add` is the smallest kernel, and the page proves only that it runs
-  there: other kernels need their own run, and `docs/SEMANTICS.md` lists what the browser backend lacks (no subgroups, no
-  blocking calls).
+  there: other kernels need their own run. What the browser backend lacks (no subgroups, no blocking calls) is listed in the
+  root README's "Platforms" section and in chapter 9 of the guide (`gust_wgpu::guide`).
 - The adapter line names the adapter a second request returned, which is expected to be the one `map_async` used; the
   exact result comparison, not the label, is what proves a GPU ran.

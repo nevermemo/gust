@@ -5,8 +5,10 @@
 Headless compute, persistent typed buffers, ordered batches, async jobs, timestamp
 measurements, and particle/sensor examples. T07 adds an explicit, dependency-checked
 staged graph. T08 adds host-driven component-pool growth by GPU copy, safe retirement,
-and GPU-derived indirect compute arguments; see the contract below. No ECS scheduler,
-rendering, entity lifecycle, compaction or GPU allocation framework is implemented.
+and GPU-derived indirect compute arguments; see the contract below. T13 (m7.t13) derives
+the active count on the GPU, and compaction exists (m7.t14 in `examples/component-pool`;
+`gust_algo::compact` offers `count`, `indices` and gather). No ECS scheduler, rendering,
+entity lifecycle or GPU allocation framework is implemented.
 
 ## Researched direction
 
@@ -21,8 +23,8 @@ Dynamic collections need separate buffer allocation, logical length, and capacit
 Host-driven geometric growth should allocate → copy live GPU bytes → refresh
 bindings → retire old resources after safe completion. No resize readback and no
 automatic shrink. Test zero length, growth boundaries, stale handles, device
-ownership, and in-flight work. Pools, arenas, freelists, and compaction are future
-options, not requirements for the first vector-like collection.
+ownership, and in-flight work. Arenas and freelists are future options, not
+requirements for the first vector-like collection (compaction has since landed, m7.t14).
 
 Geometry uses fixed-size vertex/index pools plus mesh metadata/count/offsets. Do
 not use an unsized structure as a structured-buffer element (see [portability](PORTABLE_SLANG_CORE.md)).
@@ -41,10 +43,14 @@ capabilities. Both should expose the same engine semantics without a CPU shader 
 ## Small proofs before an engine framework
 
 1. A component pool grows while retaining GPU-authored data, with explicit length
-   and capacity and no host readback during growth.
+   and capacity and no host readback during growth. (Done: T08, `GpuPool`.)
 2. Two typed systems declare read/write dependencies and cannot run out of order.
-3. GPU active-count generation drives a validated indirect dispatch.
+   (Done: the staged graph derives its edges from the typed calls' declared reads
+   and writes, M2.)
+3. GPU active-count generation drives a validated indirect dispatch. (Done: T13,
+   m7.t13, shown by `examples/component-pool`.)
 4. Culling writes compacted visibility and indirect arguments consumed by rendering.
+   (Open: there is no rendering; compaction itself exists.)
 
 Each proof needs a runnable example, failure cases, inspectable artifacts, and
 measurements separating compile/setup, upload, dispatch, and readback. Benchmark
@@ -96,7 +102,7 @@ or entity table.
   (the allocation), and kernels must guard `i < active && i < buffer.len()`. A
   malformed count then degrades to "process the whole allocation", never to
   out-of-bounds access or a silent no-op. T09 supplies bounded loops. This proof
-  predates atomics (T10), and the GPU-authored active count is the deferred T13 proof, so
-  the count itself is the host-mirrored pool length; what the GPU derives without
-  readback is the active count (count clamped by allocation and a settings budget)
-  and the dispatch arguments.
+  predates atomics (T10); the GPU-authored active count was then the deferred T13 proof
+  and has since landed (m7.t13), so at T08 the count itself was the host-mirrored pool
+  length; what the GPU derives without readback is the active count (count clamped by
+  allocation and a settings budget) and the dispatch arguments.

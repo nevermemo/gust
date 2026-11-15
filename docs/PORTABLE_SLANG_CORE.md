@@ -1,19 +1,22 @@
 # Portability contract and evidence
 
-Status: policy plus limited executable evidence. Last reviewed 2026-09-07.
+Status: policy plus limited executable evidence. Last reviewed 2026-11-15.
 
 | Tier | Meaning | Current evidence |
 | --- | --- | --- |
-| A: Portable GPU Core | Conservative Slang GPU subset across intended GPU targets; excludes CUDA-specific and Slang CPU execution assumptions | WGSL and SPIR-V compilation tests only |
-| B: WebGPU engine profile | Explicit bounded bindings, portable resource layouts and synchronization, no native-only requirements | Native Vulkan wgpu execution of WGSL; no browser test yet |
-| C: Native optimization | Capability-gated binding arrays, nonuniform indexing, stronger atomics, multi-draw or mesh paths | Not implemented or tested here |
+| A: Portable GPU Core | Conservative Slang GPU subset across intended GPU targets; excludes CUDA-specific and Slang CPU execution assumptions | WGSL and SPIR-V compilation, and `spirv-val` on the exported SPIR-V (`cargo xtask check-artifacts`) |
+| B: WebGPU engine profile | Explicit bounded bindings, portable resource layouts and synchronization, no native-only requirements | Native Vulkan wgpu execution of WGSL, and a browser run: `cargo xtask check-web` (`examples/web-vector-add`) and `gallery/web-hello` run the WGSL in headless Chrome (Chrome 156 on one RTX 5090 is the only browser and adapter measured) |
+| C: Native optimization | Capability-gated binding arrays, nonuniform indexing, stronger atomics, multi-draw or mesh paths | Not implemented or tested here. The one capability gate that exists, `subgroups` (M8, Vulkan only, refused in the browser), is not on this list |
 
-Tier labels are not certification. Metal, DXIL, browser WebGPU, and additional
-vendors remain untested. A future machine-readable manifest should record compiler
-version, target/options, adapter/features, fixture, compile/validate/execute outcome,
-and unsupported reasons. The initial `.ai/VALIDATION.json` records local command
-outcomes, versions in stdout, and exported SPIR-V hashes; it is not that full
-cross-target capability matrix. Missing tools cannot count as successful probes.
+Tier labels are not certification. Metal, DXIL, browsers other than Chrome, and
+additional vendors remain untested. A future machine-readable manifest should record
+compiler version, target/options, adapter/features, fixture, compile/validate/execute
+outcome, and unsupported reasons. `.ai/VALIDATION.json` is a local, untracked gate
+artifact that `cargo xtask check-full` overwrites: it records command outcomes,
+versions in stdout, and exported SPIR-V hashes, with the workspace root and home
+directory redacted, and it is never committed (copy a summary into `STATUS.md`). It is
+not that full cross-target capability matrix. Missing tools cannot count as successful
+probes.
 
 ## Capability probe records
 
@@ -23,8 +26,10 @@ is true only when `slangc` actually emitted the target; `detail` carries the suc
 marker or the compiler diagnostic on failure. This is the first machine-readable
 capability record: downstream claims must cite a probe record, not an assumption.
 The probe is capability evidence, not a correctness test. Cross-target discovery
-(DXIL, Metal, browser WebGPU) and adapter/feature capture remain future work beyond
-the completed T05 probe slice (T05 is complete; those are not part of its scope).
+(DXIL, Metal) and adapter/feature capture as probe records remain future work beyond
+the completed T05 probe slice (T05 is complete; those are not part of its scope). The
+browser run exists, but it is a run of kernels in Chrome (its result line names the
+adapter), not a probe record.
 
 ## Resource baseline
 
@@ -44,14 +49,19 @@ buffer identity plus offset, with bounds and lifetime rules; it is not a native
 address or a promise to preserve arbitrary Rust pointer behavior.
 
 Do not say “wgpu has no bindless or multi-draw.” Native capabilities exist, but
-their requirements and backend support differ. Check [wgpu 30 feature flags](https://docs.rs/wgpu/30.0.1/wgpu/struct.Features.html)
+their requirements and backend support differ. Check [wgpu 30 feature flags](https://docs.rs/wgpu/30.0.2/wgpu/struct.Features.html)
+(the workspace requires wgpu 30.0.1 or newer in the 30 line, a floor and not a pin; the lockfile resolves 30.0.2)
 and enable them only after probing. The engine baseline must work without those
 optional paths; native fast paths preserve the same output semantics.
 
 ## Numeric and ABI boundary
 
 Today: 32-bit scalar arithmetic and recursively padding-free, four-byte-aligned
-storage structs; booleans are not host POD. No vector/matrix/texture/uniform layout
-promise. Float comparisons use explicit tolerances when operations can round
+storage structs (`StorageV1`); booleans are not host POD. Beyond that the layouts are
+`StorageV2` (2- and 4-wide vectors, 2x2 and 4x4 matrices, with natural alignment),
+`Std140V1` for uniforms, and 2-D textures and samplers (`gust::texture`). Each is
+gated by reflection: before a pipeline is created, the runtime compares every binding
+and every field offset, size, alignment and stride with what Slang reports (D17, D91),
+so a layout that disagrees is an error, not a silent upload. Float comparisons use explicit tolerances when operations can round
 differently. No claim of general Rust integer overflow or float-to-int cast semantics.
 Any wider ABI needs target layout tests before public buffer support.

@@ -1,7 +1,8 @@
 # Next tasks
 
-This is the active queue only. Completed narrative is archived in
-[history/NEXT_TASKS-2026-09-09.md](history/NEXT_TASKS-2026-09-09.md); feature
+This is the active queue, plus closed items marked "Closed" in place until the next archive. Completed narrative is
+archived in [history/NEXT_TASKS-2026-09-09.md](history/NEXT_TASKS-2026-09-09.md) (that file is a dated 2026-09-09
+snapshot, so items closed since are marked in place and dropped at the next archive); feature
 contracts live in [tasks/](tasks/README.md).
 
 Claim one bounded task in [STATUS.md](STATUS.md) before editing. A task is not
@@ -24,7 +25,7 @@ test module; do not mix that mechanical move with behavior changes.
 
 ## Later engine proofs
 
-- GPU active count to indirect dispatch (T13): landed in m7.t13; retirement and compaction landed in m7.t14.
+- Closed: GPU active count to indirect dispatch (T13) landed in m7.t13; retirement and compaction landed in m7.t14.
 - component-pool after m7.t14: the pool's host length never shrinks and retired slots are never reused, so under a
   running emitter each frame's cost (mark, scan, gather, scatter) grows with every particle ever spawned. Options: a
   freelist, a double-buffered dense pool (the pool itself becomes the prefix), or a deferred host truncation from an
@@ -43,8 +44,10 @@ test module; do not mix that mechanical move with behavior changes.
 - O5: `max_buffer_size` is not checked; buffer creation is infallible, so an oversized
   buffer is still a wgpu panic. Take the error-scope route (`push_error_scope` /
   `on_uncaptured_error`) rather than another host pre-check, with a test that pins
-  today's panic first. M10 API pass at the latest.
-- O8: done in M10 (m10.api2a.2, `09dbc47`): the f32/u32 compatibility calls and the
+  today's panic first. M10 API pass at the latest. Partly closed in m7.a0 (D84):
+  `try_create_typed_buffer`, `create_zeroed_buffer` and `GpuVec` are checked (`Error::DeviceLimit`,
+  `Error::OutOfMemory`); `create_typed_buffer` itself keeps its signature and stays infallible and unchecked.
+- O8: closed in M10 (m10.api2a.2, `09dbc47`): the f32/u32 compatibility calls and the
   `F32Binding`/`U32Binding` types are deprecated since 0.2.0, removal planned for 1.0.
 - O4: access typestate on `GpuBuffer` (`GpuBuffer<T, A>`) so a read-only buffer passed
   as read-write fails at compile time; changes every `create_*` signature and the pool.
@@ -54,11 +57,11 @@ test module; do not mix that mechanical move with behavior changes.
   and the headless runtime rejects them (`Error::UnsupportedParameter`); plain value
   parameters are rejected by the macro. Resolved at M3 close (D40): uniform kernels stay
   without a typed call and without a CPU twin until M6's uniform work, which decides
-  both together. Done in M6: m6.u1 (host side) and m6.u2 (merge `1b592a1`) give them typed calls and twins.
+  both together. Closed, done in M6: m6.u1 (host side) and m6.u2 (merge `1b592a1`) give them typed calls and twins.
 
 ## M3 follow-ups (filed at M3 close)
 
-- Done in M7 (m7.w, D87): explicit `wrapping_add`, `wrapping_sub`, `wrapping_mul` and
+- Closed, done in M7 (m7.w, D87): explicit `wrapping_add`, `wrapping_sub`, `wrapping_mul` and
   `wrapping_neg` methods; D39 still drops any wrapping rewrite of twin bodies.
 - A debug write-set race checker in `gust::cpu`: the twin runs invocations one after
   another, so a kernel in which two invocations write one location gives a clean twin
@@ -107,20 +110,21 @@ test module; do not mix that mechanical move with behavior changes.
   `gust-wgpu` has it (m4.z).
 - Browser automation in CI (S4, D69): measure a software WebGPU adapter on a Linux runner first.
 - `layout: null` element types are exported unchecked (D71): describe them from the type, or refuse them.
-- M10 publication: `cargo publish` strips self dev-dependencies (D68); docs.rs needs `package.metadata.docs.rs` and
-  `doc(cfg)`; registry users see no inferred-profile warning.
+- M10 publication: `cargo publish` strips self dev-dependencies (D68); registry users see no inferred-profile
+  warning. Closed: the docs.rs metadata (`package.metadata.docs.rs` in `crates/gust/Cargo.toml` and
+  `crates/gust-wgpu/Cargo.toml`) and `doc(cfg)` (`crates/gust-wgpu/src/lib.rs`) exist (m10.r1).
 - `xtask/src/bless.rs` hashes only `tests/fixtures/*.slang`, so blessing other goldens reports a false failure.
 
 ## M5 follow-ups (filed during M5)
 
-- Lower integer `/` and `%` through `__gust_div`/`__gust_rem` helpers so slangc cannot fold a zero divisor (D74):
+- Closed: lower integer `/` and `%` through `__gust_div`/`__gust_rem` helpers so slangc cannot fold a zero divisor (D74):
   done in m6.dv (merge `94baab5`, D77). Format 5 keeps no divisor-rule discard (the 13 of format 4 are gone), so
   no class needs naming.
 - The StorageV1/StorageV2 wording mix in the struct layout asserts (pinned in xtask ui tests).
 - gpu-software installs Mesa from one Ubuntu snapshot; m5.f1 added retries, but a long snapshot.ubuntu.com outage
   (three failures on 2026-11-02) still stops it. A tested fallback source (wgpu's CI uses `gfx-rs/ci-build`) would
   need its own identity assertions (D52).
-- Done in M8 (m8.r1, D137 and D145, which amend D26's proofs): D65 (CPU bodies in `dev`, `native` and `web` production
+- Closed: done in M8 (m8.r1, D137 and D145, which amend D26's proofs): D65 (CPU bodies in `dev`, `native` and `web` production
   builds) is reconciled with D26 and its fixtures (`typed-call-no-cpu-twin`, check-dual E1 and E3 stay for untagged and
   GPU-routed kernels; `typed-call-routed-*` and check-dual E4 prove the routed case) and with the macro's process-wide
   profile read (the target is resolved per kernel at expansion, nearest first).
@@ -152,7 +156,7 @@ test module; do not mix that mechanical move with behavior changes.
   #14198 was closed in its favour. Once it is in a Slang release the pin adopts, the bool overloads of `__gust_xor` and
   `__gust_xor_assign` can go (a pin bump with the usual re-bless; D46). Until then the overloads stay. Recorded here
   because the repository did not mention it (sanity-fable and sanity-opus, 2026-11-02).
-- Gate the layouts of the emitted WGSL with naga's validator and `proc::Layouter`: done in mx.n (merge `4d4dafe`,
+- Gate the layouts of the emitted WGSL with naga's validator and `proc::Layouter`: closed, done in mx.n (merge `4d4dafe`,
   D98), through `wgpu::naga`, so the D02 allow-list is unchanged; it replaces m6.m2's by-hand run. Left: exported
   WGSL (`compile_reflected_clean`) is gated only through the one committed precompiled file.
 - `encase` or `crevice` (MIT OR Apache-2.0, licence not yet checked) as an independent Std140V1/StorageV2 oracle for
@@ -538,9 +542,11 @@ test module; do not mix that mechanical move with behavior changes.
   (any program calling `is_some` or `is_ok` names the type elsewhere); drop the redundant method arms of those
   scans or reword the comment; `names.rs` has a 143-column line; the rc records of revert experiments say rc=0
   whatever the tests did (only the logs show it).
-- No browser (Tint) run of any M9 fixture (methods, enums and `match`, tuples, arrays, closures, traits and generics)
-  exists, although `web` is a target (Opus sanity check of M9): one `check-web` of the M9 fixtures would show whether
-  Tint takes the WGSL as naga does. Not started in m9.z.
+- One M9-feature program has run in a browser (Tint): the gallery's `state-machine` (G7, an enum and `match` program)
+  ran once through the `check-web` runner in headless Chrome 156 on the RTX 5090, Tint took the artifact and every
+  record equalled (m10.g9; `gallery/state-machine/README.md`, STATUS). The other M9 fixtures (methods, tuples, arrays,
+  closures, traits and generics) have no Tint run (Opus sanity check of M9, which asked for one `check-web` of them).
+  The rest was not started in m9.z.
 - m9.r2b re-check nits: two of the mutation checks reach only the array check, two `ArrayOf::ELEMENT_OK`
   assertions have no doctest, and the stride message names `Vec3` where it means any 12-byte element.
 - m9.e1 re-check nits: an enum local named like the binding of an `Ok(m)` arm in a `Result` match gets a false

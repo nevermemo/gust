@@ -241,16 +241,19 @@ pub(crate) fn slang_free_problems(
 
 /// Whether the shell of the platform finds `slangc` with the `PATH` of `environment`: `Ok(())` when it does not, an
 /// error when it does or when the lookup itself fails. The lookup is `where slangc` under `cmd` on Windows and
-/// `command -v slangc` under `sh` elsewhere. It runs through a shell because `Command::new("slangc")` is no test:
+/// `command -v slangc` under `/bin/sh` elsewhere. It runs through a shell because `Command::new("slangc")` is no test:
 /// on Windows std falls back to the parent's `PATH` after the one it was given, so it would find the tool that the
-/// stripping removed from the child.
+/// stripping removed from the child. The shell is named by an absolute path on Unix: the probe runs under
+/// `env_clear`, so a bare `sh` would be looked up in the stripped `PATH` (without one, libc falls back to a default
+/// search path), which makes the lookup of the shell depend on the very variable under test; a program name that
+/// contains `/` is never searched for.
 fn slangc_cannot_be_found(environment: &[(OsString, OsString)]) -> Result<(), String> {
     let mut probe = if cfg!(windows) {
         let mut probe = Command::new("cmd");
         probe.args(["/d", "/c", "where", "slangc"]);
         probe
     } else {
-        let mut probe = Command::new("sh");
+        let mut probe = Command::new("/bin/sh");
         probe.args(["-c", "command -v slangc"]);
         probe
     };

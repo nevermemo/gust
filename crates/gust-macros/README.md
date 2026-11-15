@@ -15,6 +15,6 @@ cargo add gust-compute
 The tests of this crate read files of the repository, so they run from a checkout, not from this package.
 
 Documentation: <https://docs.rs/gust-compute-macros>. The project, its platforms and its status:
-<https://github.com/nevermemo/gust/blob/main/README.md>.
+<https://github.com/nevermemo/gust/blob/v0.2.0/README.md>.
 
 Licensed under either of MIT or Apache-2.0 at your option (`LICENSE-MIT`, `LICENSE-APACHE`).

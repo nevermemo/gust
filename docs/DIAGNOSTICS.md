@@ -31,7 +31,7 @@ split or renumbered, and each change is listed here:
   refuses a read-write output bound `Independent`. The twin has `cpu::Error::PixelExtent` and
   `cpu::Error::PixelIndependentOutput`, and a call over 2^26 elements is a `DeviceLimit` named `pixel_max_elements`.
   These are run-time errors, not macro codes.
-- M9 (0.2.0-dev): a form that was refused is either accepted now (methods, enums, `match`, tuples, arrays, closures,
+- M9 (0.2.0): a form that was refused is either accepted now (methods, enums, `match`, tuples, arrays, closures,
   traits and generics) or refused with a more specific code, and no code was retired or renumbered. A closure was
   E0314, which now names only `async`, `static`, `const`, `for<..>` and attribute closures (the rest are E0329 to
   E0332); `usize` was E0201 or E0202 and is E0334 (accepted as the cast of an index); a trait impl was E0102 or E0121

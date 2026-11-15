@@ -205,9 +205,10 @@ The list above misses these literals (audit of slice m10.r0): the comment of `cr
 the pin is `=0.2.0-dev` until the release and the "(0.2.0-dev)" label of the M9 entry in `docs/DIAGNOSTICS.md`.
 Prose that names the literal `0.2.0-dev` on purpose (this file, the CHANGELOG, the README's description of the development
 line) shows up in the `rg` proof too: read each hit and keep only the ones that are true of the release. The version
-bump also regenerates the six fixture lockfiles that name `0.2.0-dev` (`tests/cpu-target`, `tests/difftest/template`,
-`tests/dual`, `tests/precompiled`, `tests/routing` and `tests/ui`), since their suites run with `--locked`, as the
-m8.v bump did.
+bump also regenerates the eight fixture lockfiles that name `0.2.0-dev` (`gallery`, `tests/cpu-target`,
+`tests/difftest/template`, `tests/dual`, `tests/precompiled`, `tests/reexport`, `tests/routing` and `tests/ui`; the
+`gallery` and `tests/reexport` ones were missing from the list of m10.r2), since their suites run with `--locked`, as
+the m8.v bump did.
 
 R7 cannot see most of this, with one exception: when the workspace version has no pre-release part, it fails if the
 `hello-gust` fixture still names a pre-release requirement. That is the guard against a missed edit; search the

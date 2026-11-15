@@ -5,8 +5,7 @@ a GPU-centric ECS game engine. **Today it is a working experimental Rust → Sla
 compute subsystem**. There is no ECS,
 renderer, rustc semantic integration, or execution-graph compiler yet.
 
-> **Version.** `main` is the development line, `0.2.0-dev`, and is not yet published. 0.2.0 will be the first public
-> release (D177). A 0.1.0 was prepared on the branch `release/0.1`; it was not published and will not be, and that
+> **Version.** This is 0.2.0, the first public release (D177). A 0.1.0 was prepared on the branch `release/0.1`; it was not published and will not be, and that
 > branch has no tag.
 
 Rust supplies the higher-level language and checking environment; Slang owns GPU
@@ -53,7 +52,7 @@ a strict profile needs neither Slang nor the helper, D45):
 
 - The stable Rust toolchain: 1.90 or newer (the `msrv` CI job type-checks the workspace on 1.90.0);
   this checkout's checks ran on stable 1.98.0 (see "Minimum Rust")
-- Outside this checkout, `cargo install cargo-gust --locked --version 0.2.0-dev` installs the
+- Outside this checkout, `cargo install cargo-gust --locked --version "~0.2"` installs the
   `cargo gust` tool; it works without `GUST_PROFILE` ("Install from crates.io" has the whole setup for a crate of your
   own)
 - `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.22 (`cargo gust slang install` installs it, and
@@ -267,7 +266,7 @@ Slang, nor the helper, nor `cargo-gust`.
 ### Set up the tools
 
 ```sh
-cargo install cargo-gust --locked --version 0.2.0-dev
+cargo install cargo-gust --locked --version "~0.2"
 cargo gust slang install        # downloads Slang 2026.22, checks its SHA-256, unpacks it into the cargo home
 cargo gust slang build-helper   # compiles the native reflection helper against that Slang and prints its path
 cargo gust doctor               # names whatever is still missing
@@ -304,8 +303,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gust-compute = "0.2.0-dev"
-gust-compute-wgpu = "0.2.0-dev"
+gust-compute = "0.2"
+gust-compute-wgpu = "0.2"
 
 [features]
 # Run-time compile through the Slang toolchain, for development only (`cargo run --features gust-dev`).
@@ -315,8 +314,7 @@ gust-dev = ["gust-compute-wgpu/slang-runtime"]
 `gust-dev` is a feature of your own crate that turns on the backend's run-time compiler, and it has to be your own
 feature. A `slang-runtime` feature on the dependency line makes `cargo build --release` fail, because a release build
 refuses the run-time compiler (D68). One on a `[dev-dependencies]` entry never reaches `cargo run`, which then stops
-with "built without the `slang-runtime` feature". The dependencies say `0.2.0-dev` (`0.2` once 0.2.0 is released; a
-caret requirement does not match a pre-release) and nothing more: the library crates pin each other to one exact
+with "built without the `slang-runtime` feature". The dependencies say `0.2` and nothing more: the library crates pin each other to one exact
 version, so a range cannot mix two releases.
 
 And this `src/main.rs`:
@@ -382,7 +380,7 @@ crate runs `cargo clean -p` for it once and says so.
 The macro writes `::gust::` and `::gust_wgpu::` paths into your crate, and they resolve because the libraries are
 called `gust` and `gust_wgpu`. Two things follow.
 
-- If you rename a dependency in your manifest, for example `g = { package = "gust-compute", version = "0.1" }`, add
+- If you rename a dependency in your manifest, for example `g = { package = "gust-compute", version = "0.2" }`, add
   `extern crate g as gust;` at the root of your crate. If `gust-compute-wgpu` is renamed too (say to `gw`), also add
   `extern crate gw as gust_wgpu;`. A doctest that uses `#[gpu]` needs the same lines inside it. The crate-path spike
   (D106) built and ran a consumer with one and with both dependencies renamed this way, on the GPU, and passed such a
@@ -482,7 +480,7 @@ case is `Cpu` evidence.
   ([SEMANTICS](docs/SEMANTICS.md)). In the browser `web+subgroups` is refused at build time, and a device
   opened with a capability there is `Error::MissingCapability`: the pinned wgpu cannot request the feature, so a web
   build runs the portable body. `check-web` shows that refusal in Chrome 156; it says nothing about the adapter.
-- **Not supported as of 0.2.0-dev:** macOS and Metal (no Metal backend is compiled), and DX12 is not claimed (the spike
+- **Not supported as of 0.2.0:** macOS and Metal (no Metal backend is compiled), and DX12 is not claimed (the spike
   S3 probe ran DX12, but `gust-compute-wgpu` does not compile it). Software adapters such as Mesa lavapipe run the GPU
   tests in CI as `Gpu (software)` evidence; they are not a target.
 - **CPU:** a `GUST_PROFILE=cpu` build contains no GPU runtime and runs the kernels as plain Rust (see "Try it").
@@ -772,7 +770,7 @@ The linear bound assumes a sampler that quantises the sub-texel position and the
 the nearest step. No specification gives that: WebGPU states no number, and Vulkan requires `subTexelPrecisionBits` of
 at least 4 in core and of at least 8 of a Vulkan 1.4 or Roadmap 2022 implementation, so the exposure is a device that
 reports fewer than 8 (the value is what the device reports). The evidence is one adapter (the RTX 5090), and an adapter
-that quantises worse can exceed the bound; the test enforces the bound and fails there. That is a known limit of 0.1.0.
+that quantises worse can exceed the bound; the test enforces the bound and fails there. That is a known limit of 0.2.0.
 
 A linear sample of an `f32` texture needs the device feature `float32-filterable`, which a native
 `DeviceOptions::default()` requests when the adapter has it and `HeadlessDevice::new()` and the browser do not; without

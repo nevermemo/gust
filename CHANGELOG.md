@@ -5,13 +5,13 @@ All notable changes to the published packages `gust-compute`, `gust-compute-macr
 breaks existing code bumps the minor version, and the promise is described in the
 [README](README.md#stability).
 
-## Unreleased (0.2.0)
+## 0.2.0
 
 0.2.0 is the first public release of GUST (D177). A 0.1.0 was prepared on the branch `release/0.1` and was never
 published: it has no tag and is not on crates.io, so there is nothing to upgrade from, and a reader who meets 0.2.0 on
 crates.io can skip "Changed, and may break code written for the unpublished 0.1.0 line" and "Compatibility with the
 unpublished 0.1.0 line" below. Those two parts are kept for this repository's own fixtures and for anyone who built
-from `release/0.1`. The workspace version is `0.2.0-dev` until the release commit. Work for 0.2.0 lands on `main`. This
+from `release/0.1`. Work for 0.2.0 lands on `main`. This
 list is what the milestones M8 and M9 and the first slices of M10 have merged.
 Against `release/0.1` the tree has four listed breaks, and the API audit of m10.api1 adds B5 to B7 (below; they break
 no released version, because none exists). B1, below, in two

@@ -10,7 +10,7 @@ one member of that set. That is a documented limitation, not a bug that will be 
 edge-case differences between the CPU and the GPU): see section 6 of
 [SEMANTICS](https://github.com/nevermemo/gust/blob/main/docs/SEMANTICS.md) and its known-mismatch ledger.
 Atomics order only atomic operations on the same location; do not use one to publish ordinary data to another
-invocation. Chapter 7 returns to the contract.
+invocation. [Chapter 7][`crate::guide::semantics_and_the_twin`] returns to the contract.
 
 ## The accepted subset
 
@@ -110,7 +110,7 @@ In a test build of the crate that defines the kernel (or with `--cfg gust_dual`)
 runs the Rust shadow body on `gust::cpu::CpuDevice`, which is how the gallery's tests check a kernel without a GPU. A
 production build contains no twin. A kernel that uses workgroup memory or a barrier has none and says
 `#[kernel(.., cpu = "unsupported")]` ([chapter 5][`crate::guide::gpu_concepts`]). What the twin proves and what it
-cannot is the subject of chapter 7.
+cannot is the subject of [chapter 7][`crate::guide::semantics_and_the_twin`].
 
 ## Where to go next
 

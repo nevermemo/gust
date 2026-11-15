@@ -1,13 +1,15 @@
 // The chapters of `gust_wgpu::guide`, one empty module each (the semver rule: the guide modules hold nothing but chapter
-// modules, which hold nothing; they exist for their documentation). Chapters 9 and 10 are listed in the index as not yet
-// written and have no module until they have text.
+// modules, which hold nothing; they exist for their documentation). Chapter 10 is listed in the index as not yet written
+// and has no module until it has text.
 //
 // The listings are packaged copies of regions of the gallery entries (`check-gallery` keeps them identical to the
-// regions). The programs of chapters 4 and 5 are compiled by this crate's doctests against the real backend; chapter
-// 6's `routed` program is a plain-text block (a route tag must be declared in the crate that uses it, GUST-E0748;
-// an `ignore` block would count as an ignored test, which the Gpu suite refuses) and is built
-// by `check-gallery` as the gallery entry. The first program of chapter 2 of
-// `gust::guide` is compiled by the private module below, which exists only in `cargo test --doc`.
+// regions). The programs of chapters 4 and 5 are compiled by this crate's doctests against the real backend, and so is
+// the host half of chapter 9's page (its kernel and reference, in one `rust` block with an empty `main`, which the
+// doctest also runs). Two listings are plain-text blocks and not doctests: chapter 6's `routed` program (a route tag
+// must be declared in the crate that uses it, GUST-E0748), which `check-gallery` builds as the gallery entry, and the
+// browser-side function of chapter 9 (it exists on `wasm32` only). An `ignore` block would count as an ignored test,
+// which the Gpu suite refuses. The first program of chapter 2 of `gust::guide` is compiled by the private module below,
+// which exists only in `cargo test --doc`.
 #[cfg(doctest)]
 #[doc = "```no_run"]
 #[doc = include_str!("listings/hello-gust-imports.rs")]
@@ -80,3 +82,15 @@ pub mod gpu_concepts_running {}
 #[doc = include_str!("listings/routed-main.rs")]
 #[doc = include_str!("06-profiles-artifacts-routing-2.md")]
 pub mod profiles_artifacts_routing {}
+
+#[doc = include_str!("09-browser-1.md")]
+#[doc = include_str!("listings/web-hello-imports.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/web-hello-kernel.rs")]
+#[doc = ""]
+#[doc = include_str!("listings/web-hello-reference.rs")]
+#[doc = "# fn main() {}"]
+#[doc = include_str!("09-browser-2.md")]
+#[doc = include_str!("listings/web-hello-map-async.rs")]
+#[doc = include_str!("09-browser-3.md")]
+pub mod browser {}

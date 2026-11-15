@@ -1,6 +1,6 @@
 // The chapters of `gust::guide`, one empty module each (the semver rule: the guide modules hold nothing but chapter
-// modules, which hold nothing; they exist for their documentation). Chapters 7 and 9 to 12 are listed in the index as
-// not yet written and have no module until they have text.
+// modules, which hold nothing; they exist for their documentation). Chapters 9 and 10 live in `gust_wgpu::guide`, and the
+// index lists chapter 10 as not yet written, so it has no module until it has text.
 //
 // The links to `gust_wgpu::guide` are built here, from this crate's version, because a Markdown file cannot read
 // `CARGO_PKG_VERSION`: the index ends with them (inline links; a link definition in this inner doc was accepted by
@@ -14,9 +14,11 @@
     env!("CARGO_PKG_VERSION"),
     "/gust_wgpu/guide/running_kernels/index.html), [5, GPU concepts, running half](https://docs.rs/gust-compute-wgpu/",
     env!("CARGO_PKG_VERSION"),
-    "/gust_wgpu/guide/gpu_concepts_running/index.html) and [6, build profiles, artifacts and routing](https://docs.rs/gust-compute-wgpu/",
+    "/gust_wgpu/guide/gpu_concepts_running/index.html), [6, build profiles, artifacts and routing](https://docs.rs/gust-compute-wgpu/",
     env!("CARGO_PKG_VERSION"),
-    "/gust_wgpu/guide/profiles_artifacts_routing/index.html).\n"
+    "/gust_wgpu/guide/profiles_artifacts_routing/index.html) and [9, the browser](https://docs.rs/gust-compute-wgpu/",
+    env!("CARGO_PKG_VERSION"),
+    "/gust_wgpu/guide/browser/index.html).\n"
 )]
 
 #[doc = include_str!("01-why-gust.md")]
@@ -72,6 +74,14 @@ pub mod authoring_model {}
 )]
 pub mod gpu_concepts {}
 
+#[doc = include_str!("07-semantics-and-the-twin.md")]
+#[doc = concat!(
+    "\n\n[ch6]: https://docs.rs/gust-compute-wgpu/",
+    env!("CARGO_PKG_VERSION"),
+    "/gust_wgpu/guide/profiles_artifacts_routing/index.html\n"
+)]
+pub mod semantics_and_the_twin {}
+
 #[doc = include_str!("08-m9-language-1.md")]
 #[doc = include_str!("listings/state-machine-kernel.rs")]
 #[doc = include_str!("08-m9-language-2.md")]
@@ -81,3 +91,19 @@ pub mod gpu_concepts {}
     "/gust_wgpu/guide/running_kernels/index.html\n"
 )]
 pub mod m9_language {}
+
+#[doc = include_str!("11-stability-and-platforms.md")]
+#[doc = concat!(
+    "\n\n[ch9]: https://docs.rs/gust-compute-wgpu/",
+    env!("CARGO_PKG_VERSION"),
+    "/gust_wgpu/guide/browser/index.html\n"
+)]
+pub mod stability_and_platforms {}
+
+#[doc = include_str!("12-internals-for-contributors.md")]
+#[doc = concat!(
+    "\n\n[ch9]: https://docs.rs/gust-compute-wgpu/",
+    env!("CARGO_PKG_VERSION"),
+    "/gust_wgpu/guide/browser/index.html\n"
+)]
+pub mod internals_for_contributors {}

@@ -21,10 +21,13 @@ is split over two crates because the running chapters need the backend, and `gus
 5. [GPU concepts in Rust][`crate::guide::gpu_concepts`]: shapes, textures, `par_for!`, workgroup memory, barriers and
    subgroup variants. Its running halves are in `gust_wgpu::guide`.
 6. Build profiles, artifacts and routing. Written; it lives in `gust_wgpu::guide`.
-7. Semantics and the twin: the contract, the defined domain and the known limitations. Not yet written.
+7. [Semantics and the twin][`crate::guide::semantics_and_the_twin`]: the contract, the defined domain, the known
+   limitations and the SPIR-V route.
 8. [The newer language features][`crate::guide::m9_language`]: methods, enums, tuples, arrays, closures, traits and
    generics.
-9. The browser. Not yet written; it will live in `gust_wgpu::guide`.
+9. The browser: building for `wasm32`, WebGPU in the page and what the repository checks. Written; it lives in
+   `gust_wgpu::guide` (linked at the end of this page).
 10. Benchmarks: methods, definitions and fairness rules. Not yet written; it will live in `gust_wgpu::guide`.
-11. Stability, versions, platforms and how to report a bug. Not yet written.
-12. Internals for contributors. Not yet written.
+11. [Stability, versions, platforms and how to report a bug][`crate::guide::stability_and_platforms`].
+12. [Internals for contributors][`crate::guide::internals_for_contributors`]: the pipeline, the gates and how to add
+    a construct.

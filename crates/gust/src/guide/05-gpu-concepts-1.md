@@ -28,7 +28,8 @@ which a GPU need not do (the load may return zero and the store may be dropped),
 hides a race, because it runs invocations one at a time in ascending order and so produces one definite answer: a racy
 kernel gives a clean twin result that proves nothing about the GPU. Every reference value in the gallery is therefore
 order-independent by construction (each written index has one writer, or the kernel uses atomics), and the race-free
-rule is yours to keep. Section 5 of SEMANTICS has the details, and chapter 7 the whole contract.
+rule is yours to keep. Section 5 of SEMANTICS has the details, and
+[chapter 7][`crate::guide::semantics_and_the_twin`] the whole contract.
 
 ## Shapes: `grid` and `pixel`, and textures
 

@@ -104,7 +104,9 @@ const TILE: usize = 64;
 
 /// The input values: small, so that no sum or prefix of the sizes below leaves `u32`.
 fn values(n: usize) -> Vec<u32> {
-    (0..n).map(|i| ((i * 7 + 3) % 10) as u32).collect()
+    (0..n)
+        .map(|i| u32::try_from((i * 7 + 3) % 10).expect("below ten"))
+        .collect()
 }
 
 /// The independent host reference of a sum: a plain loop, which never goes through a kernel (D26, D42).
@@ -133,8 +135,8 @@ fn invocations(n: usize) -> u32 {
 }
 
 /// The sum of the first `n` elements of `input`, on the GPU: one `tile_sum` pass per level, each pass leaves one value
-/// per tile, until a single tile is left. Every buffer holds fewer values than the pass has invocations, so every
-/// resource is `Independent` of the dispatch size.
+/// per tile, until a single tile is left. The source of a pass holds exactly one value per element, so it is bound plainly and the call checks its
+/// length; `sums` holds one value per tile, fewer than the pass has invocations, so it is `Independent`.
 fn reduce(device: &HeadlessDevice, input: &GpuBuffer<u32>, n: usize) -> u32 {
     let mut levels: Vec<GpuBuffer<u32>> = Vec::new();
     let mut len = n;
@@ -143,13 +145,8 @@ fn reduce(device: &HeadlessDevice, input: &GpuBuffer<u32>, n: usize) -> u32 {
         let sums =
             device.create_typed_buffer("sums", &vec![0u32; tiles], GpuBufferAccess::ReadWrite);
         let source = levels.last().unwrap_or(input);
-        blocks::tile_sum::dispatch(
-            device,
-            invocations(len),
-            Independent(source),
-            Independent(&sums),
-        )
-        .expect("the sum pass");
+        blocks::tile_sum::dispatch(device, invocations(len), source, Independent(&sums))
+            .expect("the sum pass");
         levels.push(sums);
         if tiles == 1 {
             break;
@@ -167,23 +164,12 @@ fn scan(device: &HeadlessDevice, input: &GpuBuffer<u32>, n: usize) -> GpuBuffer<
     let out = device.create_typed_buffer("scan", &vec![0u32; n], GpuBufferAccess::ReadWrite);
     let totals =
         device.create_typed_buffer("totals", &vec![0u32; tiles], GpuBufferAccess::ReadWrite);
-    blocks::tile_scan::dispatch(
-        device,
-        invocations(n),
-        Independent(input),
-        Independent(&out),
-        Independent(&totals),
-    )
-    .expect("the tile scan");
+    blocks::tile_scan::dispatch(device, invocations(n), input, &out, Independent(&totals))
+        .expect("the tile scan");
     if tiles > 1 {
         let offsets = scan(device, &totals, tiles);
-        blocks::add_offsets::dispatch(
-            device,
-            invocations(n),
-            Independent(&offsets),
-            Independent(&out),
-        )
-        .expect("the offsets pass");
+        blocks::add_offsets::dispatch(device, invocations(n), Independent(&offsets), &out)
+            .expect("the offsets pass");
     }
     out
 }
@@ -207,17 +193,15 @@ const SIZES: [usize; 8] = [1, 63, 64, 65, 1000, 4096, 4097, 100_000];
 
 fn main() {
     let device = HeadlessDevice::new().expect("a Vulkan compute adapter");
-    let mut headline = (0, Vec::new());
-    for n in SIZES {
-        headline = check(&device, n);
-    }
-    let (sum, scanned) = headline;
+    let results: Vec<_> = SIZES.iter().map(|n| check(&device, *n)).collect();
+    let (sum, scanned) = results.last().expect("there are sizes");
+    let sum = *sum;
     let checksum: u64 = scanned.iter().map(|value| u64::from(*value)).sum();
     println!(
         "reduce-scan: {} values in {} sizes, sum {sum}, scan ends at {} with checksum {checksum}",
         scanned.len(),
         SIZES.len(),
-        scanned[scanned.len() - 1]
+        scanned.last().expect("a non-empty scan")
     );
     println!("adapter: {}", device.adapter_info().name);
 }
@@ -258,7 +242,7 @@ mod tests {
                 &device,
                 u32::try_from(n).expect("small"),
                 Independent(&device.buffer(&offsets)),
-                Independent(&out),
+                &out,
             )
             .expect("the twin dispatches");
             assert_eq!(out.read(), host_scan(&values), "n = {n}");

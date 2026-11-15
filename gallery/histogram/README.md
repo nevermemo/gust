@@ -2,8 +2,8 @@
 
 A count of keys into bins, where every invocation adds one to the bin of its key with `atomic_add`. With 100 000 keys in
 8 bins, between about six and thirty-five thousand invocations hit each bin, and the keys are skewed (the busiest bin
-holds several times the least busy one), so the example is contention on purpose. A plain `bins[k] += 1` would lose counts on a GPU; the atomic does
-not, and the result is checked **exactly** against a host count.
+holds several times the least busy one), so the example is contention on purpose. A plain `bins[k] += 1` would lose
+counts on a GPU; the atomic does not, and the result is checked **exactly** against a host count.
 
 What it shows: atomics on a `RWStructuredBuffer<uint>`; a dispatch whose output is shorter than its element count
 (`Independent(&bins)` is the call-site statement that the bins are not one per invocation); an exact check of an integer

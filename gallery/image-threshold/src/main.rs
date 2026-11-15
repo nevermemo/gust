@@ -160,7 +160,7 @@ mod tests {
             .expect("a sampled texture");
         sampled.write(&image(width, height)).expect("upload");
         let nearest = device.sampler(SamplerOptions::new(Filter::Nearest, Address::ClampToEdge));
-        let count = (width * height) as usize;
+        let count = usize::try_from(width * height).expect("small");
         let flags = device.buffer(&vec![u32::MAX; count]);
         threshold::flag::dispatch(&device, width * height, &sampled, &nearest, &flags)
             .expect("the twin dispatches");
@@ -231,7 +231,7 @@ mod tests {
         // A guard on the example: bright and dark texels both occur.
         let flags = host_flags(&image(37, 21));
         let bright: u32 = flags.iter().sum();
-        assert!(bright > 0 && (bright as usize) < flags.len());
+        assert!(bright > 0 && usize::try_from(bright).expect("small") < flags.len());
     }
 }
 // ANCHOR_END: tests

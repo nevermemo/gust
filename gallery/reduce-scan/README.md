@@ -20,8 +20,10 @@ What it shows:
   has a twin and a test.
 - **Multi-level host code.** One tile is 64 elements, so a bigger input needs a pass per level: `reduce` loops (sums of
   tiles, then sums of those sums, until one tile is left) and `scan` recurses (scan the tiles, scan the tile totals with
-  the same function, add each tile's offset with `add_offsets`). Every buffer holds fewer values than the pass has
-  invocations, so each resource is wrapped in `Independent`, the call-site statement that it is not one per invocation.
+  the same function, add each tile's offset with `add_offsets`). Buffers that hold exactly one value per
+  element (the input, the scan output) are bound plainly, so the call checks their length; the per-tile ones (`sums`,
+  `totals`, `offsets`) hold fewer values than the pass has invocations, so they are wrapped in `Independent`, the
+  call-site statement that they are not one per invocation.
 
 Sizes: 1, 63, 64, 65, 1000, 4096, 4097 and 100 000 values. 1, 63, 65, 1000, 4097 and 100 000 leave a **partial last
 workgroup** (the lanes past the end hold 0), 64 and 4096 are whole tiles, 4097 has 65 tiles so the tile totals need a second
@@ -34,8 +36,11 @@ GPU and panics in a debug twin, D39); this entry stays inside it.
 Tests (`cargo test`): the host references against hand-computed values; `add_offsets` on the CPU twin completing a
 host-made per-tile scan, against the host scan, at 1, 63, 64, 65, 129, 1000 and 4097 values (exact); and one test that
 runs the GPU check for every size, marked `#[ignore]` because it needs an adapter (`cargo test -- --ignored`; it fails
-loudly without one, it never skips silently). The barrier kernels are therefore not covered by a plain `cargo test`:
-their evidence is `cargo run --release`.
+loudly without one, it never skips silently). No gate runs that test (`cargo xtask check-gallery` runs `cargo test`
+without `--ignored`), so the barrier kernels are not covered by a plain `cargo test`: their evidence is `cargo run
+--release`, which the check does run. A GPU pass is evidence on that adapter, not a proof that the barriers are right: a
+barrier that is missing can still pass where the 64 lanes happen to run in lockstep, so the result says nothing about
+adapters whose lanes do not.
 
 `gust-algo` (D110): the repository's `gust-algo` crate offers the general version of these operations (`reduce`, `scan`
 and `compact` over `GpuVec`, with 256-lane tiles and a different schedule). This entry does **not** depend on it: its

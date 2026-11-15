@@ -413,6 +413,19 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   route is 0.65 to 0.83 on W3-d16 and W3-d64. Outcome C is re-opened; m10.b1c (trace diff of the batch path)
   comes before b1b; no GPU-time table is published before it reports. The plan is at Revision 1.3. Results in the
   work area (plans/m10/probe/b1q/, sanity-b1q-ruling-fable.md).
+- The 0.2.0 release candidate (m10.r3, D177): `<C>` = `83124ad` (PR #54, merged 2026-11-15T14:07Z), the workspace
+  at 0.2.0 with the three `=0.2.0` pins, every install line and fixture at `~0.2`/`"0.2"`, the crate READMEs and
+  cargo-gust's `documentation` linking `blob/v0.2.0`, the root and nine fixture lockfiles at 0.2.0, RELEASE.md (the
+  owner tags as soon as any crate is up) and the CHANGELOG semver record (run 43719222853 on `9895659`). Opus:
+  accept after fixes, then accept. On a clean detached checkout of `83124ad`, RTX 5090, 2026-11-15: the full
+  `cargo xtask check-release` passed (780 s; R5 on stable and on nightly with `--cfg docsrs` for
+  `x86_64-unknown-linux-gnu` and `wasm32-unknown-unknown`; R8 the dry run of the four packages) and `cargo xtask
+  check-full` passed (6480 s; every gallery entry on the GPU, `web-hello` in Chrome through WebGPU), the tree clean
+  after both. The packages are not published: steps 0 to 8 of RELEASE.md are the owner's. Also merged on
+  2026-11-15: before `<C>`, m10.g9 (`a0d676b`, PR #52, gallery G9 `web-hello` in the browser, G7 through Tint once)
+  and m10.b0p (`ea5c1ae`, PR #53, the host-side profile: GUST's host work per call matches the hand-written
+  per-call path); after it, m10.g3b (`deaec08`, PR #55, guide chapters 3 to 6 and 8; GPU suite pin 464 over 49),
+  which ships with the next release.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

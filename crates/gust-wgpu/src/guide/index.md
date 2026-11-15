@@ -13,10 +13,15 @@ installation of the tools, is [`gust::guide`].
   subgroup variants on a device. The kernel half is [`gust::guide::gpu_concepts`].
 - Chapter 6, [build profiles, artifacts and routing][`crate::guide::profiles_artifacts_routing`]: `cargo gust`,
   `GUST_PROFILE`, `gust.toml` and the CPU target.
-- Chapters 9 (the browser) and 10 (benchmarks: the methods, definitions and fairness rules) will live here; they are not
-  yet written, so there is no chapter page.
+- Chapter 9, [the browser][`crate::guide::browser`]: the gallery's browser page, `map_async`, building for `wasm32`,
+  what the repository checks and what it cannot.
+- Chapter 10 (benchmarks: the methods, definitions and fairness rules) will live here; it is not yet written, so there
+  is no chapter page.
 
 The first program of chapter 2 of the sibling guide is compiled by this crate's doctests, with the real backend (it is
-not run: running it needs a GPU), and so is every program of chapters 4 and 5. Chapter 6's one program, `routed`, is not
-a doctest (a route tag has to be declared in the manifest of the crate that uses it); the gallery entry it is copied
-from is built and run by `cargo xtask check-gallery`.
+not run: running it needs a GPU), and so is every program of chapters 4 and 5. Chapter 9's first block, the kernel and
+the host reference of the browser page, is compiled by a doctest too (its `main` is empty); the page's browser code is
+shown as text, because it exists on `wasm32` only. Chapter 6's one program, `routed`, is not a doctest either (a route
+tag has to be declared in the manifest of the crate that uses it). The gallery entries those two texts come from are
+built by `cargo xtask check-gallery`, which also keeps every listing identical to its entry; `web-hello` is run in
+headless Chrome by the GPU part of that check, and `routed` is run natively.

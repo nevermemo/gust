@@ -783,8 +783,8 @@ fn the_registered_guide_listings_match_the_real_gallery_and_a_changed_gallery_li
     let root = workspace_root().expect("the repository root");
     assert_eq!(
         LISTINGS.len(),
-        39,
-        "the guide's listings: chapter 2 (6), chapters 3, 5 and 8 (6), chapters 4 to 6 (27)"
+        43,
+        "the guide's listings: chapter 2 (6), chapters 3, 5 and 8 (6), chapters 4 to 6 (27), chapter 9 (4)"
     );
     assert_eq!(check_listings(&root, &LISTINGS), Ok(LISTINGS.len()));
     // The same listings against copies of the gallery sources, G1's with one changed line of each region: each change must fail the check.
@@ -917,7 +917,14 @@ fn the_sources_of_web_hello_have_the_anchored_regions_a_guide_chapter_can_show()
     let source = repository_file("gallery/web-hello/src/lib.rs");
     assert_eq!(
         anchor_names(&source).unwrap(),
-        ["imports", "kernel", "reference", "browser", "tests"]
+        [
+            "imports",
+            "kernel",
+            "reference",
+            "browser",
+            "map-async",
+            "tests"
+        ]
     );
     let kernel = anchored_region(&source, "kernel").unwrap();
     assert!(kernel.contains("#[gpu]\npub fn add(a: f32, b: f32) -> f32 {\n    a + b\n}\n"));

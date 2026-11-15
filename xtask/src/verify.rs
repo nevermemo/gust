@@ -1038,8 +1038,12 @@ pub(crate) struct GpuSuitePin {
 /// Slice m10.g3b: 459 over 49 became 464 over 49. Five new doctests in `gust_wgpu`, on the same result line: the
 /// programs of guide chapters 4 (G2, G4) and 5 (G5, G6, G10), compiled `no_run`. Chapter 6's program is a plain-text
 /// block, not an ignored test (the suite requires 0 ignored).
+///
+/// Slice m10.k1: 464 over 49 became 465 over 49. One new doctest in `gust_wgpu`, on the same result line: the first
+/// block of guide chapter 9 (the kernel and host reference of the browser page, a `rust` block with an empty `main`,
+/// compiled and run). The browser-side listing of that chapter is a plain-text block, not an ignored test.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 464,
+    passed: 465,
     result_lines: 49,
 };
 

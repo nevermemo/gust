@@ -19,4 +19,4 @@ Rust, and the program runs it on the GPU and compares the same way.
 - **Edge cases.** Where the GPU result may differ from the CPU twin's for an input at the edge of the defined domain,
   SEMANTICS lists it as a limitation and the project does not chase a match (D39).
 
-Chapter 7 states the contract that all of this lives inside.
+[Chapter 7][`crate::guide::semantics_and_the_twin`] states the contract that all of this lives inside.

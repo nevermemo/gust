@@ -73,6 +73,7 @@ mod browser {
         text.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
+    // ANCHOR: map-async
     /// `map_async` opens the default device itself (in the browser through `default_device_async`), uploads the host
     /// slices, dispatches the generated kernel and awaits the read-back; nothing blocks, which a browser cannot allow.
     async fn add_on_the_browser_gpu() -> Result<String, String> {
@@ -94,6 +95,7 @@ mod browser {
             selected_kernels()
         ))
     }
+    // ANCHOR_END: map-async
 
     /// The index of the first element whose bits differ, or of the first missing one when the lengths differ; `None` when
     /// the two are equal bit for bit.

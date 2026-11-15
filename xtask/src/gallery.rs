@@ -173,8 +173,8 @@ pub(crate) struct Listing {
 /// the whole program in `gust_wgpu::guide` from its own copies in `crates/gust-wgpu` (a packaged crate cannot include a
 /// file outside its directory). Chapters 3, 5 and 8 of `gust::guide` include the kernel region of G2, G3, G5 to G7 and G10
 /// from `crates/gust`; chapters 4 to 6 of `gust_wgpu::guide` include the regions of the whole programs of G2, G4 to G6,
-/// G8 and G10 from `crates/gust-wgpu`.
-pub(crate) const LISTINGS: [Listing; 39] = [
+/// G8 and G10 from `crates/gust-wgpu`; chapter 9 includes the regions of G9 (`web-hello`) from `crates/gust-wgpu`.
+pub(crate) const LISTINGS: [Listing; 43] = [
     Listing {
         packaged: "crates/gust/src/guide/listings/hello-gust-imports.rs",
         source: "gallery/hello-gust/src/main.rs",
@@ -369,6 +369,26 @@ pub(crate) const LISTINGS: [Listing; 39] = [
         packaged: "crates/gust-wgpu/src/guide/listings/routed-main.rs",
         source: "gallery/routed/src/main.rs",
         anchor: "main",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/web-hello-imports.rs",
+        source: "gallery/web-hello/src/lib.rs",
+        anchor: "imports",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/web-hello-kernel.rs",
+        source: "gallery/web-hello/src/lib.rs",
+        anchor: "kernel",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/web-hello-reference.rs",
+        source: "gallery/web-hello/src/lib.rs",
+        anchor: "reference",
+    },
+    Listing {
+        packaged: "crates/gust-wgpu/src/guide/listings/web-hello-map-async.rs",
+        source: "gallery/web-hello/src/lib.rs",
+        anchor: "map-async",
     },
 ];
 

@@ -1,1 +1,3 @@
 /target/
+# A driver output of `cargo gust build` and `run` (the routes resolved for the profile of the run), not an artifact.
+/*/gust-artifacts/routes.json

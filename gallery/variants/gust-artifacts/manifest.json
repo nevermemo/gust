@@ -1,0 +1,50 @@
+{
+  "kernels": [
+    {
+      "clean_sha256": "db198d6ee0c8d9b06059a8ec672d4fcc93495c8e5c770a55c72e8843447741d4",
+      "entry_point": "gpu_stats_tally_subgroups",
+      "formats": [
+        {
+          "file": "23049946b11d6490.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "3a5e09287856f0d2fe1257a1516f21d4495aab3a904a74a5286a6e22d6f0026f",
+          "sha256": "def86acbc45014b94667be9cf40d57a2d34bb0f2d855ba4fad8215907f9de548"
+        }
+      ],
+      "key": "23049946b11d6490",
+      "module": "stats",
+      "name": "tally"
+    },
+    {
+      "clean_sha256": "7484071aec6af42cd3b52f636e956b4cff32fcddca83deb3700466059f947e48",
+      "entry_point": "gpu_stats_tally",
+      "formats": [
+        {
+          "file": "69a88d2b9bfe3f99.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "174430783f033afdc29de5bf36d8f12fe068128bc8c990e159344df27637d19b",
+          "sha256": "85e9d19d66b5ccd27f59569aafa4731115d0935f689bacce9757f4a11097a208"
+        }
+      ],
+      "key": "69a88d2b9bfe3f99",
+      "module": "stats",
+      "name": "tally",
+      "variants": [
+        {
+          "key": "23049946b11d6490",
+          "requires": [
+            "subgroups"
+          ],
+          "variant": "tally_subgroups"
+        },
+        {
+          "key": "69a88d2b9bfe3f99",
+          "requires": [],
+          "variant": ""
+        }
+      ]
+    }
+  ],
+  "schema": 3,
+  "slang": "2026.22"
+}

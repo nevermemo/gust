@@ -1,0 +1,36 @@
+{
+  "kernels": [
+    {
+      "clean_sha256": "c6d6f684697ba1814ffd85c011111fafa11d76f89b54b9000741a5eaa451537d",
+      "entry_point": "gpu_smooth_blur",
+      "formats": [
+        {
+          "file": "bc059d70c97c354e.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "df6eaced9974185408318555222c292d31d898b75601ae54f3ef54dce97870ec",
+          "sha256": "43330a929ebf1fc89690f481555ea8da8799a87b6a26494e5f2474195a05351e"
+        }
+      ],
+      "key": "bc059d70c97c354e",
+      "module": "smooth",
+      "name": "blur"
+    },
+    {
+      "clean_sha256": "fc0a4f994e4b90b6a3e4cef35ee7c3261be66445f7fb262d0be357b921d56ff6",
+      "entry_point": "gpu_tidy_saturate",
+      "formats": [
+        {
+          "file": "bf4f9c47f7037a35.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "9e1a5fecc247eb3bdf019005f8e2c510c781f54a346d28bd8e6a7e7bcc4af22a",
+          "sha256": "7d2f409b556d2ae7549469c1d05f63cb0c6af52e5b29eb4340b9b2efc07b7d37"
+        }
+      ],
+      "key": "bf4f9c47f7037a35",
+      "module": "tidy",
+      "name": "saturate"
+    }
+  ],
+  "schema": 1,
+  "slang": "2026.22"
+}

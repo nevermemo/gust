@@ -426,6 +426,12 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   and m10.b0p (`ea5c1ae`, PR #53, the host-side profile: GUST's host work per call matches the hand-written
   per-call path); after it, m10.g3b (`deaec08`, PR #55, guide chapters 3 to 6 and 8; GPU suite pin 464 over 49),
   which ships with the next release.
+- Release hold (D189, owner, 2026-11-15): nothing is published, tagged or branched for release until the joint
+  project review; `<C>` = `83124ad` stays gated and unpublished. Merged on 2026-11-15 after `<C>`, besides g3b:
+  m10.b1c (`9b618c0`, PR #56; outcome D for the batch-path GPU-time excess, D188; per-cell route evidence, the
+  reproducibility clause, p5-p95 and the two-state flag in the bench) and m10.k1 (`6dfeb3d`, PR #57; guide chapters
+  7, 9, 11 and 12; GPU suite pin 465 over 49; every public item documented, items with an example: gust-compute
+  about 2.5 %, gust-compute-wgpu 0.8 % on x86_64 and 1.3 % on wasm32, on rustdoc's denominator, guide excluded).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -5,8 +5,9 @@ a GPU-centric ECS game engine. **Today it is a working experimental Rust → Sla
 compute subsystem**. There is no ECS,
 renderer, rustc semantic integration, or execution-graph compiler yet.
 
-> **Version.** `main` is the development line, `0.2.0-dev`, and is not yet published. The 0.1 line is the branch
-> `release/0.1`.
+> **Version.** `main` is the development line, `0.2.0-dev`, and is not yet published. 0.2.0 will be the first public
+> release (D177). A 0.1.0 was prepared on the branch `release/0.1`; it was not published and will not be, and that
+> branch has no tag.
 
 Rust supplies the higher-level language and checking environment; Slang owns GPU
 code generation; GUST will connect intentional CPU and GPU execution. We preserve
@@ -244,7 +245,8 @@ devices.
 The two code blocks below are the recipe that `cargo xtask check-release` builds word for word from the packaged
 crates.
 
-GUST is published as four packages that always share one version (0.1.0 is the first release):
+GUST is published as four packages that always share one version (0.2.0 is the first release; a 0.1.0 was never
+published, D177):
 
 | Package | Library name | What it is |
 | --- | --- | --- |
@@ -462,7 +464,7 @@ Changing the `gust.toml` rebuilds the crates that use a tag, in both directions 
 check-routing`: a route that goes from unset to set recompiles too).
 A route flip is a call-site change when a kernel call names its device: a kernel routed to the CPU is called on
 `CpuDevice` and one routed to the GPU on `HeadlessDevice`, and only the generated element-wise map (`name::map`) is
-the same on both ("Upgrading from 0.1.0 to 0.2.0"). A `gust::routed::RoutedDevice` (M9, D165) is the exception: one
+the same on both ("Code built against `release/0.1`"). A `gust::routed::RoutedDevice` (M9, D165) is the exception: one
 handle whose calls run each kernel on the target its build resolved, so the same call-site source covers a flip
 (storage-buffer kernels only, and not with a GPU on wasm32; see `gust::routed`).
 `cargo xtask check-routing` is the evidence (see the command table near the top); everything it runs but its `gpu`
@@ -496,39 +498,74 @@ case is `Cpu` evidence.
   target, the scalar coretests, where `(x as f32) as i32` for `x = 16777217` and `-16777217` gives `x` itself and
   not the neighbour Rust gives (the WGSL route on lavapipe is right).
   That is a documented limitation, not chased (SEMANTICS section 15); no other adapter is measured.
+- **Known issue: an NVIDIA driver defect on the default WGSL route (D168, D169).** On the NVIDIA GeForce RTX 5090
+  through Vulkan, driver 610.88, a function-scope array in a kernel has one or more elements read as 0 after an element
+  at a dynamic index is loaded and written back with a value the driver can prove unchanged (`a[k] -= 0`, `a[k] = a[k]`,
+  or an operand that folds to 0). Arrays of length 3, 4, 5, 8, 16 and 17 whose elements hold one value were measured to fail;
+  length 2 never did, and programs that write a real change are not affected ([SEMANTICS](docs/SEMANTICS.md), section
+  7, has the full pattern). The generated Slang, WGSL and SPIR-V are correct and the AMD Radeon 890M computes Rust's
+  values, so GUST does not refuse the form. This was measured on one device and driver and has not been run on another
+  NVIDIA architecture. The opt-in cure is the `spirv-route` feature: with the route taken the defect did not reproduce
+  on the RTX 5090. It needs run-time compilation and Vulkan, so a shipped `native` or `web` build, or a kernel with a
+  precompiled artifact, stays on the WGSL route and can meet the defect where the pattern occurs. The route has its
+  own documented result differences (SEMANTICS section 15).
 
 ## Stability
 
-GUST is an experimental compiler and 0.1 is its first release. It follows SemVer for 0.x (D111): a change that breaks
-existing code bumps the minor version (0.2.0), and a patch release only adds or fixes. The four packages are released
-together at one version and depend on each other with exact versions, so upgrade them together. Each release is
-described in [CHANGELOG](CHANGELOG.md).
+GUST is an experimental compiler and 0.2.0 is its first public release (D177; a 0.1.0 was prepared and never
+published). It follows SemVer for 0.x (D111): a change that breaks existing code bumps the minor version (0.2 to 0.3),
+and a patch release only adds or fixes: a construct may be added to the `#[gpu]` language in a patch and is refused
+only in a minor. The four packages are released together at one version and depend on each other with exact versions,
+so upgrade them together. Each release is described in [CHANGELOG](CHANGELOG.md). GUST is pre-1.0: nothing here
+promises that the API stops changing between minors, only how a change is made and announced.
 
 The promise covers:
 
-- the public API of `gust-compute` and `gust-compute-wgpu`: `#[gpu]` and `par_for!`, the typed call surface, the
-  buffer, device and map types, the CPU runtime and the artifact types. Every public enum is `#[non_exhaustive]`
+- the public API of `gust-compute` and `gust-compute-wgpu`: every item that is not `#[doc(hidden)]`, including
+  `#[gpu]` and `par_for!`, the typed call surface, the buffer, device and map types, the CPU runtime and the artifact types. Every public enum is `#[non_exhaustive]`
   except `MatrixLayout` and `Access` (`gust-compute`) and `TransferDirection`, `GpuBufferAccess` and the binding enums
   (`gust-compute-wgpu`), which are closed sets, and the uninhabited marker types, which have no variants: a
   `#[non_exhaustive]` enum may gain variants, so match it with a wildcard arm. A minor bump may grow `Access` (a
   write-only access, say);
+- the `#[gpu]` language: the set of accepted constructs with their lowering contract ([SEMANTICS](docs/SEMANTICS.md));
 - the commands of `cargo-gust` and the lines they print, which scripts and CI read;
-- the file formats: `gust-artifacts/manifest.json` (up to schema 3 since 0.2.0), the record files (up to schema 4) and
-  the reflection records; a newer release reads every older schema (D82, D89, D91, D139);
-- the modules that 0.2.0 adds to `gust-compute` (`gust::capability`, `gust::limits`, `gust::target`, `gust::routes`),
-  `GUST_PROFILE`'s `+capability` suffix, the `[package.metadata.gust]` table and `gust.toml`, and the hidden marker
-  `gust::target::GpuKernel` with the line that a hand-written `Kernel` adds (below);
-- the additions of M9: `gust::routed` (`RoutedDevice` and its buffers, D165), the `spirv-route` feature with `Route`,
-  `RouteEvent`, `HeadlessDevice::route_events` and `SPIRV_ROUTE` (D172, D174), and the array layout kinds
-  (`TypeLayoutKind::Array`, `ReflectedTypeKind::Array`, `TypeLayout::array`, D159);
+- the file formats: `gust-artifacts/manifest.json` (schema 3), the record files (schema 4) and the reflection records
+  (schemas 1 to 4); a newer release reads every older schema (D82, D89, D91, D139);
+- `gust.toml`, the `[package.metadata.gust]` table and `GUST_PROFILE`'s grammar including the `+capability` suffix;
+- the modules `gust::capability`, `gust::limits`, `gust::target`, `gust::routes` and `gust::routed` (`RoutedDevice`
+  and its buffers, D165), the hidden marker `gust::target::GpuKernel` with the line that a hand-written `Kernel` adds
+  (below), the `spirv-route` items `Route`, `RouteEvent`, `HeadlessDevice::route_events` and `SPIRV_ROUTE` (D172,
+  D174), and the array layout kinds (`TypeLayoutKind::Array`, `ReflectedTypeKind::Array`, `TypeLayout::array`, D159);
 - the diagnostic codes, `GUST-E....` ([DIAGNOSTICS](docs/DIAGNOSTICS.md)): a code keeps its meaning, the message text
-  may be reworded.
+  may be reworded; a code is never renumbered after the first release (D33);
+- two Cargo features, by name and meaning: `slang-runtime` (run-time compilation; off by default) and `spirv-route`
+  (the opt-in SPIR-V route; off by default, Vulkan only, D172). The behaviour of `spirv-route` may change in a minor
+  release, its name does not. No other feature is promised;
+- seven environment variables: `GUST_PROFILE` (its grammar), `GUST_SLANG_HOME`, `GUST_SLANG_REFLECT`, `GUST_ROUTE__*`,
+  `GUST_CPU_THREADS`, and `GUST_EXPORT_DIR` and `GUST_ROUTED_PROFILE`. The last two are set by `cargo gust` for the
+  macros of the crates it builds (a protocol between an installed `cargo gust` and a project of another version): do
+  not set them yourself.
 
 It does not cover the support surface, which is public only because generated code or `cargo-gust` needs it:
 `gust::profile`, `gust::spirv`, `gust::slang::probe`, `gust_wgpu::render_wgpu_source`, the `__gust_*` names that the
 macro emits, the hidden `descriptor;` form of `par_for!`, the internal `cargo-gust-bridge` feature and
-the toolchain support (the rules for finding Slang that `cargo-gust` shares with the run-time bridge, D109). The
-`cargo xtask` commands and the evidence tiers belong to this repository and are not published.
+the toolchain support (the rules for finding Slang that `cargo-gust` shares with the run-time bridge, D109). It does
+not cover either:
+
+- the other `GUST_*` environment variables: `GUST_SPIRV_ROUTE_LOG` and the ones that only tests read;
+- the Slang text of a kernel: the content key of a precompiled artifact may change in a minor release (B4 did), while a
+  patch release keeps committed artifacts valid;
+- the guide modules `gust::guide` and `gust_wgpu::guide`: their chapter set may change, and they hold no items, only
+  documentation;
+- the `cargo xtask` commands and the evidence tiers, which belong to this repository and are not published.
+
+The minimum Rust version is 1.90 for the 0.2 line ("Minimum Rust" below). The promise is that the four crates build on
+that toolchain with the dependency versions available at publish time (the `msrv` CI job and a build of the
+`hello-gust` fixture on 1.90 without a lockfile check it). A later dependency release that raises its own minimum Rust
+is outside the promise, and is answered by a patch that caps the range when the resolver cannot route around it.
+Raising `rust-version` is a minor release, never a patch. A Slang pin bump is a minor release when it changes the key of a committed artifact (the bump from 2026.20 to 2026.22
+did), and the CHANGELOG entry names the pinned Slang version. The platforms are Vulkan on Windows and Linux and
+WebGPU in Chrome ("Platforms"); nothing else is claimed (D112).
 
 `pixel` kernels, `Shape` and the texture and sampler types are in the published surface and under the promise above, so
 a 0.x release may change them like the rest. Their evidence is narrower than the rest: a GUST `pixel` or texture kernel
@@ -536,12 +573,16 @@ has run on one hardware adapter, the RTX 5090 (Vulkan), and on the lavapipe soft
 Headless Chrome on that same NVIDIA GPU has run a `pixel` kernel and no texture kernel. Another vendor's GPU, or a
 phone, may show a difference the tests have not seen ([Shapes](#shapes-grid-and-pixel) lists what has run).
 
-### Upgrading from 0.1.0 to 0.2.0
+### Code built against `release/0.1`
 
-0.2.0 is a minor bump because of four breaks: B1, in two parts (the descriptor constructor and setters, and the
-`GpuKernel` bound), which is the last one of its kind; B2, reserved subgroup function names; B3, recursion refused;
-and B4, more renamed names. The rest of M8 and M9 only adds ([CHANGELOG](CHANGELOG.md) has the full list; the
-`semver` CI job covers the public API, and was not run for the M9 additions).
+This section is for code built against the branch `release/0.1` or this repository's earlier history. It is not an
+upgrade guide for registry users: 0.1.0 was never published (D177), so 0.2.0 is the first version on crates.io and
+there is nothing to upgrade from there. Against `release/0.1`, 0.2.0 has four breaks: B1, in two parts (the descriptor
+constructor and setters, and the `GpuKernel` bound), which is the last one of its kind; B2, reserved subgroup function
+names; B3, recursion refused; and B4, more renamed names. The API audit of m10.api1 adds B5 to B7 (record structs and
+`Route` marked `#[non_exhaustive]`, three more structs likewise, and two items hidden from the docs), which the
+[CHANGELOG](CHANGELOG.md) lists with their migrations. The rest of M8 and M9 only adds (the CHANGELOG has the full
+list; the `semver` CI job covers the public API against that branch).
 
 - **B1, part 1: `KernelDescriptor` is `#[non_exhaustive]`.** A struct literal, or a struct update from a base value, no
   longer compiles outside `gust-compute`, because the descriptor gained `variant`, `requires` and `target`. Build one

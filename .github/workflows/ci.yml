@@ -302,14 +302,16 @@ jobs:
   semver:
     # The report of what a branch breaks against the release line (M8 plan section 1, slice m8.v): `cargo
     # semver-checks` for the two library crates, `gust-compute` and `gust-compute-wgpu`, against the git ref
-    # `release/0.1` (there is no `v0.1.0` tag and no registry baseline: 0.1.0 is not published). The report is uploaded
-    # as an artifact. It does not judge the macro language (the proc-macro crate has no API for the tool to compare),
+    # `release/0.1` (there is no `v0.1.0` tag and no registry baseline: 0.1.0 was never published, D177). The baseline
+    # stays `release/0.1` until 0.2.0 is published; then the release slice (m10.r3) changes it to `--baseline-version
+    # 0.2.0`. The report is uploaded as an artifact. It does not judge the macro language (the proc-macro crate has no API for the tool to compare),
     # and its list is not a proof: its report for `gust-compute-wgpu` was empty although m8.w1 added the `GpuKernel`
     # bound to that crate's entry points, most likely because `GpuKernel` is `#[doc(hidden)]` and the tool skips such
     # items. It compares the `dev` profile only (no `GUST_PROFILE` is set, so items gated on `gust_profile` or
     # `gust_capability` are not compared) and uses the tool's default feature selection.
-    # `--release-type patch` is on purpose: the versions say 0.1.0 to 0.2.0-dev, which the tool counts as a major
-    # change and then runs no lint at all ("0 checks, 260 skip"); asked for a patch, it lists every break.
+    # `--release-type patch` is on purpose: against that branch the versions say 0.1.0 to 0.2.0-dev, which the tool
+    # counts as a major change and then runs no lint at all ("0 checks, 260 skip"); asked for a patch, it lists every
+    # break.
     # The job does NOT fail on what the tool finds: a 0.x minor release may break (README, "Stability"), so the
     # findings are the list for the CHANGELOG, not a red light. It does fail when the tool, the baseline or a build is
     # missing: the step requires a "Summary" line for each of the two crates.

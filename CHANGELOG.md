@@ -7,10 +7,14 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased (0.2.0)
 
-The workspace version is `0.2.0-dev`. Work for 0.2.0 lands on `main`; the 0.1.0 line continues on the branch
-`release/0.1`. This list is what the milestones M8 and M9 have merged.
-0.2.0 has four listed breaks, and the API audit of m10.api1 adds B5 to B7 (below; 0.1.0 is never published and
-0.2.0 is the first release, D177, so they break no released version). B1, below, in two
+0.2.0 is the first public release of GUST (D177). A 0.1.0 was prepared on the branch `release/0.1` and was never
+published: it has no tag and is not on crates.io, so there is nothing to upgrade from, and a reader who meets 0.2.0 on
+crates.io can skip "Changed, and may break code written for the unpublished 0.1.0 line" and "Compatibility with the
+unpublished 0.1.0 line" below. Those two parts are kept for this repository's own fixtures and for anyone who built
+from `release/0.1`. The workspace version is `0.2.0-dev` until the release commit. Work for 0.2.0 lands on `main`. This
+list is what the milestones M8 and M9 and the first slices of M10 have merged.
+Against `release/0.1` the tree has four listed breaks, and the API audit of m10.api1 adds B5 to B7 (below; they break
+no released version, because none exists). B1, below, in two
 parts (the descriptor constructor and setters, and the `GpuKernel` bound), is the last of its kind: the descriptor is
 `#[non_exhaustive]` from now on. B2 is a function name in a `#[gpu]` module that is now reserved (the 21 subgroup
 operations). B3 is that recursion is refused (`GUST-E0120`). B4 is that more names are renamed in the emitted Slang,
@@ -26,6 +30,27 @@ m10.api2a.1 the same job (run 43660662918) lists, for `gust-compute`, `struct_ma
 `HeadlessDevice::check_same_device` and `pub_module_level_const_now_doc_hidden` on `EXACT_CLASS_BYTES` (B7). It does
 not judge the macro language, and it does not check items that were already `#[doc(hidden)]`, so the list is not a
 proof.
+
+### Known issues
+
+- **An NVIDIA driver defect gives wrong values for one array pattern on the default WGSL route** (D168, D169; not a
+  GUST bug: the generated Slang, slangc's WGSL and naga's SPIR-V are correct, and the AMD Radeon 890M computes Rust's
+  values). Measured on one device only: an NVIDIA GeForce RTX 5090 through Vulkan, driver 610.88. In a kernel, a
+  function-scope array has one or more elements read as 0 after an element at a dynamic index is loaded and written
+  back with a value the driver can prove unchanged (`a[k] -= 0`, `a[k] ^= 0`, `a[k] <<= 0`, `a[k] &= !0`,
+  `a[k] = a[k]`, or an operand that folds to 0 through `%` or a call). Arrays of length 3, 4, 5, 8, 16 and 17 whose
+  elements all hold one value were measured to fail, and any array after an earlier dynamic store and a copy; length 2
+  never failed, a zero read from buffer data never triggered it, and programs that write a real change are not
+  affected. A stored array in a struct field is affected the same way; arrays in storage buffers were not measured.
+  GUST does not refuse or rewrite the form (D39). It was not run on another NVIDIA architecture, so whether the defect
+  appears on another NVIDIA GPU or driver is unknown. The GPU test `driver_sentinel`
+  (`crates/gust-wgpu/tests/driver_sentinel.rs`) expects the defect's values on that device, so a driver change that
+  fixes it fails the test, which is the cue to re-measure. Details: [SEMANTICS](docs/SEMANTICS.md), section 7.
+  - **The opt-in cure is the `spirv-route` feature** (D172, listed under Added): with it on and the route taken, the
+    defect did not reproduce on the RTX 5090. The route needs run-time compilation and Vulkan, so it is no cure for a
+    shipped build: a precompiled artifact keeps its WGSL, and a build with the `native` or `web` profile (which has no
+    run-time compiler) stays on the WGSL route and meets the defect where the pattern occurs. The route has its own
+    documented result differences (SEMANTICS section 15).
 
 ### Added
 
@@ -247,7 +272,10 @@ proof.
   | `F32BufferDispatch` | `BufferDispatch` |
   | `DispatchOutput`, `U32DispatchOutput` | `read_typed_buffer` on the buffers |
 
-### Changed, and may break code written for 0.1.0
+### Changed, and may break code written for the unpublished 0.1.0 line
+
+These are the differences from `release/0.1`, the branch that was prepared as 0.1.0 and never published. They matter to
+code built from that branch and to this repository's fixtures; code written for the registry starts at 0.2.0.
 
 - **B1, part 1: `KernelDescriptor` is `#[non_exhaustive]`** and has new fields (`variant`, `requires`, `target`).
   A struct literal, or a struct update from a base value, no longer compiles outside `gust-compute`. Migration: build
@@ -334,10 +362,10 @@ It brings four more crates, so a build of `gust-compute` compiles five that 0.1.
 lower, under the workspace's 1.90. The reason is that `cargo publish` rewrites a manifest, so a reader of the source
 form that was written by hand would refuse the form a published crate carries. This is not a code break.
 
-### Compatibility with 0.1.0
+### Compatibility with the unpublished 0.1.0 line
 
-The `semver` job of CI compares `gust-compute` and `gust-compute-wgpu` with the branch `release/0.1` (0.1.0) with
-`cargo-semver-checks` 0.51.0. On the merge of m8.x1 into `main` (`ci.yml` run 42518513308, job `semver`; the job treats
+The `semver` job of CI compares `gust-compute` and `gust-compute-wgpu` with the branch `release/0.1` (the unpublished
+0.1.0; it is the baseline until 0.2.0 is on crates.io) with `cargo-semver-checks` 0.51.0. On the merge of m8.x1 into `main` (`ci.yml` run 42518513308, job `semver`; the job treats
 its findings as expected and stays green; run 42518612375 on `main` at `85d62fd` was green too, and `c245266..85d62fd`
 changed documentation only, so the counts hold), the job found:
 
@@ -376,11 +404,13 @@ By this comparison the only source edits that 0.1.0 code needed are the four B1 
 the diff, not about a run: whether each gate is green on a commit is recorded in STATUS, and the gates that 0.2.0 adds
 (`check-routing`, the `dev+subgroups` batches) only add fixtures.
 
-## 0.1.0 (not yet published)
+## 0.1.0 (never published)
 
-The first public release of GUST, an experimental compiler from a restricted subset of Rust to Slang for compute
-kernels. Nothing in this entry changes an earlier release: there is none. The release is deferred; the packages are not
-on crates.io and there is no `v0.1.0` tag yet. The branch `release/0.1` holds the state that will be published.
+History, kept as a record. 0.1.0 was prepared as the first release and was never published (D177, the owner's choice of
+2026-11-14): the packages named 0.1.0 are not on crates.io, there is no `v0.1.0` tag, and `release/0.1` stays a branch
+with no tag. 0.2.0 is the first public release and builds on it, with the changes its own entry lists (the pinned
+Slang below is 2026.20; 0.2.0 pins 2026.22). The entry describes the state of that branch, an experimental compiler
+from a restricted subset of Rust to Slang for compute kernels.
 
 ### What you can do
 
@@ -430,7 +460,8 @@ NVIDIA GPU has run a `pixel` kernel and no texture kernel. README, "Stability", 
 - In the browser (`wasm32`) nothing blocks: a job's `wait`, and so a kernel's `dispatch`, returns `Error::WouldBlock`
   (any work it submitted will run). Submit, then await a readback (`read_typed_buffer_async`, `GpuVec::to_vec_async`).
 - SPIR-V is exported and validated with `spirv-val` when it is on `PATH`, but the runtime executes the WGSL.
-  Running the exported SPIR-V is planned for a 0.1.x release.
+  Running the exported SPIR-V was planned for a 0.1.x release, which will not exist; 0.2.0 has the opt-in
+  `spirv-route` feature instead (listed under Added).
 - A crate that depends directly on both `gust-compute` and the unrelated crate `gust` fails with rustc error
   E0464, because both libraries are called `gust`. Renaming a dependency needs an `extern crate ... as gust;` line.
 - The packaged crates are not test-runnable: their tests read files of the repository. Run the tests from a checkout.

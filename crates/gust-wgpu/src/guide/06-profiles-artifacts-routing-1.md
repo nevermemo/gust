@@ -94,9 +94,9 @@ smooth = { targets = ["gpu", "cpu"], default = "gpu" }
 "routed::smooth" = "gpu"
 ```
 
-This is the one program of chapters 4 to 6 that the doctests do not compile, so its block is `ignore`. A route tag must
+This is the one program of chapters 4 to 6 that the doctests do not compile, so its block is text. A route tag must
 be declared in the `Cargo.toml` of the crate that uses it, and the manifest of this crate declares none (the doctest
 fails with GUST-E0748). The listing is compiled instead as the gallery entry `gallery/routed`, a real crate with those
 tags, which `cargo xtask check-gallery` builds and runs, and the same command keeps the listing identical to it.
 
-```rust,ignore
+```text

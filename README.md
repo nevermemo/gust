@@ -393,8 +393,10 @@ called `gust` and `gust_wgpu`. Two things follow.
   warned about an output filename collision.
 - A crate that reaches `gust` only through another crate (the other one says `pub use gust;`) has no `::gust` of its
   own: name the path with `#[inner::gust::gpu(crate = ::inner::gust)]`, in either order with `route = ".."`, or with
-  `crate(::inner::gust);` as the first clause of `par_for!`. The macro then rewrites every path-leading `::gust::` of
-  its output to that path, tokens you wrote yourself in the module that spell one included. The `::gust_wgpu::` paths
+  `crate(::inner::gust);` as one of the clauses before the loop of `par_for!` (any order, each at most once). The
+  macro then rewrites each `::gust::` of its output that begins a path to that path: one after a path segment (as in
+  `::inner::gust::`) or in a qualified path (`<T as X>::gust::`) is left alone; one after a keyword, `->`, a lifetime, a
+  comparison or the end of generics is rewritten, and so are tokens you wrote yourself that spell one. The `::gust_wgpu::` paths
   stay literal, so the function form of `#[gpu]` and `par_for!` still need a direct dependency on `gust-compute-wgpu`;
   the module form does not. `tests/reexport` compiles all four forms this way.
 

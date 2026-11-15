@@ -377,3 +377,103 @@ fn an_error_after_the_clause_still_names_the_forwarded_facade() {
         "{output}"
     );
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Where a path begins (review of m10.api2a.3, item 2)
+
+#[test]
+fn a_path_after_a_lifetime_is_rewritten() {
+    for (source, expected) in [
+        (
+            "fn f(x: &'a ::gust::X) {}",
+            "fn f(x: &'a ::inner::gust::X) {}",
+        ),
+        (
+            "fn f(x: &'static ::gust::X) {}",
+            "fn f(x: &'static ::inner::gust::X) {}",
+        ),
+        (
+            "fn f<'a>(x: &'a mut ::gust::X) {}",
+            "fn f<'a>(x: &'a mut ::inner::gust::X) {}",
+        ),
+        (
+            "type T = dyn Tr + 'a ::gust::X;",
+            "type T = dyn Tr + 'a ::inner::gust::X;",
+        ),
+    ] {
+        assert_eq!(forwarded(source), tokens(expected), "{source}");
+    }
+}
+
+#[test]
+fn a_path_after_the_end_of_generics_is_rewritten() {
+    for (source, expected) in [
+        (
+            "impl<T> ::gust::Tr for X<T> {}",
+            "impl<T> ::inner::gust::Tr for X<T> {}",
+        ),
+        (
+            "impl<T: Clone, U> ::gust::Tr for X {}",
+            "impl<T: Clone, U> ::inner::gust::Tr for X {}",
+        ),
+        (
+            "fn f(g: impl for<'a> ::gust::F<'a>) {}",
+            "fn f(g: impl for<'a> ::inner::gust::F<'a>) {}",
+        ),
+        (
+            "impl<T: Into<u8>> ::gust::Tr for X {}",
+            "impl<T: Into<u8>> ::inner::gust::Tr for X {}",
+        ),
+    ] {
+        assert_eq!(forwarded(source), tokens(expected), "{source}");
+    }
+}
+
+#[test]
+fn a_path_after_a_comparison_or_a_shift_is_rewritten() {
+    for (source, expected) in [
+        ("let c = a > ::gust::K;", "let c = a > ::inner::gust::K;"),
+        ("let c = a >> ::gust::K;", "let c = a >> ::inner::gust::K;"),
+        (
+            "let c = f(x) > ::gust::K;",
+            "let c = f(x) > ::inner::gust::K;",
+        ),
+    ] {
+        assert_eq!(forwarded(source), tokens(expected), "{source}");
+    }
+}
+
+#[test]
+fn a_path_after_the_arguments_of_a_path_is_not_rewritten() {
+    // The `>` closes the arguments of a path or a qualified path, so the `::` is a separator.
+    for source in [
+        "Vec<T>::gust::x",
+        "Vec::<T>::gust::x",
+        "<T as Tr>::gust::x",
+        "<Vec<T> as Tr>::gust::x",
+        "let v = <Vec<Vec<u8>> as Tr>::gust::x;",
+        "a::b<C<D>>::gust::x",
+        "x = <T as Tr<U>>::gust::x;",
+    ] {
+        assert_eq!(forwarded(source), tokens(source), "{source}");
+    }
+}
+
+#[test]
+fn an_error_after_a_clause_names_the_forwarded_facade_when_the_loop_does_not_parse() {
+    // A malformed binding list fails the whole parse, after a valid `crate(..);`: the error value still uses the path.
+    let environment = Environment::default();
+    let input: TokenStream = "crate(::inner::gust); i in 0..n, [a: ] { }"
+        .parse()
+        .unwrap();
+    let output = par_for_in(input, &environment, Profile::Other, 1).to_string();
+    assert!(output.starts_with("{ :: core :: compile_error"), "{output}");
+    assert!(
+        output.contains(":: inner :: gust :: map :: Error"),
+        "{output}"
+    );
+    assert!(
+        !output.replace(FACADE, "").contains(":: gust ::"),
+        "{output}"
+    );
+}

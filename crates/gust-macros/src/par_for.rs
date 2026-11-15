@@ -136,8 +136,52 @@ impl Parse for RawBinding {
     }
 }
 
+/// Just the clauses in front of the loop; [`expand_input`] reads them first, so that the `crate(..)` path is known even
+/// when the rest of the input does not parse.
+struct Clauses(Options);
+
+impl Parse for Clauses {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let options = parse_options(input)?;
+        input.parse::<TokenStream>()?;
+        Ok(Self(options))
+    }
+}
+
 impl Parse for Raw {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        let options = parse_options(input)?;
+        let pattern = syn::Pat::parse_single(input)?;
+        input.parse::<Token![in]>()?;
+        let ranges: syn::Expr = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let content;
+        syn::bracketed!(content in input);
+        let bindings = content
+            .parse_terminated(RawBinding::parse, Token![,])?
+            .into_iter()
+            .collect();
+        let body: syn::Block = input.parse()?;
+        if !input.is_empty() {
+            return Err(diagnostics::error(
+                Code::ParForForm,
+                input.cursor().token_stream(),
+                "`par_for!` ends with the body block",
+            ));
+        }
+        Ok(Self {
+            options,
+            pattern,
+            ranges,
+            bindings,
+            body,
+        })
+    }
+}
+
+/// The keyword clauses in front of the loop.
+fn parse_options(input: ParseStream) -> syn::Result<Options> {
+    {
         let mut options = Options::default();
         // The keyword options come first, each ended by `;`. A loop pattern is never an identifier followed by `(`
         // or `;`, so these are unambiguous.
@@ -221,31 +265,7 @@ impl Parse for Raw {
                 break;
             }
         }
-        let pattern = syn::Pat::parse_single(input)?;
-        input.parse::<Token![in]>()?;
-        let ranges: syn::Expr = input.parse()?;
-        input.parse::<Token![,]>()?;
-        let content;
-        syn::bracketed!(content in input);
-        let bindings = content
-            .parse_terminated(RawBinding::parse, Token![,])?
-            .into_iter()
-            .collect();
-        let body: syn::Block = input.parse()?;
-        if !input.is_empty() {
-            return Err(diagnostics::error(
-                Code::ParForForm,
-                input.cursor().token_stream(),
-                "`par_for!` ends with the body block",
-            ));
-        }
-        Ok(Self {
-            options,
-            pattern,
-            ranges,
-            bindings,
-            body,
-        })
+        Ok(options)
     }
 }
 
@@ -1089,6 +1109,12 @@ pub(crate) fn expand_input(
     call_line: u32,
     form: &mut Form,
 ) -> syn::Result<TokenStream> {
+    // The clauses first, alone: the `crate(..)` path is then known for the error value even when the loop after them
+    // does not parse. A clause error is reported by the full parse below.
+    if let Ok(Clauses(options)) = diagnostics::parse2::<Clauses>(Code::ParForForm, input.clone()) {
+        form.descriptor = options.descriptor;
+        form.krate = options.krate;
+    }
     let raw = diagnostics::parse2::<Raw>(Code::ParForForm, input)?;
     form.descriptor = raw.options.descriptor;
     form.krate.clone_from(&raw.options.krate);

@@ -3,7 +3,7 @@ use std::fs;
 use super::{
     Expectation, Expected, REEXPORT_DIR, UI_DIR, cargo_args, case_command, discover_cases, judge,
     parse_diagnostics, parse_env, parse_expectation, parse_expected, reexport_args,
-    reexport_command, reexport_problems,
+    reexport_command, reexport_problems, reexport_target_dir,
 };
 use crate::workspace::workspace_root;
 
@@ -2128,19 +2128,58 @@ fn the_reexport_fixture_has_no_direct_dependency_on_gust() {
     // every `::gust` resolve without the option and the fixture would prove nothing.
     let root = workspace_root().unwrap();
     let outer = fs::read_to_string(root.join(REEXPORT_DIR).join("outer/Cargo.toml")).unwrap();
-    let dependencies = outer.split("[dependencies]").nth(1).unwrap();
-    let dependencies = dependencies.split("\n[").next().unwrap();
-    let names: Vec<&str> = dependencies
-        .lines()
-        .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
-        .filter_map(|line| line.split('=').next())
-        .map(str::trim)
-        .collect();
+    // Every dependency table counts: `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, the target-specific
+    // ones (`[target.'cfg(..)'.dependencies]`) and the `[dependencies.name]` form.
+    let mut names: Vec<String> = Vec::new();
+    let mut in_dependencies = false;
+    for line in outer.lines().map(str::trim) {
+        if let Some(header) = line.strip_prefix('[') {
+            let header = header.trim_end_matches(']').trim();
+            in_dependencies = header.ends_with("dependencies");
+            if let Some((_, name)) = header.split_once("dependencies.") {
+                names.push(name.trim().to_owned());
+            }
+        } else if in_dependencies
+            && !line.is_empty()
+            && !line.starts_with('#')
+            && let Some((name, _)) = line.split_once('=')
+        {
+            names.push(name.trim().to_owned());
+        }
+    }
     assert_eq!(names, ["inner", "gust-wgpu"], "{outer}");
-    assert!(
-        !dependencies.contains("package = \"gust-compute\""),
-        "{outer}"
-    );
+    assert!(!outer.contains("gust-compute\""), "{outer}");
+    assert!(!outer.contains("[patch"), "{outer}");
     let inner = fs::read_to_string(root.join(REEXPORT_DIR).join("inner/src/lib.rs")).unwrap();
     assert!(inner.contains("pub use gust;"), "{inner}");
+}
+
+#[test]
+fn the_reexport_check_shares_the_cases_target_directory_unless_cargo_is_told_one() {
+    // Without it a run in a clean checkout would leave an untracked `tests/reexport/target` (the Unit job of CI sets
+    // no `CARGO_TARGET_DIR`).
+    assert_eq!(
+        reexport_target_dir(None).as_deref(),
+        Some("tests/ui/target")
+    );
+    assert_eq!(
+        reexport_target_dir(Some(std::ffi::OsStr::new(""))).as_deref(),
+        Some("tests/ui/target")
+    );
+    assert_eq!(reexport_target_dir(Some(std::ffi::OsStr::new("/t"))), None);
+    let command = reexport_command(std::path::Path::new("ROOT"));
+    let args: Vec<_> = command.get_args().map(ToOwned::to_owned).collect();
+    let has_directory = args.iter().any(|arg| arg == "--target-dir");
+    assert_eq!(
+        has_directory,
+        std::env::var_os("CARGO_TARGET_DIR").is_none_or(|value| value.is_empty())
+    );
+    let ignore = fs::read_to_string(
+        workspace_root()
+            .unwrap()
+            .join(REEXPORT_DIR)
+            .join(".gitignore"),
+    )
+    .unwrap();
+    assert!(ignore.lines().any(|line| line == "/target/"), "{ignore}");
 }

@@ -101,8 +101,10 @@ mod forward_tests;
 /// (build-time routing) and `crate = <path>`. The expansion names the facade as `::gust`, which only a crate with a
 /// direct dependency on `gust-compute` named `gust` has; a crate that reaches it through another crate's
 /// `pub use gust;` says where with `#[gpu(crate = ::inner::gust)]` (the path starts with `::` or `crate::`). A final
-/// pass then rewrites every path-leading `::gust::` in the output to that path, tokens you wrote yourself inside the
-/// module that spell one included; `::inner::gust::` is not touched. Without the argument nothing is rewritten. The
+/// pass then rewrites each `::gust::` of the output that begins a path to that path: not one after a path segment (as
+/// in `::inner::gust::`) or in a qualified path (`<T as X>::gust::`); one after a keyword, `->`, a lifetime, a
+/// comparison or the end of a list of generics is rewritten. Tokens you wrote yourself inside the module that spell
+/// one are rewritten too. Without the argument nothing is rewritten. The
 /// function-map form still names `::gust_wgpu` literally, so it needs a direct dependency on `gust-compute-wgpu`
 /// (the module form does not).
 #[proc_macro_attribute]
@@ -142,8 +144,8 @@ pub fn gpu(attribute: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// A third clause, `crate(<path>);`, goes with the others (before the loop, each at most
 /// once) and names where `gust` is for a crate that reaches it through another crate (`crate(::inner::gust);`, as
-/// `#[gpu(crate = ..)]` does); the path starts with `::` or `crate::`. It rewrites every path-leading `::gust::` of the
-/// expansion, in your body too. The expansion names `::gust_wgpu` literally, so a call still needs a direct dependency
+/// `#[gpu(crate = ..)]` does); the path starts with `::` or `crate::`. It rewrites each `::gust::` of the
+/// expansion that begins a path (the rule of `#[gpu(crate = ..)]`), in your body too. The expansion names `::gust_wgpu` literally, so a call still needs a direct dependency
 /// on `gust-compute-wgpu`. The clause is the grammar's own: `crate` followed by `(` cannot begin a loop pattern.
 ///
 /// ```text

@@ -49,7 +49,7 @@ pub(crate) fn parse_facade(input: ParseStream<'_>, code: Code) -> syn::Result<sy
     Ok(path)
 }
 
-/// `stream` with every path-leading `::gust` (followed by `::`) replaced by `facade`, groups included.
+/// `stream` with each `::gust` that begins a path (followed by `::`) replaced by `facade`, groups included.
 pub(crate) fn forward_crate(stream: TokenStream, facade: &syn::Path) -> TokenStream {
     rewrite(stream, &facade.to_token_stream())
 }
@@ -96,26 +96,78 @@ fn leads_the_facade(tokens: &[TokenTree], index: usize) -> bool {
         && !continues_a_path(tokens, index)
 }
 
-/// Whether the token in front of `tokens[index]` makes a `::` a separator: a path segment (an identifier that is no
-/// keyword) or the `>` that closes a qualified path (`<T as X>::gust::..`). `->` and `=>` are not that `>`.
+/// Whether the token in front of `tokens[index]` makes a `::` a separator. The rule, exactly as implemented:
+///
+/// - an identifier is a path segment unless it is a keyword after which a path may begin (`impl`, `as`, `for`, ..) or
+///   the name of a lifetime (`&'a ::gust::X`);
+/// - a `>` that is part of `->` or `=>` is not a separator;
+/// - any other `>` is looked at with its matching `<` (counted back in the same group): if there is none, the `>` is a
+///   comparison or a shift (`a > ::gust::K`) and a path begins; if the `<` follows `impl`, `for`, `fn`, `struct`,
+///   `enum`, `trait` or `type`, the `>` ends a list of generics (`impl<T> ::gust::Tr`) and a path begins; otherwise it
+///   closes the arguments of a path (`Vec<T>::gust::..`, `Vec::<T>::gust::..`) or a qualified path
+///   (`<T as X>::gust::..`) and the `::` is a separator.
 fn continues_a_path(tokens: &[TokenTree], index: usize) -> bool {
     let Some(previous) = index.checked_sub(1).and_then(|at| tokens.get(at)) else {
         return false;
     };
     match previous {
-        TokenTree::Ident(ident) => !is_keyword_before_a_type_or_path(&ident.to_string()),
-        TokenTree::Punct(punct) if punct.as_char() == '>' => {
-            let arrow = index
+        TokenTree::Ident(ident) => {
+            let lifetime = index
                 .checked_sub(2)
                 .and_then(|at| tokens.get(at))
-                .is_some_and(|before| {
-                    matches!(before, TokenTree::Punct(joint)
-                        if matches!(joint.as_char(), '-' | '=') && joint.spacing() == Spacing::Joint)
-                });
-            !arrow
+                .is_some_and(
+                    |before| matches!(before, TokenTree::Punct(tick) if tick.as_char() == '\''),
+                );
+            !lifetime && !is_keyword_before_a_type_or_path(&ident.to_string())
+        }
+        TokenTree::Punct(punct) if punct.as_char() == '>' => {
+            if is_arrow(tokens, index - 1) {
+                return false;
+            }
+            match matching_open(tokens, index - 1) {
+                None => false,
+                Some(open) => match open.checked_sub(1).and_then(|at| tokens.get(at)) {
+                    Some(TokenTree::Ident(keyword)) => !matches!(
+                        keyword.to_string().as_str(),
+                        "impl" | "for" | "fn" | "struct" | "enum" | "trait" | "type"
+                    ),
+                    _ => true,
+                },
+            }
         }
         _ => false,
     }
+}
+
+/// Whether the `>` at `tokens[at]` is the end of `->` or `=>`.
+fn is_arrow(tokens: &[TokenTree], at: usize) -> bool {
+    at.checked_sub(1)
+        .and_then(|before| tokens.get(before))
+        .is_some_and(|before| {
+            matches!(before, TokenTree::Punct(joint)
+                if matches!(joint.as_char(), '-' | '=') && joint.spacing() == Spacing::Joint)
+        })
+}
+
+/// The index of the `<` that the `>` at `tokens[close]` closes, counting back through `<` and `>` in the same group
+/// (arrows do not count); `None` when the `>` closes nothing.
+fn matching_open(tokens: &[TokenTree], close: usize) -> Option<usize> {
+    let mut depth = 0_usize;
+    for at in (0..=close).rev() {
+        if let TokenTree::Punct(punct) = &tokens[at] {
+            match punct.as_char() {
+                '>' if !is_arrow(tokens, at) => depth += 1,
+                '<' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(at);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 /// The keywords after which a path may begin: `impl ::gust::Trait for ::gust::Type`, `x as ::gust::T`,

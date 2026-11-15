@@ -165,7 +165,10 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
         });
     }
     // The re-export fixture: one more `cargo check`, which must succeed.
-    match reexport_command(root).output() {
+    let reexport_started = std::time::Instant::now();
+    let reexport_output = reexport_command(root).output();
+    let reexport_seconds = reexport_started.elapsed().as_secs();
+    match reexport_output {
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
             problems.extend(reexport_problems(output.status.success(), &stderr));
@@ -192,7 +195,7 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
         .count();
     let with_env = cases.iter().filter(|case| !case.env.is_empty()).count();
     Ok(format!(
-        "UI check passed: {failing} fixture crate(s) failed to compile with exactly the expected rustc error, {refused} failed in the build script of gust with the expected text and {} compiled cleanly (tests/ui, `cargo check --locked --message-format json`; {with_env} with variables of their own from env.txt). The re-export fixture ({REEXPORT_DIR}, `#[gpu(crate = ..)]`) also compiled, with no direct dependency on gust. Only the keys of each expected.txt (code, file, line, message and label) are compared, all within the one error of the crate itself (warnings and other crates are ignored, a second error fails) read from cargo's JSON, not the whole rustc output; a `build-error:` text is looked up in cargo's stderr; no slangc and no GPU were involved.\n",
+        "UI check passed: {failing} fixture crate(s) failed to compile with exactly the expected rustc error, {refused} failed in the build script of gust with the expected text and {} compiled cleanly (tests/ui, `cargo check --locked --message-format json`; {with_env} with variables of their own from env.txt). The re-export fixture ({REEXPORT_DIR}, `#[gpu(crate = ..)]`) also compiled, with no direct dependency on gust (that step took {reexport_seconds} s). Only the keys of each expected.txt (code, file, line, message and label) are compared, all within the one error of the crate itself (warnings and other crates are ignored, a second error fails) read from cargo's JSON, not the whole rustc output; a `build-error:` text is looked up in cargo's stderr; no slangc and no GPU were involved.\n",
         cases.len() - failing - refused
     ))
 }
@@ -217,12 +220,23 @@ pub(crate) fn case_command(root: &Path, case: &str, fixture_env: &[(String, Stri
 /// The cargo child that checks the re-export fixture (see [`REEXPORT_DIR`]), under the same profile as the cases.
 pub(crate) fn reexport_command(root: &Path) -> Command {
     let mut command = Command::new(env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")));
-    command
-        .args(reexport_args())
-        .current_dir(root)
-        .stdin(Stdio::null());
+    command.args(reexport_args());
+    if let Some(directory) = reexport_target_dir(env::var_os("CARGO_TARGET_DIR").as_deref()) {
+        command.arg("--target-dir").arg(directory);
+    }
+    command.current_dir(root).stdin(Stdio::null());
     set_workspace_profile(&mut command);
     command
+}
+
+/// The target directory of the re-export check: the one of the cases (`tests/ui/target`, which holds the dependencies
+/// they built) unless `CARGO_TARGET_DIR` is set, which cargo then honours for both. `None` leaves it to cargo. Without
+/// this a run in a clean checkout would build `gust-compute-wgpu` cold into an untracked `tests/reexport/target`.
+pub(crate) fn reexport_target_dir(variable: Option<&std::ffi::OsStr>) -> Option<String> {
+    match variable {
+        Some(value) if !value.is_empty() => None,
+        _ => Some(format!("{UI_DIR}/target")),
+    }
 }
 
 /// The arguments after `cargo` that check the package `outer` of the re-export fixture.

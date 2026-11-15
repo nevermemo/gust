@@ -29,8 +29,9 @@ const METRICS: [(&str, &str); 4] = [
 ];
 
 /// Column order of the backends.
-const BACKENDS: [&str; 12] = [
+const BACKENDS: [&str; 15] = [
     "gust-gpu",
+    "gust-gpu-spirv",
     "wgsl-prebuilt",
     "wgsl-percall",
     "wgsl-percall+bind-group-reuse",
@@ -38,6 +39,8 @@ const BACKENDS: [&str; 12] = [
     "wgsl-percall+one-submission",
     "wgsl-percall+all-on",
     "gust-twin",
+    "gust-cpu",
+    "gust-cpu-par",
     "rayon-1",
     "rayon-N",
     "serial",
@@ -157,7 +160,7 @@ fn check_labels(runs: &[Value]) -> BenchResult<()> {
         return Err("no run files to aggregate".into());
     };
     for (index, run) in runs.iter().enumerate().skip(1) {
-        for key in ["route", "build", "adapter", "config"] {
+        for key in ["route", "build", "adapter", "config", "group"] {
             if run[key] != first[key] {
                 return Err(format!(
                     "run {} disagrees with run 0 on `{key}`: {} against {}",
@@ -268,7 +271,7 @@ struct ClockSpan {
 
 /// The ablation order of the table: the per-call shape, each switch alone, all three on (result `Vec` still fresh),
 /// the careful shape (which also reuses the `Vec`), and GUST for reference.
-const ABLATION: [&str; 7] = [
+const ABLATION: [&str; 8] = [
     "wgsl-percall",
     "wgsl-percall+bind-group-reuse",
     "wgsl-percall+staging-reuse",
@@ -276,6 +279,7 @@ const ABLATION: [&str; 7] = [
     "wgsl-percall+all-on",
     "wgsl-prebuilt",
     "gust-gpu",
+    "gust-gpu-spirv",
 ];
 
 /// One row per (workload, size, timing, backend of [`ABLATION`]): the median and its ratios to `wgsl-prebuilt` and
@@ -406,12 +410,93 @@ fn link_map(runs: &[Value]) -> BTreeMap<(String, u64), String> {
         .collect()
 }
 
+/// The GUST GPU backend of these runs: `gust-gpu-spirv` in a `spirv-route` build, else `gust-gpu` (one build per
+/// aggregate, see `check_labels`).
+fn gust_backend(table: &Table) -> &'static str {
+    if table
+        .keys()
+        .any(|(_, _, backend, _)| backend == "gust-gpu-spirv")
+    {
+        "gust-gpu-spirv"
+    } else {
+        "gust-gpu"
+    }
+}
+
+/// What the cells say about a workload: its name and its bytes per element.
+struct WorkloadInfo {
+    name: String,
+    bytes: f64,
+}
+
+fn workload_info(runs: &[Value]) -> BTreeMap<String, WorkloadInfo> {
+    let mut info = BTreeMap::new();
+    for run in runs {
+        for cell in run["cells"].as_array().into_iter().flatten() {
+            let Some(workload) = cell["workload"].as_str() else {
+                continue;
+            };
+            info.entry(workload.to_owned())
+                .or_insert_with(|| WorkloadInfo {
+                    name: cell["workload_name"]
+                        .as_str()
+                        .unwrap_or(workload)
+                        .to_owned(),
+                    bytes: cell["bytes_per_element"].as_f64().unwrap_or(12.0),
+                });
+        }
+    }
+    info
+}
+
+/// The DRAM peak of an adapter in GB/s and where the figure comes from, for adapters this table knows. Unknown
+/// adapters are not flagged (no peak is guessed).
+pub fn dram_peak_gbps(adapter: &str) -> Option<(f64, &'static str)> {
+    adapter.contains("RTX 5090").then_some((
+        1792.0,
+        "NVIDIA GeForce RTX 5090 specification: 512-bit GDDR7 at 28 Gbps, 1792 GB/s",
+    ))
+}
+
+fn is_gpu_backend(id: &str) -> bool {
+    id.starts_with("gust-gpu") || id.starts_with("wgsl-")
+}
+
+fn bandwidth_gbps(n: f64, bytes: f64, ms: f64) -> f64 {
+    n * bytes / (ms * 1e-3) / 1e9
+}
+
+/// Every GPU-backend point whose achieved bandwidth (compulsory bytes over the median time) is above the DRAM `peak`.
+/// Such a figure is not a DRAM bandwidth (the data sits in cache, or the time is not the kernel's alone), so the
+/// report marks it instead of printing it as one (plan R1.2-2).
+fn bandwidth_flags(table: &Table, info: &BTreeMap<String, WorkloadInfo>, peak: f64) -> Vec<Value> {
+    let mut flags = Vec::new();
+    for ((workload, n, backend, metric), point) in table {
+        if !is_gpu_backend(backend) {
+            continue;
+        }
+        let bytes = info.get(workload).map_or(12.0, |i| i.bytes);
+        let gbps = bandwidth_gbps(*n as f64, bytes, point.median());
+        if gbps > peak {
+            flags.push(json!({
+                "workload": workload, "n": n, "backend": backend, "metric": metric,
+                "gb_per_s": gbps, "dram_peak_gb_per_s": peak,
+            }));
+        }
+    }
+    flags
+}
+
 pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult<()> {
     let runs = load(inputs)?;
     check_labels(&runs)?;
     let table = gather(&runs);
     let paired = gather_paired(&runs);
     let cold = cold_starts(&runs);
+    let info = workload_info(&runs);
+    let gust = gust_backend(&table);
+    let peak = dram_peak_gbps(runs[0]["adapter"]["name"].as_str().unwrap_or(""));
+    let flags = peak.map_or_else(Vec::new, |(peak, _)| bandwidth_flags(&table, &info, peak));
 
     let mut sizes: BTreeMap<String, Vec<u64>> = BTreeMap::new();
     for (workload, n, _, _) in table.keys() {
@@ -465,7 +550,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             })
         })
         .collect::<Vec<_>>();
-    let overhead = overhead_rows(&table, &sizes);
+    let overhead = overhead_rows(&table, &sizes, gust);
     let cold_json = cold
         .iter()
         .map(|((workload, n, backend), point)| {
@@ -494,10 +579,13 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         "route": runs[0]["route"],
         "build": runs[0]["build"],
         "adapter": runs[0]["adapter"],
+        "group": runs[0]["group"],
+        "dram_peak": peak.map(|(gbps, source)| json!({ "gb_per_s": gbps, "source": source })),
+        "above_dram_peak": flags,
         "meta": runs[0]["meta"],
         "config": runs[0]["config"],
         "runs": runs.iter().map(|run| json!({
-            "label": run["label"], "run_seed": run["run_seed"], "sidecar": run["sampler"]["sidecar"], "load_before": run["load_before"], "load_after": run["load_after"],
+            "label": run["label"], "group": run["group"], "kill_rule": run["kill_rule"], "run_seed": run["run_seed"], "sidecar": run["sampler"]["sidecar"], "load_before": run["load_before"], "load_after": run["load_after"],
             "gpu_before": run["gpu_before"], "gpu_after": run["gpu_after"],
             "wall_s": run["wall_s"], "failures": run["failures"],
         })).collect::<Vec<_>>(),
@@ -536,13 +624,33 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             ", EXCEPT the failures listed at the end"
         }
     )?;
+    writeln!(
+        md,
+        "Group: {}; route: {}; GUST profile: {}; features: {}.\n",
+        runs[0]["group"].as_str().unwrap_or("?"),
+        runs[0]["route"].as_str().unwrap_or("?"),
+        runs[0]["build"]["gust_profile"].as_str().unwrap_or("?"),
+        runs[0]["build"]["features"]
+    )?;
+    for run in &runs {
+        if run["kill_rule"].is_object() {
+            writeln!(
+                md,
+                "- {}: kill rule, C re-opened = {} ({} paired GPU-time ratios checked, offenders: {})",
+                run["label"].as_str().unwrap_or("run"),
+                run["kill_rule"]["c_reopened"],
+                run["kill_rule"]["checked"],
+                run["kill_rule"]["offenders"]
+            )?;
+        }
+    }
+    writeln!(md)?;
     machine_block(&mut md, &runs[0]["meta"], &runs[0]["build"])?;
     for (workload, list) in &sizes {
-        let name = if workload == "W1" {
-            "vector-add"
-        } else {
-            "saxpy"
-        };
+        let name = info
+            .get(workload)
+            .map_or(workload.as_str(), |i| i.name.as_str());
+        let bytes = info.get(workload).map_or(12.0, |i| i.bytes);
         writeln!(md, "\n## {workload} {name}\n")?;
         for (metric, label) in METRICS {
             writeln!(md, "### {label}\n")?;
@@ -600,11 +708,11 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
 
         writeln!(
             md,
-            "### Achieved bandwidth (GB/s, 12 bytes per element), from the batch timestamps and from end to end\n"
+            "### Achieved bandwidth (GB/s, {bytes} bytes per element), from the batch timestamps and from end to end\n"
         )?;
         writeln!(
             md,
-            "| elements | gust-gpu batch | wgsl-prebuilt batch | wgsl-percall batch | gust-gpu e2e | wgsl-prebuilt e2e | rayon-N e2e | PCIe link (GPU e2e) |"
+            "| elements | {gust} batch | wgsl-prebuilt batch | wgsl-percall batch | {gust} e2e | wgsl-prebuilt e2e | rayon-N e2e | PCIe link (GPU e2e) |"
         )?;
         writeln!(md, "|---|---|---|---|---|---|---|---|")?;
         for n in list {
@@ -612,29 +720,41 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                 table
                     .get(&(workload.clone(), *n, backend.to_owned(), metric.to_owned()))
                     .map_or("-".to_owned(), |p| {
-                        let gbps = (*n as f64 * 12.0) / (p.median() * 1e-3) / 1e9;
-                        if gbps < 10.0 {
+                        let gbps = bandwidth_gbps(*n as f64, bytes, p.median());
+                        let text = if gbps < 10.0 {
                             format!("{gbps:.2}")
                         } else {
                             format!("{gbps:.0}")
+                        };
+                        if is_gpu_backend(backend) && peak.is_some_and(|(peak, _)| gbps > peak) {
+                            format!("{text} (>peak)")
+                        } else {
+                            text
                         }
                     })
             };
             writeln!(
                 md,
                 "| {n} | {} | {} | {} | {} | {} | {} | {} |",
-                gbps("gust-gpu", "gpu_batch_per_dispatch"),
+                gbps(gust, "gpu_batch_per_dispatch"),
                 gbps("wgsl-prebuilt", "gpu_batch_per_dispatch"),
                 gbps("wgsl-percall", "gpu_batch_per_dispatch"),
-                gbps("gust-gpu", "end_to_end"),
+                gbps(gust, "end_to_end"),
                 gbps("wgsl-prebuilt", "end_to_end"),
                 gbps("rayon-N", "end_to_end"),
                 link_of(workload, *n),
             )?;
         }
+        let flagged = flags.iter().filter(|f| f["workload"] == *workload).count();
+        if let (true, Some((peak, source))) = (flagged > 0, peak) {
+            writeln!(
+                md,
+                "{flagged} points report more than the adapter's DRAM peak of {peak:.0} GB/s ({source}); the batch and end-to-end cells above are marked `(>peak)`. Such a figure is not a DRAM bandwidth: the data sits in cache, or the timing is not the kernel alone.\n"
+            )?;
+        }
         writeln!(md)?;
 
-        crossover(&mut md, &table, workload, list, &link_of)?;
+        crossover(&mut md, &table, workload, list, &link_of, gust)?;
     }
 
     writeln!(
@@ -999,6 +1119,7 @@ fn crossover(
     workload: &str,
     sizes: &[u64],
     link_of: &dyn Fn(&str, u64) -> String,
+    gust: &str,
 ) -> BenchResult<()> {
     let get = |n: u64, backend: &str| {
         table
@@ -1010,7 +1131,7 @@ fn crossover(
             ))
             .map(Point::median)
     };
-    for gpu in ["gust-gpu", "wgsl-prebuilt"] {
+    for gpu in [gust, "wgsl-prebuilt"] {
         let winner = sizes
             .iter()
             .copied()
@@ -1034,7 +1155,7 @@ fn crossover(
     Ok(())
 }
 
-fn overhead_rows(table: &Table, sizes: &BTreeMap<String, Vec<u64>>) -> Vec<Value> {
+fn overhead_rows(table: &Table, sizes: &BTreeMap<String, Vec<u64>>, gust: &str) -> Vec<Value> {
     let mut rows = Vec::new();
     for (workload, list) in sizes {
         for n in list {
@@ -1049,7 +1170,7 @@ fn overhead_rows(table: &Table, sizes: &BTreeMap<String, Vec<u64>>) -> Vec<Value
                         ))
                         .map(Point::median)
                 };
-                let (Some(gust), Some(prebuilt)) = (get("gust-gpu"), get("wgsl-prebuilt")) else {
+                let (Some(gust), Some(prebuilt)) = (get(gust), get("wgsl-prebuilt")) else {
                     continue;
                 };
                 let percall = get("wgsl-percall");
@@ -1287,5 +1408,41 @@ mod tests {
         );
         assert!(!out_json.exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn runs_of_different_groups_do_not_aggregate() {
+        let mut a = run("wgsl", "GPU A", "a.json");
+        a["group"] = json!("publishable");
+        let mut b = run("wgsl", "GPU A", "b.json");
+        b["group"] = json!("ablation");
+        let error = check_labels(&[a.clone(), b]).unwrap_err();
+        assert!(error.to_string().contains("`group`"), "{error}");
+        assert!(check_labels(&[a.clone(), a]).is_ok());
+    }
+
+    #[test]
+    fn a_gpu_point_above_the_dram_peak_is_flagged_and_a_cpu_or_low_one_is_not() {
+        let cell = |backend: &str, ms: f64| {
+            json!({
+                "workload": "W1", "n": 1048576, "backend": backend, "bytes_per_element": 12,
+                "metrics": { "gpu_batch_per_dispatch": { "median_ms": ms, "n": 30 } },
+            })
+        };
+        // 1048576 * 12 B in 0.006 ms is about 2097 GB/s: above 1792. In 0.01 ms it is about 1258: below.
+        let mut one = run("wgsl", "NVIDIA GeForce RTX 5090", "a.json");
+        one["cells"] = json!([
+            cell("wgsl-prebuilt", 0.006),
+            cell("gust-gpu", 0.01),
+            cell("rayon-N", 0.006)
+        ]);
+        let table = gather(std::slice::from_ref(&one));
+        let info = workload_info(std::slice::from_ref(&one));
+        let (peak, source) = dram_peak_gbps("NVIDIA GeForce RTX 5090").unwrap();
+        assert_eq!(peak, 1792.0);
+        assert!(source.contains("1792"));
+        let flags = bandwidth_flags(&table, &info, peak);
+        assert_eq!(flags.len(), 1);
+        assert_eq!(flags[0]["backend"], "wgsl-prebuilt");
+        assert!(dram_peak_gbps("Some Other GPU").is_none());
     }
 }

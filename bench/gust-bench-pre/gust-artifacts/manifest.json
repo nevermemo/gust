@@ -16,6 +16,36 @@
       "name": "add"
     },
     {
+      "clean_sha256": "57b03587b532dbba24bff2c9ba38c78ff0e17e0e4f315b2eeae8e95787667d42",
+      "entry_point": "gpu_kernel_horner",
+      "formats": [
+        {
+          "file": "2580c40b11271718.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "5cbb69a251984a03c1e5f4653816157af40b8c2609d46c202081cb0994440cbd",
+          "sha256": "72e3a5fbabe85530b6be6b877caa88e87c2f53ba147c738cbe32dc7ed2a47b16"
+        }
+      ],
+      "key": "2580c40b11271718",
+      "module": "kernel",
+      "name": "horner"
+    },
+    {
+      "clean_sha256": "17fc71addb434ca58ef756c378f58e3f5ce2787921bb0b76687509bcc9542429",
+      "entry_point": "gpu_kernel_histogram",
+      "formats": [
+        {
+          "file": "48733ffa27c233fd.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "22cff3b28efbd1b0bf2a50b4755b6d597d04c92b20e1f0e131f820d5d675c64f",
+          "sha256": "cbf897bd5bfb61bd87b00de575150ce30925324dc67cb6fac433dcd85905b9af"
+        }
+      ],
+      "key": "48733ffa27c233fd",
+      "module": "kernel",
+      "name": "histogram"
+    },
+    {
       "clean_sha256": "905eca6e3a07e95814ea9ec1f74e2f7a47ceb7792e9c9abaa0b698529d32f2c3",
       "entry_point": "gpu_kernel_saxpy",
       "formats": [

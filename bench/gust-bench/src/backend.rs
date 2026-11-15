@@ -71,10 +71,19 @@ pub trait Backend {
         None
     }
 
-    /// The route check after a cell: every route event the device holds for this backend's kernel must be on the
-    /// route of the build. An `Err` names both routes and fails the cell. Backends without route events pass.
+    /// The route check after a cell: no route event of the cell's own may be off the route of the build, and the
+    /// kernel's latest event over the device's life must exist and be on the route (for a warm cell, which compiles
+    /// nothing, that event is the build of the cached pipeline it ran). An `Err` names both routes and fails the cell.
+    /// Backends without route events pass.
     fn route_check(&self) -> Result<(), String> {
         Ok(())
+    }
+
+    /// What `route_check` saw, for the run file (m10.b1c, R1.3-6): the build's route, how many route events the device
+    /// holds for this kernel and on which routes. `None` where the backend has no route events (every build without
+    /// `spirv-route`, and the hand-WGSL backends).
+    fn route_evidence(&self) -> Option<Value> {
+        None
     }
 
     /// Pipeline-cache misses so far, where the backend counts them. The harness asserts it does not move while

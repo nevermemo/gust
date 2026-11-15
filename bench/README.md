@@ -53,11 +53,16 @@ command order**: wgpu-core logs a pass's contents (set_bind_group, dispatch) whe
 is called, and logs no pipeline sets, timestamp writes, `resolve_query_set` or barriers. It cannot show the timestamp
 span of a batch.
 
-`gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall] [--label batch16|end_to_end]`
+`gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall,gust-gpu] [--label batch16|end_to_end]`
 writes wgpu's API trace of the hand-WGSL device, one directory per backend, workload, size and operation, in a
 `--features wgpu-trace` build. GUST's device is opened inside `gust-wgpu` with the trace off and `HeadlessDevice` takes no
-trace path, so GUST has no trace from outside the crate; that needs a `DeviceOptions::trace` hook in `crates/gust-wgpu` (an
-api2b candidate, not built here).
+trace path, so the `gust-gpu` backend of `trace` works only against a `gust-wgpu` that reads a trace directory when it
+opens its device (a `DeviceOptions::trace` hook, an api2b candidate; m10.b1c used a throwaway patch that is not part of
+the crate, reading `GUST_WGPU_TRACE_DIR`). Without such a hook `trace --backends gust-gpu` fails with "no trace.ron",
+rather than writing an empty directory.
+
+`gust-bench dump-kernels --out DIR` (a `slang-runtime` build) writes each kernel's Slang source, the WGSL and the SPIR-V
+that slangc makes of it, for diffing the two routes; the Slang source of a `spirv-route` build is the one that route emits.
 
 ## Groups and builds
 
@@ -91,7 +96,47 @@ their own run (the ratio of the two ratios), not through a direct pairing.
 gust-gpu-spirv) GPU-time (`gpu_single`, `gpu_batch_per_dispatch`) paired ratio to `wgsl-prebuilt` more than 10 % off 1.0
 on any cell marks the run "C re-opened" (`kill_rule.c_reopened`, with the offending cells listed). It judges only a complete run: every GUST cell and quantity needs a ratio, and any
 cell without one (a failed or dropped backend, a size with no GUST cell) counts in `kill_rule.unpaired`; `kill_rule.judged` is true only when `checked > 0` and `unpaired == 0`, and otherwise `c_reopened` is `null`, never `false`. `kill_rule.control` carries the same ratio for `wgsl-percall` (same kernel text as `wgsl-prebuilt`, so its distance from 1.0 is the noise floor of the method); it is a record beside the rule, not an input, and the rule's threshold and inputs are unchanged. The judgement that
-uses it is b1b's. A `publishable` run refuses a `--backends` list that leaves out `wgsl-prebuilt`, `wgsl-percall` or the build's GUST backend (use `--group ablation` for subsets). After every GUST cell of a `spirv-route` build the device's route events for that kernel are checked: any event off the build's route (or none at all) fails the cell, naming both routes.
+uses it is b1b's. The control is a noise floor for `gpu_single` only. For `gpu_batch_per_dispatch` it also differs from
+`wgsl-prebuilt` in the per-pass bind groups (percall builds a fresh one each pass, as GUST does; prebuilt reuses one), so its
+batch excess (1.08-1.13 on W1 1M in the m10.b1c run) may be a real effect of that and not noise. A control that is stream-identical for
+the batch quantity would be a second `wgsl-prebuilt` instance, or `bind_group_reuse` on; until then "control out of tolerance" voids a
+batch cell on a confounded control. A `publishable` run refuses a `--backends` list that leaves out `wgsl-prebuilt`, `wgsl-percall` or the build's GUST backend (use `--group ablation` for subsets). After every GUST cell of a `spirv-route` build the device's route events for that kernel are checked: a cell fails on any event of its own that is off the build's route, and otherwise needs the kernel's latest event over the device's life to exist and be on the route, naming both routes. That check is also written into the cell, as `route_evidence`
+(build route; the number of route events for the kernel since this cell's `prepare`, how many of those are on and off the build's
+route, and `events_cumulative`, the device's whole-life count; the last event). The events are cumulative on the device (the W3 cells
+share `kernel::horner`), so the per-cell counts are the total minus what was there when the cell began. Events arise only when a
+pipeline is compiled and the cache is keyed by kernel, so a warm cell (every cell after a workload's first size) has `events` 0: it is
+judged on the event of the pipeline it ran, the kernel's latest event, which an earlier cell's compile made. It is `null` in a build without `spirv-route`, where the runtime keeps no route events. (`cold_routes` stays `[]` unless the run takes cold starts.)
+
+**Reproducibility clause (plan R1.3-4).** Each offender in `kill_rule.offenders` carries `control_median_ratio` and
+`control_in_tolerance` for its own cell. An offender counts only when it recurs in every run of the build, with at least 3 runs of distinct
+seeds (`run_seed`; two files, or one seed twice, never count), and the control in tolerance on that cell in each of those runs;
+`aggregate` writes the count to `kill_rule_reproducibility` (with the seeds, once) and a list to the report. A hit that does not
+meet this is listed, not counted. Per-point `per_run_p5_ms`, `per_run_p95_ms`, `per_run_outliers_gt_3mad` and
+`two_state_suspect` are written beside the median for the bimodal cells (a p5 or p95 missing from an old run file is `null`, never the
+median). `two_state_suspect` is true when either test fires, and both are written (`two_state_heavy_tail`, `two_state_wide_gap`):
+the heavy-tail test (on every metric), a fifth of a run's samples beyond 3 MAD, and the gap test, (p95 - p5) / median above 0.10 in some run,
+for `gpu_batch_per_dispatch` only. A near-even two-state split inflates the MAD and passes the first, which is why the second exists. The
+flag asks for p5-p95 to be reported; the share of samples in each state is not computed.
+
+Calibration of the gap test (plans/m10/probe/b1c/aggregate-w12.json, aggregate-w3.json; `flagcount.py` prints these): in the six m10.b1c
+confirming run files the per-run batch gap is 0.004-0.086 on every point the test does not flag, and the points it flags have a run at
+0.105-0.30. Those are, in the w12 file, 5 W1 1M points (gust-gpu, percall, prebuilt, gust-setup, gust-shader; gust-device is not flagged),
+5 W2 1M points (every hand row) and 2 W2 4M points (gust-gpu, prebuilt); in the w3 file W3-d16 unchecked, W3-d4 prebuilt and W3-d4
+unchecked. The W1 1M cell is two-state (about 6.1 and 7.9 us); whether the W2 and W3 cells are two-state is not established. A single dispatch's p5-p95 is 0.3-0.75 of its median from ordinary jitter, which is why
+the test is not applied to `gpu_single`, `end_to_end` or `dispatch_host`. The 0.10 threshold sits in the gap between those ranges. It is
+not fitted beyond these runs: a cell with a different two-state spacing, or a quieter or noisier machine, needs the data re-read, not the
+threshold trusted. On those files the flag fires on 21 of 24 (w12) and 7 of 12 (w3) `gpu_batch_per_dispatch` points, 15 and 4
+`gpu_single`, 9 and 2 `end_to_end`, 3 and 3 `dispatch_host`; the gap test by itself fires on 12 and 3 batch points and on no other metric; each of those also has a heavy tail, so the gap test
+changes no flag on these files and the totals are the heavy-tail totals.
+
+**Probe backends (m10.b1c).** `--with gust-setup,gust-shader,gust-device,unchecked` (publishable group only; list the ids in
+`--backends` too when it is given) adds hand-WGSL rows to the rotation, each `wgsl-prebuilt` plus one named difference from GUST:
+`wgsl-prebuilt+gust-device` (a separate wgpu device opened like GUST's, which requests `MEMORY_DECORATION_COHERENT`, with the
+timestamp objects created before the data buffers: three differences at once, not separable by this probe), `wgsl-prebuilt+gust-shader`
+(the shared hand device with GUST's own generated WGSL as the kernel), `wgsl-prebuilt+gust-setup` (both: the pre-registered
+ablation) and `wgsl-prebuilt+unchecked` (the hand WGSL compiled without wgpu's runtime checks, bounds checks and loop bounding, on the
+shared device). The kill rule ignores them; they exist to test a named difference between GUST and the hand path, so a ratio
+between a probe and GUST is the test, and none of them is a result.
 
 **Small-group run conditions.** A small group (one workload and size, e.g. a diagnostic run of W1 at 1 048 576) is run
 with: the GPU idle (check `nvidia-smi` first and write down what else ran), one size, the run-time-compile build, a

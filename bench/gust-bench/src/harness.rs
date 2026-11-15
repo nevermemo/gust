@@ -843,6 +843,7 @@ pub fn run_gpu_group(
             "cold_start_ms": member.cold_ms,
             "cold_start_first_in_process": member.cold_first,
             "cold_routes": member.cold_routes,
+            "route_evidence": backend.route_evidence(),
             "cold_start_note": member.cold_ms.as_ref().map(|_| cold_note(backend.id())),
             "warmup": warmup,
             "clocks_after_timing": clocks_after,

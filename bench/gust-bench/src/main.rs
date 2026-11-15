@@ -4,13 +4,14 @@
 //! gust-bench run --out run1.json [--label NAME] [--quick] [--workloads W1,W3,W4-256-zipf] [--sizes N,N] [--backends a,b]
 //!                [--group publishable|ablation] [--ablation bind-group-reuse,staging-reuse,one-submission,all-on|all]
 //!                [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S]
-//!                [--cold-only] [--cold-repeats N] [--seed N]
+//!                [--cold-only] [--cold-repeats N] [--seed N] [--with gust-setup,gust-shader,gust-device,unchecked]
 //! gust-bench aggregate --json out.json --md out.md run1.json run2.json run3.json
 //! gust-bench dump-wgsl            # the WGSL GUST generates for each kernel, on stdout (slang-runtime builds)
+//! gust-bench dump-kernels --out DIR # each kernel's Slang source, WGSL and slangc SPIR-V, as files (slang-runtime builds)
 //! gust-bench profile --out p.json [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS]
 //!                                 # host-side counts per call (allocations, wgpu API calls); needs --features profile-counts
-//! gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall] [--label batch16|end_to_end]
-//!                                 # wgpu API traces of the hand-WGSL backends; needs --features wgpu-trace
+//! gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall,gust-gpu] [--label batch16|end_to_end]
+//!                                 # wgpu API traces of the hand-WGSL backends (and, with the gust-wgpu probe-trace hook, GUST); needs --features wgpu-trace
 //! gust-bench probe-adapters       # DXGI adapters, the LUID mapping, and which LUID this process's GPU work shows on
 //! gust-bench list                 # backends, workloads, sizes, groups
 //! ```
@@ -58,7 +59,7 @@ use serde_json::{Value, json};
 use wgsl_wgpu::{HandWgsl, Mode, Switch, WgpuContext};
 use workloads::Workload;
 
-const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W3,...] [--sizes N,N] [--backends a,b] [--group publishable|ablation] [--ablation LIST|all-on|all] [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench probe-adapters\n       gust-bench profile --out FILE [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS] (profile-counts build)\n       gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall] [--label batch16|end_to_end] (wgpu-trace build)\n       gust-bench list";
+const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W3,...] [--sizes N,N] [--backends a,b] [--group publishable|ablation] [--ablation LIST|all-on|all] [--with gust-setup,gust-shader,gust-device,unchecked] [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench dump-kernels --out DIR (slang-runtime build)\n       gust-bench probe-adapters\n       gust-bench profile --out FILE [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS] (profile-counts build)\n       gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall,gust-gpu] [--label batch16|end_to_end] (wgpu-trace build)\n       gust-bench list";
 
 #[derive(Default)]
 struct Options {
@@ -75,6 +76,9 @@ struct Options {
     cap_secs: Option<f64>,
     /// The raw `--ablation` list (switch names, `all-on`, `all`), parsed where the hand-WGSL backends exist.
     ablation: Option<String>,
+    /// `--with gust-setup,gust-shader,gust-device,unchecked`: the m10.b1c probe backends, appended to the publishable group
+    /// (see `gpu_backends`).
+    with_probe: Vec<String>,
     settle_secs: Option<f64>,
     window_secs: Option<f64>,
     no_sampler: bool,
@@ -179,6 +183,20 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 options.cap_secs = Some(value("--cap-secs")?.parse().map_err(|e| format!("{e}"))?);
             }
             "--ablation" => options.ablation = Some(value("--ablation")?),
+            "--with" => {
+                for item in value("--with")?.split(',') {
+                    match item {
+                        "gust-setup" | "gust-shader" | "gust-device" | "unchecked" => {
+                            options.with_probe.push(item.to_owned());
+                        }
+                        other => {
+                            return Err(format!(
+                                "--with takes gust-setup, gust-shader, gust-device or unchecked, not {other}"
+                            ));
+                        }
+                    }
+                }
+            }
             "--settle-secs" => {
                 options.settle_secs = Some(
                     value("--settle-secs")?
@@ -248,6 +266,7 @@ fn gpu_backends(
     ctx: &Rc<WgpuContext>,
     ablation: &[Switch],
     all_on: bool,
+    probes: &[(String, Rc<WgpuContext>)],
 ) -> Vec<Box<dyn Backend>> {
     let mut backends: Vec<Box<dyn Backend>> = match group {
         Group::Publishable => vec![
@@ -265,6 +284,15 @@ fn gpu_backends(
     }
     if all_on {
         backends.push(Box::new(HandWgsl::all_on(Rc::clone(ctx))));
+    }
+    // The m10.b1c probes (`--with`): more hand backends in the publishable rotation, `gust-setup` and `gust-device` on a
+    // device of their own set up like GUST's, `gust-shader` and `unchecked` on the shared hand device. The kill rule
+    // ignores them (it judges GUST against wgsl-prebuilt only).
+    for (name, probe) in probes {
+        backends.push(match name.as_str() {
+            "unchecked" => Box::new(HandWgsl::unchecked(Rc::clone(probe))),
+            gust => Box::new(HandWgsl::gust_probe(Rc::clone(probe), gust)),
+        });
     }
     backends
 }
@@ -537,7 +565,23 @@ fn run(options: &Options) -> BenchResult<bool> {
         .workloads
         .clone()
         .unwrap_or_else(|| Workload::ALL.to_vec());
-    let mut backends = gpu_backends(group, &gust_device, &ctx, &ablation, all_on);
+    if !options.with_probe.is_empty() && group != Group::Publishable {
+        return Err("--with runs in the publishable group".into());
+    }
+    let mut probes = Vec::new();
+    for name in &options.with_probe {
+        // `gust-setup` and `gust-device` have a device of their own (set up like GUST's); the others share the hand device.
+        let probe = if name == "gust-setup" || name == "gust-device" {
+            Rc::new(WgpuContext::open_like_gust()?)
+        } else {
+            Rc::clone(&ctx)
+        };
+        if probe.info.name != ctx.info.name {
+            return Err("the probe device landed on another adapter".into());
+        }
+        probes.push((name.clone(), probe));
+    }
+    let mut backends = gpu_backends(group, &gust_device, &ctx, &ablation, all_on, &probes);
     if group == Group::Publishable {
         backends.extend(cpu_backends(threads));
     }
@@ -714,6 +758,35 @@ fn dump_wgsl() -> BenchResult<()> {
     Ok(())
 }
 
+/// `dump-kernels --out DIR`: for every benchmark kernel its Slang source, the WGSL and the SPIR-V that slangc makes of it
+/// (`DIR/<kernel>.slang`, `.wgsl`, `.spv`). In a `spirv-route` build the Slang source is the one that route emits.
+#[cfg(all(feature = "gpu", feature = "slang-runtime"))]
+fn dump_kernels(options: &Options) -> BenchResult<()> {
+    let dir = std::path::PathBuf::from(options.out.as_deref().ok_or("--out DIR is required")?);
+    std::fs::create_dir_all(&dir)?;
+    for descriptor in workloads::all_descriptors() {
+        let stem = descriptor.qualified_name().to_string().replace("::", "_");
+        std::fs::write(dir.join(format!("{stem}.slang")), descriptor.slang_source)?;
+        std::fs::write(
+            dir.join(format!("{stem}.wgsl")),
+            gust::slang::compile_wgsl(descriptor)?,
+        )?;
+        let words = gust::slang::compile_spirv(descriptor)?;
+        let bytes = words
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect::<Vec<u8>>();
+        std::fs::write(dir.join(format!("{stem}.spv")), bytes)?;
+        eprintln!("dumped {stem}");
+    }
+    Ok(())
+}
+
+#[cfg(not(all(feature = "gpu", feature = "slang-runtime")))]
+fn dump_kernels(_options: &Options) -> BenchResult<()> {
+    Err("dump-kernels needs a build with the gpu and slang-runtime features".into())
+}
+
 #[cfg(not(all(feature = "gpu", feature = "slang-runtime")))]
 fn dump_wgsl() -> BenchResult<()> {
     Err("dump-wgsl needs a build with the gpu and slang-runtime features".into())
@@ -837,6 +910,7 @@ fn real_main() -> BenchResult<bool> {
             Ok(true)
         }
         "dump-wgsl" => dump_wgsl().map(|()| true),
+        "dump-kernels" => dump_kernels(&options).map(|()| true),
         "probe-adapters" => probe_adapters(),
         "profile" => profile_command(&options),
         "trace" => trace_command(&options),

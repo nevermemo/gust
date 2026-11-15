@@ -29,7 +29,7 @@ const METRICS: [(&str, &str); 4] = [
 ];
 
 /// Column order of the backends.
-const BACKENDS: [&str; 15] = [
+const BACKENDS: [&str; 19] = [
     "gust-gpu",
     "gust-gpu-spirv",
     "wgsl-prebuilt",
@@ -38,6 +38,10 @@ const BACKENDS: [&str; 15] = [
     "wgsl-percall+staging-reuse",
     "wgsl-percall+one-submission",
     "wgsl-percall+all-on",
+    "wgsl-prebuilt+gust-setup",
+    "wgsl-prebuilt+gust-shader",
+    "wgsl-prebuilt+gust-device",
+    "wgsl-prebuilt+unchecked",
     "gust-twin",
     "gust-cpu",
     "gust-cpu-par",
@@ -47,9 +51,24 @@ const BACKENDS: [&str; 15] = [
     "(none)",
 ];
 
+/// The (p95 - p5) / median above which a run of a `gpu_batch_per_dispatch` cell is flagged as possibly two-state
+/// (README, "Reproducibility clause", for the calibration). 0.10 sits above every unflagged batch cell (0.004-0.086) and
+/// below the flagged ones' widest run (0.105-0.30) in the m10.b1c run files, and is not fitted beyond them. Whether the
+/// flagged W2 and W3 cells are two-state is not established.
+const TWO_STATE_GAP: f64 = 0.10;
+
+/// The one quantity the gap test applies to: a single dispatch's p5-p95 is wide from ordinary jitter (0.3-0.75 of the
+/// median), so the test would flag every cell of the other metrics.
+const TWO_STATE_GAP_METRIC: &str = "gpu_batch_per_dispatch";
+
 struct Point {
     per_run_median: Vec<f64>,
     samples: Vec<u64>,
+    /// Per run: the p5 and p95 of the samples and how many lie beyond 3 MAD of the median. A bimodal cell (two
+    /// states, as W1 1 048 576 is) has a wide p5-p95 and many such samples, which a median alone hides.
+    per_run_p5: Vec<Option<f64>>,
+    per_run_p95: Vec<Option<f64>>,
+    per_run_outliers: Vec<u64>,
 }
 
 impl Point {
@@ -67,6 +86,36 @@ impl Point {
 
     fn spread_pct(&self) -> f64 {
         (self.max() - self.min()) / self.median() * 100.0
+    }
+
+    /// Heavy-tail test: a run of this cell has at least a fifth of its samples beyond 3 MAD (7 of 30 in the b1q cells
+    /// the ruling named). A near-even two-state split inflates the MAD and passes this test, hence the gap test.
+    fn heavy_tail(&self) -> bool {
+        self.per_run_outliers
+            .iter()
+            .zip(&self.samples)
+            .any(|(outliers, n)| *n > 0 && *outliers * 5 >= *n)
+    }
+
+    /// Gap test, `gpu_batch_per_dispatch` only: in some run, (p95 - p5) / median is above `TWO_STATE_GAP`. A cell whose
+    /// samples sit in two states (W1 1 048 576 batch: about 6.1 and 7.9 us) has a gap of 0.19 or more as long as each state
+    /// holds more than 5 % of a run's samples, however evenly they are split.
+    fn wide_gap(&self, metric: &str) -> bool {
+        metric == TWO_STATE_GAP_METRIC
+            && self
+                .per_run_p5
+                .iter()
+                .zip(&self.per_run_p95)
+                .zip(&self.per_run_median)
+                .any(|((p5, p95), median)| match (p5, p95) {
+                    (Some(p5), Some(p95)) => *median > 0.0 && (p95 - p5) / median > TWO_STATE_GAP,
+                    _ => false,
+                })
+    }
+
+    /// Report p5-p95, not the median alone, when either test fires.
+    fn two_state_suspect(&self, metric: &str) -> bool {
+        self.heavy_tail() || self.wide_gap(metric)
     }
 }
 
@@ -94,6 +143,65 @@ impl PairedPoint {
 }
 
 type PairedTable = BTreeMap<(String, u64, String, String), PairedPoint>;
+
+/// Runs (with distinct seeds) the reproducibility clause needs before anything counts: the plan's "3/3 seeds".
+const MIN_REPRODUCIBILITY_RUNS: usize = 3;
+
+/// The reproducibility clause (plan R1.3-4) over the run files of one build: an offender of the kill rule counts when it
+/// recurs in every run (3/3 seeds) and its control (`wgsl-percall` on the same cell) is within tolerance in each of those
+/// runs. Single-run hits are listed with their count, not counted.
+fn reproducibility(runs: &[Value]) -> Value {
+    type Key = (String, String, u64, String);
+    let mut seen: BTreeMap<Key, (usize, usize, Vec<f64>)> = BTreeMap::new();
+    for run in runs {
+        for offender in run["kill_rule"]["offenders"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let key = (
+                offender["backend"].as_str().unwrap_or("").to_owned(),
+                offender["workload"].as_str().unwrap_or("").to_owned(),
+                offender["n"].as_u64().unwrap_or(0),
+                offender["quantity"].as_str().unwrap_or("").to_owned(),
+            );
+            let entry = seen.entry(key).or_default();
+            entry.0 += 1;
+            if offender["control_in_tolerance"] == true {
+                entry.1 += 1;
+            }
+            entry
+                .2
+                .push(offender["median_ratio"].as_f64().unwrap_or(f64::NAN));
+        }
+    }
+    let total = runs.len();
+    // Three runs with three different seeds: two files, or one seed twice, cannot show a recurrence (m10.b1c review nit 15).
+    let seeds: Vec<Value> = runs.iter().map(|run| run["run_seed"].clone()).collect();
+    let distinct = seeds
+        .iter()
+        .enumerate()
+        .all(|(i, seed)| !seed.is_null() && seeds[..i].iter().all(|other| other != seed));
+    let enough = total >= MIN_REPRODUCIBILITY_RUNS && distinct;
+    let rows = seen
+        .into_iter()
+        .map(|((backend, workload, n, quantity), (hits, control_ok, ratios))| {
+            json!({
+                "backend": backend, "workload": workload, "n": n, "quantity": quantity,
+                "runs_with_offender": hits, "runs": total, "runs_with_control_in_tolerance": control_ok,
+                "ratios": ratios,
+                "counts": enough && hits == total && control_ok == total,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "clause": "an offender counts when it recurs in every run (at least 3 runs, distinct seeds) with the control within tolerance on that cell in each; other hits are listed, not counted",
+        "runs": total,
+        "seeds": seeds,
+        "enough_runs_with_distinct_seeds": enough,
+        "offenders": rows,
+    })
+}
 
 fn gather_paired(runs: &[Value]) -> PairedTable {
     let mut table = PairedTable::new();
@@ -208,9 +316,17 @@ fn gather(runs: &[Value]) -> Table {
                     .or_insert_with(|| Point {
                         per_run_median: Vec::new(),
                         samples: Vec::new(),
+                        per_run_p5: Vec::new(),
+                        per_run_p95: Vec::new(),
+                        per_run_outliers: Vec::new(),
                     });
                 point.per_run_median.push(median);
                 point.samples.push(value["n"].as_u64().unwrap_or(0));
+                point.per_run_p5.push(value["p5_ms"].as_f64());
+                point.per_run_p95.push(value["p95_ms"].as_f64());
+                point
+                    .per_run_outliers
+                    .push(value["outliers_gt_3mad"].as_u64().unwrap_or(0));
             }
         }
     }
@@ -539,6 +655,8 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             .unwrap_or_else(|| "?".to_owned())
     };
 
+    let repro = reproducibility(&runs);
+
     // ---- JSON ----
     let points = table
         .iter()
@@ -548,6 +666,10 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                 "median_ms": point.median(), "min_run_median_ms": point.min(),
                 "max_run_median_ms": point.max(), "spread_pct": point.spread_pct(),
                 "per_run_median_ms": point.per_run_median, "samples_per_run": point.samples,
+                "per_run_p5_ms": point.per_run_p5, "per_run_p95_ms": point.per_run_p95,
+                "per_run_outliers_gt_3mad": point.per_run_outliers,
+                "two_state_suspect": point.two_state_suspect(metric),
+                "two_state_heavy_tail": point.heavy_tail(), "two_state_wide_gap": point.wide_gap(metric),
                 "paired_vs_prebuilt": paired
                     .get(&(workload.clone(), *n, backend.clone(), metric.clone()))
                     .map(|p| json!({
@@ -599,6 +721,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             "wall_s": run["wall_s"], "failures": run["failures"],
         })).collect::<Vec<_>>(),
         "correctness_checks_passed": checks,
+        "kill_rule_reproducibility": &repro,
         "failures": failures,
         "points": points,
         "gust_vs_hand_overhead": overhead,
@@ -653,6 +776,34 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                 run["kill_rule"]["unpaired"],
                 run["kill_rule"]["offenders"],
                 run["kill_rule"]["control"]["outside_tolerance"]
+            )?;
+        }
+    }
+    let rows = repro["offenders"].as_array().cloned().unwrap_or_default();
+    if !rows.is_empty() {
+        writeln!(
+            md,
+            "\nKill-rule offenders against the reproducibility clause (an offender counts when it recurs in all {} runs, at least 3 with distinct seeds, with the control within tolerance on its cell in each; seeds {}):\n",
+            runs.len(),
+            repro["seeds"]
+        )?;
+        for row in &rows {
+            writeln!(
+                md,
+                "- {} {} n={} {}: in {} of {} runs, control in tolerance in {}, ratios {} -> {}",
+                row["backend"].as_str().unwrap_or("?"),
+                row["workload"].as_str().unwrap_or("?"),
+                row["n"],
+                row["quantity"].as_str().unwrap_or("?"),
+                row["runs_with_offender"],
+                row["runs"],
+                row["runs_with_control_in_tolerance"],
+                row["ratios"],
+                if row["counts"] == true {
+                    "counts"
+                } else {
+                    "listed, not counted"
+                }
             )?;
         }
     }
@@ -1470,5 +1621,95 @@ mod tests {
         assert_eq!(flags.len(), 1);
         assert_eq!(flags[0]["backend"], "wgsl-prebuilt");
         assert!(dram_peak_gbps("Some Other GPU").is_none());
+    }
+}
+
+#[cfg(test)]
+mod reproducibility_tests {
+    use super::*;
+
+    fn run_seeded(control_ok: bool, seed: u64) -> Value {
+        json!({ "run_seed": seed, "kill_rule": { "offenders": [{
+            "backend": "gust-gpu", "workload": "W1", "n": 1048576, "quantity": "gpu_batch_per_dispatch",
+            "median_ratio": 1.2, "control_in_tolerance": control_ok,
+        }] } })
+    }
+
+    #[test]
+    fn an_offender_counts_only_when_every_run_has_it_with_the_control_in_tolerance() {
+        let all = reproducibility(&[
+            run_seeded(true, 1),
+            run_seeded(true, 2),
+            run_seeded(true, 3),
+        ]);
+        assert_eq!(all["offenders"][0]["counts"], true);
+        let one_noisy = reproducibility(&[
+            run_seeded(true, 1),
+            run_seeded(false, 2),
+            run_seeded(true, 3),
+        ]);
+        assert_eq!(one_noisy["offenders"][0]["counts"], false);
+        let missing = reproducibility(&[
+            run_seeded(true, 1),
+            json!({ "run_seed": 2, "kill_rule": { "offenders": [] } }),
+            json!({ "run_seed": 3, "kill_rule": { "offenders": [] } }),
+        ]);
+        assert_eq!(missing["offenders"][0]["runs_with_offender"], 1);
+        assert_eq!(missing["offenders"][0]["counts"], false);
+    }
+
+    #[test]
+    fn fewer_than_three_runs_or_a_repeated_seed_never_counts() {
+        let two = reproducibility(&[run_seeded(true, 1), run_seeded(true, 2)]);
+        assert_eq!(two["offenders"][0]["counts"], false);
+        assert_eq!(two["enough_runs_with_distinct_seeds"], false);
+        let repeated = reproducibility(&[
+            run_seeded(true, 1),
+            run_seeded(true, 1),
+            run_seeded(true, 2),
+        ]);
+        assert_eq!(repeated["offenders"][0]["counts"], false);
+        let unseeded = reproducibility(&[
+            json!({ "kill_rule": { "offenders": [] } }),
+            json!({ "kill_rule": { "offenders": [] } }),
+            json!({ "kill_rule": { "offenders": [] } }),
+        ]);
+        assert_eq!(unseeded["enough_runs_with_distinct_seeds"], false);
+    }
+}
+
+#[cfg(test)]
+mod two_state_tests {
+    use super::*;
+
+    fn point(median: f64, p5: Option<f64>, p95: Option<f64>, outliers: u64) -> Point {
+        Point {
+            per_run_median: vec![median],
+            samples: vec![30],
+            per_run_p5: vec![p5],
+            per_run_p95: vec![p95],
+            per_run_outliers: vec![outliers],
+        }
+    }
+
+    #[test]
+    fn a_balanced_two_state_cell_is_flagged_by_the_gap_not_the_tail() {
+        // wgsl-percall, W1 1M batch, seed 11 of the m10.b1c run: p5 6.32, p95 7.90 us, no sample beyond 3 MAD.
+        let balanced = point(7.0, Some(6.32), Some(7.90), 0);
+        assert!(!balanced.heavy_tail());
+        assert!(balanced.wide_gap("gpu_batch_per_dispatch"));
+        assert!(balanced.two_state_suspect("gpu_batch_per_dispatch"));
+        // The gap test is for the batch quantity only: the same spread on a single dispatch is ordinary jitter.
+        assert!(!balanced.wide_gap("gpu_single"));
+        assert!(!balanced.two_state_suspect("gpu_single"));
+    }
+
+    #[test]
+    fn a_tight_cell_and_a_missing_percentile_are_not_flagged() {
+        let batch = "gpu_batch_per_dispatch";
+        assert!(!point(14.8, Some(14.7), Some(14.9), 1).two_state_suspect(batch));
+        assert!(!point(7.0, None, None, 0).two_state_suspect(batch));
+        // The heavy-tail test runs on every metric.
+        assert!(point(7.0, Some(7.0), Some(7.1), 7).two_state_suspect("gpu_single"));
     }
 }

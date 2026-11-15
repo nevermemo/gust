@@ -157,6 +157,8 @@ pub(crate) const WEB_HELLO: Example = Example {
     out_name: "web_hello",
     manifest: "gallery/web-hello/gust-artifacts/manifest.json",
     closing: "map_async exact against the host reference",
+    // A gallery crate is built the way a user builds it: no flag variables of the caller.
+    cleared_env: &["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"],
 };
 
 /// A guide listing: a packaged file (path relative to the repository root) that must be byte-identical to the region
@@ -1038,7 +1040,7 @@ pub(crate) fn output_has_line(output: &str, expected: &str) -> bool {
 /// for `wasm32-unknown-unknown`, served from a loopback server and run in headless Chrome through the runner of
 /// `check-web` (`web::run_example`), so the part also needs Chrome, a `wasm-bindgen` CLI of the locked version and the
 /// wasm32 target; a missing one fails the part, and so does a page that does not log its `GUST_OK` line.
-fn gpu_part(root: &Path) -> Result<String, String> {
+fn gpu_part(root: &Path, browser: bool) -> Result<String, String> {
     let cargo = cargo_program()?;
     let gallery = root.join(GALLERY_DIR);
     let target = gallery_target(root, "no-slang");
@@ -1060,7 +1062,11 @@ fn gpu_part(root: &Path) -> Result<String, String> {
         }));
     for (entry, profile, expected_line) in runs {
         if entry.browser {
-            lines.push(browser_run(root, entry)?);
+            lines.push(if browser {
+                browser_run(root, entry)?
+            } else {
+                browser_skipped_line(entry)
+            });
             continue;
         }
         let mut run = match (&driver, entry.via_driver) {
@@ -1125,6 +1131,15 @@ fn gpu_part(root: &Path) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
+/// What the part prints for a browser entry it was asked to leave out (`check-full --skip-web`), so that the skip is
+/// visible in the output and not silent.
+pub(crate) fn browser_skipped_line(entry: &Entry) -> String {
+    format!(
+        "{}: browser run SKIPPED on request (check-full --skip-web); no evidence for the page in a browser",
+        entry.dir
+    )
+}
+
 /// The page of a browser entry in headless Chrome, through the runner of `check-web`. The page's `GUST_OK` line must name the
 /// adapter words, the kernel its build selected (compared with the committed manifest) and end with the entry's
 /// `expected_line`; the returned line names the Chrome version and the adapter.
@@ -1138,8 +1153,8 @@ fn browser_run(root: &Path, entry: &Entry) -> Result<String, String> {
         }
     };
     let label = format!(
-        "web-hello page in headless Chrome ({} through the runner of check-web)",
-        example.dir
+        "{} page in headless Chrome ({} through the runner of check-web)",
+        entry.dir, example.dir
     );
     println!("  $ {label}");
     let run = run_example(
@@ -1149,7 +1164,16 @@ fn browser_run(root: &Path, entry: &Entry) -> Result<String, String> {
         &gallery_target(root, "web"),
         Instant::now(),
     )
-    .map_err(|error| format!("{label}: {error}"))?;
+    .map_err(|error| {
+        // The runner's messages name the flags of `check-web`; this check has none.
+        let note = if error.contains("--chrome") || error.contains("--wasm-bindgen") {
+            "
+  check-gallery takes no --chrome or --wasm-bindgen flag: it looks for Chrome in its standard install locations and for a `wasm-bindgen` CLI of the locked version on PATH"
+        } else {
+            ""
+        };
+        format!("{label}: {error}{note}")
+    })?;
     Ok(format!(
         "{}: the page logged `GUST_OK {}`, evidence: {}",
         entry.dir,
@@ -1173,7 +1197,7 @@ pub(crate) fn adapter_name(output: &str) -> Option<&str> {
 /// `cargo xtask check-gallery [--slang] [--no-slang] [--gpu]`.
 pub(crate) fn check_gallery(args: &[String]) -> Result<(), String> {
     let parts = Parts::parse(args)?;
-    run_parts(&workspace_root()?, parts)?;
+    run_parts(&workspace_root()?, parts, true)?;
     println!(
         "check-gallery passed (parts run: {})",
         parts.run_names().join(", ")
@@ -1181,8 +1205,9 @@ pub(crate) fn check_gallery(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The GPU part alone, which `check-full` runs (`verify.rs`).
-pub(crate) fn check_gallery_gpu_report() -> Result<String, String> {
+/// The GPU part alone, which `check-full` runs (`verify.rs`). `browser` is false only for `check-full --skip-web`: the
+/// browser entries are then left out, the output says so and `check-full` records the skip.
+pub(crate) fn check_gallery_gpu_report(browser: bool) -> Result<String, String> {
     run_parts(
         &workspace_root()?,
         Parts {
@@ -1190,10 +1215,14 @@ pub(crate) fn check_gallery_gpu_report() -> Result<String, String> {
             no_slang: false,
             gpu: true,
         },
+        browser,
     )
 }
 
-fn run_parts(root: &Path, parts: Parts) -> Result<String, String> {
+/// A part of the check, as [`run_parts`] calls it.
+type PartFn<'a> = dyn Fn(&Path) -> Result<String, String> + 'a;
+
+fn run_parts(root: &Path, parts: Parts, browser: bool) -> Result<String, String> {
     println!(
         "check-gallery: parts that run: {}",
         parts.run_names().join(", ")
@@ -1215,15 +1244,13 @@ fn run_parts(root: &Path, parts: Parts) -> Result<String, String> {
             parts.not_run_names().join(", ")
         ));
     }
-    for (selected, name, part) in [
-        (
-            parts.slang,
-            "slang",
-            slang_part as fn(&Path) -> Result<String, String>,
-        ),
-        (parts.no_slang, "no-slang", no_slang_part),
-        (parts.gpu, "gpu", gpu_part),
-    ] {
+    let gpu = |root: &Path| gpu_part(root, browser);
+    let parts_to_run: [(bool, &str, &PartFn<'_>); 3] = [
+        (parts.slang, "slang", &slang_part),
+        (parts.no_slang, "no-slang", &no_slang_part),
+        (parts.gpu, "gpu", &gpu),
+    ];
+    for (selected, name, part) in parts_to_run {
         if !selected {
             continue;
         }

@@ -60,6 +60,7 @@ cargo run --release               # needs a Vulkan compute adapter
 
 It prints the line `state-machine: 1000 records of 16 symbols, ..` with the totals (the stream is generated from a fixed
 seed, so the numbers are the same on every run), then a line `adapter: <name>` with the GPU it ran on.
+
 ## In a browser (Tint), measured once
 
 The same kernel (the enum and `match`, tuples, the traits, the generic `feed` and the methods of milestone 9) was run
@@ -67,4 +68,6 @@ once in headless Chrome 156 on an NVIDIA Blackwell GPU, through the runner of `c
 of the kernel and its committed WGSL artifact, built for `wasm32-unknown-unknown` under `GUST_PROFILE=web`, 1000 records
 through `submit` and an awaited read-back). Chrome's WGSL compiler (Tint) accepted the artifact, and every record equalled
 the host reference. This entry stays a native program, with no browser page of its own; `web-hello` (G9) is the
-committed browser entry. One adapter and one Chrome version were measured; nothing else is claimed.
+committed browser entry. The run was on 2026-11-15 (base commit `bb5c0b1`); the page logged `GUST_OK nvidia
+blackwell | selected scanner.scan=bacf6392c8bb91c0:-:0 | tokenizer exact against the host reference`. The scratch crate is not
+in the repository. One adapter and one Chrome version were measured; nothing else is claimed.

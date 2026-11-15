@@ -385,3 +385,8 @@ jobs:
         env:
           GUST_PROFILE: web
         run: cargo clippy --locked --target wasm32-unknown-unknown -p gust-compute -p gust-compute-wgpu -p web-vector-add -- -D warnings
+      - name: Clippy on wasm32 for the gallery page (web-hello, strict web profile)
+        # The gallery is a workspace of its own, so it is named by its manifest. The page's `browser` module exists on wasm32 only.
+        env:
+          GUST_PROFILE: web
+        run: cargo clippy --locked --manifest-path gallery/Cargo.toml --target wasm32-unknown-unknown -p web-hello -- -D warnings

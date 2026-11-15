@@ -6,12 +6,14 @@ use std::{
 
 use super::{
     ENTRIES, LISTINGS, Listing, Parts, WEB_HELLO, adapter_name, anchor_names, anchored_region,
-    check_listings, folder_holds, lf_line_ends, listing_matches, no_slang_environment,
-    output_has_line, required_files, shared_folder_problems, slang_home_problem,
-    slangc_cannot_be_found, tail, tree_difference, tree_has_slang_runtime, workspace_members,
+    browser_skipped_line, check_listings, folder_holds, lf_line_ends, listing_matches,
+    no_slang_environment, output_has_line, required_files, shared_folder_problems,
+    slang_home_problem, slangc_cannot_be_found, tail, tree_difference, tree_has_slang_runtime,
+    workspace_members,
 };
 use crate::{
     precompiled::{StripReport, child_environment, directory_has_slang_tool, slang_free_problems},
+    verify::GALLERY_BROWSER_SKIP,
     workspace::workspace_root,
 };
 
@@ -744,10 +746,10 @@ fn ci_runs_the_slang_part_in_the_slang_job_and_the_no_slang_part_in_the_unit_job
 #[test]
 fn check_full_runs_only_the_gpu_part_of_the_gallery() {
     let source = repository_file("xtask/src/verify.rs");
-    assert!(source.contains("check_gallery_gpu_report()"));
+    assert!(source.contains("check_gallery_gpu_report(!skip_web)"));
     // The call sits directly inside the Full-mode branch, so no other mode runs it.
     let call = source
-        .find("check_gallery_gpu_report().map")
+        .find("check_gallery_gpu_report(!skip_web).map")
         .expect("the call");
     assert!(
         source[..call]
@@ -765,7 +767,7 @@ fn check_full_runs_only_the_gpu_part_of_the_gallery() {
     assert!(!source.contains("check_gallery_report"));
     let gallery = repository_file("xtask/src/gallery.rs");
     let gpu = gallery
-        .split("pub(crate) fn check_gallery_gpu_report()")
+        .split("pub(crate) fn check_gallery_gpu_report(browser: bool)")
         .nth(1)
         .expect("check_gallery_gpu_report");
     let body = &gpu[..gpu.find("\n}\n").expect("end")];
@@ -938,4 +940,41 @@ fn the_wasm_bindgen_pin_of_the_gallery_equals_the_one_of_the_repository() {
             .contains(&format!("wasm-bindgen = \"={root}\"")),
         "gallery/web-hello/Cargo.toml must pin wasm-bindgen = \"={root}\""
     );
+}
+
+#[test]
+fn skip_web_leaves_the_browser_entry_out_prints_it_and_records_it() {
+    // The skipped line names the entry and the flag; it is not silent.
+    let hello = ENTRIES.iter().find(|entry| entry.browser).unwrap();
+    assert_eq!(
+        browser_skipped_line(hello),
+        "web-hello: browser run SKIPPED on request (check-full --skip-web); no evidence for the page in a browser"
+    );
+    // The gallery step passes the opposite of `skip_web` and records the skip beside `check-web`; without the flag the
+    // preflight of the Full run covers the gallery page's tools too.
+    let verify = repository_file("xtask/src/verify.rs");
+    assert!(verify.contains("check_gallery_gpu_report(!skip_web)"));
+    let step = verify
+        .split("check_gallery_gpu_report(!skip_web)")
+        .nth(1)
+        .unwrap();
+    assert!(
+        step.contains("if skip_web {\n            skipped.push(GALLERY_BROWSER_SKIP.to_owned());")
+    );
+    assert_eq!(GALLERY_BROWSER_SKIP, "check-gallery web-hello browser run");
+    let web = repository_file("xtask/src/web.rs");
+    assert!(web.contains("for example in [&WEB_VECTOR_ADD, &crate::gallery::WEB_HELLO]"));
+    // Only the gpu part takes the flag, and the flagless check-gallery runs the browser.
+    let gallery = repository_file("xtask/src/gallery.rs");
+    assert!(gallery.contains("run_parts(&workspace_root()?, parts, true)?;"));
+    assert!(gallery.contains("browser_skipped_line(entry)"));
+}
+
+#[test]
+fn the_browser_build_of_the_gallery_clears_the_flag_variables_and_check_web_clears_none() {
+    assert_eq!(
+        WEB_HELLO.cleared_env,
+        ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"]
+    );
+    assert!(crate::web::WEB_VECTOR_ADD.cleared_env.is_empty());
 }

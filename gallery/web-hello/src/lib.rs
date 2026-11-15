@@ -83,7 +83,7 @@ mod browser {
             .map_err(|error| format!("map_async failed: {error}"))?;
         if let Some(first) = first_difference(&result, &expected) {
             return Err(format!(
-                "map_async result differs from the host reference: {} of {} values, first at index {first}",
+                "map_async result differs from the host reference: {} values against {} expected, first difference at index {first}",
                 result.len(),
                 expected.len()
             ));

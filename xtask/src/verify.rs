@@ -199,6 +199,9 @@ pub(crate) fn verify_with(mode: VerifyMode, record: bool, skip_web: bool) -> Res
     Ok(())
 }
 
+/// The name `--skip-web` records for the browser entry of the gallery's GPU part (beside `check-web`).
+pub(crate) const GALLERY_BROWSER_SKIP: &str = "check-gallery web-hello browser run";
+
 /// The tools of `check-web` are looked up at the start of a Full run that will run it, with `probe` (check-web's own
 /// lookups). Every other run, including Full with `--skip-web`, does not look: it never runs `check-web`.
 fn web_preflight(
@@ -386,12 +389,17 @@ fn verify_inner(
             }
         }
     }
-    // The GPU part of `check-gallery` (m10.g0): `cargo run --release` per gallery entry on the adapter. It is not part of
-    // `integration_checks`: that list is pinned by tests, and only this part of the gallery check belongs to the full
-    // gate (the Slang and no-Slang parts run in CI).
+    // The GPU part of `check-gallery` (m10.g0): `cargo run --release` per gallery program on the adapter, and the page of
+    // `web-hello` in headless Chrome through the runner of `check-web` (m10.g9). It is not part of `integration_checks`:
+    // that list is pinned by tests, and only this part of the gallery check belongs to the full gate (the Slang and
+    // no-Slang parts run in CI). `--skip-web` leaves the browser entry out like it leaves out `check-web`: the part
+    // prints the skip, the record names it, and Chrome is not needed.
     if mode == VerifyMode::Full {
-        let outcome = check_gallery_gpu_report().map(|summary| format!("{summary}\n"));
+        let outcome = check_gallery_gpu_report(!skip_web).map(|summary| format!("{summary}\n"));
         run_integration(checks, "check-gallery", outcome)?;
+        if skip_web {
+            skipped.push(GALLERY_BROWSER_SKIP.to_owned());
+        }
     }
     Ok(())
 }

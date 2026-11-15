@@ -66,6 +66,8 @@ pub(crate) struct Example {
     pub(crate) manifest: &'static str,
     /// The last part of the page's `GUST_OK` label (after the adapter words and the selected kernels).
     pub(crate) closing: &'static str,
+    /// Environment variables the cargo build of the page does not inherit (empty for `check-web`'s own page).
+    pub(crate) cleared_env: &'static [&'static str],
 }
 
 /// The page of `cargo xtask check-web`.
@@ -76,6 +78,7 @@ pub(crate) const WEB_VECTOR_ADD: Example = Example {
     out_name: OUT_NAME,
     manifest: MANIFEST_PATH,
     closing: SUBGROUPS_REFUSED,
+    cleared_env: &[],
 };
 
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
@@ -213,13 +216,12 @@ fn find_tools(
 /// The tool lookups of a default `check-web` run, and nothing else: no build, no Chrome. `check-full` calls this
 /// first, so a missing tool fails in seconds and not after the long steps.
 pub(crate) fn preflight_tools() -> Result<(), String> {
-    find_tools(
-        &workspace_root()?,
-        &WEB_VECTOR_ADD,
-        &Options::default(),
-        env::var_os("PATH"),
-    )
-    .map(|_| ())
+    let root = workspace_root()?;
+    // The gallery's browser entry runs through the same runner in the same Full run, with its own lock.
+    for example in [&WEB_VECTOR_ADD, &crate::gallery::WEB_HELLO] {
+        find_tools(&root, example, &Options::default(), env::var_os("PATH"))?;
+    }
+    Ok(())
 }
 
 /// [`check_web`] that returns its passing summary (empty for `--tree-only`, which has printed its one line) instead of
@@ -963,7 +965,11 @@ fn require_wasm_target() -> Result<(), String> {
 fn build_example(root: &Path, example: &Example, target_dir: &Path) -> Result<PathBuf, String> {
     let (package, out_name) = (example.package, example.out_name);
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let status = Command::new(cargo)
+    let mut build = Command::new(cargo);
+    for name in example.cleared_env {
+        build.env_remove(name);
+    }
+    let status = build
         .args([
             "build",
             "--locked",

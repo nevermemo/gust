@@ -41,8 +41,8 @@ Open `http://127.0.0.1:8000/` (or `http://localhost:8000/`): WebGPU needs a secu
 line it logs, and the browser's console shows it. Serve on the loopback address only: the files are a development build
 of your own program, not something to expose on a network.
 
-Browsers: the check runs headless Chrome (`--headless=new`, no other flag) on a discrete GPU with a Vulkan driver on
-Windows; that is the only configuration this entry has been run in. Chrome and Edge ship WebGPU on desktop; whether
+Browsers: the check runs headless Chrome (`--headless=new`, no WebGPU flag) on an NVIDIA RTX 5090 under Windows; that is
+the only configuration this entry has been run in, and the WebGPU backend Chrome chose there was not recorded. Chrome and Edge ship WebGPU on desktop; whether
 Firefox or Safari run the page was not tried here. On Linux, Chrome may need `--enable-unsafe-webgpu` and a Vulkan
 feature flag (not tried here), and a machine with no GPU can use the software adapter (SwiftShader), which the check
 labels `Gpu (software ...)`. `cargo xtask check-web` takes `--chrome-arg` for such flags; the gallery run passes none.
@@ -59,7 +59,7 @@ part: build, `cargo test`, anchors), compares its `gust-artifacts/` with a fresh
 the GPU part builds it for `wasm32-unknown-unknown`, runs `wasm-bindgen`, serves the output from a server on `127.0.0.1`
 and an ephemeral port, opens it in headless Chrome and requires the `GUST_OK` line above. It is the runner of `cargo
 xtask check-web`, called with this page's constants. A missing Chrome, `wasm-bindgen` or wasm32 standard library fails the
-part, and so does a page that logs no result within 90 seconds; nothing is skipped. CI does not run the GPU part (its
+part, and so does a page that logs no result within 90 seconds; nothing is skipped. CI compiles and lints the page's wasm32 code (a clippy step of the `wasm` job) but does not run the GPU part (its
 runners have no WebGPU adapter); the browser run belongs to `cargo xtask check-full`, which needs Chrome and
 `wasm-bindgen` for `check-web` already.
 

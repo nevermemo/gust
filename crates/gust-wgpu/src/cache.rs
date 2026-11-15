@@ -4,6 +4,7 @@ use gust::{Artifact, Format, KernelDescriptor, Shape, capability::Capability};
 
 /// Observable state of one device's compiled-kernel cache.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PipelineCacheStats {
     /// The number of compiled kernels held in the cache.
     pub entries: usize,
@@ -134,12 +135,7 @@ mod tests {
     const BYTES: &[u8] = b"@compute fn main() {}";
     const REFLECTION: &str = "{\"schemaVersion\":1}";
 
-    const BASE: Artifact = Artifact {
-        format: Format::Wgsl,
-        key: "0123456789abcdef",
-        bytes: BYTES,
-        reflection: REFLECTION,
-    };
+    const BASE: Artifact = Artifact::new(Format::Wgsl, "0123456789abcdef", BYTES, REFLECTION);
 
     const ARTIFACTS: &[Artifact] = &[BASE];
 
@@ -174,10 +170,7 @@ mod tests {
     #[test]
     fn descriptors_that_differ_only_in_the_artifact_address_have_different_keys() {
         // Same length, same key text, same reflection, same content: only the address of the bytes differs.
-        let copy = Artifact {
-            bytes: leaked_copy(BYTES),
-            ..BASE
-        };
+        let copy = BASE.with_bytes(leaked_copy(BYTES));
         assert_eq!(copy.bytes, BASE.bytes);
         assert_ne!(copy.bytes.as_ptr(), BASE.bytes.as_ptr());
         assert_ne!(key(&with(BASE)), key(&with(copy)));
@@ -186,20 +179,14 @@ mod tests {
     #[test]
     fn descriptors_that_differ_only_in_the_artifact_length_have_different_keys() {
         // Same address (a prefix of the same slice).
-        let shorter = Artifact {
-            bytes: &BYTES[..BYTES.len() - 1],
-            ..BASE
-        };
+        let shorter = BASE.with_bytes(&BYTES[..BYTES.len() - 1]);
         assert_eq!(shorter.bytes.as_ptr(), BASE.bytes.as_ptr());
         assert_ne!(key(&with(BASE)), key(&with(shorter)));
     }
 
     #[test]
     fn descriptors_that_differ_only_in_the_artifact_key_have_different_keys() {
-        let renamed = Artifact {
-            key: "fedcba9876543210",
-            ..BASE
-        };
+        let renamed = BASE.with_key("fedcba9876543210");
         assert_ne!(key(&with(BASE)), key(&with(renamed)));
     }
 
@@ -208,19 +195,13 @@ mod tests {
     {
         // R2-5: the reflection JSON is part of the identity. Same bytes, same length of JSON, different address.
         let copy: &'static str = Box::leak(REFLECTION.to_string().into_boxed_str());
-        let moved = Artifact {
-            reflection: copy,
-            ..BASE
-        };
+        let moved = BASE.with_reflection(copy);
         assert_eq!(moved.reflection, BASE.reflection);
         assert_ne!(moved.reflection.as_ptr(), BASE.reflection.as_ptr());
         assert_ne!(key(&with(BASE)), key(&with(moved)));
 
         // Different length, same address.
-        let shorter = Artifact {
-            reflection: &REFLECTION[..REFLECTION.len() - 1],
-            ..BASE
-        };
+        let shorter = BASE.with_reflection(&REFLECTION[..REFLECTION.len() - 1]);
         assert_eq!(shorter.reflection.as_ptr(), BASE.reflection.as_ptr());
         assert_ne!(key(&with(BASE)), key(&with(shorter)));
     }
@@ -255,10 +236,7 @@ mod tests {
     #[test]
     fn a_spirv_artifact_is_not_part_of_the_key_of_this_backend() {
         // This backend runs WGSL: a descriptor that adds a SPIR-V artifact compiles the same pipeline.
-        let spirv = Artifact {
-            format: Format::Spirv,
-            ..BASE
-        };
+        let spirv = BASE.with_format(Format::Spirv);
         let bare = KERNEL.with_artifacts(&[]);
         assert_eq!(key(&with(spirv)), key(&bare));
         assert!(preferred_artifact(&with(spirv)).is_none());

@@ -285,6 +285,18 @@ pub enum Error {
     Gpu(Box<dyn std::error::Error + Send + Sync>),
 }
 
+impl Error {
+    /// The GPU backend's error as `E`, when this is [`Error::Gpu`] holding one (for the wgpu backend,
+    /// `downcast_gpu::<gust_wgpu::Error>()`). The twin of `map::Error::downcast_ref`; it is `None` for every other
+    /// variant, [`Error::Cpu`] included (that one holds a typed [`crate::cpu::Error`] already).
+    pub fn downcast_gpu<E: std::error::Error + 'static>(&self) -> Option<&E> {
+        match self {
+            Self::Gpu(error) => error.downcast_ref::<E>(),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -645,5 +657,42 @@ where
     fn submit_call(&self, call: &Call<'_, Self, K, N>) -> Result<RoutedJob, Error> {
         <K::Side as SideRun<K, N, G>>::run(self, call)?;
         Ok(RoutedJob)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::fmt;
+
+    use super::Error;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct Backend(&'static str);
+
+    impl fmt::Display for Backend {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "backend says {}", self.0)
+        }
+    }
+
+    impl std::error::Error for Backend {}
+
+    #[test]
+    fn downcast_gpu_recovers_the_backend_error() {
+        let error = Error::Gpu(Box::new(Backend("lost")));
+        assert_eq!(error.downcast_gpu::<Backend>(), Some(&Backend("lost")));
+        assert!(error.downcast_gpu::<fmt::Error>().is_none());
+    }
+
+    #[test]
+    fn downcast_gpu_is_none_for_the_other_variants() {
+        for error in [
+            Error::NoGpu {
+                kernel: "k".to_string(),
+            },
+            Error::ForeignBuffer { kernel: None },
+        ] {
+            assert!(error.downcast_gpu::<Backend>().is_none());
+        }
     }
 }

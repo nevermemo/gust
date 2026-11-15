@@ -235,6 +235,9 @@ pub struct HandWgsl {
     switches: Switches,
     /// The one switch an ablation backend turned on, for its id and description.
     ablation: Option<Switch>,
+    /// All three switches on, the result `Vec` still fresh per call (`Mode::PerCall`): the row between the single
+    /// switches and `wgsl-prebuilt`, which also reuses the `Vec`.
+    all_on: bool,
     counters: Counters,
     resident: Option<Resident>,
 }
@@ -250,6 +253,7 @@ impl HandWgsl {
             mode,
             switches,
             ablation: None,
+            all_on: false,
             counters: Counters::default(),
             resident: None,
         }
@@ -260,6 +264,16 @@ impl HandWgsl {
         Self {
             switches: Switches::PER_CALL.with(switch),
             ablation: Some(switch),
+            ..Self::new(ctx, Mode::PerCall)
+        }
+    }
+
+    /// `PerCall` with every switch on: it differs from `Prebuilt` only in the fresh result `Vec` per call, so the
+    /// gap between the two is the `Vec`, and the gap between this and `wgsl-percall` is the three switches together.
+    pub fn all_on(ctx: Rc<WgpuContext>) -> Self {
+        Self {
+            switches: Switches::PREBUILT,
+            all_on: true,
             ..Self::new(ctx, Mode::PerCall)
         }
     }
@@ -441,6 +455,7 @@ impl HandWgsl {
 impl Backend for HandWgsl {
     fn id(&self) -> &'static str {
         match (self.mode, self.ablation) {
+            _ if self.all_on => "wgsl-percall+all-on",
             (Mode::Prebuilt, _) => "wgsl-prebuilt",
             (Mode::PerCall, None) => "wgsl-percall",
             (Mode::PerCall, Some(switch)) => switch.backend_id(),
@@ -449,6 +464,9 @@ impl Backend for HandWgsl {
 
     fn description(&self) -> &'static str {
         match (self.mode, self.ablation) {
+            _ if self.all_on => {
+                "wgsl-percall with all three switches on: bind group and staging buffer built once, one submission; the result Vec is still fresh per call"
+            }
             (Mode::PerCall, Some(Switch::BindGroupReuse)) => {
                 "wgsl-percall with one switch on: the bind group is built once, everything else per call"
             }
@@ -648,6 +666,13 @@ mod tests {
     use crate::workloads::{check, gen_inputs, reference};
 
     const N: usize = 4096;
+    /// The GPU tests take turns: creating several Vulkan instances at once made adapter discovery fail now and then.
+    fn gpu_context() -> (std::sync::MutexGuard<'static, ()>, Rc<WgpuContext>) {
+        static GPU: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let guard = GPU.lock().unwrap_or_else(|e| e.into_inner());
+        let ctx = WgpuContext::new().expect("an adapter is needed for the switch test");
+        (guard, Rc::new(ctx))
+    }
 
     /// Runs one end-to-end sample and one 16-pass batch on a fresh backend and returns the counts of each, after
     /// checking the output (an ablation must not change what is computed).
@@ -685,7 +710,7 @@ mod tests {
 
     #[test]
     fn each_switch_changes_exactly_what_it_claims() {
-        let ctx = Rc::new(WgpuContext::new().expect("an adapter is needed for the switch test"));
+        let (_gpu, ctx) = gpu_context();
         // Defaults are today's behaviour: PerCall has every switch off, Prebuilt every switch on.
         assert_eq!(
             HandWgsl::new(Rc::clone(&ctx), Mode::PerCall).switches(),
@@ -722,8 +747,22 @@ mod tests {
     }
 
     #[test]
+    fn all_on_has_every_switch_on_and_a_fresh_vec_like_percall() {
+        let (_gpu, ctx) = gpu_context();
+        let backend = HandWgsl::all_on(Rc::clone(&ctx));
+        assert_eq!(backend.switches(), Switches::PREBUILT);
+        assert_eq!(backend.id(), "wgsl-percall+all-on");
+        assert_eq!(backend.mode, Mode::PerCall, "the result Vec stays per call");
+        assert_eq!(
+            counts_of(backend),
+            (counts(0, 0, 1), counts(0, 0, 1)),
+            "same host calls as wgsl-prebuilt"
+        );
+    }
+
+    #[test]
     fn ablation_backends_flip_one_switch_and_have_their_own_ids() {
-        let ctx = Rc::new(WgpuContext::new().expect("an adapter is needed for the switch test"));
+        let (_gpu, ctx) = gpu_context();
         let mut ids = Vec::new();
         for switch in Switch::ALL {
             let backend = HandWgsl::ablation(Rc::clone(&ctx), switch);

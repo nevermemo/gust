@@ -8,7 +8,9 @@ breaks existing code bumps the minor version, and the promise is described in th
 ## Unreleased (0.2.0)
 
 The workspace version is `0.2.0-dev`. Work for 0.2.0 lands on `main`; the 0.1.0 line continues on the branch
-`release/0.1`. This list is what the milestones M8 and M9 have merged. 0.2.0 has four listed breaks. B1, below, in two
+`release/0.1`. This list is what the milestones M8 and M9 have merged.
+0.2.0 has four listed breaks, and the API audit of m10.api1 adds B5 to B7 (below; 0.1.0 is never published and
+0.2.0 is the first release, D177, so they break no released version). B1, below, in two
 parts (the descriptor constructor and setters, and the `GpuKernel` bound), is the last of its kind: the descriptor is
 `#[non_exhaustive]` from now on. B2 is a function name in a `#[gpu]` module that is now reserved (the 21 subgroup
 operations). B3 is that recursion is refused (`GUST-E0120`). B4 is that more names are renamed in the emitted Slang,
@@ -17,8 +19,13 @@ which changes the content key of a precompiled artifact of a module that uses on
 (D165 and the route types). The `semver` job of CI ran on `f613b32` (run 43535559023): cargo-semver-checks 0.51.0
 against `release/0.1`, `--release-type patch`, the `dev` profile and the default features, 229 checks for each of
 `gust-compute` and `gust-compute-wgpu` (31 skipped). Its one finding is the `#[non_exhaustive]` on `KernelDescriptor`
-in `gust-compute` (B1, already listed); for `gust-compute-wgpu` it found nothing ("no semver update required"). It
-does not judge the macro language and skips `#[doc(hidden)]` items, so the list is not a proof.
+in `gust-compute` (B1, already listed); for `gust-compute-wgpu` it found nothing ("no semver update required"). After
+m10.api2a.1 the same job (run 43660662918) lists, for `gust-compute`, `struct_marked_non_exhaustive` on
+`KernelDescriptor` (B1), `ModuleDescriptor`, `Artifact` and `Verified` (B6); for `gust-compute-wgpu`,
+`struct_marked_non_exhaustive` on the six record structs of B5, `inherent_method_now_doc_hidden` on
+`HeadlessDevice::check_same_device` and `pub_module_level_const_now_doc_hidden` on `EXACT_CLASS_BYTES` (B7). It does
+not judge the macro language, and it does not check items that were already `#[doc(hidden)]`, so the list is not a
+proof.
 
 ### Added
 
@@ -207,6 +214,14 @@ does not judge the macro language and skips `#[doc(hidden)]` items, so the list 
   precompiled artifact. The record has an `array` layout kind (`count` and a nested `element`), and the fill reads it
   from the reflection. An array of arrays is `GUST-E0217` in the macro (the tool refuses one too). The record
   schema stays 1: an older tool refuses the unknown kind by name.
+- `gust::routed::Error::downcast_gpu::<E>()` (m10.api2a.1, G17) returns the GPU backend's own error when the error
+  is `Error::Gpu`, as `gust::map::Error::downcast_ref` does for the map functions:
+  `error.downcast_gpu::<gust_wgpu::Error>()`.
+- `Debug` for the `gust-compute-wgpu` handles (m10.api2a.1, W2): `HeadlessDevice`, `GpuBuffer<T>`, `GpuUniform<T>`,
+  `GpuPool<T>`, `StagedGraph`, `BufferDispatch` and `WgpuJob` print ids, lengths and counts, never a raw wgpu handle.
+- `Artifact::with_format`, `with_key`, `with_bytes`, `with_reflection`, `Artifact::new` and `ModuleDescriptor::new`
+  (m10.api2a.1): the constructors that the `#[non_exhaustive]` structs of B6 need (B5's record structs get none; only
+  the crate builds them).
 
 ### Changed, and may break code written for 0.1.0
 
@@ -249,6 +264,25 @@ does not judge the macro language and skips `#[doc(hidden)]` items, so the list 
   parameter or struct on its own the word compiles, and a user struct, helper or global of that name placed before an
   emitted `interface` or `extension` fails (E20001); the rename removes that. Not measured: how many 0.1.0 modules use
   such a name (no example of this repository does; the tests that use one are the renaming's own).
+- **B5: the record structs and `Route` of `gust-compute-wgpu` are `#[non_exhaustive]`** (m10.api2a.1, W8 and W13).
+  `PipelineCacheStats`, `PoolStats`, `DispatchTiming`, `TransferTiming`, `GrowthRecord`, `TransferRecord`, `RouteEvent`
+  and the enum `Route`. A struct literal or a struct update of one of the structs no longer compiles outside the crate,
+  and a `match` on `Route` needs a wildcard arm (reading fields and `==` on a `Route` are unchanged). Migration: only
+  the crate builds them, so a reader changes nothing; code that built one starts from `Default` where the type has it
+  (`let mut t = TransferTiming::default(); t.bytes = ..;`, as `examples/signal-pipeline` now does) or compares the
+  fields (as `examples/component-pool` now does for `GrowthRecord`, which has no `Default`). `cargo semver-checks`
+  lists the six structs; `Route` and `RouteEvent` are new in 0.2.0 (not in the `release/0.1` baseline) and behind
+  `spirv-route`, so they break no released version and the tool does not list them.
+- **B6: `ModuleDescriptor`, `Artifact` and `Verified` are `#[non_exhaustive]`** (m10.api2a.1, G7a and G20), with
+  constructors in the pattern of `KernelDescriptor`. Migration: `Artifact { format, key, bytes, reflection }` becomes
+  `Artifact::new(format, key, bytes, reflection)`, `Artifact { bytes, ..BASE }` becomes `BASE.with_bytes(bytes)` (also
+  `with_format`, `with_key`, `with_reflection`), and `ModuleDescriptor { name, kernels }` becomes
+  `ModuleDescriptor::new(name, kernels)`. `#[gpu]` modules and `cargo gust` need no change (the macro and the tool
+  emit the constructors); `Verified` is only produced by `verify_artifact`. `cargo semver-checks` lists these three.
+- **B7: `HeadlessDevice::check_same_device` and `pool::EXACT_CLASS_BYTES` are `#[doc(hidden)]`** (m10.api2a.1, W1
+  and W10). Both stay callable and keep their paths, so no program stops compiling; the semver tool lists a hide as a
+  removal. Migration: none (the first is a support function of the tests, the second an allocator detail with no use
+  outside the crate).
 - `DeviceOptions::default()` and `HeadlessDevice::new()` now request `gust::capability::enabled()`. In a build with no
   capability that is the empty set, as before; in a `+subgroups` build they open a device with the feature or fail with
   `Error::MissingCapability`.

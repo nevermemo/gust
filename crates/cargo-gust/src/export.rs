@@ -353,12 +353,12 @@ pub(crate) fn verify_stored(
     reflection_json: &str,
 ) -> Result<String, String> {
     let kernel = completed_descriptor(record, reflection_json)?;
-    let artifact = Artifact {
+    let artifact = Artifact::new(
         format,
-        key: leak_str(&record.key),
-        bytes: leak_bytes(bytes),
-        reflection: leak_str(reflection_json),
-    };
+        leak_str(&record.key),
+        leak_bytes(bytes),
+        leak_str(reflection_json),
+    );
     verify_artifact(&kernel, &artifact)
         .map(|verified| verified.compiled.compiler_version)
         .map_err(|error| error.to_string())

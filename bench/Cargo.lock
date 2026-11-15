@@ -228,6 +228,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gust-bench-pre"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "gust-compute",
+ "gust-compute-wgpu",
+ "pollster",
+ "rayon",
+ "serde_json",
+ "wgpu",
+ "windows",
+]
+
+[[package]]
 name = "gust-compute"
 version = "0.2.0-dev"
 dependencies = [

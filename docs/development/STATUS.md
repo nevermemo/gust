@@ -384,6 +384,19 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   is cut at the publish. D177 (0.2.0 first, 0.1.0 never published) is the owner's choice (2026-11-14).
   First slices: m10.r0 (release literals and the diagnostic-code freeze review), m10.b0 (the bench harness onto
   main and the premise re-measurement), m10.g0 (the gallery skeleton).
+- M10 slices merged (2026-11-14 to 15), each after an Opus review and the coordinator's gates on the merged tip:
+  m10.r0 (`e81f0df`), m10.b0a (`56acd54`, the bench onto main), m10.r1 (`ef1b024`, PR #40), m10.g0 (`9fef575`,
+  PR #39, the gallery workspace and `check-gallery`), m10.g1 (`9305ada`, PR #41) and m10.g2 (`c72ebdf`, PR #43,
+  gallery entries G1 to G6), m10.api1 (`d5ea2ee`, PR #42, the read-only API audit: 63 items, 17 cheap; rustdoc
+  coverage gust-compute 713/713, gust-compute-wgpu 335/335; the O5 panic pinned by a test), m10.api2a.1 (`2c9fe4b`,
+  PR #44, the 0.2.0 hardening: `#[non_exhaustive]` record structs and descriptors with constructors, two hides,
+  `Debug` impls, `downcast_gpu`, W18 tests; the semver job, run 43660662918, lists exactly the audit's breaks and B1),
+  m10.b0b (`421faba`, PR #45, the paired, seeded random-order harness and the premise measurement; D184). The GPU
+  suite pin is 458 over 49 (measured at api2a.1).
+- The b0 premise measurement (D184): a quiet window on 2026-11-15, 01:48 to 02:13Z, three runs and the precompiled
+  cold start at `6e833ed`, RTX 5090; results and their reading in the work area (plans/m10/probe/b0-results.md,
+  b0c/notes.md). Outcome C on one cell, open (SPIR-V step in m10.b1a); the host-side gap stands, B not claimed
+  until the profile slice m10.b0p; the precompiled cold start meets 10 ms. The plan is at Revision 1.2.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

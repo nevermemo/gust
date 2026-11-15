@@ -17,7 +17,7 @@ pub const SCALE: f32 = 2.5;
 /// size are 192 MiB, well past the L2 cache of the RTX 5090 (96 MB), so it is the DRAM-bound point.
 pub const SIZES: [usize; 5] = [1 << 12, 1 << 16, 1 << 20, 1 << 22, 65535 * WORKGROUP];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Workload {
     VectorAdd,
     Saxpy,

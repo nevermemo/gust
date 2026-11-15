@@ -956,10 +956,10 @@ fn expand_validated_with(
 
             /// The descriptors of the kernels of this module.
             pub const MODULE_DESCRIPTOR: ::gust::ModuleDescriptor =
-                ::gust::ModuleDescriptor {
-                    name: #module_name,
-                    kernels: &[#(#descriptor_paths::DESCRIPTOR),*],
-                };
+                ::gust::ModuleDescriptor::new(
+                    #module_name,
+                    &[#(#descriptor_paths::DESCRIPTOR),*],
+                );
         }
     })
 }
@@ -4526,17 +4526,15 @@ mod tests {
         let (scratch, key) = crate_with_pair("pair-present", true);
         let text = expanded(KERNEL, &environment(Some(&scratch.0), None)).to_string();
         assert!(
-            text.contains(
-                "artifacts : & [:: gust :: Artifact { format : :: gust :: Format :: Wgsl"
-            ),
+            text.contains("artifacts : & [:: gust :: Artifact :: new (:: gust :: Format :: Wgsl"),
             "{text}"
         );
-        assert!(text.contains(&format!("key : \"{key}\"")), "{text}");
+        assert!(text.contains(&format!("Wgsl , \"{key}\" ,")), "{text}");
         assert!(text.contains(&format!(
-            "bytes : :: core :: include_bytes ! (:: core :: concat ! (:: core :: env ! (\"CARGO_MANIFEST_DIR\") , \"/gust-artifacts/{key}.wgsl\"))"
+            ", :: core :: include_bytes ! (:: core :: concat ! (:: core :: env ! (\"CARGO_MANIFEST_DIR\") , \"/gust-artifacts/{key}.wgsl\"))"
         )), "{text}");
         assert!(text.contains(&format!(
-            "reflection : :: core :: include_str ! (:: core :: concat ! (:: core :: env ! (\"CARGO_MANIFEST_DIR\") , \"/gust-artifacts/{key}.wgsl.reflection.json\"))"
+            ", :: core :: include_str ! (:: core :: concat ! (:: core :: env ! (\"CARGO_MANIFEST_DIR\") , \"/gust-artifacts/{key}.wgsl.reflection.json\"))"
         )), "{text}");
         assert!(text.contains("require_artifact (true)"), "{text}");
         assert!(!text.contains("require_artifact (false)"), "{text}");

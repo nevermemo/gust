@@ -1081,6 +1081,23 @@ fn two_uniform_updates_between_dispatches_are_observed_in_order() {
     let second = graph.run(&call_two);
     let set_three = graph.write_uniform(&factor, &three);
     let third = graph.run(&call_three);
+    // `Debug` (W2): counts and ids, never a raw wgpu handle.
+    assert_eq!(format!("{graph:?}"), "StagedGraph { nodes: 5 }");
+    assert_eq!(
+        format!("{factor:?}"),
+        format!("GpuUniform {{ device_id: {}, .. }}", device.id())
+    );
+    assert_eq!(
+        format!("{src:?}"),
+        format!(
+            "GpuBuffer {{ len: {COUNT}, access: ReadWrite, device_id: {}, indirect: false, .. }}",
+            device.id()
+        )
+    );
+    assert!(
+        format!("{device:?}")
+            .starts_with(&format!("HeadlessDevice {{ id: {}, adapter: ", device.id()))
+    );
     // Written down before the first run. A write of the uniform waits for the dispatches that read the old value
     // (WAR) and the one before it (WAW); a dispatch waits for the write it reads.
     assert_eq!(edges(&graph, first), Vec::<usize>::new());

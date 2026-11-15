@@ -38,12 +38,7 @@ const WGSL: &[u8] = include_bytes!("fixtures/precompiled/52e85c5f03f72272.wgsl")
 const REFLECTION: &str = include_str!("fixtures/precompiled/52e85c5f03f72272.wgsl.reflection.json");
 const MANIFEST: &str = include_str!("fixtures/precompiled/manifest.json");
 
-const ARTIFACT: Artifact = Artifact {
-    format: Format::Wgsl,
-    key: KEY,
-    bytes: WGSL,
-    reflection: REFLECTION,
-};
+const ARTIFACT: Artifact = Artifact::new(Format::Wgsl, KEY, WGSL, REFLECTION);
 
 fn leak_bytes(bytes: Vec<u8>) -> &'static [u8] {
     Box::leak(bytes.into_boxed_slice())
@@ -131,13 +126,7 @@ fn one_flipped_wgsl_byte_is_an_artifact_hash_mismatch() {
     let mut bytes = WGSL.to_vec();
     let at = bytes.iter().position(|b| *b == b'+').expect("the addition");
     bytes[at] = b'-';
-    let message = identity_error(
-        &DESCRIPTOR,
-        &Artifact {
-            bytes: leak_bytes(bytes),
-            ..ARTIFACT
-        },
-    );
+    let message = identity_error(&DESCRIPTOR, &ARTIFACT.with_bytes(leak_bytes(bytes)));
     assert!(
         message.contains("artifact hash (stored \"282df814ca1e66dd\""),
         "{message}"
@@ -148,13 +137,7 @@ fn one_flipped_wgsl_byte_is_an_artifact_hash_mismatch() {
 
 #[test]
 fn a_truncated_wgsl_is_an_artifact_hash_mismatch() {
-    let message = identity_error(
-        &DESCRIPTOR,
-        &Artifact {
-            bytes: &WGSL[..WGSL.len() - 1],
-            ..ARTIFACT
-        },
-    );
+    let message = identity_error(&DESCRIPTOR, &ARTIFACT.with_bytes(&WGSL[..WGSL.len() - 1]));
     assert!(
         message.contains("artifact hash (stored \"282df814ca1e66dd\""),
         "{message}"
@@ -167,10 +150,7 @@ fn a_crlf_rewritten_wgsl_is_an_artifact_hash_mismatch() {
     let crlf = std::str::from_utf8(WGSL).unwrap().replace('\n', "\r\n");
     let message = identity_error(
         &DESCRIPTOR,
-        &Artifact {
-            bytes: leak_bytes(crlf.into_bytes()),
-            ..ARTIFACT
-        },
+        &ARTIFACT.with_bytes(leak_bytes(crlf.into_bytes())),
     );
     assert!(
         message.contains("artifact hash (stored \"282df814ca1e66dd\""),
@@ -184,10 +164,9 @@ fn a_replaced_source_hash_is_a_source_hash_mismatch() {
     assert_eq!(REFLECTION.matches("563ba40500e91764").count(), 1);
     let message = identity_error(
         &DESCRIPTOR,
-        &Artifact {
-            reflection: leak_str(REFLECTION.replace("563ba40500e91764", "0123456789abcdef")),
-            ..ARTIFACT
-        },
+        &ARTIFACT.with_reflection(leak_str(
+            REFLECTION.replace("563ba40500e91764", "0123456789abcdef"),
+        )),
     );
     assert!(
         message
@@ -213,13 +192,7 @@ fn a_renamed_entry_point_is_an_entry_point_mismatch() {
 
 #[test]
 fn a_wrong_target_is_a_target_mismatch() {
-    let message = identity_error(
-        &DESCRIPTOR,
-        &Artifact {
-            format: Format::Spirv,
-            ..ARTIFACT
-        },
-    );
+    let message = identity_error(&DESCRIPTOR, &ARTIFACT.with_format(Format::Spirv));
     assert!(
         message.contains("target (stored \"wgsl\", expected \"spirv\")"),
         "{message}"
@@ -231,11 +204,11 @@ fn every_differing_identity_value_is_named() {
     let kernel = DESCRIPTOR.with_entry_point("gpu_vector_add_other");
     let message = identity_error(
         &kernel,
-        &Artifact {
-            bytes: &WGSL[..WGSL.len() - 1],
-            reflection: leak_str(REFLECTION.replace("563ba40500e91764", "0123456789abcdef")),
-            ..ARTIFACT
-        },
+        &ARTIFACT
+            .with_bytes(&WGSL[..WGSL.len() - 1])
+            .with_reflection(leak_str(
+                REFLECTION.replace("563ba40500e91764", "0123456789abcdef"),
+            )),
     );
     for what in ["entry point (", "source hash (", "artifact hash ("] {
         assert!(message.contains(what), "{what} missing from {message}");

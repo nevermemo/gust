@@ -18,6 +18,46 @@ A custom harness in a nested, unpublished workspace. It measures two workloads, 
 copy in one submission, no wait between). They are off by default; `--ablation LIST|all` adds them to a run. The fresh
 result `Vec` stays per call in every ablation. A test counts bind groups, staging buffers and submissions per switch.
 
+`--ablation all` also adds `wgsl-percall+all-on`: every switch on, the result `Vec` still fresh per call. The table
+then reads `wgsl-percall`, each switch alone, `+all-on`, `wgsl-prebuilt` and `gust-gpu`; the step from `+all-on` to
+`wgsl-prebuilt` is the result `Vec`, the step from `wgsl-percall` to `+all-on` is the three switches together.
+
+The GPU backends of one workload and size are measured as a paired group: one idle window, one shared warm-up, then
+every timed quantity in interleaved rounds. Each round visits every GPU backend once, in a seeded random order (a fresh
+permutation per round from the run seed mixed with workload, size and quantity; `--seed N` fixes the run seed, which the
+run file records as `run_seed`). The file records each quantity's seed, every round's order (`round_orders`) and each
+sample's predecessor (`predecessor`), so a carry-over cost between neighbouring backends can be tested for. The
+aggregate reports each backend's paired ratio to `wgsl-prebuilt` (the median of the per-round ratios, with its spread)
+for all four timings.
+
+The shared warm-up uses real load (end-to-end samples alternating with 1024-pass batches) until the clock query reports
+P0 with the memory clock within 90 % and the SM clock within 50 % of their maxima, capped at 1 s (`--warmup-secs S`
+changes the cap; the deadline is checked before every iteration, so it is overrun by at most one, and `warmup.actual_s`
+records the real time). P0 is a record, not a goal: a group that hits the cap is kept and marked `p0_not_reached`; the
+pairing, not P0, is what makes the backends comparable. The clocks at the end of the warm-up (`warmup.clocks`) and right
+after the timed samples (`clocks_after_timing`), the PCIe link and the P0 counts are in the aggregate; every end-to-end
+table carries the PCIe link. `--cold-only` skips the four timings and measures only the cold start (`--cold-repeats
+N`). The precompiled package must pass `cargo gust check -p gust-bench-pre` (measure.sh --build-only runs it): a stale
+artifact otherwise falls back to a run-time compile under dev.
+
+Deviation from D179 (b0): the quiet-window sampler idles the GPU once per GPU group (record `"backend": "gpu-group"`),
+not once before every cell; CPU backends still get one window each.
+
+The first cold start of each kernel on a backend in a process is flagged (`cold_start_first_in_process`) and the aggregate lists it
+apart from the rest: it also pays one-time costs. A hand-WGSL cold start is labelled "driver shader cache warm" (its
+pipeline was already created once on the same device by `prepare`).
+
+**Precompiled cold start.**
+
+The `#[gpu]` macro embeds artifacts found in `gust-artifacts/` beside the Cargo.toml of the package that compiles it.
+`gust-bench` has none, so it compiles Slang at run time. `gust-bench-pre` is the same harness sources (its binary
+`gust-bench-pre` has `path = "../gust-bench/src/main.rs"`) in a package of its own, with the committed artifacts in
+`gust-bench-pre/gust-artifacts/`; a build of it embeds them and its results say `config.shader_source = "precompiled"`.
+To regenerate them after a kernel changes: `cargo gust build --manifest-path bench/gust-bench-pre/Cargo.toml` (the
+pinned Slang and its helper), then commit the directory. Run it with
+`gust-bench-pre run --workloads W1,W2 --sizes 4096 --backends gust-gpu,wgsl-prebuilt --cold-only --cold-repeats 10
+--no-sampler --out FILE`.
+
 The hand-WGSL device is a second `wgpu::Device` on the same adapter selection (Vulkan, high performance, default
 limits, `TIMESTAMP_QUERY`), because `HeadlessDevice` does not expose its own device. The harness refuses to run if the
 two devices land on different adapters or if the adapter is a software one.
@@ -59,7 +99,10 @@ header says so and every adapter's activity is recorded. `gust-bench probe-adapt
 it keeps the adapter busy and reports on which LUID this process's own utilisation appears.
 
 Every results file also carries `route` (`wgsl` or `spirv`, read from the build), `build` (release, profile, features,
-cfgs) and `adapter` (name, backend, driver) at its top level.
+cfgs, the commit and whether the tree was dirty) and `adapter` (name, backend, driver) at its top level. `aggregate`
+refuses runs that disagree on route, build, adapter or config (quick against full, sizes, workloads, backends and
+their ablations). The `nvidia-smi` cross-check of a window is taken after the settle sleep and before the window
+starts.
 
 Exit status is 0 only when every correctness check and every cache assertion passed.
 

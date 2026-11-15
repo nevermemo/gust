@@ -19,8 +19,13 @@ which changes the content key of a precompiled artifact of a module that uses on
 (D165 and the route types). The `semver` job of CI ran on `f613b32` (run 43535559023): cargo-semver-checks 0.51.0
 against `release/0.1`, `--release-type patch`, the `dev` profile and the default features, 229 checks for each of
 `gust-compute` and `gust-compute-wgpu` (31 skipped). Its one finding is the `#[non_exhaustive]` on `KernelDescriptor`
-in `gust-compute` (B1, already listed); for `gust-compute-wgpu` it found nothing ("no semver update required"). It
-does not judge the macro language and skips `#[doc(hidden)]` items, so the list is not a proof.
+in `gust-compute` (B1, already listed); for `gust-compute-wgpu` it found nothing ("no semver update required"). After
+m10.api2a.1 the same job (run 43660662918) lists, for `gust-compute`, `struct_marked_non_exhaustive` on
+`KernelDescriptor` (B1), `ModuleDescriptor`, `Artifact` and `Verified` (B6); for `gust-compute-wgpu`,
+`struct_marked_non_exhaustive` on the six record structs of B5, `inherent_method_now_doc_hidden` on
+`HeadlessDevice::check_same_device` and `pub_module_level_const_now_doc_hidden` on `EXACT_CLASS_BYTES` (B7). It does
+not judge the macro language, and it does not check items that were already `#[doc(hidden)]`, so the list is not a
+proof.
 
 ### Added
 

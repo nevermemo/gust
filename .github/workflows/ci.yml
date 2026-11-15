@@ -43,6 +43,11 @@ jobs:
         # development PC) and this job keeps its time (R4.10). The suite prints each skipped step; a local run of
         # `cargo xtask test --suite Unit` runs them.
         run: cargo --locked xtask test --suite Unit --skip-difftest
+      - name: Gallery without Slang
+        # The no-Slang part of `check-gallery` (m10.g0): the gallery's release build and tests with Slang proved absent
+        # from PATH, the anchors, and the guide-listing sync check. The Slang part runs in the job `slang`, the GPU part
+        # in `check-full`. It comes before the dual build, which stays the last step of the job.
+        run: cargo --locked xtask check-gallery --no-slang
       - name: Dual test build
         # `--cfg gust_dual` (D26): fmt and clippy of tests/dual, the workspace built with the cfg, and the cross-crate
         # proof E1-E3. Cargo only; the examples' GPU runs of the full mode stay local.
@@ -63,6 +68,28 @@ jobs:
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: Check on the minimum version
         run: cargo check --workspace --all-targets --locked
+      - name: Build the hello-gust fixture on the minimum version, with no lockfile
+        # The way a user resolves it (D178, M10 plan section 1.3): the README recipe's two files (`xtask/src/release/hello-gust`)
+        # with the workspace's crates patched in by path, in a directory of its own, with no Cargo.lock. Shows whether the
+        # MSRV-aware resolver (resolver 3) finds dependency versions that build on 1.90. Not `--locked` on purpose.
+        run: |
+          consumer="$RUNNER_TEMP/hello-gust"
+          mkdir -p "$consumer/src"
+          cp xtask/src/release/hello-gust/Cargo.toml "$consumer/Cargo.toml"
+          cp xtask/src/release/hello-gust/src/main.rs "$consumer/src/main.rs"
+          {
+            printf '\n[workspace]\n\n[patch.crates-io]\n'
+            printf 'gust-compute = { path = "%s/crates/gust" }\n' "$GITHUB_WORKSPACE"
+            printf 'gust-compute-macros = { path = "%s/crates/gust-macros" }\n' "$GITHUB_WORKSPACE"
+            printf 'gust-compute-wgpu = { path = "%s/crates/gust-wgpu" }\n' "$GITHUB_WORKSPACE"
+          } >> "$consumer/Cargo.toml"
+          test ! -e "$consumer/Cargo.lock"
+          cargo --version
+          cargo build --manifest-path "$consumer/Cargo.toml"
+          cargo build --manifest-path "$consumer/Cargo.toml" --features gust-dev
+          # What the MSRV-aware resolver chose, for the log.
+          cargo tree --manifest-path "$consumer/Cargo.toml" --depth 1
+          grep -c '^name = ' "$consumer/Cargo.lock"
 
   cpu-target:
     # The production CPU target (D21, D51; slice m5.e2): `GUST_PROFILE=cpu` builds the fixture tests/cpu-target in
@@ -204,6 +231,11 @@ jobs:
         run: >-
           cargo run --locked --quiet -p cargo-gust --
           check -p kernels --manifest-path tests/precompiled/Cargo.toml --recompile
+      - name: Gallery artifacts (Slang part)
+        # The Slang part of `check-gallery` (m10.g0): `cargo gust check` of the committed artifacts of every gallery entry,
+        # and a fresh `cargo gust build` in a scratch copy compared with them byte for byte, with the pinned Slang
+        # installed above.
+        run: cargo --locked xtask check-gallery --slang
 
   precompiled:
     # D45, D46: the production-shaped consumer of precompiled kernels (tests/precompiled). `--check-only` is the mode

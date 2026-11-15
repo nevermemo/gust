@@ -38,8 +38,10 @@ says are publishable, so it needs no edit when a package is renamed.
   `LICENSE-MIT`, `LICENSE-APACHE`, `build.rs` for `gust-compute`, `assets/**` for `cargo-gust`, no test data.
 - R3 and R4: the metadata fields, one version for the four, every internal dependency exact (`=0.1.0`), and every
   other workspace member `publish = false`.
-- R5: `cargo doc --no-deps` of the library crates with rustdoc warnings denied, on stable and, when a nightly
-  toolchain is installed, with the docs.rs features and `--cfg docsrs`.
+- R5: `cargo doc --no-deps` of the library crates with rustdoc warnings denied, on stable and on nightly with the docs.rs
+  features and `--cfg docsrs`, once for each target the docs.rs metadata names (`x86_64-unknown-linux-gnu` when it
+  names none; `gust-compute-wgpu` adds `wasm32-unknown-unknown`). The full run fails when the nightly toolchain or a
+  target is missing and says how to install it; `--check-only` runs the host only and skips a missing nightly.
 - R6: each `.crate` file under 2 MiB.
 - R7: the README recipe ("Install from crates.io") built word for word from the unpacked `.crate` files, plus a
   `cargo install` of the unpacked `cargo-gust`. The full mode also runs `cargo gust build`, builds the release form

@@ -1,0 +1,9 @@
+# The example gallery (plan M10 §3.1): complete programs shaped like a user's crate, in a workspace root of its own, so the
+# root workspace does not contain it and it has its own committed `Cargo.lock` (the `tests/routing` pattern). Each entry
+# depends on the library crates by path, with the package names a user writes (`gust-compute`, `gust-compute-wgpu`), has a
+# `gust-dev` feature for the run-time compile path, commits the `gust-artifacts/` that `cargo gust build` wrote, and builds
+# in release without Slang. `cargo xtask check-gallery` checks every entry (it keeps the list of entries in
+# `xtask/src/gallery.rs`, and a unit test there compares the list with `members`).
+[workspace]
+members = ["hello-gust", "saxpy-uniform", "histogram", "particles", "image-threshold", "reduce-scan"]
+resolver = "3"

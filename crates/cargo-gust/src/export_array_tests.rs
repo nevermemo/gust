@@ -86,12 +86,7 @@ impl Stored {
     fn reflection(&self) -> Reflection {
         verify_artifact(
             self.kernel,
-            &Artifact {
-                format: Format::Wgsl,
-                key: self.key,
-                bytes: self.wgsl,
-                reflection: self.reflection,
-            },
+            &Artifact::new(Format::Wgsl, self.key, self.wgsl, self.reflection),
         )
         .unwrap()
         .compiled

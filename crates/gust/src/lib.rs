@@ -187,6 +187,7 @@
 //! this crate.
 
 #![warn(missing_docs)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 // The `#[gpu]` expansion names `::gust::..`; this lets the crate's own unit tests expand it too.
 #[cfg(test)]
@@ -219,6 +220,7 @@ pub mod spirv;
 pub mod target;
 pub mod texture;
 #[cfg(feature = "slang-runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 pub mod toolchain;
 
 pub use abi::{

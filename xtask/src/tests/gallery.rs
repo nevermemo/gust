@@ -1,0 +1,706 @@
+use std::{
+    ffi::{OsStr, OsString},
+    fs,
+    path::{Path, PathBuf},
+};
+
+use super::{
+    ENTRIES, Listing, Parts, adapter_name, anchor_names, anchored_region, check_listings,
+    folder_holds, lf_line_ends, listing_matches, no_slang_environment, output_has_line,
+    shared_folder_problems, slang_home_problem, slangc_cannot_be_found, tail, tree_difference,
+    tree_has_slang_runtime, workspace_members,
+};
+use crate::{
+    precompiled::{StripReport, child_environment, directory_has_slang_tool, slang_free_problems},
+    workspace::workspace_root,
+};
+
+fn args(words: &[&str]) -> Vec<String> {
+    words.iter().map(|word| (*word).to_owned()).collect()
+}
+
+/// A file of the repository, with LF endings.
+fn repository_file(path: &str) -> String {
+    let root = workspace_root().expect("the repository root");
+    fs::read_to_string(root.join(path))
+        .unwrap_or_else(|error| panic!("{path}: {error}"))
+        .replace("\r\n", "\n")
+}
+
+#[test]
+fn no_flag_runs_all_three_parts_and_each_flag_only_its_own() {
+    assert_eq!(Parts::parse(&[]), Ok(Parts::ALL));
+    assert_eq!(
+        Parts::parse(&args(&["--slang"])),
+        Ok(Parts {
+            slang: true,
+            no_slang: false,
+            gpu: false
+        })
+    );
+    assert_eq!(
+        Parts::parse(&args(&["--no-slang"])),
+        Ok(Parts {
+            slang: false,
+            no_slang: true,
+            gpu: false
+        })
+    );
+    assert_eq!(
+        Parts::parse(&args(&["--gpu"])),
+        Ok(Parts {
+            slang: false,
+            no_slang: false,
+            gpu: true
+        })
+    );
+    // Order and repetition do not matter; naming all three is the default.
+    assert_eq!(
+        Parts::parse(&args(&["--gpu", "--slang", "--gpu"])),
+        Ok(Parts {
+            slang: true,
+            no_slang: false,
+            gpu: true
+        })
+    );
+    assert_eq!(
+        Parts::parse(&args(&["--gpu", "--no-slang", "--slang"])),
+        Ok(Parts::ALL)
+    );
+}
+
+#[test]
+fn an_unknown_argument_is_refused_and_named() {
+    for bad in ["--skip-gpu", "slang", "--GPU", "", "--slang=1"] {
+        let error = Parts::parse(&args(&["--slang", bad])).unwrap_err();
+        assert!(error.contains(&format!("`{bad}`")), "{error}");
+    }
+}
+
+#[test]
+fn the_names_of_the_parts_say_which_run_and_which_do_not() {
+    let only_gpu = Parts::parse(&args(&["--gpu"])).unwrap();
+    assert_eq!(only_gpu.run_names(), ["gpu"]);
+    assert_eq!(only_gpu.not_run_names(), ["slang", "no-slang"]);
+    assert_eq!(Parts::ALL.run_names(), ["slang", "no-slang", "gpu"]);
+    assert!(Parts::ALL.not_run_names().is_empty());
+}
+
+const SOURCE: &str = "\
+use a;
+// ANCHOR: first
+fn one() {}
+
+    // ANCHOR: nested
+    let x = 1;
+    // ANCHOR_END: nested
+fn two() {}
+// ANCHOR_END: first
+// ANCHOR: second
+fn three() {}
+// ANCHOR_END: second
+";
+
+#[test]
+fn a_region_is_the_lines_between_its_anchors_and_nested_anchor_lines_are_dropped() {
+    assert_eq!(
+        anchored_region(SOURCE, "first").unwrap(),
+        "fn one() {}\n\n    let x = 1;\nfn two() {}\n"
+    );
+    assert_eq!(
+        anchored_region(SOURCE, "nested").unwrap(),
+        "    let x = 1;\n"
+    );
+    assert_eq!(
+        anchored_region(SOURCE, "second").unwrap(),
+        "fn three() {}\n"
+    );
+    assert_eq!(anchor_names(SOURCE).unwrap(), ["first", "nested", "second"]);
+}
+
+#[test]
+fn a_crlf_source_gives_the_same_region_as_an_lf_source() {
+    let crlf = SOURCE.replace('\n', "\r\n");
+    for name in ["first", "nested", "second"] {
+        assert_eq!(
+            anchored_region(&crlf, name).unwrap(),
+            anchored_region(SOURCE, name).unwrap(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn an_empty_region_is_empty_and_an_unknown_name_is_an_error() {
+    let text = "// ANCHOR: nothing\n// ANCHOR_END: nothing\n";
+    assert_eq!(anchored_region(text, "nothing").unwrap(), "");
+    assert_eq!(
+        anchored_region(SOURCE, "third").unwrap_err(),
+        "no anchor `third`"
+    );
+    assert_eq!(
+        anchor_names("fn main() {}\n").unwrap(),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn malformed_anchors_are_errors_with_the_line_or_the_name() {
+    assert_eq!(
+        anchor_names("// ANCHOR: a\nfn f() {}\n").unwrap_err(),
+        "anchor `a` is never closed"
+    );
+    assert_eq!(
+        anchor_names("fn f() {}\n// ANCHOR_END: a\n").unwrap_err(),
+        "line 2: ANCHOR_END `a` has no open ANCHOR (missing, closed twice, or before its start)"
+    );
+    assert_eq!(
+        anchor_names("// ANCHOR: a\n// ANCHOR_END: a\n// ANCHOR_END: a\n").unwrap_err(),
+        "line 3: ANCHOR_END `a` has no open ANCHOR (missing, closed twice, or before its start)"
+    );
+    assert_eq!(
+        anchor_names("// ANCHOR: a\n// ANCHOR_END: a\n// ANCHOR: a\n// ANCHOR_END: a\n")
+            .unwrap_err(),
+        "line 3: anchor `a` is declared twice"
+    );
+    assert_eq!(
+        anchor_names("// ANCHOR: a b\n").unwrap_err(),
+        "line 1: an anchor name is one word with no spaces (got `a b`)"
+    );
+    assert_eq!(
+        anchor_names("// ANCHOR: \n").unwrap_err(),
+        "line 1: an anchor name is one word with no spaces (got ``)"
+    );
+    assert_eq!(
+        anchor_names("// ANCHOR:a\n").unwrap_err(),
+        "line 1: write one space after the colon of an anchor line (got `a`)"
+    );
+    assert_eq!(
+        anchor_names("// ANCHOR_END:a\n").unwrap_err(),
+        "line 1: write one space after the colon of an anchor line (got `a`)"
+    );
+    // A misspelt end is not silently accepted as text of the region.
+    assert!(anchor_names("// ANCHOR: a\n// ANCHOR_END: b\n").is_err());
+    // A region of a malformed file is refused even when its own anchors are fine.
+    assert!(anchored_region("// ANCHOR: a\n// ANCHOR_END: a\n// ANCHOR: b\n", "a").is_err());
+}
+
+#[test]
+fn the_gallery_sources_have_well_formed_anchors_with_the_regions_the_guide_will_show() {
+    let source = repository_file("gallery/hello-gust/src/main.rs");
+    assert_eq!(
+        anchor_names(&source).unwrap(),
+        ["imports", "kernel", "main", "tests"]
+    );
+    let kernel = anchored_region(&source, "kernel").unwrap();
+    assert!(kernel.starts_with("#[gpu]\nmod vector_add {\n"), "{kernel}");
+    assert!(kernel.ends_with("    }\n}\n"), "{kernel}");
+    let main = anchored_region(&source, "main").unwrap();
+    assert!(main.starts_with("fn main() {\n"), "{main}");
+    assert!(
+        main.contains("println!(\"hello-gust: {result:?}\");"),
+        "{main}"
+    );
+}
+
+#[test]
+fn a_listing_matches_only_when_every_byte_is_the_region() {
+    let region = "fn one() {}\n";
+    assert!(listing_matches(b"fn one() {}\n", region));
+    assert!(!listing_matches(b"fn one() {}", region), "no final newline");
+    assert!(!listing_matches(b"fn one() { }\n", region));
+    assert!(!listing_matches(b"fn two() {}\n", region), "same length");
+    assert!(!listing_matches(b"", region));
+}
+
+fn scratch(name: &str) -> PathBuf {
+    let directory =
+        std::env::temp_dir().join(format!("gust-gallery-test-{name}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&directory);
+    fs::create_dir_all(&directory).unwrap();
+    directory
+}
+
+fn write(root: &Path, relative: &str, text: &str) {
+    fs::write(root.join(relative), text).unwrap();
+}
+
+#[test]
+fn the_listing_check_counts_matches_and_names_the_file_that_drifted() {
+    let root = scratch("listings");
+    write(&root, "source.rs", SOURCE);
+    write(&root, "good.rs", "fn three() {}\n");
+    write(&root, "stale.rs", "fn three() { 1 }\n");
+    let good = Listing {
+        packaged: "good.rs",
+        source: "source.rs",
+        anchor: "second",
+    };
+    let stale = Listing {
+        packaged: "stale.rs",
+        source: "source.rs",
+        anchor: "second",
+    };
+    let missing_anchor = Listing {
+        packaged: "good.rs",
+        source: "source.rs",
+        anchor: "nope",
+    };
+    let missing_file = Listing {
+        packaged: "absent.rs",
+        source: "source.rs",
+        anchor: "second",
+    };
+    assert_eq!(check_listings(&root, &[]), Ok(0));
+    assert_eq!(check_listings(&root, &[good]), Ok(1));
+    let error = check_listings(&root, &[stale]).unwrap_err();
+    assert!(
+        error.contains("stale.rs is not byte-identical to region `second` of source.rs"),
+        "{error}"
+    );
+    assert!(
+        check_listings(&root, &[missing_anchor])
+            .unwrap_err()
+            .contains("no anchor `nope`")
+    );
+    assert!(
+        check_listings(&root, &[missing_file])
+            .unwrap_err()
+            .contains("absent.rs")
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_list_of_entries_is_the_members_of_the_gallery_workspace() {
+    let manifest = repository_file("gallery/Cargo.toml");
+    let mut members = workspace_members(&manifest).unwrap();
+    members.sort();
+    let mut entries = ENTRIES
+        .iter()
+        .map(|entry| entry.dir.to_owned())
+        .collect::<Vec<_>>();
+    entries.sort();
+    assert_eq!(members, entries);
+    assert_eq!(
+        entries,
+        [
+            "hello-gust",
+            "histogram",
+            "image-threshold",
+            "particles",
+            "reduce-scan",
+            "saxpy-uniform"
+        ]
+    );
+}
+
+#[test]
+fn workspace_members_reads_a_multi_line_array_and_ignores_comments() {
+    let manifest = "# members = [\"no\"]\n[workspace]\nmembers = [\n    \"a\", # one\n    \"b\",\n]\nresolver = \"3\"\n";
+    // The comment line before `[workspace]` is skipped like any line that does not start with `members`.
+    assert_eq!(workspace_members(manifest).unwrap(), ["a", "b"]);
+    assert!(workspace_members("[workspace]\nresolver = \"3\"\n").is_err());
+}
+
+fn environment(pairs: &[(&str, &OsStr)]) -> Vec<(OsString, OsString)> {
+    pairs
+        .iter()
+        .map(|(name, value)| (OsString::from(*name), (*value).to_owned()))
+        .collect()
+}
+
+fn never_found(_: &[(OsString, OsString)]) -> Result<(), String> {
+    Ok(())
+}
+
+/// A scratch tree: `slang/` holds a `slangc`, `helper/` a `gust-slang-reflect`, `shared/` a `slangc` and a `cargo`,
+/// `plain/` a `cargo`; `home/` is empty. The path is `plain`, `slang`, `helper`.
+fn fake_machine(name: &str) -> (PathBuf, OsString) {
+    let root = scratch(name);
+    for (folder, files) in [
+        ("slang", &["slangc", "slangc.exe"][..]),
+        (
+            "helper",
+            &["gust-slang-reflect", "gust-slang-reflect.exe"][..],
+        ),
+        (
+            "shared",
+            &["slangc", "slangc.exe", "cargo", "cargo.exe"][..],
+        ),
+        ("plain", &["cargo", "cargo.exe"][..]),
+        ("home", &[][..]),
+    ] {
+        fs::create_dir_all(root.join(folder)).unwrap();
+        for file in files {
+            write(&root.join(folder), file, "");
+        }
+    }
+    let path =
+        std::env::join_paths(["plain", "slang", "helper"].map(|folder| root.join(folder))).unwrap();
+    (root, path)
+}
+
+#[test]
+fn the_slang_folders_and_variables_are_taken_out_and_the_rest_is_kept() {
+    let (root, path) = fake_machine("strip");
+    let parent = environment(&[
+        ("PATH", &path),
+        ("KEEP", OsStr::new("1")),
+        ("GUST_SLANG_HOME", OsStr::new("/cache")),
+        ("VULKAN_SDK", OsStr::new("/sdk")),
+        ("VK_SDK_PATH", OsStr::new("/sdk")),
+        ("GUST_EXPORT_DIR", OsStr::new("/export")),
+        ("MY_SLANG_THING", OsStr::new("x")),
+        ("GUST_PROFILE", OsStr::new("dev")),
+    ]);
+    let (child, report) = no_slang_environment(
+        &parent,
+        &root.join("home"),
+        &directory_has_slang_tool,
+        &folder_holds,
+        &never_found,
+    )
+    .unwrap();
+    let value = |name: &str| {
+        child
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+    };
+    assert_eq!(
+        std::env::split_paths(&value("PATH").unwrap()).collect::<Vec<_>>(),
+        [root.join("plain")]
+    );
+    assert_eq!(value("KEEP"), Some(OsString::from("1")));
+    assert_eq!(value("GUST_PROFILE"), Some(OsString::from("native")));
+    for name in [
+        "VULKAN_SDK",
+        "VK_SDK_PATH",
+        "GUST_EXPORT_DIR",
+        "MY_SLANG_THING",
+    ] {
+        assert_eq!(value(name), None, "{name}");
+    }
+    // The only Slang variable left is the empty scratch home.
+    assert_eq!(
+        value("GUST_SLANG_HOME"),
+        Some(root.join("home").into_os_string())
+    );
+    assert_eq!(
+        report.directories,
+        [root.join("slang"), root.join("helper")]
+    );
+    assert_eq!(report.variables.len(), 5, "{:?}", report.variables);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_post_check_can_fail_when_the_stripping_missed_a_slang_folder() {
+    let (root, path) = fake_machine("missed");
+    let parent = environment(&[("PATH", &path)]);
+    // A stripping that lies (it sees no Slang tool anywhere) leaves the folders in; `slang_free_problems` with the
+    // honest predicate must then name them.
+    let mut report = StripReport::default();
+    let child = child_environment(&parent, &|_: &Path| false, &mut report);
+    assert!(report.directories.is_empty());
+    let problems = slang_free_problems(&child, &directory_has_slang_tool);
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(
+        problems.iter().all(|p| p.contains("holds a Slang tool")),
+        "{problems:?}"
+    );
+    // The assembled check fails the same way when the independent lookup finds slangc.
+    let finds = |_: &[(OsString, OsString)]| Err("`slangc` is found".to_owned());
+    let error = no_slang_environment(
+        &parent,
+        &root.join("home"),
+        &directory_has_slang_tool,
+        &folder_holds,
+        &finds,
+    )
+    .unwrap_err();
+    assert!(error.contains("`slangc` is found"), "{error}");
+    // And when the predicate used for the stripping misses the folders (the post-check uses the same one, so only the
+    // lookup can catch this): the real lookup is exercised in the next test.
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_real_lookup_finds_a_slangc_that_a_missed_stripping_leaves_on_the_path() {
+    let (root, path) = fake_machine("lookup");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for file in ["slang/slangc", "shared/slangc"] {
+            fs::set_permissions(root.join(file), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    // `cmd` needs SystemRoot and `where` lives in System32, which is on both paths; the folders under test come first.
+    let mut with_slang = environment(&[("PATH", &path)]);
+    let mut clean = environment(&[("PATH", root.join("plain").as_os_str())]);
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+        let system32 = PathBuf::from(&system_root).join("System32");
+        for (list, folders) in [
+            (
+                &mut with_slang,
+                std::env::split_paths(&path).collect::<Vec<_>>(),
+            ),
+            (&mut clean, vec![root.join("plain")]),
+        ] {
+            let mut folders = folders;
+            folders.push(system32.clone());
+            list[0].1 = std::env::join_paths(folders).unwrap();
+            list.push((OsString::from("SystemRoot"), system_root.clone()));
+        }
+    }
+    // The Slang case must fail because `slangc` was found, not because the lookup itself could not run.
+    let error = slangc_cannot_be_found(&with_slang).unwrap_err();
+    assert!(
+        error.contains("is found with the stripped environment"),
+        "{error}"
+    );
+    assert!(!error.contains("could not run"), "{error}");
+    assert_eq!(slangc_cannot_be_found(&clean), Ok(()));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_cache_that_holds_slang_or_is_missing_is_refused() {
+    let (root, path) = fake_machine("cache");
+    let parent = environment(&[("PATH", &path)]);
+    assert_eq!(slang_home_problem(&root.join("home")), None);
+    // A fake cache with an installed Slang in it (`<home>/<version>/bin/slangc`).
+    fs::create_dir_all(root.join("cache/2026.22/bin")).unwrap();
+    write(&root.join("cache/2026.22/bin"), "slangc", "");
+    let problem = slang_home_problem(&root.join("cache")).unwrap();
+    assert!(problem.contains("is not empty"), "{problem}");
+    let error = no_slang_environment(
+        &parent,
+        &root.join("cache"),
+        &directory_has_slang_tool,
+        &folder_holds,
+        &never_found,
+    )
+    .unwrap_err();
+    assert!(error.contains("is not empty"), "{error}");
+    let missing = slang_home_problem(&root.join("absent")).unwrap();
+    assert!(missing.contains("cannot be read"), "{missing}");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_slang_folder_that_also_holds_the_cargo_is_refused_not_dropped() {
+    let (root, _) = fake_machine("shared");
+    let shared = std::env::join_paths([root.join("shared"), root.join("plain")]).unwrap();
+    let parent = environment(&[("PATH", &shared)]);
+    let error = no_slang_environment(
+        &parent,
+        &root.join("home"),
+        &directory_has_slang_tool,
+        &folder_holds,
+        &never_found,
+    )
+    .unwrap_err();
+    assert!(error.contains("`cargo`"), "{error}");
+    assert!(error.contains("shared"), "{error}");
+    assert!(shared_folder_problems(&[root.join("slang")], &folder_holds).is_empty());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_tree_with_the_run_time_bridge_is_recognised() {
+    assert!(tree_has_slang_runtime(
+        "hello-gust\n└── gust-compute-wgpu feature \"slang-runtime\"\n"
+    ));
+    assert!(!tree_has_slang_runtime(
+        "hello-gust\n└── gust-compute-wgpu feature \"default\"\n"
+    ));
+}
+
+#[test]
+fn the_adapter_is_the_name_after_the_prefix() {
+    assert_eq!(
+        adapter_name("hello-gust: [1.0]\nadapter: NVIDIA GeForce RTX 5090 \n"),
+        Some("NVIDIA GeForce RTX 5090")
+    );
+    assert_eq!(adapter_name("hello-gust: [1.0]\n"), None);
+    assert_eq!(adapter_name("adapter: \n"), None);
+    assert_eq!(adapter_name("an adapter: x\n"), None);
+}
+
+#[test]
+fn a_crlf_packaged_listing_matches_and_any_other_difference_does_not() {
+    let region = "fn one() {}\n\nfn two() {}\n";
+    assert!(listing_matches(
+        b"fn one() {}\r\n\r\nfn two() {}\r\n",
+        region
+    ));
+    assert!(listing_matches(b"fn one() {}\n\nfn two() {}\n", region));
+    assert!(!listing_matches(b"fn one() {}\r\n\r\nfn two() {}", region));
+    assert!(
+        !listing_matches(b"fn one() {}\r\r\nfn two() {}\n", region),
+        "a lone CR is text"
+    );
+    assert_eq!(lf_line_ends(b"a\r\nb\rc\r\n"), b"a\nb\rc\n");
+    // The file check: a CRLF copy of the region passes, and the same file with a changed byte fails.
+    let root = scratch("crlf");
+    write(&root, "source.rs", &SOURCE.replace('\n', "\r\n"));
+    write(&root, "good.rs", "fn three() {}\r\n");
+    write(&root, "bad.rs", "fn three() {x}\r\n");
+    let listing = |packaged| Listing {
+        packaged,
+        source: "source.rs",
+        anchor: "second",
+    };
+    assert_eq!(check_listings(&root, &[listing("good.rs")]), Ok(1));
+    assert!(check_listings(&root, &[listing("bad.rs")]).is_err());
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn files(items: &[(&str, &str)]) -> Vec<(String, Vec<u8>)> {
+    items
+        .iter()
+        .map(|(name, bytes)| ((*name).to_owned(), bytes.as_bytes().to_vec()))
+        .collect()
+}
+
+#[test]
+fn artifact_trees_differ_by_name_set_or_by_one_byte() {
+    let committed = files(&[("a.wgsl", "x"), ("manifest.json", "{}")]);
+    assert_eq!(tree_difference(&committed, &committed), None);
+    assert!(
+        tree_difference(&committed, &files(&[("a.wgsl", "x")]))
+            .unwrap()
+            .contains("file lists differ")
+    );
+    assert!(
+        tree_difference(
+            &committed,
+            &files(&[("b.wgsl", "x"), ("manifest.json", "{}")])
+        )
+        .unwrap()
+        .contains("file lists differ")
+    );
+    assert_eq!(
+        tree_difference(
+            &committed,
+            &files(&[("a.wgsl", "y"), ("manifest.json", "{}")])
+        )
+        .as_deref(),
+        Some("a.wgsl differs from the fresh build")
+    );
+    assert_eq!(
+        tree_difference(
+            &committed,
+            &files(&[("a.wgsl", "x"), ("manifest.json", "{} ")])
+        )
+        .as_deref(),
+        Some("manifest.json differs from the fresh build")
+    );
+}
+
+#[test]
+fn the_expected_line_must_be_a_whole_line_of_the_output() {
+    let line = ENTRIES[0].expected_line;
+    assert!(output_has_line(&format!("{line}\n"), line));
+    assert!(output_has_line(&format!("noise\n{line}  \r\nmore\n"), line));
+    assert!(!output_has_line(&format!("prefix {line}\n"), line));
+    assert!(!output_has_line(
+        "hello-gust: [11.0, 22.0, 33.0, 45.0]\n",
+        line
+    ));
+    assert!(!output_has_line("", line));
+}
+
+#[test]
+fn tail_keeps_the_last_lines() {
+    assert_eq!(tail("a\nb\nc\nd", 2), "c\nd");
+    assert_eq!(tail("a", 5), "a");
+    assert_eq!(tail("", 3), "");
+}
+
+/// The text of one job of ci.yml: from its header line to the next job.
+fn job(ci: &str, name: &str) -> String {
+    let start = ci.find(&format!("\n  {name}:\n")).expect(name) + 1;
+    let rest = &ci[start..];
+    let end = rest
+        .match_indices("\n  ")
+        .find(|(index, _)| {
+            rest[index + 3..]
+                .chars()
+                .next()
+                .is_some_and(|c| c != ' ' && c != '#' && c != '\n')
+        })
+        .map_or(rest.len(), |(index, _)| index);
+    rest[..end].to_owned()
+}
+
+#[test]
+fn ci_runs_the_slang_part_in_the_slang_job_and_the_no_slang_part_in_the_unit_job_only() {
+    let ci = repository_file(".github/workflows/ci.yml");
+    let slang = job(&ci, "slang");
+    let unit = job(&ci, "unit");
+    assert!(
+        slang.contains("        run: cargo --locked xtask check-gallery --slang\n"),
+        "{slang}"
+    );
+    assert!(
+        unit.contains("        run: cargo --locked xtask check-gallery --no-slang\n"),
+        "{unit}"
+    );
+    assert!(
+        !slang.contains("--no-slang") && !slang.contains("--gpu"),
+        "{slang}"
+    );
+    assert!(
+        !unit.contains("check-gallery --slang") && !unit.contains("--gpu"),
+        "{unit}"
+    );
+    // Two steps in the whole workflow, no GPU part anywhere (the lavapipe step is a later slice).
+    let steps = ci
+        .lines()
+        .filter(|line| line.trim_start().starts_with("run:") && line.contains("check-gallery"))
+        .count();
+    assert_eq!(steps, 2, "{ci}");
+    assert!(!ci.contains("check-gallery --gpu"));
+    // The slang job installs the Slang before the gallery step uses it.
+    let install = slang.find("gust slang install").expect("install step");
+    let gallery = slang.find("check-gallery --slang").expect("gallery step");
+    assert!(install < gallery);
+}
+
+#[test]
+fn check_full_runs_only_the_gpu_part_of_the_gallery() {
+    let source = repository_file("xtask/src/verify.rs");
+    assert!(source.contains("check_gallery_gpu_report()"));
+    // The call sits directly inside the Full-mode branch, so no other mode runs it.
+    let call = source
+        .find("check_gallery_gpu_report().map")
+        .expect("the call");
+    assert!(
+        source[..call]
+            .trim_end()
+            .trim_end_matches("let outcome =")
+            .trim_end()
+            .ends_with("if mode == VerifyMode::Full {"),
+        "the gallery step is not the first statement of `if mode == VerifyMode::Full`"
+    );
+    let usage = repository_file("xtask/src/main.rs");
+    assert!(
+        usage.contains("`check-full` runs the GPU part only"),
+        "usage"
+    );
+    assert!(!source.contains("check_gallery_report"));
+    let gallery = repository_file("xtask/src/gallery.rs");
+    let gpu = gallery
+        .split("pub(crate) fn check_gallery_gpu_report()")
+        .nth(1)
+        .expect("check_gallery_gpu_report");
+    let body = &gpu[..gpu.find("\n}\n").expect("end")];
+    assert!(
+        body.contains("slang: false")
+            && body.contains("no_slang: false")
+            && body.contains("gpu: true")
+    );
+}

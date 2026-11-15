@@ -354,6 +354,7 @@ impl HeadlessDevice {
     }
 
     /// Fail with [`Error::MixedDevices`] unless `other` is this device's id.
+    #[doc(hidden)]
     pub fn check_same_device(&self, other: u64) -> Result<(), Error> {
         if self.id == other {
             Ok(())

@@ -18,6 +18,7 @@ use std::collections::HashMap;
 
 /// Which route compiled a kernel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Route {
     /// slangc's SPIR-V through passthrough.
     Spirv,
@@ -27,6 +28,7 @@ pub enum Route {
 
 /// The route one kernel took when its pipeline was built, and why it did not take the SPIR-V route.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RouteEvent {
     /// The qualified name of the kernel.
     pub kernel: String,

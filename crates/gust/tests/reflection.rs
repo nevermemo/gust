@@ -2009,12 +2009,7 @@ mod schema_three {
         let descriptor = descriptor.with_slang_source(SOURCE);
         verify_artifact(
             &descriptor,
-            &Artifact {
-                format: ArtifactFormat::Wgsl,
-                key: "0000000000000000",
-                bytes,
-                reflection,
-            },
+            &Artifact::new(ArtifactFormat::Wgsl, "0000000000000000", bytes, reflection),
         )
     }
 

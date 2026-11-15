@@ -47,6 +47,7 @@ pub enum TransferDirection {
 
 /// One host/GPU transfer performed by an executed graph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TransferRecord {
     /// The node that made the transfer.
     pub node: NodeId,
@@ -146,6 +147,15 @@ fn readback_kind<'a, T: GpuPod>(buffer: &'a GpuBuffer<T>) -> NodeKind<'a> {
 #[derive(Default)]
 pub struct StagedGraph<'a> {
     nodes: Vec<Node<'a>>,
+}
+
+impl std::fmt::Debug for StagedGraph<'_> {
+    /// The number of nodes.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StagedGraph")
+            .field("nodes", &self.nodes.len())
+            .finish()
+    }
 }
 
 impl<'a> StagedGraph<'a> {

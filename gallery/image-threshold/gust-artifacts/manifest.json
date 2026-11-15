@@ -1,0 +1,38 @@
+{
+  "kernels": [
+    {
+      "clean_sha256": "1b732068b59eb86a7ef24df8b2cdaac935f4813212759b1dd4f2e2b5e6696453",
+      "entry_point": "gpu_threshold_binarize",
+      "formats": [
+        {
+          "file": "0f838e404feee7ae.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "6cdd37399211544b539d126567f88a03de6ea8f6245b6d3ab6c6c35ed491f206",
+          "sha256": "897a0c26c284970fdd0b87c68ac5545631606f25759c8db876612cd6049418fc"
+        }
+      ],
+      "key": "0f838e404feee7ae",
+      "module": "threshold",
+      "name": "binarize",
+      "shape": "grid"
+    },
+    {
+      "clean_sha256": "5290397e07fede73e7db67fc74125165ed8955ce216ebfeb0180a2f11d9f422a",
+      "entry_point": "gpu_threshold_flag",
+      "formats": [
+        {
+          "file": "34674515574a2ca4.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "cd5732f134152aad7b2d8510b0225bb4999baa6e923224010183466e54bbe7fd",
+          "sha256": "5637d8c0fce36af571f3c5783fad8eca0b02b6131c99be1a9320025f06b5598d"
+        }
+      ],
+      "key": "34674515574a2ca4",
+      "module": "threshold",
+      "name": "flag",
+      "shape": "pixel"
+    }
+  ],
+  "schema": 2,
+  "slang": "2026.22"
+}

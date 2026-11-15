@@ -59,6 +59,7 @@ impl From<Format> for Target {
 
 /// Compiler output for one kernel plus the helper's raw reflection JSON for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Artifact {
     /// The compiler output format of `bytes`.
     pub format: Format,
@@ -72,8 +73,56 @@ pub struct Artifact {
     pub reflection: &'static str,
 }
 
+impl Artifact {
+    /// An artifact of `format` with `key`, `bytes` and `reflection` (the fields of the same names).
+    ///
+    /// The struct is `#[non_exhaustive]` (0.2.0), so a later field is not a breaking change and a literal is no longer
+    /// possible outside this crate: `Artifact { format, key, bytes, reflection }` becomes
+    /// `Artifact::new(format, key, bytes, reflection)`. The function is `const`, so an artifact can still be a `const`
+    /// or sit in a `&'static` slice.
+    pub const fn new(
+        format: Format,
+        key: &'static str,
+        bytes: &'static [u8],
+        reflection: &'static str,
+    ) -> Self {
+        Self {
+            format,
+            key,
+            bytes,
+            reflection,
+        }
+    }
+
+    /// The artifact with `format` as its [`format`](Self::format). Struct-update syntax
+    /// (`Artifact { format, ..BASE }`) becomes `BASE.with_format(format)`.
+    pub const fn with_format(mut self, format: Format) -> Self {
+        self.format = format;
+        self
+    }
+
+    /// The artifact with `key` as its [`key`](Self::key).
+    pub const fn with_key(mut self, key: &'static str) -> Self {
+        self.key = key;
+        self
+    }
+
+    /// The artifact with `bytes` as its [`bytes`](Self::bytes).
+    pub const fn with_bytes(mut self, bytes: &'static [u8]) -> Self {
+        self.bytes = bytes;
+        self
+    }
+
+    /// The artifact with `reflection` as its [`reflection`](Self::reflection).
+    pub const fn with_reflection(mut self, reflection: &'static str) -> Self {
+        self.reflection = reflection;
+        self
+    }
+}
+
 /// What [`verify_artifact`] established about an artifact.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Verified {
     /// The artifact bytes with the stored reflection read from the JSON.
     pub compiled: CompiledReflection,

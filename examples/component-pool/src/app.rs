@@ -1334,13 +1334,14 @@ mod tests {
         let spawned = spawn(3, 2, 1);
         let growth = device.pool_push(&mut particles, &spawned).unwrap().unwrap();
         reference.extend(spawned);
+        // `GrowthRecord` is `#[non_exhaustive]`: compare its fields, not a literal.
         assert_eq!(
-            growth,
-            gust_wgpu::GrowthRecord {
-                old_capacity: 4,
-                new_capacity: 8,
-                copied_bytes: 3 * size_of::<Particle>() as u64
-            }
+            (
+                growth.old_capacity,
+                growth.new_capacity,
+                growth.copied_bytes
+            ),
+            (4, 8, 3 * size_of::<Particle>() as u64)
         );
         let spawned = spawn(5, 65, 1);
         let growth = device.pool_push(&mut particles, &spawned).unwrap().unwrap();

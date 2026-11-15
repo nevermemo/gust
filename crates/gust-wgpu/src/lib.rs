@@ -61,13 +61,14 @@
 //! them at the same version, and a minor bump of one is a minor bump of all.
 //!
 //! What a minor bump may change: any public item that is not support surface, including a function's signature and
-//! the public fields of the plain record types (`BufferDispatch`, `DeviceOptions`, `PoolStats` and the like).
+//! the public fields of the plain record types (`BufferDispatch`, `DeviceOptions` and the like).
 //! Every public enum is `#[non_exhaustive]` ([`Error`], `AdapterChoice`, `LimitsPolicy` and `FeaturesPolicy` among
 //! them) except `TransferDirection`, `GpuBufferAccess` and the binding enums (`F32Binding`, `U32Binding` and
 //! `F32BufferBinding`), which are closed sets: a new variant of the others is not a breaking change and a `match`
 //! outside this crate needs a wildcard arm; the variants themselves are not, so adding a field to a struct variant is a
-//! breaking change and comes only in a minor bump. A `GraphReport` is `#[non_exhaustive]` and only this crate builds
-//! one.
+//! breaking change and comes only in a minor bump. The statistics and timing records (`PipelineCacheStats`, `PoolStats`,
+//! `GrowthRecord`, `TransferRecord`, `TransferTiming`, `DispatchTiming` and `RouteEvent`) and `GraphReport` are
+//! `#[non_exhaustive]` and only this crate builds one: read their fields, and a later release may add one.
 //!
 //! # Support surface
 //!
@@ -77,6 +78,7 @@
 //! wrote.
 
 #![warn(missing_docs)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]
 
 use std::{
@@ -114,6 +116,10 @@ mod map_host;
 #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
 mod passthrough;
 #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "spirv-route", not(target_arch = "wasm32"))))
+)]
 pub use passthrough::{Route, RouteEvent};
 
 /// Whether this build has the opt-in SPIR-V route (the Cargo feature `spirv-route`, m9.rt2): the kernels are then emitted with
@@ -354,6 +360,18 @@ pub struct GpuBuffer<T> {
     marker: PhantomData<T>,
 }
 
+impl<T> std::fmt::Debug for GpuBuffer<T> {
+    /// Length, access and owning device; never the raw wgpu handle.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuBuffer")
+            .field("len", &self.len)
+            .field("access", &self.access)
+            .field("device_id", &self.device_id)
+            .field("indirect", &self.indirect)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<T> GpuBuffer<T> {
     /// The number of elements.
     pub const fn len(&self) -> usize {
@@ -407,6 +425,15 @@ pub struct GpuUniform<T> {
     layout: gust::TypeLayout,
     device_id: u64,
     marker: PhantomData<T>,
+}
+
+impl<T> std::fmt::Debug for GpuUniform<T> {
+    /// The owning device; never the raw wgpu handle.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuUniform")
+            .field("device_id", &self.device_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<T> GpuUniform<T> {
@@ -614,6 +641,19 @@ pub struct BufferDispatch<'a> {
     samplers: &'a [GpuSamplerBinding<'a>],
 }
 
+impl std::fmt::Debug for BufferDispatch<'_> {
+    /// The kernel's name, the extent and the number of bindings.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BufferDispatch")
+            .field("kernel", &self.kernel.name)
+            .field("element_count", &self.element_count)
+            .field("extent_yz", &self.extent_yz)
+            .field("bindings", &self.bindings.len())
+            .field("samplers", &self.samplers.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a> BufferDispatch<'a> {
     /// A one-dimensional dispatch of `element_count` invocations: the extent `element_count x 1 x 1`.
     pub const fn new(
@@ -707,6 +747,7 @@ pub struct U32DispatchOutput {
 
 /// Host-observed time for an explicit transfer boundary.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TransferTiming {
     /// Number of application bytes transferred.
     pub bytes: u64,
@@ -716,6 +757,7 @@ pub struct TransferTiming {
 
 /// Host and device measurements for one synchronous persistent submission.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DispatchTiming {
     /// Wall-clock time including bind-group/command encoding, submission, and synchronization.
     pub host_elapsed: Duration,
@@ -830,6 +872,15 @@ impl WgpuJob<'_> {
             Ok(_) | Err(wgpu::PollError::Timeout) => Ok(JobStatus::Pending),
             Err(error) => Err(Error::Poll(error.to_string())),
         }
+    }
+}
+
+impl std::fmt::Debug for WgpuJob<'_> {
+    /// Whether the job submitted work; never the raw wgpu handles.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WgpuJob")
+            .field("submitted", &self.submission.is_some())
+            .finish_non_exhaustive()
     }
 }
 
@@ -1332,6 +1383,18 @@ pub struct HeadlessDevice {
     /// The route each kernel's pipeline was built from, in build order (`HeadlessDevice::route_events`).
     #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
     route_events: Mutex<Vec<RouteEvent>>,
+}
+
+impl std::fmt::Debug for HeadlessDevice {
+    /// The device's id, the adapter's name and backend, and the capabilities; never the raw wgpu handles.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeadlessDevice")
+            .field("id", &self.id)
+            .field("adapter", &self.adapter_info.name)
+            .field("backend", &self.adapter_info.backend)
+            .field("capabilities", &self.capabilities)
+            .finish_non_exhaustive()
+    }
 }
 
 impl HeadlessDevice {
@@ -2889,6 +2952,10 @@ impl HeadlessDevice {
     /// With the environment variable `GUST_SPIRV_ROUTE_LOG=<file>` set, every event is also appended to that file as a line
     /// `<kernel> <Spirv|Wgsl> <reason>`, which is how `check-difftest` shows the route of generated crates.
     #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(all(feature = "spirv-route", not(target_arch = "wasm32"))))
+    )]
     pub fn route_events(&self) -> Vec<RouteEvent> {
         self.route_events
             .lock()
@@ -3698,12 +3765,8 @@ mod tests {
     use super::*;
     use gust::ResourceBinding;
 
-    const WGSL_ARTIFACT: gust::Artifact = gust::Artifact {
-        format: gust::Format::Wgsl,
-        key: "0123456789abcdef",
-        bytes: b"",
-        reflection: "",
-    };
+    const WGSL_ARTIFACT: gust::Artifact =
+        gust::Artifact::new(gust::Format::Wgsl, "0123456789abcdef", b"", "");
 
     #[test]
     fn a_kernel_with_a_wgsl_artifact_uses_it_with_or_without_the_run_time_compiler() {
@@ -3731,10 +3794,8 @@ mod tests {
     fn a_kernel_without_an_artifact_in_a_build_without_the_compiler_is_no_artifact() {
         // The `slang-runtime` feature is always on in tests (the self dev-dependency), so this is the one place the
         // off-state policy runs: through the argument that stands for the feature.
-        let spirv_only = DESCRIPTOR.with_artifacts(&[gust::Artifact {
-            format: gust::Format::Spirv,
-            ..WGSL_ARTIFACT
-        }]);
+        const SPIRV: gust::Artifact = WGSL_ARTIFACT.with_format(gust::Format::Spirv);
+        let spirv_only = DESCRIPTOR.with_artifacts(&[SPIRV]);
         for kernel in [&DESCRIPTOR, &spirv_only] {
             let error = select_shader_source(kernel, false)
                 .expect_err("no WGSL artifact and no compiler is an error, not a fallback");

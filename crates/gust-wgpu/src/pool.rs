@@ -12,6 +12,7 @@ use crate::{Error, GpuBuffer, GpuBufferAccess, HeadlessDevice};
 
 /// Evidence for one host-driven growth step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct GrowthRecord {
     /// The capacity in elements before the growth.
     pub old_capacity: usize,
@@ -35,6 +36,19 @@ pub struct GpuPool<T: GpuPod> {
     generation: u64,
     retired: Vec<Retired>,
     growths: Vec<GrowthRecord>,
+}
+
+impl<T: GpuPod> std::fmt::Debug for GpuPool<T> {
+    /// Length, capacity, generation and owning device; never the raw wgpu handles.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuPool")
+            .field("len", &self.len)
+            .field("capacity", &self.buffer.len())
+            .field("generation", &self.generation)
+            .field("device_id", &self.buffer.device_id)
+            .field("growths", &self.growths.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl HeadlessDevice {
@@ -289,6 +303,7 @@ use std::{
 
 /// Allocations of at most this many bytes are pooled by their exact size; larger ones by the next power of two (or
 /// by the device's `max_buffer_size` when that is smaller).
+#[doc(hidden)]
 pub const EXACT_CLASS_BYTES: u64 = 64 * 1024;
 
 /// The most bytes a pool keeps idle by default (1 GiB). Past it the least recently returned buffers are dropped.
@@ -296,6 +311,7 @@ pub const DEFAULT_POOL_BYTES_MAX: u64 = 1 << 30;
 
 /// Counters of a [`BufferPool`], for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PoolStats {
     /// Hand-outs served from an idle buffer.
     pub hits: u64,

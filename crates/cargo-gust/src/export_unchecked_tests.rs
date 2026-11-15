@@ -121,12 +121,12 @@ fn null_layouts_are_filled_from_the_reflection_and_the_artifact_still_verifies()
 fn the_export_cross_check_completes_a_null_layout_first_and_never_sees_a_null_one() {
     let reflection = verify_artifact(
         &vector_add::add::DESCRIPTOR,
-        &Artifact {
-            format: Format::Wgsl,
-            key: VECTOR_ADD_KEY,
-            bytes: VECTOR_ADD_WGSL,
-            reflection: VECTOR_ADD_REFLECTION,
-        },
+        &Artifact::new(
+            Format::Wgsl,
+            VECTOR_ADD_KEY,
+            VECTOR_ADD_WGSL,
+            VECTOR_ADD_REFLECTION,
+        ),
     )
     .unwrap()
     .compiled

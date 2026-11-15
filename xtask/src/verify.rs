@@ -11,6 +11,7 @@ use crate::{
     checks::{GOLDEN_SPIRV_SETS, check_dual, tests_not_ok},
     difftest::check_difftest_report,
     docs::docs_check,
+    gallery::check_gallery_gpu_report,
     lint::lint,
     precompiled::check_precompiled_report,
     process::{
@@ -384,6 +385,13 @@ fn verify_inner(
                 skipped.push(name.to_owned());
             }
         }
+    }
+    // The GPU part of `check-gallery` (m10.g0): `cargo run --release` per gallery entry on the adapter. It is not part of
+    // `integration_checks`: that list is pinned by tests, and only this part of the gallery check belongs to the full
+    // gate (the Slang and no-Slang parts run in CI).
+    if mode == VerifyMode::Full {
+        let outcome = check_gallery_gpu_report().map(|summary| format!("{summary}\n"));
+        run_integration(checks, "check-gallery", outcome)?;
     }
     Ok(())
 }
@@ -1004,8 +1012,18 @@ pub(crate) struct GpuSuitePin {
 /// limitation widens only the `CastInt` slots of CT-80 and CT-84 by the source integer (it needs no adapter and runs
 /// with the feature off too). The two route tests that changed (`spirv_route.rs`, `workgroup_zero.rs`) keep their
 /// count.
+///
+/// Slice m10.api1: 453 over 49 became 454 over 49. One new test in `tests/limits.rs`, the O5 pin: the infallible
+/// `create_typed_buffer` above `max_buffer_size` panics in wgpu (it needs an adapter).
+///
+/// Slice m10.api2a.1 (W18): 454 over 49 became 458 over 49. Four new tests:
+/// `timed_typed_transfers_report_their_bytes_and_round_trip` and
+/// `pool_reserve_grows_geometrically_and_keeps_the_live_prefix` in `tests/typed.rs`, and
+/// `enumerate_async_lists_the_adapters_enumerate_lists` and
+/// `coherent_storage_is_reported_only_when_the_adapter_offers_it` in `tests/device_options.rs`.
+/// (`create_zeroed_buffer_async` exists on `wasm32` only, so no native test reaches it.)
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 453,
+    passed: 458,
     result_lines: 49,
 };
 

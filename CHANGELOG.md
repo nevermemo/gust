@@ -364,14 +364,18 @@ form that was written by hand would refuse the form a published crate carries. T
 ### Compatibility with the unpublished 0.1.0 line
 
 The `semver` job of CI compares `gust-compute` and `gust-compute-wgpu` with the branch `release/0.1` (the unpublished
-0.1.0; it is the baseline until 0.2.0 is on crates.io) with `cargo-semver-checks` 0.51.0. On the merge of m8.x1 into `main` (`ci.yml` run 42518513308, job `semver`; the job treats
-its findings as expected and stays green; run 42518612375 on `main` at `85d62fd` was green too, and `c245266..85d62fd`
-changed documentation only, so the counts hold), the job found:
+0.1.0; it is the baseline until 0.2.0 is on crates.io) with `cargo-semver-checks` 0.51.0, `--release-type patch`. On
+the release candidate (`ci.yml` run 43719222853, job `semver`, at `9895659`; the job treats its findings as expected and
+stays green; the commit after it changed this record only, so the counts hold), the job found:
 
-- `gust-compute`: 229 checks, 228 passed, 31 skipped, 1 failed. The failure is `struct_marked_non_exhaustive` for
-  `KernelDescriptor` (`crates/gust/src/descriptor.rs`), which is B1, so the tool says a new major version is required
-  (for 0.x, a minor bump).
-- `gust-compute-wgpu`: 229 checks, all passed, 31 skipped, no version update required.
+- `gust-compute`: 229 checks, 228 passed, 31 skipped, 1 failed: `struct_marked_non_exhaustive` for `KernelDescriptor`
+  (B1), `ModuleDescriptor`, `Artifact` and `Verified` (B6). The tool says a new major version is required (for 0.x,
+  a minor bump).
+- `gust-compute-wgpu`: 229 checks, 224 passed, 31 skipped, 5 failed: `struct_marked_non_exhaustive` for the six record
+  structs of B5; `inherent_method_now_doc_hidden` for `HeadlessDevice::check_same_device` and
+  `pub_module_level_const_now_doc_hidden` for `EXACT_CLASS_BYTES` (B7); `type_marked_deprecated` (six types) and
+  `type_method_marked_deprecated` (13 methods) for the f32/u32 compatibility family, which is deprecated, not removed
+  (a warning, not a break).
 - What the job cannot see: the `GpuKernel` bound (hidden from the docs), the changed defaults above, the `toml`
   dependency, and `cargo-gust` (a binary).
 

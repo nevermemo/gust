@@ -1022,8 +1022,12 @@ pub(crate) struct GpuSuitePin {
 /// `enumerate_async_lists_the_adapters_enumerate_lists` and
 /// `coherent_storage_is_reported_only_when_the_adapter_offers_it` in `tests/device_options.rs`.
 /// (`create_zeroed_buffer_async` exists on `wasm32` only, so no native test reaches it.)
+///
+/// Slice m10.k0: 458 over 49 became 459 over 49. One new doctest in `gust_wgpu`: the `gust_wgpu::guide` page compiles
+/// the whole hello-gust program (`no_run`), counted on the existing `Doc-tests gust_wgpu` result line. The merge of k0
+/// missed it because its PR did not run the lavapipe workflow; the push run on `main` caught it.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 458,
+    passed: 459,
     result_lines: 49,
 };
 

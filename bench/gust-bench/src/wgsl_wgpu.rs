@@ -54,20 +54,20 @@ impl WgpuContext {
     /// for the Windows adapter probe, the profile mode and the tests.
     #[cfg(any(windows, test, feature = "profile-counts"))]
     pub fn new() -> BenchResult<Self> {
-        Self::open_with(None, false, false, None)
+        Self::open_with(None, false, false, None, false)
     }
 
     /// Opens the device; with `trace` (a `wgpu-trace` build) wgpu writes its API trace of this device into that directory.
     #[cfg(feature = "wgpu-trace")]
     pub fn open(trace: Option<&std::path::Path>) -> BenchResult<Self> {
-        Self::open_with(trace, false, false, None)
+        Self::open_with(trace, false, false, None, false)
     }
 
     /// A device set up the way `HeadlessDevice` sets its own up (the m10.b1c probe `gust-setup`): it also requests
     /// `MEMORY_DECORATION_COHERENT` when the adapter has it (`gust-wgpu` `lib.rs`, `HeadlessDevice::open`). On the adapter
     /// whose name contains `adapter` (`--adapter`), or the high-performance one with `None`.
     pub fn open_like_gust_on(adapter: Option<&str>) -> BenchResult<Self> {
-        Self::open_with(None, true, false, adapter)
+        Self::open_with(None, true, false, adapter, false)
     }
 
     /// The default device on the adapter whose name contains `adapter` (`--adapter`), or the high-performance one with
@@ -75,7 +75,16 @@ impl WgpuContext {
     /// `max_compute_workgroups_per_dimension` (every other limit at wgpu's default), as `LimitsPolicy::Adapter` does for
     /// `HeadlessDevice`: the one a W7 input above 2^25 words needs.
     pub fn open_on(adapter: Option<&str>, adapter_limits: bool) -> BenchResult<Self> {
-        Self::open_with(None, false, adapter_limits, adapter)
+        Self::open_with(None, false, adapter_limits, adapter, false)
+    }
+
+    /// The device of the `rustgpu-wgpu` backend: its own device (the run's third) on the adapter selection (the `--adapter`
+    /// substring or the high-performance choice) with default limits, `TIMESTAMP_QUERY` and `PASSTHROUGH_SHADERS`.
+    /// `Err(Refusal)` when the adapter lacks a capability the module needs (see `open_with`); any other `Err` is a failure
+    /// to open the device.
+    #[cfg(feature = "rust-gpu")]
+    pub fn open_passthrough_on(adapter: Option<&str>) -> BenchResult<Self> {
+        Self::open_with(None, false, false, adapter, true)
     }
 
     /// The adapter of a `--adapter` substring on `instance`: the one adapter of the Vulkan enumeration whose name contains
@@ -103,6 +112,7 @@ impl WgpuContext {
         like_gust: bool,
         adapter_limits: bool,
         adapter_name: Option<&str>,
+        passthrough: bool,
     ) -> BenchResult<Self> {
         #[cfg(not(feature = "wgpu-trace"))]
         if trace.is_some() {
@@ -112,6 +122,11 @@ impl WgpuContext {
         descriptor.backends = wgpu::Backends::VULKAN;
         let instance = wgpu::Instance::new(descriptor);
         let adapter = Self::pick_adapter(&instance, adapter_name)?;
+        // A passthrough device (the rust-gpu comparator) is refused, with the reason and as a `Refusal`, when the adapter
+        // lacks a capability the module needs; the backend is then not run (never a fallback to another shader path).
+        if passthrough {
+            Self::require_passthrough_capabilities(&adapter)?;
+        }
         let timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let mut required_limits = wgpu::Limits::default();
         if adapter_limits {
@@ -137,6 +152,10 @@ impl WgpuContext {
                     adapter.features() & wgpu::Features::MEMORY_DECORATION_COHERENT
                 } else {
                     wgpu::Features::empty()
+                } | if passthrough {
+                    wgpu::Features::PASSTHROUGH_SHADERS
+                } else {
+                    wgpu::Features::empty()
                 },
                 required_limits,
                 ..Default::default()
@@ -147,6 +166,38 @@ impl WgpuContext {
             info: adapter.get_info(),
             timestamps,
         })
+    }
+
+    /// The capabilities the rust-gpu module needs of an adapter, each a typed `Refusal` when missing:
+    /// - wgpu's `PASSTHROUGH_SHADERS` (a defensive check: wgpu-hal 30.0.2 sets it on every Vulkan adapter);
+    /// - the Vulkan memory model the module declares (`OpCapability VulkanMemoryModel`). wgpu-hal 30.0.2 creates every
+    ///   device with `vulkanMemoryModel` off (it turns it on only with cooperative matrices), which breaks a valid-usage
+    ///   rule of the module, so the backend runs only where the physical device's Vulkan API version is 1.3 or later (the
+    ///   version that requires the feature to be supported). The adapter's own feature query is not reachable through
+    ///   wgpu's HAL access without a Vulkan dependency of the bench, so the version stands for it.
+    #[cfg(feature = "rust-gpu")]
+    fn require_passthrough_capabilities(
+        adapter: &wgpu::Adapter,
+    ) -> Result<(), crate::rustgpu_module::Refusal> {
+        let passthrough = adapter
+            .features()
+            .contains(wgpu::Features::PASSTHROUGH_SHADERS);
+        // SAFETY: `as_hal` only borrows the adapter's Vulkan HAL object, which is read (a version number), not modified.
+        let api_version = unsafe {
+            adapter
+                .as_hal::<wgpu::hal::api::Vulkan>()
+                .map(|hal| hal.physical_device_capabilities().properties().api_version)
+        };
+        crate::rustgpu_module::check_capabilities(
+            &adapter.get_info().name,
+            passthrough,
+            api_version,
+        )
+    }
+
+    #[cfg(not(feature = "rust-gpu"))]
+    fn require_passthrough_capabilities(_adapter: &wgpu::Adapter) -> BenchResult<()> {
+        unreachable!("a passthrough device needs a build with the rust-gpu feature")
     }
 
     fn wait(&self, submission: wgpu::SubmissionIndex) -> BenchResult<()> {
@@ -344,6 +395,10 @@ pub struct HandWgsl {
     /// The m10.b1c SPIR-V probe `unchecked`: `Prebuilt` with the hand WGSL compiled without wgpu's runtime checks
     /// (bounds checks, loop bounding), the checks the WGSL route has and the SPIR-V passthrough route does not.
     unchecked: bool,
+    /// The `rustgpu-wgpu` comparator (m10.b4): `Prebuilt`'s host shape and device shape, with the kernel from the
+    /// committed rust-gpu SPIR-V module loaded through wgpu's passthrough route instead of WGSL. Always false in a build
+    /// without the `rust-gpu` feature.
+    rust_gpu: bool,
     /// All three switches on, the result `Vec` still fresh per call (`Mode::PerCall`): the row between the single
     /// switches and `wgsl-prebuilt`, which also reuses the `Vec`.
     all_on: bool,
@@ -368,6 +423,7 @@ impl HandWgsl {
             gust_order: false,
             probe_id: None,
             unchecked: false,
+            rust_gpu: false,
             all_on: false,
             counters: Counters::default(),
             resident: None,
@@ -389,6 +445,17 @@ impl HandWgsl {
     pub fn unchecked(ctx: Rc<WgpuContext>) -> Self {
         Self {
             unchecked: true,
+            ..Self::new(ctx, Mode::Prebuilt)
+        }
+    }
+
+    /// The rust-gpu comparator `rustgpu-wgpu`: the host side of `wgsl-prebuilt` (bind group and staging buffer built once,
+    /// one submission per end-to-end sample) over a passthrough device (`WgpuContext::open_passthrough_on`), the kernel
+    /// the committed rust-gpu module's entry point of the workload.
+    #[cfg(feature = "rust-gpu")]
+    pub fn rust_gpu(ctx: Rc<WgpuContext>) -> Self {
+        Self {
+            rust_gpu: true,
             ..Self::new(ctx, Mode::Prebuilt)
         }
     }
@@ -512,15 +579,52 @@ impl HandWgsl {
     }
 
     /// The entry points of the workload's module, in dispatch order.
-    fn entry_points(workload: Workload, gust_kernel: bool) -> Vec<&'static str> {
+    fn entry_points(workload: Workload, gust_kernel: bool, rust_gpu: bool) -> Vec<&'static str> {
         if gust_kernel {
             return vec![Self::gust_source(workload).1];
+        }
+        if rust_gpu {
+            return Self::rust_gpu_entry_points(workload);
         }
         match workload.family() {
             "W6" => vec!["center", "amplify", "shift", "rescale", "energy", "combine"],
             "W7" => vec!["reduce_blocks", "reduce_total"],
             _ => vec!["main"],
         }
+    }
+
+    /// Whether the rust-gpu module has a kernel for the workload (W1 to W4).
+    #[cfg(feature = "rust-gpu")]
+    fn rust_gpu_supports(workload: Workload) -> bool {
+        crate::rustgpu::entry_point(workload).is_some()
+    }
+
+    #[cfg(not(feature = "rust-gpu"))]
+    fn rust_gpu_supports(_workload: Workload) -> bool {
+        false
+    }
+
+    /// The rust-gpu module of the `rustgpu-wgpu` backend, created through wgpu's passthrough route on the context's
+    /// device (which `WgpuContext::open_passthrough_on` opened with `PASSTHROUGH_SHADERS`).
+    #[cfg(feature = "rust-gpu")]
+    fn rust_gpu_module(ctx: &WgpuContext) -> wgpu::ShaderModule {
+        crate::rustgpu::create_module(&ctx.device)
+    }
+
+    #[cfg(not(feature = "rust-gpu"))]
+    fn rust_gpu_module(_ctx: &WgpuContext) -> wgpu::ShaderModule {
+        unreachable!("the rustgpu-wgpu backend needs a build with the rust-gpu feature")
+    }
+
+    /// The one entry point of the rust-gpu module that runs `workload` (empty for a workload the module has no kernel for).
+    #[cfg(feature = "rust-gpu")]
+    fn rust_gpu_entry_points(workload: Workload) -> Vec<&'static str> {
+        crate::rustgpu::entry_point(workload).into_iter().collect()
+    }
+
+    #[cfg(not(feature = "rust-gpu"))]
+    fn rust_gpu_entry_points(_workload: Workload) -> Vec<&'static str> {
+        unreachable!("the rustgpu-wgpu backend needs a build with the rust-gpu feature")
     }
 
     /// The per-sample host inputs an end-to-end sample uploads, as bytes, in the order of [`Resident::uploads`].
@@ -579,6 +683,7 @@ impl HandWgsl {
         workload: Workload,
         gust_kernel: bool,
         unchecked: bool,
+        rust_gpu: bool,
     ) -> Pipeline {
         let entries = (0..Self::binding_count(workload))
             .map(|index| wgpu::BindGroupLayoutEntry {
@@ -607,28 +712,32 @@ impl HandWgsl {
                 bind_group_layouts: &[Some(&layout)],
                 immediate_size: 0,
             });
-        let text = if gust_kernel {
-            Self::gust_source(workload).0
+        let module = if rust_gpu {
+            Self::rust_gpu_module(ctx)
         } else {
-            Self::source(workload)
-        };
-        let descriptor = wgpu::ShaderModuleDescriptor {
-            label: Some("bench hand WGSL"),
-            source: wgpu::ShaderSource::Wgsl(text.into()),
-        };
-        let module = if unchecked {
-            // SAFETY: a probe of a kernel whose indices the harness checks on the host (every sample is verified
-            // against the serial reference), run only to see what wgpu's runtime checks cost.
-            unsafe {
-                ctx.device.create_shader_module_trusted(
-                    descriptor,
-                    wgpu::ShaderRuntimeChecks::unchecked(),
-                )
+            let text = if gust_kernel {
+                Self::gust_source(workload).0
+            } else {
+                Self::source(workload)
+            };
+            let descriptor = wgpu::ShaderModuleDescriptor {
+                label: Some("bench hand WGSL"),
+                source: wgpu::ShaderSource::Wgsl(text.into()),
+            };
+            if unchecked {
+                // SAFETY: a probe of a kernel whose indices the harness checks on the host (every sample is verified
+                // against the serial reference), run only to see what wgpu's runtime checks cost.
+                unsafe {
+                    ctx.device.create_shader_module_trusted(
+                        descriptor,
+                        wgpu::ShaderRuntimeChecks::unchecked(),
+                    )
+                }
+            } else {
+                ctx.device.create_shader_module(descriptor)
             }
-        } else {
-            ctx.device.create_shader_module(descriptor)
         };
-        let pipelines = Self::entry_points(workload, gust_kernel)
+        let pipelines = Self::entry_points(workload, gust_kernel, rust_gpu)
             .into_iter()
             .map(|entry| {
                 ctx.device
@@ -787,7 +896,7 @@ impl HandWgsl {
             buffers.push(ctx.buffer(label, bytes, storage | wgpu::BufferUsages::COPY_SRC));
         }
         buffers.push(ctx.buffer("bench out", bytes, storage | wgpu::BufferUsages::COPY_SRC));
-        let pipeline = Self::create_pipeline(ctx, workload, false, self.unchecked);
+        let pipeline = Self::create_pipeline(ctx, workload, false, self.unchecked, false);
         let stage_bindings = Self::STAGE_BINDINGS.to_vec();
         let stage_groups = stage_bindings
             .iter()
@@ -903,6 +1012,7 @@ impl HandWgsl {
 impl Backend for HandWgsl {
     fn id(&self) -> &'static str {
         match (self.mode, self.ablation) {
+            _ if self.rust_gpu => "rustgpu-wgpu",
             _ if self.all_on => "wgsl-percall+all-on",
             _ if self.probe_id.is_some() => self.probe_id.unwrap_or("wgsl-prebuilt"),
             _ if self.unchecked => "wgsl-prebuilt+unchecked",
@@ -914,6 +1024,9 @@ impl Backend for HandWgsl {
 
     fn description(&self) -> &'static str {
         match (self.mode, self.ablation) {
+            _ if self.rust_gpu => {
+                "rust-gpu 0.11.0 kernels (nightly toolchain, committed SPIR-V module) on plain wgpu through the passthrough route; the host side of wgsl-prebuilt; W1 to W4 only"
+            }
             _ if self.unchecked => {
                 "wgsl-prebuilt with wgpu's shader runtime checks (bounds checks, loop bounding) off, hand WGSL (m10.b1c SPIR-V probe)"
             }
@@ -962,7 +1075,8 @@ impl Backend for HandWgsl {
     /// first) is not built by the staged `prepare`. Both the `gust-shader` and the `gust-device` and `gust-setup`
     /// (`gust_order`) probes skip it.
     fn supports(&self, workload: Workload) -> bool {
-        !(self.gust_shader && matches!(workload.family(), "W5" | "W6" | "W7" | "W9"))
+        (!self.rust_gpu || Self::rust_gpu_supports(workload))
+            && !(self.gust_shader && matches!(workload.family(), "W5" | "W6" | "W7" | "W9"))
             && !(self.gust_order && workload.is_pipeline())
     }
 
@@ -1020,7 +1134,13 @@ impl Backend for HandWgsl {
             ));
         }
         buffers.push(ctx.buffer("bench out", bytes, storage | wgpu::BufferUsages::COPY_SRC));
-        let pipeline = Self::create_pipeline(ctx, workload, self.gust_shader, self.unchecked);
+        let pipeline = Self::create_pipeline(
+            ctx,
+            workload,
+            self.gust_shader,
+            self.unchecked,
+            self.rust_gpu,
+        );
         let bind_group = Self::create_bind_group(ctx, &pipeline, &buffers);
         let staging = ctx.buffer(
             "bench staging",
@@ -1175,7 +1295,13 @@ impl Backend for HandWgsl {
     fn cold_start(&mut self) -> BenchResult<Option<Duration>> {
         let workload = self.resident().workload;
         let started = Instant::now();
-        let pipeline = Self::create_pipeline(&self.ctx, workload, self.gust_shader, self.unchecked);
+        let pipeline = Self::create_pipeline(
+            &self.ctx,
+            workload,
+            self.gust_shader,
+            self.unchecked,
+            self.rust_gpu,
+        );
         let r = self.resident.as_mut().expect("prepare was called");
         if workload.is_pipeline() {
             r.stage_groups = r

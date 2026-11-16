@@ -38,6 +38,7 @@ and a value above 4096 is refused beside W9). On these backends:
 | `gust-gpu-spirv` | the same, in the `spirv-route` build (the SPIR-V route; see Groups and builds) |
 | `wgsl-prebuilt` | hand-written WGSL on plain wgpu, host side built the careful way: bind group and read-back staging buffer built once, one submission per end-to-end sample |
 | `wgsl-percall` | the same WGSL, host side shaped like `gust-wgpu` does it: a bind group per dispatch, a fresh staging buffer and `Vec` per read-back, two submissions with a wait after each |
+| `rustgpu-wgpu` | the `rust-gpu` build only: the same four kernels (W1 to W4) written in Rust with rust-gpu 0.11.0, built on a pinned nightly to a committed SPIR-V module and loaded through wgpu's passthrough route, on the host side of `wgsl-prebuilt` (the rust-gpu comparator, below) |
 | `gust-twin` | the GUST CPU twin (`--cfg gust_dual`), single thread, a semantic reference with per-call validation (not the production CPU target) |
 | `gust-cpu` | the production CPU target (`GUST_PROFILE=cpu` build, no GPU runtime): the kernel's Rust body through `CpuDevice`, single thread, typed dispatch |
 | `gust-cpu-par` | the same build's generated element-wise map (`#[gpu] fn`, chunked over scoped threads), W1 and W2 only (a map takes scalars, W3 needs a runtime coefficient array, W4 is a scatter) |
@@ -104,6 +105,7 @@ names its build in the JSON: `route` (`wgsl`, `spirv` or `cpu`), `build.features
 | `spirv-route` | the same with `--features spirv-route` | `spirv` | `gust-gpu-spirv` (the macro emits the SPIR-V route) |
 | precompiled | `GUST_PROFILE=native cargo build --release -p gust-bench-pre` | `wgsl` | `gust-gpu` (embedded artifacts) |
 | `cpu` | `GUST_PROFILE=cpu cargo build --release -p gust-bench --no-default-features` | `cpu` | `gust-cpu`, `gust-cpu-par`, no GPU rows |
+| `rust-gpu` | the default build with `--features rust-gpu` | `wgsl` | `gust-gpu`, and `rustgpu-wgpu` beside the hand rows (not a table: the run is marked not publishable, see below) |
 
 Deviation from the plan's single group: the plan puts gust-gpu and gust-gpu on SPIR-V in one random-order group. The
 SPIR-V route changes the code `gust-wgpu`'s macros emit (a Cargo feature), so one process holds one GUST route and
@@ -218,6 +220,69 @@ as shown.
 The hand-WGSL device is a second `wgpu::Device` on the same adapter selection (Vulkan, high performance, default
 limits, `TIMESTAMP_QUERY`), because `HeadlessDevice` does not expose its own device. The harness refuses to run if the
 two devices land on different adapters, or if the adapter is a software one unless `--functional` is given.
+
+## The rust-gpu comparator (`rustgpu-wgpu`, `--features rust-gpu`)
+
+Kernels written in Rust with rust-gpu 0.11.0 (`spirv-std` and `spirv-builder` `=0.11.0`; the project describes itself as
+"not yet production-ready"), run on plain wgpu next to the hand WGSL. It is a comparator for W1 to W4 only; there is no
+rust-gpu kernel for W5 to W9, and those workloads leave the backend out.
+
+- `bench/rust-gpu-shaders/shader`: the `no_std` shader crate. Four kernels, each the algorithm, workgroup size (256) and
+  storage-buffer binding order of the hand WGSL of its workload (`bench/shaders/*.wgsl`): `w1_f32`, `w2_saxpy`,
+  `w3_horner`, `w4_histogram`, and `w1_u32`, which is built and validated with the module but run by no workload (the
+  bench's W1 is `f32`). The doc comment of each kernel says how it differs from its hand WGSL (the W2 scalar is a
+  one-element read-only storage buffer as in the hand WGSL, not a uniform; W4's add is `OpAtomicIAdd` on a `&mut [u32]`).
+- `bench/rust-gpu-shaders/builder`: the builder package (`spirv-builder`, target `spirv-unknown-vulkan1.1`).
+- Both are outside the bench workspace (a package and workspace root each, with their own `rust-toolchain.toml` and
+  `Cargo.lock`), because they build with the nightly `nightly-2026-08-15` (components `rust-src`, `rustc-dev`,
+  `llvm-tools`) while the bench stays on stable and `--locked`. Install it once with
+  `rustup toolchain install nightly-2026-08-15 --profile minimal --component rust-src,rustc-dev,llvm-tools`; the rustup
+  default toolchain is not changed.
+- The built module is committed: `bench/rust-gpu-shaders/rustgpu.spv` and `rustgpu.manifest.json` (toolchain, crate
+  versions, target, entry points, size and sha256). A normal bench build never runs the builder: `--features rust-gpu`
+  embeds the committed bytes (`include_bytes!`), and a test checks them against the manifest.
+
+Rebuild (from the repository root; the builder's inner cargo needs `RUSTUP_TOOLCHAIN` in the environment, a
+`rust-toolchain.toml` is not enough when the builder is started from another directory):
+
+```sh
+RUSTUP_TOOLCHAIN=nightly-2026-08-15 cargo run --locked --release \
+  --manifest-path bench/rust-gpu-shaders/builder/Cargo.toml -- bench/rust-gpu-shaders/shader OUT_DIR
+# writes OUT_DIR/rustgpu.spv; use bench/rust-gpu-shaders as OUT_DIR to replace the committed module
+cmp OUT_DIR/rustgpu.spv bench/rust-gpu-shaders/rustgpu.spv   # a rebuild reproduces the committed bytes
+sha256sum OUT_DIR/rustgpu.spv   # if the module changed, update sha256 and bytes in rustgpu.manifest.json by hand
+"$VULKAN_SDK/Bin/spirv-val" --target-env vulkan1.1 bench/rust-gpu-shaders/rustgpu.spv
+git status --short bench/rust-gpu-shaders   # both Cargo.lock files must be unchanged (--locked enforces it)
+```
+
+The first build compiles `rustc_codegen_spirv` and about 170 crates (several minutes); later builds take under a
+minute. A rebuild reproducing the committed bytes has been shown on one machine (the build machine); a test in the
+default build checks the committed bytes against the manifest and the toolchain and crate pins against the two
+`rust-toolchain.toml` and `Cargo.toml` files, but only a rebuild shows that the sources produce the bytes.
+
+The backend opens its own wgpu device (the run's third, after GUST's and the hand-WGSL one) on the run's adapter
+selection, only when the run selects the backend, with `Features::PASSTHROUGH_SHADERS`, and loads the module through
+`create_shader_module_passthrough`, the call GUST's own SPIR-V route uses. Its host side is `wgsl-prebuilt`'s.
+
+The module declares the Vulkan memory model (rust-gpu's Vulkan targets always do), and wgpu-hal 30.0.2 creates the
+device with `vulkanMemoryModel` off unless cooperative matrices are requested. That breaks a Vulkan valid-usage rule
+(VUID-VkShaderModuleCreateInfo-pCode-08740), so the behaviour is undefined by the spec; it ran correctly on the two
+adapters tried. Under the Khronos validation layer (Vulkan SDK 1.4.357) a functional run reports it for this
+module: VUID-VkShaderModuleCreateInfo-pCode-08740 and, for the queue-family scope of W4's atomic,
+VUID-RuntimeSpirv-vulkanMemoryModel-06266. The backend therefore runs only on a physical device that reports
+Vulkan 1.3 or later, where the feature must be supported, and is refused on any other. Making the device enable the
+feature (an own Vulkan device creation, or an upstream wgpu change) is not done and is a condition of any publishable
+rust-gpu row (`docs/BENCHMARKS.md`).
+
+A refusal (a missing capability: the Vulkan 1.3 gate, or passthrough shaders, a defensive check because wgpu-hal sets
+them on every Vulkan adapter) leaves the backend out of the run, and the run file lists it under
+`config.backends_not_run` with the reason; naming it with `--backends` is then an error, and any other failure to open the
+device fails the run. A run file records the module's identity under `versions.rust_gpu`.
+
+The `rust-gpu` feature is listed in `build.features` and makes a run not publishable: a third device and one more
+backend in the rotation have not been shown to leave the other rows unchanged. The mark is lifted by a run where the
+rust-gpu device cannot disturb the others (the backend in a group or a process of its own, or a measured no-interference
+result) together with a device that enables `vulkanMemoryModel`.
 
 ## Build and run
 

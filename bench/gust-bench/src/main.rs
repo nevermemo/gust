@@ -40,6 +40,10 @@ mod rayon_cpu;
 mod report;
 #[cfg(feature = "gpu")]
 mod route;
+#[cfg(feature = "rust-gpu")]
+mod rustgpu;
+#[cfg(any(test, feature = "rust-gpu"))]
+mod rustgpu_module;
 mod sampler;
 #[cfg(feature = "wgpu-trace")]
 mod trace;
@@ -333,6 +337,57 @@ fn gpu_backends(
         });
     }
     backends
+}
+
+/// What `rust_gpu_backend` returns: the backend when it can run, and the backends left out with their reasons.
+#[cfg(feature = "gpu")]
+type RustGpuSetup = (Option<Box<dyn Backend>>, Vec<Value>);
+
+/// The rust-gpu comparator `rustgpu-wgpu` (m10.b4), in the publishable group's rotation of a `rust-gpu` build: its own
+/// device (the run's third) on the run's adapter selection, opened with wgpu's passthrough feature, only when the run
+/// selects the backend (no `--backends` list, or one naming it). An adapter that lacks a capability the module needs
+/// leaves the backend out with the reason (printed and recorded in the run file as `backends_not_run`), never a
+/// fallback to another shader path; naming it with `--backends` then makes that an error, and any other failure to open
+/// the device fails the run (`rustgpu_module::decide`).
+#[cfg(all(feature = "gpu", feature = "rust-gpu"))]
+fn rust_gpu_backend(
+    options: &Options,
+    group: Group,
+    adapter: &wgpu::AdapterInfo,
+) -> BenchResult<RustGpuSetup> {
+    use rustgpu_module::{Decision, decide};
+    if group != Group::Publishable {
+        return Ok((None, Vec::new()));
+    }
+    if let Some(wanted) = &options.backends
+        && !wanted.iter().any(|name| name == "rustgpu-wgpu")
+    {
+        return Ok((None, Vec::new()));
+    }
+    let opened = WgpuContext::open_passthrough_on(options.adapter.as_deref());
+    match decide(opened, options.backends.as_deref())? {
+        Decision::Run(ctx) => {
+            adapter::require_same(&[("GUST device", adapter), ("rust-gpu device", &ctx.info)])?;
+            Ok((Some(Box::new(HandWgsl::rust_gpu(Rc::new(ctx)))), Vec::new()))
+        }
+        Decision::NotRun(entry) => {
+            eprintln!(
+                "rustgpu-wgpu not run: {}",
+                entry["reason"].as_str().unwrap_or_default()
+            );
+            Ok((None, vec![entry]))
+        }
+    }
+}
+
+/// A build without the `rust-gpu` feature has no such backend; naming it is an unknown backend, and nothing is recorded.
+#[cfg(all(feature = "gpu", not(feature = "rust-gpu")))]
+fn rust_gpu_backend(
+    _options: &Options,
+    _group: Group,
+    _adapter: &wgpu::AdapterInfo,
+) -> BenchResult<RustGpuSetup> {
+    Ok((None, Vec::new()))
 }
 
 /// The CPU backends, run beside the publishable group (not in its rotation). In the `GUST_PROFILE=cpu` build they
@@ -721,7 +776,7 @@ fn run_inputs(
         release_build: !cfg!(debug_assertions),
         tainting_features: meta::build_features()
             .into_iter()
-            .filter(|feature| matches!(*feature, "profile-counts" | "wgpu-trace"))
+            .filter(|feature| matches!(*feature, "profile-counts" | "wgpu-trace" | "rust-gpu"))
             .map(str::to_owned)
             .collect(),
         probe_backends: !options.with_probe.is_empty(),
@@ -805,6 +860,8 @@ fn run(options: &Options) -> BenchResult<bool> {
         probes.push((name.clone(), probe));
     }
     let mut backends = gpu_backends(group, &gust_device, &ctx, &ablation, all_on, &probes);
+    let (rust_gpu, backends_not_run) = rust_gpu_backend(options, group, adapter)?;
+    backends.extend(rust_gpu);
     if group == Group::Publishable {
         backends.extend(cpu_backends(threads));
     }
@@ -908,6 +965,9 @@ fn run(options: &Options) -> BenchResult<bool> {
             &backends,
             json!({
                 "hand_wgsl_adapter": ctx.info.name,
+                // A backend of this build that was left out, with the reason (the rust-gpu comparator on an adapter
+                // without passthrough shaders): "not run", never a fallback.
+                "backends_not_run": backends_not_run,
                 // Which shader source gust-gpu's cold start used (plan 2.3): a kernel with embedded artifacts is
                 // loaded from them, otherwise it is compiled at run time. A run of one kind does not aggregate with
                 // the other.

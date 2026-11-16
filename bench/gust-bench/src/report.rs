@@ -81,11 +81,18 @@ const METRICS: [(&str, &str); 4] = [
     ),
 ];
 
+/// The rust-gpu comparator (m10.b4): kernels in Rust compiled by rust-gpu to a committed SPIR-V module, run on plain wgpu.
+const RUST_GPU: &str = "rustgpu-wgpu";
+
+/// What a table with `rustgpu-wgpu` cells says about that backend: its toolchain and status, what it runs, how it differs.
+const RUST_GPU_NOTE: &str = "rustgpu-wgpu: the same four kernels written in Rust with rust-gpu 0.11.0 (spirv-std and spirv-builder 0.11.0, a project that calls itself \"not yet production-ready\"), compiled on the nightly toolchain nightly-2026-08-15 to one committed SPIR-V module for Vulkan 1.1 and loaded through wgpu's passthrough route, so wgpu and naga do not translate or validate it. It has W1 to W4 only, each the same algorithm, workgroup size and binding order as the hand WGSL, on the host side of wgsl-prebuilt (its own device, bind group and staging buffer built once). Its bounds policy is rust-gpu's own: an out-of-range index ends the invocation early (docs/BENCHMARKS.md, \"Bounds policy\"), unlike the WGSL route's. It is not part of the GUST kill rule.";
+
 /// Column order of the backends.
-const BACKENDS: [&str; 19] = [
+const BACKENDS: [&str; 20] = [
     "gust-gpu",
     "gust-gpu-spirv",
     "wgsl-prebuilt",
+    RUST_GPU,
     "wgsl-percall",
     "wgsl-percall+bind-group-reuse",
     "wgsl-percall+staging-reuse",
@@ -692,7 +699,7 @@ pub fn dram_peak_gbps(adapter: &str) -> Option<(f64, &'static str)> {
 }
 
 fn is_gpu_backend(id: &str) -> bool {
-    id.starts_with("gust-gpu") || id.starts_with("wgsl-")
+    id.starts_with("gust-gpu") || id.starts_with("wgsl-") || id == RUST_GPU
 }
 
 fn bandwidth_gbps(n: f64, bytes: f64, ms: f64) -> f64 {
@@ -944,6 +951,9 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         }
     }
     writeln!(md)?;
+    if table.keys().any(|key| key.2 == RUST_GPU) {
+        writeln!(md, "{RUST_GPU_NOTE}\n")?;
+    }
     machine_block(&mut md, &runs[0]["meta"], &runs[0]["build"])?;
     for (workload, list) in &sizes {
         let name = info
@@ -1692,6 +1702,8 @@ mod tests {
             cell["workload"] = json!(workload);
             cell["bytes_per_element"] = json!(68);
             cell["bytes_per_element_end_to_end"] = json!(24);
+            // A batch metric as well (m10.b3c re-check, nit 3): the batch column keeps the 68 bytes of six device passes.
+            cell["metrics"]["gpu_batch_per_dispatch"] = json!({ "median_ms": ms, "n": 30 });
             cells.push(cell);
         }
         one["cells"] = json!(cells);
@@ -1720,8 +1732,57 @@ mod tests {
             "the hand form has a rayon-N row and keeps its break-even sentence"
         );
         assert!(hand.contains("24 bytes per element"), "{hand}");
-        // 4096 elements * 24 bytes / 1 ms = 0.098 GB/s (the 68-byte figure would be 0.28).
-        assert!(hand.contains("| 0.10 |") && !hand.contains("| 0.28 |"));
+        // The bandwidth row of 4096 elements: wgsl-prebuilt takes 1 ms in both metrics, so its batch cell counts the 68
+        // bytes of six device passes (4096 * 68 / 1 ms = 0.28 GB/s) and its end-to-end cell the 24 bytes that cross the
+        // bus (0.098, printed 0.10); gust-gpu takes 3 ms (0.09 batch).
+        let table = hand
+            .split("### Achieved bandwidth")
+            .nth(1)
+            .expect("the bandwidth table");
+        let row = table
+            .lines()
+            .find(|line| line.starts_with("| 4096 |"))
+            .expect("the 4096 row");
+        let cells: Vec<&str> = row.split('|').map(str::trim).collect();
+        // cells[0] is empty (before the first bar): size, gust batch, prebuilt batch, percall batch, gust e2e, prebuilt e2e.
+        assert_eq!(cells[2], "0.09", "gust-gpu batch: {row}");
+        assert_eq!(cells[3], "0.28", "wgsl-prebuilt batch keeps 68 B: {row}");
+        assert_eq!(cells[6], "0.10", "wgsl-prebuilt e2e counts 24 B: {row}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The rust-gpu comparator gets its own column and, when present, one note that labels it and states its toolchain;
+    /// a report without its cells carries neither.
+    #[test]
+    fn rustgpu_cells_get_a_column_and_the_toolchain_note_and_others_do_not() {
+        let dir = scratch("rustgpu");
+        let mut with = run("wgsl", "GPU A", "a.json");
+        with["cells"] = json!([
+            gpu_cell("wgsl-prebuilt", 1.0, true, 2600.0),
+            gpu_cell("rustgpu-wgpu", 1.5, true, 2600.0),
+        ]);
+        let mut without = run("wgsl", "GPU A", "b.json");
+        without["cells"] = json!([gpu_cell("wgsl-prebuilt", 1.0, true, 2600.0)]);
+        for (one, name, has) in [(with, "with", true), (without, "without", false)] {
+            let sub = dir.join(name);
+            fs::create_dir_all(&sub).unwrap();
+            let inputs = write_runs(&sub, &[one]);
+            let (out_json, out_md) = (sub.join("o.json"), sub.join("o.md"));
+            aggregate(
+                &inputs,
+                out_json.to_str().unwrap(),
+                out_md.to_str().unwrap(),
+            )
+            .unwrap();
+            let md = fs::read_to_string(&out_md).unwrap();
+            assert_eq!(md.contains("rustgpu-wgpu (ms)"), has, "column: {name}");
+            assert_eq!(
+                md.contains("nightly-2026-08-15") && md.contains("not yet production-ready"),
+                has,
+                "note: {name}"
+            );
+            assert_eq!(md.contains("rust-gpu 0.11.0"), has, "version: {name}");
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

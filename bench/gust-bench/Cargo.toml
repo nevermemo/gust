@@ -18,6 +18,8 @@ pollster = { version = "=0.4.0", optional = true }
 rayon = "=1.12.0"
 serde_json = "=1.0.145"
 wgpu = { version = "=30.0.2", default-features = false, features = ["std", "vulkan", "wgsl"], optional = true }
+# The CubeCL comparator (m10.b2): needs rustc 1.95 or later (the bench's own rust-version stays 1.90 for the default build).
+cubecl = { version = "=0.11.4", default-features = false, features = ["wgpu"], optional = true }
 
 # Windows only: the sampler reads the GPU-engine performance counters (PDH), the process table (ToolHelp) and the
 # adapter LUIDs (DXGI). windows 0.62.2 is MIT OR Apache-2.0 and is already in the lock through wgpu-hal.
@@ -47,6 +49,10 @@ wgpu-trace = ["gpu", "wgpu/trace"]
 # nightly, outside this workspace) loaded through wgpu's passthrough route, W1 to W4. No dependency: the module is bytes.
 # Off by default, so the default build, CI and the lock do not change.
 rust-gpu = ["gpu"]
+# The CubeCL comparator `cubecl-wgpu` and `cubecl-wgpu-tuned` (m10.b2): kernels in Rust through CubeCL 0.11.4's wgpu runtime, on the
+# adapter the run selected. Needs rustc 1.95 or later (CubeCL's own floor); off by default, so the default build, CI and the lock's
+# resolution of every existing crate do not change.
+cubecl = ["gpu", "dep:cubecl"]
 
 [lints]
 workspace = true

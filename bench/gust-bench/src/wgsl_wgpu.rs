@@ -89,7 +89,10 @@ impl WgpuContext {
 
     /// The adapter of a `--adapter` substring on `instance`: the one adapter of the Vulkan enumeration whose name contains
     /// it (`adapter::match_adapter`, the same rule GUST's device is opened by), or wgpu's high-performance choice.
-    fn pick_adapter(instance: &wgpu::Instance, name: Option<&str>) -> BenchResult<wgpu::Adapter> {
+    pub(crate) fn pick_adapter(
+        instance: &wgpu::Instance,
+        name: Option<&str>,
+    ) -> BenchResult<wgpu::Adapter> {
         let Some(name) = name else {
             return Ok(pollster::block_on(instance.request_adapter(
                 &wgpu::RequestAdapterOptions {

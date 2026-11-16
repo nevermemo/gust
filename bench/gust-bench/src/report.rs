@@ -101,12 +101,21 @@ const RUST_GPU: &str = "rustgpu-wgpu";
 /// What a table with `rustgpu-wgpu` cells says about that backend: its toolchain and status, what it runs, how it differs.
 const RUST_GPU_NOTE: &str = "rustgpu-wgpu: the same four kernels written in Rust with rust-gpu 0.11.0 (spirv-std and spirv-builder 0.11.0, a project that calls itself \"not yet production-ready\"), compiled on the nightly toolchain nightly-2026-08-15 to one committed SPIR-V module for Vulkan 1.1 and loaded through wgpu's passthrough route, so wgpu and naga do not translate or validate it. It has W1 to W4 only, each the same algorithm, workgroup size and binding order as the hand WGSL, on the host side of wgsl-prebuilt (its own device, bind group and staging buffer built once). Its bounds policy is rust-gpu's own: an out-of-range index ends the invocation early (docs/BENCHMARKS.md, \"Bounds policy\"), unlike the WGSL route's. Because it is loaded through passthrough, wgpu's runtime checks are off for this row while `wgsl-prebuilt` has them on, so its ratio to `wgsl-prebuilt` is not like-for-like in D193's sense. It is not part of the GUST kill rule.";
 
+/// The CubeCL comparator (m10.b2): two rows, the same workloads as CubeCL 0.11.4 kernels on its wgpu runtime.
+const CUBECL: &str = "cubecl-wgpu";
+const CUBECL_TUNED: &str = "cubecl-wgpu-tuned";
+
+/// What a table with `cubecl-wgpu` or `cubecl-wgpu-tuned` cells says about those backends: what they run, how they differ.
+const CUBECL_NOTE: &str = "cubecl-wgpu and cubecl-wgpu-tuned: W1 to W4, W7 and W9 written as CubeCL 0.11.4 kernels in Rust and run through CubeCL's wgpu runtime (CubeCL without its `spirv` feature: it emits WGSL, which wgpu and naga translate), on a device of their own on the run's adapter. cubecl-wgpu is the like-for-like row: the default checked launch, 256-wide cubes (W9 16 by 16), line size 1, the algorithm of the hand WGSL of each workload; its bounds policy clamps an out-of-range buffer index to the last element, and CubeCL turns wgpu's own bounds checks off for both rows (docs/BENCHMARKS.md, \"Bounds policy\"), so neither row has the runtime checks `wgsl-prebuilt` has. cubecl-wgpu-tuned runs the same kernels through CubeCL's unchecked launch (no clamp) and, for W1 to W3 where the length is a multiple of four, with line size 4; it has no autotune, which does not apply to hand-launched kernels. Neither row is part of the GUST kill rule, and a ratio of either to `wgsl-prebuilt` is not a GUST overhead. The CubeCL rows have no cold-start figure, and a build with them has wgpu's default features on for every row.";
+
 /// Column order of the backends.
-const BACKENDS: [&str; 21] = [
+const BACKENDS: [&str; 23] = [
     "gust-gpu",
     "gust-gpu-spirv",
     "wgsl-prebuilt",
     RUST_GPU,
+    CUBECL,
+    CUBECL_TUNED,
     "wgsl-percall",
     "wgsl-percall+bind-group-reuse",
     "wgsl-percall+staging-reuse",
@@ -799,7 +808,10 @@ pub fn dram_peak_gbps(adapter: &str) -> Option<(f64, &'static str)> {
 }
 
 fn is_gpu_backend(id: &str) -> bool {
-    id.starts_with("gust-gpu") || id.starts_with("wgsl-") || id == RUST_GPU
+    id.starts_with("gust-gpu")
+        || id.starts_with("wgsl-")
+        || id == RUST_GPU
+        || id.starts_with("cubecl-")
 }
 
 fn bandwidth_gbps(n: f64, bytes: f64, ms: f64) -> f64 {
@@ -1104,6 +1116,12 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     writeln!(md)?;
     if table.keys().any(|key| key.2 == RUST_GPU) {
         writeln!(md, "{RUST_GPU_NOTE}\n")?;
+    }
+    if table
+        .keys()
+        .any(|key| key.2 == CUBECL || key.2 == CUBECL_TUNED)
+    {
+        writeln!(md, "{CUBECL_NOTE}\n")?;
     }
     machine_block(&mut md, &runs[0]["meta"], &runs[0]["build"])?;
     for (workload, list) in &sizes {
@@ -2130,6 +2148,46 @@ mod tests {
                 "note: {name}"
             );
             assert_eq!(md.contains("rust-gpu 0.11.0"), has, "version: {name}");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The CubeCL rows get a column each and, when present, one note that labels them; a report without their cells carries
+    /// neither.
+    #[test]
+    fn cubecl_cells_get_columns_and_the_note_and_others_do_not() {
+        let dir = scratch("cubecl");
+        let mut with = run("wgsl", "GPU A", "a.json");
+        with["cells"] = json!([
+            gpu_cell("wgsl-prebuilt", 1.0, true, 2600.0),
+            gpu_cell("cubecl-wgpu", 1.5, true, 2600.0),
+            gpu_cell("cubecl-wgpu-tuned", 1.2, true, 2600.0),
+        ]);
+        let mut without = run("wgsl", "GPU A", "b.json");
+        without["cells"] = json!([gpu_cell("wgsl-prebuilt", 1.0, true, 2600.0)]);
+        for (one, name, has) in [(with, "with", true), (without, "without", false)] {
+            let sub = dir.join(name);
+            fs::create_dir_all(&sub).unwrap();
+            let inputs = write_runs(&sub, &[one]);
+            let (out_json, out_md) = (sub.join("o.json"), sub.join("o.md"));
+            aggregate(
+                &inputs,
+                out_json.to_str().unwrap(),
+                out_md.to_str().unwrap(),
+            )
+            .unwrap();
+            let md = fs::read_to_string(&out_md).unwrap();
+            assert_eq!(md.contains("cubecl-wgpu (ms)"), has, "column: {name}");
+            assert_eq!(
+                md.contains("cubecl-wgpu-tuned (ms)"),
+                has,
+                "tuned column: {name}"
+            );
+            assert_eq!(
+                md.contains("CubeCL 0.11.4") && md.contains("no autotune"),
+                has,
+                "note: {name}"
+            );
         }
         let _ = fs::remove_dir_all(&dir);
     }

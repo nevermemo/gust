@@ -41,6 +41,8 @@ spirv-route = []
 profile-counts = []
 wgpu-trace = []
 rust-gpu = []
+# `cubecl` is declared for the same reason and stays off: the comparator is gust-bench's (its mod is `cfg(feature = "cubecl")`).
+cubecl = []
 
 [lints]
 workspace = true

@@ -482,6 +482,11 @@ fn check_group(file: &Json, group: &str, route: &str) -> Result<bool, String> {
     };
     match group {
         "publishable" => {
+            if let Some(backend) = points().find(|backend| backend.starts_with("cubecl-")) {
+                return Err(format!(
+                    "a publishable file holds the CubeCL row `{backend}`: the CubeCL comparator is never a table row (its build is not publishable, and its bounds policy is not the hand rows')"
+                ));
+            }
             if let Some(backend) = points().find(|backend| backend.ends_with("-unchecked")) {
                 return Err(format!(
                     "a publishable file holds the checks-off row `{backend}`: those rows belong to the spirv group (D193)"

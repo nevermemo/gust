@@ -41,6 +41,7 @@ and a value above 4096 is refused beside W9). On these backends:
 | `wgsl-percall` | the same WGSL, host side shaped like `gust-wgpu` does it: a bind group per dispatch, a fresh staging buffer and `Vec` per read-back, two submissions with a wait after each |
 | `wgsl-prebuilt-unchecked`, `wgsl-percall-unchecked` | the `spirv` group's hand rows (D193, m10.b3d): `wgsl-prebuilt` and `wgsl-percall` with the shader module compiled without wgpu's runtime checks (bounds checks, loop bounding), as the SPIR-V route's shaders are; the first is the group's reference, the second its control. They are no `+` ids: they are table rows of their group, not probes |
 | `rustgpu-wgpu` | the `rust-gpu` build only: the same four kernels (W1 to W4) written in Rust with rust-gpu 0.11.0, built on a pinned nightly to a committed SPIR-V module and loaded through wgpu's passthrough route, on the host side of `wgsl-prebuilt` (the rust-gpu comparator, below) |
+| `cubecl-wgpu`, `cubecl-wgpu-tuned` | the `cubecl` build only: W1 to W4, W7 and W9 written as CubeCL 0.11.4 kernels in Rust, run through CubeCL's wgpu runtime on the run's adapter; like-for-like (checked launch, line size 1) and tuned (unchecked launch, line size 4 where the length allows) (the CubeCL comparator, below) |
 | `gust-twin` | the GUST CPU twin (`--cfg gust_dual`), single thread, a semantic reference with per-call validation (not the production CPU target) |
 | `gust-cpu` | the production CPU target (`GUST_PROFILE=cpu` build, no GPU runtime): the kernel's Rust body through `CpuDevice`, single thread, typed dispatch |
 | `gust-cpu-par` | the same build's generated element-wise map (`#[gpu] fn`, chunked over scoped threads), W1 and W2 only (a map takes scalars, W3 needs a runtime coefficient array, W4 is a scatter) |
@@ -114,6 +115,7 @@ names its build in the JSON: `route` (`wgsl`, `spirv` or `cpu`), `build.features
 | precompiled | `GUST_PROFILE=native cargo build --release -p gust-bench-pre` | `wgsl` | `gust-gpu` (embedded artifacts) |
 | `cpu` | `GUST_PROFILE=cpu cargo build --release -p gust-bench --no-default-features` | `cpu` | `gust-cpu`, `gust-cpu-par`, no GPU rows |
 | `rust-gpu` | the default build with `--features rust-gpu` | `wgsl` | `gust-gpu`, and `rustgpu-wgpu` beside the hand rows (not a table: the run is marked not publishable, see below) |
+| `cubecl` | the default build with `--features cubecl` (rustc 1.95 or newer) | `wgsl` | `gust-gpu`, and `cubecl-wgpu` and `cubecl-wgpu-tuned` beside the hand rows (not a table: the run is marked not publishable, see below) |
 
 Deviation from the plan's single group: the plan put gust-gpu and gust-gpu on SPIR-V in one random-order group. The
 SPIR-V route changes the code `gust-wgpu`'s macros emit (a Cargo feature), so one process holds one GUST route and
@@ -293,6 +295,41 @@ backend in the rotation have not been shown to leave the other rows unchanged. T
 rust-gpu device cannot disturb the others (the backend in a group or a process of its own, or a measured no-interference
 result) together with a device that enables `vulkanMemoryModel`.
 
+## The CubeCL comparator (`cubecl-wgpu`, `cubecl-wgpu-tuned`, `--features cubecl`)
+
+The same workloads written as CubeCL 0.11.4 kernels (`#[cube]` functions in Rust) and run through CubeCL's wgpu runtime,
+next to the hand WGSL. Workloads: W1, W2, W3, W4, W7 and W9 (naive). W5 and W6 are left out for scope, not because CubeCL could not express them; the bench has no W8.
+
+- Needs rustc 1.95 or newer for the dependency (CubeCL's floor); the bench's own `rust-version` is 1.90 and a default
+  build does not compile CubeCL. Check with `rustc --version`; with a rustup toolchain use
+  `cargo +1.95.0 ...` or set `RUSTUP_TOOLCHAIN`.
+- CubeCL is pinned `=0.11.4` with `default-features = false, features = ["wgpu"]`: no `spirv` feature (CubeCL emits WGSL,
+  which wgpu and naga translate), no autotune or kernel cache on disk, no network client. The lock gained CubeCL's crates
+  and changed no pre-existing version, but the build turns on wgpu's default features for every row (`dx12`, `gles`,
+  `metal`, `webgpu`, `web`, `parking_lot` and others; instances stay Vulkan-only, but wgpu's host-side locking differs
+  from the default build's), because `cubecl-wgpu` does not switch them off.
+- The runtime is created from the bench's own wgpu instance, adapter and device (Vulkan, `TIMESTAMP_QUERY`), so
+  `--adapter` selects the adapter for these rows as for the others. An adapter that cannot run the kernels is a refusal:
+  the rows are left out and the run file lists them under `config.backends_not_run` with the reason; naming one with
+  `--backends` is then an error. Only that adapter gate refuses; an error of CubeCL's own initialisation fails the run.
+  CubeCL's flush policy is pinned (`tasks_max` 64, default memory configuration) and recorded in the run file.
+- `cubecl-wgpu` is the like-for-like row (checked launch, 256-wide cubes, W9 16 by 16, line size 1);
+  `cubecl-wgpu-tuned` uses the unchecked launch and line size 4 for W1 to W3 where the length is a multiple of four.
+  Neither has autotune. Their bounds policies are in `docs/BENCHMARKS.md`, "Bounds policy".
+- The CubeCL rows have no cold-start figure. W7's GPU time is the sum of one profiling window per repeat, all closed
+  before any is read; the end-to-end sample includes CubeCL's copy of each input into owned bytes (details in
+  `docs/BENCHMARKS.md`).
+- The `cubecl` feature is listed in `build.features` and makes a run not publishable (a device of its own, two more
+  backends in the rotation, and wgpu's default features on for every row). Neither row is part of the GUST
+  kill rule, and a ratio of either to `wgsl-prebuilt` is not a GUST overhead.
+
+```sh
+# from the repository root, with rustc 1.95 or newer
+cargo run --release --manifest-path bench/Cargo.toml -p gust-bench --features cubecl -- run \
+  --functional --quick --backends gust-gpu,wgsl-prebuilt,wgsl-percall,cubecl-wgpu,cubecl-wgpu-tuned --out cubecl.json
+cargo test --manifest-path bench/Cargo.toml -p gust-bench --features cubecl cubecl_backend
+```
+
 ## Build and run
 
 The bench is its own workspace (`bench/Cargo.toml`), so run cargo from `bench/` or pass `--manifest-path bench/Cargo.toml`.
@@ -429,7 +466,7 @@ workgroups and is rejected). Three f32 streams of the last size are 192 MiB, bey
   release profile for every backend.
 - On a CPU the three streams of the largest sizes are memory bound; rayon-N did not beat one thread there on this
   machine (see the results), so the CPU rows say as much about DRAM bandwidth as about the schedulers.
-- Not covered by this spike: workloads W6 and W8 and other comparators (CubeCL, rust-gpu); the spike did not have multi-dimensional dispatch, which W9 now has.
+- Not covered by this spike: workloads W6 and W8 and other comparators beyond CubeCL and rust-gpu; the spike did not have multi-dimensional dispatch, which W9 now has.
 - W4's histogram accumulates across dispatches (a batch of passes keeps counting); the harness counts the passes since
   the bins were cleared and divides the counts by that number, and a count that is not a multiple of it fails the check.
   The bytes per element of W4 (4) count the key stream only, so its GB/s is the compulsory traffic, not the atomics'.

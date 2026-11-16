@@ -210,6 +210,11 @@ pub fn build_features() -> Vec<&'static str> {
     if cfg!(feature = "rust-gpu") {
         features.push("rust-gpu");
     }
+    // A device of its own besides GUST's and the hand device, two more backends in the rotation, and wgpu's default features
+    // for every row (m10.b2), for the same reason.
+    if cfg!(feature = "cubecl") {
+        features.push("cubecl");
+    }
     features
 }
 
@@ -236,7 +241,7 @@ fn machine_common(rayon_threads: usize) -> serde_json::Map<String, Value> {
             "features": build_features(),
         },
     });
-    #[cfg_attr(not(feature = "rust-gpu"), allow(unused_mut))]
+    #[cfg_attr(not(any(feature = "rust-gpu", feature = "cubecl")), allow(unused_mut))]
     let mut map = match value {
         Value::Object(map) => map,
         _ => serde_json::Map::new(),
@@ -246,6 +251,11 @@ fn machine_common(rayon_threads: usize) -> serde_json::Map<String, Value> {
     #[cfg(feature = "rust-gpu")]
     if let Some(Value::Object(versions)) = map.get_mut("versions") {
         versions.insert("rust_gpu".to_owned(), crate::rustgpu_module::identity());
+    }
+    // The CubeCL comparator (m10.b2): its version, compiler and what each row is.
+    #[cfg(feature = "cubecl")]
+    if let Some(Value::Object(versions)) = map.get_mut("versions") {
+        versions.insert("cubecl".to_owned(), crate::cubecl_backend::identity());
     }
     map
 }

@@ -5,6 +5,7 @@
 //!                [--group publishable|ablation] [--ablation bind-group-reuse,staging-reuse,one-submission,all-on|all]
 //!                [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S]
 //!                [--cold-only] [--cold-repeats N] [--seed N] [--with gust-setup,gust-shader,gust-device,unchecked]
+//!                [--functional]   # correctness only, quick sizes, any adapter (lavapipe included), no sampler, no timing published
 //! gust-bench aggregate --json out.json --md out.md run1.json run2.json run3.json
 //! gust-bench dump-wgsl            # the WGSL GUST generates for each kernel, on stdout (slang-runtime builds)
 //! gust-bench dump-kernels --out DIR # each kernel's Slang source, WGSL and slangc SPIR-V, as files (slang-runtime builds)
@@ -28,6 +29,7 @@ mod gust_cpu;
 #[cfg(feature = "gpu")]
 mod gust_gpu;
 mod harness;
+mod judge;
 mod meta;
 #[cfg(feature = "profile-counts")]
 mod profile;
@@ -35,7 +37,6 @@ mod rayon_cpu;
 mod report;
 #[cfg(feature = "gpu")]
 mod route;
-#[cfg(feature = "gpu")]
 mod sampler;
 #[cfg(feature = "wgpu-trace")]
 mod trace;
@@ -53,13 +54,14 @@ use group::Group;
 use gust_wgpu::HeadlessDevice;
 use harness::{CellInput, Config, prepare_case, run_cell, run_gpu_group};
 #[cfg(feature = "gpu")]
+use sampler::AdapterIdent;
 use sampler::Sampler;
 use serde_json::{Value, json};
 #[cfg(feature = "gpu")]
 use wgsl_wgpu::{HandWgsl, Mode, Switch, WgpuContext};
 use workloads::Workload;
 
-const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W3,...] [--sizes N,N] [--backends a,b] [--group publishable|ablation] [--ablation LIST|all-on|all] [--with gust-setup,gust-shader,gust-device,unchecked] [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench dump-kernels --out DIR (slang-runtime build)\n       gust-bench probe-adapters\n       gust-bench profile --out FILE [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS] (profile-counts build)\n       gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall,gust-gpu] [--label batch16|end_to_end] (wgpu-trace build)\n       gust-bench list";
+const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W3,...] [--sizes N,N] [--backends a,b] [--group publishable|ablation] [--ablation LIST|all-on|all] [--with gust-setup,gust-shader,gust-device,unchecked] [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N] [--functional]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench dump-kernels --out DIR (slang-runtime build)\n       gust-bench probe-adapters\n       gust-bench profile --out FILE [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS] (profile-counts build)\n       gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall,gust-gpu] [--label batch16|end_to_end] (wgpu-trace build)\n       gust-bench list";
 
 #[derive(Default)]
 struct Options {
@@ -68,6 +70,9 @@ struct Options {
     md: Option<String>,
     label: Option<String>,
     quick: bool,
+    /// `--functional`: a correctness-only run (every cell's checks on the `--quick` sizes), accepted on a software
+    /// adapter, with no sampler; no timing of it is ever published.
+    functional: bool,
     workloads: Option<Vec<Workload>>,
     sizes: Option<Vec<usize>>,
     backends: Option<Vec<String>>,
@@ -147,6 +152,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--md" => options.md = Some(value("--md")?),
             "--label" => options.label = Some(value("--label")?),
             "--quick" => options.quick = true,
+            "--functional" => options.functional = true,
             "--workloads" => {
                 let mut list = Vec::new();
                 for item in value("--workloads")?.split(',') {
@@ -233,6 +239,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),
             other => options.positional.push(other.to_owned()),
         }
+    }
+    // A functional run is the quick sizes and samples: it checks every cell's correctness and nothing else.
+    if options.functional {
+        options.quick = true;
     }
     Ok(options)
 }
@@ -333,19 +343,49 @@ struct RunRecord {
     failures: Vec<String>,
     /// Route, build and adapter (plan 2.5 item 8), merged into the top level.
     provenance: Value,
+    /// `publishable` and its reasons (`judge::judge_run`), written with the banner of a run that is not.
+    publishable: bool,
+    publishable_reasons: Vec<String>,
+    functional: bool,
+    /// Start and end of the run by the harness's own clock (plan 2.4 item 5).
+    started_unix_s: u64,
+    ended_unix_s: u64,
+    /// The git state at the start and at the end of the run (plan 2.4 item 1).
+    git_start: meta::GitState,
+    git_end: meta::GitState,
 }
 
 impl RunRecord {
     fn into_document(self) -> Value {
+        let git = |state: &meta::GitState| {
+            json!({
+                "head": state.head, "tree_dirty": state.dirty,
+                "origin_main": state.origin_main, "ancestor_of_origin_main": state.ancestor_of_origin_main,
+            })
+        };
         let mut document = json!({
             "label": self.label,
             "run_seed": self.run_seed,
             "group": self.group,
             "kill_rule": self.kill_rule,
-            "banner": "shared machine, not publishable",
-            // The publishable judgement (plan 2.4) is b1b's; until then no file is publishable, and says why.
-            "publishable": meta::PUBLISHABLE,
-            "publishable_reason": meta::PUBLISHABLE_REASON,
+            // Plan 2.4: a run the harness does not judge publishable carries the banner and the reasons.
+            "banner": (!self.publishable).then_some(report::BANNER),
+            "publishable": self.publishable,
+            "publishable_reason": if self.publishable {
+                "every check of plan 2.4 items 1 to 3 passed; the attestation (item 5) is the results commit's".to_owned()
+            } else {
+                self.publishable_reasons.join("; ")
+            },
+            "publishable_reasons": self.publishable_reasons,
+            "functional": self.functional,
+            "window": {
+                "started_utc": meta::utc_text(self.started_unix_s),
+                "ended_utc": meta::utc_text(self.ended_unix_s),
+                "started_unix_s": self.started_unix_s,
+                "ended_unix_s": self.ended_unix_s,
+            },
+            "source": { "start": git(&self.git_start), "end": git(&self.git_end) },
+            "thresholds": judge::THRESHOLDS.json(),
             "sampler": self.sampler,
             "meta": self.machine,
             "config": self.config,
@@ -439,13 +479,16 @@ fn select_backends(
 }
 
 /// The cells of a run: for each workload and size, the group's GPU backends as one paired rotation, then each CPU
-/// backend alone. `before_cell` is called with a label before each (the sampler's idle window, in a GPU build).
+/// backend alone. `before_cell` is called with a label before each (the sampler's settle-and-window, retried until the
+/// window is quiet) and returns the quiet record the following cells are stamped with, together with `blockers` (the
+/// run-level reasons no cell is publishable), by `judge::stamp_cell`.
 fn run_cells(
     backends: &mut [Box<dyn Backend>],
     workload_list: &[Workload],
     options: &Options,
     config: &Config,
-    before_cell: &mut dyn FnMut(&str, Workload, usize),
+    blockers: &[String],
+    before_cell: &mut dyn FnMut(&str, Workload, usize) -> Value,
 ) -> (Vec<Value>, Vec<String>) {
     let mut cells = Vec::new();
     let mut failures = Vec::new();
@@ -466,15 +509,20 @@ fn run_cells(
                 .collect();
             let mut produced = Vec::new();
             if !gpu.is_empty() {
-                before_cell("gpu-group", *workload, *n);
-                produced.extend(run_gpu_group(&mut gpu, &input, config));
+                let quiet = before_cell("gpu-group", *workload, *n);
+                for mut cell in run_gpu_group(&mut gpu, &input, config) {
+                    judge::stamp_cell(&mut cell.json, &quiet, blockers);
+                    produced.push(cell);
+                }
             }
             for backend in backends
                 .iter_mut()
                 .filter(|b| b.kind() != Kind::Gpu && b.supports(*workload))
             {
-                before_cell(backend.id(), *workload, *n);
-                produced.push(run_cell(backend.as_mut(), &input, config));
+                let quiet = before_cell(backend.id(), *workload, *n);
+                let mut cell = run_cell(backend.as_mut(), &input, config);
+                judge::stamp_cell(&mut cell.json, &quiet, blockers);
+                produced.push(cell);
             }
             for cell in produced {
                 let summary = ["end_to_end", "dispatch_host", "gpu_single"].map(|metric| {
@@ -537,9 +585,131 @@ fn kill_rule_of(group: Group, cells: &[Value]) -> Value {
     record
 }
 
+/// What a run does before each cell: settle, sample and judge the window (plan 2.4 item 3), retrying up to `N`
+/// times, when the sampler is on; otherwise a record that says the window was not judged.
+struct Quiet<'a> {
+    sampler: Option<&'a Sampler>,
+    timing: sampler::Timing,
+    /// Every window taken, with its attempt number and verdict: the sidecar.
+    windows: Vec<Value>,
+    why_off: &'static str,
+}
+
+impl Quiet<'_> {
+    fn before_cell(&mut self, label: &str, workload: Workload, n: usize) -> Value {
+        let Some(sampler) = self.sampler else {
+            return judge::unjudged_record(self.why_off);
+        };
+        let (windows, record) =
+            judge::settle_until_quiet(&judge::THRESHOLDS, self.timing.samples(), || {
+                sampler.sample_cell(json!({
+                    "backend": label, "workload": workload.id(), "n": n,
+                }))
+            });
+        self.windows.extend(windows);
+        if record["quiet"] != true {
+            eprintln!(
+                "not quiet: {label} {} n={n} after {} attempts: {}",
+                workload.id(),
+                record["attempts"],
+                record["reasons"][0].as_str().unwrap_or("?")
+            );
+        }
+        record
+    }
+}
+
+/// Writes the sampler's sidecar beside `out` and returns the run file's `sampler` block.
+fn write_sidecar(
+    out: &str,
+    sampler: Option<&Sampler>,
+    windows: &[Value],
+    timing: &sampler::Timing,
+) -> BenchResult<Value> {
+    let Some(sampler) = sampler else {
+        return Ok(json!({ "enabled": false }));
+    };
+    let sidecar = sampler::sidecar_path(out);
+    let document = json!({ "header": sampler.header(), "windows": windows });
+    std::fs::write(&sidecar, serde_json::to_string(&document)? + "\n")?;
+    Ok(json!({
+        "enabled": true,
+        // Only the file name: results files never carry a path.
+        "sidecar": sidecar.file_name().and_then(|n| n.to_str()),
+        "windows": windows.len(),
+        "settle_s": timing.settle.as_secs_f64(), "window_s": timing.window.as_secs_f64(),
+        "rate_hz": timing.rate_hz,
+    }))
+}
+
+/// The sampling timing of a run: the plan's defaults, or the `--settle-secs` and `--window-secs` overrides.
+fn run_timing(options: &Options) -> sampler::Timing {
+    let mut timing = sampler::Timing::default();
+    if let Some(secs) = options.settle_secs {
+        timing.settle = Duration::from_secs_f64(secs);
+    }
+    if let Some(secs) = options.window_secs {
+        timing.window = Duration::from_secs_f64(secs);
+    }
+    timing
+}
+
+/// The facts of the start of a run that decide whether any of its cells can be published (`judge::run_blockers`).
+fn run_inputs(
+    options: &Options,
+    config: &Config,
+    group: Group,
+    sampler_on: bool,
+    software_adapter: bool,
+    git: &meta::GitState,
+    timing: &sampler::Timing,
+) -> judge::RunInputs {
+    // Anything that changes the measured method (plan 2.3, 2.4 item 3) away from its defaults is named.
+    let defaults = Config::default();
+    let default_timing = sampler::Timing::default();
+    let mut overrides = Vec::new();
+    if timing.settle != default_timing.settle {
+        overrides.push("--settle-secs".to_owned());
+    }
+    if timing.window != default_timing.window || timing.rate_hz != default_timing.rate_hz {
+        overrides.push("--window-secs".to_owned());
+    }
+    if config.cap != defaults.cap && !options.quick {
+        overrides.push("--cap-secs".to_owned());
+    }
+    if config.warmup_cap != defaults.warmup_cap {
+        overrides.push("--warmup-secs".to_owned());
+    }
+    judge::RunInputs {
+        overrides,
+        build_head: meta::build_head(),
+        build_dirty: meta::build_dirty(),
+        functional: options.functional,
+        quick: options.quick,
+        cold_only: options.cold_only,
+        sizes_overridden: options.sizes.is_some(),
+        samples: config.samples,
+        group_is_publishable: group == Group::Publishable,
+        release_build: !cfg!(debug_assertions),
+        tainting_features: meta::build_features()
+            .into_iter()
+            .filter(|feature| matches!(*feature, "profile-counts" | "wgpu-trace"))
+            .map(str::to_owned)
+            .collect(),
+        probe_backends: !options.with_probe.is_empty(),
+        sampler_enabled: sampler_on,
+        software_adapter,
+        head: git.head.clone(),
+        tree_dirty: git.dirty,
+        ancestor_of_origin_main: git.ancestor_of_origin_main,
+    }
+}
+
 #[cfg(feature = "gpu")]
 fn run(options: &Options) -> BenchResult<bool> {
     let out = options.out.as_deref().ok_or("--out is required")?;
+    let started_unix_s = meta::unix_now();
+    let git_start = meta::git_state();
     let (group, ablation_list) = resolve_group(options.group, options.ablation.as_deref())?;
     let (ablation, all_on) = match &ablation_list {
         Some(list) => parse_ablation(list)?,
@@ -548,8 +718,14 @@ fn run(options: &Options) -> BenchResult<bool> {
     let gust_device = Rc::new(HeadlessDevice::new()?);
     let ctx = Rc::new(WgpuContext::new()?);
     let adapter = gust_device.adapter_info();
-    if matches!(adapter.device_type, wgpu::DeviceType::Cpu) {
-        return Err(format!("software adapter selected: {}", adapter.name).into());
+    // A software adapter (lavapipe) runs only the functional check: its times are never published (plan 2.4).
+    let software = matches!(adapter.device_type, wgpu::DeviceType::Cpu);
+    if software && !options.functional {
+        return Err(format!(
+            "software adapter selected: {} (only `--functional` runs on one, and it publishes no timing)",
+            adapter.name
+        )
+        .into());
     }
     if adapter.name != ctx.info.name {
         return Err(format!(
@@ -602,18 +778,38 @@ fn run(options: &Options) -> BenchResult<bool> {
     let load_before = meta::load_snapshot();
     let gpu_before = meta::gpu_snapshot();
     eprintln!("gpu before: {gpu_before}\nload before: {load_before}");
-    let mut timing = sampler::Timing::default();
-    if let Some(secs) = options.settle_secs {
-        timing.settle = Duration::from_secs_f64(secs);
-    }
-    if let Some(secs) = options.window_secs {
-        timing.window = Duration::from_secs_f64(secs);
-    }
-    let sampler = (!options.no_sampler).then(|| Sampler::open(timing, adapter));
+    let timing = run_timing(options);
+    // A functional run checks correctness only: no window, no judgement.
+    let sampler_on = !options.no_sampler && !options.functional;
+    let sampler = sampler_on.then(|| {
+        Sampler::open(
+            timing,
+            Some(AdapterIdent {
+                vendor: adapter.vendor,
+                device: adapter.device,
+                name: &adapter.name,
+            }),
+        )
+    });
     if let Some(sampler) = &sampler {
         eprintln!("sampler: {}", sampler.header()["luid_mapping"]);
     }
-    let mut window_records = Vec::new();
+    let blockers = judge::run_blockers(&run_inputs(
+        options, &config, group, sampler_on, software, &git_start, &timing,
+    ));
+    for blocker in &blockers {
+        eprintln!("not publishable: {blocker}");
+    }
+    let mut quiet = Quiet {
+        sampler: sampler.as_ref(),
+        timing,
+        windows: Vec::new(),
+        why_off: if options.functional {
+            "functional run: no sampler"
+        } else {
+            "no sampler (--no-sampler)"
+        },
+    };
     let started = Instant::now();
 
     let (cells, failures) = run_cells(
@@ -621,32 +817,21 @@ fn run(options: &Options) -> BenchResult<bool> {
         &workload_list,
         options,
         &config,
-        &mut |label, workload, n| {
-            if let Some(sampler) = &sampler {
-                window_records.push(sampler.sample_cell(json!({
-                    "backend": label, "workload": workload.id(), "n": n,
-                })));
-            }
-        },
+        &blockers,
+        &mut |label, workload, n| quiet.before_cell(label, workload, n),
     );
+    let ended_unix_s = meta::unix_now();
+    let git_end = meta::git_state();
 
-    let sidecar = sampler::sidecar_path(out);
-    let sampler_json = match &sampler {
-        Some(sampler) => {
-            let document = json!({ "header": sampler.header(), "windows": window_records });
-            std::fs::write(&sidecar, serde_json::to_string(&document)? + "\n")?;
-            json!({
-                "enabled": true,
-                // Only the file name: results files never carry a path.
-                "sidecar": sidecar.file_name().and_then(|n| n.to_str()),
-                "windows": window_records.len(),
-                "settle_s": timing.settle.as_secs_f64(), "window_s": timing.window.as_secs_f64(),
-                "rate_hz": timing.rate_hz,
-            })
-        }
-        None => json!({ "enabled": false }),
+    let sampler_json = write_sidecar(out, sampler.as_ref(), &quiet.windows, &timing)?;
+    let kill_rule = if options.functional {
+        Value::Null
+    } else {
+        kill_rule_of(group, &cells)
     };
-    let kill_rule = kill_rule_of(group, &cells);
+    let source_changed = meta::source_change(&git_start, &git_end);
+    let (publishable, publishable_reasons) =
+        judge::judge_run(&blockers, &cells, &failures, source_changed.as_deref());
     let document = RunRecord {
         label: options.label.clone().unwrap_or_else(|| "run".to_owned()),
         run_seed: config.run_seed,
@@ -674,21 +859,35 @@ fn run(options: &Options) -> BenchResult<bool> {
         wall_s: started.elapsed().as_secs_f64(),
         cells,
         failures: failures.clone(),
-        provenance: meta::provenance(adapter),
+        provenance: meta::provenance(adapter, &git_start),
+        publishable,
+        publishable_reasons,
+        functional: options.functional,
+        started_unix_s,
+        ended_unix_s,
+        git_start,
+        git_end,
     }
     .into_document();
     std::fs::write(out, serde_json::to_string_pretty(&document)? + "\n")?;
     for failure in &failures {
         eprintln!("FAILURE: {failure}");
     }
+    eprintln!(
+        "publishable: {} ({})",
+        document["publishable"], document["publishable_reason"]
+    );
     Ok(failures.is_empty())
 }
 
-/// The `GUST_PROFILE=cpu` build has no GPU runtime: only the CPU backends, one group, no sampler (there is no GPU
-/// to idle).
+/// The `GUST_PROFILE=cpu` build has no GPU runtime: only the CPU backends, one group. The sampler still runs between
+/// cells (no adapter under test, so every adapter's activity counts: the stricter fallback), so the CPU rows are
+/// judged like any others.
 #[cfg(not(feature = "gpu"))]
 fn run(options: &Options) -> BenchResult<bool> {
     let out = options.out.as_deref().ok_or("--out is required")?;
+    let started_unix_s = meta::unix_now();
+    let git_start = meta::git_state();
     let (group, _) = resolve_group(options.group, options.ablation.as_deref())?;
     if group != Group::Publishable {
         return Err(
@@ -704,20 +903,46 @@ fn run(options: &Options) -> BenchResult<bool> {
     let mut backends = cpu_backends(threads);
     select_backends(&mut backends, options.backends.as_ref())?;
     let load_before = meta::load_snapshot();
+    let timing = run_timing(options);
+    let sampler_on = !options.no_sampler && !options.functional;
+    let sampler = sampler_on.then(|| Sampler::open(timing, None));
+    let blockers = judge::run_blockers(&run_inputs(
+        options, &config, group, sampler_on, false, &git_start, &timing,
+    ));
+    for blocker in &blockers {
+        eprintln!("not publishable: {blocker}");
+    }
+    let mut quiet = Quiet {
+        sampler: sampler.as_ref(),
+        timing,
+        windows: Vec::new(),
+        why_off: if options.functional {
+            "functional run: no sampler"
+        } else {
+            "no sampler (--no-sampler)"
+        },
+    };
     let started = Instant::now();
     let (cells, failures) = run_cells(
         &mut backends,
         &workload_list,
         options,
         &config,
-        &mut |_, _, _| {},
+        &blockers,
+        &mut |label, workload, n| quiet.before_cell(label, workload, n),
     );
+    let ended_unix_s = meta::unix_now();
+    let git_end = meta::git_state();
+    let sampler_json = write_sidecar(out, sampler.as_ref(), &quiet.windows, &timing)?;
+    let source_changed = meta::source_change(&git_start, &git_end);
+    let (publishable, publishable_reasons) =
+        judge::judge_run(&blockers, &cells, &failures, source_changed.as_deref());
     let document = RunRecord {
         label: options.label.clone().unwrap_or_else(|| "run".to_owned()),
         run_seed: config.run_seed,
         group: group.name(),
         kill_rule: Value::Null,
-        sampler: json!({ "enabled": false }),
+        sampler: sampler_json,
         machine: meta::machine_cpu(threads),
         config: config_json(&config, options, &workload_list, &backends, json!({})),
         load_before,
@@ -727,13 +952,24 @@ fn run(options: &Options) -> BenchResult<bool> {
         wall_s: started.elapsed().as_secs_f64(),
         cells,
         failures: failures.clone(),
-        provenance: meta::provenance_cpu(),
+        provenance: meta::provenance_cpu(&git_start),
+        publishable,
+        publishable_reasons,
+        functional: options.functional,
+        started_unix_s,
+        ended_unix_s,
+        git_start,
+        git_end,
     }
     .into_document();
     std::fs::write(out, serde_json::to_string_pretty(&document)? + "\n")?;
     for failure in &failures {
         eprintln!("FAILURE: {failure}");
     }
+    eprintln!(
+        "publishable: {} ({})",
+        document["publishable"], document["publishable_reason"]
+    );
     Ok(failures.is_empty())
 }
 
@@ -807,7 +1043,14 @@ fn probe_adapters() -> BenchResult<bool> {
         )
         .into());
     }
-    let sampler = Sampler::open(sampler::Timing::default(), adapter);
+    let sampler = Sampler::open(
+        sampler::Timing::default(),
+        Some(AdapterIdent {
+            vendor: adapter.vendor,
+            device: adapter.device,
+            name: &adapter.name,
+        }),
+    );
     let own = std::process::id();
     let window = Duration::from_secs(3);
     let n = *Workload::VectorAdd.sizes().last().expect("sizes");
@@ -987,6 +1230,71 @@ mod tests {
         assert!(parse(&args(&["--workloads", "W9"])).is_err());
     }
 
+    /// The method flags a run changes away from the defaults, as `run_inputs` names them, for a command line.
+    fn overrides_of(list: &[&str]) -> Vec<String> {
+        let args = list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        let options = parse(&args).unwrap();
+        let config = build_config(&options, Group::Publishable);
+        let timing = run_timing(&options);
+        let git = meta::GitState {
+            head: Some("0123456789abcdef".to_owned()),
+            dirty: Some(false),
+            origin_main: None,
+            ancestor_of_origin_main: Some(true),
+        };
+        run_inputs(
+            &options,
+            &config,
+            Group::Publishable,
+            true,
+            false,
+            &git,
+            &timing,
+        )
+        .overrides
+    }
+
+    #[test]
+    fn the_method_flags_map_to_the_overrides_the_judge_names() {
+        assert!(overrides_of(&[]).is_empty());
+        assert_eq!(overrides_of(&["--settle-secs", "1"]), ["--settle-secs"]);
+        assert_eq!(overrides_of(&["--window-secs", "1"]), ["--window-secs"]);
+        assert_eq!(overrides_of(&["--cap-secs", "3"]), ["--cap-secs"]);
+        assert_eq!(overrides_of(&["--warmup-secs", "0"]), ["--warmup-secs"]);
+        assert_eq!(
+            overrides_of(&[
+                "--settle-secs",
+                "1",
+                "--window-secs",
+                "1",
+                "--cap-secs",
+                "3",
+                "--warmup-secs",
+                "0"
+            ]),
+            [
+                "--settle-secs",
+                "--window-secs",
+                "--cap-secs",
+                "--warmup-secs"
+            ]
+        );
+        // The values of the defaults are not overrides.
+        assert!(overrides_of(&["--warmup-secs", "1", "--cap-secs", "8"]).is_empty());
+        // `--quick` sets its own cap, which is not an override; an explicit `--cap-secs` on top of it is not named either.
+        assert!(overrides_of(&["--quick"]).is_empty());
+        assert!(overrides_of(&["--quick", "--cap-secs", "5"]).is_empty());
+    }
+
+    #[test]
+    fn functional_implies_quick_and_the_flag_is_parsed() {
+        let args = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        let options = parse(&args(&["--functional", "--out", "x.json"])).unwrap();
+        assert!(options.functional);
+        assert!(options.quick);
+        assert!(!parse(&args(&["--out", "x.json"])).unwrap().functional);
+    }
+
     #[test]
     fn each_workload_runs_its_own_ladder_and_quick_shortens_it() {
         let mut options = Options::default();
@@ -1021,10 +1329,23 @@ mod tests {
             cells: Vec::new(),
             failures: Vec::new(),
             provenance: json!({ "route": "wgsl", "build": { "commit": "abc" }, "adapter": { "name": "A" } }),
+            publishable: false,
+            publishable_reasons: vec!["--quick run: reduced samples and sizes".to_owned()],
+            functional: false,
+            started_unix_s: 1_700_000_000,
+            ended_unix_s: 1_700_000_060,
+            git_start: meta::GitState::default(),
+            git_end: meta::GitState::default(),
         }
         .into_document();
         assert_eq!(document["publishable"], false);
-        assert_eq!(document["publishable_reason"], meta::PUBLISHABLE_REASON);
+        assert_eq!(
+            document["publishable_reason"],
+            "--quick run: reduced samples and sizes"
+        );
+        assert_eq!(document["window"]["started_unix_s"], 1_700_000_000u64);
+        assert_eq!(document["window"]["started_utc"], "2023-11-14T22:13:20Z");
+        assert_eq!(document["functional"], false);
         assert_eq!(document["banner"], "shared machine, not publishable");
         assert_eq!(document["route"], "wgsl");
         assert_eq!(document["build"]["commit"], "abc");

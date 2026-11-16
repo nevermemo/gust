@@ -65,18 +65,125 @@ fn commit() -> String {
     }
 }
 
-/// Whether the working tree has uncommitted or untracked changes (`None` when git cannot say). A commit named
-/// without this would read as clean.
-fn tree_dirty() -> Option<bool> {
-    let output = Command::new("git")
-        .args(["-c", "safe.directory=*", "status", "--porcelain"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| !output.stdout.iter().all(u8::is_ascii_whitespace))
+/// What git says about the source tree this binary is run from (plan 2.4 item 1). Every field is `None` when git cannot
+/// say: the judgement treats that as "not publishable", never as a pass.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GitState {
+    /// `git rev-parse HEAD`, the full id.
+    pub head: Option<String>,
+    /// Whether `git status --porcelain --untracked-files=all` lists anything (a user setting such as
+    /// `status.showUntrackedFiles=no` cannot hide an untracked file from it).
+    pub dirty: Option<bool>,
+    /// `git rev-parse origin/main`.
+    pub origin_main: Option<String>,
+    /// `git merge-base --is-ancestor HEAD origin/main`: exit 0 is yes, exit 1 is no, anything else is unknown.
+    pub ancestor_of_origin_main: Option<bool>,
+}
+
+impl GitState {
+    /// The first 12 characters of HEAD, or `unknown`.
+    pub fn short(&self) -> String {
+        self.head.as_deref().map_or_else(
+            || "unknown".to_owned(),
+            |head| head.chars().take(12).collect(),
+        )
+    }
+}
+
+/// One git call: its arguments (after `git -c safe.directory=*`) in, its exit code and trimmed standard output out
+/// (`None` when git could not be run).
+pub type GitCall<'a> = dyn Fn(&[&str]) -> Option<(i32, String)> + 'a;
+
+/// Reads the state through `git`.
+pub fn git_state_with(git: &GitCall<'_>) -> GitState {
+    let ok = |args: &[&str]| git(args).filter(|(code, _)| *code == 0).map(|(_, out)| out);
+    GitState {
+        head: ok(&["rev-parse", "HEAD"]).filter(|id| !id.is_empty()),
+        dirty: ok(&["status", "--porcelain", "--untracked-files=all"]).map(|out| !out.is_empty()),
+        origin_main: ok(&["rev-parse", "origin/main"]).filter(|id| !id.is_empty()),
+        ancestor_of_origin_main: git(&["merge-base", "--is-ancestor", "HEAD", "origin/main"])
+            .and_then(|(code, _)| match code {
+                0 => Some(true),
+                1 => Some(false),
+                _ => None,
+            }),
+    }
+}
+
+/// The commit this binary was compiled at (`build.rs`), `None` when git could not say. A run whose HEAD differs is not
+/// publishable: the binary is not the code of the commit it would be labelled with.
+pub fn build_head() -> Option<String> {
+    option_env!("GUST_BENCH_BUILD_HEAD")
+        .filter(|head| !head.is_empty())
+        .map(str::to_owned)
+}
+
+/// Whether tracked files had uncommitted changes when this binary was compiled (`build.rs`), `None` when git could not
+/// say. A run whose build was dirty is not publishable: the binary is code that no commit holds.
+pub fn build_dirty() -> Option<bool> {
+    build_dirty_from(option_env!("GUST_BENCH_BUILD_DIRTY"))
+}
+
+/// The meaning of the `GUST_BENCH_BUILD_DIRTY` value: `1` dirty, `0` clean, anything else (empty, unset) unknown.
+pub fn build_dirty_from(value: Option<&str>) -> Option<bool> {
+    match value {
+        Some("1") => Some(true),
+        Some("0") => Some(false),
+        _ => None,
+    }
+}
+
+/// The git state of the checkout this crate is built in.
+pub fn git_state() -> GitState {
+    git_state_with(&|args| {
+        let output = Command::new("git")
+            .args(["-c", "safe.directory=*"])
+            .args(args)
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .ok()?;
+        Some((
+            output.status.code()?,
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        ))
+    })
+}
+
+/// Whether the source moved between two reads of [`git_state`] (a run starts and ends with one each): a different
+/// HEAD, or a tree that is not clean at the end. `None` when it did not.
+pub fn source_change(start: &GitState, end: &GitState) -> Option<String> {
+    if start.head != end.head {
+        return Some("HEAD moved during the run".to_owned());
+    }
+    (end.dirty != Some(false)).then(|| "the tree was not clean at the end of the run".to_owned())
+}
+
+/// Seconds since the Unix epoch (0 when the clock is before it).
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// `2026-11-15T08:05:00Z` for a Unix time (proleptic Gregorian, days-to-civil by Howard Hinnant's algorithm).
+pub fn utc_text(unix_s: u64) -> String {
+    let days = (unix_s / 86_400) as i64;
+    let rest = unix_s % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rest / 3_600,
+        rest % 3_600 / 60,
+        rest % 60
+    )
 }
 
 /// The cargo features this binary was built with, as the results file records them.
@@ -272,18 +379,11 @@ pub fn load_snapshot() -> Value {
     json!({ "process_counts": counts, "gpu_compute_app_count": gpu_apps })
 }
 
-/// Why no file is publishable yet. The judgement (plan 2.4) is b1b's; the per-run file, the aggregate and the sampler
-/// sidecar all say `publishable: false` with exactly this text.
-pub const PUBLISHABLE: bool = false;
-
-/// The reason that goes with [`PUBLISHABLE`].
-pub const PUBLISHABLE_REASON: &str =
-    "no judgement is implemented yet: the sampler records the quiet window, thresholds come later";
-
 /// The provenance fields every results file carries at its top level (plan 2.5 item 8): the route, the build and the
-/// adapter under test. The route is read from the build (`gust_wgpu::SPIRV_ROUTE`), never from a flag.
+/// adapter under test. The route is read from the build (`gust_wgpu::SPIRV_ROUTE`), never from a flag. `git` is the
+/// state read at the start of the run.
 #[cfg(feature = "gpu")]
-pub fn provenance(adapter: &wgpu::AdapterInfo) -> Value {
+pub fn provenance(adapter: &wgpu::AdapterInfo, git: &GitState) -> Value {
     let route = if gust_wgpu::SPIRV_ROUTE {
         "spirv"
     } else {
@@ -295,17 +395,17 @@ pub fn provenance(adapter: &wgpu::AdapterInfo) -> Value {
             "name": adapter.name, "backend": format!("{:?}", adapter.backend),
             "driver": adapter.driver, "driver_info": adapter.driver_info,
         }),
-        (&commit(), tree_dirty()),
+        git,
     )
 }
 
 /// The provenance of a build without a GPU runtime: route `cpu`, no adapter.
 #[cfg(not(feature = "gpu"))]
-pub fn provenance_cpu() -> Value {
-    provenance_of("cpu", Value::Null, (&commit(), tree_dirty()))
+pub fn provenance_cpu(git: &GitState) -> Value {
+    provenance_of("cpu", Value::Null, git)
 }
 
-fn provenance_of(route: &str, adapter: Value, (commit, dirty): (&str, Option<bool>)) -> Value {
+fn provenance_of(route: &str, adapter: Value, git: &GitState) -> Value {
     let release = !cfg!(debug_assertions);
     let mut cfgs = Vec::new();
     if cfg!(gust_dual) {
@@ -319,8 +419,8 @@ fn provenance_of(route: &str, adapter: Value, (commit, dirty): (&str, Option<boo
             "gust_profile": gust::profile::NAME,
             "features": build_features(),
             "cfgs": cfgs,
-            "commit": commit,
-            "tree_dirty": dirty,
+            "commit": git.short(),
+            "tree_dirty": git.dirty,
         },
         "adapter": adapter,
     })
@@ -330,14 +430,105 @@ fn provenance_of(route: &str, adapter: Value, (commit, dirty): (&str, Option<boo
 mod tests {
     use super::*;
 
-    /// The shape of the three provenance fields is pinned: a reader (and the renderer of b1b) relies on exactly
-    /// these keys in every results file.
-    /// Every output (per-run file, aggregate, sidecar) takes both fields from these constants, so pinning them pins the
-    /// three outputs; the aggregate and sidecar tests check their own copies.
     #[test]
-    fn no_file_is_publishable_and_the_reason_is_not_empty() {
-        const { assert!(!PUBLISHABLE) };
-        assert!(PUBLISHABLE_REASON.len() > 20);
+    fn the_build_dirty_flag_is_unknown_unless_the_build_said_one_way_or_the_other() {
+        assert_eq!(build_dirty_from(Some("0")), Some(false));
+        assert_eq!(build_dirty_from(Some("1")), Some(true));
+        assert_eq!(build_dirty_from(Some("")), None);
+        assert_eq!(build_dirty_from(Some("maybe")), None);
+        assert_eq!(build_dirty_from(None), None);
+    }
+
+    /// What git answers, as the closure of `git_state_with` sees it: the arguments after `git -c safe.directory=*`.
+    fn git_says(
+        head: Option<(i32, &str)>,
+        status: Option<(i32, &str)>,
+        origin: Option<(i32, &str)>,
+        ancestor: Option<i32>,
+    ) -> GitState {
+        git_state_with(&|args| match args {
+            ["rev-parse", "HEAD"] => head.map(|(c, o)| (c, o.to_owned())),
+            ["status", "--porcelain", "--untracked-files=all"] => {
+                status.map(|(c, o)| (c, o.to_owned()))
+            }
+            ["rev-parse", "origin/main"] => origin.map(|(c, o)| (c, o.to_owned())),
+            ["merge-base", "--is-ancestor", "HEAD", "origin/main"] => {
+                ancestor.map(|c| (c, String::new()))
+            }
+            other => panic!("unexpected git call {other:?}"),
+        })
+    }
+
+    #[test]
+    fn the_git_state_reads_head_the_tree_and_the_ancestry_and_never_guesses() {
+        let clean = git_says(
+            Some((0, "0123456789abcdef0123")),
+            Some((0, "")),
+            Some((0, "fedcba9876543210fedc")),
+            Some(0),
+        );
+        assert_eq!(clean.head.as_deref(), Some("0123456789abcdef0123"));
+        assert_eq!(clean.short(), "0123456789ab");
+        assert_eq!(clean.dirty, Some(false));
+        assert_eq!(clean.origin_main.as_deref(), Some("fedcba9876543210fedc"));
+        assert_eq!(clean.ancestor_of_origin_main, Some(true));
+        // Anything in `git status --porcelain` is dirty; exit 1 of merge-base is "not an ancestor"; exit 128 (no
+        // origin/main) and a git that cannot run are unknown, never yes.
+        let dirty = git_says(
+            Some((0, "abc")),
+            Some((0, "?? untracked.txt")),
+            Some((128, "")),
+            Some(1),
+        );
+        assert_eq!(dirty.dirty, Some(true));
+        assert_eq!(dirty.origin_main, None);
+        assert_eq!(dirty.ancestor_of_origin_main, Some(false));
+        let unknown = git_says(Some((128, "")), Some((128, "")), None, Some(128));
+        assert_eq!(
+            unknown,
+            GitState {
+                head: None,
+                dirty: None,
+                origin_main: None,
+                ancestor_of_origin_main: None
+            }
+        );
+        assert_eq!(unknown.short(), "unknown");
+        let missing = git_says(None, None, None, None);
+        assert_eq!(missing.ancestor_of_origin_main, None);
+    }
+
+    #[test]
+    fn a_source_change_is_a_moved_head_or_a_tree_that_is_not_clean_at_the_end() {
+        let at = |head: &str, dirty| GitState {
+            head: Some(head.to_owned()),
+            dirty,
+            ..GitState::default()
+        };
+        assert_eq!(
+            source_change(&at("a", Some(false)), &at("a", Some(false))),
+            None
+        );
+        assert!(
+            source_change(&at("a", Some(false)), &at("b", Some(false)))
+                .unwrap()
+                .contains("HEAD moved")
+        );
+        assert!(
+            source_change(&at("a", Some(false)), &at("a", Some(true)))
+                .unwrap()
+                .contains("not clean")
+        );
+        assert!(source_change(&at("a", Some(false)), &at("a", None)).is_some());
+    }
+
+    #[test]
+    fn utc_text_formats_known_instants() {
+        assert_eq!(utc_text(0), "1970-01-01T00:00:00Z");
+        assert_eq!(utc_text(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(utc_text(1_700_000_000), "2023-11-14T22:13:20Z");
+        assert_eq!(utc_text(1_794_729_900), "2026-11-15T08:05:00Z");
+        assert_eq!(utc_text(4_102_444_799), "2099-12-31T23:59:59Z");
     }
 
     #[test]
@@ -358,7 +549,12 @@ mod tests {
         let value = provenance_of(
             "wgsl",
             json!({ "name": "Test GPU", "backend": "Vulkan", "driver": "555.55", "driver_info": "driver 1" }),
-            ("0123456789ab", Some(true)),
+            &GitState {
+                head: Some("0123456789abcdef".to_owned()),
+                dirty: Some(true),
+                origin_main: Some("fedcba".to_owned()),
+                ancestor_of_origin_main: Some(false),
+            },
         );
         assert_eq!(value["build"]["commit"], "0123456789ab");
         assert_eq!(value["build"]["tree_dirty"], true);

@@ -95,16 +95,15 @@ their own run (the ratio of the two ratios), not through a direct pairing.
 **Kill rule** (`group::kill_rule`, in the run file as `kill_rule` for the publishable group): a gust-gpu (or
 gust-gpu-spirv) GPU-time (`gpu_single`, `gpu_batch_per_dispatch`) paired ratio to `wgsl-prebuilt` more than 10 % off 1.0
 on any cell marks the run "C re-opened" (`kill_rule.c_reopened`, with the offending cells listed). It judges only a complete run: every GUST cell and quantity needs a ratio, and any
-cell without one (a failed or dropped backend, a size with no GUST cell) counts in `kill_rule.unpaired`; `kill_rule.judged` is true only when `checked > 0` and `unpaired == 0`, and otherwise `c_reopened` is `null`, never `false`. `kill_rule.control` carries the same ratio for `wgsl-percall` (same kernel text as `wgsl-prebuilt`, so its distance from 1.0 is the noise floor of the method); it is a record beside the rule, not an input, and the rule's threshold and inputs are unchanged. The judgement that
-uses it is b1b's. The control is a noise floor for `gpu_single` only. For `gpu_batch_per_dispatch` it also differs from
+cell without one (a failed or dropped backend, a size with no GUST cell) counts in `kill_rule.unpaired`; `kill_rule.judged` is true only when `checked > 0` and `unpaired == 0`, and otherwise `c_reopened` is `null`, never `false`. `kill_rule.control` carries the same ratio for `wgsl-percall` (same kernel text as `wgsl-prebuilt`, so its distance from 1.0 is the noise floor of the method); it is a record beside the rule, not an input, and the rule's threshold and inputs are unchanged. The control is a noise floor for `gpu_single` only. For `gpu_batch_per_dispatch` it also differs from
 `wgsl-prebuilt` in the per-pass bind groups (percall builds a fresh one each pass, as GUST does; prebuilt reuses one), so its
 batch excess (1.08-1.13 on W1 1M in the m10.b1c run) may be a real effect of that and not noise. A control that is stream-identical for
 the batch quantity would be a second `wgsl-prebuilt` instance, or `bind_group_reuse` on; until then "control out of tolerance" voids a
-batch cell on a confounded control. A `publishable` run refuses a `--backends` list that leaves out `wgsl-prebuilt`, `wgsl-percall` or the build's GUST backend (use `--group ablation` for subsets). After every GUST cell of a `spirv-route` build the device's route events for that kernel are checked: a cell fails on any event of its own that is off the build's route, and otherwise needs the kernel's latest event over the device's life to exist and be on the route, naming both routes. That check is also written into the cell, as `route_evidence`
+batch cell on a confounded control. A `publishable` run refuses a `--backends` list that leaves out `wgsl-prebuilt`, `wgsl-percall` or the build's GUST backend (use `--group ablation` for subsets). After every GUST cell of a `spirv-route` build the device's route events for that kernel are checked: a cell fails on any event of its own that is off the build's route, and otherwise needs the kernel's latest event over the device's life to exist and be on the route, naming only the build route (the no-event error names no event at all). That check is also written into the cell, as `route_evidence`
 (build route; the number of route events for the kernel since this cell's `prepare`, how many of those are on and off the build's
 route, and `events_cumulative`, the device's whole-life count; the last event). The events are cumulative on the device (the W3 cells
 share `kernel::horner`), so the per-cell counts are the total minus what was there when the cell began. Events arise only when a
-pipeline is compiled and the cache is keyed by kernel, so a warm cell (every cell after a workload's first size) has `events` 0: it is
+pipeline is compiled and the cache is keyed by kernel, so a cell that compiles nothing (for example every cell after a workload's first size) has `events` 0: it is
 judged on the event of the pipeline it ran, the kernel's latest event, which an earlier cell's compile made. It is `null` in a build without `spirv-route`, where the runtime keeps no route events. (`cold_routes` stays `[]` unless the run takes cold starts.)
 
 **Reproducibility clause (plan R1.3-4).** Each offender in `kill_rule.offenders` carries `control_median_ratio` and
@@ -120,10 +119,10 @@ flag asks for p5-p95 to be reported; the share of samples in each state is not c
 
 Calibration of the gap test (plans/m10/probe/b1c/aggregate-w12.json, aggregate-w3.json; `flagcount.py` prints these): in the six m10.b1c
 confirming run files the per-run batch gap is 0.004-0.086 on every point the test does not flag, and the points it flags have a run at
-0.105-0.30. Those are, in the w12 file, 5 W1 1M points (gust-gpu, percall, prebuilt, gust-setup, gust-shader; gust-device is not flagged),
+0.111-0.30. Those are, in the w12 file, 5 W1 1M points (gust-gpu, percall, prebuilt, gust-setup, gust-shader; gust-device is not flagged),
 5 W2 1M points (every hand row) and 2 W2 4M points (gust-gpu, prebuilt); in the w3 file W3-d16 unchecked, W3-d4 prebuilt and W3-d4
 unchecked. The W1 1M cell is two-state (about 6.1 and 7.9 us); whether the W2 and W3 cells are two-state is not established. A single dispatch's p5-p95 is 0.3-0.75 of its median from ordinary jitter, which is why
-the test is not applied to `gpu_single`, `end_to_end` or `dispatch_host`. The 0.10 threshold sits in the gap between those ranges. It is
+the test is not applied to `gpu_single`, `end_to_end` or `dispatch_host`. The 0.10 threshold sits in the gap between 0.086 and 0.111. It is
 not fitted beyond these runs: a cell with a different two-state spacing, or a quieter or noisier machine, needs the data re-read, not the
 threshold trusted. On those files the flag fires on 21 of 24 (w12) and 7 of 12 (w3) `gpu_batch_per_dispatch` points, 15 and 4
 `gpu_single`, 9 and 2 `end_to_end`, 3 and 3 `dispatch_host`; the gap test by itself fires on 12 and 3 batch points and on no other metric; each of those also has a heavy tail, so the gap test
@@ -197,34 +196,45 @@ as shown.
 
 The hand-WGSL device is a second `wgpu::Device` on the same adapter selection (Vulkan, high performance, default
 limits, `TIMESTAMP_QUERY`), because `HeadlessDevice` does not expose its own device. The harness refuses to run if the
-two devices land on different adapters or if the adapter is a software one.
+two devices land on different adapters, or if the adapter is a software one unless `--functional` is given.
 
 ## Build and run
 
 The bench is its own workspace (`bench/Cargo.toml`), so run cargo from `bench/` or pass `--manifest-path bench/Cargo.toml`.
-The GUST CPU twin exists only in a `--cfg gust_dual` build (D26: a cfg, never a Cargo feature), so build with it:
+The GUST CPU twin exists only in a `--cfg gust_dual` build (D26: a cfg, never a Cargo feature); the recipe below is the
+build line of `docs/BENCHMARKS.md`, without it (add `RUSTFLAGS="--cfg gust_dual"` to the build for a `gust-twin` row).
 
 `gust-compute` refuses a release build that enables `slang-runtime` unless `GUST_PROFILE=dev` is set (the bench
 compiles its kernels at run time), so every cargo command here runs with `GUST_PROFILE=dev`.
 
+Build from a clean tree at the commit you will run, and write the outputs outside the work tree (`OUT` below): a file
+written inside it makes the tree dirty and the run is then not publishable.
+
 ```sh
 cd bench
-GUST_PROFILE=dev RUSTFLAGS="--cfg gust_dual" cargo build --release --locked
+GUST_PROFILE=dev cargo build --release --locked -p gust-bench
 # the native Slang helper is found through GUST_SLANG_REFLECT, as for the main workspace
-./target/release/gust-bench run --out run1.json       # about 30 minutes (the large sizes poison and verify 64 MiB per sample); repeat for run2.json, run3.json
-./target/release/gust-bench aggregate --json results.json --md results.md run1.json run2.json run3.json
+./target/release/gust-bench run --out "$OUT/run1.json" --label run1 --seed 1   # about 30 minutes (the large sizes poison and verify 64 MiB per sample); repeat for run2.json, run3.json with other seeds
+./target/release/gust-bench aggregate --json "$OUT/results.json" --md "$OUT/results.md" "$OUT/run1.json" "$OUT/run2.json" "$OUT/run3.json"
 ./target/release/gust-bench dump-wgsl                 # the WGSL GUST generates for each kernel
 ./target/release/gust-bench list
 ```
 
 `run` options: `--quick` (two small sizes, 5 samples, for smoke tests), `--workloads W1,W2`, `--sizes N,N`,
 `--backends gust-gpu,rayon-N`, `--group publishable|ablation`, `--samples N`, `--cap-secs S`, `--label NAME`,
-`--ablation LIST|all` (ablation group only), `--seed N`, `--settle-secs S`, `--window-secs S`, `--no-sampler`. Every
+`--ablation LIST|all` (ablation group only), `--seed N`, `--settle-secs S`, `--window-secs S`, `--warmup-secs S`,
+`--no-sampler`, `--functional` (correctness only, below). Every
 path comes from an argument. `aggregate` also refuses to mix runs with and without the sampler (`sampler.enabled`). A build without `--cfg gust_dual` still works and simply has no `gust-twin` row. The builds
 of the Groups and builds section (spirv-route, precompiled, cpu) take the same options; the `cpu` build runs the CPU
-backends only and has no sampler.
+backends only; its sampler has no adapter to map, so every adapter's activity counts (the stricter fallback).
 
-## The quiet-window sampler (recording only)
+The build script of `gust-bench` (shared by `gust-bench-pre`) embeds the git HEAD at compile time, so build from the
+commit you will run; the binary is `bench/target/release/gust-bench` (`bench/target/` is gitignored).
+
+`--functional` is the CI-safe correctness run: quick sizes, no sampler, a software adapter (lavapipe) allowed, the
+file marked `"functional": true` and never publishable. `cargo xtask check-bench --functional --quick` runs it.
+
+## The quiet-window sampler and the publishable judgement
 
 Before each cell the harness waits a 3 s settle interval and then samples a 2 s window at 4 Hz (8 samples): the
 Windows performance counter `\GPU Engine(*)\Utilization Percentage` for every engine instance (the instance name
@@ -232,7 +242,20 @@ carries the owning pid and the adapter LUID) and the process table (pid, parent 
 at the window's start and end, read through ToolHelp and `GetProcessTimes` so that no helper process is spawned. The
 harness's PID ancestry (itself, its shell-like parent chain up to the first process that is not cargo or a shell, and
 the children of that chain) is computed and recorded. Everything goes to the sidecar `<results>.samples.json`; the
-results file names it and carries `"publishable": false` with a reason, because no judgement or threshold exists yet.
+results file names it. Each window is judged (`judge.rs`): a foreign process (not the harness, its ancestry or its
+descendants) above `T_gpu` on the adapter under test, or a named process (cargo, rustc, slangc, a model server, python,
+node, `vmmem`) that used CPU or started or ended in the window, makes it not quiet; the cell is retried up to `N`
+times and every attempt is in the sidecar. `T_cpu` is not set (no `vmmem` data), so a `vmmem` or `vmmemWSL` process in
+the walk makes a window not quiet; a window recorded with the WSL service up (no running distribution confirmed) listed
+neither, so whether the walk lists WSL's VM process by name is not established. The judge fails closed on a row it cannot read, an unparsed counter instance and an `invalid` sample
+of a counter that matters. A run that changes the settle (`--settle-secs`), the window (`--window-secs`), the sample
+cap (`--cap-secs`) or the warm-up (`--warmup-secs`), asks for fewer than 30 samples, or whose compiled-in git HEAD
+differs from the run-time HEAD (or either is unknown), or whose build had uncommitted changes to tracked files (or
+whose build state is unknown), gets a named blocker and is never publishable; a quantity with
+fewer than 5 collected samples blocks its cell. Every cell carries `publishable` with a reason; the run file carries the run-level `publishable`, the
+banner when it is false, its start and end times and the git state at both ends. `aggregate` judges the set (three
+runs, one session, distinct seeds, every sidecar present) and writes the merged sidecar beside its JSON. The
+thresholds and their data are in docs/BENCHMARKS.md.
 The adapter under test is mapped to its LUID through DXGI (vendor and device id, then name); when that fails the
 header says so and every adapter's activity is recorded. `gust-bench probe-adapters` verifies the mapping on a machine:
 it keeps the adapter busy and reports on which LUID this process's own utilisation appears.
@@ -291,7 +314,8 @@ workgroups and is rejected). Three f32 streams of the last size are 192 MiB, bey
   The JSON carries an `nvidia-smi` snapshot before and after every cell and process counts before and after a run.
 - The harness never pins clocks and never stops other services.
 - Results and the metadata record adapter, driver, OS, CPU and versions, and no paths or user names. Results go
-  where the caller points `--out`, never into the repository.
+  where the caller points `--out`, never into the repository; point it outside the work tree, because a run that
+  leaves the tree dirty is not publishable.
 - `gust-gpu` and the hand WGSL both use wgpu's checked shader path (`create_shader_module`), so robustness checks are
   on for both. rayon uses safe zipped slice iterators (no per-element bounds checks); overflow checks are off in the
   release profile for every backend.

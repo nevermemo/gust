@@ -471,7 +471,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   whose kill rule tells a slower offender (re-opens C) from a faster one (a reading step); the publishable group's
   pre-registered rule is unchanged). VUID-StandaloneSpirv-None-10684 under the validation layer comes from naga
   30.0.1's SPIR-V backend (upstream gfx-rs/wgpu issue 7696), not from GUST's code; it is recorded as a documented
-  limitation in m10.b3e.
+  limitation in m10.b3e. m10.b3e (`e6d1f5b`, PR #70; D194 and D195: W7 times a batch of public sums in one
+  `timed` span against per-repeat hand timestamp pairs, W6-graph runs through `execute_graph_timed`, and the D190
+  and D191 kill-rule exclusions are removed, so a W7 cell can re-open C on the public sum alone); m10.b2
+  (`ecc0026`, PR #71; a CubeCL 0.11.4 comparator behind the off-by-default bench feature `cubecl`: rows
+  `cubecl-wgpu` (checked launch, line size 1) and `cubecl-wgpu-tuned` (unchecked launch, line size 4) for W1 to
+  W4, W7 and W9 naive on a device of its own on the bench's adapter, outside the publishable group and the kill
+  rule; the feature needs rustc 1.95 and turns on wgpu's default features for every row, so its runs are not
+  publishable; `buildid` is MPL-2.0 under D192). Functional CubeCL runs on the RTX 5090 and the Radeon 890M
+  passed; no timing is recorded.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

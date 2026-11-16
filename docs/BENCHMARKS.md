@@ -524,7 +524,8 @@ the plan's "any cell", recorded beside D190 by the coordinator; no `crates/` cha
 **Reproducibility clause.** A gap counts only if it recurs: the same cell must be more than 10 percent off in all three
 seeds of a confirming run (at least three runs with distinct seeds), with the group's control (`wgsl-percall`; in the
 `spirv` group `wgsl-percall-unchecked`) inside its tolerance on that cell in each of those runs. A cell that recurs with the
-control out of tolerance, or in fewer seeds, is listed and not counted. In the `spirv` group the recurrence must also keep
+control out of tolerance, or in fewer seeds, is listed and not counted. In the `publishable` group the clause is two-sided as pre-registered (plan R1.2-3): a cell more than 10 percent
+off in either direction in every run counts. In the `spirv` group the recurrence must also keep
 its direction: a cell more than 10 percent slower in one seed and more than 10 percent faster in another recurs in neither
 direction, and a counted offender is reported as "re-opens C" (slower) or "reading step, does not re-open C" (faster);
 each row of the aggregate carries its `direction`.

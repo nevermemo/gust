@@ -597,7 +597,7 @@ fn a_spirv_group_file_must_come_from_the_spirv_route_with_its_own_rule_and_other
         (
             "0123456789ab-spirv",
             aggregate_of("spirv", "spirv", "gust-gpu-spirv", None),
-            "timed run of a spirv file has a null kill rule",
+            "run of a spirv file has a null kill rule",
         ),
     ] {
         let dir = scratch("bad-group");
@@ -608,16 +608,36 @@ fn a_spirv_group_file_must_come_from_the_spirv_route_with_its_own_rule_and_other
     }
 }
 
-/// S3: a run marked functional has no kill-rule record by design, so a spirv file of functional runs stays valid.
+/// R2: functional runs are never filed, and a null rule or an unpublishable run in a spirv file is refused outright.
 #[test]
-fn a_spirv_file_of_functional_runs_may_carry_null_rules() {
-    let body = aggregate_of("spirv", "spirv", "gust-gpu-spirv", None).replace(
-        "{ \"run_seed\":",
-        "{ \"functional\": true, \"kill_rule\": null, \"run_seed\":",
+fn a_spirv_file_of_functional_or_unpublishable_runs_is_refused() {
+    let ruled = aggregate_of(
+        "spirv",
+        "spirv",
+        "gust-gpu-spirv",
+        Some("wgsl-prebuilt-unchecked"),
     );
-    let dir = scratch("spirv-functional");
-    file_as(&dir, "test-gpu", "0123456789ab-spirv", &body, true);
-    let filed = load_results(&dir.join("results"), &attested).unwrap();
-    assert!(!filed[0].legacy);
-    let _ = fs::remove_dir_all(&dir);
+    for (body, reason) in [
+        (
+            ruled.replace("{ \"run_seed\":", "{ \"functional\": true, \"run_seed\":"),
+            "holds a functional run",
+        ),
+        (
+            ruled.replace("{ \"run_seed\":", "{ \"publishable\": false, \"run_seed\":"),
+            "not publishable",
+        ),
+        (
+            aggregate_of("spirv", "spirv", "gust-gpu-spirv", None).replace(
+                "{ \"run_seed\":",
+                "{ \"functional\": false, \"kill_rule\": null, \"run_seed\":",
+            ),
+            "null kill rule",
+        ),
+    ] {
+        let dir = scratch("spirv-functional");
+        file_as(&dir, "test-gpu", "0123456789ab-spirv", &body, true);
+        let error = load_results(&dir.join("results"), &attested).unwrap_err();
+        assert!(error.contains(reason), "{reason}: {error}");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

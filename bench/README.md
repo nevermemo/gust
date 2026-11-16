@@ -140,7 +140,7 @@ judged on the event of the pipeline it ran, the kernel's latest event, which an 
 
 **Reproducibility clause (plan R1.3-4).** Each offender in `kill_rule.offenders` carries `control_median_ratio` and
 `control_in_tolerance` for its own cell. An offender counts only when it recurs in every run of the build, with at least 3 runs of distinct
-seeds (`run_seed`; two files, or one seed twice, never count), the same direction (slower or faster) in each, and the group's control (`wgsl-percall`, or `wgsl-percall-unchecked` in the `spirv` group) in tolerance on that cell in each of those runs;
+seeds (`run_seed`; two files, or one seed twice, never count), and the group's control (`wgsl-percall`, or `wgsl-percall-unchecked` in the `spirv` group) in tolerance on that cell in each of those runs. In the `publishable` group the clause is two-sided as pre-registered (a cell more than 10 percent off in either direction in every run counts); in the `spirv` group the recurrence must also keep its direction (slower or faster), each row carries `direction`, and an offender with no direction and no ratio is `unknown` and never counts;
 `aggregate` writes the count to `kill_rule_reproducibility` (with the seeds, once) and a list to the report. A hit that does not
 meet this is listed, not counted. Per-point `per_run_p5_ms`, `per_run_p95_ms`, `per_run_outliers_gt_3mad` and
 `two_state_suspect` are written beside the median for the bimodal cells (a p5 or p95 missing from an old run file is `null`, never the

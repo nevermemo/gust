@@ -1425,7 +1425,7 @@ mod tests {
     #[cfg(feature = "gpu")]
     #[test]
     fn with_probes_are_refused_outside_the_publishable_group() {
-        let probes = vec!["bind-group-reuse".to_owned()];
+        let probes = vec!["gust-shader".to_owned()];
         assert!(check_probes_group(Group::Publishable, &probes).is_ok());
         assert!(check_probes_group(Group::Publishable, &[]).is_ok());
         for group in [Group::Spirv, Group::Ablation] {

@@ -216,11 +216,14 @@ type PairedTable = BTreeMap<(String, u64, String, String), PairedPoint>;
 const MIN_REPRODUCIBILITY_RUNS: usize = 3;
 
 /// The reproducibility clause (plan R1.3-4) over the run files of one build: an offender of the kill rule counts when it
-/// recurs in every run (3/3 seeds) in the same direction (slower or faster than the window) and its control (the group's:
-/// `wgsl-percall`, or `wgsl-percall-unchecked` in the `spirv` group, on the same cell) is within tolerance in each of
-/// those runs. A cell slower in one run and faster in another recurs in neither direction. Single-run hits are listed
-/// with their count, not counted.
-fn reproducibility(runs: &[Value]) -> Value {
+/// recurs in every run (3/3 seeds) and its control (the group's: `wgsl-percall`, or `wgsl-percall-unchecked` in the
+/// `spirv` group, on the same cell) is within tolerance in each of those runs. In the `publishable` group the rule is
+/// two-sided and the clause stays as pre-registered (plan R1.2-3): a cell more than 10 percent off in either direction
+/// in every run counts. In the `spirv` group (`spirv` true) the recurrence must also keep its direction (slower or
+/// faster), because the two directions mean different things there: a cell slower in one run and faster in another
+/// recurs in neither, and an offender without a direction or a ratio is listed under `unknown` and never counts.
+/// Single-run hits are listed with their count, not counted.
+fn reproducibility(runs: &[Value], spirv: bool) -> Value {
     type Key = (String, String, u64, String, &'static str);
     let mut seen: BTreeMap<Key, (usize, usize, Vec<f64>)> = BTreeMap::new();
     for run in runs {
@@ -229,12 +232,21 @@ fn reproducibility(runs: &[Value]) -> Value {
             .into_iter()
             .flatten()
         {
-            // Files written before the direction field existed: the ratio says which side of the window it is on.
-            let direction = match offender["direction"].as_str() {
-                Some("faster") => "faster",
-                Some("slower") => "slower",
-                _ if offender["median_ratio"].as_f64().unwrap_or(f64::NAN) > 1.0 => "slower",
-                _ => "faster",
+            // Spirv group only. Files written before the direction field existed: the ratio says which side of the
+            // window it is on; with no ratio either the direction is unknown.
+            let direction = if !spirv {
+                ""
+            } else {
+                match (
+                    offender["direction"].as_str(),
+                    offender["median_ratio"].as_f64(),
+                ) {
+                    (Some("faster"), _) => "faster",
+                    (Some("slower"), _) => "slower",
+                    (_, Some(ratio)) if ratio > 1.0 => "slower",
+                    (_, Some(_)) => "faster",
+                    _ => "unknown",
+                }
             };
             let key = (
                 offender["backend"].as_str().unwrap_or("").to_owned(),
@@ -265,15 +277,19 @@ fn reproducibility(runs: &[Value]) -> Value {
         .into_iter()
         .map(|((backend, workload, n, quantity, direction), (hits, control_ok, ratios))| {
             json!({
-                "backend": backend, "workload": workload, "n": n, "quantity": quantity, "direction": direction,
+                "backend": backend, "workload": workload, "n": n, "quantity": quantity, "direction": (!direction.is_empty()).then_some(direction),
                 "runs_with_offender": hits, "runs": total, "runs_with_control_in_tolerance": control_ok,
                 "ratios": ratios,
-                "counts": enough && hits == total && control_ok == total,
+                "counts": enough && direction != "unknown" && hits == total && control_ok == total,
             })
         })
         .collect::<Vec<_>>();
     json!({
-        "clause": "an offender counts when it recurs in every run (at least 3 runs, distinct seeds) in the same direction with the control within tolerance on that cell in each; other hits are listed, not counted",
+        "clause": if spirv {
+            "an offender counts when it recurs in every run (at least 3 runs, distinct seeds) in the same direction (slower or faster; an unknown direction never counts) with the control within tolerance on that cell in each; other hits are listed, not counted"
+        } else {
+            "an offender counts when it recurs in every run (at least 3 runs, distinct seeds), in either direction, with the control within tolerance on that cell in each; other hits are listed, not counted"
+        },
         "runs": total,
         "seeds": seeds,
         "enough_runs_with_distinct_seeds": enough,
@@ -848,7 +864,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             .unwrap_or_else(|| "?".to_owned())
     };
 
-    let repro = reproducibility(&runs);
+    let repro = reproducibility(&runs, names.group == "spirv");
 
     // The judgement of the aggregate (plan 2.4): every run publishable, three runs, one session, and every run's
     // sampler sidecar present beside its file (the quiet-window evidence travels with the table).
@@ -1013,14 +1029,24 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     }
     let rows = repro["offenders"].as_array().cloned().unwrap_or_default();
     if !rows.is_empty() {
+        let same_direction = if names.group == "spirv" {
+            ", in the same direction"
+        } else {
+            ", in either direction"
+        };
         writeln!(
             md,
-            "\nKill-rule offenders against the reproducibility clause (an offender counts when it recurs in all {} runs, at least 3 with distinct seeds, in the same direction, with the control {control} within tolerance on its cell in each; seeds {}):\n",
+            "\nKill-rule offenders against the reproducibility clause (an offender counts when it recurs in all {} runs, at least 3 with distinct seeds{same_direction}, with the control {control} within tolerance on its cell in each; seeds {}):\n",
             runs.len(),
             repro["seeds"]
         )?;
         for row in &rows {
-            let direction = row["direction"].as_str().unwrap_or("?");
+            let direction = row["direction"].as_str().unwrap_or("");
+            let shown = if direction.is_empty() {
+                String::new()
+            } else {
+                format!(", {direction}")
+            };
             let verdict = match (row["counts"] == true, names.group == "spirv", direction) {
                 (false, _, _) => "listed, not counted",
                 (true, false, _) => "counts",
@@ -1029,12 +1055,12 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             };
             writeln!(
                 md,
-                "- {} {} n={} {}, {}: in {} of {} runs, control in tolerance in {}, ratios {} -> {}",
+                "- {} {} n={} {}{}: in {} of {} runs, control in tolerance in {}, ratios {} -> {}",
                 row["backend"].as_str().unwrap_or("?"),
                 row["workload"].as_str().unwrap_or("?"),
                 row["n"],
                 row["quantity"].as_str().unwrap_or("?"),
-                direction,
+                shown,
                 row["runs_with_offender"],
                 row["runs"],
                 row["runs_with_control_in_tolerance"],
@@ -2272,23 +2298,32 @@ mod reproducibility_tests {
 
     #[test]
     fn an_offender_counts_only_when_every_run_has_it_with_the_control_in_tolerance() {
-        let all = reproducibility(&[
-            run_seeded(true, 1),
-            run_seeded(true, 2),
-            run_seeded(true, 3),
-        ]);
+        let all = reproducibility(
+            &[
+                run_seeded(true, 1),
+                run_seeded(true, 2),
+                run_seeded(true, 3),
+            ],
+            false,
+        );
         assert_eq!(all["offenders"][0]["counts"], true);
-        let one_noisy = reproducibility(&[
-            run_seeded(true, 1),
-            run_seeded(false, 2),
-            run_seeded(true, 3),
-        ]);
+        let one_noisy = reproducibility(
+            &[
+                run_seeded(true, 1),
+                run_seeded(false, 2),
+                run_seeded(true, 3),
+            ],
+            false,
+        );
         assert_eq!(one_noisy["offenders"][0]["counts"], false);
-        let missing = reproducibility(&[
-            run_seeded(true, 1),
-            json!({ "run_seed": 2, "kill_rule": { "offenders": [] } }),
-            json!({ "run_seed": 3, "kill_rule": { "offenders": [] } }),
-        ]);
+        let missing = reproducibility(
+            &[
+                run_seeded(true, 1),
+                json!({ "run_seed": 2, "kill_rule": { "offenders": [] } }),
+                json!({ "run_seed": 3, "kill_rule": { "offenders": [] } }),
+            ],
+            false,
+        );
         assert_eq!(missing["offenders"][0]["runs_with_offender"], 1);
         assert_eq!(missing["offenders"][0]["counts"], false);
     }
@@ -2304,42 +2339,76 @@ mod reproducibility_tests {
     /// M1: a recurrence has to keep its direction; a cell slower once and faster twice recurs in neither.
     #[test]
     fn a_recurrence_keeps_its_direction() {
-        let mixed = reproducibility(&[run_at(1, 1.2), run_at(2, 0.8), run_at(3, 1.2)]);
+        let mixed = reproducibility(&[run_at(1, 1.2), run_at(2, 0.8), run_at(3, 1.2)], true);
         let rows = mixed["offenders"].as_array().unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|row| row["counts"] == false));
-        let faster = reproducibility(&[run_at(1, 0.8), run_at(2, 0.8), run_at(3, 0.8)]);
+        let faster = reproducibility(&[run_at(1, 0.8), run_at(2, 0.8), run_at(3, 0.8)], true);
         assert_eq!(faster["offenders"][0]["counts"], true);
         assert_eq!(faster["offenders"][0]["direction"], "faster");
-        let slower = reproducibility(&[run_at(1, 1.2), run_at(2, 1.2), run_at(3, 1.2)]);
+        let slower = reproducibility(&[run_at(1, 1.2), run_at(2, 1.2), run_at(3, 1.2)], true);
         assert_eq!(slower["offenders"][0]["counts"], true);
         assert_eq!(slower["offenders"][0]["direction"], "slower");
         // A file written before the field existed falls back to the side of 1.0 its ratio is on.
-        let old = reproducibility(&[
-            run_seeded(true, 1),
-            run_seeded(true, 2),
-            run_seeded(true, 3),
-        ]);
+        let old = reproducibility(
+            &[
+                run_seeded(true, 1),
+                run_seeded(true, 2),
+                run_seeded(true, 3),
+            ],
+            true,
+        );
         assert_eq!(old["offenders"][0]["direction"], "slower");
         assert_eq!(old["offenders"][0]["counts"], true);
     }
 
+    /// R1: the publishable group's clause stays as pre-registered (plan R1.2-3): either direction recurs.
+    #[test]
+    fn the_publishable_clause_is_two_sided() {
+        let mixed = reproducibility(&[run_at(1, 1.2), run_at(2, 0.8), run_at(3, 1.2)], false);
+        let rows = mixed["offenders"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["counts"], true);
+        assert_eq!(rows[0]["direction"], Value::Null);
+    }
+
+    /// R3: with neither a direction nor a ratio, the direction is unknown and never counts.
+    #[test]
+    fn an_offender_without_direction_or_ratio_never_counts_in_the_spirv_group() {
+        let bare = |seed: u64| {
+            json!({ "run_seed": seed, "kill_rule": { "offenders": [{
+            "backend": "gust-gpu-spirv", "workload": "W1", "n": 4096, "quantity": "gpu_single",
+            "control_in_tolerance": true,
+        }] } })
+        };
+        let unknown = reproducibility(&[bare(1), bare(2), bare(3)], true);
+        assert_eq!(unknown["offenders"][0]["direction"], "unknown");
+        assert_eq!(unknown["offenders"][0]["runs_with_offender"], 3);
+        assert_eq!(unknown["offenders"][0]["counts"], false);
+    }
+
     #[test]
     fn fewer_than_three_runs_or_a_repeated_seed_never_counts() {
-        let two = reproducibility(&[run_seeded(true, 1), run_seeded(true, 2)]);
+        let two = reproducibility(&[run_seeded(true, 1), run_seeded(true, 2)], false);
         assert_eq!(two["offenders"][0]["counts"], false);
         assert_eq!(two["enough_runs_with_distinct_seeds"], false);
-        let repeated = reproducibility(&[
-            run_seeded(true, 1),
-            run_seeded(true, 1),
-            run_seeded(true, 2),
-        ]);
+        let repeated = reproducibility(
+            &[
+                run_seeded(true, 1),
+                run_seeded(true, 1),
+                run_seeded(true, 2),
+            ],
+            false,
+        );
         assert_eq!(repeated["offenders"][0]["counts"], false);
-        let unseeded = reproducibility(&[
-            json!({ "kill_rule": { "offenders": [] } }),
-            json!({ "kill_rule": { "offenders": [] } }),
-            json!({ "kill_rule": { "offenders": [] } }),
-        ]);
+        let unseeded = reproducibility(
+            &[
+                json!({ "kill_rule": { "offenders": [] } }),
+                json!({ "kill_rule": { "offenders": [] } }),
+                json!({ "kill_rule": { "offenders": [] } }),
+            ],
+            false,
+        );
         assert_eq!(unseeded["enough_runs_with_distinct_seeds"], false);
     }
 }

@@ -461,8 +461,8 @@ const SPIRV_GROUP_ROWS: [&str; 9] = [
 /// The group of a filed aggregate against its route (D193). Only the table groups are filed: `publishable` (the WGSL
 /// build) and `spirv` (the SPIR-V route's, checks off on both sides). A `spirv` file must come from the SPIR-V route,
 /// hold only its own rows (`gust-gpu-spirv`, `wgsl-prebuilt-unchecked`, `wgsl-percall-unchecked` and the CPU rows),
-/// have at least one run, and carry the group's kill rule in every timed run (`group` and `reference` in each run's
-/// record; a run marked `"functional": true` has none by design and may have a null one). A publishable file holds no
+/// have at least one run, and carry the group's kill rule in every run (`group` and `reference` in each run's
+/// record; a null record, a run marked `"functional": true` or a run with `"publishable": false` is refused). A publishable file holds no
 /// `-unchecked` point. A file of the SPIR-V route in the
 /// publishable group, or a publishable file with a `gust-gpu-spirv` point, is **legacy** (pre-D193): it is read and
 /// labelled, not refused. Returns whether the file is legacy.
@@ -506,11 +506,14 @@ fn check_group(file: &Json, group: &str, route: &str) -> Result<bool, String> {
             }
             for run in runs {
                 let rule = run.get("kill_rule");
+                if matches!(run.get("functional"), Some(Json::Bool(true))) {
+                    return Err("a filed spirv file holds a functional run: functional runs publish no timing and are never filed".into());
+                }
+                if matches!(run.get("publishable"), Some(Json::Bool(false))) {
+                    return Err("a filed spirv file holds a run that is not publishable".into());
+                }
                 if matches!(rule, None | Some(Json::Null)) {
-                    if matches!(run.get("functional"), Some(Json::Bool(true))) {
-                        continue;
-                    }
-                    return Err("a timed run of a spirv file has a null kill rule: it must carry the group's record".into());
+                    return Err("a run of a spirv file has a null kill rule: it must carry the group's record".into());
                 }
                 let of = |key: &str| rule.and_then(|r| r.get(key)).and_then(Json::as_str);
                 if of("group") != Some("spirv") || of("reference") != Some(SPIRV_REFERENCE) {

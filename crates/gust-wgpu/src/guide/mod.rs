@@ -1,6 +1,6 @@
 // The chapters of `gust_wgpu::guide`, one empty module each (the semver rule: the guide modules hold nothing but chapter
-// modules, which hold nothing; they exist for their documentation). Chapter 10 is listed in the index as not yet written
-// and has no module until it has text.
+// modules, which hold nothing; they exist for their documentation). Chapter 10 (benchmarks) has no listings and no Rust
+// code block (its two `sh` blocks are not tested by rustdoc), so it adds no doctest.
 //
 // The listings are packaged copies of regions of the gallery entries (`check-gallery` keeps them identical to the
 // regions). The programs of chapters 4 and 5 are compiled by this crate's doctests against the real backend, and so is
@@ -94,3 +94,6 @@ pub mod profiles_artifacts_routing {}
 #[doc = include_str!("listings/web-hello-map-async.rs")]
 #[doc = include_str!("09-browser-3.md")]
 pub mod browser {}
+
+#[doc = include_str!("10-benchmarks.md")]
+pub mod benchmarks {}

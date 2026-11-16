@@ -1,6 +1,6 @@
 // The chapters of `gust::guide`, one empty module each (the semver rule: the guide modules hold nothing but chapter
-// modules, which hold nothing; they exist for their documentation). Chapters 9 and 10 live in `gust_wgpu::guide`, and the
-// index lists chapter 10 as not yet written, so it has no module until it has text.
+// modules, which hold nothing; they exist for their documentation). Chapters 4, 6, 9 and 10, and the running halves of
+// chapter 5, live in `gust_wgpu::guide` (the index says so for each).
 //
 // The links to `gust_wgpu::guide` are built here, from this crate's version, because a Markdown file cannot read
 // `CARGO_PKG_VERSION`: the index ends with them (inline links; a link definition in this inner doc was accepted by
@@ -16,9 +16,11 @@
     env!("CARGO_PKG_VERSION"),
     "/gust_wgpu/guide/gpu_concepts_running/index.html), [6, build profiles, artifacts and routing](https://docs.rs/gust-compute-wgpu/",
     env!("CARGO_PKG_VERSION"),
-    "/gust_wgpu/guide/profiles_artifacts_routing/index.html) and [9, the browser](https://docs.rs/gust-compute-wgpu/",
+    "/gust_wgpu/guide/profiles_artifacts_routing/index.html), [9, the browser](https://docs.rs/gust-compute-wgpu/",
     env!("CARGO_PKG_VERSION"),
-    "/gust_wgpu/guide/browser/index.html).\n"
+    "/gust_wgpu/guide/browser/index.html) and [10, benchmarks](https://docs.rs/gust-compute-wgpu/",
+    env!("CARGO_PKG_VERSION"),
+    "/gust_wgpu/guide/benchmarks/index.html).\n"
 )]
 
 #[doc = include_str!("01-why-gust.md")]

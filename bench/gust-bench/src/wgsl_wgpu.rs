@@ -392,8 +392,9 @@ pub struct HandWgsl {
     gust_shader: bool,
     gust_order: bool,
     probe_id: Option<&'static str>,
-    /// The m10.b1c SPIR-V probe `unchecked`: `Prebuilt` with the hand WGSL compiled without wgpu's runtime checks
-    /// (bounds checks, loop bounding), the checks the WGSL route has and the SPIR-V passthrough route does not.
+    /// The `spirv` group's hand rows (D193): the hand WGSL compiled without wgpu's runtime checks
+    /// (bounds checks, loop bounding), the checks the WGSL route has and the SPIR-V passthrough route does not; `Prebuilt`
+    /// is `wgsl-prebuilt-unchecked` (the group's reference), `PerCall` is `wgsl-percall-unchecked` (its control).
     unchecked: bool,
     /// The `rustgpu-wgpu` comparator (m10.b4): `Prebuilt`'s host shape and device shape, with the kernel from the
     /// committed rust-gpu SPIR-V module loaded through wgpu's passthrough route instead of WGSL. Always false in a build
@@ -440,12 +441,13 @@ impl HandWgsl {
         }
     }
 
-    /// The `unchecked` probe: `Prebuilt` with the hand WGSL compiled without wgpu's runtime checks (bounds checks and
-    /// loop bounding), as the SPIR-V route's shaders are, on the shared hand device.
-    pub fn unchecked(ctx: Rc<WgpuContext>) -> Self {
+    /// A hand row of the `spirv` group (D193): `mode` with the hand WGSL compiled without wgpu's runtime checks (bounds
+    /// checks and loop bounding), as the SPIR-V route's shaders are, on the shared hand device. `Mode::Prebuilt` is
+    /// `wgsl-prebuilt-unchecked`, `Mode::PerCall` is `wgsl-percall-unchecked`.
+    pub fn unchecked(ctx: Rc<WgpuContext>, mode: Mode) -> Self {
         Self {
             unchecked: true,
-            ..Self::new(ctx, Mode::Prebuilt)
+            ..Self::new(ctx, mode)
         }
     }
 
@@ -725,8 +727,12 @@ impl HandWgsl {
                 source: wgpu::ShaderSource::Wgsl(text.into()),
             };
             if unchecked {
-                // SAFETY: a probe of a kernel whose indices the harness checks on the host (every sample is verified
-                // against the serial reference), run only to see what wgpu's runtime checks cost.
+                // SAFETY: this builds `wgsl-prebuilt-unchecked` and `wgsl-percall-unchecked`, the reference and the
+                // control of the `spirv` group (same kernel text, only the host side differs). The kernels do not rely on
+                // wgpu's runtime checks: every kernel guards its indices against `arrayLength` of its own bindings
+                // (bench/shaders/*.wgsl), matmul guards against the `dims` the host writes, which match the host-sized
+                // buffers, and every loop is bounded by `n`, the degree or a constant. Every sample of both rows is
+                // verified against the serial reference.
                 unsafe {
                     ctx.device.create_shader_module_trusted(
                         descriptor,
@@ -1015,7 +1021,8 @@ impl Backend for HandWgsl {
             _ if self.rust_gpu => "rustgpu-wgpu",
             _ if self.all_on => "wgsl-percall+all-on",
             _ if self.probe_id.is_some() => self.probe_id.unwrap_or("wgsl-prebuilt"),
-            _ if self.unchecked => "wgsl-prebuilt+unchecked",
+            (Mode::Prebuilt, _) if self.unchecked => "wgsl-prebuilt-unchecked",
+            (Mode::PerCall, _) if self.unchecked => "wgsl-percall-unchecked",
             (Mode::Prebuilt, _) => "wgsl-prebuilt",
             (Mode::PerCall, None) => "wgsl-percall",
             (Mode::PerCall, Some(switch)) => switch.backend_id(),
@@ -1027,8 +1034,11 @@ impl Backend for HandWgsl {
             _ if self.rust_gpu => {
                 "rust-gpu 0.11.0 kernels (nightly toolchain, committed SPIR-V module) on plain wgpu through the passthrough route; the host side of wgsl-prebuilt; W1 to W4 only"
             }
-            _ if self.unchecked => {
-                "wgsl-prebuilt with wgpu's shader runtime checks (bounds checks, loop bounding) off, hand WGSL (m10.b1c SPIR-V probe)"
+            (Mode::Prebuilt, _) if self.unchecked => {
+                "wgsl-prebuilt with wgpu's shader runtime checks (bounds checks, loop bounding) off, hand WGSL: the reference of the spirv group (D193)"
+            }
+            (Mode::PerCall, _) if self.unchecked => {
+                "wgsl-percall with wgpu's shader runtime checks (bounds checks, loop bounding) off, hand WGSL: the control of the spirv group (D193)"
             }
             _ if self.probe_id.is_some() => {
                 "wgsl-prebuilt plus what the wgpu trace shows differing from GUST (m10.b1c probe): the device's requested features (gust-setup and gust-device), the timestamp objects created before the data buffers (the same two), GUST's generated WGSL as the kernel (gust-setup and gust-shader)"
@@ -1524,5 +1534,21 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), 3);
         assert_eq!(Switch::parse("nope"), None);
+    }
+
+    /// The two hand rows of the `spirv` group (D193): first-class ids without a `+`, the host shape of their checked
+    /// twin (percall keeps its per-call switches, prebuilt its reuse).
+    #[test]
+    fn the_unchecked_rows_have_their_own_ids_and_the_host_shape_of_their_twin() {
+        let (_gpu, ctx) = gpu_context();
+        let prebuilt = HandWgsl::unchecked(Rc::clone(&ctx), Mode::Prebuilt);
+        let percall = HandWgsl::unchecked(Rc::clone(&ctx), Mode::PerCall);
+        assert_eq!(prebuilt.id(), "wgsl-prebuilt-unchecked");
+        assert_eq!(percall.id(), "wgsl-percall-unchecked");
+        assert!(!prebuilt.id().contains('+') && !percall.id().contains('+'));
+        assert_eq!(prebuilt.switches(), Switches::PREBUILT);
+        assert_eq!(percall.switches(), Switches::PER_CALL);
+        assert!(prebuilt.description().contains("reference"));
+        assert!(percall.description().contains("control"));
     }
 }

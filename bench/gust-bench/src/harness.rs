@@ -50,8 +50,10 @@ pub struct Config {
     pub run_seed: u64,
     /// Measure only the cold start (GPU cells at the first size), none of the four timings.
     pub cold_only: bool,
-    /// The backend group of the run (`publishable` or `ablation`, see `group`), written into every cell.
-    pub group: &'static str,
+    /// The backend group of the run (`publishable`, `spirv` or `ablation`, see `group`): its name is written into every
+    /// cell and its `Group::reference` is the backend every other one is paired against (`wgsl-prebuilt`, or
+    /// `wgsl-prebuilt-unchecked` in the `spirv` group).
+    pub group: crate::group::Group,
 }
 
 impl Default for Config {
@@ -68,7 +70,7 @@ impl Default for Config {
             warmup_batch: 1024,
             run_seed: 0x6a09_e667_f3bc_c908,
             cold_only: false,
-            group: "publishable",
+            group: crate::group::Group::Publishable,
         }
     }
 }
@@ -479,7 +481,7 @@ pub fn run_cell(backend: &mut dyn Backend, input: &CellInput<'_>, config: &Confi
         "bytes_per_element": input.workload.bytes_per_element(),
         "bytes_per_element_end_to_end": input.workload.bytes_per_element_end_to_end(),
         "flops_per_element": input.workload.flops_per_element(),
-        "group": config.group,
+        "group": config.group.name(),
         "metrics": metrics,
         "checks_passed": checks,
         "cold_start_ms": cold_ms,
@@ -577,12 +579,9 @@ pub fn round_orders(seed: u64, count: usize, rounds: usize) -> Vec<Vec<usize>> {
         .collect()
 }
 
-/// The backend every other one is paired against.
-pub const PAIR_REFERENCE: &str = "wgsl-prebuilt";
-
 /// The paired ratios `a[i] / reference[i]` of two sample sets taken in the same rotations: median, spread (min, p5,
 /// p95, max) and the count. `None` when either set is empty.
-fn paired_json(samples: &[f64], reference: &[f64]) -> Option<Value> {
+fn paired_json(samples: &[f64], reference: &[f64], reference_id: &str) -> Option<Value> {
     let ratios = samples
         .iter()
         .zip(reference)
@@ -595,7 +594,7 @@ fn paired_json(samples: &[f64], reference: &[f64]) -> Option<Value> {
     let mut sorted = ratios.clone();
     sorted.sort_by(f64::total_cmp);
     Some(json!({
-        "reference": PAIR_REFERENCE, "n": ratios.len(), "median_ratio": percentile(&sorted, 0.5),
+        "reference": reference_id, "n": ratios.len(), "median_ratio": percentile(&sorted, 0.5),
         "min_ratio": sorted[0], "p5_ratio": percentile(&sorted, 0.05),
         "p95_ratio": percentile(&sorted, 0.95), "max_ratio": sorted[sorted.len() - 1],
     }))
@@ -657,14 +656,17 @@ fn rotate_quantity(
     }
     let reference = group
         .iter()
-        .position(|b| b.id() == PAIR_REFERENCE)
+        .position(|b| b.id() == config.group.reference())
         .map(|i| values[i].clone());
     for i in 0..count {
         if values[i].is_empty() {
             continue;
         }
         let mut entry = stats_json(&values[i]);
-        if let Some(paired) = reference.as_ref().and_then(|r| paired_json(&values[i], r)) {
+        if let Some(paired) = reference
+            .as_ref()
+            .and_then(|r| paired_json(&values[i], r, config.group.reference()))
+        {
             entry["paired_vs_prebuilt"] = paired;
         }
         entry["seed"] = json!(seed);
@@ -680,7 +682,7 @@ fn rotate_quantity(
 /// call returns only when its work is complete (`poison` and the timed call both wait), so one backend leaves nothing
 /// in flight for the next; the pipeline-cache miss counter of each backend must not move across the timed samples
 /// (asserted). Returns one cell per backend, in group order, with the shared warm-up and the clocks after the
-/// rotation in each, and the paired ratio to [`PAIR_REFERENCE`] inside each timed quantity.
+/// rotation in each, and the paired ratio to the group's reference (`Config::reference`) inside each timed quantity.
 pub fn run_gpu_group(
     group: &mut [&mut dyn Backend],
     input: &CellInput<'_>,
@@ -886,7 +888,7 @@ pub fn run_gpu_group(
             "bytes_per_element": input.workload.bytes_per_element(),
             "bytes_per_element_end_to_end": input.workload.bytes_per_element_end_to_end(),
             "flops_per_element": input.workload.flops_per_element(),
-            "group": config.group,
+            "group": config.group.name(),
             "metrics": member.metrics,
             "checks_passed": member.checks,
             "cold_start_ms": member.cold_ms,
@@ -921,6 +923,9 @@ pub fn prepare_case(n: usize, workload: Workload) -> (Inputs, Reference) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `publishable` group's reference (`Group::reference` is the run's own).
+    const PAIR_REFERENCE: &str = "wgsl-prebuilt";
 
     /// A GPU-kind backend with a cold start and nothing else: enough for a cold-only cell.
     struct Fake(&'static str);
@@ -1135,14 +1140,55 @@ mod tests {
         );
     }
 
+    /// The spirv group pairs against its own reference id, not against `wgsl-prebuilt`.
+    #[test]
+    fn the_pairing_reference_is_the_groups() {
+        let mut fakes = [
+            Fake("gust-gpu-spirv"),
+            Fake("wgsl-prebuilt-unchecked"),
+            Fake("wgsl-prebuilt"),
+        ];
+        let mut group: Vec<&mut dyn Backend> = fakes
+            .iter_mut()
+            .map(|f| -> &mut dyn Backend { f })
+            .collect();
+        let mut members = members(3);
+        let config = Config {
+            samples: 4,
+            min_samples: 4,
+            cap: Duration::from_secs(3600),
+            group: crate::group::Group::Spirv,
+            ..Config::default()
+        };
+        rotate_quantity(
+            &mut group,
+            &mut members,
+            &config,
+            "end_to_end",
+            5,
+            |backend, _| {
+                Ok(Some(match backend.id() {
+                    "wgsl-prebuilt-unchecked" => 2.0,
+                    "gust-gpu-spirv" => 3.0,
+                    _ => 100.0,
+                }))
+            },
+        );
+        let paired = &members[0].metrics["end_to_end"]["paired_vs_prebuilt"];
+        assert_eq!(paired["reference"], "wgsl-prebuilt-unchecked");
+        assert_eq!(paired["median_ratio"], 1.5);
+        let itself = &members[1].metrics["end_to_end"]["paired_vs_prebuilt"];
+        assert_eq!(itself["median_ratio"], 1.0);
+    }
+
     #[test]
     fn paired_ratios_are_per_rotation() {
-        let paired = paired_json(&[2.0, 6.0, 3.0], &[1.0, 2.0, 1.0]).unwrap();
+        let paired = paired_json(&[2.0, 6.0, 3.0], &[1.0, 2.0, 1.0], PAIR_REFERENCE).unwrap();
         // 2, 3, 3
         assert_eq!(paired["median_ratio"], 3.0);
         assert_eq!(paired["min_ratio"], 2.0);
         assert_eq!(paired["max_ratio"], 3.0);
-        assert!(paired_json(&[], &[1.0]).is_none());
+        assert!(paired_json(&[], &[1.0], PAIR_REFERENCE).is_none());
     }
 
     #[test]

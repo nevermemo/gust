@@ -35,9 +35,10 @@ and a value above 4096 is refused beside W9). On these backends:
 | id | what it is |
 |---|---|
 | `gust-gpu` | the GUST kernel through `gust-wgpu`'s public API only (typed call, `dispatch_batch`, `dispatch_batch_timed`), WGSL route |
-| `gust-gpu-spirv` | the same, in the `spirv-route` build (the SPIR-V route; see Groups and builds) |
+| `gust-gpu-spirv` | the same, in the `spirv-route` build (the SPIR-V route; judged in the `spirv` group, see Groups and builds) |
 | `wgsl-prebuilt` | hand-written WGSL on plain wgpu, host side built the careful way: bind group and read-back staging buffer built once, one submission per end-to-end sample |
 | `wgsl-percall` | the same WGSL, host side shaped like `gust-wgpu` does it: a bind group per dispatch, a fresh staging buffer and `Vec` per read-back, two submissions with a wait after each |
+| `wgsl-prebuilt-unchecked`, `wgsl-percall-unchecked` | the `spirv` group's hand rows (D193, m10.b3d): `wgsl-prebuilt` and `wgsl-percall` with the shader module compiled without wgpu's runtime checks (bounds checks, loop bounding), as the SPIR-V route's shaders are; the first is the group's reference, the second its control. They are no `+` ids: they are table rows of their group, not probes |
 | `rustgpu-wgpu` | the `rust-gpu` build only: the same four kernels (W1 to W4) written in Rust with rust-gpu 0.11.0, built on a pinned nightly to a committed SPIR-V module and loaded through wgpu's passthrough route, on the host side of `wgsl-prebuilt` (the rust-gpu comparator, below) |
 | `gust-twin` | the GUST CPU twin (`--cfg gust_dual`), single thread, a semantic reference with per-call validation (not the production CPU target) |
 | `gust-cpu` | the production CPU target (`GUST_PROFILE=cpu` build, no GPU runtime): the kernel's Rust body through `CpuDevice`, single thread, typed dispatch |
@@ -86,14 +87,20 @@ that slangc makes of it, for diffing the two routes; the Slang source of a `spir
 
 ## Groups and builds
 
-A run is one **group**, chosen by `--group publishable|ablation` (default `publishable`) and written into the run file
+A run is one **group**, chosen by `--group publishable|spirv|ablation` (default `publishable` in the WGSL build, `spirv` in the `spirv-route` build) and written into the run file
 (`group` at the top level and in every cell; `aggregate` refuses to mix groups):
 
 - `publishable`: `gust-gpu`, `wgsl-prebuilt` and `wgsl-percall`, sampled together in seeded random order (below), plus
   the CPU backends run beside them (not in the rotation). This is the group a published table is made of.
+- `spirv` (D193, m10.b3d; the `spirv-route` build only): `gust-gpu-spirv`, `wgsl-prebuilt-unchecked` (the reference of its
+  ratios) and `wgsl-percall-unchecked` (its control), sampled together in seeded random order, plus the CPU backends beside
+  them. The SPIR-V route skips wgpu's runtime shader checks (its own guards, D174), so it is judged against hand WGSL that
+  skips them too: **checks are off on both sides**. It has its own kill rule (below) and is never compared with the
+  publishable group's rows. The `spirv-route` build refuses `--group publishable`, the WGSL build refuses `--group spirv`.
 - `ablation`: `wgsl-percall`, `wgsl-prebuilt` and the switch ablations, with no GUST backend. Its rows are compared
   only with the `wgsl-percall` and `wgsl-prebuilt` of the same run, never with numbers from a publishable run.
-  `--ablation` without `--group ablation` is an error.
+  `--ablation` without `--group ablation` is an error. In the `spirv-route` build `--group ablation` runs only the checked
+  hand rows and the switches (no GUST row, and no `--with` probes), while the run file still says `route: spirv`.
 
 The route and the profile are properties of the build, not of a flag, so each build is its own result file, and a run
 names its build in the JSON: `route` (`wgsl`, `spirv` or `cpu`), `build.features`, `build.gust_profile`,
@@ -102,27 +109,29 @@ names its build in the JSON: `route` (`wgsl`, `spirv` or `cpu`), `build.features
 | build | command (from `bench/`) | route | GUST backend ids |
 |---|---|---|---|
 | default | `GUST_PROFILE=dev cargo build --release -p gust-bench` | `wgsl` | `gust-gpu` (run-time Slang compile) |
-| `spirv-route` | the same with `--features spirv-route` | `spirv` | `gust-gpu-spirv` (the macro emits the SPIR-V route) |
+| `spirv-route` | the same with `--features spirv-route` | `spirv` | `gust-gpu-spirv` (the macro emits the SPIR-V route); runs the `spirv` group |
 | precompiled | `GUST_PROFILE=native cargo build --release -p gust-bench-pre` | `wgsl` | `gust-gpu` (embedded artifacts) |
 | `cpu` | `GUST_PROFILE=cpu cargo build --release -p gust-bench --no-default-features` | `cpu` | `gust-cpu`, `gust-cpu-par`, no GPU rows |
 | `rust-gpu` | the default build with `--features rust-gpu` | `wgsl` | `gust-gpu`, and `rustgpu-wgpu` beside the hand rows (not a table: the run is marked not publishable, see below) |
 
-Deviation from the plan's single group: the plan puts gust-gpu and gust-gpu on SPIR-V in one random-order group. The
+Deviation from the plan's single group: the plan put gust-gpu and gust-gpu on SPIR-V in one random-order group. The
 SPIR-V route changes the code `gust-wgpu`'s macros emit (a Cargo feature), so one process holds one GUST route and
-the two routes cannot share a rotation. Each build instead runs its own publishable group with its own
-`wgsl-prebuilt` and `wgsl-percall`, and the routes are compared through their paired ratios to the `wgsl-prebuilt` of
-their own run (the ratio of the two ratios), not through a direct pairing.
+the two routes cannot share a rotation. Since D193 they also should not: the SPIR-V route skips wgpu's runtime checks,
+so each build runs a group of its own with hand rows that have the same checks as its GUST route (`publishable` against
+checked `wgsl-prebuilt`, `spirv` against `wgsl-prebuilt-unchecked`), and the two routes are not compared with each other.
+A run file of the SPIR-V route in the `publishable` group, or a `publishable` file with a `gust-gpu-spirv` cell, is a
+pre-D193 file: `aggregate` refuses it, and the xtask readers (`check-bench --render`) read it as legacy and label it.
 
-**Kill rule** (`group::kill_rule`, in the run file as `kill_rule` for the publishable group): a gust-gpu (or
-gust-gpu-spirv) GPU-time (`gpu_single`, `gpu_batch_per_dispatch`) paired ratio to `wgsl-prebuilt` more than 10 % off 1.0
-on any cell marks the run "C re-opened" (`kill_rule.c_reopened`, with the offending cells listed). A workload with no same-kernel
+**Kill rule** (`group::kill_rule(group, cells)`, in the run file as `kill_rule` for each table group, with `group` and
+`reference` in the record): in `publishable`, a `gust-gpu` GPU-time (`gpu_single`, `gpu_batch_per_dispatch`) paired ratio to `wgsl-prebuilt` more than 10 % off 1.0
+on any cell marks the run "C re-opened" (`kill_rule.c_reopened`, with the offending cells listed; each offender has a `direction`). In `spirv` (D193) the same rule reads `gust-gpu-spirv` against `wgsl-prebuilt-unchecked` with `wgsl-percall-unchecked` as the control, and the direction splits (plan R1.3-3): slower than 1.10 sets `c_reopened`, faster than 0.90 sets `reading_step` and does not re-open C; it asks for a reading of the cell's cause (as the W3 reading of b1q/b1c did). `gust-gpu-spirv` is not judged in `publishable`. A workload with no same-kernel
 GUST/hand pairing (`Workload::same_kernel`, W7) is outside the rule and every such cell is listed in `kill_rule.excluded`
 (`backend`, `workload`, `n`, `reason`), not silently absent. It judges only a complete run: every other GUST cell and quantity needs a ratio, and any
-cell without one (a failed or dropped backend, a size with no GUST cell) counts in `kill_rule.unpaired`; `kill_rule.judged` is true only when `checked > 0` and `unpaired == 0`, and otherwise `c_reopened` is `null`, never `false`. `kill_rule.control` carries the same ratio for `wgsl-percall` (same kernel text as `wgsl-prebuilt`, so its distance from 1.0 is the noise floor of the method); it is a record beside the rule, not an input, and the rule's threshold and quantities are unchanged. The control is a noise floor for `gpu_single` only. For `gpu_batch_per_dispatch` it also differs from
+cell without one (a failed or dropped backend, a size with no GUST cell) counts in `kill_rule.unpaired`; `kill_rule.judged` is true only when `checked > 0` and `unpaired == 0`, and otherwise `c_reopened` is `null`, never `false`. `kill_rule.control` carries the same ratio for the group's control (`wgsl-percall`, or `wgsl-percall-unchecked`; same kernel text as the reference, so its distance from 1.0 is the noise floor of the method); it is a record beside the rule, not an input, and the rule's threshold and quantities are unchanged. The control is a noise floor for `gpu_single` only. For `gpu_batch_per_dispatch` it also differs from
 `wgsl-prebuilt` in the per-pass bind groups (percall builds a fresh one each pass, as GUST does; prebuilt reuses one), so its
 batch excess (1.08-1.13 on W1 1M in the m10.b1c run) may be a real effect of that and not noise. A control that is stream-identical for
 the batch quantity would be a second `wgsl-prebuilt` instance, or `bind_group_reuse` on; until then "control out of tolerance" voids a
-batch cell on a confounded control. A `publishable` run refuses a `--backends` list that leaves out `wgsl-prebuilt`, `wgsl-percall` or the build's GUST backend (use `--group ablation` for subsets). After every GUST cell of a `spirv-route` build the device's route events for that kernel are checked: a cell fails on any event of its own that is off the build's route, and otherwise needs the kernel's latest event over the device's life to exist and be on the route, naming only the build route (the no-event error names no event at all). That check is also written into the cell, as `route_evidence`
+batch cell on a confounded control. A `publishable` run refuses a `--backends` list that leaves out `gust-gpu`, `wgsl-prebuilt` or `wgsl-percall`, and a `spirv` run one that leaves out `gust-gpu-spirv`, `wgsl-prebuilt-unchecked` or `wgsl-percall-unchecked` (use `--group ablation` for subsets). After every GUST cell of a `spirv-route` build the device's route events for that kernel are checked: a cell fails on any event of its own that is off the build's route, and otherwise needs the kernel's latest event over the device's life to exist and be on the route, naming only the build route (the no-event error names no event at all). That check is also written into the cell, as `route_evidence`
 (build route; the number of route events for the kernel since this cell's `prepare`, how many of those are on and off the build's
 route, and `events_cumulative`, the device's whole-life count; the last event). The events are cumulative on the device (the W3 cells
 share `kernel::horner`), so the per-cell counts are the total minus what was there when the cell began. Events arise only when a
@@ -131,7 +140,7 @@ judged on the event of the pipeline it ran, the kernel's latest event, which an 
 
 **Reproducibility clause (plan R1.3-4).** Each offender in `kill_rule.offenders` carries `control_median_ratio` and
 `control_in_tolerance` for its own cell. An offender counts only when it recurs in every run of the build, with at least 3 runs of distinct
-seeds (`run_seed`; two files, or one seed twice, never count), and the control in tolerance on that cell in each of those runs;
+seeds (`run_seed`; two files, or one seed twice, never count), and the group's control (`wgsl-percall`, or `wgsl-percall-unchecked` in the `spirv` group) in tolerance on that cell in each of those runs. In the `publishable` group the clause is two-sided as pre-registered (a cell more than 10 percent off in either direction in every run counts); in the `spirv` group the recurrence must also keep its direction (slower or faster), each row carries `direction`, and an offender with no direction and no ratio is `unknown` and never counts;
 `aggregate` writes the count to `kill_rule_reproducibility` (with the seeds, once) and a list to the report. A hit that does not
 meet this is listed, not counted. Per-point `per_run_p5_ms`, `per_run_p95_ms`, `per_run_outliers_gt_3mad` and
 `two_state_suspect` are written beside the median for the bimodal cells (a p5 or p95 missing from an old run file is `null`, never the
@@ -151,14 +160,12 @@ threshold trusted. On those files the flag fires on 21 of 24 (w12) and 7 of 12 (
 `gpu_single`, 9 and 2 `end_to_end`, 3 and 3 `dispatch_host`; the gap test by itself fires on 12 and 3 batch points and on no other metric; each of those also has a heavy tail, so the gap test
 changes no flag on these files and the totals are the heavy-tail totals.
 
-**Probe backends (m10.b1c).** `--with gust-setup,gust-shader,gust-device,unchecked` (publishable group only; list the ids in
+**Probe backends (m10.b1c).** `--with gust-setup,gust-shader,gust-device` (publishable group only; list the ids in
 `--backends` too when it is given) adds hand-WGSL rows to the rotation, each `wgsl-prebuilt` plus one named difference from GUST:
 `wgsl-prebuilt+gust-device` (a separate wgpu device opened like GUST's, which requests `MEMORY_DECORATION_COHERENT`, with the
 timestamp objects created before the data buffers: three differences at once, not separable by this probe), `wgsl-prebuilt+gust-shader`
 (the shared hand device with GUST's own generated WGSL as the kernel), `wgsl-prebuilt+gust-setup` (both: the pre-registered
-ablation) and `wgsl-prebuilt+unchecked` (the hand WGSL compiled without wgpu's runtime checks, bounds checks and loop bounding, on the
-shared device). The kill rule ignores them; they exist to test a named difference between GUST and the hand path, so a ratio
-between a probe and GUST is the test, and none of them is a result.
+ablation). The m10.b1c probe `unchecked` (the hand WGSL compiled without wgpu's runtime checks, bounds checks and loop bounding) is gone from `--with`: it is the `spirv` group's own `wgsl-prebuilt-unchecked` row now (m10.b3d, D193; `--with unchecked` is an error pointing at `--group spirv`), where it is the reference and not a probe. The kill rule ignores the others; they exist to test a named difference between GUST and the hand path, so a ratio between a probe and GUST is the test, and none of them is a result.
 
 **Small-group run conditions.** A small group (one workload and size, e.g. a diagnostic run of W1 at 1 048 576) is run
 with: the GPU idle (check `nvidia-smi` first and write down what else ran), one size, the run-time-compile build, a
@@ -308,7 +315,7 @@ mkdir -p "$OUT"
 ```
 
 `run` options: `--quick` (two small sizes, 5 samples, for smoke tests), `--workloads W1,W2`, `--sizes N,N`,
-`--backends gust-gpu,rayon-N`, `--group publishable|ablation`, `--samples N`, `--cap-secs S`, `--label NAME`,
+`--backends gust-gpu,rayon-N`, `--group publishable|spirv|ablation` (default per build: `publishable` in the WGSL build, `spirv` in the `spirv-route` build; `spirv` runs only in the `spirv-route` build, `publishable` only outside it, `ablation` in either), `--with LIST` (probe backends, `publishable` group only, so never in the `spirv-route` build), `--samples N`, `--cap-secs S`, `--label NAME`,
 `--ablation LIST|all` (ablation group only), `--seed N`, `--settle-secs S`, `--window-secs S`, `--warmup-secs S`,
 `--no-sampler`, `--functional` (correctness only, below). Every
 path comes from an argument. `aggregate` also refuses to mix runs with and without the sampler (`sampler.enabled`). A build without `--cfg gust_dual` still works and simply has no `gust-twin` row. The builds

@@ -414,3 +414,230 @@ fn the_checked_in_page_matches_the_header_the_thresholds_and_the_filed_results()
     assert!(HEADER.contains("not in its authors' recommended configuration"));
     assert!(HEADER.contains("corrections are welcome as issues against this repository"));
 }
+
+/// The aggregate of `aggregate()` as the harness writes it for another route and group.
+fn aggregate_of(route: &str, group: &str, backend: &str, reference: Option<&str>) -> String {
+    let rule = reference.map_or(String::new(), |reference| {
+        format!(r#", "kill_rule": {{ "group": "{group}", "reference": "{reference}" }}"#)
+    });
+    let mut text = aggregate(true, false)
+        .replacen(
+            "\"route\": \"wgsl\",",
+            &format!("\"route\": \"{route}\", \"group\": \"{group}\","),
+            1,
+        )
+        .replace(
+            "\"backend\": \"gust-gpu\"",
+            &format!("\"backend\": \"{backend}\""),
+        );
+    // The rule goes into every run: a timed spirv run must carry one.
+    for seed in [11, 22, 33] {
+        text = text.replacen(
+            &format!("{{ \"run_seed\": {seed},"),
+            &format!("{{ \"run_seed\": {seed}{rule},"),
+            1,
+        );
+    }
+    if group == "spirv" {
+        // The group's own reference beside the GUST row, as the harness writes it.
+        text = text.replace(
+            "\"backend\": \"wgsl-prebuilt\"",
+            "\"backend\": \"wgsl-prebuilt-unchecked\"",
+        );
+    }
+    text
+}
+
+/// D193: the `spirv` group is a section of its own, labelled "checks off on both sides", with its rows apart from the
+/// publishable group's; a legacy file (the SPIR-V route in the publishable group) is read and labelled, not refused.
+#[test]
+fn the_spirv_group_is_its_own_labelled_section_and_a_pre_d193_file_is_legacy_not_refused() {
+    let dir = scratch("spirv-group");
+    file_as(
+        &dir,
+        "test-gpu",
+        "0123456789ab-spirv",
+        &aggregate_of(
+            "spirv",
+            "spirv",
+            "gust-gpu-spirv",
+            Some("wgsl-prebuilt-unchecked"),
+        ),
+        true,
+    );
+    file(&dir, &aggregate(true, false), true);
+    let filed = load_results(&dir.join("results"), &attested).unwrap();
+    assert_eq!(filed.len(), 2);
+    let tables = render_tables(&filed, &limits_of(JUDGE_FIXTURE));
+    assert!(
+        tables.contains(
+            "### Test GPU, route spirv, group spirv (checks off on both sides), commit 0123456789ab"
+        ),
+        "{tables}"
+    );
+    assert!(
+        tables.contains("Group `spirv` (D193): checks off on both sides."),
+        "{tables}"
+    );
+    assert!(
+        tables.contains("### Test GPU, route wgsl, commit 0123456789ab"),
+        "{tables}"
+    );
+    // The spirv section holds the spirv rows and the publishable one does not.
+    let spirv_at = tables.find("route spirv").unwrap();
+    let wgsl_at = tables.find("route wgsl").unwrap();
+    let (first, second) = if spirv_at < wgsl_at {
+        (&tables[spirv_at..wgsl_at], &tables[wgsl_at..])
+    } else {
+        (&tables[wgsl_at..spirv_at], &tables[spirv_at..])
+    };
+    let (spirv, wgsl) = if spirv_at < wgsl_at {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    assert!(spirv.contains("| gust-gpu-spirv |") && !wgsl.contains("gust-gpu-spirv"));
+    let _ = fs::remove_dir_all(&dir);
+
+    // Legacy: the SPIR-V route's file in the publishable group, and a publishable file with a spirv point.
+    let dir = scratch("legacy");
+    file_as(
+        &dir,
+        "test-gpu",
+        "0123456789ab-spirv",
+        &aggregate_of("spirv", "publishable", "gust-gpu-spirv", None),
+        true,
+    );
+    let filed = load_results(&dir.join("results"), &attested).unwrap();
+    assert!(filed[0].legacy);
+    let tables = render_tables(&filed, &limits_of(JUDGE_FIXTURE));
+    assert!(
+        tables.contains("route spirv, legacy (pre-D193), commit"),
+        "{tables}"
+    );
+    assert!(tables.contains("Legacy file (pre-D193)"), "{tables}");
+    let _ = fs::remove_dir_all(&dir);
+    let dir = scratch("legacy-point");
+    file(
+        &dir,
+        &aggregate_of("wgsl", "publishable", "gust-gpu-spirv", None),
+        true,
+    );
+    assert!(load_results(&dir.join("results"), &attested).unwrap()[0].legacy);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_spirv_group_file_must_come_from_the_spirv_route_with_its_own_rule_and_other_groups_are_not_filed()
+ {
+    for (name, body, reason) in [
+        (
+            "0123456789ab-wgsl",
+            aggregate_of("wgsl", "spirv", "gust-gpu", None),
+            "the spirv group is the SPIR-V route's",
+        ),
+        (
+            "0123456789ab-spirv",
+            aggregate_of("spirv", "spirv", "gust-gpu-spirv", Some("wgsl-prebuilt")),
+            "not the spirv group's",
+        ),
+        (
+            "0123456789ab-wgsl",
+            aggregate_of("wgsl", "ablation", "gust-gpu", None),
+            "not a table group",
+        ),
+        // S3: a spirv file holds only its own rows.
+        (
+            "0123456789ab-spirv",
+            aggregate_of(
+                "spirv",
+                "spirv",
+                "gust-gpu-spirv",
+                Some("wgsl-prebuilt-unchecked"),
+            )
+            .replace(
+                "wgsl-prebuilt-unchecked\", \"metric",
+                "wgsl-prebuilt\", \"metric",
+            ),
+            "not the spirv group's (gust-gpu-spirv",
+        ),
+        (
+            "0123456789ab-spirv",
+            aggregate_of(
+                "spirv",
+                "spirv",
+                "gust-gpu",
+                Some("wgsl-prebuilt-unchecked"),
+            ),
+            "`gust-gpu`, which is not the spirv group's",
+        ),
+        // A publishable file holds no checks-off row.
+        (
+            "0123456789ab-wgsl",
+            aggregate_of("wgsl", "publishable", "gust-gpu", None)
+                .replace("\"wgsl-prebuilt\"", "\"wgsl-prebuilt-unchecked\""),
+            "checks-off row `wgsl-prebuilt-unchecked`",
+        ),
+        // A spirv file with no runs, or a timed run without a record, is refused.
+        (
+            "0123456789ab-spirv",
+            {
+                let body = aggregate_of(
+                    "spirv",
+                    "spirv",
+                    "gust-gpu-spirv",
+                    Some("wgsl-prebuilt-unchecked"),
+                );
+                let start = body.find("\"runs\": [").unwrap();
+                let end = body[start..].find("],").unwrap() + start;
+                format!("{}\"runs\": []{}", &body[..start], &body[end + 1..])
+            },
+            "has no runs",
+        ),
+        (
+            "0123456789ab-spirv",
+            aggregate_of("spirv", "spirv", "gust-gpu-spirv", None),
+            "run of a spirv file has a null kill rule",
+        ),
+    ] {
+        let dir = scratch("bad-group");
+        file_as(&dir, "test-gpu", name, &body, true);
+        let error = load_results(&dir.join("results"), &attested).unwrap_err();
+        assert!(error.contains(reason), "{reason}: {error}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+/// R2: functional runs are never filed, and a null rule or an unpublishable run in a spirv file is refused outright.
+#[test]
+fn a_spirv_file_of_functional_or_unpublishable_runs_is_refused() {
+    let ruled = aggregate_of(
+        "spirv",
+        "spirv",
+        "gust-gpu-spirv",
+        Some("wgsl-prebuilt-unchecked"),
+    );
+    for (body, reason) in [
+        (
+            ruled.replace("{ \"run_seed\":", "{ \"functional\": true, \"run_seed\":"),
+            "holds a functional run",
+        ),
+        (
+            ruled.replace("{ \"run_seed\":", "{ \"publishable\": false, \"run_seed\":"),
+            "not publishable",
+        ),
+        (
+            aggregate_of("spirv", "spirv", "gust-gpu-spirv", None).replace(
+                "{ \"run_seed\":",
+                "{ \"functional\": false, \"kill_rule\": null, \"run_seed\":",
+            ),
+            "null kill rule",
+        ),
+    ] {
+        let dir = scratch("spirv-functional");
+        file_as(&dir, "test-gpu", "0123456789ab-spirv", &body, true);
+        let error = load_results(&dir.join("results"), &attested).unwrap_err();
+        assert!(error.contains(reason), "{reason}: {error}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

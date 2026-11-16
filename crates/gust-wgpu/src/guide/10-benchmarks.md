@@ -49,7 +49,9 @@ Which rows exist depends on the build. All of these exist on the main branch:
 
 - `gust-gpu`: the GUST kernel through the public API of `gust-wgpu` only, on the WGSL route.
 - `gust-gpu-spirv`: the same on the opt-in SPIR-V route, in a build with the `spirv-route` feature. A build holds one
-  GUST route, so the two routes are separate result files, each compared with its own hand-written baseline.
+  GUST route, so the two routes are separate result files. The SPIR-V route skips wgpu's runtime checks, so it runs in
+  a group of its own (`spirv`) and is compared with hand WGSL that also skips them (`wgsl-prebuilt-unchecked`), never
+  with the checked rows (D193).
 - `wgsl-prebuilt`: hand-written WGSL on plain wgpu, with the host side built the careful way (bind group and read-back
   buffer made once).
 - `wgsl-percall`: the same WGSL text with a host side shaped like `gust-wgpu`'s (a bind group per dispatch, a fresh
@@ -96,8 +98,9 @@ round by round.
 - The harness is built in release mode, and a result from any other build is not publishable. Overflow checks are off
   in the release profile for every backend.
 - `gust-gpu` and the hand-written WGSL both go through wgpu's checked shader path, so wgpu's runtime checks are on for
-  both. `gust-gpu-spirv` is loaded through wgpu's SPIR-V passthrough, so those checks are not on for that route, while
-  its hand-written baseline has them. The rayon rows use safe zipped slice iterators.
+  both. `gust-gpu-spirv` is loaded through wgpu's SPIR-V passthrough, so those checks are not on for that route; it is
+  compared with hand WGSL that also skips them (`wgsl-prebuilt-unchecked`, in the `spirv` group of its own, D193). The
+  rayon rows use safe zipped slice iterators.
 - The GPU backends are timed in interleaved, seeded random rounds and paired round by round, so slow drift of the
   machine is shared between them. The steady state is checked: GUST's pipeline-cache miss counter must not move during
   the timed samples, or the run fails.

@@ -22,13 +22,20 @@ fn e2e_comparable(workload: &str) -> bool {
 const E2E_NOTE: &str = "GUST's read-back converts a typed `Vec<Particle>` into the harness's words inside the end-to-end sample (a second allocation and a per-field copy) where the baseline reads raw words with one copy, so no GUST end-to-end ratio, overhead row, bandwidth figure or break-even is shown; the dispatch timings are not affected.";
 
 /// What a W6 (staged pipeline) table's samples time, by form: the two GUST forms are different programs on the host side and the table must say so.
-fn pipeline_note(workload: &str) -> Option<&'static str> {
+fn pipeline_note(workload: &str, names: &Names, gust: &str) -> Option<String> {
+    let runs_form = if names.group == "spirv" {
+        gust.to_owned()
+    } else {
+        "gust-gpu and gust-gpu-spirv".to_owned()
+    };
+    let reference = names.reference;
     match workload {
-        "W6-graph" => Some(
-            "W6 as a `StagedGraph`: every gust-gpu sample builds the graph of the six calls (derived edges), validates it, encodes the six dispatches into one command buffer (one compute pass each) and submits once, all inside the timed region; the end-to-end sample adds five upload nodes and one read-back node. The graph has no GPU timestamps, so there is no batch figure for it. The baselines are the hand-ordered rows of this workload (wgsl-prebuilt: six passes, one submit, nothing rebuilt), so the gap includes the graph's per-call host work, which is what a program that uses a `StagedGraph` pays; only gust-gpu and gust-gpu-spirv run this form (the CPU backends have no graph; their rows are under W6-hand).",
-        ),
+        "W6-graph" => Some(format!(
+            "W6 as a `StagedGraph`: every {gust} sample builds the graph of the six calls (derived edges), validates it, encodes the six dispatches into one command buffer (one compute pass each) and submits once, all inside the timed region; the end-to-end sample adds five upload nodes and one read-back node. The graph has no GPU timestamps, so there is no batch figure for it. The baselines are the hand-ordered rows of this workload ({reference}: six passes, one submit, nothing rebuilt), so the gap includes the graph's per-call host work, which is what a program that uses a `StagedGraph` pays; only {runs_form} run this form (the CPU backends have no graph; their rows are under W6-hand).",
+        )),
         "W6-hand" => Some(
-            "W6 in hand order: the same six GUST kernels dispatched in stage order with one `dispatch_batch` (six passes, one submit), no graph; the end-to-end sample adds five uploads and the read-back. Every backend of the table runs this form: the hand WGSL runs six entry points in six passes with one submit, the CPU backends compute one element's six stages at a time (rayon, serial) or run the six kernels one after another (gust-cpu, gust-twin). The batch bandwidth counts the traffic of six passes (68 bytes per element: 11 reads and 6 writes of 4 bytes), which a fused kernel would not do; the end-to-end bandwidth, for the GPU rows and for rayon-N alike, counts 24 bytes per element (five uploads and one read-back, which is also what the fused CPU loop touches).",
+            "W6 in hand order: the same six GUST kernels dispatched in stage order with one `dispatch_batch` (six passes, one submit), no graph; the end-to-end sample adds five uploads and the read-back. Every backend of the table runs this form: the hand WGSL runs six entry points in six passes with one submit, the CPU backends compute one element's six stages at a time (rayon, serial) or run the six kernels one after another (gust-cpu, gust-twin). The batch bandwidth counts the traffic of six passes (68 bytes per element: 11 reads and 6 writes of 4 bytes), which a fused kernel would not do; the end-to-end bandwidth, for the GPU rows and for rayon-N alike, counts 24 bytes per element (five uploads and one read-back, which is also what the fused CPU loop touches)."
+            .to_owned(),
         ),
         _ => None,
     }
@@ -85,10 +92,10 @@ const METRICS: [(&str, &str); 4] = [
 const RUST_GPU: &str = "rustgpu-wgpu";
 
 /// What a table with `rustgpu-wgpu` cells says about that backend: its toolchain and status, what it runs, how it differs.
-const RUST_GPU_NOTE: &str = "rustgpu-wgpu: the same four kernels written in Rust with rust-gpu 0.11.0 (spirv-std and spirv-builder 0.11.0, a project that calls itself \"not yet production-ready\"), compiled on the nightly toolchain nightly-2026-08-15 to one committed SPIR-V module for Vulkan 1.1 and loaded through wgpu's passthrough route, so wgpu and naga do not translate or validate it. It has W1 to W4 only, each the same algorithm, workgroup size and binding order as the hand WGSL, on the host side of wgsl-prebuilt (its own device, bind group and staging buffer built once). Its bounds policy is rust-gpu's own: an out-of-range index ends the invocation early (docs/BENCHMARKS.md, \"Bounds policy\"), unlike the WGSL route's. It is not part of the GUST kill rule.";
+const RUST_GPU_NOTE: &str = "rustgpu-wgpu: the same four kernels written in Rust with rust-gpu 0.11.0 (spirv-std and spirv-builder 0.11.0, a project that calls itself \"not yet production-ready\"), compiled on the nightly toolchain nightly-2026-08-15 to one committed SPIR-V module for Vulkan 1.1 and loaded through wgpu's passthrough route, so wgpu and naga do not translate or validate it. It has W1 to W4 only, each the same algorithm, workgroup size and binding order as the hand WGSL, on the host side of wgsl-prebuilt (its own device, bind group and staging buffer built once). Its bounds policy is rust-gpu's own: an out-of-range index ends the invocation early (docs/BENCHMARKS.md, \"Bounds policy\"), unlike the WGSL route's. Because it is loaded through passthrough, wgpu's runtime checks are off for this row while `wgsl-prebuilt` has them on, so its ratio to `wgsl-prebuilt` is not like-for-like in D193's sense. It is not part of the GUST kill rule.";
 
 /// Column order of the backends.
-const BACKENDS: [&str; 20] = [
+const BACKENDS: [&str; 21] = [
     "gust-gpu",
     "gust-gpu-spirv",
     "wgsl-prebuilt",
@@ -101,7 +108,8 @@ const BACKENDS: [&str; 20] = [
     "wgsl-prebuilt+gust-setup",
     "wgsl-prebuilt+gust-shader",
     "wgsl-prebuilt+gust-device",
-    "wgsl-prebuilt+unchecked",
+    "wgsl-prebuilt-unchecked",
+    "wgsl-percall-unchecked",
     "gust-twin",
     "gust-cpu",
     "gust-cpu-par",
@@ -208,10 +216,15 @@ type PairedTable = BTreeMap<(String, u64, String, String), PairedPoint>;
 const MIN_REPRODUCIBILITY_RUNS: usize = 3;
 
 /// The reproducibility clause (plan R1.3-4) over the run files of one build: an offender of the kill rule counts when it
-/// recurs in every run (3/3 seeds) and its control (`wgsl-percall` on the same cell) is within tolerance in each of those
-/// runs. Single-run hits are listed with their count, not counted.
-fn reproducibility(runs: &[Value]) -> Value {
-    type Key = (String, String, u64, String);
+/// recurs in every run (3/3 seeds) and its control (the group's: `wgsl-percall`, or `wgsl-percall-unchecked` in the
+/// `spirv` group, on the same cell) is within tolerance in each of those runs. In the `publishable` group the rule is
+/// two-sided and the clause stays as pre-registered (plan R1.2-3): a cell more than 10 percent off in either direction
+/// in every run counts. In the `spirv` group (`spirv` true) the recurrence must also keep its direction (slower or
+/// faster), because the two directions mean different things there: a cell slower in one run and faster in another
+/// recurs in neither, and an offender without a direction or a ratio is listed under `unknown` and never counts.
+/// Single-run hits are listed with their count, not counted.
+fn reproducibility(runs: &[Value], spirv: bool) -> Value {
+    type Key = (String, String, u64, String, &'static str);
     let mut seen: BTreeMap<Key, (usize, usize, Vec<f64>)> = BTreeMap::new();
     for run in runs {
         for offender in run["kill_rule"]["offenders"]
@@ -219,11 +232,28 @@ fn reproducibility(runs: &[Value]) -> Value {
             .into_iter()
             .flatten()
         {
+            // Spirv group only. Files written before the direction field existed: the ratio says which side of the
+            // window it is on; with no ratio either the direction is unknown.
+            let direction = if !spirv {
+                ""
+            } else {
+                match (
+                    offender["direction"].as_str(),
+                    offender["median_ratio"].as_f64(),
+                ) {
+                    (Some("faster"), _) => "faster",
+                    (Some("slower"), _) => "slower",
+                    (_, Some(ratio)) if ratio > 1.0 => "slower",
+                    (_, Some(_)) => "faster",
+                    _ => "unknown",
+                }
+            };
             let key = (
                 offender["backend"].as_str().unwrap_or("").to_owned(),
                 offender["workload"].as_str().unwrap_or("").to_owned(),
                 offender["n"].as_u64().unwrap_or(0),
                 offender["quantity"].as_str().unwrap_or("").to_owned(),
+                direction,
             );
             let entry = seen.entry(key).or_default();
             entry.0 += 1;
@@ -245,17 +275,21 @@ fn reproducibility(runs: &[Value]) -> Value {
     let enough = total >= MIN_REPRODUCIBILITY_RUNS && distinct;
     let rows = seen
         .into_iter()
-        .map(|((backend, workload, n, quantity), (hits, control_ok, ratios))| {
+        .map(|((backend, workload, n, quantity, direction), (hits, control_ok, ratios))| {
             json!({
-                "backend": backend, "workload": workload, "n": n, "quantity": quantity,
+                "backend": backend, "workload": workload, "n": n, "quantity": quantity, "direction": (!direction.is_empty()).then_some(direction),
                 "runs_with_offender": hits, "runs": total, "runs_with_control_in_tolerance": control_ok,
                 "ratios": ratios,
-                "counts": enough && hits == total && control_ok == total,
+                "counts": enough && direction != "unknown" && hits == total && control_ok == total,
             })
         })
         .collect::<Vec<_>>();
     json!({
-        "clause": "an offender counts when it recurs in every run (at least 3 runs, distinct seeds) with the control within tolerance on that cell in each; other hits are listed, not counted",
+        "clause": if spirv {
+            "an offender counts when it recurs in every run (at least 3 runs, distinct seeds) in the same direction (slower or faster; an unknown direction never counts) with the control within tolerance on that cell in each; other hits are listed, not counted"
+        } else {
+            "an offender counts when it recurs in every run (at least 3 runs, distinct seeds), in either direction, with the control within tolerance on that cell in each; other hits are listed, not counted"
+        },
         "runs": total,
         "seeds": seeds,
         "enough_runs_with_distinct_seeds": enough,
@@ -380,6 +414,30 @@ fn check_labels(runs: &[Value]) -> BenchResult<()> {
             .into());
         }
     }
+    // D193: the SPIR-V route is judged in the `spirv` group only. A run file of the SPIR-V route with the publishable
+    // group, or a publishable file holding a `gust-gpu-spirv` cell, is a pre-D193 file: refused here (a new aggregate
+    // would claim a comparison the owner ruled out), and the xtask readers label such files legacy.
+    for (index, run) in runs.iter().enumerate() {
+        let group = run["group"].as_str().unwrap_or("");
+        let route = run["route"].as_str().unwrap_or("");
+        let spirv_cell = run["cells"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|cell| cell["backend"] == "gust-gpu-spirv");
+        if group == "publishable" && (route == "spirv" || spirv_cell) {
+            return Err(format!(
+                "run {index} is a pre-D193 file: the SPIR-V route (gust-gpu-spirv) is judged in the `spirv` group, not in `publishable`; rerun it with --group spirv"
+            )
+            .into());
+        }
+        if group == "spirv" && route != "spirv" {
+            return Err(format!(
+                "run {index} says group `spirv` but route `{route}`: the spirv group is the spirv-route build's"
+            )
+            .into());
+        }
+    }
     Ok(())
 }
 
@@ -500,9 +558,43 @@ const ABLATION: [&str; 8] = [
     "gust-gpu-spirv",
 ];
 
+/// The columns of the `spirv` group's paired-ratio and host-shape tables (D193): GUST on the SPIR-V route and the two
+/// hand rows built without wgpu's runtime checks, never the checked rows.
+const SPIRV_COLUMNS: [&str; 3] = [
+    "wgsl-percall-unchecked",
+    "wgsl-prebuilt-unchecked",
+    "gust-gpu-spirv",
+];
+
+/// What the report names per group: the backend every ratio is taken against, the control, and the columns of the
+/// ratio tables (D193: the `spirv` group has its own reference, so its ratios are never shown against `wgsl-prebuilt`).
+struct Names {
+    group: &'static str,
+    reference: &'static str,
+    control: &'static str,
+    columns: &'static [&'static str],
+}
+
+fn names_of(group: &str) -> Names {
+    match crate::group::Group::parse(group) {
+        Some(crate::group::Group::Spirv) => Names {
+            group: "spirv",
+            reference: crate::group::SPIRV_REFERENCE,
+            control: crate::group::SPIRV_CONTROL,
+            columns: &SPIRV_COLUMNS,
+        },
+        _ => Names {
+            group: "publishable",
+            reference: "wgsl-prebuilt",
+            control: "wgsl-percall",
+            columns: &ABLATION,
+        },
+    }
+}
+
 /// One row per (workload, size, timing, backend of [`ABLATION`]): the median and its ratios to `wgsl-prebuilt` and
 /// `wgsl-percall`, all on the same host shape of the same run set.
-fn ablation_rows(table: &Table, sizes: &BTreeMap<String, Vec<u64>>) -> Vec<Value> {
+fn ablation_rows(table: &Table, sizes: &BTreeMap<String, Vec<u64>>, names: &Names) -> Vec<Value> {
     let mut rows = Vec::new();
     for (workload, list) in sizes {
         for n in list {
@@ -512,8 +604,8 @@ fn ablation_rows(table: &Table, sizes: &BTreeMap<String, Vec<u64>>) -> Vec<Value
                         .get(&(workload.clone(), *n, backend.to_owned(), metric.to_owned()))
                         .map(Point::median)
                 };
-                let (prebuilt, percall) = (get("wgsl-prebuilt"), get("wgsl-percall"));
-                for backend in ABLATION {
+                let (prebuilt, percall) = (get(names.reference), get(names.control));
+                for &backend in names.columns {
                     let Some(ms) = get(backend) else { continue };
                     // The time is shown, the ratio is not, where GUST and the baseline run different algorithms (W7).
                     let comparable = !is_gust(backend)
@@ -735,6 +827,8 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     let cold = cold_starts(&runs);
     let info = workload_info(&runs);
     let gust = gust_backend(&table);
+    let names = names_of(runs[0]["group"].as_str().unwrap_or("publishable"));
+    let (reference, control) = (names.reference, names.control);
     let peak = dram_peak_gbps(runs[0]["adapter"]["name"].as_str().unwrap_or(""));
     let flags = peak.map_or_else(Vec::new, |(peak, _)| bandwidth_flags(&table, &info, peak));
 
@@ -770,7 +864,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             .unwrap_or_else(|| "?".to_owned())
     };
 
-    let repro = reproducibility(&runs);
+    let repro = reproducibility(&runs, names.group == "spirv");
 
     // The judgement of the aggregate (plan 2.4): every run publishable, three runs, one session, and every run's
     // sampler sidecar present beside its file (the quiet-window evidence travels with the table).
@@ -814,7 +908,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             })
         })
         .collect::<Vec<_>>();
-    let overhead = overhead_rows(&table, &sizes, gust);
+    let overhead = overhead_rows(&table, &sizes, gust, &names);
     let cold_json = cold
         .iter()
         .map(|((workload, n, backend), point)| {
@@ -824,7 +918,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                     "all_ms": point.all(), "note": point.note })
         })
         .collect::<Vec<_>>();
-    let ablation = ablation_rows(&table, &sizes);
+    let ablation = ablation_rows(&table, &sizes, &names);
     let clocks = clock_rows(&runs);
     let (gpu_cells, p0_cells) = runs
         .iter()
@@ -847,12 +941,14 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         "build": runs[0]["build"],
         "adapter": runs[0]["adapter"],
         "group": runs[0]["group"],
+        "reference": reference,
+        "control": control,
         "dram_peak": peak.map(|(gbps, source)| json!({ "gb_per_s": gbps, "source": source })),
         "above_dram_peak": flags,
         "meta": runs[0]["meta"],
         "config": runs[0]["config"],
         "runs": runs.iter().map(|run| json!({
-            "label": run["label"], "group": run["group"], "kill_rule": run["kill_rule"], "run_seed": run["run_seed"], "sidecar": run["sampler"]["sidecar"], "publishable": run["publishable"], "publishable_reason": run["publishable_reason"], "window": run["window"], "load_before": run["load_before"], "load_after": run["load_after"],
+            "label": run["label"], "group": run["group"], "functional": run["functional"] == true, "kill_rule": run["kill_rule"], "run_seed": run["run_seed"], "sidecar": run["sampler"]["sidecar"], "publishable": run["publishable"], "publishable_reason": run["publishable_reason"], "window": run["window"], "load_before": run["load_before"], "load_after": run["load_after"],
             "gpu_before": run["gpu_before"], "gpu_after": run["gpu_after"],
             "wall_s": run["wall_s"], "failures": run["failures"],
         })).collect::<Vec<_>>(),
@@ -884,7 +980,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     }
     writeln!(
         md,
-        "Shader source of gust-gpu's cold start: {}. Warm-up with load to P0 before each GPU cell, capped at {} s.\n",
+        "Shader source of {gust}'s cold start: {}. Warm-up with load to P0 before each GPU cell, capped at {} s.\n",
         runs[0]["config"]["shader_source"].as_str().unwrap_or("?"),
         runs[0]["config"]["warmup_cap_s"]
     )?;
@@ -910,9 +1006,18 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         if run["kill_rule"].is_object() {
             writeln!(
                 md,
-                "- {}: kill rule, C re-opened = {} (judged: {}; {} paired GPU-time ratios checked, {} unpaired, offenders: {}; control wgsl-percall/wgsl-prebuilt: {} outside the window; {} cells excluded as no same-kernel pairing, listed in the run file)",
+                "- {}: kill rule of the {} group, C re-opened = {}{} (judged: {}; {} paired GPU-time ratios checked against {reference}, {} unpaired, offenders: {}; control {control}/{reference}: {} outside the window; {} cells excluded as no same-kernel pairing, listed in the run file)",
                 run["label"].as_str().unwrap_or("run"),
+                run["kill_rule"]["group"].as_str().unwrap_or(names.group),
                 run["kill_rule"]["c_reopened"],
+                if run["kill_rule"]["reading_step"].is_null() {
+                    String::new()
+                } else {
+                    format!(
+                        ", reading step = {} (a faster cell: it asks for a reading of the cell's cause and does not re-open C)",
+                        run["kill_rule"]["reading_step"]
+                    )
+                },
                 run["kill_rule"]["judged"],
                 run["kill_rule"]["checked"],
                 run["kill_rule"]["unpaired"],
@@ -924,29 +1029,43 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     }
     let rows = repro["offenders"].as_array().cloned().unwrap_or_default();
     if !rows.is_empty() {
+        let same_direction = if names.group == "spirv" {
+            ", in the same direction"
+        } else {
+            ", in either direction"
+        };
         writeln!(
             md,
-            "\nKill-rule offenders against the reproducibility clause (an offender counts when it recurs in all {} runs, at least 3 with distinct seeds, with the control within tolerance on its cell in each; seeds {}):\n",
+            "\nKill-rule offenders against the reproducibility clause (an offender counts when it recurs in all {} runs, at least 3 with distinct seeds{same_direction}, with the control {control} within tolerance on its cell in each; seeds {}):\n",
             runs.len(),
             repro["seeds"]
         )?;
         for row in &rows {
+            let direction = row["direction"].as_str().unwrap_or("");
+            let shown = if direction.is_empty() {
+                String::new()
+            } else {
+                format!(", {direction}")
+            };
+            let verdict = match (row["counts"] == true, names.group == "spirv", direction) {
+                (false, _, _) => "listed, not counted",
+                (true, false, _) => "counts",
+                (true, true, "slower") => "counts: re-opens C",
+                (true, true, _) => "counts: reading step, does not re-open C",
+            };
             writeln!(
                 md,
-                "- {} {} n={} {}: in {} of {} runs, control in tolerance in {}, ratios {} -> {}",
+                "- {} {} n={} {}{}: in {} of {} runs, control in tolerance in {}, ratios {} -> {}",
                 row["backend"].as_str().unwrap_or("?"),
                 row["workload"].as_str().unwrap_or("?"),
                 row["n"],
                 row["quantity"].as_str().unwrap_or("?"),
+                shown,
                 row["runs_with_offender"],
                 row["runs"],
                 row["runs_with_control_in_tolerance"],
                 row["ratios"],
-                if row["counts"] == true {
-                    "counts"
-                } else {
-                    "listed, not counted"
-                }
+                verdict
             )?;
         }
     }
@@ -1019,13 +1138,13 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         if !pairs_same_kernel(workload) {
             writeln!(
                 md,
-                "No {gust} / wgsl-prebuilt ratio is shown for {workload}: the two run different algorithms (GUST the library's sum with its own schedule, the baseline a tree of its own), and the library's sum exposes no GPU timestamps. The times above are each backend's own.\n"
+                "No {gust} / {reference} ratio is shown for {workload}: the two run different algorithms (GUST the library's sum with its own schedule, the baseline a tree of its own), and the library's sum exposes no GPU timestamps. The times above are each backend's own.\n"
             )?;
         }
         if !e2e_comparable(workload) {
             writeln!(md, "{E2E_NOTE}\n")?;
         }
-        if let Some(note) = pipeline_note(workload) {
+        if let Some(note) = pipeline_note(workload, &names, gust) {
             writeln!(md, "{note}\n")?;
         }
         // A GFLOP/s column (2 N^3 flops for W9, plan 2.3) is b5's: it goes beside the bandwidth table below.
@@ -1034,7 +1153,14 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                 md,
                 "Achieved bandwidth is not applicable to {workload}: it is not a per-element stream (each matrix is read many times), so no bytes-per-element figure is defined.\n"
             )?;
-            crossover(&mut md, &table, workload, list, &link_of, gust)?;
+            crossover(
+                &mut md,
+                &table,
+                workload,
+                list,
+                &link_of,
+                (gust, names.reference),
+            )?;
             continue;
         }
         if bytes_e2e == bytes {
@@ -1050,7 +1176,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         }
         writeln!(
             md,
-            "| {} | {gust} batch | wgsl-prebuilt batch | wgsl-percall batch | {gust} e2e | wgsl-prebuilt e2e | rayon-N e2e | PCIe link (GPU e2e) |",
+            "| {} | {gust} batch | {reference} batch | {control} batch | {gust} e2e | {reference} e2e | rayon-N e2e | PCIe link (GPU e2e) |",
             size_header(workload)
         )?;
         writeln!(md, "|---|---|---|---|---|---|---|---|")?;
@@ -1081,14 +1207,14 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                 md,
                 "| {n} | {} | {} | {} | {} | {} | {} | {} |",
                 gbps(gust, "gpu_batch_per_dispatch"),
-                gbps("wgsl-prebuilt", "gpu_batch_per_dispatch"),
-                gbps("wgsl-percall", "gpu_batch_per_dispatch"),
+                gbps(reference, "gpu_batch_per_dispatch"),
+                gbps(control, "gpu_batch_per_dispatch"),
                 if e2e_comparable(workload) {
                     gbps(gust, "end_to_end")
                 } else {
                     "-".to_owned()
                 },
-                gbps("wgsl-prebuilt", "end_to_end"),
+                gbps(reference, "end_to_end"),
                 gbps("rayon-N", "end_to_end"),
                 link_of(workload, *n),
             )?;
@@ -1102,7 +1228,14 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         }
         writeln!(md)?;
 
-        crossover(&mut md, &table, workload, list, &link_of, gust)?;
+        crossover(
+            &mut md,
+            &table,
+            workload,
+            list,
+            &link_of,
+            (gust, names.reference),
+        )?;
     }
 
     writeln!(
@@ -1111,7 +1244,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     )?;
     writeln!(
         md,
-        "| workload | elements (W5: particles, W9: side N) | timing | gust-gpu (ms) | wgsl-prebuilt (ms) | ratio | difference (us) | wgsl-percall (ms) | ratio | PCIe link (end to end) |"
+        "| workload | elements (W5: particles, W9: side N) | timing | {gust} (ms) | {reference} (ms) | ratio | difference (us) | {control} (ms) | ratio | PCIe link (end to end) |"
     )?;
     writeln!(md, "|---|---|---|---|---|---|---|---|---|---|")?;
     for row in &overhead {
@@ -1143,28 +1276,28 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     // Paired ratios: the GPU backends were sampled in rotation, so these ratios saw the same power state.
     writeln!(
         md,
-        "\n## Paired ratios to wgsl-prebuilt (GPU backends sampled in interleaved random-order rounds, one shared warm-up)\n"
+        "\n## Paired ratios to {reference} (GPU backends sampled in interleaved random-order rounds, one shared warm-up)\n"
     )?;
     writeln!(
         md,
-        "Each run takes the samples of all GPU backends of a (workload, size) in interleaved rounds, each round in a seeded random order (the run seed, every round's order and every sample's predecessor are in the run file), so a P-state drift hits every backend alike and no backend always follows the same neighbour. The ratio of a rotation is the backend's sample over wgsl-prebuilt's sample of the same rotation; a cell shows the median over runs of the per-run median ratio, then [lowest to highest run median] and (mean of the within-run p5 to p95). A ratio of 1.00 means no gap to wgsl-prebuilt.\n"
+        "Each run takes the samples of all GPU backends of a (workload, size) in interleaved rounds, each round in a seeded random order (the run seed, every round's order and every sample's predecessor are in the run file), so a P-state drift hits every backend alike and no backend always follows the same neighbour. The ratio of a rotation is the backend's sample over {reference}'s sample of the same rotation; a cell shows the median over runs of the per-run median ratio, then [lowest to highest run median] and (mean of the within-run p5 to p95). A ratio of 1.00 means no gap to {reference}.\n"
     )?;
     for (metric, _) in METRICS {
         for workload in sizes.keys() {
             writeln!(md, "### {workload}, {metric}\n")?;
             write!(md, "| {} |", size_header(workload))?;
-            for backend in ABLATION {
+            for &backend in names.columns {
                 write!(md, " {backend} |")?;
             }
             writeln!(md)?;
             write!(md, "|---|")?;
-            for _ in ABLATION {
+            for _ in names.columns {
                 write!(md, "---|")?;
             }
             writeln!(md)?;
             for n in &sizes[workload] {
                 write!(md, "| {n} |")?;
-                for backend in ABLATION {
+                for &backend in names.columns {
                     match paired.get(&(workload.clone(), *n, backend.to_owned(), metric.to_owned()))
                     {
                         Some(p) => {
@@ -1189,19 +1322,30 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     }
 
     // The ablation table: medians of the per-run medians; each cell shows the ratio to wgsl-prebuilt.
-    writeln!(
-        md,
-        "\n## Ablation (hand WGSL host shape; median ms, ratio to wgsl-prebuilt in brackets)\n"
-    )?;
-    writeln!(
-        md,
-        "Rows: `wgsl-percall` (every switch off), each switch alone, `wgsl-percall+all-on` (all three on, result `Vec` still fresh per call), `wgsl-prebuilt` (all three on and the `Vec` reused), `gust-gpu`. The step from `+all-on` to `wgsl-prebuilt` is the result `Vec`.\n"
-    )?;
+    if names.group == "spirv" {
+        writeln!(
+            md,
+            "\n## Hand-shape rows, checks off on both sides (median ms, ratio to {reference} in brackets)\n"
+        )?;
+        writeln!(
+            md,
+            "Rows: `{control}` (per-call host shape, wgpu's shader runtime checks off), `{reference}` (careful host shape, checks off), `{gust}` (the SPIR-V route, whose own guards are not wgpu's checks, D174). These rows are not comparable with the publishable group's `wgsl-prebuilt` and `wgsl-percall`, which have the checks on (D193).\n"
+        )?;
+    } else {
+        writeln!(
+            md,
+            "\n## Ablation (hand WGSL host shape; median ms, ratio to wgsl-prebuilt in brackets)\n"
+        )?;
+        writeln!(
+            md,
+            "Rows: `wgsl-percall` (every switch off), each switch alone, `wgsl-percall+all-on` (all three on, result `Vec` still fresh per call), `wgsl-prebuilt` (all three on and the `Vec` reused), `gust-gpu`. The step from `+all-on` to `wgsl-prebuilt` is the result `Vec`.\n"
+        )?;
+    }
     for metric in ["end_to_end", "dispatch_host"] {
         for workload in sizes.keys() {
             writeln!(md, "### {workload}, {metric}\n")?;
             write!(md, "| {} |", size_header(workload))?;
-            for backend in ABLATION {
+            for &backend in names.columns {
                 write!(md, " {backend} |")?;
             }
             if metric == "end_to_end" {
@@ -1209,7 +1353,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             }
             writeln!(md)?;
             write!(md, "|---|")?;
-            for _ in ABLATION {
+            for _ in names.columns {
                 write!(md, "---|")?;
             }
             if metric == "end_to_end" {
@@ -1218,7 +1362,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             writeln!(md)?;
             for n in &sizes[workload] {
                 write!(md, "| {n} |")?;
-                for backend in ABLATION {
+                for &backend in names.columns {
                     let row = ablation.iter().find(|r| {
                         r["workload"] == *workload
                             && r["n"] == *n
@@ -1467,7 +1611,7 @@ fn crossover(
     workload: &str,
     sizes: &[u64],
     link_of: &dyn Fn(&str, u64) -> String,
-    gust: &str,
+    (gust, reference): (&str, &str),
 ) -> BenchResult<()> {
     let get = |n: u64, backend: &str| {
         table
@@ -1488,7 +1632,7 @@ fn crossover(
         )?;
         return Ok(());
     }
-    for gpu in [gust, "wgsl-prebuilt"] {
+    for gpu in [gust, reference] {
         if gpu == gust && !e2e_comparable(workload) {
             continue;
         }
@@ -1516,7 +1660,12 @@ fn crossover(
     Ok(())
 }
 
-fn overhead_rows(table: &Table, sizes: &BTreeMap<String, Vec<u64>>, gust: &str) -> Vec<Value> {
+fn overhead_rows(
+    table: &Table,
+    sizes: &BTreeMap<String, Vec<u64>>,
+    gust: &str,
+    names: &Names,
+) -> Vec<Value> {
     let mut rows = Vec::new();
     for (workload, list) in sizes {
         // W7: GUST runs the library's sum and the baseline its own tree, so the pair is no overhead of GUST.
@@ -1538,10 +1687,10 @@ fn overhead_rows(table: &Table, sizes: &BTreeMap<String, Vec<u64>>, gust: &str) 
                         ))
                         .map(Point::median)
                 };
-                let (Some(gust), Some(prebuilt)) = (get(gust), get("wgsl-prebuilt")) else {
+                let (Some(gust), Some(prebuilt)) = (get(gust), get(names.reference)) else {
                     continue;
                 };
-                let percall = get("wgsl-percall");
+                let percall = get(names.control);
                 rows.push(json!({
                     "workload": workload, "n": n, "metric": metric,
                     "gust_ms": gust, "prebuilt_ms": prebuilt, "percall_ms": percall,
@@ -1587,6 +1736,59 @@ mod tests {
         dir
     }
 
+    /// D193: a SPIR-V cell in a publishable file, or the SPIR-V route's file in the publishable group, is a pre-D193
+    /// file and is refused; the `spirv` group has to come from the SPIR-V route.
+    #[test]
+    fn a_spirv_cell_in_the_publishable_group_is_refused_and_the_spirv_group_needs_its_route() {
+        let with_group = |route: &str, group: &str, backend: Option<&str>| {
+            let mut value = run(route, "GPU A", "a.json");
+            value["group"] = json!(group);
+            if let Some(backend) = backend {
+                value["cells"] = json!([gpu_cell(backend, 1.0, false, 2400.0)]);
+            }
+            value
+        };
+        let error =
+            check_labels(&[with_group("wgsl", "publishable", Some("gust-gpu-spirv"))]).unwrap_err();
+        assert!(error.to_string().contains("pre-D193"), "{error}");
+        let error = check_labels(&[with_group("spirv", "publishable", None)]).unwrap_err();
+        assert!(error.to_string().contains("--group spirv"), "{error}");
+        let error = check_labels(&[with_group("wgsl", "spirv", None)]).unwrap_err();
+        assert!(error.to_string().contains("spirv-route"), "{error}");
+        assert!(check_labels(&[with_group("spirv", "spirv", Some("gust-gpu-spirv"))]).is_ok());
+        assert!(check_labels(&[with_group("wgsl", "publishable", Some("gust-gpu"))]).is_ok());
+        assert!(check_labels(&[with_group("wgsl", "ablation", Some("wgsl-prebuilt"))]).is_ok());
+    }
+
+    /// The `spirv` group's ratio tables are against its own reference and carry only its own rows (D193).
+    #[test]
+    fn the_spirv_group_is_reported_against_its_own_unchecked_reference() {
+        let names = names_of("spirv");
+        assert_eq!(names.reference, "wgsl-prebuilt-unchecked");
+        assert_eq!(names.control, "wgsl-percall-unchecked");
+        assert!(!names.columns.contains(&"wgsl-prebuilt") && !names.columns.contains(&"gust-gpu"));
+        assert_eq!(names_of("publishable").reference, "wgsl-prebuilt");
+        let mut one = run("spirv", "GPU A", "a.json");
+        one["group"] = json!("spirv");
+        one["cells"] = json!([
+            gpu_cell("wgsl-percall-unchecked", 2.0, false, 2400.0),
+            gpu_cell("wgsl-prebuilt-unchecked", 1.0, false, 2600.0),
+            gpu_cell("gust-gpu-spirv", 1.5, false, 2600.0),
+        ]);
+        let table = gather(std::slice::from_ref(&one));
+        let sizes = BTreeMap::from([("W1".to_owned(), vec![4096u64])]);
+        let rows = ablation_rows(&table, &sizes, &names);
+        let spirv = rows
+            .iter()
+            .find(|r| r["backend"] == "gust-gpu-spirv" && r["metric"] == "end_to_end")
+            .expect("spirv row");
+        assert_eq!(spirv["ratio_vs_prebuilt"], 1.5);
+        assert_eq!(spirv["ratio_vs_percall"], 0.75);
+        let overhead = overhead_rows(&table, &sizes, "gust-gpu-spirv", &names);
+        assert_eq!(overhead[0]["prebuilt_ms"], 1.0);
+        assert_eq!(overhead[0]["percall_ms"], 2.0);
+        assert_eq!(overhead[0]["ratio_vs_prebuilt"], 1.5);
+    }
     #[test]
     fn a_label_mismatch_between_runs_is_an_error() {
         let same = [
@@ -1638,7 +1840,7 @@ mod tests {
             ("W1".to_owned(), vec![4096u64]),
             ("W5".to_owned(), vec![4096u64]),
         ]);
-        let overhead = overhead_rows(&table, &sizes, "gust-gpu");
+        let overhead = overhead_rows(&table, &sizes, "gust-gpu", &names_of("publishable"));
         let has = |w: &str, metric: &str| {
             overhead
                 .iter()
@@ -1673,12 +1875,24 @@ mod tests {
     /// forms keep distinct ids (so they are never merged into one table or one ratio).
     #[test]
     fn the_two_w6_forms_have_their_own_notes_and_ids() {
-        let graph = pipeline_note("W6-graph").expect("the graph form is described");
-        let hand = pipeline_note("W6-hand").expect("the hand-ordered form is described");
+        let names = names_of("publishable");
+        let note = |workload: &str| pipeline_note(workload, &names, "gust-gpu");
+        let graph = note("W6-graph").expect("the graph form is described");
+        let hand = note("W6-hand").expect("the hand-ordered form is described");
         assert!(graph.contains("StagedGraph") && graph.contains("no GPU timestamps"));
         assert!(hand.contains("no graph") && hand.contains("one submit"));
         assert_ne!(graph, hand);
-        assert!(pipeline_note("W1").is_none() && pipeline_note("W5").is_none());
+        assert!(note("W1").is_none() && note("W5").is_none());
+        // The spirv group names its own reference and its one GUST row, never the checked rows.
+        let spirv = names_of("spirv");
+        let graph = pipeline_note("W6-graph", &spirv, "gust-gpu-spirv").unwrap();
+        assert!(
+            graph.contains("wgsl-prebuilt-unchecked: six passes")
+                && !graph.contains("(wgsl-prebuilt:")
+        );
+        assert!(
+            graph.contains("only gust-gpu-spirv run this form") && !graph.contains("gust-gpu and")
+        );
         assert_ne!(Workload::PipelineGraph.id(), Workload::PipelineHand.id());
         assert_eq!(size_header("W6-hand"), "elements");
     }
@@ -1809,7 +2023,8 @@ mod tests {
         ]);
         let table = gather(std::slice::from_ref(&one));
         let sizes = BTreeMap::from([("W1".to_owned(), vec![4096u64])]);
-        let rows = ablation_rows(&table, &sizes);
+        let names = names_of("publishable");
+        let rows = ablation_rows(&table, &sizes, &names);
         let all_on = rows
             .iter()
             .find(|r| r["backend"] == "wgsl-percall+all-on" && r["metric"] == "end_to_end")
@@ -1820,6 +2035,76 @@ mod tests {
         assert_eq!(clocks.len(), 3);
         assert_eq!(clocks[0]["sm_mhz"], json!([2400.0]));
         assert_eq!(clocks[0]["pstate"], json!(["P0"]));
+    }
+
+    /// A spirv-group run of one seed whose kill rule lists one offender of `gust-gpu-spirv` at the given ratio.
+    fn spirv_run(seed: u64, ratio: f64) -> Value {
+        let mut one = run("spirv", "GPU A", &format!("s{seed}.json"));
+        one["group"] = json!("spirv");
+        one["run_seed"] = json!(seed);
+        one["label"] = json!(format!("seed {seed}"));
+        one["cells"] = json!([
+            gpu_cell("wgsl-percall-unchecked", 2.0, true, 2400.0),
+            gpu_cell("wgsl-prebuilt-unchecked", 1.0, true, 2600.0),
+            gpu_cell("gust-gpu-spirv", 1.5, true, 2600.0),
+        ]);
+        let faster = ratio < 1.0;
+        one["kill_rule"] = json!({
+            "group": "spirv", "reference": "wgsl-prebuilt-unchecked", "judged": true, "checked": 4, "unpaired": 0,
+            "c_reopened": !faster, "reading_step": faster,
+            "offenders": [{
+                "backend": "gust-gpu-spirv", "workload": "W1", "n": 4096, "quantity": "gpu_single",
+                "median_ratio": ratio, "direction": if faster { "faster" } else { "slower" },
+                "control_in_tolerance": true,
+            }],
+            "control": { "backend": "wgsl-percall-unchecked", "outside_tolerance": 0 },
+            "excluded": [],
+        });
+        one
+    }
+
+    /// S1: a whole spirv-group aggregate end to end: its tables are against the unchecked reference, carry none of the
+    /// checked rows, and say what a faster offender asks for.
+    #[test]
+    fn a_spirv_group_aggregate_renders_against_its_own_reference() {
+        let dir = scratch("spirv-aggregate");
+        let inputs = write_runs(
+            &dir,
+            &[spirv_run(1, 0.8), spirv_run(2, 0.8), spirv_run(3, 0.8)],
+        );
+        let (out_json, out_md) = (dir.join("o.json"), dir.join("o.md"));
+        aggregate(
+            &inputs,
+            out_json.to_str().unwrap(),
+            out_md.to_str().unwrap(),
+        )
+        .unwrap();
+        let md = fs::read_to_string(&out_md).unwrap();
+        assert!(
+            md.contains("## Paired ratios to wgsl-prebuilt-unchecked"),
+            "{md}"
+        );
+        assert!(md.contains("Hand-shape rows, checks off on both sides"));
+        assert!(md.contains("kill rule of the spirv group"));
+        assert!(md.contains("reading step = true"));
+        assert!(md.contains("counts: reading step, does not re-open C"));
+        assert!(!md.contains("counts: re-opens C"));
+        assert!(!md.contains("| wgsl-prebuilt |") && !md.contains("wgsl-percall batch"));
+        assert!(!md.contains("Ablation (hand WGSL host shape"));
+        assert!(!md.contains("Shader source of gust-gpu's"));
+        let summary: Value = serde_json::from_str(&fs::read_to_string(&out_json).unwrap()).unwrap();
+        assert_eq!(summary["group"], "spirv");
+        assert_eq!(summary["reference"], "wgsl-prebuilt-unchecked");
+        assert_eq!(summary["control"], "wgsl-percall-unchecked");
+        assert_eq!(
+            summary["kill_rule_reproducibility"]["offenders"][0]["direction"],
+            "faster"
+        );
+        assert_eq!(
+            summary["kill_rule_reproducibility"]["offenders"][0]["counts"],
+            true
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2013,43 +2298,117 @@ mod reproducibility_tests {
 
     #[test]
     fn an_offender_counts_only_when_every_run_has_it_with_the_control_in_tolerance() {
-        let all = reproducibility(&[
-            run_seeded(true, 1),
-            run_seeded(true, 2),
-            run_seeded(true, 3),
-        ]);
+        let all = reproducibility(
+            &[
+                run_seeded(true, 1),
+                run_seeded(true, 2),
+                run_seeded(true, 3),
+            ],
+            false,
+        );
         assert_eq!(all["offenders"][0]["counts"], true);
-        let one_noisy = reproducibility(&[
-            run_seeded(true, 1),
-            run_seeded(false, 2),
-            run_seeded(true, 3),
-        ]);
+        let one_noisy = reproducibility(
+            &[
+                run_seeded(true, 1),
+                run_seeded(false, 2),
+                run_seeded(true, 3),
+            ],
+            false,
+        );
         assert_eq!(one_noisy["offenders"][0]["counts"], false);
-        let missing = reproducibility(&[
-            run_seeded(true, 1),
-            json!({ "run_seed": 2, "kill_rule": { "offenders": [] } }),
-            json!({ "run_seed": 3, "kill_rule": { "offenders": [] } }),
-        ]);
+        let missing = reproducibility(
+            &[
+                run_seeded(true, 1),
+                json!({ "run_seed": 2, "kill_rule": { "offenders": [] } }),
+                json!({ "run_seed": 3, "kill_rule": { "offenders": [] } }),
+            ],
+            false,
+        );
         assert_eq!(missing["offenders"][0]["runs_with_offender"], 1);
         assert_eq!(missing["offenders"][0]["counts"], false);
     }
 
+    fn run_at(seed: u64, ratio: f64) -> Value {
+        let direction = if ratio > 1.0 { "slower" } else { "faster" };
+        json!({ "run_seed": seed, "kill_rule": { "offenders": [{
+            "backend": "gust-gpu-spirv", "workload": "W1", "n": 4096, "quantity": "gpu_single",
+            "median_ratio": ratio, "direction": direction, "control_in_tolerance": true,
+        }] } })
+    }
+
+    /// M1: a recurrence has to keep its direction; a cell slower once and faster twice recurs in neither.
+    #[test]
+    fn a_recurrence_keeps_its_direction() {
+        let mixed = reproducibility(&[run_at(1, 1.2), run_at(2, 0.8), run_at(3, 1.2)], true);
+        let rows = mixed["offenders"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row["counts"] == false));
+        let faster = reproducibility(&[run_at(1, 0.8), run_at(2, 0.8), run_at(3, 0.8)], true);
+        assert_eq!(faster["offenders"][0]["counts"], true);
+        assert_eq!(faster["offenders"][0]["direction"], "faster");
+        let slower = reproducibility(&[run_at(1, 1.2), run_at(2, 1.2), run_at(3, 1.2)], true);
+        assert_eq!(slower["offenders"][0]["counts"], true);
+        assert_eq!(slower["offenders"][0]["direction"], "slower");
+        // A file written before the field existed falls back to the side of 1.0 its ratio is on.
+        let old = reproducibility(
+            &[
+                run_seeded(true, 1),
+                run_seeded(true, 2),
+                run_seeded(true, 3),
+            ],
+            true,
+        );
+        assert_eq!(old["offenders"][0]["direction"], "slower");
+        assert_eq!(old["offenders"][0]["counts"], true);
+    }
+
+    /// R1: the publishable group's clause stays as pre-registered (plan R1.2-3): either direction recurs.
+    #[test]
+    fn the_publishable_clause_is_two_sided() {
+        let mixed = reproducibility(&[run_at(1, 1.2), run_at(2, 0.8), run_at(3, 1.2)], false);
+        let rows = mixed["offenders"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["counts"], true);
+        assert_eq!(rows[0]["direction"], Value::Null);
+    }
+
+    /// R3: with neither a direction nor a ratio, the direction is unknown and never counts.
+    #[test]
+    fn an_offender_without_direction_or_ratio_never_counts_in_the_spirv_group() {
+        let bare = |seed: u64| {
+            json!({ "run_seed": seed, "kill_rule": { "offenders": [{
+            "backend": "gust-gpu-spirv", "workload": "W1", "n": 4096, "quantity": "gpu_single",
+            "control_in_tolerance": true,
+        }] } })
+        };
+        let unknown = reproducibility(&[bare(1), bare(2), bare(3)], true);
+        assert_eq!(unknown["offenders"][0]["direction"], "unknown");
+        assert_eq!(unknown["offenders"][0]["runs_with_offender"], 3);
+        assert_eq!(unknown["offenders"][0]["counts"], false);
+    }
+
     #[test]
     fn fewer_than_three_runs_or_a_repeated_seed_never_counts() {
-        let two = reproducibility(&[run_seeded(true, 1), run_seeded(true, 2)]);
+        let two = reproducibility(&[run_seeded(true, 1), run_seeded(true, 2)], false);
         assert_eq!(two["offenders"][0]["counts"], false);
         assert_eq!(two["enough_runs_with_distinct_seeds"], false);
-        let repeated = reproducibility(&[
-            run_seeded(true, 1),
-            run_seeded(true, 1),
-            run_seeded(true, 2),
-        ]);
+        let repeated = reproducibility(
+            &[
+                run_seeded(true, 1),
+                run_seeded(true, 1),
+                run_seeded(true, 2),
+            ],
+            false,
+        );
         assert_eq!(repeated["offenders"][0]["counts"], false);
-        let unseeded = reproducibility(&[
-            json!({ "kill_rule": { "offenders": [] } }),
-            json!({ "kill_rule": { "offenders": [] } }),
-            json!({ "kill_rule": { "offenders": [] } }),
-        ]);
+        let unseeded = reproducibility(
+            &[
+                json!({ "kill_rule": { "offenders": [] } }),
+                json!({ "kill_rule": { "offenders": [] } }),
+                json!({ "kill_rule": { "offenders": [] } }),
+            ],
+            false,
+        );
         assert_eq!(unseeded["enough_runs_with_distinct_seeds"], false);
     }
 }

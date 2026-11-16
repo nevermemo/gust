@@ -4,9 +4,9 @@ use std::{
 };
 
 use super::{
-    ATTESTATION, DOCS_PAGE, HEADER, JUDGE_SOURCE, Options, RESULTS_DIR, block_of,
-    functional_verdict, load_results, render, render_tables, replace_block, sample_limits, slugify,
-    thresholds_block,
+    ATTESTATION, DOCS_PAGE, HEADER, JUDGE_SOURCE, MIRROR_DIR, MIRROR_PREFIX, Options, RESULTS_DIR,
+    block_of, check_mirrors, functional_verdict, load_results, render, render_tables,
+    replace_block, sample_limits, slugify, thresholds_block,
 };
 use crate::workspace::workspace_root;
 
@@ -398,6 +398,18 @@ fn the_checked_in_page_matches_the_header_the_thresholds_and_the_filed_results()
     assert_eq!(
         block_of(&page, "bench-tables"),
         Some(render_tables(&filed, &limits_of(&judge)).trim())
+    );
+    assert_eq!(
+        check_mirrors(&root).expect("the guide pages are readable"),
+        Vec::<String>::new(),
+        "a guide page that mirrors the header differs from it"
+    );
+    // check_mirrors finds nothing to check when the chapter is renamed or removed; require the chapter itself.
+    assert!(
+        root.join(MIRROR_DIR)
+            .join(format!("{MIRROR_PREFIX}.md"))
+            .is_file(),
+        "the guide chapter that mirrors the header is missing"
     );
     assert!(HEADER.contains("not in its authors' recommended configuration"));
     assert!(HEADER.contains("corrections are welcome as issues against this repository"));

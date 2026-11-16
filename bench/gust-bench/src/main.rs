@@ -26,6 +26,8 @@
 #[cfg(feature = "gpu")]
 mod adapter;
 mod backend;
+#[cfg(feature = "cubecl")]
+mod cubecl_backend;
 mod group;
 #[cfg(any(gust_dual, not(feature = "gpu")))]
 mod gust_cpu;
@@ -429,6 +431,75 @@ fn rust_gpu_backend(
     Ok((None, Vec::new()))
 }
 
+/// What `cubecl_backends` returns: the rows when they can run, the rows left out with their reasons, and the record of the
+/// comparator for the run file's config (`Value::Null` when it did not run).
+#[cfg(feature = "gpu")]
+type CubeclSetup = (Vec<Box<dyn Backend>>, Vec<Value>, Value);
+
+/// The CubeCL comparator's two rows (m10.b2), in the publishable group's rotation of a `cubecl` build: one runtime on a
+/// device of its own (the run's third or fourth) on the run's adapter selection, opened only when the run selects a CubeCL
+/// row (no `--backends` list, or one naming one). An adapter CubeCL cannot run its kernels on leaves both rows out with the
+/// reason (printed and recorded in the run file as `backends_not_run`), never another adapter; naming a row with
+/// `--backends` then makes that an error, and any other failure to open the runtime fails the run
+/// (`cubecl_backend::decide`).
+#[cfg(all(feature = "gpu", feature = "cubecl"))]
+fn cubecl_backends(
+    options: &Options,
+    group: Group,
+    adapter: &wgpu::AdapterInfo,
+    adapter_limits: bool,
+) -> BenchResult<CubeclSetup> {
+    use cubecl_backend::{Cubecl, CubeclContext, Decision, LIKE_FOR_LIKE, TUNED, decide};
+    if group != Group::Publishable {
+        return Ok((Vec::new(), Vec::new(), Value::Null));
+    }
+    if let Some(wanted) = &options.backends
+        && !wanted
+            .iter()
+            .any(|name| name == LIKE_FOR_LIKE || name == TUNED)
+    {
+        return Ok((Vec::new(), Vec::new(), Value::Null));
+    }
+    let opened = CubeclContext::open_on(options.adapter.as_deref(), adapter_limits);
+    match decide(opened, options.backends.as_deref())? {
+        Decision::Run(ctx) => {
+            adapter::require_same(&[("GUST device", adapter), ("CubeCL device", &ctx.info)])?;
+            let record =
+                json!({ "adapter": ctx.info.name, "identity": cubecl_backend::identity() });
+            let ctx = Rc::new(ctx);
+            Ok((
+                vec![
+                    Box::new(Cubecl::new(Rc::clone(&ctx), false)),
+                    Box::new(Cubecl::new(ctx, true)),
+                ],
+                Vec::new(),
+                record,
+            ))
+        }
+        Decision::NotRun(entries) => {
+            for entry in &entries {
+                eprintln!(
+                    "{} not run: {}",
+                    entry["backend"].as_str().unwrap_or_default(),
+                    entry["reason"].as_str().unwrap_or_default()
+                );
+            }
+            Ok((Vec::new(), entries, Value::Null))
+        }
+    }
+}
+
+/// A build without the `cubecl` feature has no such backends; naming one is an unknown backend, and nothing is recorded.
+#[cfg(all(feature = "gpu", not(feature = "cubecl")))]
+fn cubecl_backends(
+    _options: &Options,
+    _group: Group,
+    _adapter: &wgpu::AdapterInfo,
+    _adapter_limits: bool,
+) -> BenchResult<CubeclSetup> {
+    Ok((Vec::new(), Vec::new(), Value::Null))
+}
+
 /// The CPU backends, run beside the publishable group (not in its rotation). In the `GUST_PROFILE=cpu` build they
 /// include `gust-cpu` and `gust-cpu-par`; in a `--cfg gust_dual` GPU build, `gust-twin`.
 #[allow(clippy::vec_init_then_push)]
@@ -822,7 +893,12 @@ fn run_inputs(
         release_build: !cfg!(debug_assertions),
         tainting_features: meta::build_features()
             .into_iter()
-            .filter(|feature| matches!(*feature, "profile-counts" | "wgpu-trace" | "rust-gpu"))
+            .filter(|feature| {
+                matches!(
+                    *feature,
+                    "profile-counts" | "wgpu-trace" | "rust-gpu" | "cubecl"
+                )
+            })
             .map(str::to_owned)
             .collect(),
         probe_backends: !options.with_probe.is_empty(),
@@ -905,8 +981,12 @@ fn run(options: &Options) -> BenchResult<bool> {
         probes.push((name.clone(), probe));
     }
     let mut backends = gpu_backends(group, &gust_device, &ctx, &ablation, all_on, &probes);
-    let (rust_gpu, backends_not_run) = rust_gpu_backend(options, group, adapter)?;
+    let (rust_gpu, mut backends_not_run) = rust_gpu_backend(options, group, adapter)?;
     backends.extend(rust_gpu);
+    let (cubecl_rows, cubecl_not_run, cubecl_record) =
+        cubecl_backends(options, group, adapter, adapter_limits)?;
+    backends.extend(cubecl_rows);
+    backends_not_run.extend(cubecl_not_run);
     if group.is_table() {
         backends.extend(cpu_backends(threads));
     }
@@ -1013,6 +1093,9 @@ fn run(options: &Options) -> BenchResult<bool> {
                 // A backend of this build that was left out, with the reason (the rust-gpu comparator on an adapter
                 // without passthrough shaders): "not run", never a fallback.
                 "backends_not_run": backends_not_run,
+                // The CubeCL comparator's adapter and what each of its rows is (null in a build without it, or when it
+                // did not run).
+                "cubecl": cubecl_record,
                 // Which shader source gust-gpu's cold start used (plan 2.3): a kernel with embedded artifacts is
                 // loaded from them, otherwise it is compiled at run time. A run of one kind does not aggregate with
                 // the other.

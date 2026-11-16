@@ -69,7 +69,10 @@ with one host-side switch turned on, or all of them) and probe rows (`wgsl-prebu
 GUST's host side, for finding where a gap comes from) also exist; they are method evidence and are never rows of a
 table.
 
-Other comparators (CubeCL, rust-gpu) are not implemented and do not run.
+Two comparators sit in builds of their own and are not in the default build: rust-gpu (`--features rust-gpu`, rows
+`rustgpu-wgpu`) and CubeCL (`--features cubecl`, rows `cubecl-wgpu` and `cubecl-wgpu-tuned`, which needs rustc 1.95).
+Their runs are marked not publishable, neither is part of the kill rule, and `bench/README.md` and
+`docs/BENCHMARKS.md` describe them.
 
 ## The four metrics
 

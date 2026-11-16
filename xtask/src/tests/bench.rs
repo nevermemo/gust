@@ -578,6 +578,30 @@ fn a_spirv_group_file_must_come_from_the_spirv_route_with_its_own_rule_and_other
                 .replace("\"wgsl-prebuilt\"", "\"wgsl-prebuilt-unchecked\""),
             "checks-off row `wgsl-prebuilt-unchecked`",
         ),
+        // m10.b2: the CubeCL comparator rows are in no filed table, in either group.
+        (
+            "0123456789ab-wgsl",
+            aggregate_of("wgsl", "publishable", "gust-gpu", None)
+                .replace("\"wgsl-prebuilt\"", "\"cubecl-wgpu\""),
+            "the CubeCL row `cubecl-wgpu`",
+        ),
+        (
+            "0123456789ab-wgsl",
+            aggregate_of("wgsl", "publishable", "gust-gpu", None)
+                .replace("\"wgsl-prebuilt\"", "\"cubecl-wgpu-tuned\""),
+            "the CubeCL row `cubecl-wgpu-tuned`",
+        ),
+        (
+            "0123456789ab-spirv",
+            aggregate_of(
+                "spirv",
+                "spirv",
+                "gust-gpu-spirv",
+                Some("wgsl-prebuilt-unchecked"),
+            )
+            .replace("\"wgsl-prebuilt-unchecked\"", "\"cubecl-wgpu\""),
+            "`cubecl-wgpu`, which is not the spirv group's",
+        ),
         // A spirv file with no runs, or a timed run without a record, is refused.
         (
             "0123456789ab-spirv",

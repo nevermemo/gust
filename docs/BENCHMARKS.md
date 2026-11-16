@@ -311,6 +311,7 @@ so the report shows none; a GFLOP/s column is not part of this slice.
 | `wgsl-percall` | the same WGSL with a host side shaped like `gust-wgpu`'s: a bind group per dispatch, a fresh staging buffer, two submissions |
 | `wgsl-prebuilt-unchecked`, `wgsl-percall-unchecked` | the `spirv` group's hand rows (D193): the same WGSL and host sides as `wgsl-prebuilt` and `wgsl-percall`, with the shader module compiled without wgpu's runtime checks (bounds checks, loop bounding), as the SPIR-V route's is; the first is the group's reference, the second its control |
 | `rustgpu-wgpu` | the `rust-gpu` build only: W1 to W4 written in Rust with rust-gpu 0.11.0, compiled on a pinned nightly to a committed SPIR-V module and loaded through wgpu's passthrough route; the host side of `wgsl-prebuilt` |
+| `cubecl-wgpu`, `cubecl-wgpu-tuned` | the `cubecl` build only: W1 to W4, W7 and W9 written as CubeCL 0.11.4 kernels in Rust and run through CubeCL's wgpu runtime on the run's adapter; the first is the like-for-like row (checked launch, line size 1), the second CubeCL as its users would tune it (unchecked launch, line size 4 where the length allows) |
 | `gust-twin`, `gust-cpu`, `gust-cpu-par` | GUST's CPU twin, the production CPU target and its element-wise parallel map |
 | `rayon-1`, `rayon-N`, `serial` | `par_iter` on one thread and on all cores, and a plain loop |
 
@@ -324,6 +325,47 @@ that skips them too, and **checks are off on both sides** in that group; its rat
 (its default is `spirv`), and the WGSL build refuses `--group spirv`. `wgsl-percall`
 also has three ablation switches (bind-group reuse, staging reuse, one submission); they run only in the ablation group,
 whose rows are never part of a table. `--group ablation` also runs in the `spirv-route` build, but only with the checked hand rows (no GUST row), and the file still says `route: spirv`; the `--with` probes run in the `publishable` group only, so they are unavailable in that build.
+
+### The CubeCL comparator
+
+`cubecl-wgpu` and `cubecl-wgpu-tuned` answer: what the same workloads cost when written as CubeCL kernels in Rust and
+run through CubeCL's own wgpu runtime, the most used Rust GPU compute framework. They are in a build of their own
+(`--features cubecl`, off by default), never in the default build, CI or the lock of the default build. Nothing about
+their timing is claimed in this document.
+
+- Version and features: CubeCL `=0.11.4` with `default-features = false, features = ["wgpu"]`. There is no `spirv`
+  feature, so CubeCL's compiler emits WGSL, which wgpu and naga translate, the route the hand WGSL takes. Without the
+  default features CubeCL has no autotune or kernel cache on disk, and no `ureq`: its network access (a download of
+  tuning data) is not in the resolved graph. The feature needs rustc 1.95 (CubeCL's floor) while the bench's own
+  `rust-version` stays 1.90; a default build does not compile CubeCL.
+- Adapter: the bench creates the wgpu instance, adapter, device and queue (Vulkan only, `TIMESTAMP_QUERY`, default
+  limits) and hands them to CubeCL's existing-setup path, so CubeCL runs on the adapter the run selected with
+  `--adapter`, as the hand device does. An adapter that cannot run the kernels (not Vulkan, fewer than 256 invocations
+  per workgroup, fewer than six storage buffers per stage) is a typed refusal: both rows are left out of the run and
+  `config.backends_not_run` lists them with the reason; naming one in `--backends` is then an error.
+- Rows: `cubecl-wgpu` is like-for-like: CubeCL's default checked launch, 256-wide cubes (W9 16 by 16), line size 1 and
+  the algorithm of the hand WGSL of each workload. `cubecl-wgpu-tuned` is the same kernels through the unchecked launch
+  and, for W1 to W3 where the length is a multiple of four, with line size 4 (one invocation per four elements); it has
+  no autotune, because CubeCL's autotune applies to tunable operation sets, not to hand-launched kernels. A run file
+  records both under `versions.cubecl`.
+- Workloads: W1, W2, W3, W4, W7 (two passes: a grid-stride share per lane and a workgroup tree, then one workgroup
+  over the partials) and W9 (naive, one output entry per invocation). W5, W6 and W8 have no CubeCL kernel and leave the
+  rows out. Each kernel is the hand WGSL's algorithm with CubeCL's idioms: `ABSOLUTE_POS` for the global index, `Shared`
+  arrays and `sync_cube` for workgroup memory and barriers, `Atomic<u32>::fetch_add` for W4.
+- Host side: the rows' own device (the run's third wgpu device), inputs and outputs in CubeCL buffers; an end-to-end
+  sample writes the inputs, runs the kernels and reads the output back through CubeCL's client, which decides its own
+  submissions; GPU time is CubeCL's profiling window (device timestamps), a sum of one-repeat windows for W7. Every sample is judged
+  by the same checker as every other GPU backend (the poison alone fails it); W7's `f32` sum is judged by the depth
+  bound of the hand tree, whose summation order the kernels share.
+- Kill rule: neither row is part of the GUST kill rule, which judges GUST against its group's hand reference only. A
+  ratio of a CubeCL row to `wgsl-prebuilt` is not a GUST overhead.
+- A run from the `cubecl` build is marked not publishable (`build.features` lists the feature): a third device and two
+  more backends in the rotation have not been measured to leave the other rows unchanged, and the launches differ in
+  bounds policy from the hand rows (below).
+- Licences: the resolved graph with the feature on is permissive (MIT, Apache-2.0, Zlib, BSD, ISC, Unlicense, BSL-1.0 and
+  combinations) with one exception, `buildid` 1.1.0 under MPL-2.0 (pulled in by `cubecl-runtime`), which D192 admits.
+  D192 also admits `option-ext` under MPL-2.0; it is not in this graph. No CDLA-Permissive-2.0 crate is in it either
+  (that licence belongs to the `webpki-roots` of the network feature, which is off).
 
 ### The rust-gpu comparator
 
@@ -395,9 +437,12 @@ should say so:
 | WGSL route (naga, `wgsl-prebuilt`, `wgsl-percall`, `gust-gpu`) | made safe by wgpu's shader runtime checks, which `wgsl-prebuilt-unchecked` and `wgsl-percall-unchecked` (the hand rows of the `spirv` group) turn off |
 | GUST's SPIR-V route (`gust-gpu-spirv`, D174) | the route's own guards (an index clamp, on whenever the route is on), and naga-like behaviour where `robustBufferAccess2` is present; a D39 limitation (`docs/SEMANTICS.md` section 15) |
 | `rustgpu-wgpu` (rust-gpu 0.11.0) | the invocation ends early: every slice index is guarded by an array-length test and the failing edge returns, so no load or store happens (read from the module's disassembly and from rust-gpu's source, where the panic paths of `core` become an abort that the linker turns into `OpReturn`; one dispatch of an unguarded W1 with 256 extra invocations on a 2^20-element buffer left the result intact and the device healthy, which is consistent with it but does not prove that the extra invocations wrote nothing) |
+| `cubecl-wgpu` (CubeCL 0.11.4, checked launch) | the index is clamped to the last element of the buffer: CubeCL's `CheckedIo` pass rewrites every storage-buffer index to `index.min(len - 1)` (`cubecl-core` `io.rs`, `checked_index`), reads and writes alike, so an out-of-range read returns the last element and an out-of-range write lands on it, and a zero-length buffer underflows; CubeCL creates its WGSL module with wgpu's bounds checks **off** and loop bounding on (`cubecl-wgpu` `backend/base.rs`), so wgpu's own checks, which `wgsl-prebuilt` has on, are not under this row (read from the dependency's source: its debug log is not in the build, which has no `std` feature) |
+| `cubecl-wgpu-tuned` (CubeCL 0.11.4, unchecked launch) | nothing: no CubeCL rewrite, wgpu's bounds checks off and no loop bounding, so an out-of-range access is undefined (the launch is `unsafe` for that reason); the same checks-off state as the `spirv` group's `wgsl-prebuilt-unchecked`, without GUST's route guards |
 
-The hand kernels and the rust-gpu kernels also carry explicit guards on the output length, so for the workloads here the
-two policies never run.
+The hand kernels, the rust-gpu kernels and the CubeCL kernels also carry explicit guards on the output length (CubeCL's
+kernels test the invocation's position against the output's length), so for the workloads here the policies never run;
+the harness checks every sample against the reference.
 
 ## The four timings
 

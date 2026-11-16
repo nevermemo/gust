@@ -31,6 +31,7 @@ windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Graphics
 # `spirv-route` is declared only so the shared sources' `cfg(feature = "spirv-route")` is a known cfg; it stays off here
 # (an artifact build has no SPIR-V route). `profile-counts` and `wgpu-trace` are declared for the same reason and stay
 # off: the `profile` and `trace` subcommands are gust-bench's.
+# `rust-gpu` is declared for the same reason and stays off: the comparator is gust-bench's (its mod is `cfg(feature = "rust-gpu")`).
 [features]
 default = ["gpu"]
 gpu = []
@@ -39,6 +40,7 @@ slang-runtime = []
 spirv-route = []
 profile-counts = []
 wgpu-trace = []
+rust-gpu = []
 
 [lints]
 workspace = true

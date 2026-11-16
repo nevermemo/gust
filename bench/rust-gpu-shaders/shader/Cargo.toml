@@ -1,0 +1,17 @@
+# The rust-gpu comparator's shader crate (m10.b4). Its own package and workspace root, outside the bench workspace: it is
+# built by the nightly its `rust-toolchain.toml` pins, never by the bench's stable toolchain, and nothing here is part of
+# the root or the bench lock. The built module is committed (`rustgpu.spv`, `rustgpu.manifest.json`).
+[package]
+name = "gust-bench-rustgpu-shader"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace]
+
+[lib]
+crate-type = ["lib", "dylib"]
+
+[dependencies]
+spirv-std = "=0.11.0"

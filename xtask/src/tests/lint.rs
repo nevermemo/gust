@@ -2,7 +2,7 @@ use super::{
     Member, TagCheck, carries_compiler_tag, carries_line_documents, compiler_tag_check,
     compiler_tag_problems, find_machine_path, is_forbidden_script, licence_problem,
     lint_tracked_files, machine_path_problems, member_field_problems, parse_members,
-    path_dependency_problems,
+    path_dependency_problems, rust_gpu_module_problems,
 };
 
 #[test]
@@ -1031,4 +1031,109 @@ fn the_lint_run_reads_tracked_bench_files_and_fails_on_a_machine_path_there() {
         ),
         "{bench:?}"
     );
+}
+
+/// The committed rust-gpu files copied to a scratch directory laid out as under the repository root.
+fn rust_gpu_scratch(name: &str) -> std::path::PathBuf {
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../bench/rust-gpu-shaders");
+    let dir = std::env::temp_dir().join(format!("gust-rustgpu-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let target = dir.join("bench/rust-gpu-shaders");
+    for file in [
+        "rustgpu.spv",
+        "rustgpu.manifest.json",
+        "shader/rust-toolchain.toml",
+        "shader/Cargo.toml",
+        "builder/rust-toolchain.toml",
+        "builder/Cargo.toml",
+    ] {
+        let to = target.join(file);
+        std::fs::create_dir_all(to.parent().expect("a parent")).expect("directories");
+        std::fs::copy(source.join(file), to).expect("a committed rust-gpu file");
+    }
+    dir
+}
+
+#[test]
+fn the_committed_rust_gpu_module_passes_its_manifest_check() {
+    let dir = rust_gpu_scratch("clean");
+    let problems = rust_gpu_module_problems(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(problems.is_empty(), "{problems:?}");
+}
+
+#[test]
+fn a_tampered_rust_gpu_module_manifest_or_pin_fails_the_check() {
+    // Each tamper changes one committed file in a scratch copy; the check must name that file.
+    type Tamper = (&'static str, fn(Vec<u8>) -> Vec<u8>, &'static str);
+    let tampers: [Tamper; 5] = [
+        (
+            "rustgpu.spv",
+            |mut bytes| {
+                let last = bytes.len() - 1;
+                bytes[last] ^= 1;
+                bytes
+            },
+            "sha256",
+        ),
+        (
+            "rustgpu.spv",
+            |mut bytes| {
+                bytes.truncate(bytes.len() - 4);
+                bytes
+            },
+            "bytes",
+        ),
+        (
+            "rustgpu.manifest.json",
+            |bytes| {
+                String::from_utf8(bytes)
+                    .expect("utf8")
+                    .replace("w4_histogram", "w9_missing")
+                    .into_bytes()
+            },
+            "w9_missing",
+        ),
+        (
+            "shader/rust-toolchain.toml",
+            |bytes| {
+                String::from_utf8(bytes)
+                    .expect("utf8")
+                    .replace("nightly-2026-08-15", "nightly-2026-08-16")
+                    .into_bytes()
+            },
+            "shader/rust-toolchain.toml",
+        ),
+        (
+            "builder/Cargo.toml",
+            |bytes| {
+                String::from_utf8(bytes)
+                    .expect("utf8")
+                    .replace("=0.11.0", "=0.11.1")
+                    .into_bytes()
+            },
+            "builder/Cargo.toml",
+        ),
+    ];
+    for (index, (file, tamper, expect)) in tampers.into_iter().enumerate() {
+        let dir = rust_gpu_scratch(&format!("tamper{index}"));
+        let path = dir.join("bench/rust-gpu-shaders").join(file);
+        let bytes = std::fs::read(&path).expect("read");
+        std::fs::write(&path, tamper(bytes)).expect("write");
+        let problems = rust_gpu_module_problems(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            problems.iter().any(|problem| problem.contains(expect)),
+            "tamper {index} of {file} must be reported ({expect}): {problems:?}"
+        );
+    }
+}
+
+#[test]
+fn a_missing_rust_gpu_manifest_fails_the_check() {
+    let dir = rust_gpu_scratch("missing");
+    std::fs::remove_file(dir.join("bench/rust-gpu-shaders/rustgpu.manifest.json")).expect("remove");
+    let problems = rust_gpu_module_problems(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!problems.is_empty());
 }

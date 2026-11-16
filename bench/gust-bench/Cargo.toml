@@ -43,6 +43,10 @@ spirv-route = ["gpu", "gust-wgpu/spirv-route"]
 profile-counts = ["gpu", "dep:log"]
 # `gust-bench trace`: wgpu's own API trace of the hand-WGSL device (GUST's device cannot be traced from outside the crate).
 wgpu-trace = ["gpu", "wgpu/trace"]
+# The rust-gpu comparator `rustgpu-wgpu` (m10.b4): the committed SPIR-V module of `bench/rust-gpu-shaders` (built on a pinned
+# nightly, outside this workspace) loaded through wgpu's passthrough route, W1 to W4. No dependency: the module is bytes.
+# Off by default, so the default build, CI and the lock do not change.
+rust-gpu = ["gpu"]
 
 [lints]
 workspace = true

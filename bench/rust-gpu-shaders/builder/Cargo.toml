@@ -1,0 +1,14 @@
+# Builds `../shader` to SPIR-V (rust-gpu 0.11.0, target spirv-unknown-vulkan1.1). A package and workspace root of its own,
+# on the nightly in `rust-toolchain.toml`; bench/README.md has the rebuild command (it sets RUSTUP_TOOLCHAIN, which
+# spirv-builder's inner cargo needs).
+[package]
+name = "gust-bench-rustgpu-builder"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace]
+
+[dependencies]
+spirv-builder = "=0.11.0"

@@ -1,0 +1,21 @@
+{
+  "what": "rust-gpu module of the bench comparator rustgpu-wgpu (m10.b4): W1 f32, W2, W3 and W4 kernels, and W1 u32 (built, validated, run by no workload)",
+  "module": "rustgpu.spv",
+  "sha256": "bee59d64206aba1e65f17d7c21ca9fd62831d486b5b9c3de6a72f04547455e3c",
+  "bytes": 6204,
+  "spirv_version": "1.3",
+  "target": "spirv-unknown-vulkan1.1",
+  "toolchain": "nightly-2026-08-15",
+  "toolchain_components": ["rust-src", "rustc-dev", "llvm-tools"],
+  "rustc": "rustc 1.99.0-nightly (d453bdd8f 2026-08-14)",
+  "rust_gpu": "0.11.0",
+  "crates": {
+    "spirv-std": "=0.11.0",
+    "spirv-builder": "=0.11.0",
+    "rustc_codegen_spirv": "0.11.0 (the backend spirv-builder 0.11.0 builds)"
+  },
+  "entry_points": ["w1_f32", "w1_u32", "w2_saxpy", "w3_horner", "w4_histogram"],
+  "workgroup_size": [256, 1, 1],
+  "validated_with": "spirv-val --target-env vulkan1.1",
+  "rebuild": "bench/README.md, section The rust-gpu comparator"
+}

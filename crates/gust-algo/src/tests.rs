@@ -11,5 +11,6 @@ mod golden;
 mod gpu;
 mod schedule;
 mod struct_gather;
+mod timing;
 mod twin;
 mod variant;

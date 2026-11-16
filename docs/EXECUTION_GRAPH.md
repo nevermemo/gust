@@ -36,10 +36,11 @@ transfer's bytes, dispatch/workgroup counts, and the bytes of buffers that only
 dispatches touched (resident). The example keeps 2·N·4 bytes resident, uploads 16
 bytes, and reads back N/8 summaries, verified against an independent host reference
 for N in {0, 1, 7, 8, 9, 63, 64, 65, 257, 1000} and across two settings updates.
-Since m10.ts2 (D194), `HeadlessDevice::execute_graph_timed` runs the same graph and fills `GraphReport::gpu_elapsed`
-with the GPU time from the first dispatch pass's begin to the last one's end (timestamps exist only at pass
-boundaries, so copies between dispatches are inside the span); it holds the device's one timestamp profiler for the
-run, and `execute_graph` never takes it.
+Since m10.ts2 (D194), `HeadlessDevice::execute_graph_timed` runs the same graph
+and fills `GraphReport::gpu_elapsed` with the GPU time from the first dispatch
+pass's begin to the last one's end (timestamps exist only at pass boundaries, so
+copies between dispatches are inside the span); it holds the device's one
+timestamp profiler for the run, and `execute_graph` never takes it.
 Still true: nodes execute in insertion order; edges, declared or derived, are
 checked, not used for scheduling. No reordering, no transfer planner.
 

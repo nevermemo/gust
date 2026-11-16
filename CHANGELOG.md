@@ -250,6 +250,13 @@ proof.
 - `Artifact::with_format`, `with_key`, `with_bytes`, `with_reflection`, `Artifact::new` and `ModuleDescriptor::new`
   (m10.api2a.1): the constructors that the `#[non_exhaustive]` structs of B6 need (B5's record structs get none; only
   the crate builds them).
+- `HeadlessDevice::execute_graph_timed` (m10.ts2, D194) runs a `StagedGraph` like `execute_graph` and also reports
+  `GraphReport::gpu_elapsed`, the GPU time from the beginning of the first dispatch pass (compute, indirect or `pixel`)
+  to the end of the last; copies between dispatches are inside, uploads before and read-backs after are not. `None`
+  on an adapter without timestamp queries or for a graph that ran no dispatch pass, and always `None` from
+  `execute_graph`, which takes no lock and is otherwise unchanged. Native only. An addition: `GraphReport` is
+  `#[non_exhaustive]`. If reading the timestamps fails, the device's timestamp read-back buffer can stay mapped and a
+  later timed call on that device can fail (also true of `dispatch_batch_timed`).
 
 ### Deprecated
 

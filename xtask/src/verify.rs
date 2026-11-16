@@ -1049,9 +1049,10 @@ pub(crate) struct GpuSuitePin {
 /// sampler types, the pool, graph and report types, the error and the job). They compile and run on the adapter, like
 /// the other doctests of the crate.
 ///
-/// Slice m10.ts2: 504 over 49 became 512 over 49. One unit test (`stamp_slots` in `graph.rs`), six new tests in `tests/graph.rs` (the timed graph: same outputs as an
-/// untimed one, indirect passes, `pixel` passes, no dispatch pass, zero-element dispatches at both ends, and the shared
-/// profiler under two threads) and one new doctest, `HeadlessDevice::execute_graph_timed`; 504 + 1 + 6 + 1 = 512.
+/// Slice m10.ts2: 504 over 49 became 512 over 49. One unit test (`stamp_slots` in `graph.rs`), six new tests in
+/// `tests/graph.rs` (the timed graph: same outputs as an untimed one, indirect passes, `pixel` passes, no dispatch
+/// pass, zero-element dispatches at both ends, and the shared profiler under two threads) and one new doctest,
+/// `HeadlessDevice::execute_graph_timed`; 504 + 1 + 6 + 1 = 512.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
     passed: 512,
     result_lines: 49,

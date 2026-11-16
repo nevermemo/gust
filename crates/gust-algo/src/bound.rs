@@ -4,7 +4,7 @@
 //! Model. Every addition the kernels evaluate rounds with a relative error of at most `c`: `c = 2^-24` for Rust's
 //! round-to-nearest (the CPU twin), `c = 2^-23` for the GPU, which `docs/SEMANTICS.md` section 4 allows to round to
 //! either neighbour ("correctly rounded", within 1 ULP). A lane adds at most
-//! [`CHAIN`](crate::schedule::CHAIN) terms. The spec lets an implementation regroup a sum freely (`docs/SEMANTICS.md`
+//! [`CHAIN`] terms. The spec lets an implementation regroup a sum freely (`docs/SEMANTICS.md`
 //! section 4), but any regrouping of the `m` terms of one lane is a tree of depth at most `m - 1`, so it costs a term
 //! no more roundings than the lane's own left-to-right chain; the levels are separate dispatches, so no grouping spans
 //! two of them; and the fixture has no product, so no fused multiply-add can form. Each value passes through at

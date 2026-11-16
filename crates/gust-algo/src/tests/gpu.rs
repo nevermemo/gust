@@ -1626,11 +1626,37 @@ fn gpu_timed_calls_return_the_untimed_values_and_report_one_batch() {
     let t = crate::timed(|| reduce::sum_wrapping(&ints)).unwrap();
     assert_eq!(t.value, reduce::sum_wrapping(&ints).unwrap());
     assert_time_rule(&device, t.time, 1);
-    // A float sum may group differently between two runs of the same call only within the bound; v1's grouping is
-    // fixed per input, so the two runs agree bit for bit here.
+    // The inputs are small integers and every partial sum is below 2^24, so the f32 sum is exact in any grouping:
+    // the two runs agree bit for bit whatever order the device adds in.
     let t = crate::timed(|| reduce::sum(&reals)).unwrap();
     assert_eq!(t.value.to_bits(), reduce::sum(&reals).unwrap().to_bits());
     assert_time_rule(&device, t.time, 1);
+    // The operation the benchmark's W7 times: the f32 sum that stays on the device.
+    let t = crate::timed(|| reduce::sum_on_device(&reals)).unwrap();
+    let untimed = reduce::sum_on_device(&reals).unwrap();
+    assert_eq!(
+        t.value.to_vec().unwrap()[0].to_bits(),
+        untimed.to_vec().unwrap()[0].to_bits()
+    );
+    assert_time_rule(&device, t.time, 1);
+    // The evidence block sum is wrapped too. On an adapter or build that refuses it the refusal is the same timed and
+    // untimed, and the output says so.
+    match (
+        evidence::sum_u32(&ints),
+        crate::timed(|| evidence::sum_u32(&ints)),
+    ) {
+        (Ok(plain), Ok(t)) => {
+            assert_eq!(t.value, plain);
+            assert_time_rule(&device, t.time, 1);
+        }
+        (Err(plain), Err(timed)) => {
+            eprintln!("evidence::sum_u32 NOT timed on this adapter or build: {plain}");
+            assert_eq!(plain.to_string(), timed.to_string());
+        }
+        (plain, timed) => {
+            panic!("timed and untimed evidence::sum_u32 disagree: {plain:?} / {timed:?}")
+        }
+    }
     // The v0 fallback form is one batch too.
     let t = crate::timed(|| reduce::sum_with(Variant::V0, &ints)).unwrap();
     assert_eq!(t.value, reduce::sum_with(Variant::V0, &ints).unwrap());
@@ -1741,6 +1767,10 @@ fn gpu_untimed_calls_are_unaffected_by_earlier_timed_scopes() {
         });
     }));
     assert!(panicked.is_err());
+    assert!(
+        !crate::timing::scope_is_open(),
+        "a failed or panicked scope left a timed scope open on this thread"
+    );
     assert_eq!(reduce::sum(&ints).unwrap(), 10);
     let t = crate::timed(|| reduce::sum(&ints)).unwrap();
     assert_time_rule(&device, t.time, 1);

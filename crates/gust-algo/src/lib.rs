@@ -24,7 +24,7 @@
 //! exact; float sums are within the per-level bound of the variant that ran
 //! ([`bound::f32_sum_bound_v1`] for v1, [`bound::f32_sum_bound`] for the v0 fallback; a caller who cannot tell which
 //! ran may assert the larger of the two) of the exact sum, a bound over every grouping WGSL permits, not a bit
-//! pattern. The v0 kernels run on `gust::cpu::CpuDevice` through their twins in test and dual builds ([`cpu`]); a twin
+//! pattern. The v0 kernels run on `gust::cpu::CpuDevice` through their twins in test and dual builds (the `cpu` module); a twin
 //! result is never GPU evidence.
 //!
 //! Opt-in GPU timestamps: [`timed`] runs any calls of this crate in a scope and reports the GPU time of the batches

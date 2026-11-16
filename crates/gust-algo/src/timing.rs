@@ -28,7 +28,7 @@ use crate::Error;
 /// assert_eq!(time.gpu_elapsed.is_some(), device.supports_gpu_timestamps());
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 #[non_exhaustive]
 pub struct GpuTime {
     /// The sum of the GPU time of every batch of the scope, or `None` when the scope dispatched no batch or a batch ran
@@ -51,7 +51,7 @@ pub struct GpuTime {
 /// assert!(result.time.batches >= 1);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct Timed<R> {
     /// What the closure returned.
@@ -72,18 +72,18 @@ impl Accum {
     /// One finished batch: its `gpu_elapsed` and whether the device can report one. A batch with no time on a device
     /// that can report one did no GPU work (every dispatch was empty) and adds zero.
     pub(crate) fn record(&mut self, gpu_elapsed: Option<Duration>, supports_timestamps: bool) {
-        self.batches += 1;
+        self.batches = self.batches.saturating_add(1);
         match gpu_elapsed {
-            Some(elapsed) => self.gpu += elapsed,
+            Some(elapsed) => self.gpu = self.gpu.saturating_add(elapsed),
             None if supports_timestamps => {}
             None => self.unsupported = true,
         }
     }
 
     fn merge(&mut self, inner: &Self) {
-        self.gpu += inner.gpu;
+        self.gpu = self.gpu.saturating_add(inner.gpu);
         self.unsupported |= inner.unsupported;
-        self.batches += inner.batches;
+        self.batches = self.batches.saturating_add(inner.batches);
     }
 
     pub(crate) fn time(&self) -> GpuTime {
@@ -97,6 +97,12 @@ impl Accum {
 thread_local! {
     /// The accumulator of the innermost [`timed`] scope of this thread, `None` outside one.
     static SCOPE: RefCell<Option<Accum>> = const { RefCell::new(None) };
+}
+
+/// Whether a [`timed`] scope is open on this thread (tests: a leaked scope shows as `true` after the scope ended).
+#[cfg(test)]
+pub(crate) fn scope_is_open() -> bool {
+    SCOPE.with(|scope| scope.borrow().is_some())
 }
 
 /// Count one finished batch in the scope of this thread, if there is one.
@@ -151,26 +157,30 @@ impl Drop for Scope {
 ///
 /// An operation dispatches one or more batches (`reduce::sum` and the other reductions, `scan::inclusive`, the
 /// gathers: one; `compact::count`: two; `compact::indices`: four; an empty input: none). `gpu_elapsed` is the sum, over
-/// the batches, of the time between the beginning of the first dispatch of the batch and the end of its last one (the
-/// compute pass, barriers between its dispatches included).
+/// the batches, of the time from the beginning of the first dispatch's compute pass of the batch to the end of the
+/// last dispatch's (each dispatch is a pass of its own; the transitions between them are included).
 ///
 /// It does not include the gaps between batches, the clearing of pooled buffers (each is a submission of its own), the
 /// readback of a result, or host time for encoding, submission and waiting, so for a multi-batch operation it is a
-/// lower bound of the wall time of the call.
+/// lower bound of the wall time of the call. Work that other threads submit to the same queue can overlap the bracket.
 ///
-/// A scope with zero batches gives `gpu_elapsed == None` and `batches == 0`. So does a scope that ran a batch on an
-/// adapter without timestamp queries; for a non-empty input `gpu_elapsed.is_some()` equals
-/// `HeadlessDevice::supports_gpu_timestamps`. A batch of only empty dispatches on a device that supports timestamps
-/// adds zero.
+/// A scope with zero batches gives `gpu_elapsed == None` and `batches == 0` (an empty input, or a gather with empty
+/// values, dispatches none). When `batches > 0`, `gpu_elapsed` is `Some` exactly when every batch ran on a device that
+/// supports timestamp queries (`HeadlessDevice::supports_gpu_timestamps`). A batch of only empty dispatches on such a
+/// device adds zero.
 ///
 /// If the closure returns an error, so does `timed`, and no time is reported. Scopes nest: an inner scope reports its
-/// own time and the outer one includes it too.
+/// own time and the outer one includes it too, also when the inner scope returned an error or panicked and the
+/// outer closure went on (the batches ran, so the outer scope counts them). A batch whose own dispatch returned an
+/// error is not counted, even if its submission ran.
 ///
 /// # Cost when not used
 ///
 /// A call outside any scope pays one thread-local read per batch and then makes the same `dispatch_batch` call as
 /// before: no timestamp query, no extra submission, no allocation. Inside a scope the batches use
-/// `dispatch_batch_timed`, which encodes the same dispatches in one pass of its own.
+/// `dispatch_batch_timed`: the same passes in an encoder of its own, plus two timestamp writes, a query resolve and a
+/// 16-byte readback per batch. Host time inside a scope is therefore larger than outside it, and timed batches on one
+/// device take turns across threads (the device has one timestamp profiler behind a lock).
 ///
 /// # Errors
 ///
@@ -200,6 +210,8 @@ pub fn timed<R>(run: impl FnOnce() -> Result<R, Error>) -> Result<Timed<R>, Erro
     Ok(Timed { value, time })
 }
 
+// NOTE: `dispatch_batch_timed` is native-only; if gust-algo ever targets wasm32 this wrapper needs the same
+// `#[cfg(not(target_arch = "wasm32"))]` gate as `HeadlessDevice::dispatch_batch` and `dispatch_batch_timed`.
 /// `device.dispatch_batch(batch)`, timed when a [`timed`] scope of this thread is open.
 pub(crate) fn dispatch_batch(
     device: &HeadlessDevice,

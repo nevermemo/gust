@@ -15,8 +15,8 @@ installation of the tools, is [`gust::guide`].
   `GUST_PROFILE`, `gust.toml` and the CPU target.
 - Chapter 9, [the browser][`crate::guide::browser`]: the gallery's browser page, `map_async`, building for `wasm32`,
   what the repository checks and what it cannot.
-- Chapter 10 (benchmarks: the methods, definitions and fairness rules) will live here; it is not yet written, so there
-  is no chapter page.
+- Chapter 10, [benchmarks][`crate::guide::benchmarks`]: the harness, the workloads, the metrics, the fairness rules and
+  the rule a result must pass before it may be shown. No result is published.
 
 The first program of chapter 2 of the sibling guide is compiled by this crate's doctests, with the real backend (it is
 not run: running it needs a GPU), and so is every program of chapters 4 and 5. Chapter 9's first block, the kernel and

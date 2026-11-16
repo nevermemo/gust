@@ -318,7 +318,7 @@ on the polynomial workload is 0.80 at degree 16 and 0.70 at degree 64, both insi
 loop-bound counter, absent from slangc's SPIR-V): the same ratio for hand WGSL without those checks is 0.81 and 0.80. At degree
 16 the checks account for nearly all of the gap; the remainder at degree 64 (about 0.10) is observed, and its cause is not
 identified. The arithmetic is the same in both routes (no fused multiply-add, no unrolling). This is an observation about
-the method, not a result of this page, and a ratio below 1 on a SPIR-V cell does not re-open the kill rule.
+the method, not a result of this page, and under the rule as the harness implements it (two-sided, `group.rs`), a ratio that far below 1 on a cell of the publishable group re-opens the kill rule for its run; these runs are not publishable, and how the rule should treat the opt-in SPIR-V route is an open question for the owner's project review.
 
 ## Other limits of the measurements
 

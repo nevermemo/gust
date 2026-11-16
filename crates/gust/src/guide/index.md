@@ -27,7 +27,8 @@ is split over two crates because the running chapters need the backend, and `gus
    generics.
 9. The browser: building for `wasm32`, WebGPU in the page and what the repository checks. Written; it lives in
    `gust_wgpu::guide` (linked at the end of this page).
-10. Benchmarks: methods, definitions and fairness rules. Not yet written; it will live in `gust_wgpu::guide`.
+10. Benchmarks: methods, definitions and fairness rules. Written; it lives in `gust_wgpu::guide` (linked at the end
+    of this page).
 11. [Stability, versions, platforms and how to report a bug][`crate::guide::stability_and_platforms`].
 12. [Internals for contributors][`crate::guide::internals_for_contributors`]: the pipeline, the gates and how to add
     a construct.

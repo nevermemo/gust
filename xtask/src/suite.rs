@@ -199,8 +199,8 @@ const CORE_ROUTED_HANDLE: Step = Step::CountedCargo(&[
 ]);
 /// The test binaries of `gust-compute` that need neither Slang nor the helper nor an adapter, and were in no suite
 /// (m8.x1, the survey of m8.p): the pixel and texture twins on the CPU device, the parallel CPU dispatch, the toolchain
-/// discovery tests (one ignored child process test stays ignored), and the doc tests. Each runs in the `unit` CI job,
-/// which has no slangc. Counted: a filter or a deleted file that leaves nothing to run fails.
+/// discovery tests (one ignored child process test stays ignored). Each runs in the `unit` CI job, which has no slangc.
+/// The doc tests of the crate are not among them (see [`CORE_DOC_TESTS`]). Counted: a filter or a deleted file that leaves nothing to run fails.
 const CORE_PIXEL_TWIN: Step = Step::CountedCargo(&[
     "test",
     "--locked",
@@ -233,22 +233,15 @@ const CORE_TOOLCHAIN_TESTS: Step = Step::CountedCargo(&[
     "--test",
     "toolchain",
 ]);
+/// The doc tests of `gust-compute` (m10.k2): the examples of `slang::compile*`, `reflect::*` and `artifact::Verified`
+/// call slangc, so this step runs in the Slangc tier and not in `unit`. It names `slang-runtime` (the docs.rs feature)
+/// instead of relying on the self dev-dependency. The doc tests of `gust-compute-wgpu` run in the Gpu suite, through
+/// [`GPU_SUITE_CALL`] (they need an adapter), and are counted in `GPU_SUITE_PIN`.
 const CORE_DOC_TESTS: Step = Step::CountedCargo(&[
     "test",
     "--locked",
     "-p",
     "gust-compute",
-    "--features",
-    "slang-runtime",
-    "--doc",
-]);
-/// The doc tests of `gust-compute-wgpu` (m10.k0): among them the first program of `gust::guide`, the whole program compiled
-/// `no_run` against the real backend. Both doc-test steps name `slang-runtime` (the docs.rs feature of each crate) instead of relying on the self dev-dependency.
-const WGPU_DOC_TESTS: Step = Step::CountedCargo(&[
-    "test",
-    "--locked",
-    "-p",
-    "gust-compute-wgpu",
     "--features",
     "slang-runtime",
     "--doc",
@@ -407,13 +400,13 @@ impl Suite {
     pub(crate) fn covers(self) -> &'static str {
         match self {
             Self::Unit => {
-                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), the coretests_twin test (the scalar Rust core test cases on the CPU twin against their literals), the uniforms_twin test (the uniforms fixture on the CPU twin against a hand reference), the pixel_twin, textures_twin, parallel, routed_handle (the routed device handle without a GPU runtime) and toolchain test binaries and the doc tests of gust-compute and gust-compute-wgpu, the tests of cargo-gust that need no helper, clippy and check of gust and gust-wgpu without default features (the slang-runtime off state), the format check, clippy and tests of the harness crate tests/difftest (a workspace of its own; CI runs them in the job `difftest`, and `--skip-difftest` leaves them out of the `unit` and `slang` jobs), and the differential batch of seeds 1 to 4 in its CPU-only mode (64 generated kernels: an independent interpreter against the CPU twin, report.json judged by cargo xtask check-difftest); no external tools"
+                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), the coretests_twin test (the scalar Rust core test cases on the CPU twin against their literals), the uniforms_twin test (the uniforms fixture on the CPU twin against a hand reference), the pixel_twin, textures_twin, parallel, routed_handle (the routed device handle without a GPU runtime) and toolchain test binaries, the tests of cargo-gust that need no helper, clippy and check of gust and gust-wgpu without default features (the slang-runtime off state), the format check, clippy and tests of the harness crate tests/difftest (a workspace of its own; CI runs them in the job `difftest`, and `--skip-difftest` leaves them out of the `unit` and `slang` jobs), and the differential batch of seeds 1 to 4 in its CPU-only mode (64 generated kernels: an independent interpreter against the CPU twin, report.json judged by cargo xtask check-difftest); no external tools"
             }
             Self::Cpu => {
                 "the production CPU target (GUST_PROFILE=cpu) on the fixture tests/cpu-target: the kernels build in release, run on gust::cpu::CpuDevice and equal independent host references; the binary holds no compiler, helper or GPU runtime; gust-wgpu refuses the profile; the cfg(test) and --cfg gust_dual builds keep one impl; the profile flips rebuild correctly; cargo only"
             }
             Self::Slangc => {
-                "Unit, plus the gust library tests and the diagnostics integration test, which compile generated Slang with slangc, and the naga layout gate (every fixture's WGSL, from slangc and from the native reflection helper, parsed and validated by wgpu's naga and compared with the descriptors' layouts; no adapter), the three helper-backed tests of cargo-gust (the real compile step on the stored export and variant records, the helper's schema 3 output), and the variant fixture of cargo-gust again under GUST_PROFILE=dev+subgroups"
+                "Unit, plus the doc tests of gust-compute (their examples compile kernels with slangc), the gust library tests and the diagnostics integration test, which compile generated Slang with slangc, and the naga layout gate (every fixture's WGSL, from slangc and from the native reflection helper, parsed and validated by wgpu's naga and compared with the descriptors' layouts; no adapter), the three helper-backed tests of cargo-gust (the real compile step on the stored export and variant records, the helper's schema 3 output), and the variant fixture of cargo-gust again under GUST_PROFILE=dev+subgroups"
             }
             Self::Spirv => {
                 "the example binaries export SPIR-V and spirv-val accepts every file (vulkan1.2)"
@@ -422,7 +415,7 @@ impl Suite {
                 "the D17 layout gate: native reflection helper, core and wgpu reflection tests, and the naga layout gate (every fixture's WGSL checked by wgpu's naga against the descriptors' layouts)"
             }
             Self::Gpu => {
-                "the adapter named in the log (adapter_info), all gust-wgpu tests on the first Vulkan adapter wgpu finds (their `test result:` lines checked against GPU_SUITE_PIN, as in verify --mode gpu), then all gust-algo tests (the reduce and scan calls, their dispatch counts and the float bound on the adapter; its `gpu::` tests are pinned by name), then the differential batch of all 8 seeds (128 generated kernels: interpreter, CPU twin and GPU compared; report.json judged by cargo xtask check-difftest), the short_circuit GPU test of tests/difftest and the same batch again under GUST_PROFILE=dev+subgroups (judged the same way; every program must report the `subgroups` capability from its own build, and its exported records must be byte for byte those of the `dev` batch). The dev+subgroups batch opens its device with the subgroups capability, so the first Vulkan adapter must offer subgroup operations or the suite fails with MissingCapability"
+                "the adapter named in the log (adapter_info), all gust-wgpu tests (the doc tests of that crate included) on the first Vulkan adapter wgpu finds (their `test result:` lines checked against GPU_SUITE_PIN, as in verify --mode gpu), then all gust-algo tests (the reduce and scan calls, their dispatch counts and the float bound on the adapter; its `gpu::` tests are pinned by name), then the differential batch of all 8 seeds (128 generated kernels: interpreter, CPU twin and GPU compared; report.json judged by cargo xtask check-difftest), the short_circuit GPU test of tests/difftest and the same batch again under GUST_PROFILE=dev+subgroups (judged the same way; every program must report the `subgroups` capability from its own build, and its exported records must be byte for byte those of the `dev` batch). The dev+subgroups batch opens its device with the subgroups capability, so the first Vulkan adapter must offer subgroup operations or the suite fails with MissingCapability"
             }
             Self::Full => {
                 "the release gate: lint, fmt, clippy, workspace tests, the fmt, clippy and tests of the harness crate tests/difftest, the release-profile Slang tests of the gust library and the release-profile known-mismatch ledger, examples (including `subgroup-reduce`, run under GUST_PROFILE=native+subgroups from its committed artifacts, which also needs an adapter with subgroup operations), the whole Gpu suite again under GUST_PROFILE=dev+subgroups (the pinned gust-wgpu targets, then all of gust-algo, so that its subgroup body runs in the release gate), artifacts and SPIR-V validation, check-dual in full mode, then the whole check-precompiled, the whole check-web (Chrome with a WebGPU adapter; a missing one fails the suite, only `cargo xtask check-full --skip-web` goes without, and records that) and, last, check-difftest (all 8 seeds on the adapter, the short_circuit GPU test and the dev+subgroups batch with its byte compare); writes .ai/VALIDATION.json"
@@ -472,8 +465,6 @@ impl Suite {
             CORE_PARALLEL_TESTS,
             CORE_ROUTED_HANDLE,
             CORE_TOOLCHAIN_TESTS,
-            CORE_DOC_TESTS,
-            WGPU_DOC_TESTS,
             CARGO_GUST_TESTS,
             OFF_STATE_CLIPPY,
             OFF_STATE_CHECK,
@@ -488,6 +479,7 @@ impl Suite {
             Self::Slangc => {
                 let mut steps = vec![Step::RequireTool("slangc")];
                 steps.extend(unit);
+                steps.push(CORE_DOC_TESTS);
                 steps.push(CORE_LIB_TESTS);
                 steps.push(CORE_DIAGNOSTICS_TESTS);
                 steps.push(NAGA_LAYOUT_GATE);

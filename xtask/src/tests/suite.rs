@@ -18,7 +18,7 @@ use crate::{
 };
 use std::{cell::RefCell, path::Path};
 
-const UNIT: [Step; 26] = [
+const UNIT: [Step; 24] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-compute-macros"]),
     Step::Cargo(&["test", "--locked", "-p", "xtask"]),
     Step::Lint,
@@ -110,24 +110,6 @@ const UNIT: [Step; 26] = [
         "test",
         "--locked",
         "-p",
-        "gust-compute",
-        "--features",
-        "slang-runtime",
-        "--doc",
-    ]),
-    Step::CountedCargo(&[
-        "test",
-        "--locked",
-        "-p",
-        "gust-compute-wgpu",
-        "--features",
-        "slang-runtime",
-        "--doc",
-    ]),
-    Step::CountedCargo(&[
-        "test",
-        "--locked",
-        "-p",
         "cargo-gust",
         "--",
         "--skip",
@@ -212,10 +194,51 @@ fn unit_runs_tests_lint_docs_and_architecture_without_external_tools() {
     assert_eq!(Suite::Unit.steps(), UNIT.to_vec());
 }
 
+/// The doc tests of `gust-compute` call slangc and those of `gust-compute-wgpu` need an adapter (CI run 43774079389), so
+/// Unit has neither step; Slangc has the first right after its `RequireTool("slangc")` and the Unit steps, and the
+/// second runs in the Gpu suite through its `cargo test -p gust-compute-wgpu` call.
+#[test]
+fn doc_tests_run_where_their_resources_exist() {
+    let is_doc = |step: &Step| match step {
+        Step::Cargo(args) | Step::CountedCargo(args) => args.contains(&"--doc"),
+        _ => false,
+    };
+    assert!(!Suite::Unit.steps().iter().any(is_doc));
+    let slangc = Suite::Slangc.steps();
+    assert_eq!(slangc[0], Step::RequireTool("slangc"));
+    let docs: Vec<&Step> = slangc.iter().filter(|step| is_doc(step)).collect();
+    assert_eq!(
+        docs,
+        [&Step::CountedCargo(&[
+            "test",
+            "--locked",
+            "-p",
+            "gust-compute",
+            "--features",
+            "slang-runtime",
+            "--doc",
+        ])]
+    );
+    assert_eq!(slangc[1 + UNIT.len()], *docs[0]);
+    assert!(!Suite::Gpu.steps().iter().any(is_doc));
+    assert!(Suite::Gpu.covers().contains("doc tests of that crate"));
+    assert!(Suite::Slangc.covers().contains("doc tests of gust-compute"));
+    assert!(!Suite::Unit.covers().contains("doc tests"));
+}
+
 #[test]
 fn slangc_is_unit_plus_the_core_library_tests_and_requires_slangc() {
     let mut expected = vec![Step::RequireTool("slangc")];
     expected.extend(UNIT);
+    expected.push(Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
+        "--features",
+        "slang-runtime",
+        "--doc",
+    ]));
     expected.push(Step::Cargo(&[
         "test",
         "--locked",

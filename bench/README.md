@@ -16,10 +16,11 @@ A custom harness in a nested, unpublished workspace. It measures six workload fa
   for the hand WGSL, the serial worst case for `serial` and rayon; derived in `gust-bench/src/workloads/sum.rs`, with the
   sizes where the serial worst case says nothing, `docs/BENCHMARKS.md`). The two largest sizes need the adapter's own
   storage-binding limit, which a run asks for only when it includes them (and then for every workload of that run). GUST
-  and the hand WGSL run different algorithms on W7 and GUST's sum exposes no GPU timestamps, so W7 has no GUST/hand ratio
-  in the report, and its cells are outside the kill rule and listed in `kill_rule.excluded`.
+  and the hand WGSL run different algorithms on W7, so W7 has no GUST/hand dispatch or end-to-end ratio and no overhead row
+  in the report; its two GPU-time ratios (GUST's `gust_algo::timed` against the hand timestamps, neither span includes the
+  read-back mapping) are shown, labelled as an algorithm comparison, and judged by the kill rule like any cell.
 - **W5 particle step** (`W5`), 2^16 and 2^20 particles (a 28-byte std430 struct element: nested position and velocity pairs, a mass, a `u32` tag, an `i32` charge), 16 explicit-Euler steps per invocation. Backends: GUST (and the SPIR-V route), `gust-twin`, `gust-cpu`, rayon, serial and the hand WGSL (`shaders/particles.wgsl`, same layout, asserted against GUST's reflection). The integers and the mass are bit-exact; each float field is inside a bound derived from the expression tree (`gust-bench/src/workloads/particles.rs`, `docs/BENCHMARKS.md`). The size is the particle count.
-- **W6 staged pipeline** (`W6-graph` and `W6-hand`), `signal-pipeline`'s six statements as six kernels in a chain, `f32`, 2^20 and 2^22 elements (quick: 2^20), five input streams, a buffer between stages, one output. `W6-graph` is GUST's `StagedGraph` (graph build, validation and execution inside every timed sample, no GPU timestamps); `W6-hand` is the same six calls as one `dispatch_batch`, no graph. Backends: `gust-gpu` (both forms, and the SPIR-V route build), `gust-twin` and `gust-cpu` (`W6-hand` only: they have no graph), rayon, serial and the hand WGSL (`shaders/signal_pipeline.wgsl`, six entry points, six passes, one submit; the baseline of both forms). The last stage is checked against a bound derived from the expression tree (`gust-bench/src/workloads/signal_pipeline.rs`, `docs/BENCHMARKS.md`), and a unit test checks every stage. The size is the element count.
+- **W6 staged pipeline** (`W6-graph` and `W6-hand`), `signal-pipeline`'s six statements as six kernels in a chain, `f32`, 2^20 and 2^22 elements (quick: 2^20), five input streams, a buffer between stages, one output. `W6-graph` is GUST's `StagedGraph` (graph build, validation and execution inside every timed sample; its GPU time is `execute_graph_timed`'s over the six dispatch passes); `W6-hand` is the same six calls as one `dispatch_batch`, no graph. Backends: `gust-gpu` (both forms, and the SPIR-V route build), `gust-twin` and `gust-cpu` (`W6-hand` only: they have no graph), rayon, serial and the hand WGSL (`shaders/signal_pipeline.wgsl`, six entry points, six passes, one submit; the baseline of both forms). The last stage is checked against a bound derived from the expression tree (`gust-bench/src/workloads/signal_pipeline.rs`, `docs/BENCHMARKS.md`), and a unit test checks every stage. The size is the element count.
 - **W9 naive matrix product** (`W9-naive`), `N x N` f32 with `N` 256, 512, 1024, 2048, one output entry per invocation (a
   16 by 16 workgroup, a 2-D dispatch). Backends: GUST, hand WGSL, rayon, serial, and `gust-twin` in a `--cfg gust_dual`
   build (and `gust-gpu-spirv` in the `spirv-route` build). Correct when every entry is inside Higham's inner-product bound
@@ -125,8 +126,9 @@ pre-D193 file: `aggregate` refuses it, and the xtask readers (`check-bench --ren
 **Kill rule** (`group::kill_rule(group, cells)`, in the run file as `kill_rule` for each table group, with `group` and
 `reference` in the record): in `publishable`, a `gust-gpu` GPU-time (`gpu_single`, `gpu_batch_per_dispatch`) paired ratio to `wgsl-prebuilt` more than 10 % off 1.0
 on any cell marks the run "C re-opened" (`kill_rule.c_reopened`, with the offending cells listed; each offender has a `direction`). In `spirv` (D193) the same rule reads `gust-gpu-spirv` against `wgsl-prebuilt-unchecked` with `wgsl-percall-unchecked` as the control, and the direction splits (plan R1.3-3): slower than 1.10 sets `c_reopened`, faster than 0.90 sets `reading_step` and does not re-open C; it asks for a reading of the cell's cause (as the W3 reading of b1q/b1c did). `gust-gpu-spirv` is not judged in `publishable`. A workload with no same-kernel
-GUST/hand pairing (`Workload::same_kernel`, W7) is outside the rule and every such cell is listed in `kill_rule.excluded`
-(`backend`, `workload`, `n`, `reason`), not silently absent. It judges only a complete run: every other GUST cell and quantity needs a ratio, and any
+GUST/hand pairing (`Workload::same_kernel`, W7) is judged on its GPU-time ratios like any cell (D194 gave `gust-algo` and
+`StagedGraph` GPU timestamps, so the D190 and D191 exclusions are gone and the rule has no `excluded` list); those ratios are
+labelled "public `gust-algo` sum against the hand tree: an algorithm comparison, not a GUST overhead". It judges only a complete run: every other GUST cell and quantity needs a ratio, and any
 cell without one (a failed or dropped backend, a size with no GUST cell) counts in `kill_rule.unpaired`; `kill_rule.judged` is true only when `checked > 0` and `unpaired == 0`, and otherwise `c_reopened` is `null`, never `false`. `kill_rule.control` carries the same ratio for the group's control (`wgsl-percall`, or `wgsl-percall-unchecked`; same kernel text as the reference, so its distance from 1.0 is the noise floor of the method); it is a record beside the rule, not an input, and the rule's threshold and quantities are unchanged. The control is a noise floor for `gpu_single` only. For `gpu_batch_per_dispatch` it also differs from
 `wgsl-prebuilt` in the per-pass bind groups (percall builds a fresh one each pass, as GUST does; prebuilt reuses one), so its
 batch excess (1.08-1.13 on W1 1M in the m10.b1c run) may be a real effect of that and not noise. A control that is stream-identical for
@@ -377,7 +379,9 @@ resident dispatches and one timestamped batch, unmeasured). A quantity stops ear
 3. **`gpu_single`**: GPU timestamps around one compute pass (the pass-bracketing query that `dispatch_batch_timed`
    uses; `wgsl-*` use the same query writes on their own pass).
 4. **`gpu_batch_per_dispatch`**: timestamps from the first to the last of 16 back-to-back passes in one submission,
-   divided by 16. This is the like-for-like device figure for small sizes, where one pass is dominated by fixed cost.
+   divided by 16. For W7 each of the 16 repeats has its own pair and the figure is the sum of the per-repeat spans, on GUST
+   and on the hand paths alike (the gaps between repeats are outside it), so W7's two GPU-time quantities are like-for-like
+   except the zero-fill of gust-algo's pooled partials (see W7); W6 is per six-pass run. This is the like-for-like device figure for small sizes, where one pass is dominated by fixed cost.
 
 "Steady state" means after the warm-up with the pipeline cache warm; the harness asserts that GUST's pipeline-cache
 `misses` did not move across the timed samples, and the run fails if it did. The **cold start** is reported separately:
@@ -404,6 +408,16 @@ workgroups and is rejected). Three f32 streams of the last size are 192 MiB, bey
 
 ## Caveats
 
+- The Khronos validation layer reports `VUID-StandaloneSpirv-None-10684` ("invalid explicit layout decorations") on
+  modules that naga compiled to SPIR-V: any `var<workgroup>` array (at every SPIR-V version, so the W7 hand reductions and
+  those of GUST's own `gust-algo` reduction and scan kernels that use workgroup memory, which go through naga on the WGSL
+  route) and, from SPIR-V 1.5, a
+  `Function` or `Private` struct or array copy (the W5 particle step, which wgpu-hal compiles for SPIR-V 1.6 on Vulkan
+  1.3 devices). The cause is naga 30.0.1's SPIR-V backend, which puts `ArrayStride` and `Offset` on a type whatever its
+  storage class (upstream gfx-rs/wgpu issue 7696, with fixes in flight); GUST's generated WGSL is legal, and slangc's own
+  SPIR-V (the `spirv-route` build) did not trigger it on any bench kernel checked. No result is affected: the runs that had the layer on passed
+  their checks, and the message is the only symptom. Re-run the layer after a wgpu bump (`docs/SEMANTICS.md`, section 7,
+  "Known validation-layer message"). The check is not a gate of this harness.
 - Results from a shared machine are labelled "shared machine, not publishable"; other lanes run cargo and GPU tests.
   The JSON carries an `nvidia-smi` snapshot before and after every cell and process counts before and after a run.
 - The harness never pins clocks and never stops other services.

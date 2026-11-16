@@ -4,8 +4,9 @@
 //! `algo` feature, which `gust-bench-pre` does not have: gust-algo ships no precompiled artifacts); the hand-WGSL
 //! backends run a workgroup-tree reduction of their own (workgroup size 256, two dispatches, a grid that scales with
 //! `n`, see [`hand_blocks`]); the CPU backends sum on the host. The kernels differ, so no GUST/hand pairing of W7 is a
-//! same-kernel comparison (`Workload::same_kernel`), and the kill rule and the report's overhead rows leave W7 out
-//! (listed, not silent: `group::kill_rule`).
+//! same-kernel comparison (`Workload::same_kernel`): the report's overhead rows and its dispatch and end-to-end ratios
+//! leave W7 out. The GPU-time ratios are shown and judged by the kill rule (`group::kill_rule`), labelled as an
+//! algorithm comparison (the public `gust-algo` sum against the hand tree), not as a GUST overhead.
 //!
 //! # The `u32` check
 //!

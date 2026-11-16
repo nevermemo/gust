@@ -462,7 +462,7 @@ const SPIRV_GROUP_ROWS: [&str; 9] = [
 /// build) and `spirv` (the SPIR-V route's, checks off on both sides). A `spirv` file must come from the SPIR-V route,
 /// hold only its own rows (`gust-gpu-spirv`, `wgsl-prebuilt-unchecked`, `wgsl-percall-unchecked` and the CPU rows),
 /// have at least one run, and carry the group's kill rule in every run (`group` and `reference` in each run's
-/// record; a null record, a run marked `"functional": true` or a run with `"publishable": false` is refused). A publishable file holds no
+/// record; a null record, a run marked `"functional": true` or a run whose `"publishable"` is not `true`, missing or null included, is refused). A publishable file holds no
 /// `-unchecked` point. A file of the SPIR-V route in the
 /// publishable group, or a publishable file with a `gust-gpu-spirv` point, is **legacy** (pre-D193): it is read and
 /// labelled, not refused. Returns whether the file is legacy.
@@ -509,8 +509,9 @@ fn check_group(file: &Json, group: &str, route: &str) -> Result<bool, String> {
                 if matches!(run.get("functional"), Some(Json::Bool(true))) {
                     return Err("a filed spirv file holds a functional run: functional runs publish no timing and are never filed".into());
                 }
-                if matches!(run.get("publishable"), Some(Json::Bool(false))) {
-                    return Err("a filed spirv file holds a run that is not publishable".into());
+                // A missing or null `publishable` is refused too: a filed spirv run must say it is publishable.
+                if !matches!(run.get("publishable"), Some(Json::Bool(true))) {
+                    return Err("a filed spirv file holds a run that is not publishable (its `publishable` is false, missing or null)".into());
                 }
                 if matches!(rule, None | Some(Json::Null)) {
                     return Err("a run of a spirv file has a null kill rule: it must carry the group's record".into());

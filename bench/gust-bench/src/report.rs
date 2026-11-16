@@ -4,13 +4,20 @@ use std::{collections::BTreeMap, fmt::Write as _, fs};
 
 use serde_json::{Value, json};
 
-use crate::{backend::BenchResult, harness::median, workloads::Workload};
+use crate::{backend::BenchResult, group::W7_RATIO_NOTE, harness::median, workloads::Workload};
 
 /// Whether a GUST/hand ratio of the workload (by id) compares the same kernel (`Workload::same_kernel`). W7 does not: GUST
-/// runs the library's sum, the baseline a reduction of its own, so no GUST ratio to the baseline is shown for it. An id
-/// this crate does not know is taken as a same-kernel workload (the older run files).
+/// runs the library's sum, the baseline a reduction of its own, so no GUST dispatch or end-to-end ratio and no overhead
+/// row is shown for it. An id this crate does not know is taken as a same-kernel workload (the older run files).
 fn pairs_same_kernel(workload: &str) -> bool {
     Workload::parse(workload).is_none_or(Workload::same_kernel)
+}
+
+/// Whether the GUST/hand ratio of one metric of the workload is shown: every metric of a same-kernel workload, and the two
+/// GPU-time metrics of W7 (labelled with [`W7_RATIO_NOTE`]; both sides have GPU time since D194). Its dispatch and
+/// end-to-end ratios stay hidden.
+fn shows_ratio(workload: &str, metric: &str) -> bool {
+    pairs_same_kernel(workload) || matches!(metric, "gpu_single" | "gpu_batch_per_dispatch")
 }
 
 /// Whether a GUST end-to-end figure of the workload (by id) times the same work as the baseline's (`Workload::end_to_end_comparable`).
@@ -31,7 +38,7 @@ fn pipeline_note(workload: &str, names: &Names, gust: &str) -> Option<String> {
     let reference = names.reference;
     match workload {
         "W6-graph" => Some(format!(
-            "W6 as a `StagedGraph`: every {gust} sample builds the graph of the six calls (derived edges), validates it, encodes the six dispatches into one command buffer (one compute pass each) and submits once, all inside the timed region; the end-to-end sample adds five upload nodes and one read-back node. The graph has no GPU timestamps, so there is no batch figure for it. The baselines are the hand-ordered rows of this workload ({reference}: six passes, one submit, nothing rebuilt), so the gap includes the graph's per-call host work, which is what a program that uses a `StagedGraph` pays; only {runs_form} run this form (the CPU backends have no graph; their rows are under W6-hand).",
+            "W6 as a `StagedGraph`: every {gust} sample builds the graph of the six calls (derived edges), validates it, encodes the six dispatches into one command buffer (one compute pass each) and submits once, all inside the timed region; the end-to-end sample adds five upload nodes and one read-back node. The GPU-time rows are `execute_graph_timed`'s `gpu_elapsed` over the six dispatch passes only (one run, and a batch as one graph of repeated runs, per six-pass run), without the graph build, validation or read-back mapping. The baselines are the hand-ordered rows of this workload ({reference}: six passes, one submit, nothing rebuilt), so the gap includes the graph's per-call host work, which is what a program that uses a `StagedGraph` pays; only {runs_form} run this form (the CPU backends have no graph; their rows are under W6-hand).",
         )),
         "W6-hand" => Some(
             "W6 in hand order: the same six GUST kernels dispatched in stage order with one `dispatch_batch` (six passes, one submit), no graph; the end-to-end sample adds five uploads and the read-back. Every backend of the table runs this form: the hand WGSL runs six entry points in six passes with one submit, the CPU backends compute one element's six stages at a time (rayon, serial) or run the six kernels one after another (gust-cpu, gust-twin). The batch bandwidth counts the traffic of six passes (68 bytes per element: 11 reads and 6 writes of 4 bytes), which a fused kernel would not do; the end-to-end bandwidth, for the GPU rows and for rayon-N alike, counts 24 bytes per element (five uploads and one read-back, which is also what the fused CPU loop touches)."
@@ -308,11 +315,12 @@ fn gather_paired(runs: &[Value]) -> PairedTable {
             ) else {
                 continue;
             };
-            // No GUST ratio to the baseline for a workload whose two paths run different algorithms (W7).
-            if is_gust(backend) && !pairs_same_kernel(workload) {
-                continue;
-            }
             for (metric, _) in METRICS {
+                // No GUST ratio to the baseline for a workload whose two paths run different algorithms (W7), except
+                // the GPU-time ratios, which are shown as such (`shows_ratio`).
+                if is_gust(backend) && !shows_ratio(workload, metric) {
+                    continue;
+                }
                 if metric == "end_to_end" && is_gust(backend) && !e2e_comparable(workload) {
                     continue;
                 }
@@ -903,6 +911,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                         "median_ratio": p.median(), "run_min_ratio": p.lowest(), "run_max_ratio": p.highest(),
                         "per_run_median_ratio": p.run_medians, "per_run_p5_ratio": p.run_p5,
                         "per_run_p95_ratio": p.run_p95,
+                        "note": (!pairs_same_kernel(workload)).then_some(W7_RATIO_NOTE),
                     })),
                 "pcie_link": (metric == "end_to_end").then(|| link_of(workload, *n)),
             })
@@ -1006,7 +1015,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         if run["kill_rule"].is_object() {
             writeln!(
                 md,
-                "- {}: kill rule of the {} group, C re-opened = {}{} (judged: {}; {} paired GPU-time ratios checked against {reference}, {} unpaired, offenders: {}; control {control}/{reference}: {} outside the window; {} cells excluded as no same-kernel pairing, listed in the run file)",
+                "- {}: kill rule of the {} group, C re-opened = {}{} (judged: {}; {} paired GPU-time ratios checked against {reference}, {} unpaired, offenders: {}; control {control}/{reference}: {} outside the window)",
                 run["label"].as_str().unwrap_or("run"),
                 run["kill_rule"]["group"].as_str().unwrap_or(names.group),
                 run["kill_rule"]["c_reopened"],
@@ -1022,9 +1031,24 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                 run["kill_rule"]["checked"],
                 run["kill_rule"]["unpaired"],
                 run["kill_rule"]["offenders"],
-                run["kill_rule"]["control"]["outside_tolerance"],
-                run["kill_rule"]["excluded"].as_array().map_or(0, Vec::len)
+                run["kill_rule"]["control"]["outside_tolerance"]
             )?;
+            // A W7 offender is an algorithm comparison, said where the verdict is read.
+            if run["kill_rule"]["offenders"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|o| {
+                    o["workload"]
+                        .as_str()
+                        .is_some_and(|w| !pairs_same_kernel(w))
+                })
+            {
+                writeln!(
+                    md,
+                    "  - the offenders on W7 are the {W7_RATIO_NOTE}; they do not say GUST adds cost."
+                )?;
+            }
         }
     }
     let rows = repro["offenders"].as_array().cloned().unwrap_or_default();
@@ -1053,9 +1077,17 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                 (true, true, "slower") => "counts: re-opens C",
                 (true, true, _) => "counts: reading step, does not re-open C",
             };
+            let label = if row["workload"]
+                .as_str()
+                .is_some_and(|w| !pairs_same_kernel(w))
+            {
+                format!(" [{W7_RATIO_NOTE}]")
+            } else {
+                String::new()
+            };
             writeln!(
                 md,
-                "- {} {} n={} {}{}: in {} of {} runs, control in tolerance in {}, ratios {} -> {}",
+                "- {} {} n={} {}{}: in {} of {} runs, control in tolerance in {}, ratios {} -> {}{label}",
                 row["backend"].as_str().unwrap_or("?"),
                 row["workload"].as_str().unwrap_or("?"),
                 row["n"],
@@ -1138,7 +1170,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         if !pairs_same_kernel(workload) {
             writeln!(
                 md,
-                "No {gust} / {reference} ratio is shown for {workload}: the two run different algorithms (GUST the library's sum with its own schedule, the baseline a tree of its own), and the library's sum exposes no GPU timestamps. The times above are each backend's own.\n"
+                "No {gust} / {reference} dispatch, end-to-end or overhead ratio is shown for {workload}: the two run different algorithms (GUST the library's sum with its own schedule, the baseline a tree of its own). The times above are each backend's own. The GPU-time ratios (the two timestamp tables) are shown in the paired section, labelled \"{W7_RATIO_NOTE}\"; both spans leave out the read-back mapping.\n"
             )?;
         }
         if !e2e_comparable(workload) {
@@ -1285,6 +1317,12 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     for (metric, _) in METRICS {
         for workload in sizes.keys() {
             writeln!(md, "### {workload}, {metric}\n")?;
+            if !pairs_same_kernel(workload) && shows_ratio(workload, metric) {
+                writeln!(
+                    md,
+                    "{workload}'s GUST column here is the {W7_RATIO_NOTE}.\n"
+                )?;
+            }
             write!(md, "| {} |", size_header(workload))?;
             for &backend in names.columns {
                 write!(md, " {backend} |")?;
@@ -1820,6 +1858,102 @@ mod tests {
         })
     }
 
+    /// W7: the GUST/hand GPU-time ratios are shown (labelled as an algorithm comparison), the dispatch and end-to-end
+    /// ratios and the overhead rows are not.
+    #[test]
+    fn w7_shows_only_its_gpu_time_ratios() {
+        for workload in ["W7-f32", "W7-u32"] {
+            assert!(shows_ratio(workload, "gpu_single"));
+            assert!(shows_ratio(workload, "gpu_batch_per_dispatch"));
+            assert!(!shows_ratio(workload, "dispatch_host"));
+            assert!(!shows_ratio(workload, "end_to_end"));
+        }
+        assert!(shows_ratio("W1", "end_to_end") && shows_ratio("W6-graph", "gpu_single"));
+        let mut one = run("wgsl", "GPU A", "a.json");
+        let mut cells = vec![];
+        for (backend, ms) in [("gust-gpu", 3.0), ("wgsl-prebuilt", 1.0)] {
+            let mut cell = gpu_cell(backend, ms, true, 2600.0);
+            cell["workload"] = json!("W7-f32");
+            let paired = cell["metrics"]["end_to_end"].clone();
+            cell["metrics"]["gpu_single"] = paired;
+            cells.push(cell);
+        }
+        one["cells"] = json!(cells);
+        let paired = gather_paired(std::slice::from_ref(&one));
+        let has = |metric: &str| {
+            paired
+                .keys()
+                .any(|k| k.0 == "W7-f32" && k.2 == "gust-gpu" && k.3 == metric)
+        };
+        assert!(has("gpu_single"));
+        assert!(!has("end_to_end"));
+    }
+
+    /// A run whose only offender is W7 says, next to "C re-opened", in the offender row and in the aggregate JSON, that the
+    /// ratio is the public `gust-algo` sum against the hand tree (an algorithm comparison, not a GUST overhead); an
+    /// offender on a same-kernel workload carries no such label.
+    #[test]
+    fn a_w7_offender_is_labelled_where_the_verdict_is_read() {
+        let dir = scratch("w7label");
+        let mut one = run("wgsl", "GPU A", "a.json");
+        let mut cells = vec![];
+        for (backend, ms) in [("gust-gpu", 3.0), ("wgsl-prebuilt", 1.0)] {
+            let mut cell = gpu_cell(backend, ms, true, 2600.0);
+            cell["workload"] = json!("W7-f32");
+            let paired = cell["metrics"]["end_to_end"].clone();
+            cell["metrics"]["gpu_single"] = paired;
+            cells.push(cell);
+        }
+        one["cells"] = json!(cells);
+        let offender = |workload: &str| {
+            json!({
+                "backend": "gust-gpu", "workload": workload, "n": 4096, "quantity": "gpu_single",
+                "median_ratio": 1.5, "direction": "slower", "control_in_tolerance": true,
+            })
+        };
+        one["kill_rule"] = json!({
+            "group": "publishable", "reference": "wgsl-prebuilt", "judged": true, "checked": 2, "unpaired": 0,
+            "c_reopened": true, "reading_step": null, "offenders": [offender("W7-f32")],
+            "control": { "backend": "wgsl-percall", "outside_tolerance": 0 },
+        });
+        let inputs = write_runs(&dir, &[one.clone()]);
+        let (out_json, out_md) = (dir.join("o.json"), dir.join("o.md"));
+        aggregate(
+            &inputs,
+            out_json.to_str().unwrap(),
+            out_md.to_str().unwrap(),
+        )
+        .unwrap();
+        let md = fs::read_to_string(&out_md).unwrap();
+        assert!(
+            md.contains("the offenders on W7 are the public `gust-algo` sum"),
+            "{md}"
+        );
+        let json: Value = serde_json::from_str(&fs::read_to_string(&out_json).unwrap()).unwrap();
+        let w7_point = json["points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| {
+                p["workload"] == "W7-f32"
+                    && p["backend"] == "gust-gpu"
+                    && p["metric"] == "gpu_single"
+            })
+            .expect("the W7 GUST GPU-time point");
+        assert_eq!(w7_point["paired_vs_prebuilt"]["note"], W7_RATIO_NOTE);
+        // A same-kernel offender has no W7 label.
+        one["kill_rule"]["offenders"] = json!([offender("W1")]);
+        let inputs = write_runs(&dir, &[one]);
+        aggregate(
+            &inputs,
+            out_json.to_str().unwrap(),
+            out_md.to_str().unwrap(),
+        )
+        .unwrap();
+        let md = fs::read_to_string(&out_md).unwrap();
+        assert!(!md.contains("the offenders on W7"), "{md}");
+    }
+
     /// W5: GUST's end-to-end sample includes a conversion copy the baseline does not pay, so there is no GUST end-to-end
     /// ratio, overhead row or bandwidth figure (a workload property, `end_to_end_comparable`); W1 keeps them.
     #[test]
@@ -1879,7 +2013,7 @@ mod tests {
         let note = |workload: &str| pipeline_note(workload, &names, "gust-gpu");
         let graph = note("W6-graph").expect("the graph form is described");
         let hand = note("W6-hand").expect("the hand-ordered form is described");
-        assert!(graph.contains("StagedGraph") && graph.contains("no GPU timestamps"));
+        assert!(graph.contains("StagedGraph") && graph.contains("execute_graph_timed"));
         assert!(hand.contains("no graph") && hand.contains("one submit"));
         assert_ne!(graph, hand);
         assert!(note("W1").is_none() && note("W5").is_none());
@@ -2058,7 +2192,6 @@ mod tests {
                 "control_in_tolerance": true,
             }],
             "control": { "backend": "wgsl-percall-unchecked", "outside_tolerance": 0 },
-            "excluded": [],
         });
         one
     }

@@ -1,6 +1,6 @@
 # Decisions and boundaries
 
-Append-only log. Next id: **D195** (D185 is reserved for the M10 close). Add a row for every owner decision or durable
+Append-only log. Next id: **D196** (D185 is reserved for the M10 close). Add a row for every owner decision or durable
 technical decision, with its date and source; supersede an old row with a new one
 instead of editing it. D01–D18 were recorded 2026-09-07 from the owner's GUST handoff,
 earlier reflection deferral, and independent inspection. Chat research is design
@@ -194,6 +194,7 @@ input, not proof of code state.
 | D192 | MPL-2.0 is accepted for unmodified, bench-only comparator dependencies (owner, 2026-11-16; answers the review pack's Q13 after the CubeCL probe m10.b2p). CubeCL 0.11.4's lockfile holds two MPL-2.0 crates, `buildid` and `option-ext`; they may be used unmodified inside the unpublished `bench/` workspace, and docs/BENCHMARKS.md states it. GUST's published crates keep the MIT/Apache-only dependency rule. | Unblocks m10.b2 (CubeCL). |
 | D193 | The SPIR-V route is judged in a group of its own (owner, 2026-11-16; answers Q14; amends R1.2-3 and R1.3-3). `gust-gpu` on the SPIR-V route skips wgpu's runtime shader checks (its own guards, D174), so it is compared with hand WGSL that also skips them, in a separate seeded group with its own kill rule, not with `wgsl-prebuilt` in the publishable group. | Bench slice in lane B. |
 | D194 | Opt-in GPU timestamps in gust-algo's public API and in `StagedGraph` (owner, 2026-11-16; revisits the exclusion parts of D190 and D191). Both are additions behind an opt-in, so programs that do not ask pay nothing. When they land, the benchmark records GPU time for W7 and W6-graph and the kill-rule exclusions of D190 and D191 are removed. The rest of D190 (per-backend unit roundoff, the stated W7 weakness) and D191's six-stage reading stand. | Two crates/ slices, then a bench slice. |
+| D195 | W7 and W6-graph are inside the kill rule (coordinator decision, owner-delegated, 2026-11-16; m10.b3e; carries out D194 and supersedes the exclusion parts of D190 and D191). GUST's W7 cell takes its GPU time through `gust_algo::timing::timed` and W6-graph through `execute_graph_timed`; the `excluded` record and `Workload::gust_gpu_timestamps` are gone. W7 stays not `same_kernel` (GUST runs the public sum, the hand path its own tree), so its overhead rows and its dispatch and end-to-end ratios stay hidden; its two GPU-time ratios are shown and judged, labelled as an algorithm comparison wherever the verdict is read. Both W7 quantities are sums of per-sum spans on both sides (the hand path takes one timestamp pair per repeat), so they compare the same thing except the zero-fill of gust-algo's pooled partials, which GUST's span leaves out. A W7 cell can therefore re-open C on the public sum's speed alone, without any GUST overhead; the first non-publishable samples suggest it will. | Owner to revisit at the project review, with D190, D191 and D194. |
 
 ## Notes
 

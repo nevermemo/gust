@@ -27,6 +27,11 @@ use serde_json::{Value, json};
 
 use crate::workloads::Workload;
 
+/// What a W7 GPU-time ratio is, wherever the report or the run file shows one: GUST's path is the public `gust-algo`
+/// sum, the baseline's a hand tree.
+pub const W7_RATIO_NOTE: &str =
+    "public `gust-algo` sum against the hand tree: an algorithm comparison, not a GUST overhead";
+
 /// The paired-ratio window of the kill rule: more than 10 % off 1.0 reopens candidate C.
 pub const KILL_TOLERANCE: f64 = 0.10;
 
@@ -156,13 +161,10 @@ pub fn require_full_set(group: Group, wanted: &[String]) -> Result<(), String> {
 /// (`c_reopened`), a faster one (below 0.90) does not: it sets `reading_step`, which asks for a reading of the
 /// cell's cause (as the b1q/b1c W3 reading did). `reading_step` is `null` in `publishable`, and `null` when not judged.
 ///
-/// A workload whose GUST and hand-WGSL paths are not the same kernel (`Workload::same_kernel`, W7: GUST runs the public
-/// `gust_algo::reduce`, which exposes no GPU timestamps, so its cell has no paired GPU-time ratio by construction) is
-/// outside the rule, on the GUST and the hand-WGSL side alike. The exclusion is recorded, not silent: `excluded` lists
-/// every such cell of the rule's backends (`backend`, `workload`, `n`, `reason`), so a reader of the run file sees W7 was
-/// present and left out on purpose (coordinator decision D190, a deviation from the plan's "any cell").
-/// W6-graph is left out the same way for a different reason (`Workload::gust_gpu_timestamps`: `StagedGraph` records no GPU
-/// timestamps, so the form has no GPU-time quantities); W6-hand stays in the rule (D191).
+/// Every workload is judged, W7 and W6-graph included (D194 gave `gust-algo` and `StagedGraph` opt-in GPU timestamps, so
+/// the exclusions of D190 and D191 are gone). W7's GUST path is the public `gust-algo` sum against the hand tree, so its
+/// GPU-time ratio is an algorithm comparison and not a GUST overhead, but it is judged like any other cell; a cell
+/// without a GPU time (an adapter without timestamp queries) has no ratio and counts as `unpaired`, as for any workload.
 /// `control` carries the same ratio for the group's control (same kernel text as the reference, so its distance from
 /// 1.0 is the noise floor of the method); it does not enter the rule. Returns the record that goes into the run file.
 pub fn kill_rule(group: Group, cells: &[Value]) -> Value {
@@ -177,41 +179,12 @@ pub fn kill_rule(group: Group, cells: &[Value]) -> Value {
     let mut with_gust = std::collections::BTreeSet::new();
     let mut with_reference = std::collections::BTreeSet::new();
     let mut control = Vec::new();
-    let mut excluded = Vec::new();
     for cell in cells {
         let backend = cell["backend"].as_str().unwrap_or("");
         let key = (
             cell["workload"].as_str().unwrap_or("").to_owned(),
             cell["n"].as_u64().unwrap_or(0),
         );
-        let of_the_rule =
-            backend == gust_backend || backend == reference || backend == control_backend;
-        // A workload that is not a same-kernel pairing (W7: GUST runs `gust-algo`'s sum and the hand backends a reduction of
-        // their own, and `gust-algo` has no public GPU timestamps, so a W7 GUST cell has no paired GPU-time ratio by
-        // construction) is outside the rule, on the GUST and the hand-WGSL side alike; it would otherwise count as
-        // `unpaired` and keep every run that includes it from being judged. The cell is listed in `excluded`.
-        if Workload::parse(&key.0).is_some_and(|w| !w.same_kernel()) {
-            if of_the_rule {
-                excluded.push(json!({
-                    "backend": backend, "workload": key.0, "n": key.1,
-                    "reason": "no same-kernel GUST/hand pairing: GUST runs the library's sum, which exposes no GPU timestamps",
-                }));
-            }
-            continue;
-        }
-        // A workload whose GUST path records no GPU timestamps (W6-graph: `StagedGraph` runs through `execute_graph`,
-        // which records none, so the form has no GPU-time samples) has no GPU-time ratio by construction. It is outside
-        // the rule on both sides, through its own predicate: it stays `same_kernel`, so its dispatch and end-to-end
-        // ratios are still judged by the report. Listed in `excluded`, not silent.
-        if Workload::parse(&key.0).is_some_and(|w| !w.gust_gpu_timestamps()) {
-            if of_the_rule {
-                excluded.push(json!({
-                    "backend": backend, "workload": key.0, "n": key.1,
-                    "reason": "StagedGraph runs through execute_graph, which records no GPU timestamps, so the graph form has no GPU-time samples and no GPU-time pairing",
-                }));
-            }
-            continue;
-        }
         if backend == control_backend {
             for quantity in KILL_QUANTITIES {
                 if let Some(ratio) =
@@ -234,11 +207,20 @@ pub fn kill_rule(group: Group, cells: &[Value]) -> Value {
                     checked += 1;
                     // The small slack keeps a ratio of exactly 1.10 inside (1.10 - 1.0 is not exactly 0.10 in f64).
                     if (ratio - 1.0).abs() > KILL_TOLERANCE + 1e-12 {
-                        offenders.push(json!({
+                        let mut offender = json!({
                             "backend": backend, "workload": cell["workload"], "n": cell["n"],
                             "quantity": quantity, "median_ratio": ratio,
                             "direction": if ratio > 1.0 { "slower" } else { "faster" },
-                        }));
+                        });
+                        // W7 is no same-kernel pairing: its offender says what the ratio compares.
+                        if cell["workload"]
+                            .as_str()
+                            .and_then(Workload::parse)
+                            .is_some_and(|w| !w.same_kernel())
+                        {
+                            offender["note"] = json!(W7_RATIO_NOTE);
+                        }
+                        offenders.push(offender);
                     }
                 }
                 None => unpaired += 1,
@@ -299,7 +281,6 @@ pub fn kill_rule(group: Group, cells: &[Value]) -> Value {
         "judged": judged,
         "c_reopened": c_reopened,
         "reading_step": reading_step,
-        "excluded": excluded,
         "offenders": offenders,
         "reproducibility_clause": "an offender counts when it recurs in 3/3 seeds with `control_in_tolerance` true on that cell in each of those runs; a single-seed hit is listed, not counted (plan R1.3-4; `aggregate` counts the seeds and needs at least 3 runs with distinct seeds)",
         "control": {
@@ -394,120 +375,53 @@ mod tests {
         value
     }
 
-    /// W7 is a different algorithm on each side (gust-algo's sum against a hand reduction) and gust-algo has no GPU
-    /// timestamps, so a W7 cell is outside the rule on both sides: it neither counts as unpaired nor is judged.
-    #[test]
-    fn w7_cells_are_outside_the_rule_on_both_sides() {
-        let w7 = |backend: &str, single: Option<f64>| {
-            let mut value = named(backend, 1 << 20, single, single);
-            value["workload"] = json!("W7-f32");
-            value
-        };
-        let mut cells = vec![
-            w7("gust-gpu", None),
-            w7("wgsl-prebuilt", Some(1.0)),
-            w7("wgsl-percall", Some(1.7)),
-            named("gust-gpu", 1, Some(1.0), Some(1.0)),
-            named("wgsl-prebuilt", 1, Some(1.0), Some(1.0)),
-        ];
-        let record = kill_rule(&cells);
-        assert_eq!(record["checked"], 2, "only the W1 cell is judged");
-        assert_eq!(record["unpaired"], 0, "the W7 cells are not unpaired");
-        assert_eq!(record["judged"], true);
-        assert_eq!(record["c_reopened"], false);
-        assert_eq!(
-            record["control"]["checked"], 0,
-            "a W7 control is not recorded"
-        );
-        // The exclusion is listed, not silent: every W7 cell of the rule's backends and of the control, with its reason.
-        let listed = record["excluded"].as_array().expect("excluded is a list");
-        assert_eq!(listed.len(), 3);
-        assert!(
-            listed
-                .iter()
-                .all(|e| e["workload"] == "W7-f32" && e["n"] == (1u64 << 20))
-        );
-        assert!(listed.iter().any(|e| e["backend"] == "gust-gpu"));
-        assert!(
-            listed[0]["reason"]
-                .as_str()
-                .is_some_and(|r| r.contains("timestamps"))
-        );
-        // A W7 GUST cell with a wild ratio would not reopen C either.
-        cells[0] = w7("gust-gpu", Some(3.0));
-        assert_eq!(kill_rule(&cells)["c_reopened"], false);
-        // A run of W7 alone judges nothing, and says null.
-        let only = kill_rule(&cells[..3]);
-        assert_eq!(only["judged"], false);
-        assert!(only["c_reopened"].is_null());
+    fn on(workload: &str, backend: &str, n: u64, ratio: Option<f64>) -> Value {
+        let mut value = named(backend, n, ratio, ratio);
+        value["workload"] = json!(workload);
+        value
     }
 
-    /// A run that has a W7 GUST cell (no ratio by construction) is still judged, on its other cells, and says what it
-    /// left out (decision D190).
+    /// W7 (GUST's public sum against the hand tree) and W6-graph have GPU time since D194, so their cells are judged like
+    /// any other: a wild ratio re-opens C, a missing GUST ratio is unpaired and the run is not judged, and the control
+    /// of the cell is recorded. Nothing is listed as excluded any more.
     #[test]
-    fn a_run_with_a_w7_gust_cell_is_judged_and_lists_the_exclusion() {
-        let mut w7 = named("gust-gpu", 1 << 20, None, None);
-        w7["workload"] = json!("W7-u32");
-        let record = kill_rule(&[
-            w7,
-            named("gust-gpu", 1, Some(1.0), Some(1.0)),
-            named("wgsl-prebuilt", 1, Some(1.0), Some(1.0)),
-        ]);
-        assert_eq!(record["judged"], true);
-        assert_eq!(record["c_reopened"], false, "judged, not null");
-        assert_eq!(record["unpaired"], 0);
-        assert_eq!(
-            record["excluded"],
-            json!([{
-                "backend": "gust-gpu", "workload": "W7-u32", "n": 1 << 20,
-                "reason": "no same-kernel GUST/hand pairing: GUST runs the library's sum, which exposes no GPU timestamps",
-            }])
-        );
-        // A run with nothing excluded lists nothing.
-        let plain = kill_rule(&[named("gust-gpu", 1, Some(1.0), Some(1.0))]);
-        assert_eq!(plain["excluded"], json!([]));
-    }
-
-    /// A full run containing W6-graph (a GUST cell with no GPU-time metrics, by construction) is still judged on its
-    /// other cells, lists the W6-graph exclusion with its reason, and keeps W6-hand in the rule.
-    #[test]
-    fn a_run_with_w6_graph_is_judged_and_lists_the_exclusion() {
-        let w6 = |workload: &str, backend: &str, single: Option<f64>| {
-            let mut value = named(backend, 1 << 20, single, single);
-            value["workload"] = json!(workload);
-            value
-        };
-        let record = kill_rule(&[
-            w6("W6-graph", "gust-gpu", None),
-            w6("W6-graph", "wgsl-prebuilt", Some(1.0)),
-            w6("W6-hand", "gust-gpu", Some(1.0)),
-            w6("W6-hand", "wgsl-prebuilt", Some(1.0)),
-            named("gust-gpu", 1, Some(1.0), Some(1.0)),
-            named("wgsl-prebuilt", 1, Some(1.0), Some(1.0)),
-        ]);
-        assert_eq!(record["unpaired"], 0, "W6-graph is not left unpaired");
-        assert_eq!(record["checked"], 4, "W1 and W6-hand, two quantities each");
-        assert_eq!(record["judged"], true);
-        assert_eq!(record["c_reopened"], false, "judged, not null");
-        let listed = record["excluded"].as_array().expect("excluded is a list");
-        assert_eq!(listed.len(), 2);
-        assert!(listed.iter().all(|e| e["workload"] == "W6-graph"));
-        assert!(
-            listed[0]["reason"]
-                .as_str()
-                .is_some_and(|r| r.contains("execute_graph") && r.contains("no GPU timestamps"))
-        );
-        // W6-hand is in the rule: a wild ratio there reopens C.
-        let wild = kill_rule(&[
-            w6("W6-graph", "gust-gpu", None),
-            w6("W6-graph", "wgsl-prebuilt", Some(1.0)),
-            w6("W6-hand", "gust-gpu", Some(1.5)),
-            w6("W6-hand", "wgsl-prebuilt", Some(1.0)),
-        ]);
-        assert_eq!(wild["c_reopened"], true);
-        // W6-graph keeps `same_kernel`, so the report still judges its dispatch and end-to-end ratios.
-        assert!(Workload::PipelineGraph.same_kernel());
-        assert!(!Workload::PipelineGraph.gust_gpu_timestamps());
+    fn w7_and_w6_graph_cells_are_judged_like_any_other_cell() {
+        for workload in ["W7-f32", "W7-u32", "W6-graph", "W6-hand"] {
+            let mut cells = vec![
+                on(workload, "gust-gpu", 1 << 20, Some(1.0)),
+                on(workload, "wgsl-prebuilt", 1 << 20, Some(1.0)),
+                on(workload, "wgsl-percall", 1 << 20, Some(1.02)),
+                named("gust-gpu", 1, Some(1.0), Some(1.0)),
+                named("wgsl-prebuilt", 1, Some(1.0), Some(1.0)),
+            ];
+            let record = kill_rule(&cells);
+            assert_eq!(
+                record["checked"], 4,
+                "{workload}: two cells, two quantities"
+            );
+            assert_eq!(record["unpaired"], 0, "{workload}");
+            assert_eq!(record["judged"], true, "{workload}");
+            assert_eq!(record["c_reopened"], false, "{workload}");
+            assert_eq!(record["control"]["checked"], 2, "{workload}: its control");
+            assert!(record.get("excluded").is_none(), "{workload}");
+            // A wild ratio of the GUST cell re-opens C.
+            cells[0] = on(workload, "gust-gpu", 1 << 20, Some(3.0));
+            let wild = kill_rule(&cells);
+            assert_eq!(wild["c_reopened"], true, "{workload}");
+            assert_eq!(wild["offenders"][0]["workload"], workload);
+            // A W7 offender says what the ratio compares; a same-kernel one carries no note.
+            assert_eq!(
+                wild["offenders"][0].get("note").is_some(),
+                workload.starts_with("W7"),
+                "{workload}"
+            );
+            // No GPU time on the GUST side (no timestamp queries): unpaired, so the run is not judged, never `false`.
+            cells[0] = on(workload, "gust-gpu", 1 << 20, None);
+            let missing = kill_rule(&cells);
+            assert_eq!(missing["unpaired"], 2, "{workload}");
+            assert_eq!(missing["judged"], false, "{workload}");
+            assert!(missing["c_reopened"].is_null(), "{workload}");
+        }
     }
 
     #[test]
@@ -696,41 +610,30 @@ mod tests {
         assert!(publishable["c_reopened"].is_null());
     }
 
-    /// D190 and D191 hold in the spirv group the same way: the W7 and W6-graph cells of the group's rows are listed
-    /// as excluded and neither counted nor judged.
+    /// The spirv group judges W7 and W6-graph the same way: their cells count and a missing GUST ratio is unpaired.
     #[test]
-    fn the_spirv_group_applies_the_d190_and_d191_exclusions() {
+    fn the_spirv_group_judges_w7_and_w6_graph_cells() {
         let on = |workload: &str, backend: &str, ratio: Option<f64>| {
             let mut value = named(backend, 1 << 20, ratio, ratio);
             value["workload"] = json!(workload);
             value
         };
         let record = spirv_rule(&[
-            on("W7-f32", "gust-gpu-spirv", None),
+            on("W7-f32", "gust-gpu-spirv", Some(1.0)),
             on("W7-f32", "wgsl-prebuilt-unchecked", Some(1.0)),
-            on("W7-f32", "wgsl-percall-unchecked", Some(1.7)),
-            on("W6-graph", "gust-gpu-spirv", None),
+            on("W6-graph", "gust-gpu-spirv", Some(1.0)),
             on("W6-graph", "wgsl-prebuilt-unchecked", Some(1.0)),
-            named("gust-gpu-spirv", 1, Some(1.0), Some(1.0)),
-            named("wgsl-prebuilt-unchecked", 1, Some(1.0), Some(1.0)),
         ]);
         assert_eq!(record["judged"], true);
+        assert_eq!(record["checked"], 4);
         assert_eq!(record["unpaired"], 0);
-        assert_eq!(record["checked"], 2);
         assert_eq!(record["c_reopened"], false);
-        assert_eq!(record["control"]["checked"], 0);
-        let listed = record["excluded"].as_array().expect("excluded is a list");
-        assert_eq!(listed.len(), 5);
-        assert!(
-            listed
-                .iter()
-                .any(|e| e["backend"] == "gust-gpu-spirv" && e["workload"] == "W7-f32")
-        );
-        assert!(
-            listed
-                .iter()
-                .any(|e| e["backend"] == "wgsl-prebuilt-unchecked" && e["workload"] == "W6-graph")
-        );
+        let missing = spirv_rule(&[
+            on("W6-graph", "gust-gpu-spirv", None),
+            on("W6-graph", "wgsl-prebuilt-unchecked", Some(1.0)),
+        ]);
+        assert_eq!(missing["judged"], false);
+        assert_eq!(missing["unpaired"], 2);
     }
 }
 

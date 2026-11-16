@@ -434,7 +434,7 @@ fn aggregate_of(route: &str, group: &str, backend: &str, reference: Option<&str>
     for seed in [11, 22, 33] {
         text = text.replacen(
             &format!("{{ \"run_seed\": {seed},"),
-            &format!("{{ \"run_seed\": {seed}{rule},"),
+            &format!("{{ \"run_seed\": {seed}, \"publishable\": true{rule},"),
             1,
         );
     }
@@ -622,9 +622,28 @@ fn a_spirv_file_of_functional_or_unpublishable_runs_is_refused() {
             ruled.replace("{ \"run_seed\":", "{ \"functional\": true, \"run_seed\":"),
             "holds a functional run",
         ),
+        // F2: the per-run `publishable` alone changes (the file-level field stays true), so only `check_group` can refuse
+        // the file, and the message is its own: `false`, `null` and a missing field are each refused.
         (
-            ruled.replace("{ \"run_seed\":", "{ \"publishable\": false, \"run_seed\":"),
-            "not publishable",
+            ruled.replace(
+                "\"run_seed\": 11, \"publishable\": true",
+                "\"run_seed\": 11, \"publishable\": false",
+            ),
+            "holds a run that is not publishable (its `publishable` is false, missing or null)",
+        ),
+        (
+            ruled.replace(
+                "\"run_seed\": 22, \"publishable\": true",
+                "\"run_seed\": 22, \"publishable\": null",
+            ),
+            "holds a run that is not publishable (its `publishable` is false, missing or null)",
+        ),
+        (
+            ruled.replace(
+                "\"run_seed\": 33, \"publishable\": true",
+                "\"run_seed\": 33",
+            ),
+            "holds a run that is not publishable (its `publishable` is false, missing or null)",
         ),
         (
             aggregate_of("spirv", "spirv", "gust-gpu-spirv", None).replace(

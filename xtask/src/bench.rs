@@ -9,7 +9,10 @@
 //!   `DIR/<adapter-slug>/<commit>-<route>.json` (each with its `.samples.json` beside it) and checks that the page's
 //!   header block is the canonical one and its thresholds block is the harness's. A file is refused unless it says
 //!   `"publishable": true` with no banner, its sidecar exists, and the commit that added it carries a
-//!   `Quiet-window attestation:` line (plan 2.4 item 5). With no files the tables say none are filed. `--check` writes
+//!   `Quiet-window attestation:` line (plan 2.4 item 5). A file is one group of the harness (`publishable`, or `spirv` from the
+//!   SPIR-V route, D193): each is a section of its own, the `spirv` one labelled "checks off on both sides", and a file of the
+//!   SPIR-V route in the publishable group (pre-D193) is read and labelled legacy, not refused. With no files the tables say
+//!   none are filed. `--check` writes
 //!   nothing and fails when the page would change.
 //!
 //! xtask cannot depend on the bench crate (it is a workspace of its own), so the thresholds are read from the `pub const`
@@ -205,6 +208,11 @@ fn functional_verdict(text: &str) -> Result<String, String> {
 struct Filed {
     adapter: String,
     route: String,
+    /// The harness's backend group of the file: `publishable` or `spirv` (D193). A file without the field is read
+    /// as `publishable`.
+    group: String,
+    /// A file of the SPIR-V route judged in the publishable group (pre-D193): read, rendered and labelled, never refused.
+    legacy: bool,
     commit: String,
     file: Json,
 }
@@ -418,12 +426,65 @@ fn load_one(path: &Path, attestation: &dyn Fn(&Path) -> Option<String>) -> Resul
             "named for commit `{named_commit}` but the file's build commit is `{commit}`"
         ));
     }
+    let group = file
+        .get("group")
+        .and_then(Json::as_str)
+        .unwrap_or("publishable")
+        .to_owned();
+    let legacy = check_group(&file, &group, &route)?;
     Ok(Filed {
         adapter,
         route,
+        group,
+        legacy,
         commit,
         file,
     })
+}
+
+/// The reference backend of the `spirv` group's kill rule (`bench/gust-bench/src/group.rs`).
+const SPIRV_REFERENCE: &str = "wgsl-prebuilt-unchecked";
+
+/// The group of a filed aggregate against its route (D193). Only the table groups are filed: `publishable` (the WGSL
+/// build) and `spirv` (the SPIR-V route's, checks off on both sides). A `spirv` file must come from the SPIR-V route and
+/// carry the group's kill rule (`group` and `reference` in each run's record). A file of the SPIR-V route in the
+/// publishable group, or a publishable file with a `gust-gpu-spirv` point, is **legacy** (pre-D193): it is read and
+/// labelled, not refused. Returns whether the file is legacy.
+fn check_group(file: &Json, group: &str, route: &str) -> Result<bool, String> {
+    let has_spirv_point = file
+        .get("points")
+        .and_then(Json::as_array)
+        .unwrap_or(&[])
+        .iter()
+        .any(|point| point.get("backend").and_then(Json::as_str) == Some("gust-gpu-spirv"));
+    match group {
+        "publishable" => Ok(route == "spirv" || has_spirv_point),
+        "spirv" => {
+            if route != "spirv" {
+                return Err(format!(
+                    "group `spirv` but route `{route}`: the spirv group is the SPIR-V route's"
+                ));
+            }
+            for run in file.get("runs").and_then(Json::as_array).unwrap_or(&[]) {
+                let rule = run.get("kill_rule");
+                if matches!(rule, None | Some(Json::Null)) {
+                    continue;
+                }
+                let of = |key: &str| rule.and_then(|r| r.get(key)).and_then(Json::as_str);
+                if of("group") != Some("spirv") || of("reference") != Some(SPIRV_REFERENCE) {
+                    return Err(format!(
+                        "a run's kill rule is not the spirv group's (group {:?}, reference {:?}; it must be spirv against {SPIRV_REFERENCE})",
+                        of("group"),
+                        of("reference")
+                    ));
+                }
+            }
+            Ok(false)
+        }
+        other => Err(format!(
+            "group `{other}` is not a table group (only publishable and spirv aggregates are filed)"
+        )),
+    }
 }
 
 /// The directory name of an adapter: lower case, every run of other characters one `-`.
@@ -612,12 +673,32 @@ fn render_tables(filed: &[Filed], limits: &SampleLimits) -> String {
     let mut out = String::new();
     for entry in filed {
         let short = entry.commit.chars().take(12).collect::<String>();
+        // Each group is a section and a table of its own (D193): the `spirv` group's rows, whose checks are off on both
+        // sides, are never in the same table as the publishable group's.
+        let label = if entry.legacy {
+            ", legacy (pre-D193)"
+        } else if entry.group == "spirv" {
+            ", group spirv (checks off on both sides)"
+        } else {
+            ""
+        };
         let _ = writeln!(
             out,
-            "### {}, route {}, commit {short}\n",
+            "### {}, route {}{label}, commit {short}\n",
             entry.adapter, entry.route
         );
         let _ = writeln!(out, "{}\n", conditions(entry));
+        if entry.legacy {
+            let _ = writeln!(
+                out,
+                "Legacy file (pre-D193): the SPIR-V route was judged here in the publishable group, against hand WGSL that has wgpu's runtime checks on, which the SPIR-V route does not. The comparison is not the one the owner ruled for (D193: the `spirv` group, checks off on both sides). Its `gust-gpu-spirv` rows are not comparable with a `spirv` group's.\n"
+            );
+        } else if entry.group == "spirv" {
+            let _ = writeln!(
+                out,
+                "Group `spirv` (D193): checks off on both sides. `gust-gpu-spirv` against hand WGSL built without wgpu's runtime shader checks (`wgsl-prebuilt-unchecked`, with `wgsl-percall-unchecked` as the control). Its rows are not comparable with the publishable group's `wgsl-prebuilt` and `wgsl-percall`, which have the checks on.\n"
+            );
+        }
         let _ = writeln!(
             out,
             "Median over the per-run medians, in ms; the bracket is the spread of the run medians (min to max).\n"

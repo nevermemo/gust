@@ -1,8 +1,11 @@
 //! The committed rust-gpu module of the `rustgpu-wgpu` comparator (m10.b4), its manifest and the CPU-only checks on both,
 //! and the decision of whether the backend runs. Compiled in a `rust-gpu` build (the run file records the module's
 //! identity from here) and in every test build, so `cargo test -p gust-bench` checks the module against its manifest
-//! without a GPU and without the feature. No CI job runs the bench's unit tests; the same check runs on every push as a
-//! step of `cargo xtask lint` (`xtask/src/lint.rs`, `rust_gpu_module_problems`).
+//! without a GPU and without the feature. No CI job runs the bench's unit tests. A CPU-only half of the check runs in
+//! `cargo xtask lint` (`xtask/src/lint.rs`, `rust_gpu_module_problems`), which CI's Unit suite runs on pushes to main and
+//! `release/*` and on pull requests. It is a CPU-only half of this test, not the same check: lint finds the manifest's
+//! entry names in the module as byte strings (it does not parse `OpEntryPoint`), where the test here compares the
+//! manifest's list with `ENTRY_POINTS`; neither reads the module's instructions.
 
 // In a test build without the `rust-gpu` feature only the tests use most of this.
 #![cfg_attr(not(feature = "rust-gpu"), allow(dead_code))]

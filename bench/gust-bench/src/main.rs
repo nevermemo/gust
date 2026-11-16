@@ -2,9 +2,9 @@
 //!
 //! ```text
 //! gust-bench run --out run1.json [--label NAME] [--quick] [--workloads W1,W3,W4-256-zipf] [--sizes N,N] [--backends a,b]
-//!                [--group publishable|ablation] [--ablation bind-group-reuse,staging-reuse,one-submission,all-on|all]
+//!                [--group publishable|spirv|ablation] [--ablation bind-group-reuse,staging-reuse,one-submission,all-on|all]
 //!                [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S]
-//!                [--cold-only] [--cold-repeats N] [--seed N] [--with gust-setup,gust-shader,gust-device,unchecked]
+//!                [--cold-only] [--cold-repeats N] [--seed N] [--with gust-setup,gust-shader,gust-device]
 //!                [--functional]   # correctness only, quick sizes, any adapter (lavapipe included), no sampler, no timing published
 //!                [--adapter "NAME"] # the one adapter whose name contains NAME (letter case ignored), for both devices of the run
 //! gust-bench aggregate --json out.json --md out.md run1.json run2.json run3.json
@@ -68,7 +68,7 @@ use serde_json::{Value, json};
 use wgsl_wgpu::{HandWgsl, Mode, Switch, WgpuContext};
 use workloads::Workload;
 
-const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W3,...] [--sizes N,N] [--backends a,b] [--group publishable|ablation] [--ablation LIST|all-on|all] [--with gust-setup,gust-shader,gust-device,unchecked] [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N] [--functional] [--adapter NAME]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench dump-kernels --out DIR (slang-runtime build)\n       gust-bench probe-adapters\n       gust-bench profile --out FILE [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS] (profile-counts build)\n       gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall,gust-gpu] [--label batch16|end_to_end] (wgpu-trace build)\n       gust-bench list";
+const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W3,...] [--sizes N,N] [--backends a,b] [--group publishable|spirv|ablation] [--ablation LIST|all-on|all] [--with gust-setup,gust-shader,gust-device] [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N] [--functional] [--adapter NAME]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench dump-kernels --out DIR (slang-runtime build)\n       gust-bench probe-adapters\n       gust-bench profile --out FILE [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS] (profile-counts build)\n       gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall,gust-gpu] [--label batch16|end_to_end] (wgpu-trace build)\n       gust-bench list";
 
 #[derive(Default)]
 struct Options {
@@ -90,7 +90,7 @@ struct Options {
     cap_secs: Option<f64>,
     /// The raw `--ablation` list (switch names, `all-on`, `all`), parsed where the hand-WGSL backends exist.
     ablation: Option<String>,
-    /// `--with gust-setup,gust-shader,gust-device,unchecked`: the m10.b1c probe backends, appended to the publishable group
+    /// `--with gust-setup,gust-shader,gust-device`: the m10.b1c probe backends, appended to the publishable group
     /// (see `gpu_backends`).
     with_probe: Vec<String>,
     settle_secs: Option<f64>,
@@ -131,18 +131,36 @@ fn parse_ablation(list: &str) -> Result<(Vec<Switch>, bool), String> {
 /// The group of a run and its ablation list. The ablation backends run in their own group (plan R1.2-3), compared only
 /// against the wgsl-percall and wgsl-prebuilt of that group, so `--ablation` needs `--group ablation`; the ablation
 /// group without a list is the whole table.
+///
+/// The default group follows the build's route (D193): `publishable` in the WGSL build, `spirv` in the `spirv-route`
+/// build, which refuses `--group publishable` (and the WGSL build refuses `--group spirv`).
 fn resolve_group(
     group: Option<Group>,
     ablation: Option<&str>,
+    spirv_route: bool,
 ) -> Result<(Group, Option<String>), String> {
-    match (group.unwrap_or(Group::Publishable), ablation) {
-        (Group::Publishable, None) => Ok((Group::Publishable, None)),
-        (Group::Publishable, Some(_)) => Err(
+    let group = group.unwrap_or_else(|| group::default_group(spirv_route));
+    group::check_route(group, spirv_route)?;
+    match (group, ablation) {
+        (Group::Publishable | Group::Spirv, None) => Ok((group, None)),
+        (Group::Publishable | Group::Spirv, Some(_)) => Err(
             "--ablation needs --group ablation: the ablation backends run in a group of their own"
                 .to_owned(),
         ),
         (Group::Ablation, None) => Ok((Group::Ablation, Some("all".to_owned()))),
         (Group::Ablation, Some(list)) => Ok((Group::Ablation, Some(list.to_owned()))),
+    }
+}
+
+/// Whether this build runs GUST on the SPIR-V route (the `spirv-route` feature; the GPU-less build has no route).
+fn spirv_route() -> bool {
+    #[cfg(feature = "gpu")]
+    {
+        gust_gpu::backend_id() == group::SPIRV_GUST
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        false
     }
 }
 
@@ -187,10 +205,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--group" => {
                 let text = value("--group")?;
-                options.group =
-                    Some(Group::parse(&text).ok_or_else(|| {
-                        format!("unknown group {text} (publishable or ablation)")
-                    })?);
+                options.group = Some(Group::parse(&text).ok_or_else(|| {
+                    format!("unknown group {text} (publishable, spirv or ablation)")
+                })?);
             }
             "--samples" => {
                 options.samples = Some(value("--samples")?.parse().map_err(|e| format!("{e}"))?);
@@ -202,13 +219,17 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--with" => {
                 for item in value("--with")?.split(',') {
                     match item {
-                        "gust-setup" | "gust-shader" | "gust-device" | "unchecked" => {
+                        "gust-setup" | "gust-shader" | "gust-device" => {
                             options.with_probe.push(item.to_owned());
                         }
                         other => {
-                            return Err(format!(
-                                "--with takes gust-setup, gust-shader, gust-device or unchecked, not {other}"
-                            ));
+                            return Err(if other == "unchecked" {
+                                "--with unchecked is gone: the unchecked hand rows are the spirv group's own (D193); run them with --group spirv in the spirv-route build".to_owned()
+                            } else {
+                                format!(
+                                    "--with takes gust-setup, gust-shader or gust-device, not {other}"
+                                )
+                            });
                         }
                     }
                 }
@@ -298,8 +319,9 @@ fn check_sizes(options: &Options, workloads: &[Workload]) -> Result<(), String> 
     Ok(())
 }
 
-/// The GPU backends of a group. The publishable group is GUST (the route of this build: `gust-gpu`, or `gust-gpu-spirv`
-/// in the `spirv-route` build), wgsl-prebuilt and wgsl-percall; the ablation group is wgsl-percall and wgsl-prebuilt
+/// The GPU backends of a group. The publishable group is `gust-gpu`, wgsl-prebuilt and wgsl-percall (the WGSL build); the
+/// spirv group (the `spirv-route` build, D193) is `gust-gpu-spirv` with the hand WGSL compiled without wgpu's runtime checks
+/// (`wgsl-prebuilt-unchecked`, the reference, and `wgsl-percall-unchecked`, the control); the ablation group is wgsl-percall and wgsl-prebuilt
 /// plus the switch ablations, with no GUST backend.
 #[cfg(feature = "gpu")]
 fn gpu_backends(
@@ -316,6 +338,11 @@ fn gpu_backends(
             Box::new(HandWgsl::new(Rc::clone(ctx), Mode::Prebuilt)),
             Box::new(HandWgsl::new(Rc::clone(ctx), Mode::PerCall)),
         ],
+        Group::Spirv => vec![
+            Box::new(gust_gpu::GustGpu::new(DeviceHandle::clone(device))),
+            Box::new(HandWgsl::unchecked(Rc::clone(ctx), Mode::Prebuilt)),
+            Box::new(HandWgsl::unchecked(Rc::clone(ctx), Mode::PerCall)),
+        ],
         Group::Ablation => vec![
             Box::new(HandWgsl::new(Rc::clone(ctx), Mode::PerCall)),
             Box::new(HandWgsl::new(Rc::clone(ctx), Mode::Prebuilt)),
@@ -328,12 +355,12 @@ fn gpu_backends(
         backends.push(Box::new(HandWgsl::all_on(Rc::clone(ctx))));
     }
     // The m10.b1c probes (`--with`): more hand backends in the publishable rotation, `gust-setup` and `gust-device` on a
-    // device of their own set up like GUST's, `gust-shader` and `unchecked` on the shared hand device. The kill rule
+    // device of their own set up like GUST's, `gust-shader` on the shared hand device. The kill rule
     // ignores them (it judges GUST against wgsl-prebuilt only).
     for (name, probe) in probes {
-        backends.push(match name.as_str() {
-            "unchecked" => Box::new(HandWgsl::unchecked(Rc::clone(probe))),
-            gust => Box::new(HandWgsl::gust_probe(Rc::clone(probe), gust)),
+        backends.push({
+            let gust = name.as_str();
+            Box::new(HandWgsl::gust_probe(Rc::clone(probe), gust))
         });
     }
     backends
@@ -506,6 +533,7 @@ fn build_config(options: &Options, group: Group) -> Config {
     });
     config.cold_only = options.cold_only;
     config.group = group.name();
+    config.reference = group.reference();
     if let Some(repeats) = options.cold_repeats {
         config.cold_repeats = repeats;
     }
@@ -648,18 +676,21 @@ fn run_cells(
     (cells, failures)
 }
 
-/// The kill rule of the publishable group over the cells, printed; null for the ablation group.
+/// The kill rule of the run's table group over the cells, printed; null for the ablation group.
 #[cfg(feature = "gpu")]
 fn kill_rule_of(group: Group, cells: &[Value]) -> Value {
-    if group != Group::Publishable {
+    if !group.is_table() {
         return Value::Null;
     }
-    let record = group::kill_rule(cells);
+    let record = group::kill_rule(group, cells);
     eprintln!(
-        "kill rule: C re-opened = {} (judged {}: {} paired GPU-time ratios checked, {} unpaired, offenders {}); control {} outside the window, worst {}",
+        "kill rule ({} group): C re-opened = {}, reading step = {} (judged {}: {} paired GPU-time ratios checked against {}, {} unpaired, offenders {}); control {} outside the window, worst {}",
+        record["group"],
         record["c_reopened"],
+        record["reading_step"],
         record["judged"],
         record["checked"],
+        record["reference"],
         record["unpaired"],
         record["offenders"],
         record["control"]["outside_tolerance"],
@@ -772,7 +803,7 @@ fn run_inputs(
         cold_only: options.cold_only,
         sizes_overridden: options.sizes.is_some(),
         samples: config.samples,
-        group_is_publishable: group == Group::Publishable,
+        group_is_publishable: group.is_table(),
         release_build: !cfg!(debug_assertions),
         tainting_features: meta::build_features()
             .into_iter()
@@ -793,7 +824,8 @@ fn run(options: &Options) -> BenchResult<bool> {
     let out = options.out.as_deref().ok_or("--out is required")?;
     let started_unix_s = meta::unix_now();
     let git_start = meta::git_state();
-    let (group, ablation_list) = resolve_group(options.group, options.ablation.as_deref())?;
+    let (group, ablation_list) =
+        resolve_group(options.group, options.ablation.as_deref(), spirv_route())?;
     let (ablation, all_on) = match &ablation_list {
         Some(list) => parse_ablation(list)?,
         None => (Vec::new(), false),
@@ -862,13 +894,13 @@ fn run(options: &Options) -> BenchResult<bool> {
     let mut backends = gpu_backends(group, &gust_device, &ctx, &ablation, all_on, &probes);
     let (rust_gpu, backends_not_run) = rust_gpu_backend(options, group, adapter)?;
     backends.extend(rust_gpu);
-    if group == Group::Publishable {
+    if group.is_table() {
         backends.extend(cpu_backends(threads));
     }
-    if group == Group::Publishable
+    if group.is_table()
         && let Some(wanted) = &options.backends
     {
-        group::require_full_set(wanted, gust_gpu::backend_id())?;
+        group::require_full_set(group, wanted, gust_gpu::backend_id())?;
     }
     select_backends(&mut backends, options.backends.as_ref())?;
 
@@ -1010,7 +1042,7 @@ fn run(options: &Options) -> BenchResult<bool> {
     let out = options.out.as_deref().ok_or("--out is required")?;
     let started_unix_s = meta::unix_now();
     let git_start = meta::git_state();
-    let (group, _) = resolve_group(options.group, options.ablation.as_deref())?;
+    let (group, _) = resolve_group(options.group, options.ablation.as_deref(), spirv_route())?;
     if options.adapter.is_some() {
         return Err("--adapter needs the default build: this build has no GPU runtime".into());
     }
@@ -1256,7 +1288,9 @@ fn list() {
             workload.sizes()
         );
     }
-    println!("groups: publishable (default), ablation");
+    println!(
+        "groups: publishable (default of the WGSL build), spirv (default of the spirv-route build), ablation"
+    );
     println!("gpu runtime in this build: {}", cfg!(feature = "gpu"));
     println!("features: {:?}", meta::build_features());
     println!("GUST profile: {}", gust::profile::NAME);
@@ -1335,19 +1369,75 @@ mod tests {
     #[test]
     fn the_ablation_backends_run_only_in_the_ablation_group() {
         assert_eq!(
-            resolve_group(None, None).unwrap(),
+            resolve_group(None, None, false).unwrap(),
             (Group::Publishable, None)
         );
-        assert!(resolve_group(Some(Group::Publishable), Some("all")).is_err());
-        assert!(resolve_group(None, Some("all-on")).is_err());
+        assert!(resolve_group(Some(Group::Publishable), Some("all"), false).is_err());
+        assert!(resolve_group(None, Some("all-on"), false).is_err());
+        assert!(resolve_group(Some(Group::Spirv), Some("all"), true).is_err());
+        for route in [false, true] {
+            assert_eq!(
+                resolve_group(Some(Group::Ablation), None, route).unwrap(),
+                (Group::Ablation, Some("all".to_owned()))
+            );
+            assert_eq!(
+                resolve_group(Some(Group::Ablation), Some("all-on"), route).unwrap(),
+                (Group::Ablation, Some("all-on".to_owned()))
+            );
+        }
+    }
+
+    /// D193: the SPIR-V route is judged in the `spirv` group and only there; the default group follows the build.
+    #[test]
+    fn the_spirv_route_build_runs_the_spirv_group_and_refuses_the_publishable_one() {
         assert_eq!(
-            resolve_group(Some(Group::Ablation), None).unwrap(),
-            (Group::Ablation, Some("all".to_owned()))
+            resolve_group(None, None, true).unwrap(),
+            (Group::Spirv, None)
         );
         assert_eq!(
-            resolve_group(Some(Group::Ablation), Some("all-on")).unwrap(),
-            (Group::Ablation, Some("all-on".to_owned()))
+            resolve_group(Some(Group::Spirv), None, true).unwrap(),
+            (Group::Spirv, None)
         );
+        let refused = resolve_group(Some(Group::Publishable), None, true).unwrap_err();
+        assert!(
+            refused.contains("D193") && refused.contains("--group spirv"),
+            "{refused}"
+        );
+        // The WGSL build has no SPIR-V route to judge.
+        let refused = resolve_group(Some(Group::Spirv), None, false).unwrap_err();
+        assert!(refused.contains("spirv-route"), "{refused}");
+    }
+
+    #[test]
+    fn the_spirv_group_parses_and_the_unchecked_probe_is_gone() {
+        let args = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            parse(&args(&["--group", "spirv"])).unwrap().group,
+            Some(Group::Spirv)
+        );
+        let Err(error) = parse(&args(&["--with", "unchecked"])) else {
+            panic!("--with unchecked must be refused");
+        };
+        assert!(
+            error.contains("--group spirv") && error.contains("D193"),
+            "{error}"
+        );
+        assert!(parse(&args(&["--with", "gust-shader"])).is_ok());
+        assert!(parse(&args(&["--with", "nope"])).is_err());
+    }
+
+    #[test]
+    fn the_run_config_pairs_against_the_groups_reference() {
+        let options = parse(&[]).unwrap();
+        assert_eq!(
+            build_config(&options, Group::Publishable).reference,
+            "wgsl-prebuilt"
+        );
+        assert_eq!(
+            build_config(&options, Group::Spirv).reference,
+            "wgsl-prebuilt-unchecked"
+        );
+        assert_eq!(build_config(&options, Group::Spirv).group, "spirv");
     }
 
     #[test]

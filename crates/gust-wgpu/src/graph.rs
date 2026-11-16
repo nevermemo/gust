@@ -152,11 +152,13 @@ pub struct GraphReport {
     pub declared_edges: usize,
     /// Bytes of buffers touched by dispatches but by no transfer in this execution.
     pub resident_bytes: u64,
-    /// The host wall-clock time that `execute_graph` took.
+    /// The host wall-clock time of the call (`execute_graph` or `execute_graph_timed`; for the latter it includes any
+    /// wait for the device's timestamp profiler).
     pub host_elapsed: Duration,
     /// The GPU time of the graph's dispatch passes, first begin to last end, from
     /// [`HeadlessDevice::execute_graph_timed`] only. `None` from `execute_graph`, on an adapter without timestamp
-    /// queries, and for a graph that ran no dispatch pass.
+    /// queries, and for a graph that ran no dispatch pass (only transfers, or only zero-element direct dispatches; an
+    /// indirect dispatch always runs a pass, even with zero arguments, so it gives `Some`).
     pub gpu_elapsed: Option<Duration>,
 }
 
@@ -721,6 +723,12 @@ impl GraphOutput {
     }
 }
 
+/// The query slots pass number `pass` of `total` dispatch passes writes: slot 0 at the beginning of the first pass,
+/// slot 1 at the end of the last, so a lone pass writes both and a middle pass none.
+fn stamp_slots(pass: usize, total: usize) -> (Option<u32>, Option<u32>) {
+    ((pass == 0).then_some(0), (pass + 1 == total).then_some(1))
+}
+
 impl HeadlessDevice {
     /// Validate, encode, and run a graph, waiting for its readbacks.
     ///
@@ -742,26 +750,59 @@ impl HeadlessDevice {
     /// times are not reported.
     ///
     /// `gpu_elapsed` is `None` when the adapter lacks timestamp queries ([`HeadlessDevice::supports_gpu_timestamps`])
-    /// and when the graph ran no dispatch pass (only transfers, or only zero-element dispatches).
+    /// and when the graph ran no dispatch pass (only transfers, or only zero-element direct dispatches; an indirect
+    /// dispatch always runs a pass, even with zero arguments, so it gives `Some`).
     ///
     /// The device has one timestamp profiler. A timed graph holds it from encoding until the timestamps are read, so
     /// a concurrent `execute_graph_timed` or [`HeadlessDevice::dispatch_batch_timed`] on the same device waits for it;
-    /// `execute_graph` never takes it, so a program that does not call this pays nothing.
+    /// `execute_graph` never takes it, so a program that does not call this pays nothing. The wait is part of
+    /// [`GraphReport::host_elapsed`].
+    ///
+    /// A timed run prepares every dispatch node before it encodes any, so when a graph has two faults, a preparation
+    /// error of a later node can be returned instead of an earlier `pixel` node's attachment error
+    /// ([`Error::OutOfMemory`]), which `execute_graph` would have returned.
+    ///
+    /// Known limitation, shared with [`HeadlessDevice::dispatch_batch_timed`]: if reading the timestamps fails (a
+    /// mapping error or timeout), the profiler's read-back buffer may stay mapped and a later timed call on the device
+    /// can then fail.
     ///
     /// ```
+    /// use gust::gpu;
     /// use gust_wgpu::{GpuBufferAccess, HeadlessDevice, StagedGraph};
     ///
-    /// let device = HeadlessDevice::new()?;
-    /// let buffer = device.create_typed_buffer("values", &[0u32; 4], GpuBufferAccess::ReadWrite);
-    /// let mut graph = StagedGraph::new();
-    /// graph.write(&buffer, &[1u32, 2, 3, 4]);
-    /// let read = graph.read(&buffer);
-    /// let output = device.execute_graph_timed(&graph)?;
-    /// assert_eq!(output.readback::<u32>(read)?, [1, 2, 3, 4]);
-    /// // No dispatch pass ran, so there is nothing to time.
-    /// assert_eq!(output.report.gpu_elapsed, None);
-    /// assert_eq!(device.execute_graph(&graph)?.report.gpu_elapsed, None);
-    /// # Ok::<(), gust_wgpu::Error>(())
+    /// #[gpu]
+    /// mod ops {
+    ///     #[kernel(workgroup_size(64, 1, 1))]
+    ///     pub fn square(id: SV_DispatchThreadID, mut data: RWStructuredBuffer<float>) {
+    ///         let i = id.x;
+    ///         if i < data.len() {
+    ///             data[i] = data[i] * data[i];
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// fn main() -> Result<(), gust_wgpu::Error> {
+    ///     let device = HeadlessDevice::new()?;
+    ///     let data = device.create_typed_buffer("data", &[0.0f32; 4], GpuBufferAccess::ReadWrite);
+    ///     let input = [1.0f32, 2.0, 3.0, 4.0];
+    ///     let call = ops::square::call(4, &data);
+    ///
+    ///     let mut graph = StagedGraph::new();
+    ///     graph.write(&data, &input);
+    ///     graph.run(&call);
+    ///     let read = graph.read(&data);
+    ///
+    ///     let output = device.execute_graph_timed(&graph)?;
+    ///     assert_eq!(output.readback::<f32>(read)?, [1.0, 4.0, 9.0, 16.0]);
+    ///     // `Some` where the adapter has timestamp queries, `None` otherwise.
+    ///     assert_eq!(
+    ///         output.report.gpu_elapsed.is_some(),
+    ///         device.supports_gpu_timestamps()
+    ///     );
+    ///     // `execute_graph` takes no timestamps.
+    ///     assert_eq!(device.execute_graph(&graph)?.report.gpu_elapsed, None);
+    ///     Ok(())
+    /// }
     /// ```
     pub fn execute_graph_timed(&self, graph: &StagedGraph<'_>) -> Result<GraphOutput, Error> {
         self.execute_graph_inner(graph, true)
@@ -775,21 +816,14 @@ impl HeadlessDevice {
         let started = Instant::now();
         graph.validate(self)?;
 
-        // The profiler is taken only by a timed run on an adapter that has one. The first and last pass of the
-        // graph are not known while encoding (a zero-element dispatch has no pass), so a timed run prepares every
-        // dispatch node first (pipeline cache hits) and then stamps the first and last of the passes.
-        let profiler = if timed {
-            self.timestamp_profiler.as_ref().map(|profiler| {
-                profiler
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-            })
-        } else {
-            None
-        };
+        // A timed run on an adapter with timestamp queries stamps the first and last pass. They are not known while
+        // encoding (a zero-element dispatch has no pass), so every dispatch node is prepared first, and only then is
+        // the device's profiler locked (as `dispatch_batch_timed` does), so a run-time compile on a cache miss never
+        // holds it. An untimed run takes no lock and prepares inline.
+        let stamp = timed && self.timestamp_profiler.is_some();
         let mut pre_prepared = None;
         let mut total_passes = 0_usize;
-        if profiler.is_some() {
+        if stamp {
             let mut all = Vec::with_capacity(graph.nodes.len());
             for node in &graph.nodes {
                 let list = match &node.kind {
@@ -808,10 +842,18 @@ impl HeadlessDevice {
             }
             pre_prepared = Some(all);
         }
+        let profiler = if stamp {
+            self.timestamp_profiler.as_ref().map(|profiler| {
+                profiler
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            })
+        } else {
+            None
+        };
         let stamps_of = |pass: usize| {
             profiler.as_ref().and_then(|profiler| {
-                let begin = (pass == 0).then_some(0);
-                let end = (pass + 1 == total_passes).then_some(1);
+                let (begin, end) = stamp_slots(pass, total_passes);
                 (begin.is_some() || end.is_some()).then_some(PassTimestamps {
                     query_set: &profiler.query_set,
                     begin,
@@ -1006,5 +1048,23 @@ impl HeadlessDevice {
             },
             readbacks,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stamp_slots;
+
+    #[test]
+    fn the_first_pass_stamps_the_beginning_and_the_last_the_end() {
+        // One pass carries both slots.
+        assert_eq!(stamp_slots(0, 1), (Some(0), Some(1)));
+        // Two passes: the first begins, the last ends.
+        assert_eq!(stamp_slots(0, 2), (Some(0), None));
+        assert_eq!(stamp_slots(1, 2), (None, Some(1)));
+        // Three passes: the middle one carries nothing.
+        assert_eq!(stamp_slots(0, 3), (Some(0), None));
+        assert_eq!(stamp_slots(1, 3), (None, None));
+        assert_eq!(stamp_slots(2, 3), (None, Some(1)));
     }
 }

@@ -13,7 +13,7 @@ each node's edges from the buffers it touches and the access the kernel declares
 writer of a buffer it reads, and a writer waits for the earlier readers. Explicit edges are available too, and the two
 styles may be mixed. `device.execute_graph(&graph)` runs the nodes in insertion order as one submission, rejects a graph
 whose edges do not cover the hazards its nodes create, and returns a report with the transfer bytes, the bytes that
-stayed resident and the dispatch and edge counts. Uniforms can be written as nodes; a kernel with a texture or sampler
+stayed resident and the dispatch and edge counts. `device.execute_graph_timed(&graph)` runs the same graph and also reports `gpu_elapsed`, the GPU time from the first dispatch pass to the end of the last (`None` without timestamp queries or without a dispatch pass); `execute_graph` takes no timestamps and costs nothing extra. Uniforms can be written as nodes; a kernel with a texture or sampler
 parameter cannot be a node.
 
 ## Resident data: `GpuVec`, pools and indirect dispatch

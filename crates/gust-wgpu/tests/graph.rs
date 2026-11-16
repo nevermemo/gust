@@ -1188,15 +1188,24 @@ mod stamped {
     }
 }
 
-/// What a timed graph with `passes` dispatch passes must report on this device.
+/// What a timed graph that ran exactly `passes` dispatch passes must report on this device: `Some` only where the
+/// adapter has timestamp queries and a pass ran, and then a duration that is neither a wrapped difference nor an
+/// absolute clock reading (a wrong stamp slot would give one of those).
 #[track_caller]
 fn assert_stamped(device: &HeadlessDevice, report: &gust_wgpu::GraphReport, passes: usize) {
+    assert_eq!(report.dispatches, passes);
+    let adapter = device.adapter_info().name.clone();
     assert_eq!(
         report.gpu_elapsed.is_some(),
         device.supports_gpu_timestamps() && passes > 0,
-        "adapter {:?}",
-        device.adapter_info().name
+        "adapter {adapter:?}"
     );
+    if let Some(elapsed) = report.gpu_elapsed {
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "implausible GPU time {elapsed:?} on {adapter:?}"
+        );
+    }
 }
 
 #[test]
@@ -1229,14 +1238,21 @@ fn a_timed_graph_returns_the_outputs_of_an_untimed_one() {
     assert_eq!(timed_values, untimed_values);
     assert_eq!(untimed.gpu_elapsed, None);
     assert_stamped(&device, &timed, 2);
-    assert_eq!(
-        (timed.dispatches, timed.upload_bytes, timed.readback_bytes),
-        (
-            untimed.dispatches,
-            untimed.upload_bytes,
-            untimed.readback_bytes
-        )
+    // Evidence line for the gate log (`-- --nocapture`): whether the `Some` path ran on this adapter.
+    println!(
+        "ts2 evidence: adapter={:?} supports_gpu_timestamps={} gpu_elapsed={:?}",
+        device.adapter_info().name,
+        device.supports_gpu_timestamps(),
+        timed.gpu_elapsed
     );
+    // Every field except the two elapsed times is deterministic and must agree.
+    let strip = |report: &gust_wgpu::GraphReport| {
+        let mut report = report.clone();
+        report.host_elapsed = std::time::Duration::ZERO;
+        report.gpu_elapsed = None;
+        report
+    };
+    assert_eq!(strip(&timed), strip(&untimed));
 }
 
 #[test]
@@ -1345,9 +1361,12 @@ fn timed_graphs_and_timed_batches_share_the_profiler_without_deadlock() {
     let batch_out = floats(&device, "b-out", &vec![0.0; COUNT]);
     let graph_call = small::copy::call(COUNT as u32, &input, &graph_out);
     let batch_call = small::copy::call(COUNT as u32, &input, &batch_out);
-    // Both threads do a bounded number of rounds and are joined by the scope; no sleep, no timeout.
+    // Both threads meet at a barrier, so the loops start together and overlap; each does a bounded number of rounds
+    // and the scope joins them; no sleep, no timeout.
+    let start = std::sync::Barrier::new(2);
     std::thread::scope(|scope| {
         scope.spawn(|| {
+            start.wait();
             for _ in 0..ROUNDS {
                 let mut graph = StagedGraph::new();
                 graph.run(&graph_call);
@@ -1356,6 +1375,7 @@ fn timed_graphs_and_timed_batches_share_the_profiler_without_deadlock() {
             }
         });
         scope.spawn(|| {
+            start.wait();
             for _ in 0..ROUNDS {
                 let timing = device
                     .dispatch_batch_timed(&[(&batch_call).into()])

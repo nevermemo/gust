@@ -125,7 +125,7 @@ run is a chain of six dispatches and the workload is about what sequencing them 
 the example has one kernel, `transform`, with six statements, and a one-node graph has no edges and nothing to sequence. W6
 makes each statement a kernel, the only reading in which a graph has more than one node. The inputs are the
 example's five periodic streams in the example's ranges. The traffic of the six passes is 11 reads and 6 writes of 4 bytes per
-element (68 bytes), which is what the dispatch and batch bandwidth columns divide by. The end-to-end bandwidth columns (GPU
+element (68 bytes), which is what the batch bandwidth columns divide by. The end-to-end bandwidth columns (GPU
 and rayon-N alike) divide by 24 bytes per element instead: what an end-to-end sample moves over the bus is five uploads and
 one read-back (20 + 4 bytes), and a fused CPU loop touches the same 24; the intermediates never leave the device.
 
@@ -151,7 +151,8 @@ backends have no `StagedGraph`: `gust-cpu` and `gust-twin` run the six kernels o
 (`signal_pipeline::element`, each stage rounded to `f32`, so the result is the same one a stage-by-stage run gives); none of them
 is in the `W6-graph` table (so that table has no rayon-N row, and the renderer says so instead of stating a break-even).
 `wgsl-gust-shader` does not run W6, like W5, W7 and W9, and neither do the order probes `wgsl-prebuilt+gust-device` and
-`wgsl-prebuilt+gust-setup` (they need the generated shader and its order). CubeCL is not in W6.
+`wgsl-prebuilt+gust-setup` (both need the timestamp-first resource order of GUST's single-kernel `prepare`, which W6's
+staged path does not build, and `gust-setup` also needs GUST's generated shader). CubeCL is not in W6.
 
 **The W6 bound.** Every operation is modelled as `fl(a op b) = (a op b)(1 + delta) + eta`, `|delta| <= u`, `|eta| <= 2^-126`,
 with `u = 2^-24` for a CPU backend and `u = 2^-23` for a GPU (the unit roundoff section above); the division uses `u_div = u`

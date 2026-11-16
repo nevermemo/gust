@@ -61,6 +61,21 @@
       "name": "matmul"
     },
     {
+      "clean_sha256": "d8c6efc1e7a00cf1faed4aa83b5bfa73841bb18e3658c88c5123b55359807734",
+      "entry_point": "gpu_kernel_step",
+      "formats": [
+        {
+          "file": "f1dc6e78332f223a.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "5a67fa4854462b29c3faf57f43641acaf784e3c2ea4a5c6731a9652af782d3b1",
+          "sha256": "7a26226c0affce50e7deb07d899463ef165b2b9fc99dad6e09f5e0a50bf80f9a"
+        }
+      ],
+      "key": "f1dc6e78332f223a",
+      "module": "kernel",
+      "name": "step"
+    },
+    {
       "clean_sha256": "905eca6e3a07e95814ea9ec1f74e2f7a47ceb7792e9c9abaa0b698529d32f2c3",
       "entry_point": "gpu_kernel_saxpy",
       "formats": [

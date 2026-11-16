@@ -6,6 +6,7 @@
 //!                [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S]
 //!                [--cold-only] [--cold-repeats N] [--seed N] [--with gust-setup,gust-shader,gust-device,unchecked]
 //!                [--functional]   # correctness only, quick sizes, any adapter (lavapipe included), no sampler, no timing published
+//!                [--adapter "NAME"] # the one adapter whose name contains NAME (letter case ignored), for both devices of the run
 //! gust-bench aggregate --json out.json --md out.md run1.json run2.json run3.json
 //! gust-bench dump-wgsl            # the WGSL GUST generates for each kernel, on stdout (slang-runtime builds)
 //! gust-bench dump-kernels --out DIR # each kernel's Slang source, WGSL and slangc SPIR-V, as files (slang-runtime builds)
@@ -22,6 +23,8 @@
 //! Build with `RUSTFLAGS="--cfg gust_dual"` to include the GUST CPU twin (D26). The `GUST_PROFILE=cpu` build has no GPU
 //! runtime (`--no-default-features`): it runs the CPU backends only, among them `gust-cpu`. See `bench/README.md`.
 
+#[cfg(feature = "gpu")]
+mod adapter;
 mod backend;
 mod group;
 #[cfg(any(gust_dual, not(feature = "gpu")))]
@@ -61,7 +64,7 @@ use serde_json::{Value, json};
 use wgsl_wgpu::{HandWgsl, Mode, Switch, WgpuContext};
 use workloads::Workload;
 
-const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W3,...] [--sizes N,N] [--backends a,b] [--group publishable|ablation] [--ablation LIST|all-on|all] [--with gust-setup,gust-shader,gust-device,unchecked] [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N] [--functional]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench dump-kernels --out DIR (slang-runtime build)\n       gust-bench probe-adapters\n       gust-bench profile --out FILE [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS] (profile-counts build)\n       gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall,gust-gpu] [--label batch16|end_to_end] (wgpu-trace build)\n       gust-bench list";
+const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W3,...] [--sizes N,N] [--backends a,b] [--group publishable|ablation] [--ablation LIST|all-on|all] [--with gust-setup,gust-shader,gust-device,unchecked] [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N] [--functional] [--adapter NAME]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench dump-kernels --out DIR (slang-runtime build)\n       gust-bench probe-adapters\n       gust-bench profile --out FILE [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS] (profile-counts build)\n       gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall,gust-gpu] [--label batch16|end_to_end] (wgpu-trace build)\n       gust-bench list";
 
 #[derive(Default)]
 struct Options {
@@ -73,6 +76,8 @@ struct Options {
     /// `--functional`: a correctness-only run (every cell's checks on the `--quick` sizes), accepted on a software
     /// adapter, with no sampler; no timing of it is ever published.
     functional: bool,
+    /// `--adapter NAME`: the adapter whose name contains NAME (see `adapter`); `None` keeps wgpu's high-performance choice.
+    adapter: Option<String>,
     workloads: Option<Vec<Workload>>,
     sizes: Option<Vec<usize>>,
     backends: Option<Vec<String>>,
@@ -153,6 +158,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--label" => options.label = Some(value("--label")?),
             "--quick" => options.quick = true,
             "--functional" => options.functional = true,
+            "--adapter" => options.adapter = Some(value("--adapter")?),
             "--workloads" => {
                 let mut list = Vec::new();
                 for item in value("--workloads")?.split(',') {
@@ -750,16 +756,21 @@ fn run(options: &Options) -> BenchResult<bool> {
             .iter()
             .any(|n| workloads::needs_adapter_limits(*w, *n))
     });
-    let gust_device = DeviceHandle::new(if adapter_limits {
-        HeadlessDevice::with_options(DeviceOptions::default())?
-    } else {
-        HeadlessDevice::new()?
+    // `--adapter NAME`: one adapter for both devices (zero or several matches are an error that lists the adapters).
+    let selection = options
+        .adapter
+        .as_deref()
+        .map(adapter::select)
+        .transpose()?;
+    let gust_device = DeviceHandle::new(match (&selection, adapter_limits) {
+        (Some(selected), _) => HeadlessDevice::with_options(selected.options(adapter_limits))?,
+        (None, true) => HeadlessDevice::with_options(DeviceOptions::default())?,
+        (None, false) => HeadlessDevice::new()?,
     });
-    let ctx = Rc::new(if adapter_limits {
-        WgpuContext::open_adapter_limits()?
-    } else {
-        WgpuContext::new()?
-    });
+    let ctx = Rc::new(WgpuContext::open_on(
+        options.adapter.as_deref(),
+        adapter_limits,
+    )?);
     let adapter = gust_device.adapter_info();
     // A software adapter (lavapipe) runs only the functional check: its times are never published (plan 2.4).
     let software = matches!(adapter.device_type, wgpu::DeviceType::Cpu);
@@ -787,7 +798,7 @@ fn run(options: &Options) -> BenchResult<bool> {
     for name in &options.with_probe {
         // `gust-setup` and `gust-device` have a device of their own (set up like GUST's); the others share the hand device.
         let probe = if name == "gust-setup" || name == "gust-device" {
-            Rc::new(WgpuContext::open_like_gust()?)
+            Rc::new(WgpuContext::open_like_gust_on(options.adapter.as_deref())?)
         } else {
             Rc::clone(&ctx)
         };
@@ -809,12 +820,24 @@ fn run(options: &Options) -> BenchResult<bool> {
 
     let limits = gust_device.limits();
     let hand_limits = ctx.device.limits();
-    let machine = meta::machine(
+    let mut machine = meta::machine(
         adapter,
         gust_device.supports_gpu_timestamps(),
         threads,
         limits,
         &hand_limits,
+    );
+    // Which adapter the run asked for: the substring and the adapter it matched (null: the default choice, no flag).
+    machine["adapter_selection"] = selection
+        .as_ref()
+        .map_or(Value::Null, adapter::Selection::record);
+    eprintln!(
+        "adapter: {} ({})",
+        adapter.name,
+        match &selection {
+            Some(selected) => format!("--adapter {}, index {}", selected.substring, selected.index),
+            None => "default choice".to_owned(),
+        }
     );
     let load_before = meta::load_snapshot();
     let gpu_before = meta::gpu_snapshot();
@@ -930,6 +953,9 @@ fn run(options: &Options) -> BenchResult<bool> {
     let started_unix_s = meta::unix_now();
     let git_start = meta::git_state();
     let (group, _) = resolve_group(options.group, options.ablation.as_deref())?;
+    if options.adapter.is_some() {
+        return Err("--adapter needs the default build: this build has no GPU runtime".into());
+    }
     if group != Group::Publishable {
         return Err(
             "this build has no GPU runtime: the ablation group needs the default build".into(),
@@ -1268,7 +1294,7 @@ mod tests {
         assert_eq!(workloads.len(), 4);
         assert!(workloads.contains(&Workload::Hist256Zipf));
         assert!(parse(&args(&["--group", "nope"])).is_err());
-        assert!(parse(&args(&["--workloads", "W5"])).is_err());
+        assert!(parse(&args(&["--workloads", "W6"])).is_err());
         let sums = parse(&args(&["--workloads", "W7,W9"]))
             .unwrap()
             .workloads

@@ -13,16 +13,17 @@ makes one is an open decision. The tables near the end are generated from filed 
 
 ## Workloads
 
-The harness lives in `bench/` (a workspace of its own; see `bench/README.md` for every command). Six families (W1 to W4, W7 and W9), each
+The harness lives in `bench/` (a workspace of its own; see `bench/README.md` for every command). Seven families (W1 to W5, W7 and W9), each
 checked against a reference on every sample; a sample that fails its check fails the cell.
 
 | id | what it is | correct when |
 |---|---|---|
 | W1 vector-add | `out = x + y`, f32, memory-bandwidth bound | bit-exact |
-| W2 saxpy | `out = a * x + y`, f32, memory-bandwidth bound | within two f32 epsilons of `|a x| + |y|` (room for a fused multiply-add) |
+| W2 saxpy | `out = a * x + y`, f32, memory-bandwidth bound | within the derived bound below (two roundings of the backend's unit roundoff times `|a x| + |y|`) |
 | W3 Horner polynomial | degree 4, 16 or 64, f32, arithmetic bound (`2 d` flops per 8 bytes) | within the derived bound below |
 | W4 u32 atomic histogram | 256 or 65536 bins, uniform or Zipf keys, atomic-contention bound | every bin equals the serial count exactly |
 | W7 sum | `u32` (wrapping) and `f32`, 2^20 to 2^27 values, one output word, a reduction; GUST runs `gust-algo`'s public sum | `u32`: the wrapping sum exactly; `f32`: within the bound of the summation order the backend runs (below) |
+| W5 particle step | 16 explicit-Euler steps of every particle of a struct buffer (a 28-byte std430 element: nested position and velocity pairs of `f32`, a `f32` mass, a `u32` tag, an `i32` charge), 2^16 or 2^20 particles, one invocation per particle | `mass`, `tag` and `charge` bit-exact; each of the four float fields within its own derived bound below |
 | W9 naive matrix product | `C = A B` of two `N x N` f32 matrices, `N` from 256 to 2048, one output entry per invocation (the tiled form is not in this set) | every entry within the derived bound below |
 
 **The unit roundoff, per backend.** Every f32 add and multiply is modelled as `fl(a op b) = (a op b)(1 + delta) + eta`
@@ -33,6 +34,64 @@ a relative error of up to `2^-23`; `gust_algo::bound::C_GPU` encodes the same co
 and the check picks the one of the backend's kind (`Rounding`). W3's bound was first written with `2^-24` for the GPU
 backends too; it was corrected with W7 and W9 (no backend had failed it, so this widens nothing that failed, it makes the
 stated model the one the semantics grant).
+
+**The W2 bound.** The kernel does one multiply and one add, `fl(fl(a x) + y)`. With the unit roundoff of "The unit roundoff,
+per backend" and `p = a x` (exact in f64: two 24-bit significands) the computed value is `(p (1 + d1) + y)(1 + d2) + eta`,
+`|d1|, |d2| <= u`, so against the exact `p + y` the error is at most `u (1 + u) |p| + u |p + y|`, which is at most
+`((1 + u)^2 - 1) (|p| + |y|)` (the product form: two operations, `(1 + u)^2 - 1 = u (2 + u)`), plus the underflow term. A
+fused multiply-add rounds once and has only less error. The f64 reference `a x + y` has one rounding, `2^-53 (|p| + |y|)`.
+The check is
+
+```text
+|out - ref_f64| <= (((1 + u)^2 - 1) + 2^-53) (|a x| + |y|) + 2 * 2^-126
+```
+
+with `u = 2^-24` for the CPU backends and `u = 2^-23` for every GPU backend. It replaces an allowance of two f32 epsilons
+(`2^-22`) of the same magnitude, which assumed round to nearest for every backend. The new factor is about `2^-23` for a CPU
+backend (half of the old one) and about `2^-22` for a GPU (the old one, plus second-order terms), so the GPU's allowance is
+not materially widened and the model is the one W3, W7 and W9 use. Tests show a plain and a fused result
+inside the bound under both units, a value between the two bounds passing for a GPU and failing for a CPU backend, and a
+result one f32 step past the bound failing; the bound is never widened to pass.
+
+**The W5 bound.** One invocation takes one particle and runs 16 steps in registers (`vx += fx dt; vy += fy dt; px += vx dt;
+py += vy dt`, the position from the new velocity, `dt = 0.016`), then writes the particle back, so one dispatch is the
+whole case and every dispatch of a cell writes the same output from the same input. `mass`, `tag` and `charge` are
+copied; the check compares them as bits. The four float fields have no closed form that is both simple and tight over 16
+compounded steps (a product-form `gamma` would be a loose and growing guess), so the bound is the forward error of the
+expression tree carried numerically along the exact trajectory (`workloads::particles::exact_and_bound`). With the
+model of "The unit roundoff, per backend", a value is a pair `(v, e)`, the computed value within `e` of the exact `v`,
+and
+
+```text
+add:  v = a.v + b.v    e = (a.e + b.e)(1 + u) + u |v| + eta
+mul:  v = a.v * b.v    e = (|a.v| b.e + |b.v| a.e + a.e b.e)(1 + u) + u |v| + eta
+```
+
+The inputs are exact. `dt` is the f32 nearest 0.016 on a CPU backend (a Rust literal, and the reference uses the same
+f32); a GPU backend's shader compiler is only required to give that f32 or a neighbour, so the model gives the constant an
+error `dt 2^-23` there. The check, per float field of every particle, is
+
+```text
+|out - ref_f64| <= (e_f32(u) + e_f64) * (1 + 1e-9)
+```
+
+with `u = 2^-24` for the CPU backends (`Rounding::Nearest`: serial, rayon-1, rayon-N, gust-twin, gust-cpu) and `u = 2^-23` for
+every GPU backend (`Rounding::Either`: gust-gpu, gust-gpu-spirv, the hand WGSL), `eta = 2^-126`, and `e_f64` the same
+recurrence with `u = 2^-53`, no `eta` and an exact `dt` (the reference's own error). The factor `1 + 1e-9` covers the
+f64 evaluation of the bound itself. A fused multiply-add rounds once, so it has only less error than the multiply and
+add it replaces, and a backend that contracts is inside the bound (a test shows plain and fused steps inside it under
+both units); tests show a value between the two bounds passing for a GPU and failing for a CPU backend, a result one f32
+step past the bound failing, and the bound tight (a small fraction of the field's scale, so it is not vacuous). The bound
+is never widened to pass.
+
+Limits of the W5 measurement. The example's second output (`energy`) is not part of this workload. The hand WGSL has the
+same struct layout as GUST's (`shaders/particles.wgsl`); a test reads GUST's reflected `GpuPod` layout (size, alignment,
+stride and each field's offset) and the field order of the shader text and asserts they agree. The GUST GPU backend reads
+the struct buffer back as `Particle` values and converts them to words inside its end-to-end sample, which the hand
+WGSL's raw word read-back does not do, so the end-to-end timing of the two is not like for like and is not compared
+here. The quick check runs 2^16 particles with all 16 steps (the step count is part of the kernel, and a single step
+would not exercise the compounding the bound is about). `wgsl-gust-shader` (GUST's generated WGSL run by the hand
+harness) does not support W5, like W7 and W9.
 
 **The W3 bound.** Higham (Accuracy and Stability of Numerical Algorithms, 2nd ed., section 5.1)
 bounds Horner's rule by `gamma_{2d} S` with `S = sum |c_k| |x|^k`. The reference is Horner's rule in f64, which obeys the
@@ -69,11 +128,11 @@ repeated test is an assumption of the harness (a test shows the branch and the f
 *The hand tree* has a known order, so it has its own bound (the plan's serial worst case still bounds it; a test shows
 the tree bound is inside it, and this is a tightening the coordinator recorded). Pass one is a grid-stride reduction:
 `blocks = min(ceil(n / 2048), max_compute_workgroups_per_dimension)` workgroups of 256 lanes, so the grid grows with `n`
-(512 workgroups at 2^20, 65535 at 2^27). A lane adds `chain_1 = ceil(n / (256 blocks))` values one after the other, then
+(512 workgroups at 2^20, 65535 at 2^27 on an adapter whose per-dimension workgroup limit is 65535; the code takes the limit the device reports, so an adapter with a larger limit gets more workgroups and a smaller `K`). A lane adds `chain_1 = ceil(n / (256 blocks))` values one after the other, then
 the 256 lane values of the workgroup are added in a tree of 8 rounds; pass two is one workgroup in which a lane adds
 `chain_2 = ceil(blocks / 256)` partials and then the same 8-round tree. `K = chain_1 + 8 + chain_2 + 8` counts the first
 add of a chain (into a zero accumulator, exact on IEEE hardware) too, the conservative reading of "either neighbour"; a
-compiler's reassociation (WGSL section 15.7.5) does not lengthen a chain. K is 26 at 2^20 and 281 at 2^27.
+compiler's reassociation (WGSL section 15.7.5) does not lengthen a chain. K is 26 at 2^20 and, under that same 65535 limit, 281 at 2^27 (an adapter with a limit of 65536 or more gets `K = 280`).
 
 *The host backends* (`serial`, `rayon-1`, `rayon-N`, `u = 2^-24`). The order of `serial` is sequential and of rayon
 unknown, so they are judged by the serial worst case, which covers every order: `((1 + u)^{n-1} - 1) S` is Higham's
@@ -84,7 +143,7 @@ the factor is 0.065 at 2^20, 0.28 at 2^22, 0.65 at 2^23 and above 1 from 2^24 (1
 the bound exceeds `S >= |s|`, so a result of `0.0` passes whatever the data, and 2^22 to 2^23 is weak (over a quarter of
 `S`). The check on those three backends is therefore meaningful at 2^20 and 2^21 only. Correctness of the `serial` and
 rayon cells at 2^22 to 2^27 rests on the same code passing at the small sizes (the code does not branch on `n`) and on
-W7-`u32` being exact on the same backends and sizes (a lost or doubled element changes the `u32` word). The `f32` check on
+W7-`u32` being exact on the same loop shape (a different code path from the `f32` one, so this is supporting evidence, not coverage of the `f32` loop; a lost or doubled element changes the `u32` word). The `f32` check on
 GUST's tree and the hand tree is meaningful at every size (the bound is a few times `1e-5 S` at most). `S` is itself
 computed in f64, so the code scales it up by `1 / (1 - gamma64_{n-1})`.
 

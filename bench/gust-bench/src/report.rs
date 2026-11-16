@@ -17,22 +17,24 @@ fn is_gust(backend: &str) -> bool {
     backend.starts_with("gust-gpu")
 }
 
-/// The header of the size column: W9's size is the matrix side `N` (the matrices hold `N * N` words), every other
-/// workload's is a count of elements.
+/// The header of the size column: W9's size is the matrix side `N` (the matrices hold `N * N` words), W5's is a count of
+/// particles (7 words each), every other workload's is a count of elements.
 fn size_header(workload: &str) -> &'static str {
     if workload == "W9" || workload.starts_with("W9-") {
         "N (matrix side)"
+    } else if workload == "W5" || workload.starts_with("W5-") {
+        "particles"
     } else {
         "elements"
     }
 }
 
-/// A size in prose: `N = 1024` for W9, `1048576 elements` for the rest.
+/// A size in prose: `N = 1024` for W9, `65536 particles` for W5, `1048576 elements` for the rest.
 fn size_phrase(workload: &str, n: u64) -> String {
-    if size_header(workload) == "elements" {
-        format!("{n} elements")
-    } else {
-        format!("N = {n}")
+    match size_header(workload) {
+        "elements" => format!("{n} elements"),
+        "particles" => format!("{n} particles"),
+        _ => format!("N = {n}"),
     }
 }
 
@@ -1032,7 +1034,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     )?;
     writeln!(
         md,
-        "| workload | elements (W9: side N) | timing | gust-gpu (ms) | wgsl-prebuilt (ms) | ratio | difference (us) | wgsl-percall (ms) | ratio | PCIe link (end to end) |"
+        "| workload | elements (W5: particles, W9: side N) | timing | gust-gpu (ms) | wgsl-prebuilt (ms) | ratio | difference (us) | wgsl-percall (ms) | ratio | PCIe link (end to end) |"
     )?;
     writeln!(md, "|---|---|---|---|---|---|---|---|---|---|")?;
     for row in &overhead {
@@ -1178,7 +1180,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     )?;
     writeln!(
         md,
-        "| workload | elements (W9: side N) | cells reaching P0 | SM MHz at start (min to max) | memory MHz at start | pstates at start | pstates after | memory MHz after | PCIe gen now (max gen) |"
+        "| workload | elements (W5: particles, W9: side N) | cells reaching P0 | SM MHz at start (min to max) | memory MHz at start | pstates at start | pstates after | memory MHz after | PCIe gen now (max gen) |"
     )?;
     writeln!(md, "|---|---|---|---|---|---|---|---|---|")?;
     let mut by_size: BTreeMap<(String, u64), ClockSpan> = BTreeMap::new();
@@ -1255,7 +1257,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     )?;
     writeln!(
         md,
-        "| workload | elements (W9: side N) | backend | first in process, per run (ms) | rest median (ms) | rest (ms) | note |"
+        "| workload | elements (W5: particles, W9: side N) | backend | first in process, per run (ms) | rest median (ms) | rest (ms) | note |"
     )?;
     writeln!(md, "|---|---|---|---|---|---|---|")?;
     let list = |values: &[f64]| {

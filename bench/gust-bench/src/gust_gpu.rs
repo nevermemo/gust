@@ -27,7 +27,7 @@ use crate::{
     route,
     workloads::{
         self, Inputs, Workload, counts_as_words, hist_threads, histogram, matmul, normalize_counts,
-        polynomial, saxpy, vector_add,
+        particles, polynomial, saxpy, vector_add,
     },
 };
 
@@ -58,6 +58,16 @@ enum Data {
         a: GpuBuffer<f32>,
         b: GpuBuffer<f32>,
         c: GpuBuffer<f32>,
+    },
+    /// W5: the typed particle and acceleration buffers and the output; the typed host copies an end-to-end sample uploads
+    /// and the typed poison are built once in `prepare`, so no sample converts the harness's words on the way in.
+    Particles {
+        input: GpuBuffer<particles::kernel::Particle>,
+        acceleration: GpuBuffer<particles::kernel::Pair>,
+        out: GpuBuffer<particles::kernel::Particle>,
+        host_input: Vec<particles::kernel::Particle>,
+        host_acceleration: Vec<particles::kernel::Pair>,
+        poison: Vec<particles::kernel::Particle>,
     },
     /// W7 on `gust-algo`: the resident input and the word the last sum returned (the output of this backend, which has
     /// no device-side output buffer to read: the public sum returns its value to the host).
@@ -266,6 +276,15 @@ impl GustGpu {
                 );
                 run(BufferDispatch::from(&call))
             }
+            Data::Particles {
+                input,
+                acceleration,
+                out,
+                ..
+            } => {
+                let call = particles::kernel::step::call(n, input, acceleration, out);
+                run(BufferDispatch::from(&call))
+            }
             #[cfg(feature = "algo")]
             Data::SumF32(_) | Data::SumU32(_) => {
                 unreachable!("W7 runs gust-algo's sum, not a kernel call of this crate")
@@ -315,6 +334,8 @@ impl GustGpu {
             }
             Data::Hist { bins, .. } => counts_as_words(d.read_typed_buffer(bins)?),
             Data::MatMul { c, .. } => d.read_typed_buffer(c)?,
+            // The typed read-back as the harness's words: the conversion is inside an end-to-end sample (see BENCHMARKS.md).
+            Data::Particles { out, .. } => particles::from_particles(&d.read_typed_buffer(out)?),
             #[cfg(feature = "algo")]
             Data::SumF32(_) | Data::SumU32(_) => {
                 let device_word = self.resident().sum_dev.borrow();
@@ -433,6 +454,27 @@ impl Backend for GustGpu {
                 d.write_typed_buffer_timed(&x, &inputs.x)?;
                 (Data::Poly { coeffs, x, out }, nan, Vec::new())
             }
+            "W5" => {
+                let nan = vec![f32::NAN; n * particles::WORDS];
+                let host_input = particles::to_particles(&inputs.x);
+                let host_acceleration = particles::to_pairs(&inputs.y);
+                let poison = particles::to_particles(&nan);
+                let input = d.create_typed_buffer("bench particles", &host_input, read_only);
+                let acceleration =
+                    d.create_typed_buffer("bench acceleration", &host_acceleration, read_only);
+                let out = d.create_typed_buffer("bench out", &poison, read_write);
+                d.write_typed_buffer_timed(&input, &host_input)?;
+                d.write_typed_buffer_timed(&acceleration, &host_acceleration)?;
+                let data = Data::Particles {
+                    input,
+                    acceleration,
+                    out,
+                    host_input,
+                    host_acceleration,
+                    poison,
+                };
+                (data, nan, Vec::new())
+            }
             "W7" => (Self::sum_data(d, workload, inputs)?, Vec::new(), Vec::new()),
             "W9" => {
                 let nan = vec![f32::NAN; n * n];
@@ -484,6 +526,9 @@ impl Backend for GustGpu {
             Data::MatMul { c, .. } => {
                 self.device.write_typed_buffer_timed(c, &r.nan)?;
             }
+            Data::Particles { out, poison, .. } => {
+                self.device.write_typed_buffer_timed(out, poison)?;
+            }
             #[cfg(feature = "algo")]
             Data::SumF32(_) | Data::SumU32(_) => {
                 r.sum_word.set(r.workload.poison_word());
@@ -509,6 +554,17 @@ impl Backend for GustGpu {
             Data::MatMul { a, b, .. } => {
                 self.device.write_typed_buffer(a, &inputs.x)?;
                 self.device.write_typed_buffer(b, &inputs.y)?;
+            }
+            Data::Particles {
+                input,
+                acceleration,
+                host_input,
+                host_acceleration,
+                ..
+            } => {
+                self.device.write_typed_buffer(input, host_input)?;
+                self.device
+                    .write_typed_buffer(acceleration, host_acceleration)?;
             }
             // W7: the upload is an in-place write into the resident `GpuVec`'s buffer, as the hand path does.
             #[cfg(feature = "algo")]

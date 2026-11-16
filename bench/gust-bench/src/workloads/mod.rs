@@ -1,8 +1,10 @@
-//! The workload set (W1 to W4, W7 and W9 of the M10 plan): inputs, the serial reference and the checker.
+//! The workload set (W1 to W5, W7 and W9 of the M10 plan): inputs, the serial reference and the checker.
 //!
-//! - W1 vector-add and W2 saxpy: memory-bandwidth bound, f32, bit-exact and two-ulp checks.
+//! - W1 vector-add and W2 saxpy: memory-bandwidth bound, f32, a bit-exact check and a derived two-operation bound.
 //! - W3 polynomial (Horner, degree 4, 16 and 64): compute bound, f32, checked against Higham's Horner bound.
 //! - W4 histogram (`u32` atomic add, 256 and 65536 bins, uniform and Zipf keys): contended atomics, exact integers.
+//! - W5 particle step (a struct buffer, 16 explicit-Euler steps per particle, 2^16 and 2^20 particles): integer fields
+//!   exact, each float field against the forward error of the step's expression tree (see `particles`).
 //! - W7 sum (`u32` wrapping and `f32`, 2^20 to 2^27 values, one output word): a reduction; `u32` exact, `f32` against
 //!   the bound of the summation order the backend runs (see `sum`).
 //! - W9 naive matrix product (`N x N` f32, `N` from 256 to 2048, one output entry per invocation): checked entry by
@@ -16,6 +18,7 @@ pub mod histogram;
 #[cfg(not(feature = "gpu"))]
 pub mod maps;
 pub mod matmul;
+pub mod particles;
 pub mod polynomial;
 pub mod saxpy;
 pub mod sum;
@@ -41,6 +44,9 @@ pub const POLY_SIZES: [usize; 2] = [1 << 20, 1 << 22];
 /// W4's sizes (plan 2.1): 2^20 and 2^24 keys. One invocation handles [`KEYS_PER_THREAD`] keys, so 2^24 keys are 2^22
 /// invocations, inside the 65535-workgroup cap that 2^24 one-key invocations would exceed.
 pub const HIST_SIZES: [usize; 2] = [1 << 20, 1 << 24];
+
+/// W5's sizes (plan 2.1): 2^16 and 2^20 particles, 16 steps each.
+pub const PARTICLE_SIZES: [usize; 2] = [1 << 16, 1 << 20];
 
 /// W7's sizes (plan 2.1): 2^20 to 2^27 values, one power of two apart. The `f32` stream of the last size is 512 MiB, so
 /// the two largest need the adapter's own storage-buffer limits (see [`needs_adapter_limits`]).
@@ -85,6 +91,7 @@ pub enum Workload {
     Hist256Zipf,
     Hist65536Uniform,
     Hist65536Zipf,
+    Particles,
     SumU32,
     SumF32,
     MatMul,
@@ -98,7 +105,7 @@ pub enum Kind {
 }
 
 impl Workload {
-    pub const ALL: [Workload; 12] = [
+    pub const ALL: [Workload; 13] = [
         Workload::VectorAdd,
         Workload::Saxpy,
         Workload::Poly4,
@@ -108,6 +115,7 @@ impl Workload {
         Workload::Hist256Zipf,
         Workload::Hist65536Uniform,
         Workload::Hist65536Zipf,
+        Workload::Particles,
         Workload::SumU32,
         Workload::SumF32,
         Workload::MatMul,
@@ -124,6 +132,7 @@ impl Workload {
             Workload::Hist256Zipf => "W4-256-zipf",
             Workload::Hist65536Uniform => "W4-65536-uniform",
             Workload::Hist65536Zipf => "W4-65536-zipf",
+            Workload::Particles => "W5",
             Workload::SumU32 => "W7-u32",
             Workload::SumF32 => "W7-f32",
             Workload::MatMul => "W9-naive",
@@ -141,6 +150,7 @@ impl Workload {
             Workload::Hist256Zipf => "histogram 256 bins, Zipf keys",
             Workload::Hist65536Uniform => "histogram 65536 bins, uniform keys",
             Workload::Hist65536Zipf => "histogram 65536 bins, Zipf keys",
+            Workload::Particles => "particle step",
             Workload::SumU32 => "sum u32 (wrapping)",
             Workload::SumF32 => "sum f32",
             Workload::MatMul => "matrix product, naive f32",
@@ -167,7 +177,7 @@ impl Workload {
         (!family.is_empty()).then_some(family)
     }
 
-    /// `W1`, `W2`, `W3`, `W4`, `W7` or `W9`.
+    /// `W1`, `W2`, `W3`, `W4`, `W5`, `W7` or `W9`.
     pub fn family(self) -> &'static str {
         match self {
             Workload::VectorAdd => "W1",
@@ -177,6 +187,7 @@ impl Workload {
             | Workload::Hist256Zipf
             | Workload::Hist65536Uniform
             | Workload::Hist65536Zipf => "W4",
+            Workload::Particles => "W5",
             Workload::SumU32 | Workload::SumF32 => "W7",
             Workload::MatMul => "W9",
         }
@@ -209,6 +220,7 @@ impl Workload {
         match self.family() {
             "W3" => &POLY_SIZES,
             "W4" => &HIST_SIZES,
+            "W5" => &PARTICLE_SIZES,
             "W7" => &SUM_SIZES,
             "W9" => &MATMUL_SIZES,
             _ => &SIZES,
@@ -238,10 +250,11 @@ impl Workload {
         matches!(self, Workload::Hist256Zipf | Workload::Hist65536Zipf)
     }
 
-    /// Words of the output for `n` inputs: `n` for the element-wise workloads, the bin count for a histogram, one for a
-    /// sum, `n * n` for the product of two `n x n` matrices.
+    /// Words of the output for `n` inputs: `n` for the element-wise workloads, the bin count for a histogram, 7 per
+    /// particle for W5, one for a sum, `n * n` for the product of two `n x n` matrices.
     pub fn out_len(self, n: usize) -> usize {
         match self.family() {
+            "W5" => n * particles::WORDS,
             "W7" => 1,
             "W9" => n * n,
             _ => self.bins().unwrap_or(n),
@@ -263,11 +276,13 @@ impl Workload {
 
     /// Bytes of memory traffic per element that the achieved-bandwidth column counts. W1 and W2: two reads and a write
     /// of f32. W3: a read and a write. W4: the key read only (the atomic traffic on the bins is not counted). W7: the
-    /// value read only (one word out). W9: not a per-element stream (the matrices are read many times), so none is
-    /// counted.
+    /// value read only (one word out). W5: per particle, the 28-byte particle and the 8-byte acceleration read and the
+    /// 28-byte particle written (the 16 steps run in registers). W9: not a per-element stream (the matrices are read
+    /// many times), so none is counted.
     pub fn bytes_per_element(self) -> u64 {
         match self.family() {
             "W3" => 8,
+            "W5" => 64,
             "W4" | "W7" => 4,
             "W9" => 0,
             _ => 12,
@@ -275,11 +290,12 @@ impl Workload {
     }
 
     /// Floating-point operations per element, for the GFLOP/s column (0 where it is not a flop workload). W3 counts a
-    /// multiply and an add per Horner step (2 * degree). W7's `f32` sum is one add per value; W9 counts none (its `n` is
-    /// the side, not an element count).
+    /// multiply and an add per Horner step (2 * degree). W5 counts 8 per step (four multiplies and four adds), 16 steps.
+    /// W7's `f32` sum is one add per value; W9 counts none (its `n` is the side, not an element count).
     pub fn flops_per_element(self) -> u64 {
         match self {
             Workload::Saxpy => 2,
+            Workload::Particles => 8 * particles::STEPS as u64,
             Workload::VectorAdd | Workload::SumF32 => 1,
             w => w.degree().map_or(0, |d| 2 * d as u64),
         }
@@ -400,6 +416,10 @@ pub fn gen_inputs(w: Workload, n: usize) -> Inputs {
             (inputs.x, inputs.y) = matmul::matrices(n);
             return inputs;
         }
+        Workload::Particles => {
+            (inputs.x, inputs.y) = particles::inputs(n);
+            return inputs;
+        }
         _ => {}
     }
     if let Some(bins) = w.bins() {
@@ -461,6 +481,16 @@ pub fn reference(w: Workload, inputs: &Inputs) -> Reference {
                 ..Reference::default()
             }
         }
+        "W5" => {
+            let (exact, bound, bound_gpu) = particles::exact_and_bound(&inputs.x, &inputs.y);
+            Reference {
+                want: particles::expected_words(&inputs.x, &exact),
+                exact,
+                bound,
+                bound_gpu,
+                ..Reference::default()
+            }
+        }
         "W7" if w == Workload::SumU32 => Reference {
             want: vec![f32::from_bits(sum::wrapping_sum(&inputs.values))],
             ..Reference::default()
@@ -495,13 +525,6 @@ pub fn reference(w: Workload, inputs: &Inputs) -> Reference {
                 .collect(),
             ..Reference::default()
         },
-    }
-}
-
-fn tolerance(w: Workload, scale: f32, x: f32, y: f32, want: f32) -> f32 {
-    match w {
-        Workload::VectorAdd => vector_add::tolerance(x, y, want),
-        _ => saxpy::tolerance(scale, x, y),
     }
 }
 
@@ -576,8 +599,27 @@ pub fn check_with(
             // The derived Horner bound (W3) and inner-product bound (W9) against the f64 value. A positive comparison,
             // so a NaN counts as a failure.
             "W3" | "W9" => (f64::from(got[i]) - reference.exact[i]).abs() <= bounds[i],
+            // W5: seven words per particle; words 0 to 3 are the float fields against the per-field bound of the
+            // particle, the mass and the two integers are compared as bits.
+            "W5" => {
+                let (particle, word) = (i / particles::WORDS, i % particles::WORDS);
+                if word < particles::FIELDS {
+                    let at = particle * particles::FIELDS + word;
+                    (f64::from(got[i]) - reference.exact[at]).abs() <= bounds[at]
+                } else {
+                    got[i].to_bits() == want[i].to_bits()
+                }
+            }
+            // W2: the derived two-operation bound of the backend's rounding against the f64 value (a positive comparison,
+            // so a NaN fails).
+            "W2" => {
+                let (scale, x, y) = (inputs.scale, inputs.x[i], inputs.y[i]);
+                (f64::from(got[i]) - saxpy::exact(scale, x, y)).abs()
+                    <= saxpy::bound(judging.rounding, scale, x, y)
+            }
+            // W1: one IEEE add, bit-exact.
             _ => {
-                let tol = tolerance(w, inputs.scale, inputs.x[i], inputs.y[i], want[i]);
+                let tol = vector_add::tolerance(inputs.x[i], inputs.y[i], want[i]);
                 (got[i] - want[i]).abs() <= tol
             }
         };
@@ -629,6 +671,7 @@ pub fn descriptor(w: Workload) -> &'static gust::KernelDescriptor {
         "W1" => &vector_add::kernel::add::DESCRIPTOR,
         "W2" => &saxpy::kernel::saxpy::DESCRIPTOR,
         "W3" => &polynomial::kernel::horner::DESCRIPTOR,
+        "W5" => &particles::kernel::step::DESCRIPTOR,
         "W7" => algo_descriptor(w),
         "W9" => &matmul::kernel::matmul::DESCRIPTOR,
         _ => &histogram::kernel::histogram::DESCRIPTOR,
@@ -653,12 +696,13 @@ fn algo_descriptor(w: Workload) -> &'static gust::KernelDescriptor {
 
 /// Every kernel of this harness's own set, once (W7 runs `gust-algo`'s kernels, which this crate does not own).
 #[cfg(feature = "gpu")]
-pub fn all_descriptors() -> [&'static gust::KernelDescriptor; 5] {
+pub fn all_descriptors() -> [&'static gust::KernelDescriptor; 6] {
     [
         descriptor(Workload::VectorAdd),
         descriptor(Workload::Saxpy),
         descriptor(Workload::Poly4),
         descriptor(Workload::Hist256Uniform),
+        descriptor(Workload::Particles),
         descriptor(Workload::MatMul),
     ]
 }
@@ -705,7 +749,11 @@ mod tests {
             Workload::parse_family("W3-d16"),
             Some(vec![Workload::Poly16])
         );
-        assert_eq!(Workload::parse_family("W5"), None);
+        assert_eq!(
+            Workload::parse_family("W5"),
+            Some(vec![Workload::Particles])
+        );
+        assert_eq!(Workload::parse_family("W6"), None);
         let ids = Workload::ALL.map(Workload::id);
         let mut sorted = ids.to_vec();
         sorted.sort_unstable();

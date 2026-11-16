@@ -16,12 +16,14 @@
 //! The device is a second `wgpu::Device` on the same adapter selection (Vulkan, high performance) with default limits
 //! and `TIMESTAMP_QUERY`, exactly what `HeadlessDevice` requests. `HeadlessDevice` does not expose its own device,
 //! so sharing one is not possible through the public API. A run with W7 inputs above 2^25 words opens it (and GUST's
-//! device) with the adapter's own buffer and storage-binding limits instead (`WgpuContext::open_adapter_limits`).
+//! device) with the adapter's own buffer and storage-binding limits instead (`WgpuContext::open_on`).
 //!
 //! W7 (sum) is a two-dispatch workgroup-tree reduction in one compute pass: `reduce_blocks` (`workloads::sum::hand_blocks`
 //! workgroups, one per 2048 values, capped by the device's workgroup limit: grid-stride sums per lane, then a tree in
 //! workgroup memory) and `reduce_total` (one workgroup, each lane adding its share of the partials, then a tree).
-//! W9 (naive matrix product) is one dispatch of `N / 16` by `N / 16` workgroups of 16 by 16.
+//! W9 (naive matrix product) is one dispatch of `N / 16` by `N / 16` workgroups of 16 by 16. W5 (particle step) is one
+//! dispatch of 256-wide workgroups over the same 28-byte std430 struct buffer GUST's kernel takes (`shaders/particles.wgsl`).
+//! `--adapter` opens this device (and every probe device) on the adapter GUST's device is on, matched by `adapter::match_adapter`.
 
 use std::{
     cell::Cell,
@@ -46,32 +48,59 @@ pub struct WgpuContext {
 }
 
 impl WgpuContext {
+    /// The default device (the high-performance adapter). The run itself opens its device through `open_on`; this one is
+    /// for the Windows adapter probe, the profile mode and the tests.
+    #[cfg(any(windows, test, feature = "profile-counts"))]
     pub fn new() -> BenchResult<Self> {
-        Self::open(None)
+        Self::open_with(None, false, false, None)
     }
 
     /// Opens the device; with `trace` (a `wgpu-trace` build) wgpu writes its API trace of this device into that directory.
+    #[cfg(feature = "wgpu-trace")]
     pub fn open(trace: Option<&std::path::Path>) -> BenchResult<Self> {
-        Self::open_with(trace, false, false)
-    }
-
-    /// The same device, requesting the adapter's own `max_buffer_size`, `max_storage_buffer_binding_size` and
-    /// `max_compute_workgroups_per_dimension` (every other limit at wgpu's default), as `LimitsPolicy::Adapter` does for
-    /// `HeadlessDevice`: the one a W7 input above 2^25 words needs.
-    pub fn open_adapter_limits() -> BenchResult<Self> {
-        Self::open_with(None, false, true)
+        Self::open_with(trace, false, false, None)
     }
 
     /// A device set up the way `HeadlessDevice` sets its own up (the m10.b1c probe `gust-setup`): it also requests
-    /// `MEMORY_DECORATION_COHERENT` when the adapter has it (`gust-wgpu` `lib.rs`, `HeadlessDevice::open`).
-    pub fn open_like_gust() -> BenchResult<Self> {
-        Self::open_with(None, true, false)
+    /// `MEMORY_DECORATION_COHERENT` when the adapter has it (`gust-wgpu` `lib.rs`, `HeadlessDevice::open`). On the adapter
+    /// whose name contains `adapter` (`--adapter`), or the high-performance one with `None`.
+    pub fn open_like_gust_on(adapter: Option<&str>) -> BenchResult<Self> {
+        Self::open_with(None, true, false, adapter)
+    }
+
+    /// The default device on the adapter whose name contains `adapter` (`--adapter`), or the high-performance one with
+    /// `None`. With `adapter_limits` it requests the adapter's own `max_buffer_size`, `max_storage_buffer_binding_size` and
+    /// `max_compute_workgroups_per_dimension` (every other limit at wgpu's default), as `LimitsPolicy::Adapter` does for
+    /// `HeadlessDevice`: the one a W7 input above 2^25 words needs.
+    pub fn open_on(adapter: Option<&str>, adapter_limits: bool) -> BenchResult<Self> {
+        Self::open_with(None, false, adapter_limits, adapter)
+    }
+
+    /// The adapter of a `--adapter` substring on `instance`: the one adapter of the Vulkan enumeration whose name contains
+    /// it (`adapter::match_adapter`, the same rule GUST's device is opened by), or wgpu's high-performance choice.
+    fn pick_adapter(instance: &wgpu::Instance, name: Option<&str>) -> BenchResult<wgpu::Adapter> {
+        let Some(name) = name else {
+            return Ok(pollster::block_on(instance.request_adapter(
+                &wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    ..Default::default()
+                },
+            ))?);
+        };
+        let mut adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN));
+        let names = adapters
+            .iter()
+            .map(|adapter| adapter.get_info().name)
+            .collect::<Vec<_>>();
+        let index = crate::adapter::match_adapter(&names, name)?;
+        Ok(adapters.swap_remove(index))
     }
 
     fn open_with(
         trace: Option<&std::path::Path>,
         like_gust: bool,
         adapter_limits: bool,
+        adapter_name: Option<&str>,
     ) -> BenchResult<Self> {
         #[cfg(not(feature = "wgpu-trace"))]
         if trace.is_some() {
@@ -80,10 +109,7 @@ impl WgpuContext {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         descriptor.backends = wgpu::Backends::VULKAN;
         let instance = wgpu::Instance::new(descriptor);
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            ..Default::default()
-        }))?;
+        let adapter = Self::pick_adapter(&instance, adapter_name)?;
         let timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let mut required_limits = wgpu::Limits::default();
         if adapter_limits {
@@ -361,7 +387,7 @@ impl HandWgsl {
     }
 
     /// The GUST-difference probes, each `Prebuilt` plus what the wgpu trace shows differing from GUST. `gust-shader`: on the
-    /// shared hand device, running GUST's generated WGSL. `gust-device`: on a device opened like GUST's (`open_like_gust`,
+    /// shared hand device, running GUST's generated WGSL. `gust-device`: on a device opened like GUST's (`open_like_gust_on`,
     /// which requests `MEMORY_DECORATION_COHERENT`), creating the timestamp objects before the data buffers as
     /// `HeadlessDevice` does, running the hand WGSL. `gust-setup` (any other name): both.
     pub fn gust_probe(ctx: Rc<WgpuContext>, name: &str) -> Self {
@@ -428,7 +454,7 @@ impl HandWgsl {
     fn gust_source(workload: Workload) -> (&'static str, &'static str) {
         match workload.family() {
             // `supports` leaves the probes out of the workloads whose GUST kernel has no artifact here.
-            "W7" | "W9" => unreachable!("{} has no GUST artifact probe", workload.id()),
+            "W5" | "W7" | "W9" => unreachable!("{} has no GUST artifact probe", workload.id()),
             "W1" => (
                 include_str!("../../gust-bench-pre/gust-artifacts/2446cbf187eae739.wgsl"),
                 "gpu_kernel_add",
@@ -453,6 +479,7 @@ impl HandWgsl {
             "W1" => include_str!("../../shaders/vector_add.wgsl"),
             "W2" => include_str!("../../shaders/saxpy.wgsl"),
             "W3" => include_str!("../../shaders/polynomial.wgsl"),
+            "W5" => include_str!("../../shaders/particles.wgsl"),
             "W7" if workload == Workload::SumU32 => include_str!("../../shaders/sum_u32.wgsl"),
             "W7" => include_str!("../../shaders/sum_f32.wgsl"),
             "W9" => include_str!("../../shaders/matmul.wgsl"),
@@ -468,7 +495,7 @@ impl HandWgsl {
 
     fn binding_count(workload: Workload) -> usize {
         match workload.family() {
-            "W1" | "W3" | "W7" => 3,
+            "W1" | "W3" | "W5" | "W7" => 3,
             "W2" | "W9" => 4,
             _ => 2,
         }
@@ -488,7 +515,8 @@ impl HandWgsl {
     /// The per-sample host inputs an end-to-end sample uploads, as bytes, in the order of [`Resident::uploads`].
     fn input_bytes(workload: Workload, inputs: &Inputs) -> Vec<&[u8]> {
         match workload.family() {
-            "W1" | "W2" => vec![cast_slice(&inputs.x), cast_slice(&inputs.y)],
+            // W5: the particles (7 words each) and their accelerations (2 words each), the layout `particles.wgsl` declares.
+            "W1" | "W2" | "W5" => vec![cast_slice(&inputs.x), cast_slice(&inputs.y)],
             "W3" => vec![cast_slice(&inputs.x)],
             "W7" if workload == Workload::SumU32 => vec![cast_slice(&inputs.values)],
             "W7" => vec![cast_slice(&inputs.x)],
@@ -748,7 +776,7 @@ impl Backend for HandWgsl {
     /// the probe has no W7 (the library's own kernels) and no W9 arm (its artifact exists in `gust-bench-pre` for the
     /// pre-built GUST backend, but the probe path does not take it).
     fn supports(&self, workload: Workload) -> bool {
-        !(self.gust_shader && matches!(workload.family(), "W7" | "W9"))
+        !(self.gust_shader && matches!(workload.family(), "W5" | "W7" | "W9"))
     }
 
     fn prepare(&mut self, workload: Workload, inputs: &Inputs) -> BenchResult<()> {

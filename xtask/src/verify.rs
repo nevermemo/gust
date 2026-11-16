@@ -1048,8 +1048,12 @@ pub(crate) struct GpuSuitePin {
 /// example for each public host type of the crate (the device and policy types, the buffer, uniform, texture and
 /// sampler types, the pool, graph and report types, the error and the job). They compile and run on the adapter, like
 /// the other doctests of the crate.
+///
+/// Slice m10.ts2: 504 over 49 became 511 over 49. Six new tests in `tests/graph.rs` (the timed graph: same outputs as an
+/// untimed one, indirect passes, `pixel` passes, no dispatch pass, zero-element dispatches at both ends, and the shared
+/// profiler under two threads) and one new doctest, `HeadlessDevice::execute_graph_timed`.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 504,
+    passed: 511,
     result_lines: 49,
 };
 

@@ -22,7 +22,8 @@ use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::{
     BufferBinding, BufferDispatch, Error, GpuBuffer, GpuBufferAccess, GpuUniform, HeadlessDevice,
-    Raw, completion::blocking::recv_mapping, error::INDIRECT_ARGUMENTS, pod_vec_from_bytes, render,
+    PassTimestamps, Raw, TIMESTAMP_RESULT_BYTES, completion::blocking::recv_mapping,
+    error::INDIRECT_ARGUMENTS, pod_vec_from_bytes, render,
 };
 
 /// Handle to one node of a [`StagedGraph`], in insertion order.
@@ -153,6 +154,10 @@ pub struct GraphReport {
     pub resident_bytes: u64,
     /// The host wall-clock time that `execute_graph` took.
     pub host_elapsed: Duration,
+    /// The GPU time of the graph's dispatch passes, first begin to last end, from
+    /// [`HeadlessDevice::execute_graph_timed`] only. `None` from `execute_graph`, on an adapter without timestamp
+    /// queries, and for a graph that ran no dispatch pass.
+    pub gpu_elapsed: Option<Duration>,
 }
 
 enum NodeKind<'a> {
@@ -725,8 +730,96 @@ impl HeadlessDevice {
     /// the GPU; the report counts their bytes as resident. Encoding a `pixel` node creates its attachment, so the
     /// graph can fail with [`Error::OutOfMemory`] named `GUST pixel attachment`; nothing is submitted then.
     pub fn execute_graph(&self, graph: &StagedGraph<'_>) -> Result<GraphOutput, Error> {
+        self.execute_graph_inner(graph, false)
+    }
+
+    /// [`execute_graph`](Self::execute_graph) that also measures the GPU time of the graph's dispatches.
+    ///
+    /// Everything `execute_graph` does, with the same outputs and report, plus [`GraphReport::gpu_elapsed`]: the GPU
+    /// time from the beginning of the first dispatch pass to the end of the last, in node order, indirect and `pixel`
+    /// passes included. Upload and read-back copies that sit before the first or after the last dispatch are outside
+    /// the span; copies between two dispatches are inside it (a timestamp exists only at a pass boundary). Per-node
+    /// times are not reported.
+    ///
+    /// `gpu_elapsed` is `None` when the adapter lacks timestamp queries ([`HeadlessDevice::supports_gpu_timestamps`])
+    /// and when the graph ran no dispatch pass (only transfers, or only zero-element dispatches).
+    ///
+    /// The device has one timestamp profiler. A timed graph holds it from encoding until the timestamps are read, so
+    /// a concurrent `execute_graph_timed` or [`HeadlessDevice::dispatch_batch_timed`] on the same device waits for it;
+    /// `execute_graph` never takes it, so a program that does not call this pays nothing.
+    ///
+    /// ```
+    /// use gust_wgpu::{GpuBufferAccess, HeadlessDevice, StagedGraph};
+    ///
+    /// let device = HeadlessDevice::new()?;
+    /// let buffer = device.create_typed_buffer("values", &[0u32; 4], GpuBufferAccess::ReadWrite);
+    /// let mut graph = StagedGraph::new();
+    /// graph.write(&buffer, &[1u32, 2, 3, 4]);
+    /// let read = graph.read(&buffer);
+    /// let output = device.execute_graph_timed(&graph)?;
+    /// assert_eq!(output.readback::<u32>(read)?, [1, 2, 3, 4]);
+    /// // No dispatch pass ran, so there is nothing to time.
+    /// assert_eq!(output.report.gpu_elapsed, None);
+    /// assert_eq!(device.execute_graph(&graph)?.report.gpu_elapsed, None);
+    /// # Ok::<(), gust_wgpu::Error>(())
+    /// ```
+    pub fn execute_graph_timed(&self, graph: &StagedGraph<'_>) -> Result<GraphOutput, Error> {
+        self.execute_graph_inner(graph, true)
+    }
+
+    fn execute_graph_inner(
+        &self,
+        graph: &StagedGraph<'_>,
+        timed: bool,
+    ) -> Result<GraphOutput, Error> {
         let started = Instant::now();
         graph.validate(self)?;
+
+        // The profiler is taken only by a timed run on an adapter that has one. The first and last pass of the
+        // graph are not known while encoding (a zero-element dispatch has no pass), so a timed run prepares every
+        // dispatch node first (pipeline cache hits) and then stamps the first and last of the passes.
+        let profiler = if timed {
+            self.timestamp_profiler.as_ref().map(|profiler| {
+                profiler
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            })
+        } else {
+            None
+        };
+        let mut pre_prepared = None;
+        let mut total_passes = 0_usize;
+        if profiler.is_some() {
+            let mut all = Vec::with_capacity(graph.nodes.len());
+            for node in &graph.nodes {
+                let list = match &node.kind {
+                    NodeKind::Dispatch(dispatch) => {
+                        self.prepare_batch(std::slice::from_ref(dispatch))?
+                    }
+                    NodeKind::DispatchIndirect { dispatch, .. } => {
+                        let placeholder =
+                            BufferDispatch::new(dispatch.kernel, 1, dispatch.bindings);
+                        self.prepare_indirect(&placeholder)?
+                    }
+                    _ => Vec::new(),
+                };
+                total_passes += list.len();
+                all.push(list);
+            }
+            pre_prepared = Some(all);
+        }
+        let stamps_of = |pass: usize| {
+            profiler.as_ref().and_then(|profiler| {
+                let begin = (pass == 0).then_some(0);
+                let end = (pass + 1 == total_passes).then_some(1);
+                (begin.is_some() || end.is_some()).then_some(PassTimestamps {
+                    query_set: &profiler.query_set,
+                    begin,
+                    end,
+                })
+            })
+        };
+        let mut pass_index = 0_usize;
 
         let mut encoder = self
             .device
@@ -765,13 +858,18 @@ impl HeadlessDevice {
                     });
                 }
                 NodeKind::Dispatch(dispatch) => {
-                    for prepared in self.prepare_batch(std::slice::from_ref(dispatch))? {
+                    let list = match pre_prepared.as_mut() {
+                        Some(all) => std::mem::take(&mut all[index]),
+                        None => self.prepare_batch(std::slice::from_ref(dispatch))?,
+                    };
+                    for prepared in list {
                         prepared.encode(
                             &self.device,
                             &mut encoder,
                             "GUST staged graph pass",
-                            None,
+                            stamps_of(pass_index),
                         )?;
+                        pass_index += 1;
                         dispatches += 1;
                         workgroups += u64::from(prepared.workgroup_count());
                     }
@@ -781,11 +879,22 @@ impl HeadlessDevice {
                     // irrelevant to pipeline and bind-group preparation, and the workgroup count limit
                     // does not apply to it.
                     let placeholder = BufferDispatch::new(dispatch.kernel, 1, dispatch.bindings);
-                    for prepared in self.prepare_indirect(&placeholder)? {
+                    let list = match pre_prepared.as_mut() {
+                        Some(all) => std::mem::take(&mut all[index]),
+                        None => self.prepare_indirect(&placeholder)?,
+                    };
+                    for prepared in list {
                         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                             label: Some("GUST staged graph indirect compute pass"),
-                            timestamp_writes: None,
+                            timestamp_writes: stamps_of(pass_index).map(|stamps| {
+                                wgpu::ComputePassTimestampWrites {
+                                    query_set: stamps.query_set,
+                                    beginning_of_pass_write_index: stamps.begin,
+                                    end_of_pass_write_index: stamps.end,
+                                }
+                            }),
                         });
+                        pass_index += 1;
                         pass.set_pipeline(prepared.cached_kernel.pipeline.compute());
                         pass.set_bind_group(0, &prepared.bind_group, &[]);
                         pass.dispatch_workgroups_indirect(args.buffer(), 0);
@@ -819,6 +928,16 @@ impl HeadlessDevice {
             }
         }
 
+        if let (Some(profiler), 1..) = (&profiler, total_passes) {
+            encoder.resolve_query_set(&profiler.query_set, 0..2, &profiler.resolve_buffer, 0);
+            encoder.copy_buffer_to_buffer(
+                &profiler.resolve_buffer,
+                0,
+                &profiler.readback_buffer,
+                0,
+                TIMESTAMP_RESULT_BYTES,
+            );
+        }
         let submission = self.queue.submit([encoder.finish()]);
         let receivers: Vec<_> = pending
             .iter()
@@ -832,10 +951,15 @@ impl HeadlessDevice {
                 })
             })
             .collect();
-        self.wait_for_submission(submission)?;
+        self.wait_for_submission(submission.clone())?;
         self.device
             .poll(wgpu::PollType::wait_indefinitely())
             .map_err(|error| Error::Poll(error.to_string()))?;
+        let gpu_elapsed = match (&profiler, total_passes) {
+            (Some(profiler), 1..) => Some(self.read_timestamp_duration(profiler, submission)?),
+            _ => None,
+        };
+        drop(profiler);
         drop(staging_uploads);
 
         let mut readbacks = Vec::with_capacity(pending.len());
@@ -878,6 +1002,7 @@ impl HeadlessDevice {
                 declared_edges: graph.edge_count(false),
                 resident_bytes: graph.resident_bytes(),
                 host_elapsed: started.elapsed(),
+                gpu_elapsed,
             },
             readbacks,
         })

@@ -437,7 +437,7 @@ fn rust_gpu_backend(
 type CubeclSetup = (Vec<Box<dyn Backend>>, Vec<Value>, Value);
 
 /// The CubeCL comparator's two rows (m10.b2), in the publishable group's rotation of a `cubecl` build: one runtime on a
-/// device of its own (the run's third or fourth) on the run's adapter selection, opened only when the run selects a CubeCL
+/// device of its own (besides GUST's and the hand device) on the run's adapter selection, opened only when the run selects a CubeCL
 /// row (no `--backends` list, or one naming one). An adapter CubeCL cannot run its kernels on leaves both rows out with the
 /// reason (printed and recorded in the run file as `backends_not_run`), never another adapter; naming a row with
 /// `--backends` then makes that an error, and any other failure to open the runtime fails the run

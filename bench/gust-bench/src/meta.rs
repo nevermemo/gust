@@ -210,7 +210,8 @@ pub fn build_features() -> Vec<&'static str> {
     if cfg!(feature = "rust-gpu") {
         features.push("rust-gpu");
     }
-    // A fourth device on the adapter and two more backends in the rotation (m10.b2), for the same reason.
+    // A device of its own besides GUST's and the hand device, two more backends in the rotation, and wgpu's default features
+    // for every row (m10.b2), for the same reason.
     if cfg!(feature = "cubecl") {
         features.push("cubecl");
     }

@@ -298,28 +298,35 @@ result) together with a device that enables `vulkanMemoryModel`.
 ## The CubeCL comparator (`cubecl-wgpu`, `cubecl-wgpu-tuned`, `--features cubecl`)
 
 The same workloads written as CubeCL 0.11.4 kernels (`#[cube]` functions in Rust) and run through CubeCL's wgpu runtime,
-next to the hand WGSL. Workloads: W1, W2, W3, W4, W7 and W9 (naive); W5, W6 and W8 leave the rows out.
+next to the hand WGSL. Workloads: W1, W2, W3, W4, W7 and W9 (naive). W5 and W6 are left out for scope, not because CubeCL could not express them; the bench has no W8.
 
 - Needs rustc 1.95 or newer for the dependency (CubeCL's floor); the bench's own `rust-version` is 1.90 and a default
   build does not compile CubeCL. Check with `rustc --version`; with a rustup toolchain use
   `cargo +1.95.0 ...` or set `RUSTUP_TOOLCHAIN`.
 - CubeCL is pinned `=0.11.4` with `default-features = false, features = ["wgpu"]`: no `spirv` feature (CubeCL emits WGSL,
   which wgpu and naga translate), no autotune or kernel cache on disk, no network client. The lock gained CubeCL's crates
-  and changed no pre-existing version.
+  and changed no pre-existing version, but the build turns on wgpu's default features for every row (`dx12`, `gles`,
+  `metal`, `webgpu`, `web`, `parking_lot` and others; instances stay Vulkan-only, but wgpu's host-side locking differs
+  from the default build's), because `cubecl-wgpu` does not switch them off.
 - The runtime is created from the bench's own wgpu instance, adapter and device (Vulkan, `TIMESTAMP_QUERY`), so
   `--adapter` selects the adapter for these rows as for the others. An adapter that cannot run the kernels is a refusal:
   the rows are left out and the run file lists them under `config.backends_not_run` with the reason; naming one with
-  `--backends` is then an error.
+  `--backends` is then an error. Only that adapter gate refuses; an error of CubeCL's own initialisation fails the run.
+  CubeCL's flush policy is pinned (`tasks_max` 64, default memory configuration) and recorded in the run file.
 - `cubecl-wgpu` is the like-for-like row (checked launch, 256-wide cubes, W9 16 by 16, line size 1);
   `cubecl-wgpu-tuned` uses the unchecked launch and line size 4 for W1 to W3 where the length is a multiple of four.
   Neither has autotune. Their bounds policies are in `docs/BENCHMARKS.md`, "Bounds policy".
-- The `cubecl` feature is listed in `build.features` and makes a run not publishable. Neither row is part of the GUST
+- The CubeCL rows have no cold-start figure. W7's GPU time is the sum of one profiling window per repeat, all closed
+  before any is read; the end-to-end sample includes CubeCL's copy of each input into owned bytes (details in
+  `docs/BENCHMARKS.md`).
+- The `cubecl` feature is listed in `build.features` and makes a run not publishable (a device of its own, two more
+  backends in the rotation, and wgpu's default features on for every row). Neither row is part of the GUST
   kill rule, and a ratio of either to `wgsl-prebuilt` is not a GUST overhead.
 
 ```sh
 # from the repository root, with rustc 1.95 or newer
 cargo run --release --manifest-path bench/Cargo.toml -p gust-bench --features cubecl -- run \
-  --functional --quick --backends wgsl-prebuilt,cubecl-wgpu,cubecl-wgpu-tuned --out cubecl.json
+  --functional --quick --backends gust-gpu,wgsl-prebuilt,wgsl-percall,cubecl-wgpu,cubecl-wgpu-tuned --out cubecl.json
 cargo test --manifest-path bench/Cargo.toml -p gust-bench --features cubecl cubecl_backend
 ```
 

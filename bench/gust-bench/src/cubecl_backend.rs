@@ -2,9 +2,10 @@
 //! kernels in Rust and run through CubeCL's wgpu runtime, on the adapter the run selected (`--adapter`).
 //!
 //! The runtime is not a second graphics stack of its own choosing: the bench creates the wgpu instance, adapter, device
-//! and queue (the run's third wgpu device, as `wgsl-prebuilt` has its own) and hands them to CubeCL's "existing setup"
+//! and queue (a device of its own besides GUST's and the hand device) and hands them to CubeCL's "existing setup"
 //! path (`try_init_device`), so CubeCL runs on exactly the adapter of the run. An adapter that cannot run the kernels is a
-//! typed [`Refusal`]: the rows are left out with the reason (`config.backends_not_run`), never a silent other GPU.
+//! typed [`Refusal`] from [`check_adapter`], and only that: the rows are left out with the reason
+//! (`config.backends_not_run`), never a silent other GPU. Any error of CubeCL's own initialisation fails the run.
 //!
 //! CubeCL is built with `default-features = false, features = ["wgpu"]`: no `spirv` feature, so its compiler emits WGSL
 //! that wgpu and naga translate, the route the hand WGSL takes; no `std`/`persistence` default features, so CubeCL has no
@@ -24,10 +25,11 @@ use bytemuck::cast_slice;
 use cubecl::__private::Runtime;
 use cubecl::bytes::Bytes;
 use cubecl::prelude::*;
+use cubecl::profile::{ProfileDuration, TimingMethod};
 use cubecl::server::Handle;
 use cubecl::wgpu::{
-    AutoCompiler, RuntimeOptions, WgpuDevice, WgpuInitError, WgpuRuntime, WgpuSetup,
-    try_init_device,
+    AutoCompiler, MemoryConfiguration, RuntimeOptions, WgpuDevice, WgpuInitError, WgpuRuntime,
+    WgpuSetup, try_init_device,
 };
 use serde_json::{Value, json};
 
@@ -43,6 +45,15 @@ pub const TUNED: &str = "cubecl-wgpu-tuned";
 
 /// Line size of the tuned row's vectorised kernels (W1 to W3).
 const LINE_SIZE: usize = 4;
+
+/// CubeCL's flush policy, pinned (its default is 32 from `CUBECL_WGPU_MAX_TASKS`, read from the environment): it submits
+/// whenever this many tasks are queued. The harness times at most 16 launches in one window, so 64 is more than twice the
+/// largest timed batch and a window never spans a policy submission.
+const TASKS_MAX: usize = 64;
+const _: () = assert!(
+    TASKS_MAX >= 2 * 16,
+    "at least twice the largest timed batch"
+);
 
 /// The adapter cannot run CubeCL's kernels of this bench. This, and only this, leaves the rows out of a run ("not run",
 /// with the reason); any other error while opening the device is a failure of the run.
@@ -88,20 +99,11 @@ pub fn check_adapter(
     Ok(())
 }
 
-/// Whether a CubeCL initialisation error is a refusal of the adapter (a typed `Refusal`) rather than a failure of the run.
-fn refusal_of(error: WgpuInitError, name: &str) -> Box<dyn Error> {
-    match error {
-        WgpuInitError::InvalidConfiguration { message } => Box::new(Refusal(format!(
-            "CubeCL refused the setup of adapter {name}: {message}"
-        ))),
-        WgpuInitError::UnsupportedGraphicsApi { api } => Box::new(Refusal(format!(
-            "CubeCL has no {api:?} runtime in this build (adapter {name})"
-        ))),
-        WgpuInitError::AdapterUnavailable { message, .. } => Box::new(Refusal(format!(
-            "CubeCL found no adapter for {name}: {message}"
-        ))),
-        other => Box::new(other),
-    }
+/// A CubeCL initialisation error is a failure of the run, never a [`Refusal`]: a bad option, a setup that does not match
+/// its adapter and device (a bug of this bench) and a missing runtime must not leave the rows out quietly. Only
+/// [`check_adapter`] refuses.
+fn init_error(error: WgpuInitError, name: &str) -> Box<dyn Error> {
+    format!("CubeCL could not start on adapter {name}: {error}").into()
 }
 
 /// What the run does about the CubeCL rows.
@@ -150,6 +152,9 @@ pub fn identity() -> Value {
         "cubecl": "0.11.4",
         "features": "default-features = false, features = [\"wgpu\"]",
         "compiler": "WGSL (no `spirv` feature): CubeCL emits WGSL, wgpu and naga translate it",
+        "tasks_max": TASKS_MAX,
+        "memory_config": "default",
+        "wgpu_features": "the cubecl build turns on wgpu's default features for every row of the run (dx12, gles, metal, webgpu, web, parking_lot and others, besides std, vulkan and wgsl): every instance stays Vulkan-only, but wgpu's host-side locking differs from the default build's",
         "rows": {
             LIKE_FOR_LIKE: "default checked launch (CubeCL clamps an out-of-range buffer index to the last element), CubeDim 1d(256) (W9: 2d(16,16)), line size 1, the hand WGSL's algorithm per workload",
             TUNED: "launch_unchecked (no bounds rewrite), line size 4 (Vector<f32, 4>) for W1 to W3 when n is a multiple of 4, else line size 1; same cube dims; no autotune (it applies to Tunable operation sets, not to hand-launched kernels)",
@@ -157,8 +162,8 @@ pub fn identity() -> Value {
     })
 }
 
-/// The wgpu device CubeCL runs on and the client of its runtime: the run's third wgpu device on the run's adapter selection,
-/// with default limits (the adapter's own buffer limits for a W7 input above 2^25 words) and `TIMESTAMP_QUERY`, as the hand
+/// The wgpu device CubeCL runs on and the client of its runtime: a device of its own, besides GUST's and the hand device,
+/// on the run's adapter selection, with default limits (the adapter's own buffer limits for a W7 input above 2^25 words) and `TIMESTAMP_QUERY`, as the hand
 /// device is opened.
 pub struct CubeclContext {
     pub client: Client,
@@ -214,9 +219,12 @@ impl CubeclContext {
             queue,
             backend: info.backend,
         };
-        let options = RuntimeOptions::try_default().map_err(|e| refusal_of(e, &info.name))?;
+        let options = RuntimeOptions {
+            tasks_max: TASKS_MAX,
+            memory_config: MemoryConfiguration::default(),
+        };
         let device =
-            try_init_device(setup, options).map_err(|error| refusal_of(error, &info.name))?;
+            try_init_device(setup, options).map_err(|error| init_error(error, &info.name))?;
         let client = WgpuRuntime::<AutoCompiler>::client(&device);
         Ok(Self {
             client,
@@ -398,6 +406,27 @@ fn w9_matmul(dims: &[u32], a: &[f32], b: &[f32], c: &mut [f32]) {
 // The backend.
 // ---------------------------------------------------------------------------------------------------------------------
 
+/// The buffer lengths the kernels' guards rely on (see the SAFETY note in `Cubecl::pass`): W1 to W3 read their inputs at
+/// positions guarded by the output's length, W9 reads `n * n` words from each matrix guarded by `n` alone.
+fn check_lengths(workload: Workload, n: usize, lens: &[usize]) -> BenchResult<()> {
+    let ok = match workload.family() {
+        "W1" => lens == [n, n, n],
+        "W2" => lens.len() == 4 && lens[0] == 1 && lens[1..] == [n, n, n],
+        "W3" => lens.len() == 3 && lens[0] >= 2 && lens[1..] == [n, n],
+        "W9" => lens == [1, n * n, n * n, n * n],
+        _ => true,
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "{}: buffer lengths {lens:?} do not match the n={n} the CubeCL kernels' guards assume",
+            workload.id()
+        )
+        .into())
+    }
+}
+
 struct Resident {
     workload: Workload,
     n: usize,
@@ -420,6 +449,8 @@ pub struct Cubecl {
     resident: Option<Resident>,
     /// Dispatches since the bins were last cleared (a histogram accumulates).
     passes: Cell<u32>,
+    /// Profiling windows closed so far (a test pins that W7 times `batch` windows and the others one).
+    windows: Cell<usize>,
 }
 
 impl Cubecl {
@@ -429,6 +460,7 @@ impl Cubecl {
             tuned,
             resident: None,
             passes: Cell::new(0),
+            windows: Cell::new(0),
         }
     }
 
@@ -451,6 +483,8 @@ impl Cubecl {
         self.tuned && matches!(workload.family(), "W1" | "W2" | "W3") && n.is_multiple_of(LINE_SIZE)
     }
 
+    /// CubeCL's `write` takes owned bytes, so each write copies the borrowed input first: inside an end-to-end sample that
+    /// copy is part of what CubeCL's host side costs here, where the hand rows write the slice straight in.
     fn write(&self, handle: &Handle, bytes: &[u8]) {
         self.ctx
             .client
@@ -468,9 +502,12 @@ impl Cubecl {
         let h = |i: usize| r.handles[i].clone();
         let len = |i: usize| r.lens[i];
         // SAFETY (every `BufferArg::from_raw_parts` and every `launch_unchecked` below): `lens` are the exact element
-        // counts of the buffers `prepare` allocated (bytes / element size), and every kernel guards its indices against
-        // the lengths of its own buffers exactly as the hand WGSL does, so no launch reads or writes out of range; every
-        // loop is bounded by a length or a constant. Every sample of both rows is checked against the serial reference.
+        // counts of the buffers `prepare` allocated (bytes / element size). The kernels guard their indices as the hand
+        // WGSL does, which is not against every buffer's own length: W1 and W2 guard on the output's length alone, and W9
+        // on `n` alone. Safety therefore rests on `prepare`: the input buffers of W1 to W3 have the output's length (the
+        // generators make `x`, `y` and the output `n` words) and W9's three matrices have `n * n` words, which `prepare`
+        // checks (`check_lengths`) before any launch. Every loop is bounded by a length or a constant, and shared-memory indices stay below
+        // 256. Every sample of both rows is checked against the serial reference.
         let arg = |i: usize| unsafe { BufferArg::from_raw_parts(h(i), len(i)) };
         let groups = |threads: usize| CubeCount::Static(threads.div_ceil(WORKGROUP) as u32, 1, 1);
         let dim = CubeDim::new_1d(WORKGROUP as u32);
@@ -601,9 +638,9 @@ impl Cubecl {
         }
     }
 
-    /// GPU time of `repeats` back-to-back passes: CubeCL's profiling window around them, which is a device-timestamp span
-    /// when the adapter has `TIMESTAMP_QUERY` (`None` otherwise: a host clock is not a GPU clock).
-    fn window(&self, repeats: usize) -> BenchResult<Option<Duration>> {
+    /// Opens CubeCL's profiling window around `repeats` back-to-back passes and closes it; the span is read later by
+    /// [`Cubecl::resolve`], so closing it does not wait for the GPU.
+    fn window(&self, repeats: usize) -> BenchResult<ProfileDuration> {
         let r = self.resident();
         let client = &self.ctx.client;
         let window = client
@@ -612,14 +649,23 @@ impl Cubecl {
         for _ in 0..repeats {
             self.pass(r);
         }
-        let profile = client
+        self.windows.set(self.windows.get() + 1);
+        Ok(client
             .profile_end(window)
-            .map_err(|error| format!("{error:?}"))?;
-        if profile.timing_method() != cubecl::profile::TimingMethod::Device {
+            .map_err(|error| format!("{error:?}"))?)
+    }
+
+    /// The device-timestamp span of a closed window. Called only when the adapter has `TIMESTAMP_QUERY`, so a window that
+    /// is not a device-timestamp span, or has no span, is an error: a sample must never be dropped quietly.
+    fn resolve(&self, profile: ProfileDuration) -> BenchResult<Duration> {
+        if profile.timing_method() != TimingMethod::Device {
             self.sync()?;
-            return Ok(None);
+            return Err("CubeCL's profiling window is not a device-timestamp span on an adapter with TIMESTAMP_QUERY".into());
         }
-        Ok(pollster::block_on(profile.resolve()).map(|ticks| ticks.duration()))
+        match pollster::block_on(profile.resolve()) {
+            Some(ticks) => Ok(ticks.duration()),
+            None => Err("CubeCL's profiling window returned no device timestamps on an adapter with TIMESTAMP_QUERY".into()),
+        }
     }
 }
 
@@ -640,7 +686,8 @@ impl Backend for Cubecl {
         Kind::Gpu
     }
 
-    /// W1 to W4, W7 and W9 (the m10.b2 scope); W5 and W6 have no CubeCL kernel here.
+    /// W1 to W4, W7 and W9 (the m10.b2 scope). W5 and W6 are left out for scope (the slice's cap order), not because CubeCL
+    /// could not express them; the bench has no W8.
     fn supports(&self, workload: Workload) -> bool {
         matches!(workload.family(), "W1" | "W2" | "W3" | "W4" | "W7" | "W9")
     }
@@ -655,6 +702,7 @@ impl Backend for Cubecl {
 
     fn prepare(&mut self, workload: Workload, inputs: &Inputs) -> BenchResult<()> {
         self.resident = None;
+        self.windows.set(0);
         let n = inputs.n;
         let out_len = workload.out_len(n);
         let client = &self.ctx.client;
@@ -688,6 +736,7 @@ impl Backend for Cubecl {
         let poison = vec![workload.poison_word(); out_len];
         handles.push(client.create_from_slice(cast_slice(&poison)));
         lens.push(out_len);
+        check_lengths(workload, n, &lens)?;
         self.sync()?;
         self.passes.set(0);
         self.resident = Some(Resident {
@@ -745,16 +794,20 @@ impl Backend for Cubecl {
         self.passes
             .set(self.passes.get().wrapping_add(batch as u32));
         if family == "W7" {
-            let mut total = Duration::ZERO;
+            // All `batch` one-repeat windows are closed before any is read, so the repeats queue behind each other as the
+            // hand row's do (one timestamp pair per repeat, summed); only the submissions are CubeCL's own.
+            let mut windows = Vec::with_capacity(batch);
             for _ in 0..batch {
-                match self.window(1)? {
-                    Some(span) => total += span,
-                    None => return Ok(None),
-                }
+                windows.push(self.window(1)?);
+            }
+            let mut total = Duration::ZERO;
+            for window in windows {
+                total += self.resolve(window)?;
             }
             return Ok(Some(total));
         }
-        self.window(batch)
+        let window = self.window(batch)?;
+        Ok(Some(self.resolve(window)?))
     }
 
     fn read_back(&mut self, out: &mut Vec<f32>) -> BenchResult<()> {
@@ -795,6 +848,69 @@ mod tests {
         let ctx = CubeclContext::open_on(None, false)
             .expect("an adapter CubeCL can run on is needed for the CubeCL tests");
         (guard, Rc::new(ctx))
+    }
+
+    /// The init errors of CubeCL are failures of the run, never refusals; only the adapter gate refuses.
+    #[test]
+    fn a_cubecl_init_error_fails_the_run_and_the_flush_policy_is_pinned() {
+        for error in [
+            WgpuInitError::InvalidConfiguration {
+                message: "CUBECL_WGPU_MAX_TASKS must be a positive integer".into(),
+            },
+            WgpuInitError::UnsupportedGraphicsApi {
+                api: cubecl::wgpu::WgpuBackend::Vulkan,
+            },
+        ] {
+            let opened: Result<u32, Box<dyn Error>> = Err(init_error(error, "a"));
+            let failure = decide(opened, None).unwrap_err();
+            assert!(failure.downcast_ref::<Refusal>().is_none(), "{failure}");
+            assert!(failure.to_string().contains("could not start"), "{failure}");
+        }
+        let identity = identity();
+        assert_eq!(identity["tasks_max"], TASKS_MAX);
+        assert_eq!(identity["memory_config"], "default");
+        assert!(
+            identity["wgpu_features"]
+                .as_str()
+                .is_some_and(|text| text.contains("parking_lot") && text.contains("dx12"))
+        );
+    }
+
+    #[test]
+    fn the_guards_rely_on_equal_buffer_lengths_and_prepare_checks_them() {
+        assert!(check_lengths(Workload::VectorAdd, 8, &[8, 8, 8]).is_ok());
+        assert!(check_lengths(Workload::VectorAdd, 8, &[8, 4, 8]).is_err());
+        assert!(check_lengths(Workload::Saxpy, 8, &[1, 8, 8, 8]).is_ok());
+        assert!(check_lengths(Workload::Saxpy, 8, &[1, 8, 7, 8]).is_err());
+        assert!(check_lengths(Workload::Poly16, 8, &[17, 8, 8]).is_ok());
+        assert!(check_lengths(Workload::Poly16, 8, &[17, 8, 9]).is_err());
+        assert!(check_lengths(Workload::MatMul, 4, &[1, 16, 16, 16]).is_ok());
+        assert!(check_lengths(Workload::MatMul, 4, &[1, 16, 15, 16]).is_err());
+        assert!(check_lengths(Workload::SumF32, 8, &[8, 1, 1]).is_ok());
+    }
+
+    /// W7 times one profiling window per repeat (summed, like the hand row's per-repeat spans), every other workload one
+    /// window around the whole batch; a window with no device timestamps is an error, never a dropped sample.
+    #[test]
+    fn w7_gpu_time_sums_one_window_per_repeat_and_the_others_take_one() {
+        let (_gpu, ctx) = gpu_context();
+        for (w, windows) in [
+            (Workload::SumU32, 16),
+            (Workload::SumF32, 16),
+            (Workload::VectorAdd, 1),
+            (Workload::MatMul, 1),
+        ] {
+            let mut backend = Cubecl::new(Rc::clone(&ctx), false);
+            backend.prepare(w, &gen_inputs(w, test_size(w))).unwrap();
+            let time = backend.gpu_time(16).unwrap();
+            assert_eq!(time.is_some(), ctx.timestamps, "{}", w.id());
+            assert_eq!(
+                backend.windows.get(),
+                if ctx.timestamps { windows } else { 0 },
+                "{}",
+                w.id()
+            );
+        }
     }
 
     fn names(list: &[&str]) -> Vec<String> {

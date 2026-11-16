@@ -13,26 +13,36 @@ fn pairs_same_kernel(workload: &str) -> bool {
     Workload::parse(workload).is_none_or(Workload::same_kernel)
 }
 
+/// Whether a GUST end-to-end figure of the workload (by id) times the same work as the baseline's (`Workload::end_to_end_comparable`).
+fn e2e_comparable(workload: &str) -> bool {
+    Workload::parse(workload).is_none_or(Workload::end_to_end_comparable)
+}
+
+/// Why W5 has no GUST end-to-end ratio, overhead row, bandwidth figure or break-even.
+const E2E_NOTE: &str = "GUST's read-back converts a typed `Vec<Particle>` into the harness's words inside the end-to-end sample (a second allocation and a per-field copy) where the baseline reads raw words with one copy, so no GUST end-to-end ratio, overhead row, bandwidth figure or break-even is shown; the dispatch timings are not affected.";
+
 fn is_gust(backend: &str) -> bool {
     backend.starts_with("gust-gpu")
 }
 
-/// The header of the size column: W9's size is the matrix side `N` (the matrices hold `N * N` words), every other
-/// workload's is a count of elements.
+/// The header of the size column: W9's size is the matrix side `N` (the matrices hold `N * N` words), W5's is a count of
+/// particles (7 words each), every other workload's is a count of elements.
 fn size_header(workload: &str) -> &'static str {
     if workload == "W9" || workload.starts_with("W9-") {
         "N (matrix side)"
+    } else if workload == "W5" || workload.starts_with("W5-") {
+        "particles"
     } else {
         "elements"
     }
 }
 
-/// A size in prose: `N = 1024` for W9, `1048576 elements` for the rest.
+/// A size in prose: `N = 1024` for W9, `65536 particles` for W5, `1048576 elements` for the rest.
 fn size_phrase(workload: &str, n: u64) -> String {
-    if size_header(workload) == "elements" {
-        format!("{n} elements")
-    } else {
-        format!("N = {n}")
+    match size_header(workload) {
+        "elements" => format!("{n} elements"),
+        "particles" => format!("{n} particles"),
+        _ => format!("N = {n}"),
     }
 }
 
@@ -249,6 +259,9 @@ fn gather_paired(runs: &[Value]) -> PairedTable {
                 continue;
             }
             for (metric, _) in METRICS {
+                if metric == "end_to_end" && is_gust(backend) && !e2e_comparable(workload) {
+                    continue;
+                }
                 let paired = &cell["metrics"][metric]["paired_vs_prebuilt"];
                 let Some(ratio) = paired["median_ratio"].as_f64() else {
                     continue;
@@ -483,7 +496,9 @@ fn ablation_rows(table: &Table, sizes: &BTreeMap<String, Vec<u64>>) -> Vec<Value
                 for backend in ABLATION {
                     let Some(ms) = get(backend) else { continue };
                     // The time is shown, the ratio is not, where GUST and the baseline run different algorithms (W7).
-                    let comparable = !is_gust(backend) || pairs_same_kernel(workload);
+                    let comparable = !is_gust(backend)
+                        || (pairs_same_kernel(workload)
+                            && (metric != "end_to_end" || e2e_comparable(workload)));
                     rows.push(json!({
                         "workload": workload, "n": n, "metric": metric, "backend": backend,
                         "median_ms": ms,
@@ -965,6 +980,9 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                 "No {gust} / wgsl-prebuilt ratio is shown for {workload}: the two run different algorithms (GUST the library's sum with its own schedule, the baseline a tree of its own), and the library's sum exposes no GPU timestamps. The times above are each backend's own.\n"
             )?;
         }
+        if !e2e_comparable(workload) {
+            writeln!(md, "{E2E_NOTE}\n")?;
+        }
         // A GFLOP/s column (2 N^3 flops for W9, plan 2.3) is b5's: it goes beside the bandwidth table below.
         if bytes == 0.0 {
             writeln!(
@@ -1008,7 +1026,11 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                 gbps(gust, "gpu_batch_per_dispatch"),
                 gbps("wgsl-prebuilt", "gpu_batch_per_dispatch"),
                 gbps("wgsl-percall", "gpu_batch_per_dispatch"),
-                gbps(gust, "end_to_end"),
+                if e2e_comparable(workload) {
+                    gbps(gust, "end_to_end")
+                } else {
+                    "-".to_owned()
+                },
                 gbps("wgsl-prebuilt", "end_to_end"),
                 gbps("rayon-N", "end_to_end"),
                 link_of(workload, *n),
@@ -1032,7 +1054,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     )?;
     writeln!(
         md,
-        "| workload | elements (W9: side N) | timing | gust-gpu (ms) | wgsl-prebuilt (ms) | ratio | difference (us) | wgsl-percall (ms) | ratio | PCIe link (end to end) |"
+        "| workload | elements (W5: particles, W9: side N) | timing | gust-gpu (ms) | wgsl-prebuilt (ms) | ratio | difference (us) | wgsl-percall (ms) | ratio | PCIe link (end to end) |"
     )?;
     writeln!(md, "|---|---|---|---|---|---|---|---|---|---|")?;
     for row in &overhead {
@@ -1178,7 +1200,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     )?;
     writeln!(
         md,
-        "| workload | elements (W9: side N) | cells reaching P0 | SM MHz at start (min to max) | memory MHz at start | pstates at start | pstates after | memory MHz after | PCIe gen now (max gen) |"
+        "| workload | elements (W5: particles, W9: side N) | cells reaching P0 | SM MHz at start (min to max) | memory MHz at start | pstates at start | pstates after | memory MHz after | PCIe gen now (max gen) |"
     )?;
     writeln!(md, "|---|---|---|---|---|---|---|---|---|")?;
     let mut by_size: BTreeMap<(String, u64), ClockSpan> = BTreeMap::new();
@@ -1255,7 +1277,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     )?;
     writeln!(
         md,
-        "| workload | elements (W9: side N) | backend | first in process, per run (ms) | rest median (ms) | rest (ms) | note |"
+        "| workload | elements (W5: particles, W9: side N) | backend | first in process, per run (ms) | rest median (ms) | rest (ms) | note |"
     )?;
     writeln!(md, "|---|---|---|---|---|---|---|")?;
     let list = |values: &[f64]| {
@@ -1401,6 +1423,9 @@ fn crossover(
             .map(Point::median)
     };
     for gpu in [gust, "wgsl-prebuilt"] {
+        if gpu == gust && !e2e_comparable(workload) {
+            continue;
+        }
         let winner = sizes
             .iter()
             .copied()
@@ -1434,6 +1459,9 @@ fn overhead_rows(table: &Table, sizes: &BTreeMap<String, Vec<u64>>, gust: &str) 
         }
         for n in list {
             for (metric, _) in METRICS.iter().rev() {
+                if *metric == "end_to_end" && !e2e_comparable(workload) {
+                    continue;
+                }
                 let get = |backend: &str| {
                     table
                         .get(&(
@@ -1522,6 +1550,57 @@ mod tests {
             "warmup": { "actual_s": 0.8, "p0_reached": sm > 2500.0, "clocks": { "sm_mhz": sm, "pstate": "P0", "pcie_gen_now": 4.0, "pcie_gen_max": 5.0, "pcie_width": 4.0, "mem_mhz": 1.0 } },
             "clocks_after_timing": { "sm_mhz": sm, "pstate": "P5", "pcie_gen_now": 4.0, "pcie_gen_max": 5.0, "pcie_width": 4.0, "mem_mhz": 810.0 },
         })
+    }
+
+    /// W5: GUST's end-to-end sample includes a conversion copy the baseline does not pay, so there is no GUST end-to-end
+    /// ratio, overhead row or bandwidth figure (a workload property, `end_to_end_comparable`); W1 keeps them.
+    #[test]
+    fn w5_has_no_gust_end_to_end_ratio_overhead_row_or_bandwidth() {
+        let dir = scratch("w5e2e");
+        let mut one = run("wgsl", "GPU A", "a.json");
+        let mut cells = vec![];
+        for workload in ["W1", "W5"] {
+            for (backend, ms) in [("gust-gpu", 3.0), ("wgsl-prebuilt", 1.0)] {
+                let mut cell = gpu_cell(backend, ms, true, 2600.0);
+                cell["workload"] = json!(workload);
+                cells.push(cell);
+            }
+        }
+        one["cells"] = json!(cells);
+        let table = gather(std::slice::from_ref(&one));
+        let sizes = BTreeMap::from([
+            ("W1".to_owned(), vec![4096u64]),
+            ("W5".to_owned(), vec![4096u64]),
+        ]);
+        let overhead = overhead_rows(&table, &sizes, "gust-gpu");
+        let has = |w: &str, metric: &str| {
+            overhead
+                .iter()
+                .any(|r| r["workload"] == w && r["metric"] == metric)
+        };
+        assert!(has("W1", "end_to_end"));
+        assert!(!has("W5", "end_to_end"));
+        let paired = gather_paired(std::slice::from_ref(&one));
+        assert!(
+            paired
+                .keys()
+                .any(|k| k.0 == "W1" && k.2 == "gust-gpu" && k.3 == "end_to_end")
+        );
+        assert!(
+            !paired
+                .keys()
+                .any(|k| k.0 == "W5" && k.2 == "gust-gpu" && k.3 == "end_to_end")
+        );
+        let inputs = write_runs(&dir, &[one]);
+        let (out_json, out_md) = (dir.join("o.json"), dir.join("o.md"));
+        aggregate(
+            &inputs,
+            out_json.to_str().unwrap(),
+            out_md.to_str().unwrap(),
+        )
+        .unwrap();
+        let md = fs::read_to_string(&out_md).unwrap();
+        assert_eq!(md.matches(E2E_NOTE).count(), 1);
     }
 
     #[test]

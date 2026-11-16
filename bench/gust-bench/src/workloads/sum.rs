@@ -44,9 +44,10 @@
 //!   (`gamma_k` needs `k u < 1`, that is `n <= 2^24`) and is monotone in `n`. The flush allowance
 //!   `(n - 1) 2^-126 (1 + factor)` is added for a device that flushes. **It is vacuous from `n = 2^24`**: there the
 //!   factor passes 1, so the bound exceeds `S >= |s|` and a result of `0.0` passes (a test pins the size). From `2^22`
-//!   it is weak (over a quarter of `S`). The order of `serial` is known and sequential, of `rayon` unknown, so no tighter
-//!   bound is derived for them (a bound the order does not justify would be a guess); the cells above `2^23` rest on the
-//!   same code passing at the small sizes and on W7-u32 being exact (see `docs/BENCHMARKS.md`).
+//!   it is weak (over a quarter of `S` at 2^22 and 2^23, vacuous above): the weak range is 2^22 to 2^27, and the check
+//!   is meaningful at 2^20 and 2^21 only. The order of `serial` is known and sequential, of `rayon` unknown, so no tighter
+//!   bound is derived for them (a bound the order does not justify would be a guess); the cells from 2^22 up rest on the
+//!   same code passing at the small sizes and on W7-u32 being exact on the same loop shape (see `docs/BENCHMARKS.md`).
 //!
 //! The reference is a sequential sum in f64, whose own error is at most `(n - 1) 2^-53 S`
 //! (`gust_algo::bound::f64_reference_error`, a test pins the two to the same formula; the rigorous recursive-sum bound is

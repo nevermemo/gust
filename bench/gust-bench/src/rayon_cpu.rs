@@ -7,7 +7,8 @@
 //! add, contended the same way: a Zipf stream hits few counters from every thread); the serial row counts into a plain
 //! `u32` array. Every call clears its bins first, so a call is one complete histogram, like a GPU end-to-end sample.
 //!
-//! The sum (W7): rayon folds a chunk per task and reduces the partial sums (`wrapping_add` for `u32`, `+` for `f32`, so
+//! The particle step (W5): the serial row steps each particle in turn (`particles::step_words`), rayon takes the particles
+//! in parallel. The sum (W7): rayon folds a chunk per task and reduces the partial sums (`wrapping_add` for `u32`, `+` for `f32`, so
 //! its order of summation is a tree whose shape depends on the splits); the serial row adds left to right. The naive
 //! matrix product (W9): the serial loop is `matmul::row` for every row, rayon takes the rows in parallel.
 
@@ -17,7 +18,7 @@ use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 
 use crate::{
     backend::{Backend, BenchResult, Kind},
-    workloads::{Inputs, Workload, matmul, polynomial, saxpy, sum, vector_add},
+    workloads::{Inputs, Workload, matmul, particles, polynomial, saxpy, sum, vector_add},
 };
 
 pub struct CpuLoop {
@@ -77,6 +78,7 @@ impl CpuLoop {
                 });
             }
             "W3" => self.run_poly(&inputs.coeffs, &inputs.x, out),
+            "W5" => self.particles(inputs, out),
             "W7" => out[0] = self.sum(workload, inputs),
             "W9" => self.matmul(inputs, out),
             _ => self.histogram(&inputs.keys, inputs.bins, out),
@@ -137,6 +139,28 @@ impl CpuLoop {
                     .par_iter()
                     .fold(|| 0.0f32, |sum, v| sum + *v)
                     .reduce(|| 0.0f32, |a, b| a + b)
+            }),
+        }
+    }
+
+    /// The particle step (W5): one particle (7 words) and its acceleration (2 words) at a time, 16 steps each.
+    fn particles(&self, inputs: &Inputs, out: &mut [f32]) {
+        let (x, y) = (&inputs.x, &inputs.y);
+        match &self.pool {
+            None => {
+                for ((o, p), a) in out
+                    .chunks_mut(particles::WORDS)
+                    .zip(x.chunks(particles::WORDS))
+                    .zip(y.chunks(particles::ACCEL_WORDS))
+                {
+                    particles::step_words(p, a, o);
+                }
+            }
+            Some(pool) => pool.install(|| {
+                out.par_chunks_mut(particles::WORDS)
+                    .zip(x.par_chunks(particles::WORDS))
+                    .zip(y.par_chunks(particles::ACCEL_WORDS))
+                    .for_each(|((o, p), a)| particles::step_words(p, a, o));
             }),
         }
     }

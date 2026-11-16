@@ -19,7 +19,7 @@ use crate::{
     backend::{Backend, BenchResult, Kind},
     workloads::{
         Inputs, Workload, counts_as_words, hist_threads, histogram, matmul, normalize_counts,
-        polynomial, saxpy, vector_add,
+        particles, polynomial, saxpy, vector_add,
     },
 };
 
@@ -49,6 +49,15 @@ enum Data {
         a: CpuBuffer<f32>,
         b: CpuBuffer<f32>,
         c: CpuBuffer<f32>,
+    },
+    /// W5: the typed particle and acceleration buffers, and the typed host copies an end-to-end sample uploads (built once
+    /// in `prepare`, so no sample converts the harness's words).
+    Particles {
+        input: CpuBuffer<particles::kernel::Particle>,
+        acceleration: CpuBuffer<particles::kernel::Pair>,
+        out: CpuBuffer<particles::kernel::Particle>,
+        host_input: Vec<particles::kernel::Particle>,
+        host_acceleration: Vec<particles::kernel::Pair>,
     },
 }
 
@@ -105,6 +114,12 @@ impl GustCpu {
                 Independent(b),
                 Independent(c),
             )?,
+            Data::Particles {
+                input,
+                acceleration,
+                out,
+                ..
+            } => particles::kernel::step::dispatch(&self.device, n, input, acceleration, out)?,
         }
         Ok(())
     }
@@ -114,6 +129,7 @@ impl GustCpu {
             Data::Add { out, .. } | Data::Saxpy { out, .. } | Data::Poly { out, .. } => out.read(),
             Data::Hist { bins, .. } => counts_as_words(bins.read()),
             Data::MatMul { c, .. } => c.read(),
+            Data::Particles { out, .. } => particles::from_particles(&out.read()),
         }
     }
 }
@@ -139,7 +155,8 @@ impl Backend for GustCpu {
         Kind::Cpu
     }
 
-    /// The twin runs W9 (a 2-D kernel with a twin); the production CPU target is not on W9's list, and no GUST CPU
+    /// The twin and the production CPU target both run W5 (the struct kernel's shadow body). The twin runs W9 (a 2-D kernel
+    /// with a twin); the production CPU target is not on W9's list, and no GUST CPU
     /// backend sums (W7 is `gust-algo`'s, which has no CPU path of its own to time here).
     fn supports(&self, workload: Workload) -> bool {
         match workload.family() {
@@ -173,6 +190,20 @@ impl Backend for GustCpu {
                 x: d.buffer(&inputs.x),
                 out: d.buffer(&vec![f32::NAN; n]),
             },
+            "W5" => {
+                let host_input = particles::to_particles(&inputs.x);
+                let host_acceleration = particles::to_pairs(&inputs.y);
+                Data::Particles {
+                    input: d.buffer(&host_input),
+                    acceleration: d.buffer(&host_acceleration),
+                    out: d.buffer(&particles::to_particles(&vec![
+                        f32::NAN;
+                        n * particles::WORDS
+                    ])),
+                    host_input,
+                    host_acceleration,
+                }
+            }
             "W7" => return Err("the GUST CPU backends have no W7".into()),
             "W9" => Data::MatMul {
                 dims: d.buffer(&[n as u32]),
@@ -198,6 +229,10 @@ impl Backend for GustCpu {
             }
             Data::Hist { bins, .. } => bins.write(&vec![0u32; bins.read().len()])?,
             Data::MatMul { c, .. } => c.write(&vec![f32::NAN; r.n * r.n])?,
+            Data::Particles { out, .. } => out.write(&particles::to_particles(&vec![
+                f32::NAN;
+                r.n * particles::WORDS
+            ]))?,
         }
         self.passes.set(0);
         Ok(())
@@ -218,6 +253,16 @@ impl Backend for GustCpu {
             Data::MatMul { a, b, .. } => {
                 a.write(&inputs.x)?;
                 b.write(&inputs.y)?;
+            }
+            Data::Particles {
+                input,
+                acceleration,
+                host_input,
+                host_acceleration,
+                ..
+            } => {
+                input.write(host_input)?;
+                acceleration.write(host_acceleration)?;
             }
         }
         self.run(r)?;

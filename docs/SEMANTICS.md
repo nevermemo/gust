@@ -1280,7 +1280,7 @@ coretests entry above has the same shape.
     gathers inside the compaction tests).
 
   Where the GPU runs these: `cargo xtask test --suite Gpu` and `verify --mode gpu` run
-  `cargo test --locked -p gust-algo` as a step of their own, which requires the 49 `gpu::` tests by name
+  `cargo test --locked -p gust-algo` as a step of their own, which requires every `gpu::` test by name
   (`ALGO_GPU_TESTS` in `xtask/src/verify.rs`); the Unit suite does not run the crate.
 - **gust-algo, float sums** (the same files; Gpu, with the twin tests in the same cargo call). Label: **measured
   against a derived bound**, not proven. The distance of an `f32` sum from an independent `f64` accumulation stays

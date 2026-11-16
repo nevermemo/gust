@@ -191,6 +191,6 @@ pub fn sum_u32(input: &GpuVec<u32>) -> Result<u32, Error> {
         source = destination;
     }
     let batch: Vec<BufferDispatch<'_>> = calls.iter().map(BufferDispatch::from).collect();
-    device.dispatch_batch(&batch)?;
+    crate::timing::dispatch_batch(device, &batch)?;
     Ok(out.to_vec()?[0])
 }

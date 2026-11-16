@@ -9,6 +9,7 @@ use std::{
 use crate::{
     json::{self, Json},
     process::{CheckRecord, report_check},
+    validation::sha256_hex,
 };
 
 /// Extensions of shell scripts that must not be tracked (D27: workflow commands live in
@@ -99,6 +100,14 @@ pub(crate) fn lint_tracked_files(root: &Path) -> Result<String, Vec<String>> {
         }
     }
     problems.extend(path_dependency_problems(&manifests));
+    // The committed rust-gpu module of the bench comparator is checked against its manifest when it is tracked (m10.b4).
+    if files
+        .iter()
+        .any(|file| file.starts_with(RUST_GPU_DIR) && file.ends_with("rustgpu.spv"))
+        || files.iter().any(|file| file.as_str() == RUST_GPU_MANIFEST)
+    {
+        problems.extend(rust_gpu_module_problems(root));
+    }
     let (publishable, release) = release_metadata_problems(root);
     problems.extend(release);
     if problems.is_empty() {
@@ -114,6 +123,112 @@ pub(crate) fn lint_tracked_files(root: &Path) -> Result<String, Vec<String>> {
     } else {
         Err(problems)
     }
+}
+
+/// The directory of the committed rust-gpu module (`bench/rust-gpu-shaders`) and its manifest, `/` paths from the root.
+const RUST_GPU_DIR: &str = "bench/rust-gpu-shaders/";
+const RUST_GPU_MANIFEST: &str = "bench/rust-gpu-shaders/rustgpu.manifest.json";
+
+/// The CPU-only half of the bench's `the_committed_module_matches_its_manifest` test, run by every lint (CI runs no bench
+/// unit tests): the module's sha256, size, SPIR-V header and entry-point names against the manifest, and the manifest's
+/// toolchain and rust-gpu version against both `rust-toolchain.toml` and both `Cargo.toml` pins. One line per problem.
+/// Only a rebuild (`rgrebuild`, `bench/README.md`) shows that the sources produce the bytes.
+pub(crate) fn rust_gpu_module_problems(root: &Path) -> Vec<String> {
+    let dir = root.join(RUST_GPU_DIR);
+    let mut problems = Vec::new();
+    let read = |name: &str| {
+        fs::read(dir.join(name)).map_err(|error| format!("{RUST_GPU_DIR}{name}: {error}"))
+    };
+    let (module, manifest_text) = match (read("rustgpu.spv"), read("rustgpu.manifest.json")) {
+        (Ok(module), Ok(manifest)) => (module, String::from_utf8_lossy(&manifest).into_owned()),
+        (module, manifest) => {
+            return [module.err(), manifest.err()]
+                .into_iter()
+                .flatten()
+                .collect();
+        }
+    };
+    let manifest = match json::parse(&manifest_text) {
+        Ok(manifest) => manifest,
+        Err(error) => return vec![format!("{RUST_GPU_MANIFEST}: not JSON: {error}")],
+    };
+    let field = |key: &str| manifest.get(key).and_then(Json::as_str).map(str::to_owned);
+    let number = |key: &str| match manifest.get(key) {
+        Some(Json::Number(text)) => Some(text.clone()),
+        _ => None,
+    };
+    let mut bad = |text: String| problems.push(format!("{RUST_GPU_DIR}rustgpu.spv: {text}"));
+    if field("sha256").as_deref() != Some(sha256_hex(&module).as_str()) {
+        bad(format!(
+            "sha256 {} differs from the manifest's {:?}",
+            sha256_hex(&module),
+            field("sha256")
+        ));
+    }
+    if number("bytes").as_deref() != Some(module.len().to_string().as_str()) {
+        bad(format!(
+            "{} bytes differ from the manifest's {:?}",
+            module.len(),
+            number("bytes")
+        ));
+    }
+    // A SPIR-V module: whole words, the magic number first (little-endian), then the version word (1.3 is 0x00010300).
+    if module.len() % 4 != 0 || module.len() < 8 || module[..4] != 0x0723_0203u32.to_le_bytes() {
+        bad("not a SPIR-V module (size or magic number)".to_owned());
+    } else if field("spirv_version").as_deref() == Some("1.3")
+        && module[4..8] != 0x0001_0300u32.to_le_bytes()
+    {
+        bad("the version word is not SPIR-V 1.3, as the manifest says".to_owned());
+    }
+    match manifest.get("entry_points").and_then(Json::as_array) {
+        Some(names) if !names.is_empty() => {
+            for name in names.iter().filter_map(Json::as_str) {
+                // The name is a nul-terminated string literal of its OpEntryPoint.
+                let mut literal = name.as_bytes().to_vec();
+                literal.push(0);
+                if !module
+                    .windows(literal.len())
+                    .any(|window| window == literal.as_slice())
+                {
+                    bad(format!(
+                        "entry point `{name}` of the manifest is not in the module"
+                    ));
+                }
+            }
+        }
+        _ => bad("the manifest lists no entry points".to_owned()),
+    }
+    let (Some(toolchain), Some(version)) = (field("toolchain"), field("rust_gpu")) else {
+        problems.push(format!(
+            "{RUST_GPU_MANIFEST}: no `toolchain` or `rust_gpu` field"
+        ));
+        return problems;
+    };
+    let pins = [
+        (
+            "shader/rust-toolchain.toml",
+            format!("channel = \"{toolchain}\""),
+        ),
+        (
+            "builder/rust-toolchain.toml",
+            format!("channel = \"{toolchain}\""),
+        ),
+        ("shader/Cargo.toml", format!("spirv-std = \"={version}\"")),
+        (
+            "builder/Cargo.toml",
+            format!("spirv-builder = \"={version}\""),
+        ),
+    ];
+    for (file, pin) in pins {
+        match fs::read_to_string(dir.join(file)) {
+            Ok(text) if text.contains(&pin) => {}
+            Ok(_) => problems.push(format!(
+                "{RUST_GPU_DIR}{file}: does not pin `{pin}` as the manifest says"
+            )),
+            Err(error) => problems.push(format!("{RUST_GPU_DIR}{file}: {error}")),
+        }
+    }
+    problems
 }
 
 /// Whether the tracked file `relative` (a `/` path) belongs to the benchmark harness's tree.

@@ -101,7 +101,7 @@ macro_rules! gpu_chain {
         let last = kernels::$terminal::call(1, Independent(source), $out);
         let mut batch: Vec<BufferDispatch<'_>> = calls.iter().map(BufferDispatch::from).collect();
         batch.push(BufferDispatch::from(&last));
-        $device.dispatch_batch(&batch)
+        crate::timing::dispatch_batch($device, &batch)
     }};
 }
 
@@ -127,7 +127,7 @@ macro_rules! gpu_block_chain {
             source = destination;
         }
         let batch: Vec<BufferDispatch<'_>> = calls.iter().map(BufferDispatch::from).collect();
-        $device.dispatch_batch(&batch)
+        crate::timing::dispatch_batch($device, &batch)
     }};
 }
 

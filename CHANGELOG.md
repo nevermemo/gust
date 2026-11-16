@@ -403,8 +403,9 @@ which gate of `main` builds it (`check-examples` builds the examples but `web-ve
     gust::target::GpuKernel for Blur {}` (three of the `expected.txt` files only change a line number).
   - One is a version literal: `tests/precompiled/kernels` named its `gust` path dependency `0.2.0-dev` (it is `0.2.0`
     in the release); its manifest and one reflection file are also written again by the new Slang.
-  - Ten only gained things (and `tests/difftest` a re-stamped seed file): `crates/gust-algo` (the `evidence` module and
-    an example, additive; not published), `examples/web-vector-add` (an added `check-web` assertion that a subgroup
+  - Ten only gained things (and `tests/difftest` a re-stamped seed file): `crates/gust-algo` (the `evidence` module,
+    an example, and opt-in GPU timestamps: `timed`, `Timed` and `GpuTime` report the summed GPU time of the batches
+    that a closure of gust-algo calls dispatches on its thread, D194; additive; not published), `examples/web-vector-add` (an added `check-web` assertion that a subgroup
     request is refused, and re-written artifacts), `tests/cpu-target` and its `kernels` (a `routed` crate and a
     `variant` module), `tests/dual` with its `consumer` and `kernel-lib` (a routed module and binary), `tests/difftest`
     (the format 7 harness and the profile flags; `seeds.txt` takes the new format stamp and all eight program hashes),

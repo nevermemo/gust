@@ -139,10 +139,15 @@ There are two GUST forms, reported as two workload ids that share the kernels, t
 Both forms of GUST and the hand WGSL do one submit with six compute passes per run; they differ in the host work around it.
 The hand WGSL (`bench/shaders/signal_pipeline.wgsl`, six entry points of one module, one three-binding layout, one bind group per
 stage, dispatched in hand order) is the baseline of both forms: `wgsl-prebuilt` builds its bind groups once, `wgsl-percall`
-builds one per pass per run. The graph form has no GPU timestamps (`execute_graph` records none), so it has no batch
-figure and no batch bandwidth (and it is outside the kill rule, see "The kill rule"); `W6-hand` has them: for W6,
-`gpu_single` brackets one six-pass run and `gpu_batch_per_dispatch` is per six-pass run (one timestamp pair around the
-`6 x batch` passes, divided by `batch`), not per compute pass. Both forms are
+builds one per pass per run. Both GUST forms have GPU timestamps and both are in the kill rule (see "The kill rule"): for
+W6, `gpu_single` brackets one six-pass run and `gpu_batch_per_dispatch` is per six-pass run (one timestamp pair around the
+`6 x batch` passes, divided by `batch`), not per compute pass. `W6-hand` takes them from `dispatch_batch_timed` over the six
+dispatches (repeated `batch` times for the batch). `W6-graph` takes them from `HeadlessDevice::execute_graph_timed` (D194):
+`GraphReport.gpu_elapsed`, the time from the beginning of the first dispatch pass to the end of the last, of a graph that
+holds only the six dispatch nodes (one run) or `batch` copies of the six in one graph (the batch: one timestamp pair around
+the `6 x batch` passes, divided by `batch`, the same shape as W6-hand's). Building and validating the graph, uploads and the
+read-back mapping are outside that span, as the read-back mapping is on every other GUST path, so the GPU-time rows of the
+two forms bracket the same six-pass work and differ only in how the passes were submitted. Both forms are
 `same_kernel()` (the same six kernels in the same order, on every path) and `end_to_end_comparable()` (every buffer is
 typed `f32` on every path, nothing is converted), so the renderer pairs them with the hand WGSL, and the pairing says
 `W6-graph` includes the graph's per-call host work and `W6-hand` does not; the two ids are never merged into one row. The CPU
@@ -248,12 +253,23 @@ reduction is two dispatches (above): one grid-stride pass whose grid grows with 
 differences: GUST's per-call pooling and zeroing, a different chain length and workgroup count, and (for `u32`) the
 read-back inside the library call. They are different algorithms, so no GUST/hand ratio is a GUST overhead.
 
-*What the timings of W7 are.* `gust-algo`'s sum exposes no GPU timestamps, so a W7 cell of GUST has no GPU time. Its
-`dispatch_host` is `reduce::sum_on_device` for `f32` (the one-word result stays on the device, read back outside the timed
-region, like the hand dispatch), but it still draws and zeroes its pooled partials per call, which the hand dispatch does
-not. `u32` has no on-device sum, so W7-`u32`'s GUST `dispatch_host` is the public `sum_wrapping` call **including the
-4-byte read-back**; the hand `dispatch_host` has none. The report shows no GUST/hand ratio for W7 and the kill rule leaves
-W7 out (see "The kill rule").
+*What the timings of W7 are.* GUST's GPU time goes through `gust_algo::timed` (D194): `gpu_single` is one public sum in one
+`timed` scope, `gpu_batch_per_dispatch` is `batch` sums in one scope divided by `batch`. `GpuTime.batches` counts the
+`dispatch_batch` submissions of the scope; one sum of a non-empty input is one, so it must read `batch` (the harness
+refuses a cell where it does not, and a test pins it), which makes the division per sum. The span is, per sum, the time from
+the beginning of the first compute pass to the end of the last (the v1 block kernels, each dispatch a pass), summed over
+the sums: the zero-fill of the pooled partials (its own submissions), the gaps between sums and the read-back mapping are
+outside it, so for a batch GUST's figure leaves out the inter-sum transitions that the hand path's single timestamp pair
+around `batch` repeats includes. The hand paths time their two-dispatch tree the same way (first to last pass). `f32` runs
+`reduce::sum_on_device` (the one-word result stays on the device, read back outside the timed region, like the hand
+dispatch), `u32` the public `sum_wrapping`. The host-timed `dispatch_host` of `f32` is the same
+call, and it still draws and zeroes its pooled partials per call, which the hand dispatch does not. `u32` has no on-device
+sum, so W7-`u32`'s GUST `dispatch_host` is the public `sum_wrapping` call **including the 4-byte read-back**; the hand
+`dispatch_host` has none. The kernels differ, so the report shows no GUST/hand dispatch or end-to-end ratio and no overhead
+row for W7; it does show the two GPU-time ratios, labelled "public `gust-algo` sum against the hand tree: an algorithm
+comparison, not a GUST overhead", and the kill rule judges them like any cell (see "The kill rule"). On an adapter without
+timestamp queries (`HeadlessDevice::supports_gpu_timestamps`, for example lavapipe) a W7 cell has no GPU-time quantity, as
+every backend has none there.
 
 *Devices.* Inputs above 2^25 words need a storage binding above the portable 128 MiB limit, so a run that includes them
 (the default W7 ladder does) opens both GPU devices with the adapter's own limits (`LimitsPolicy::Adapter` for GUST, the
@@ -496,7 +512,7 @@ offending cells. The rule judges only a complete run: a cell without a ratio cou
 
 **The `spirv` group's rule (D193).** The SPIR-V route has its own group and its own record of the same rule: for each cell
 of the `spirv` group the harness takes the paired ratio of `gust-gpu-spirv`'s GPU time to `wgsl-prebuilt-unchecked`'s
-(same quantities, same 10 percent window, same `null` when anything is unpaired, same exclusions below), with
+(same quantities, same 10 percent window, same `null` when anything is unpaired), with
 `wgsl-percall-unchecked` as the control, and the record in the run file says `group: "spirv"` and `reference`. The
 publishable group no longer judges `gust-gpu-spirv` at all. Plan R1.3-3 splits the direction, and the record carries it
 on every offender (`direction`): a ratio **above** 1.10 (slower) re-opens C (`c_reopened`); a ratio **below** 0.90 (faster)
@@ -505,21 +521,18 @@ degrees 16 and 64 (see "An observation" below). Both are `null` when the group w
 rule stays two-sided as before (either direction is "C re-opened"). The reproducibility clause and the control's limits
 below hold in both groups. Both sides have their checks off, so a gap in this group is not the cost of wgpu's checks.
 
-**Cells outside the rule.** A workload whose GUST and hand paths are not the same kernel is outside the rule, on both
-sides (`Workload::same_kernel`; today only W7): GUST runs `gust-algo`'s public sum, which exposes no GPU timestamps, so its
-cell has no paired GPU-time ratio by construction, and the hand reduction is another algorithm. Such a cell is neither
-counted as unpaired nor judged (it would otherwise keep every run that includes W7 from being judged, `c_reopened` always
-null), and it is **listed**: the rule's record in the run file has `excluded: [{backend, workload, n, reason}]` for each
-of them, so a reader sees W7 was present and left out on purpose. This is a deviation from the plan's "any cell of the
-publishable group" (decision D190). It does not affect whether a run is publishable.
-
-W6-graph is outside the rule too, for a different reason and through a predicate of its own
-(`Workload::gust_gpu_timestamps`, not `same_kernel`): `StagedGraph` runs through `execute_graph`, which records no GPU
-timestamps, so the graph form has no GPU-time samples (`gpu_single` and `gpu_batch_per_dispatch` do not exist for it) and
-no GPU-time pairing. Its cells are listed in `excluded` with that reason, and it is not counted as unpaired (it would
-otherwise keep every full run from being judged). W6-graph stays `same_kernel`, so its dispatch and end-to-end ratios are
-still shown and judged by the report; W6-hand has GPU timestamps and stays in the rule. This is a second deviation from
-the plan's "any cell", recorded beside D190 by the coordinator; no `crates/` change was made for it.
+**No cell is outside the rule.** Every workload is judged, W7 and W6-graph included (D194 gave `gust-algo` and
+`StagedGraph` opt-in GPU timestamps, so the exclusions that D190 and D191 recorded are removed, and the run file's rule
+record no longer has an `excluded` list). Two things about how they read. W7's GUST path is the public `gust-algo` sum
+and the baseline is a hand tree: its GPU-time ratio is a statement about the public sum against the hand tree, **an
+algorithm comparison, not a GUST overhead**, and it is labelled so in the report; `same_kernel()` stays false for W7, so the
+overhead rows and the dispatch and end-to-end ratios of W7 stay hidden. A "C re-opened" on a W7 cell therefore says the
+library's sum is more than 10 percent from the hand tree, which is a finding about the library's algorithm. W6-graph's
+GPU-time cells are `execute_graph_timed`'s over the six dispatch passes (see the W6 section), so they compare passes with
+passes; the graph's host work is in its dispatch and end-to-end rows, not here. Both GUST APIs take their GPU time without
+the read-back mapping. A cell without GPU time (an adapter without timestamp queries, for example lavapipe in CI) has no
+GPU-time quantity for any backend; the paired ratio is then missing, the cell counts as unpaired and the verdict is `null`,
+as for any workload.
 
 **Reproducibility clause.** A gap counts only if it recurs: the same cell must be more than 10 percent off in all three
 seeds of a confirming run (at least three runs with distinct seeds), with the group's control (`wgsl-percall`; in the
@@ -528,7 +541,8 @@ control out of tolerance, or in fewer seeds, is listed and not counted. In the `
 off in either direction in every run counts. In the `spirv` group the recurrence must also keep
 its direction: a cell more than 10 percent slower in one seed and more than 10 percent faster in another recurs in neither
 direction, and a counted offender is reported as "re-opens C" (slower) or "reading step, does not re-open C" (faster);
-each row of the aggregate carries its `direction`.
+each row of the aggregate carries its `direction`. An offender whose direction is unknown (a run file that does not carry it)
+never counts in the `spirv` group.
 
 **The control's limits for the batch quantity.** (In the `spirv` group read `wgsl-percall-unchecked` and `wgsl-prebuilt-unchecked` for the two names below: the limit is the same.) `wgsl-percall` runs the same kernel text as `wgsl-prebuilt`, so its
 distance from 1.0 is a noise floor for `gpu_single`. For `gpu_batch_per_dispatch` it is not a pure noise floor: it

@@ -434,7 +434,7 @@ fn aggregate_of(route: &str, group: &str, backend: &str, reference: Option<&str>
     for seed in [11, 22, 33] {
         text = text.replacen(
             &format!("{{ \"run_seed\": {seed},"),
-            &format!("{{ \"run_seed\": {seed}{rule},"),
+            &format!("{{ \"run_seed\": {seed}, \"publishable\": true{rule},"),
             1,
         );
     }
@@ -623,7 +623,16 @@ fn a_spirv_file_of_functional_or_unpublishable_runs_is_refused() {
             "holds a functional run",
         ),
         (
-            ruled.replace("{ \"run_seed\":", "{ \"publishable\": false, \"run_seed\":"),
+            ruled.replace("\"publishable\": true", "\"publishable\": false"),
+            "not publishable",
+        ),
+        // F2 (b3d re-check): a missing or null per-run `publishable` is refused for a spirv file as well.
+        (
+            ruled.replace(", \"publishable\": true", ""),
+            "not publishable",
+        ),
+        (
+            ruled.replace("\"publishable\": true", "\"publishable\": null"),
             "not publishable",
         ),
         (

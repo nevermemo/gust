@@ -230,19 +230,14 @@ impl Workload {
 
     /// Whether GUST and the hand-WGSL baseline run the same kernel work on this workload, so that a GUST/hand pairing
     /// (the report's overhead rows, the dispatch and end-to-end ratios) compares the same algorithm. `false` for W7: GUST
-    /// runs the public `gust_algo::reduce` (v1 schedule, no GPU timestamps exposed, `u32` read-back inside the call) and
-    /// the baseline runs its own tree, so no ratio between them is a GUST overhead. It promises the same kernel work, not
-    /// identical timed work: W6-graph's dispatch and end-to-end samples include the graph's build and validation by
-    /// design (that is what the form measures), which the hand-ordered baseline does not do.
+    /// runs the public `gust_algo::reduce` (v1 schedule, `u32` read-back inside the call) and the baseline runs its own
+    /// tree, so those ratios are no GUST overhead and stay hidden. W7's GPU-time ratios (`gpu_single`,
+    /// `gpu_batch_per_dispatch`) are shown and judged anyway, labelled as an algorithm comparison (since D194 both sides
+    /// have GPU time). It promises the same kernel work, not identical timed work: W6-graph's dispatch and end-to-end
+    /// samples include the graph's build and validation by design (that is what the form measures), which the
+    /// hand-ordered baseline does not do.
     pub fn same_kernel(self) -> bool {
         self.family() != "W7"
-    }
-
-    /// Whether GUST's path on this workload records GPU timestamps, so that its GPU-time quantities (`gpu_single`,
-    /// `gpu_batch_per_dispatch`) exist and can enter the kill rule. `false` for W6-graph: `StagedGraph` runs through
-    /// `execute_graph`, which records none. (W7 has none either and is outside the rule through `same_kernel`.)
-    pub fn gust_gpu_timestamps(self) -> bool {
-        self != Workload::PipelineGraph
     }
 
     /// Whether GUST's end-to-end sample times the same work as the hand-WGSL baseline's, so that a GUST end-to-end ratio,

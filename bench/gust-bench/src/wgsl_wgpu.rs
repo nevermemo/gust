@@ -179,35 +179,20 @@ impl WgpuContext {
     fn require_passthrough_capabilities(
         adapter: &wgpu::Adapter,
     ) -> Result<(), crate::rustgpu_module::Refusal> {
-        use crate::rustgpu_module::Refusal;
-        let name = adapter.get_info().name;
-        if !adapter
+        let passthrough = adapter
             .features()
-            .contains(wgpu::Features::PASSTHROUGH_SHADERS)
-        {
-            return Err(Refusal(format!(
-                "adapter {name} lacks wgpu's PASSTHROUGH_SHADERS feature, so the rust-gpu SPIR-V module cannot be loaded"
-            )));
-        }
-        // Vulkan 1.3 as the packed version number: variant 0, major 1, minor 3, patch 0.
-        const VULKAN_1_3: u32 = (1 << 22) | (3 << 12);
+            .contains(wgpu::Features::PASSTHROUGH_SHADERS);
         // SAFETY: `as_hal` only borrows the adapter's Vulkan HAL object, which is read (a version number), not modified.
         let api_version = unsafe {
             adapter
                 .as_hal::<wgpu::hal::api::Vulkan>()
                 .map(|hal| hal.physical_device_capabilities().properties().api_version)
         };
-        match api_version {
-            Some(version) if version >= VULKAN_1_3 => Ok(()),
-            Some(version) => Err(Refusal(format!(
-                "adapter {name} reports Vulkan {}.{}, below 1.3, so it is not known to support the Vulkan memory model the rust-gpu module declares",
-                version >> 22,
-                (version >> 12) & 0x3ff
-            ))),
-            None => Err(Refusal(format!(
-                "adapter {name} has no Vulkan HAL adapter, so its Vulkan memory model support cannot be read"
-            ))),
-        }
+        crate::rustgpu_module::check_capabilities(
+            &adapter.get_info().name,
+            passthrough,
+            api_version,
+        )
     }
 
     #[cfg(not(feature = "rust-gpu"))]

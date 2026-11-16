@@ -320,9 +320,7 @@ default), never in the default build, CI or the lock.
   behaviour is undefined by the spec. It ran correctly on the two adapters tried (RTX 5090, Radeon 890M). Under the
   Khronos validation layer (Vulkan SDK 1.4.357) a functional quick run reports it for this module:
   VUID-VkShaderModuleCreateInfo-pCode-08740 and, for the queue-family scope of W4's atomic,
-  VUID-RuntimeSpirv-vulkanMemoryModel-06266. The same run also reports VUID-StandaloneSpirv-None-10684 (an
-  explicit-layout Function variable) for the module of some other backend; it is not from this module, which has no
-  Function-storage variable, and it was not investigated here. Because Vulkan 1.3 requires the feature to be
+  VUID-RuntimeSpirv-vulkanMemoryModel-06266. Because Vulkan 1.3 requires the feature to be
   supported, the backend runs only on a physical device that reports Vulkan 1.3 or later
   (`WgpuContext::open_passthrough_on`; the adapter's feature query itself is not reachable through wgpu's HAL access
   without a Vulkan dependency of the bench, so the API version stands for it); on any other adapter it is refused with
@@ -340,7 +338,7 @@ default), never in the default build, CI or the lock.
   | W1 vector add (`f32`) | `w1_f32` | algorithm, guard on the output length | rust-gpu's own index checks (below) |
   | W2 saxpy | `w2_saxpy` | algorithm; the scalar is a one-element read-only storage buffer at binding 0, not a uniform, so neither side has a cheaper scalar path; guard on the output length and a non-empty scalar buffer | rust-gpu's own index checks |
   | W3 polynomial, degrees 4, 16, 64 | `w3_horner` | Horner's rule, the loop bounded by 64 that leaves at the degree, the three guards | rust-gpu's own index checks |
-  | W4 histogram, four cases | `w4_histogram` | key assignment (a workgroup owns 1024 keys, each lane takes four, strided by 256), the bin guard; an atomic add per key | the add is `OpAtomicIAdd` at queue-family scope (device scope needs a Vulkan memory-model capability wgpu does not enable) on a `&mut [u32]`, relaxed like the WGSL `atomicAdd` |
+  | W4 histogram, four cases | `w4_histogram` | key assignment (a workgroup owns 1024 keys, each lane takes four, strided by 256), the bin guard; an atomic add per key | the add is `OpAtomicIAdd` at queue-family scope, the widest the module can declare without the `VulkanMemoryModelDeviceScope` capability (which wgpu does not enable), on a `&mut [u32]`, relaxed like the WGSL `atomicAdd`; queue-family scope itself needs the `vulkanMemoryModel` feature, which the device does not have, so it breaks VUID-RuntimeSpirv-vulkanMemoryModel-06266 (see the memory-model bullet) |
   | W5, W6, W7, W9 | none | | no rust-gpu kernel: the backend does not run them |
 
   A fifth entry point, `w1_u32`, is in the module and validated with it; no workload runs it. The "same algorithm"

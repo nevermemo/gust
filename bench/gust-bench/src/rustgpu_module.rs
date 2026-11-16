@@ -1,7 +1,8 @@
 //! The committed rust-gpu module of the `rustgpu-wgpu` comparator (m10.b4), its manifest and the CPU-only checks on both,
 //! and the decision of whether the backend runs. Compiled in a `rust-gpu` build (the run file records the module's
-//! identity from here) and in every test build, so CI checks the module against its manifest without a GPU and without
-//! the feature.
+//! identity from here) and in every test build, so `cargo test -p gust-bench` checks the module against its manifest
+//! without a GPU and without the feature. No CI job runs the bench's unit tests; the same check runs on every push as a
+//! step of `cargo xtask lint` (`xtask/src/lint.rs`, `rust_gpu_module_problems`).
 
 // In a test build without the `rust-gpu` feature only the tests use most of this.
 #![cfg_attr(not(feature = "rust-gpu"), allow(dead_code))]
@@ -113,6 +114,36 @@ impl fmt::Display for Refusal {
 
 impl Error for Refusal {}
 
+/// Vulkan 1.3 as the packed version number (variant 0, major 1, minor 3, patch 0): the version that requires
+/// `vulkanMemoryModel` to be supported.
+pub const VULKAN_1_3: u32 = (1 << 22) | (3 << 12);
+
+/// The capabilities the module needs of an adapter, from what was read of it: whether it has wgpu's
+/// `PASSTHROUGH_SHADERS` and its physical device's Vulkan API version (`None` when there is no Vulkan HAL adapter).
+/// Each missing one is a typed `Refusal`. Pure, so the gate is tested without a GPU.
+pub fn check_capabilities(
+    name: &str,
+    passthrough: bool,
+    api_version: Option<u32>,
+) -> Result<(), Refusal> {
+    if !passthrough {
+        return Err(Refusal(format!(
+            "adapter {name} lacks wgpu's PASSTHROUGH_SHADERS feature, so the rust-gpu SPIR-V module cannot be loaded"
+        )));
+    }
+    match api_version {
+        Some(version) if version >= VULKAN_1_3 => Ok(()),
+        Some(version) => Err(Refusal(format!(
+            "adapter {name} reports Vulkan {}.{}, below 1.3, so it is not known to support the Vulkan memory model the rust-gpu module declares",
+            version >> 22,
+            (version >> 12) & 0x3ff
+        ))),
+        None => Err(Refusal(format!(
+            "adapter {name} has no Vulkan HAL adapter, so its Vulkan memory model support cannot be read"
+        ))),
+    }
+}
+
 /// What the run does about the backend.
 #[derive(Debug)]
 pub enum Decision<T> {
@@ -218,6 +249,39 @@ mod tests {
                 .contains(&format!("spirv-builder = \"={version}\"")),
             "the builder pins spirv-builder ={version}"
         );
+    }
+
+    /// The capability gate refuses 1.2, a missing HAL adapter and a missing passthrough feature, and passes 1.3 and later.
+    /// Its refusal reaches `decide` as a refusal through the same `?` conversion `open_with` uses, so a later `map_err`
+    /// that turned it into another error would fail here. The call from `open_with` itself needs a real adapter
+    /// (`as_hal`), which a unit test cannot make; this pins the function and the conversion it relies on.
+    #[test]
+    fn the_capability_gate_refuses_and_its_refusal_survives_the_open_path() {
+        let v = |major: u32, minor: u32| (major << 22) | (minor << 12);
+        assert!(check_capabilities("a", true, Some(v(1, 3))).is_ok());
+        assert!(check_capabilities("a", true, Some(v(1, 4))).is_ok());
+        for refused in [
+            check_capabilities("a", true, Some(v(1, 2))),
+            check_capabilities("a", true, None),
+            check_capabilities("a", false, Some(v(1, 3))),
+        ] {
+            assert!(refused.is_err());
+        }
+        // The shape of `open_with`: a `Refusal` returned with `?` into a boxed error.
+        fn open(version: u32) -> Result<u32, Box<dyn Error>> {
+            check_capabilities("a", true, Some(version))?;
+            Ok(1)
+        }
+        assert!(matches!(
+            decide(open(v(1, 3)), None).unwrap(),
+            Decision::Run(1)
+        ));
+        match decide(open(v(1, 2)), None).unwrap() {
+            Decision::NotRun(entry) => {
+                assert!(entry["reason"].as_str().unwrap().contains("below 1.3"));
+            }
+            Decision::Run(_) => panic!("Vulkan 1.2 must be refused"),
+        }
     }
 
     fn names(list: &[&str]) -> Vec<String> {

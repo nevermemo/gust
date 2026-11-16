@@ -87,9 +87,11 @@ pub fn w3_horner(
 
 /// W4 (`histogram.wgsl`): keys at binding 0 (read-only), bins at binding 1 (`u32`, atomic add). A workgroup owns a block
 /// of 256 * 4 contiguous keys; each lane takes four of them, strided by 256, and ignores a key at or above the bin count.
-/// The add is `OpAtomicIAdd` at queue-family scope (the widest scope the Vulkan memory model allows without its
-/// device-scope capability, which wgpu does not enable on a device) with no memory semantics, the relaxed add the WGSL
-/// `atomicAdd` is; every invocation of the dispatch is inside that scope. The bins
+/// The add is `OpAtomicIAdd` at queue-family scope (the widest scope the module can declare without the
+/// `VulkanMemoryModelDeviceScope` capability, which wgpu does not enable on a device) with no memory semantics, the
+/// relaxed add the WGSL `atomicAdd` is; every invocation of the dispatch is inside that scope. Queue-family scope is
+/// itself only allowed with the `vulkanMemoryModel` feature enabled, which wgpu-hal 30.0.2 leaves off on this device,
+/// so it still breaks VUID-RuntimeSpirv-vulkanMemoryModel-06266 (`docs/BENCHMARKS.md`, "The rust-gpu comparator"). The bins
 /// are a plain `&mut [u32]` here (rust-gpu has no atomic array type); the atomic is the instruction on the element.
 #[spirv(compute(threads(256)))]
 pub fn w4_histogram(

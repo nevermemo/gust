@@ -1,10 +1,13 @@
-//! The workload set (W1 to W5, W7 and W9 of the M10 plan): inputs, the serial reference and the checker.
+//! The workload set (W1 to W7 and W9 of the M10 plan): inputs, the serial reference and the checker.
 //!
 //! - W1 vector-add and W2 saxpy: memory-bandwidth bound, f32, a bit-exact check and a derived two-operation bound.
 //! - W3 polynomial (Horner, degree 4, 16 and 64): compute bound, f32, checked against Higham's Horner bound.
 //! - W4 histogram (`u32` atomic add, 256 and 65536 bins, uniform and Zipf keys): contended atomics, exact integers.
 //! - W5 particle step (a struct buffer, 16 explicit-Euler steps per particle, 2^16 and 2^20 particles): integer fields
 //!   exact, each float field against the forward error of the step's expression tree (see `particles`).
+//! - W6 staged pipeline (the six steps of `examples/signal-pipeline` as six kernels with a buffer between each, 2^20 and
+//!   2^22 elements; `W6-graph`: GUST's `StagedGraph`, `W6-hand`: the same six dispatches in hand order): the final stage
+//!   against the composed forward error of the six stages, every stage in a unit test (see `signal_pipeline`).
 //! - W7 sum (`u32` wrapping and `f32`, 2^20 to 2^27 values, one output word): a reduction; `u32` exact, `f32` against
 //!   the bound of the summation order the backend runs (see `sum`).
 //! - W9 naive matrix product (`N x N` f32, `N` from 256 to 2048, one output entry per invocation): checked entry by
@@ -21,6 +24,7 @@ pub mod matmul;
 pub mod particles;
 pub mod polynomial;
 pub mod saxpy;
+pub mod signal_pipeline;
 pub mod sum;
 pub mod vector_add;
 
@@ -47,6 +51,9 @@ pub const HIST_SIZES: [usize; 2] = [1 << 20, 1 << 24];
 
 /// W5's sizes (plan 2.1): 2^16 and 2^20 particles, 16 steps each.
 pub const PARTICLE_SIZES: [usize; 2] = [1 << 16, 1 << 20];
+
+/// W6's sizes (plan 2.1): 2^20 and 2^22 elements through six stages.
+pub const PIPELINE_SIZES: [usize; 2] = [1 << 20, 1 << 22];
 
 /// W7's sizes (plan 2.1): 2^20 to 2^27 values, one power of two apart. The `f32` stream of the last size is 512 MiB, so
 /// the two largest need the adapter's own storage-buffer limits (see [`needs_adapter_limits`]).
@@ -92,6 +99,13 @@ pub enum Workload {
     Hist65536Uniform,
     Hist65536Zipf,
     Particles,
+    /// W6, GUST's `StagedGraph` form: the six stages as nodes of one graph (derived edges, checked at execution; the nodes run in
+    /// the order added), built and executed
+    /// inside every timed sample. GUST only (the hand WGSL runs its own hand-ordered passes beside it as the baseline).
+    PipelineGraph,
+    /// W6, the hand-ordered form: the same six dispatches one pass each in the order written, no graph (GUST's
+    /// `dispatch_batch`, the hand WGSL's six passes, the CPU backends' six loops or one fused loop).
+    PipelineHand,
     SumU32,
     SumF32,
     MatMul,
@@ -105,7 +119,7 @@ pub enum Kind {
 }
 
 impl Workload {
-    pub const ALL: [Workload; 13] = [
+    pub const ALL: [Workload; 15] = [
         Workload::VectorAdd,
         Workload::Saxpy,
         Workload::Poly4,
@@ -116,6 +130,8 @@ impl Workload {
         Workload::Hist65536Uniform,
         Workload::Hist65536Zipf,
         Workload::Particles,
+        Workload::PipelineGraph,
+        Workload::PipelineHand,
         Workload::SumU32,
         Workload::SumF32,
         Workload::MatMul,
@@ -133,6 +149,8 @@ impl Workload {
             Workload::Hist65536Uniform => "W4-65536-uniform",
             Workload::Hist65536Zipf => "W4-65536-zipf",
             Workload::Particles => "W5",
+            Workload::PipelineGraph => "W6-graph",
+            Workload::PipelineHand => "W6-hand",
             Workload::SumU32 => "W7-u32",
             Workload::SumF32 => "W7-f32",
             Workload::MatMul => "W9-naive",
@@ -151,6 +169,8 @@ impl Workload {
             Workload::Hist65536Uniform => "histogram 65536 bins, uniform keys",
             Workload::Hist65536Zipf => "histogram 65536 bins, Zipf keys",
             Workload::Particles => "particle step",
+            Workload::PipelineGraph => "staged pipeline, StagedGraph",
+            Workload::PipelineHand => "staged pipeline, hand order",
             Workload::SumU32 => "sum u32 (wrapping)",
             Workload::SumF32 => "sum f32",
             Workload::MatMul => "matrix product, naive f32",
@@ -177,7 +197,7 @@ impl Workload {
         (!family.is_empty()).then_some(family)
     }
 
-    /// `W1`, `W2`, `W3`, `W4`, `W5`, `W7` or `W9`.
+    /// `W1`, `W2`, `W3`, `W4`, `W5`, `W6`, `W7` or `W9`.
     pub fn family(self) -> &'static str {
         match self {
             Workload::VectorAdd => "W1",
@@ -188,6 +208,7 @@ impl Workload {
             | Workload::Hist65536Uniform
             | Workload::Hist65536Zipf => "W4",
             Workload::Particles => "W5",
+            Workload::PipelineGraph | Workload::PipelineHand => "W6",
             Workload::SumU32 | Workload::SumF32 => "W7",
             Workload::MatMul => "W9",
         }
@@ -207,12 +228,21 @@ impl Workload {
         self.bins().is_some()
     }
 
-    /// Whether GUST and the hand-WGSL baseline run the same kernel on this workload, so that a GUST/hand pairing (the
-    /// kill rule's ratios, the report's overhead rows) compares the same algorithm and the same timed work. `false` for
-    /// W7: GUST runs the public `gust_algo::reduce` (v1 schedule, no GPU timestamps exposed, `u32` read-back inside the
-    /// call) and the baseline runs its own tree, so no ratio between them is a GUST overhead.
+    /// Whether GUST and the hand-WGSL baseline run the same kernel work on this workload, so that a GUST/hand pairing
+    /// (the report's overhead rows, the dispatch and end-to-end ratios) compares the same algorithm. `false` for W7: GUST
+    /// runs the public `gust_algo::reduce` (v1 schedule, no GPU timestamps exposed, `u32` read-back inside the call) and
+    /// the baseline runs its own tree, so no ratio between them is a GUST overhead. It promises the same kernel work, not
+    /// identical timed work: W6-graph's dispatch and end-to-end samples include the graph's build and validation by
+    /// design (that is what the form measures), which the hand-ordered baseline does not do.
     pub fn same_kernel(self) -> bool {
         self.family() != "W7"
+    }
+
+    /// Whether GUST's path on this workload records GPU timestamps, so that its GPU-time quantities (`gpu_single`,
+    /// `gpu_batch_per_dispatch`) exist and can enter the kill rule. `false` for W6-graph: `StagedGraph` runs through
+    /// `execute_graph`, which records none. (W7 has none either and is outside the rule through `same_kernel`.)
+    pub fn gust_gpu_timestamps(self) -> bool {
+        self != Workload::PipelineGraph
     }
 
     /// Whether GUST's end-to-end sample times the same work as the hand-WGSL baseline's, so that a GUST end-to-end ratio,
@@ -224,12 +254,26 @@ impl Workload {
         self.family() != "W5"
     }
 
+    /// Whether this is a W6 form (the staged pipeline: six kernels, five input streams, one output). Its timed samples
+    /// have the same typed `f32` buffers on every path, so nothing converts and `end_to_end_comparable` is true.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub fn is_pipeline(self) -> bool {
+        self.family() == "W6"
+    }
+
+    /// Whether this workload is the form that runs through GUST's `StagedGraph`: only `gust-gpu` (and its SPIR-V route
+    /// build) has it, with the hand WGSL's hand-ordered passes as the baseline; no CPU backend has a graph.
+    pub fn is_graph_form(self) -> bool {
+        self == Workload::PipelineGraph
+    }
+
     /// The default size ladder of the workload.
     pub fn sizes(self) -> &'static [usize] {
         match self.family() {
             "W3" => &POLY_SIZES,
             "W4" => &HIST_SIZES,
             "W5" => &PARTICLE_SIZES,
+            "W6" => &PIPELINE_SIZES,
             "W7" => &SUM_SIZES,
             "W9" => &MATMUL_SIZES,
             _ => &SIZES,
@@ -286,15 +330,30 @@ impl Workload {
     /// Bytes of memory traffic per element that the achieved-bandwidth column counts. W1 and W2: two reads and a write
     /// of f32. W3: a read and a write. W4: the key read only (the atomic traffic on the bins is not counted). W7: the
     /// value read only (one word out). W5: per particle, the 28-byte particle and the 8-byte acceleration read and the
-    /// 28-byte particle written (the 16 steps run in registers). W9: not a per-element stream (the matrices are read
-    /// many times), so none is counted.
+    /// 28-byte particle written (the 16 steps run in registers). W6: the traffic of the six stages added up, 68 bytes
+    /// (five stages of two reads and a write, the energy stage of one read and a write), the intermediates counted as the
+    /// streams they are; this is the device traffic of one six-pass run, the figure of the dispatch and batch columns
+    /// (what an end-to-end sample moves is [`Workload::bytes_per_element_end_to_end`]). W9: not a per-element
+    /// stream (the matrices are read many times), so none is counted.
     pub fn bytes_per_element(self) -> u64 {
         match self.family() {
             "W3" => 8,
             "W5" => 64,
+            "W6" => 68,
             "W4" | "W7" => 4,
             "W9" => 0,
             _ => 12,
+        }
+    }
+
+    /// Bytes per element of what an end-to-end sample moves (the end-to-end columns, GPU and rayon-N alike): the same
+    /// as [`Workload::bytes_per_element`] except W6, where five input uploads and one read-back cross the bus (24 bytes)
+    /// and the fused CPU loop touches the same 24, not the 68 of the six device passes (whose intermediates never leave
+    /// the device).
+    pub fn bytes_per_element_end_to_end(self) -> u64 {
+        match self.family() {
+            "W6" => 24,
+            _ => self.bytes_per_element(),
         }
     }
 
@@ -305,6 +364,8 @@ impl Workload {
         match self {
             Workload::Saxpy => 2,
             Workload::Particles => 8 * particles::STEPS as u64,
+            // W6: subtract, multiply, add, divide, multiply, the exact multiply by 0.25 and the final add.
+            Workload::PipelineGraph | Workload::PipelineHand => 7,
             Workload::VectorAdd | Workload::SumF32 => 1,
             w => w.degree().map_or(0, |d| 2 * d as u64),
         }
@@ -331,6 +392,8 @@ pub struct Inputs {
     pub bins: usize,
     /// The `u32` sum's addends.
     pub values: Vec<u32>,
+    /// W6's five input streams: `signal`, `baseline`, `gain`, `bias`, `scale`.
+    pub pipeline: Vec<Vec<f32>>,
 }
 
 /// The reference of one (workload, size): the expected output words and, for W3, the exact values and per-element
@@ -411,8 +474,13 @@ pub fn gen_inputs(w: Workload, n: usize) -> Inputs {
         keys: Vec::new(),
         bins: 0,
         values: Vec::new(),
+        pipeline: Vec::new(),
     };
     match w {
+        Workload::PipelineGraph | Workload::PipelineHand => {
+            inputs.pipeline = signal_pipeline::inputs(n);
+            return inputs;
+        }
         Workload::SumU32 => {
             inputs.values = sum::u32_values(n);
             return inputs;
@@ -494,6 +562,16 @@ pub fn reference(w: Workload, inputs: &Inputs) -> Reference {
             let (exact, bound, bound_gpu) = particles::exact_and_bound(&inputs.x, &inputs.y);
             Reference {
                 want: particles::expected_words(&inputs.x, &exact),
+                exact,
+                bound,
+                bound_gpu,
+                ..Reference::default()
+            }
+        }
+        "W6" => {
+            let (exact, bound, bound_gpu) = signal_pipeline::exact_and_bound(&inputs.pipeline);
+            Reference {
+                want: exact.iter().map(|v| *v as f32).collect(),
                 exact,
                 bound,
                 bound_gpu,
@@ -607,7 +685,8 @@ pub fn check_with(
             }
             // The derived Horner bound (W3) and inner-product bound (W9) against the f64 value. A positive comparison,
             // so a NaN counts as a failure.
-            "W3" | "W9" => (f64::from(got[i]) - reference.exact[i]).abs() <= bounds[i],
+            // W6 the same, per element, against the composed bound of the six stages (`signal_pipeline`).
+            "W3" | "W6" | "W9" => (f64::from(got[i]) - reference.exact[i]).abs() <= bounds[i],
             // W5: seven words per particle; words 0 to 3 are the float fields against the per-field bound of the
             // particle, the mass and the two integers are compared as bits.
             "W5" => {
@@ -673,7 +752,7 @@ pub fn normalize_counts(words: &mut [f32], passes: u32) {
 }
 
 /// The descriptor of the GUST kernel a workload runs (the three W3 degrees share one kernel, the four W4 histograms
-/// another).
+/// another). W6 has six kernels: this is the first (`center`), see [`descriptors`].
 #[cfg(feature = "gpu")]
 pub fn descriptor(w: Workload) -> &'static gust::KernelDescriptor {
     match w.family() {
@@ -681,10 +760,36 @@ pub fn descriptor(w: Workload) -> &'static gust::KernelDescriptor {
         "W2" => &saxpy::kernel::saxpy::DESCRIPTOR,
         "W3" => &polynomial::kernel::horner::DESCRIPTOR,
         "W5" => &particles::kernel::step::DESCRIPTOR,
+        "W6" => &signal_pipeline::kernel::center::DESCRIPTOR,
         "W7" => algo_descriptor(w),
         "W9" => &matmul::kernel::matmul::DESCRIPTOR,
         _ => &histogram::kernel::histogram::DESCRIPTOR,
     }
+}
+
+/// Every GUST kernel a workload runs, in the order a run dispatches them: the six stages of W6, the one kernel of every
+/// other workload. The route checks and the cold start cover all of them.
+#[cfg(feature = "gpu")]
+pub fn descriptors(w: Workload) -> Vec<&'static gust::KernelDescriptor> {
+    if w.is_pipeline() {
+        pipeline_descriptors().to_vec()
+    } else {
+        vec![descriptor(w)]
+    }
+}
+
+/// The six kernels of W6, stage 0 to 5.
+#[cfg(feature = "gpu")]
+fn pipeline_descriptors() -> [&'static gust::KernelDescriptor; signal_pipeline::STAGES] {
+    use signal_pipeline::kernel;
+    [
+        &kernel::center::DESCRIPTOR,
+        &kernel::amplify::DESCRIPTOR,
+        &kernel::shift::DESCRIPTOR,
+        &kernel::rescale::DESCRIPTOR,
+        &kernel::energy::DESCRIPTOR,
+        &kernel::combine::DESCRIPTOR,
+    ]
 }
 
 /// The first-pass kernel of `gust-algo`'s public sum for a W7 workload (the one whose route events a W7 cell is judged
@@ -703,17 +808,20 @@ fn algo_descriptor(w: Workload) -> &'static gust::KernelDescriptor {
     unreachable!("{} needs the `algo` feature", w.id())
 }
 
-/// Every kernel of this harness's own set, once (W7 runs `gust-algo`'s kernels, which this crate does not own).
+/// Every kernel of this harness's own set, once (W7 runs `gust-algo`'s kernels, which this crate does not own): one of
+/// each of W1 to W5 and W9, and the six of W6.
 #[cfg(feature = "gpu")]
-pub fn all_descriptors() -> [&'static gust::KernelDescriptor; 6] {
-    [
+pub fn all_descriptors() -> Vec<&'static gust::KernelDescriptor> {
+    let mut all = vec![
         descriptor(Workload::VectorAdd),
         descriptor(Workload::Saxpy),
         descriptor(Workload::Poly4),
         descriptor(Workload::Hist256Uniform),
         descriptor(Workload::Particles),
         descriptor(Workload::MatMul),
-    ]
+    ];
+    all.extend(pipeline_descriptors());
+    all
 }
 
 /// The size of a unit-test case of a workload: small, off the workgroup boundaries (so the guards run), and for W9 a
@@ -762,7 +870,15 @@ mod tests {
             Workload::parse_family("W5"),
             Some(vec![Workload::Particles])
         );
-        assert_eq!(Workload::parse_family("W6"), None);
+        assert_eq!(
+            Workload::parse_family("W6"),
+            Some(vec![Workload::PipelineGraph, Workload::PipelineHand])
+        );
+        assert_eq!(
+            Workload::parse_family("W6-graph"),
+            Some(vec![Workload::PipelineGraph])
+        );
+        assert_eq!(Workload::parse_family("W8"), None);
         let ids = Workload::ALL.map(Workload::id);
         let mut sorted = ids.to_vec();
         sorted.sort_unstable();
@@ -880,6 +996,32 @@ mod tests {
             assert!(check(Workload::SumU32, &inputs, &reference, &[poison]).is_err());
             assert!(check(Workload::SumU32, &inputs, &reference, &reference.want).is_ok());
         }
+    }
+
+    #[test]
+    fn w6_has_two_forms_one_family_the_plan_sizes_and_one_output_stream() {
+        for w in [Workload::PipelineGraph, Workload::PipelineHand] {
+            assert_eq!(w.family(), "W6");
+            assert_eq!(w.sizes(), [1 << 20, 1 << 22]);
+            assert_eq!(w.kind(), Kind::F32);
+            assert_eq!(w.out_len(1000), 1000);
+            assert_eq!(w.bytes_per_element(), 68);
+            assert!(w.same_kernel() && w.end_to_end_comparable() && w.is_pipeline());
+            assert!(!w.accumulates() && w.poison_word().is_nan());
+            let inputs = gen_inputs(w, 100);
+            assert_eq!(inputs.pipeline.len(), signal_pipeline::INPUTS);
+            assert!(inputs.pipeline.iter().all(|stream| stream.len() == 100));
+        }
+        assert!(Workload::PipelineGraph.is_graph_form());
+        assert!(!Workload::PipelineHand.is_graph_form());
+        assert!(!Workload::Particles.is_pipeline());
+        // Both forms are judged by the same reference: one set of inputs, one bound.
+        let (a, b) = (
+            case(Workload::PipelineGraph, 512),
+            case(Workload::PipelineHand, 512),
+        );
+        assert_eq!(a.1.want, b.1.want);
+        assert_eq!(a.1.bound_gpu, b.1.bound_gpu);
     }
 
     #[test]

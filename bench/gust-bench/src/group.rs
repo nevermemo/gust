@@ -86,6 +86,8 @@ pub fn require_full_set(wanted: &[String], gust_id: &str) -> Result<(), String> 
 /// outside the rule, on the GUST and the hand-WGSL side alike. The exclusion is recorded, not silent: `excluded` lists
 /// every such cell of the rule's backends (`backend`, `workload`, `n`, `reason`), so a reader of the run file sees W7 was
 /// present and left out on purpose (coordinator decision D190, a deviation from the plan's "any cell").
+/// W6-graph is left out the same way for a different reason (`Workload::gust_gpu_timestamps`: `StagedGraph` records no GPU
+/// timestamps, so the form has no GPU-time quantities); W6-hand stays in the rule.
 /// `control` carries the same ratio for wgsl-percall (same kernel text as wgsl-prebuilt, so its distance from 1.0 is
 /// the noise floor of the method); it does not enter the rule. Returns the record that goes into the run file.
 pub fn kill_rule(cells: &[Value]) -> Value {
@@ -114,6 +116,22 @@ pub fn kill_rule(cells: &[Value]) -> Value {
                 excluded.push(json!({
                     "backend": backend, "workload": key.0, "n": key.1,
                     "reason": "no same-kernel GUST/hand pairing: GUST runs the library's sum, which exposes no GPU timestamps",
+                }));
+            }
+            continue;
+        }
+        // A workload whose GUST path records no GPU timestamps (W6-graph: `StagedGraph` runs through `execute_graph`,
+        // which records none, so the form has no GPU-time samples) has no GPU-time ratio by construction. It is outside
+        // the rule on both sides, through its own predicate: it stays `same_kernel`, so its dispatch and end-to-end
+        // ratios are still judged by the report. Listed in `excluded`, not silent.
+        if Workload::parse(&key.0).is_some_and(|w| !w.gust_gpu_timestamps()) {
+            if GUST_BACKENDS.contains(&backend)
+                || backend == "wgsl-prebuilt"
+                || backend == CONTROL_BACKEND
+            {
+                excluded.push(json!({
+                    "backend": backend, "workload": key.0, "n": key.1,
+                    "reason": "StagedGraph runs through execute_graph, which records no GPU timestamps, so the graph form has no GPU-time samples and no GPU-time pairing",
                 }));
             }
             continue;
@@ -344,6 +362,48 @@ mod tests {
         // A run with nothing excluded lists nothing.
         let plain = kill_rule(&[named("gust-gpu", 1, Some(1.0), Some(1.0))]);
         assert_eq!(plain["excluded"], json!([]));
+    }
+
+    /// A full run containing W6-graph (a GUST cell with no GPU-time metrics, by construction) is still judged on its
+    /// other cells, lists the W6-graph exclusion with its reason, and keeps W6-hand in the rule.
+    #[test]
+    fn a_run_with_w6_graph_is_judged_and_lists_the_exclusion() {
+        let w6 = |workload: &str, backend: &str, single: Option<f64>| {
+            let mut value = named(backend, 1 << 20, single, single);
+            value["workload"] = json!(workload);
+            value
+        };
+        let record = kill_rule(&[
+            w6("W6-graph", "gust-gpu", None),
+            w6("W6-graph", "wgsl-prebuilt", Some(1.0)),
+            w6("W6-hand", "gust-gpu", Some(1.0)),
+            w6("W6-hand", "wgsl-prebuilt", Some(1.0)),
+            named("gust-gpu", 1, Some(1.0), Some(1.0)),
+            named("wgsl-prebuilt", 1, Some(1.0), Some(1.0)),
+        ]);
+        assert_eq!(record["unpaired"], 0, "W6-graph is not left unpaired");
+        assert_eq!(record["checked"], 4, "W1 and W6-hand, two quantities each");
+        assert_eq!(record["judged"], true);
+        assert_eq!(record["c_reopened"], false, "judged, not null");
+        let listed = record["excluded"].as_array().expect("excluded is a list");
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().all(|e| e["workload"] == "W6-graph"));
+        assert!(
+            listed[0]["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("execute_graph") && r.contains("no GPU timestamps"))
+        );
+        // W6-hand is in the rule: a wild ratio there reopens C.
+        let wild = kill_rule(&[
+            w6("W6-graph", "gust-gpu", None),
+            w6("W6-graph", "wgsl-prebuilt", Some(1.0)),
+            w6("W6-hand", "gust-gpu", Some(1.5)),
+            w6("W6-hand", "wgsl-prebuilt", Some(1.0)),
+        ]);
+        assert_eq!(wild["c_reopened"], true);
+        // W6-graph keeps `same_kernel`, so the report still judges its dispatch and end-to-end ratios.
+        assert!(Workload::PipelineGraph.same_kernel());
+        assert!(!Workload::PipelineGraph.gust_gpu_timestamps());
     }
 
     #[test]

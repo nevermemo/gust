@@ -31,6 +31,21 @@
       "name": "horner"
     },
     {
+      "clean_sha256": "96d9595afdcae1b6f66509ca89a978b359ebb0d33cee0fa0ce774f300ceb601c",
+      "entry_point": "gpu_kernel_center",
+      "formats": [
+        {
+          "file": "3d0023e9345d1f6f.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "97945f6f773ea75a7db32838f6725fc569fbf5c83da3c15ad0b9266277f80e40",
+          "sha256": "8e0a3351a68d3fdc536dafadd6ba844131de6a2bb1ccb459f49bc4a882805514"
+        }
+      ],
+      "key": "3d0023e9345d1f6f",
+      "module": "kernel",
+      "name": "center"
+    },
+    {
       "clean_sha256": "17fc71addb434ca58ef756c378f58e3f5ce2787921bb0b76687509bcc9542429",
       "entry_point": "gpu_kernel_histogram",
       "formats": [
@@ -44,6 +59,81 @@
       "key": "48733ffa27c233fd",
       "module": "kernel",
       "name": "histogram"
+    },
+    {
+      "clean_sha256": "2da1f0dd0281c6348ec18a6d9624b496e2252d4a79f0ad8f30f4b2d5383774ea",
+      "entry_point": "gpu_kernel_amplify",
+      "formats": [
+        {
+          "file": "72467861bf259571.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "8075c9d6f80d72cce208392b9835dd3320ccd41c6934627346794924ad3c125e",
+          "sha256": "e3b67d22a81b3d3071d0f8a9c11a676794c876d41371f9f4c23879270b15083a"
+        }
+      ],
+      "key": "72467861bf259571",
+      "module": "kernel",
+      "name": "amplify"
+    },
+    {
+      "clean_sha256": "4a4418089c67ecf65e03a281b56fdb91da54cbd9859176746d95cc42dfc6108d",
+      "entry_point": "gpu_kernel_rescale",
+      "formats": [
+        {
+          "file": "73d07f630ab3f8dc.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "f4f858875fe853ec2532653dab6e4c2adde2c3cba8c084d15016c94acdc77e14",
+          "sha256": "b59c76deaae878840f66b59dd53f69d353bc7108548051fe2b1ca9cef2ff6583"
+        }
+      ],
+      "key": "73d07f630ab3f8dc",
+      "module": "kernel",
+      "name": "rescale"
+    },
+    {
+      "clean_sha256": "613bab5c992c4b0a1bb052e7a423553a31985f7db1947bbd56413966cc119bce",
+      "entry_point": "gpu_kernel_combine",
+      "formats": [
+        {
+          "file": "a4fa5b22981fab73.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "a4ac41bedeb646e8523eae10676b2d4d461c9388c86c022a084434e884aab817",
+          "sha256": "c56cfb2ad29ee62dcc885ed79cbfc730ad5a4943d11a8a21847262d3baab3ea7"
+        }
+      ],
+      "key": "a4fa5b22981fab73",
+      "module": "kernel",
+      "name": "combine"
+    },
+    {
+      "clean_sha256": "8bf866a6e57b702d4b0c3d2ebf34cfd311ae0aea66a001ac9115a1edded861fe",
+      "entry_point": "gpu_kernel_energy",
+      "formats": [
+        {
+          "file": "c3cfe6e43f84e818.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "2b681e1c8686d141761f1097f64cad38fbf8191061eb3ea0774838d850b2e38e",
+          "sha256": "9c84bdadccccc05b6f3575501cfd1e4f297c446ad830b237bd926a70b5011d1f"
+        }
+      ],
+      "key": "c3cfe6e43f84e818",
+      "module": "kernel",
+      "name": "energy"
+    },
+    {
+      "clean_sha256": "e5eba2e552f74d3a1a0ec902ac6f9739d7b2257eb2baacc1b57cd82ac86f8af2",
+      "entry_point": "gpu_kernel_shift",
+      "formats": [
+        {
+          "file": "caf1b826965fd2b5.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "020ae09b6871438ef4062a4282b41ac4caef74d0c3f6651889171992cd1f96df",
+          "sha256": "980818bf8a508f3beb4a1eda36e2d4b4e91e79f1cf7d4eea4501c0ac99aef43a"
+        }
+      ],
+      "key": "caf1b826965fd2b5",
+      "module": "kernel",
+      "name": "shift"
     },
     {
       "clean_sha256": "7f1a75da06de34cc004299eac02f6e5032d71e4f724cc44bca6134f6abd72033",

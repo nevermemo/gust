@@ -23,6 +23,8 @@
 //! workgroup memory) and `reduce_total` (one workgroup, each lane adding its share of the partials, then a tree).
 //! W9 (naive matrix product) is one dispatch of `N / 16` by `N / 16` workgroups of 16 by 16. W5 (particle step) is one
 //! dispatch of 256-wide workgroups over the same 28-byte std430 struct buffer GUST's kernel takes (`shaders/particles.wgsl`).
+//! W6 (staged pipeline) is six entry points of `shaders/signal_pipeline.wgsl` over one three-binding layout, one bind group per stage
+//! (`STAGE_BINDINGS`) and one compute pass per stage in a single submission, in the hand order; both W6 ids run it.
 //! `--adapter` opens this device (and every probe device) on the adapter GUST's device is on, matched by `adapter::match_adapter`.
 
 use std::{
@@ -320,6 +322,11 @@ struct Resident {
     steps: Vec<(usize, [u32; 3])>,
     /// W7: the workgroups of the first dispatch (0 for every other workload).
     blocks: u32,
+    /// W6: per stage the three buffers (indexes into `buffers`) bound to bindings 0, 1 and 2 (empty for every other
+    /// workload, which has the one `bind_group`).
+    stage_bindings: Vec<[usize; 3]>,
+    /// W6: the bind group of each stage, built once (`bind_group` is the first stage's).
+    stage_groups: Vec<wgpu::BindGroup>,
 }
 
 pub struct HandWgsl {
@@ -454,7 +461,9 @@ impl HandWgsl {
     fn gust_source(workload: Workload) -> (&'static str, &'static str) {
         match workload.family() {
             // `supports` leaves the probes out of the workloads whose GUST kernel has no artifact here.
-            "W5" | "W7" | "W9" => unreachable!("{} has no GUST artifact probe", workload.id()),
+            "W5" | "W6" | "W7" | "W9" => {
+                unreachable!("{} has no GUST artifact probe", workload.id())
+            }
             "W1" => (
                 include_str!("../../gust-bench-pre/gust-artifacts/2446cbf187eae739.wgsl"),
                 "gpu_kernel_add",
@@ -480,6 +489,7 @@ impl HandWgsl {
             "W2" => include_str!("../../shaders/saxpy.wgsl"),
             "W3" => include_str!("../../shaders/polynomial.wgsl"),
             "W5" => include_str!("../../shaders/particles.wgsl"),
+            "W6" => include_str!("../../shaders/signal_pipeline.wgsl"),
             "W7" if workload == Workload::SumU32 => include_str!("../../shaders/sum_u32.wgsl"),
             "W7" => include_str!("../../shaders/sum_f32.wgsl"),
             "W9" => include_str!("../../shaders/matmul.wgsl"),
@@ -495,7 +505,7 @@ impl HandWgsl {
 
     fn binding_count(workload: Workload) -> usize {
         match workload.family() {
-            "W1" | "W3" | "W5" | "W7" => 3,
+            "W1" | "W3" | "W5" | "W6" | "W7" => 3,
             "W2" | "W9" => 4,
             _ => 2,
         }
@@ -507,6 +517,7 @@ impl HandWgsl {
             return vec![Self::gust_source(workload).1];
         }
         match workload.family() {
+            "W6" => vec!["center", "amplify", "shift", "rescale", "energy", "combine"],
             "W7" => vec!["reduce_blocks", "reduce_total"],
             _ => vec!["main"],
         }
@@ -518,6 +529,12 @@ impl HandWgsl {
             // W5: the particles (7 words each) and their accelerations (2 words each), the layout `particles.wgsl` declares.
             "W1" | "W2" | "W5" => vec![cast_slice(&inputs.x), cast_slice(&inputs.y)],
             "W3" => vec![cast_slice(&inputs.x)],
+            // W6: signal, baseline, gain, bias, scale: the five input buffers, in the order `prepare_pipeline` creates them.
+            "W6" => inputs
+                .pipeline
+                .iter()
+                .map(|s| cast_slice(s.as_slice()))
+                .collect(),
             "W7" if workload == Workload::SumU32 => vec![cast_slice(&inputs.values)],
             "W7" => vec![cast_slice(&inputs.x)],
             "W9" => vec![cast_slice(&inputs.x), cast_slice(&inputs.y)],
@@ -540,6 +557,10 @@ impl HandWgsl {
                 let side = n.div_ceil(workloads::matmul::TILE) as u32;
                 vec![(0, [side, side, 1])]
             }
+            // W6: six dispatches, one per stage and pipeline, the same workgroup count each (one invocation per element).
+            "W6" => (0..workloads::signal_pipeline::STAGES)
+                .map(|stage| (stage, [n.div_ceil(WORKGROUP) as u32, 1, 1]))
+                .collect(),
             _ => {
                 let threads = if workload.bins().is_some() {
                     hist_threads(n)
@@ -644,6 +665,163 @@ impl HandWgsl {
         })
     }
 
+    /// W6: the bind group of one stage over its three buffers (`stage_bindings`), on the one three-binding layout.
+    fn create_stage_group(
+        ctx: &WgpuContext,
+        pipeline: &Pipeline,
+        buffers: &[wgpu::Buffer],
+        bindings: [usize; 3],
+    ) -> wgpu::BindGroup {
+        let entries = bindings
+            .iter()
+            .enumerate()
+            .map(|(binding, buffer)| wgpu::BindGroupEntry {
+                binding: binding as u32,
+                resource: buffers[*buffer].as_entire_binding(),
+            })
+            .collect::<Vec<_>>();
+        ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bench stage bind group"),
+            layout: &pipeline.layout,
+            entries: &entries,
+        })
+    }
+
+    /// W6: the index of the first stage output among the buffers (the five inputs come before it).
+    const STAGE_FIRST_OUTPUT: usize = 5;
+
+    /// W6: the buffers of the pipeline in creation order (`signal`, `baseline`, `gain`, `bias`, `scale`, then the
+    /// outputs of stages 0 to 5, the last being the final output) and, per stage, the three buffers it binds.
+    const STAGE_BINDINGS: [[usize; 3]; 6] = [
+        [0, 1, 5],
+        [5, 2, 6],
+        [6, 3, 7],
+        [7, 4, 8],
+        [8, 8, 9],
+        [9, 8, 10],
+    ];
+
+    /// W6: records `batch` runs of the six stages, each stage a compute pass of its own in the order written (wgpu
+    /// orders the storage writes between passes). The timestamps bracket the first pass of the first run to the last
+    /// pass of the last run.
+    fn record_staged(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        r: &Resident,
+        batch: usize,
+        timestamps: bool,
+    ) {
+        let stages = r.steps.len();
+        let passes = batch * stages;
+        for index in 0..passes {
+            let stage = index % stages;
+            let per_call;
+            let bind_group = if self.switches.bind_group_reuse {
+                &r.stage_groups[stage]
+            } else {
+                bump(&self.counters.bind_groups);
+                per_call = Self::create_stage_group(
+                    &self.ctx,
+                    &r.pipeline,
+                    &r.buffers,
+                    r.stage_bindings[stage],
+                );
+                &per_call
+            };
+            let timestamp_writes = (timestamps && (index == 0 || index == passes - 1))
+                .then_some(r.query_set.as_ref())
+                .flatten()
+                .map(|query_set| wgpu::ComputePassTimestampWrites {
+                    query_set,
+                    beginning_of_pass_write_index: (index == 0).then_some(0),
+                    end_of_pass_write_index: (index == passes - 1).then_some(1),
+                });
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("bench stage pass"),
+                timestamp_writes,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            let (pipeline, [x, y, z]) = &r.steps[stage];
+            pass.set_pipeline(&r.pipeline.pipelines[*pipeline]);
+            pass.dispatch_workgroups(*x, *y, *z);
+        }
+    }
+
+    /// W6's `prepare`: the five input buffers (written once), the six stage outputs, one module with the six entry
+    /// points, and one bind group per stage.
+    fn prepare_pipeline(&mut self, workload: Workload, inputs: &Inputs) -> BenchResult<()> {
+        // `supports` leaves W6 out of the probes; `profile` does not filter by it, so this makes a probe asked for W6 loud
+        // instead of running the hand shader under the probe's id.
+        assert!(
+            !self.gust_shader && !self.gust_order,
+            "W6 is not run by the GUST-shader or device-order probes"
+        );
+        let ctx = &self.ctx;
+        let n = inputs.n;
+        let bytes = (n * size_of::<f32>()) as u64;
+        let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+        let mut buffers = Vec::new();
+        let mut uploads = Vec::new();
+        for (label, values) in [
+            "bench signal",
+            "bench baseline",
+            "bench gain",
+            "bench bias",
+            "bench scale",
+        ]
+        .into_iter()
+        .zip(Self::input_bytes(workload, inputs))
+        {
+            let buffer = ctx.buffer(label, values.len() as u64, storage);
+            ctx.queue.write_buffer(&buffer, 0, values);
+            uploads.push(buffers.len());
+            buffers.push(buffer);
+        }
+        for label in [
+            "bench centered",
+            "bench amplified",
+            "bench biased",
+            "bench normalized",
+            "bench energy",
+        ] {
+            buffers.push(ctx.buffer(label, bytes, storage | wgpu::BufferUsages::COPY_SRC));
+        }
+        buffers.push(ctx.buffer("bench out", bytes, storage | wgpu::BufferUsages::COPY_SRC));
+        let pipeline = Self::create_pipeline(ctx, workload, false, self.unchecked);
+        let stage_bindings = Self::STAGE_BINDINGS.to_vec();
+        let stage_groups = stage_bindings
+            .iter()
+            .map(|bindings| Self::create_stage_group(ctx, &pipeline, &buffers, *bindings))
+            .collect::<Vec<_>>();
+        let staging = ctx.buffer(
+            "bench staging",
+            bytes,
+            wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        );
+        let (query_set, resolve, timestamp_read) = Self::timestamp_objects(ctx);
+        ctx.flush()?;
+        self.passes.set(0);
+        self.resident = Some(Resident {
+            workload,
+            out_len: n,
+            bytes,
+            buffers,
+            uploads,
+            staging,
+            pipeline,
+            bind_group: stage_groups[0].clone(),
+            query_set,
+            resolve,
+            timestamp_read,
+            poison: vec![workload.poison_word(); n],
+            steps: Self::steps(workload, n, 0),
+            blocks: 0,
+            stage_bindings,
+            stage_groups,
+        });
+        Ok(())
+    }
+
     /// Records `batch` passes. A pass with `timestamps` gets the query writes: the first pass writes query 0 at its
     /// beginning and the last pass writes query 1 at its end, as `dispatch_batch_timed` does.
     fn record(
@@ -653,6 +831,9 @@ impl HandWgsl {
         batch: usize,
         timestamps: bool,
     ) {
+        if r.workload.is_pipeline() {
+            return self.record_staged(encoder, r, batch, timestamps);
+        }
         for index in 0..batch {
             let per_call;
             let bind_group = if self.switches.bind_group_reuse {
@@ -775,12 +956,21 @@ impl Backend for HandWgsl {
     /// The GUST-shader probes run GUST's generated WGSL, which this crate embeds as precompiled artifacts for W1 to W4;
     /// the probe has no W7 (the library's own kernels), no W5 and no W9 arm (their artifacts exist in `gust-bench-pre` for the
     /// pre-built GUST backend, but the probe path does not take it).
+    ///
+    /// W6 is left out of every probe: the artifacts for its six kernels exist (in `gust-bench-pre`, as for W5 and W9)
+    /// but the shader probe path does not take them, and the device-order probe's resource order (timestamp objects
+    /// first) is not built by the staged `prepare`. Both the `gust-shader` and the `gust-device` and `gust-setup`
+    /// (`gust_order`) probes skip it.
     fn supports(&self, workload: Workload) -> bool {
-        !(self.gust_shader && matches!(workload.family(), "W5" | "W7" | "W9"))
+        !(self.gust_shader && matches!(workload.family(), "W5" | "W6" | "W7" | "W9"))
+            && !(self.gust_order && workload.is_pipeline())
     }
 
     fn prepare(&mut self, workload: Workload, inputs: &Inputs) -> BenchResult<()> {
         self.resident = None;
+        if workload.is_pipeline() {
+            return self.prepare_pipeline(workload, inputs);
+        }
         let ctx = &self.ctx;
         let n = inputs.n;
         let out_len = workload.out_len(n);
@@ -856,15 +1046,27 @@ impl Backend for HandWgsl {
             poison: vec![workload.poison_word(); out_len],
             steps: Self::steps(workload, n, blocks),
             blocks,
+            stage_bindings: Vec::new(),
+            stage_groups: Vec::new(),
         });
         Ok(())
     }
 
     fn poison(&mut self) -> BenchResult<()> {
         let r = self.resident();
-        self.ctx
-            .queue
-            .write_buffer(Self::out_buffer(r), 0, cast_slice(&r.poison));
+        if r.workload.is_pipeline() {
+            // W6: every stage output (buffers 5 to 10; 0 to 4 are the inputs), as GUST poisons all six, so a pass that
+            // stopped writing an intermediate cannot read the previous sample's correct value and still pass.
+            for buffer in &r.buffers[Self::STAGE_FIRST_OUTPUT..] {
+                self.ctx
+                    .queue
+                    .write_buffer(buffer, 0, cast_slice(&r.poison));
+            }
+        } else {
+            self.ctx
+                .queue
+                .write_buffer(Self::out_buffer(r), 0, cast_slice(&r.poison));
+        }
         self.passes.set(0);
         self.ctx.flush()
     }
@@ -975,7 +1177,18 @@ impl Backend for HandWgsl {
         let started = Instant::now();
         let pipeline = Self::create_pipeline(&self.ctx, workload, self.gust_shader, self.unchecked);
         let r = self.resident.as_mut().expect("prepare was called");
-        r.bind_group = Self::create_bind_group(&self.ctx, &pipeline, &r.buffers);
+        if workload.is_pipeline() {
+            r.stage_groups = r
+                .stage_bindings
+                .iter()
+                .map(|bindings| {
+                    Self::create_stage_group(&self.ctx, &pipeline, &r.buffers, *bindings)
+                })
+                .collect();
+            r.bind_group = r.stage_groups[0].clone();
+        } else {
+            r.bind_group = Self::create_bind_group(&self.ctx, &pipeline, &r.buffers);
+        }
         r.pipeline = pipeline;
         self.dispatch()?;
         Ok(Some(started.elapsed()))
@@ -1069,6 +1282,47 @@ mod tests {
                     backend.read_back(&mut out).unwrap();
                     check_with(w, &inputs, &reference, &out, judging)
                         .unwrap_or_else(|e| panic!("{} {mode:?} batch: {e}", w.id()));
+                }
+            }
+        }
+    }
+
+    /// W6: the timed path reads only the final stage, so this test reads every stage's buffer after one run and checks each
+    /// against its own bound (`signal_pipeline::stage_exact_and_bound`, the GPU bound), and checks the six steps.
+    #[test]
+    fn every_hand_stage_is_inside_its_own_bound_on_the_gpu() {
+        use crate::workloads::signal_pipeline::{STAGES, stage_exact_and_bound};
+        let (_gpu, ctx) = gpu_context();
+        for mode in [Mode::Prebuilt, Mode::PerCall] {
+            let w = Workload::PipelineHand;
+            let inputs = gen_inputs(w, workloads::test_size(w));
+            let mut backend = HandWgsl::new(Rc::clone(&ctx), mode);
+            backend.prepare(w, &inputs).unwrap();
+            backend.poison().unwrap();
+            backend.dispatch().unwrap();
+            let r = backend.resident();
+            assert_eq!(r.steps.len(), STAGES);
+            for stage in 0..STAGES {
+                let source = &r.buffers[5 + stage];
+                let staging = ctx.buffer(
+                    "test stage staging",
+                    r.bytes,
+                    wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                );
+                let mut encoder = backend.encoder();
+                encoder.copy_buffer_to_buffer(source, 0, &staging, 0, r.bytes);
+                backend.submit(encoder.finish());
+                let got = ctx
+                    .map_read(&staging, |bytes| cast_slice::<u8, f32>(bytes).to_vec())
+                    .unwrap();
+                let (exact, _, bound_gpu) = stage_exact_and_bound(&inputs.pipeline, stage);
+                for (i, ((got, exact), bound)) in got.iter().zip(&exact).zip(&bound_gpu).enumerate()
+                {
+                    let err = (f64::from(*got) - exact).abs();
+                    assert!(
+                        err <= *bound,
+                        "{mode:?} stage {stage} element {i}: {err} against {bound}"
+                    );
                 }
             }
         }

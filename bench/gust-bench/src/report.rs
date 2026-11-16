@@ -21,6 +21,19 @@ fn e2e_comparable(workload: &str) -> bool {
 /// Why W5 has no GUST end-to-end ratio, overhead row, bandwidth figure or break-even.
 const E2E_NOTE: &str = "GUST's read-back converts a typed `Vec<Particle>` into the harness's words inside the end-to-end sample (a second allocation and a per-field copy) where the baseline reads raw words with one copy, so no GUST end-to-end ratio, overhead row, bandwidth figure or break-even is shown; the dispatch timings are not affected.";
 
+/// What a W6 (staged pipeline) table's samples time, by form: the two GUST forms are different programs on the host side and the table must say so.
+fn pipeline_note(workload: &str) -> Option<&'static str> {
+    match workload {
+        "W6-graph" => Some(
+            "W6 as a `StagedGraph`: every gust-gpu sample builds the graph of the six calls (derived edges), validates it, encodes the six dispatches into one command buffer (one compute pass each) and submits once, all inside the timed region; the end-to-end sample adds five upload nodes and one read-back node. The graph has no GPU timestamps, so there is no batch figure for it. The baselines are the hand-ordered rows of this workload (wgsl-prebuilt: six passes, one submit, nothing rebuilt), so the gap includes the graph's per-call host work, which is what a program that uses a `StagedGraph` pays; only gust-gpu and gust-gpu-spirv run this form (the CPU backends have no graph; their rows are under W6-hand).",
+        ),
+        "W6-hand" => Some(
+            "W6 in hand order: the same six GUST kernels dispatched in stage order with one `dispatch_batch` (six passes, one submit), no graph; the end-to-end sample adds five uploads and the read-back. Every backend of the table runs this form: the hand WGSL runs six entry points in six passes with one submit, the CPU backends compute one element's six stages at a time (rayon, serial) or run the six kernels one after another (gust-cpu, gust-twin). The batch bandwidth counts the traffic of six passes (68 bytes per element: 11 reads and 6 writes of 4 bytes), which a fused kernel would not do; the end-to-end bandwidth, for the GPU rows and for rayon-N alike, counts 24 bytes per element (five uploads and one read-back, which is also what the fused CPU loop touches).",
+        ),
+        _ => None,
+    }
+}
+
 fn is_gust(backend: &str) -> bool {
     backend.starts_with("gust-gpu")
 }
@@ -629,6 +642,19 @@ fn gust_backend(table: &Table) -> &'static str {
 struct WorkloadInfo {
     name: String,
     bytes: f64,
+    /// Bytes per element of an end-to-end sample (the same as `bytes` unless the workload moves less over the bus
+    /// than its device passes touch, W6).
+    bytes_e2e: f64,
+}
+
+impl WorkloadInfo {
+    fn bytes_for(&self, metric: &str) -> f64 {
+        if metric == "end_to_end" {
+            self.bytes_e2e
+        } else {
+            self.bytes
+        }
+    }
 }
 
 fn workload_info(runs: &[Value]) -> BTreeMap<String, WorkloadInfo> {
@@ -638,14 +664,19 @@ fn workload_info(runs: &[Value]) -> BTreeMap<String, WorkloadInfo> {
             let Some(workload) = cell["workload"].as_str() else {
                 continue;
             };
-            info.entry(workload.to_owned())
-                .or_insert_with(|| WorkloadInfo {
+            info.entry(workload.to_owned()).or_insert_with(|| {
+                let bytes = cell["bytes_per_element"].as_f64().unwrap_or(12.0);
+                WorkloadInfo {
                     name: cell["workload_name"]
                         .as_str()
                         .unwrap_or(workload)
                         .to_owned(),
-                    bytes: cell["bytes_per_element"].as_f64().unwrap_or(12.0),
-                });
+                    bytes,
+                    bytes_e2e: cell["bytes_per_element_end_to_end"]
+                        .as_f64()
+                        .unwrap_or(bytes),
+                }
+            });
         }
     }
     info
@@ -677,7 +708,7 @@ fn bandwidth_flags(table: &Table, info: &BTreeMap<String, WorkloadInfo>, peak: f
         if !is_gpu_backend(backend) {
             continue;
         }
-        let bytes = info.get(workload).map_or(12.0, |i| i.bytes);
+        let bytes = info.get(workload).map_or(12.0, |i| i.bytes_for(metric));
         let gbps = bandwidth_gbps(*n as f64, bytes, point.median());
         if gbps > peak {
             flags.push(json!({
@@ -919,6 +950,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             .get(workload)
             .map_or(workload.as_str(), |i| i.name.as_str());
         let bytes = info.get(workload).map_or(12.0, |i| i.bytes);
+        let bytes_e2e = info.get(workload).map_or(12.0, |i| i.bytes_e2e);
         writeln!(md, "\n## {workload} {name}\n")?;
         for (metric, label) in METRICS {
             writeln!(md, "### {label}\n")?;
@@ -983,6 +1015,9 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         if !e2e_comparable(workload) {
             writeln!(md, "{E2E_NOTE}\n")?;
         }
+        if let Some(note) = pipeline_note(workload) {
+            writeln!(md, "{note}\n")?;
+        }
         // A GFLOP/s column (2 N^3 flops for W9, plan 2.3) is b5's: it goes beside the bandwidth table below.
         if bytes == 0.0 {
             writeln!(
@@ -992,10 +1027,17 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             crossover(&mut md, &table, workload, list, &link_of, gust)?;
             continue;
         }
-        writeln!(
-            md,
-            "### Achieved bandwidth (GB/s, {bytes} bytes per element), from the batch timestamps and from end to end\n"
-        )?;
+        if bytes_e2e == bytes {
+            writeln!(
+                md,
+                "### Achieved bandwidth (GB/s, {bytes} bytes per element), from the batch timestamps and from end to end\n"
+            )?;
+        } else {
+            writeln!(
+                md,
+                "### Achieved bandwidth (GB/s), from the batch timestamps ({bytes} bytes per element, the device traffic of the passes) and from end to end ({bytes_e2e} bytes per element, what crosses the bus and what the fused CPU loop touches)\n"
+            )?;
+        }
         writeln!(
             md,
             "| {} | {gust} batch | wgsl-prebuilt batch | wgsl-percall batch | {gust} e2e | wgsl-prebuilt e2e | rayon-N e2e | PCIe link (GPU e2e) |",
@@ -1007,7 +1049,12 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                 table
                     .get(&(workload.clone(), *n, backend.to_owned(), metric.to_owned()))
                     .map_or("-".to_owned(), |p| {
-                        let gbps = bandwidth_gbps(*n as f64, bytes, p.median());
+                        let per = if metric == "end_to_end" {
+                            bytes_e2e
+                        } else {
+                            bytes
+                        };
+                        let gbps = bandwidth_gbps(*n as f64, per, p.median());
                         let text = if gbps < 10.0 {
                             format!("{gbps:.2}")
                         } else {
@@ -1422,6 +1469,15 @@ fn crossover(
             ))
             .map(Point::median)
     };
+    // No rayon-N end-to-end point at any size (W6-graph: the CPU backends run the hand-ordered form only): there is
+    // nothing to break even against, and "never faster" would claim a measurement that does not exist.
+    if !sizes.iter().any(|n| get(*n, "rayon-N").is_some()) {
+        writeln!(
+            md,
+            "No rayon-N row for {workload}, so no end-to-end break-even is stated (the CPU backends run the hand-ordered form only; see that table).\n"
+        )?;
+        return Ok(());
+    }
     for gpu in [gust, "wgsl-prebuilt"] {
         if gpu == gust && !e2e_comparable(workload) {
             continue;
@@ -1601,6 +1657,72 @@ mod tests {
         .unwrap();
         let md = fs::read_to_string(&out_md).unwrap();
         assert_eq!(md.matches(E2E_NOTE).count(), 1);
+    }
+
+    /// W6 has two forms with two different timed regions: each has its own note, other workloads have none, and the two
+    /// forms keep distinct ids (so they are never merged into one table or one ratio).
+    #[test]
+    fn the_two_w6_forms_have_their_own_notes_and_ids() {
+        let graph = pipeline_note("W6-graph").expect("the graph form is described");
+        let hand = pipeline_note("W6-hand").expect("the hand-ordered form is described");
+        assert!(graph.contains("StagedGraph") && graph.contains("no GPU timestamps"));
+        assert!(hand.contains("no graph") && hand.contains("one submit"));
+        assert_ne!(graph, hand);
+        assert!(pipeline_note("W1").is_none() && pipeline_note("W5").is_none());
+        assert_ne!(Workload::PipelineGraph.id(), Workload::PipelineHand.id());
+        assert_eq!(size_header("W6-hand"), "elements");
+    }
+
+    /// W6-graph has no rayon-N row (the CPU backends run the hand-ordered form), so the renderer must not claim a
+    /// break-even ("never faster") it did not measure; and the end-to-end bandwidth of W6 counts what the sample moves
+    /// (24 bytes per element), not the 68 of the six device passes.
+    #[test]
+    fn w6_graph_without_a_rayon_row_has_no_break_even_claim_and_w6_e2e_counts_24_bytes() {
+        let dir = scratch("w6render");
+        let mut one = run("wgsl", "GPU A", "a.json");
+        let mut cells = vec![];
+        for (workload, backend, ms) in [
+            ("W6-graph", "gust-gpu", 3.0),
+            ("W6-graph", "wgsl-prebuilt", 1.0),
+            ("W6-hand", "gust-gpu", 3.0),
+            ("W6-hand", "wgsl-prebuilt", 1.0),
+            ("W6-hand", "rayon-N", 2.0),
+        ] {
+            let mut cell = gpu_cell(backend, ms, true, 2600.0);
+            cell["workload"] = json!(workload);
+            cell["bytes_per_element"] = json!(68);
+            cell["bytes_per_element_end_to_end"] = json!(24);
+            cells.push(cell);
+        }
+        one["cells"] = json!(cells);
+        let inputs = write_runs(&dir, &[one]);
+        let (out_json, out_md) = (dir.join("o.json"), dir.join("o.md"));
+        aggregate(
+            &inputs,
+            out_json.to_str().unwrap(),
+            out_md.to_str().unwrap(),
+        )
+        .unwrap();
+        let md = fs::read_to_string(&out_md).unwrap();
+        let graph = md.split("## W6-graph").nth(1).expect("W6-graph section");
+        let graph = graph.split("\n## W6-hand").next().unwrap();
+        assert!(
+            graph.contains("No rayon-N row for W6-graph"),
+            "the graph form says it has no rayon-N row:\n{graph}"
+        );
+        assert!(
+            !graph.contains("never faster"),
+            "no break-even claim without a CPU measurement"
+        );
+        let hand = md.split("\n## W6-hand").nth(1).expect("W6-hand section");
+        assert!(
+            hand.contains("End-to-end break-even, wgsl-prebuilt against rayon-N"),
+            "the hand form has a rayon-N row and keeps its break-even sentence"
+        );
+        assert!(hand.contains("24 bytes per element"), "{hand}");
+        // 4096 elements * 24 bytes / 1 ms = 0.098 GB/s (the 68-byte figure would be 0.28).
+        assert!(hand.contains("| 0.10 |") && !hand.contains("| 0.28 |"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

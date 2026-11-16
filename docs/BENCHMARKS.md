@@ -13,7 +13,7 @@ makes one is an open decision. The tables near the end are generated from filed 
 
 ## Workloads
 
-The harness lives in `bench/` (a workspace of its own; see `bench/README.md` for every command). Seven families (W1 to W5, W7 and W9), each
+The harness lives in `bench/` (a workspace of its own; see `bench/README.md` for every command). Eight families (W1 to W7 and W9), each
 checked against a reference on every sample; a sample that fails its check fails the cell.
 
 | id | what it is | correct when |
@@ -23,6 +23,7 @@ checked against a reference on every sample; a sample that fails its check fails
 | W3 Horner polynomial | degree 4, 16 or 64, f32, arithmetic bound (`2 d` flops per 8 bytes) | within the derived bound below |
 | W4 u32 atomic histogram | 256 or 65536 bins, uniform or Zipf keys, atomic-contention bound | every bin equals the serial count exactly |
 | W5 particle step | 16 explicit-Euler steps of every particle of a struct buffer (a 28-byte std430 element: nested position and velocity pairs of `f32`, a `f32` mass, a `u32` tag, an `i32` charge), 2^16 or 2^20 particles, one invocation per particle | `mass`, `tag` and `charge` bit-exact; each of the four float fields within its own derived bound below |
+| W6 staged pipeline | six kernels of `signal-pipeline`'s `transform` in a chain, f32, 2^20 or 2^22 elements, a buffer between stages; two GUST forms (`W6-graph`: `StagedGraph`; `W6-hand`: six dispatches, no graph) | the final stage within the composed derived bound below; every stage within its own bound in a unit test |
 | W7 sum | `u32` (wrapping) and `f32`, 2^20 to 2^27 values, one output word, a reduction; GUST runs `gust-algo`'s public sum | `u32`: the wrapping sum exactly; `f32`: within the bound of the summation order the backend runs (below) |
 | W9 naive matrix product | `C = A B` of two `N x N` f32 matrices, `N` from 256 to 2048, one output entry per invocation (the tiled form is not in this set) | every entry within the derived bound below |
 
@@ -105,17 +106,81 @@ step past the bound failing, and the bound tight (a small fraction of the field'
 is never widened to pass.
 
 Limits of the W5 measurement. The example's second output (`energy`) is not part of this workload. The hand WGSL has the
-same struct layout as GUST's (`shaders/particles.wgsl`); a test reads GUST's reflected `GpuPod` layout (size, alignment,
-stride and each field's offset) and the field order of the shader text and asserts they agree, and another test reads the
-committed Slang reflection of the step kernel (`bench/gust-bench-pre/gust-artifacts`) and checks stride 28 and the five
+same struct layout as GUST's (`shaders/particles.wgsl`); a test reads the layout that `GpuPod` derives for GUST's struct (size, alignment,
+stride and each field's offset) and the field order of the shader text and asserts they agree, and another test, a separate
+check, reads the committed Slang reflection of the step kernel (`bench/gust-bench-pre/gust-artifacts`) and checks stride 28 and the five
 offsets. The GUST GPU backend reads the struct buffer back as `Particle` values and converts them to words inside its
 end-to-end sample (a second allocation and a per-field copy), which the hand WGSL's raw word read-back does not do. So the
 end-to-end timing of the two is not like for like, and the renderer shows no GUST end-to-end ratio, overhead row,
 end-to-end bandwidth or GUST break-even for W5 (`Workload::end_to_end_comparable`, a property of the workload, with the
-reason printed on the page); the dispatch timings stay. `gust-cpu` and `gust-twin` convert the same way, so their W5
+reason printed on the page); the dispatch timings stay. GUST's W5 end-to-end milliseconds include the struct conversion copy (the typed `Vec<Particle>` read-back converted to words), which is the reason the end-to-end ratio is hidden. `gust-cpu` and `gust-twin` convert the same way, so their W5
 end-to-end times carry that copy too (they are in no GUST/hand pairing, but they do enter the rayon comparison). The quick check runs 2^16 particles with all 16 steps (the step count is part of the kernel, and a single step
 would not exercise the compounding the bound is about). `wgsl-gust-shader` (GUST's generated WGSL run by the hand
 harness) does not support W5, like W7 and W9.
+
+**W6, the staged pipeline.** `examples/signal-pipeline`'s `transform` is six statements in one kernel. W6 makes each statement a
+kernel of its own (`bench/gust-bench/src/workloads/signal_pipeline.rs`: `center`, `amplify`, `shift`, `rescale`, `energy`,
+`combine`), `f32`, one invocation per element, a buffer between every two stages, 2^20 and 2^22 elements (quick: 2^20), so a
+run is a chain of six dispatches and the workload is about what sequencing them costs. The plan's W6 row names six kernels;
+the example has one kernel, `transform`, with six statements, and a one-node graph has no edges and nothing to sequence. W6
+makes each statement a kernel, the only reading in which a graph has more than one node. The inputs are the
+example's five periodic streams in the example's ranges. The traffic of the six passes is 11 reads and 6 writes of 4 bytes per
+element (68 bytes), which is what the batch bandwidth columns divide by. The end-to-end bandwidth columns (GPU
+and rayon-N alike) divide by 24 bytes per element instead: what an end-to-end sample moves over the bus is five uploads and
+one read-back (20 + 4 bytes), and a fused CPU loop touches the same 24; the intermediates never leave the device.
+
+There are two GUST forms, reported as two workload ids that share the kernels, the inputs and the bound:
+
+| id | what runs | what one timed sample includes |
+|---|---|---|
+| `W6-graph` | six typed `Call`s added to a `StagedGraph` (`graph.run`, derived edges), `device.execute_graph` | building the graph, validating it (the edges are checked), encoding six compute passes into one command buffer, one submit and the wait. End to end adds five upload nodes (`graph.write`) and one read-back node (`graph.read`) in the same graph, each upload through a staging buffer the graph owns |
+| `W6-hand` | the same six calls as one `dispatch_batch` of six `BufferDispatch`es, no graph | the six passes (one compute pass per dispatch) in one submit and the wait; no graph build, no validation of edges. End to end adds five `write_typed_buffer` uploads and the typed read-back |
+
+Both forms of GUST and the hand WGSL do one submit with six compute passes per run; they differ in the host work around it.
+The hand WGSL (`bench/shaders/signal_pipeline.wgsl`, six entry points of one module, one three-binding layout, one bind group per
+stage, dispatched in hand order) is the baseline of both forms: `wgsl-prebuilt` builds its bind groups once, `wgsl-percall`
+builds one per pass per run. The graph form has no GPU timestamps (`execute_graph` records none), so it has no batch
+figure and no batch bandwidth (and it is outside the kill rule, see "The kill rule"); `W6-hand` has them: for W6,
+`gpu_single` brackets one six-pass run and `gpu_batch_per_dispatch` is per six-pass run (one timestamp pair around the
+`6 x batch` passes, divided by `batch`), not per compute pass. Both forms are
+`same_kernel()` (the same six kernels in the same order, on every path) and `end_to_end_comparable()` (every buffer is
+typed `f32` on every path, nothing is converted), so the renderer pairs them with the hand WGSL, and the pairing says
+`W6-graph` includes the graph's per-call host work and `W6-hand` does not; the two ids are never merged into one row. The CPU
+backends have no `StagedGraph`: `gust-cpu` and `gust-twin` run the six kernels one after another through `CpuDevice` (the
+`W6-hand` form only), and `rayon-1`, `rayon-N` and `serial` compute one element's six stages at a time
+(`signal_pipeline::element`, each stage rounded to `f32`, so the result is the same one a stage-by-stage run gives); none of them
+is in the `W6-graph` table (so that table has no rayon-N row, and the renderer says so instead of stating a break-even).
+`wgsl-gust-shader` does not run W6, like W5, W7 and W9, and neither do the order probes `wgsl-prebuilt+gust-device` and
+`wgsl-prebuilt+gust-setup` (both need the timestamp-first resource order of GUST's single-kernel `prepare`, which W6's
+staged path does not build, and `gust-setup` also needs GUST's generated shader). CubeCL is not in W6.
+
+**The W6 bound.** Every operation is modelled as `fl(a op b) = (a op b)(1 + delta) + eta`, `|delta| <= u`, `|eta| <= 2^-126`,
+with `u = 2^-24` for a CPU backend and `u = 2^-23` for a GPU (the unit roundoff section above); the division uses `u_div = u`
+on a CPU (0.5 ULP) and `u_div = 2.5 * 2^-23` on a GPU (`docs/SEMANTICS.md` section 4, "within 2.5 ULP"; the example's `5u`).
+The forward error of the tree is carried along the f64 trajectory as a pair `(v, e)`, the computed value within `e` of the
+exact one:
+
+```text
+add:  e = (a.e + b.e)(1 + u) + u |v| + eta                     (a subtraction is the same)
+mul:  e = (|a.v| b.e + |b.v| a.e + a.e b.e)(1 + u) + u |v| + eta
+div:  e = ((a.e + |v| b.e) / (|b.v| - b.e)) (1 + u_div) + u_div |v| + eta
+```
+
+The five inputs are exact, and `0.25 * normalized` is a multiply by a power of two, exact (error `0.25 e`). The stages
+are stored: each stage is a dispatch of its own, so a value is rounded to `f32` between any two operations, and no stage has
+an addition chain longer than two, which is why the bound is not in the order-free form of W5 (nothing to regroup across a
+stage, and a fused multiply-add rounds once, so it has only less error than the multiply and add it replaces). Each
+stage's computed value is its operation applied to the previous stage's computed values, which is exactly what the
+recurrence propagates. The reference is the same six operations in f64 with `u = 2^-53` (the division correctly rounded
+too) and no `eta`. A stage's bound is the sum of the f32 model's final `e` and the f64 reference's, times `1 + 1e-9` (the
+f64 evaluation of the bound itself). A timed sample checks the final stage against that composed bound
+(`signal_pipeline::exact_and_bound`, the CPU bound or the GPU bound by the backend's `Rounding`, through the same
+`Judging` as W3 and W9); a unit test checks every stage separately against its own (`signal_pipeline::stage_exact_and_bound`,
+on the hand WGSL and on both GUST forms, from the intermediate buffers). The bound is never widened to pass. Tests show
+a correct result passing, a result just past the bound failing, a value between the GPU and the CPU bounds passing for a
+GPU and failing for a CPU backend, a GPU rounding every operation and the division by directed rounding inside the GPU
+bound at every stage, and the bound a small multiple of the roundings it covers (not vacuous). The quick check runs
+2^20 elements of both forms, checked on every sample.
 
 **The W3 bound.** Higham (Accuracy and Stability of Numerical Algorithms, 2nd ed., section 5.1)
 bounds Horner's rule by `gamma_{2d} S` with `S = sum |c_k| |x|^k`. The reference is Horner's rule in f64, which obeys the
@@ -354,6 +419,14 @@ counted as unpaired nor judged (it would otherwise keep every run that includes 
 null), and it is **listed**: the rule's record in the run file has `excluded: [{backend, workload, n, reason}]` for each
 of them, so a reader sees W7 was present and left out on purpose. This is a deviation from the plan's "any cell of the
 publishable group" (decision D190). It does not affect whether a run is publishable.
+
+W6-graph is outside the rule too, for a different reason and through a predicate of its own
+(`Workload::gust_gpu_timestamps`, not `same_kernel`): `StagedGraph` runs through `execute_graph`, which records no GPU
+timestamps, so the graph form has no GPU-time samples (`gpu_single` and `gpu_batch_per_dispatch` do not exist for it) and
+no GPU-time pairing. Its cells are listed in `excluded` with that reason, and it is not counted as unpaired (it would
+otherwise keep every full run from being judged). W6-graph stays `same_kernel`, so its dispatch and end-to-end ratios are
+still shown and judged by the report; W6-hand has GPU timestamps and stays in the rule. This is a second deviation from
+the plan's "any cell", recorded beside D190 by the coordinator; no `crates/` change was made for it.
 
 **Reproducibility clause.** A gap counts only if it recurs: the same cell must be more than 10 percent off in all three
 seeds of a confirming run (at least three runs with distinct seeds), with the control (`wgsl-percall`) inside its tolerance

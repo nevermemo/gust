@@ -19,7 +19,7 @@ use crate::{
     backend::{Backend, BenchResult, Kind},
     workloads::{
         Inputs, Workload, counts_as_words, hist_threads, histogram, matmul, normalize_counts,
-        particles, polynomial, saxpy, vector_add,
+        particles, polynomial, saxpy, signal_pipeline, vector_add,
     },
 };
 
@@ -58,6 +58,11 @@ enum Data {
         out: CpuBuffer<particles::kernel::Particle>,
         host_input: Vec<particles::kernel::Particle>,
         host_acceleration: Vec<particles::kernel::Pair>,
+    },
+    /// W6: the five input streams and the six stage outputs (the last is the output), run as six dispatches in stage order.
+    Pipeline {
+        inputs: Vec<CpuBuffer<f32>>,
+        stages: Vec<CpuBuffer<f32>>,
     },
 }
 
@@ -120,6 +125,19 @@ impl GustCpu {
                 out,
                 ..
             } => particles::kernel::step::dispatch(&self.device, n, input, acceleration, out)?,
+            Data::Pipeline {
+                inputs: i,
+                stages: s,
+            } => {
+                use signal_pipeline::kernel;
+                let d = &self.device;
+                kernel::center::dispatch(d, n, &i[0], &i[1], &s[0])?;
+                kernel::amplify::dispatch(d, n, &s[0], &i[2], &s[1])?;
+                kernel::shift::dispatch(d, n, &s[1], &i[3], &s[2])?;
+                kernel::rescale::dispatch(d, n, &s[2], &i[4], &s[3])?;
+                kernel::energy::dispatch(d, n, &s[3], &s[4])?;
+                kernel::combine::dispatch(d, n, &s[4], &s[3], &s[5])?;
+            }
         }
         Ok(())
     }
@@ -130,6 +148,7 @@ impl GustCpu {
             Data::Hist { bins, .. } => counts_as_words(bins.read()),
             Data::MatMul { c, .. } => c.read(),
             Data::Particles { out, .. } => particles::from_particles(&out.read()),
+            Data::Pipeline { stages, .. } => stages[signal_pipeline::STAGES - 1].read(),
         }
     }
 }
@@ -159,6 +178,10 @@ impl Backend for GustCpu {
     /// with a twin); the production CPU target is not on W9's list, and no GUST CPU
     /// backend sums (W7 is `gust-algo`'s, which has no CPU path of its own to time here).
     fn supports(&self, workload: Workload) -> bool {
+        // W6 in `StagedGraph` form needs the GPU runtime; the hand-ordered form (six dispatches, no graph) runs here.
+        if workload.is_graph_form() {
+            return false;
+        }
         match workload.family() {
             "W7" => false,
             "W9" => !gust::profile::IS_CPU,
@@ -204,6 +227,16 @@ impl Backend for GustCpu {
                     host_acceleration,
                 }
             }
+            "W6" => Data::Pipeline {
+                inputs: inputs
+                    .pipeline
+                    .iter()
+                    .map(|values| d.buffer(values))
+                    .collect(),
+                stages: (0..signal_pipeline::STAGES)
+                    .map(|_| d.buffer(&vec![f32::NAN; n]))
+                    .collect(),
+            },
             "W7" => return Err("the GUST CPU backends have no W7".into()),
             "W9" => Data::MatMul {
                 dims: d.buffer(&[n as u32]),
@@ -233,6 +266,11 @@ impl Backend for GustCpu {
                 f32::NAN;
                 r.n * particles::WORDS
             ]))?,
+            Data::Pipeline { stages, .. } => {
+                for stage in stages {
+                    stage.write(&vec![f32::NAN; r.n])?;
+                }
+            }
         }
         self.passes.set(0);
         Ok(())
@@ -263,6 +301,13 @@ impl Backend for GustCpu {
             } => {
                 input.write(host_input)?;
                 acceleration.write(host_acceleration)?;
+            }
+            Data::Pipeline {
+                inputs: buffers, ..
+            } => {
+                for (buffer, values) in buffers.iter().zip(&inputs.pipeline) {
+                    buffer.write(values)?;
+                }
             }
         }
         self.run(r)?;

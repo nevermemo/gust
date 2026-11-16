@@ -50,11 +50,10 @@ pub struct Config {
     pub run_seed: u64,
     /// Measure only the cold start (GPU cells at the first size), none of the four timings.
     pub cold_only: bool,
-    /// The backend group of the run (`publishable` or `ablation`, see `group`), written into every cell.
-    pub group: &'static str,
-    /// The backend id every other one of the group is paired against (`Group::reference`): `wgsl-prebuilt`, or
-    /// `wgsl-prebuilt-unchecked` in the `spirv` group.
-    pub reference: &'static str,
+    /// The backend group of the run (`publishable`, `spirv` or `ablation`, see `group`): its name is written into every
+    /// cell and its `Group::reference` is the backend every other one is paired against (`wgsl-prebuilt`, or
+    /// `wgsl-prebuilt-unchecked` in the `spirv` group).
+    pub group: crate::group::Group,
 }
 
 impl Default for Config {
@@ -71,8 +70,7 @@ impl Default for Config {
             warmup_batch: 1024,
             run_seed: 0x6a09_e667_f3bc_c908,
             cold_only: false,
-            group: "publishable",
-            reference: PAIR_REFERENCE,
+            group: crate::group::Group::Publishable,
         }
     }
 }
@@ -483,7 +481,7 @@ pub fn run_cell(backend: &mut dyn Backend, input: &CellInput<'_>, config: &Confi
         "bytes_per_element": input.workload.bytes_per_element(),
         "bytes_per_element_end_to_end": input.workload.bytes_per_element_end_to_end(),
         "flops_per_element": input.workload.flops_per_element(),
-        "group": config.group,
+        "group": config.group.name(),
         "metrics": metrics,
         "checks_passed": checks,
         "cold_start_ms": cold_ms,
@@ -581,9 +579,6 @@ pub fn round_orders(seed: u64, count: usize, rounds: usize) -> Vec<Vec<usize>> {
         .collect()
 }
 
-/// The backend every other one is paired against.
-pub const PAIR_REFERENCE: &str = "wgsl-prebuilt";
-
 /// The paired ratios `a[i] / reference[i]` of two sample sets taken in the same rotations: median, spread (min, p5,
 /// p95, max) and the count. `None` when either set is empty.
 fn paired_json(samples: &[f64], reference: &[f64], reference_id: &str) -> Option<Value> {
@@ -661,7 +656,7 @@ fn rotate_quantity(
     }
     let reference = group
         .iter()
-        .position(|b| b.id() == config.reference)
+        .position(|b| b.id() == config.group.reference())
         .map(|i| values[i].clone());
     for i in 0..count {
         if values[i].is_empty() {
@@ -670,7 +665,7 @@ fn rotate_quantity(
         let mut entry = stats_json(&values[i]);
         if let Some(paired) = reference
             .as_ref()
-            .and_then(|r| paired_json(&values[i], r, config.reference))
+            .and_then(|r| paired_json(&values[i], r, config.group.reference()))
         {
             entry["paired_vs_prebuilt"] = paired;
         }
@@ -893,7 +888,7 @@ pub fn run_gpu_group(
             "bytes_per_element": input.workload.bytes_per_element(),
             "bytes_per_element_end_to_end": input.workload.bytes_per_element_end_to_end(),
             "flops_per_element": input.workload.flops_per_element(),
-            "group": config.group,
+            "group": config.group.name(),
             "metrics": member.metrics,
             "checks_passed": member.checks,
             "cold_start_ms": member.cold_ms,
@@ -928,6 +923,9 @@ pub fn prepare_case(n: usize, workload: Workload) -> (Inputs, Reference) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `publishable` group's reference (`Group::reference` is the run's own).
+    const PAIR_REFERENCE: &str = "wgsl-prebuilt";
 
     /// A GPU-kind backend with a cold start and nothing else: enough for a cold-only cell.
     struct Fake(&'static str);
@@ -1159,7 +1157,7 @@ mod tests {
             samples: 4,
             min_samples: 4,
             cap: Duration::from_secs(3600),
-            reference: "wgsl-prebuilt-unchecked",
+            group: crate::group::Group::Spirv,
             ..Config::default()
         };
         rotate_quantity(

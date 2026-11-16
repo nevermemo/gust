@@ -727,8 +727,12 @@ impl HandWgsl {
                 source: wgpu::ShaderSource::Wgsl(text.into()),
             };
             if unchecked {
-                // SAFETY: a probe of a kernel whose indices the harness checks on the host (every sample is verified
-                // against the serial reference), run only to see what wgpu's runtime checks cost.
+                // SAFETY: this builds `wgsl-prebuilt-unchecked` and `wgsl-percall-unchecked`, the reference and the
+                // control of the `spirv` group (same kernel text, only the host side differs). The kernels do not rely on
+                // wgpu's runtime checks: every kernel guards its indices against `arrayLength` of its own bindings
+                // (bench/shaders/*.wgsl), matmul guards against the `dims` the host writes, which match the host-sized
+                // buffers, and every loop is bounded by `n`, the degree or a constant. Every sample of both rows is
+                // verified against the serial reference.
                 unsafe {
                     ctx.device.create_shader_module_trusted(
                         descriptor,

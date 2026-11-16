@@ -420,7 +420,7 @@ fn aggregate_of(route: &str, group: &str, backend: &str, reference: Option<&str>
     let rule = reference.map_or(String::new(), |reference| {
         format!(r#", "kill_rule": {{ "group": "{group}", "reference": "{reference}" }}"#)
     });
-    aggregate(true, false)
+    let mut text = aggregate(true, false)
         .replacen(
             "\"route\": \"wgsl\",",
             &format!("\"route\": \"{route}\", \"group\": \"{group}\","),
@@ -429,12 +429,23 @@ fn aggregate_of(route: &str, group: &str, backend: &str, reference: Option<&str>
         .replace(
             "\"backend\": \"gust-gpu\"",
             &format!("\"backend\": \"{backend}\""),
-        )
-        .replacen(
-            "{ \"run_seed\": 11,",
-            &format!("{{ \"run_seed\": 11{rule},"),
+        );
+    // The rule goes into every run: a timed spirv run must carry one.
+    for seed in [11, 22, 33] {
+        text = text.replacen(
+            &format!("{{ \"run_seed\": {seed},"),
+            &format!("{{ \"run_seed\": {seed}{rule},"),
             1,
-        )
+        );
+    }
+    if group == "spirv" {
+        // The group's own reference beside the GUST row, as the harness writes it.
+        text = text.replace(
+            "\"backend\": \"wgsl-prebuilt\"",
+            "\"backend\": \"wgsl-prebuilt-unchecked\"",
+        );
+    }
+    text
 }
 
 /// D193: the `spirv` group is a section of its own, labelled "checks off on both sides", with its rows apart from the
@@ -535,6 +546,59 @@ fn a_spirv_group_file_must_come_from_the_spirv_route_with_its_own_rule_and_other
             aggregate_of("wgsl", "ablation", "gust-gpu", None),
             "not a table group",
         ),
+        // S3: a spirv file holds only its own rows.
+        (
+            "0123456789ab-spirv",
+            aggregate_of(
+                "spirv",
+                "spirv",
+                "gust-gpu-spirv",
+                Some("wgsl-prebuilt-unchecked"),
+            )
+            .replace(
+                "wgsl-prebuilt-unchecked\", \"metric",
+                "wgsl-prebuilt\", \"metric",
+            ),
+            "not the spirv group's (gust-gpu-spirv",
+        ),
+        (
+            "0123456789ab-spirv",
+            aggregate_of(
+                "spirv",
+                "spirv",
+                "gust-gpu",
+                Some("wgsl-prebuilt-unchecked"),
+            ),
+            "`gust-gpu`, which is not the spirv group's",
+        ),
+        // A publishable file holds no checks-off row.
+        (
+            "0123456789ab-wgsl",
+            aggregate_of("wgsl", "publishable", "gust-gpu", None)
+                .replace("\"wgsl-prebuilt\"", "\"wgsl-prebuilt-unchecked\""),
+            "checks-off row `wgsl-prebuilt-unchecked`",
+        ),
+        // A spirv file with no runs, or a timed run without a record, is refused.
+        (
+            "0123456789ab-spirv",
+            {
+                let body = aggregate_of(
+                    "spirv",
+                    "spirv",
+                    "gust-gpu-spirv",
+                    Some("wgsl-prebuilt-unchecked"),
+                );
+                let start = body.find("\"runs\": [").unwrap();
+                let end = body[start..].find("],").unwrap() + start;
+                format!("{}\"runs\": []{}", &body[..start], &body[end + 1..])
+            },
+            "has no runs",
+        ),
+        (
+            "0123456789ab-spirv",
+            aggregate_of("spirv", "spirv", "gust-gpu-spirv", None),
+            "timed run of a spirv file has a null kill rule",
+        ),
     ] {
         let dir = scratch("bad-group");
         file_as(&dir, "test-gpu", name, &body, true);
@@ -542,4 +606,18 @@ fn a_spirv_group_file_must_come_from_the_spirv_route_with_its_own_rule_and_other
         assert!(error.contains(reason), "{reason}: {error}");
         let _ = fs::remove_dir_all(&dir);
     }
+}
+
+/// S3: a run marked functional has no kill-rule record by design, so a spirv file of functional runs stays valid.
+#[test]
+fn a_spirv_file_of_functional_runs_may_carry_null_rules() {
+    let body = aggregate_of("spirv", "spirv", "gust-gpu-spirv", None).replace(
+        "{ \"run_seed\":",
+        "{ \"functional\": true, \"kill_rule\": null, \"run_seed\":",
+    );
+    let dir = scratch("spirv-functional");
+    file_as(&dir, "test-gpu", "0123456789ab-spirv", &body, true);
+    let filed = load_results(&dir.join("results"), &attested).unwrap();
+    assert!(!filed[0].legacy);
+    let _ = fs::remove_dir_all(&dir);
 }

@@ -152,6 +152,18 @@ fn resolve_group(
     }
 }
 
+/// `--with` probes are hand-WGSL probes of the checked baseline: they run in the `publishable` group only.
+#[cfg(feature = "gpu")]
+fn check_probes_group(group: Group, with_probe: &[String]) -> Result<(), String> {
+    if !with_probe.is_empty() && group != Group::Publishable {
+        return Err(format!(
+            "--with runs in the publishable group; the {} group takes no probes (its rows are fixed)",
+            group.name()
+        ));
+    }
+    Ok(())
+}
+
 /// Whether this build runs GUST on the SPIR-V route (the `spirv-route` feature; the GPU-less build has no route).
 fn spirv_route() -> bool {
     #[cfg(feature = "gpu")]
@@ -437,9 +449,9 @@ fn cpu_backends(threads: usize) -> Vec<Box<dyn Backend>> {
 struct RunRecord {
     label: String,
     run_seed: u64,
-    /// `publishable` or `ablation`: the group every sample of the file came from.
+    /// `publishable`, `spirv` or `ablation`: the group every sample of the file came from.
     group: &'static str,
-    /// The kill rule of the publishable group (`group::kill_rule`), null for the ablation group.
+    /// The kill rule of the run's table group (`group::kill_rule`), null for the ablation group.
     kill_rule: Value,
     sampler: Value,
     machine: Value,
@@ -532,8 +544,7 @@ fn build_config(options: &Options, group: Group) -> Config {
             .map_or(1, |d| d.as_nanos() as u64)
     });
     config.cold_only = options.cold_only;
-    config.group = group.name();
-    config.reference = group.reference();
+    config.group = group;
     if let Some(repeats) = options.cold_repeats {
         config.cold_repeats = repeats;
     }
@@ -560,8 +571,8 @@ fn config_json(
         "workgroup_size": workloads::WORKGROUP,
         "sizes": workload_list.iter().map(|w| (w.id().to_owned(), json!(sizes_for(options, *w)))).collect::<serde_json::Map<_, _>>(),
         "warmup_cap_s": config.warmup_cap.as_secs_f64(), "warmup_batch": config.warmup_batch,
-        "group": config.group,
-        "sampling": "the group's gpu backends interleaved in rounds of seeded random order, paired against wgsl-prebuilt",
+        "group": config.group.name(),
+        "sampling": format!("the group's gpu backends interleaved in rounds of seeded random order, paired against {}", config.group.reference()),
         "cold_only": config.cold_only,
         "cold_repeats": config.cold_repeats,
         "workloads": workload_list.iter().map(|w| w.id()).collect::<Vec<_>>(),
@@ -660,7 +671,11 @@ fn run_cells(
                     if paired.is_empty() {
                         String::new()
                     } else {
-                        format!(", paired vs prebuilt: {}", paired.join(", "))
+                        format!(
+                            ", paired vs {}: {}",
+                            config.group.reference(),
+                            paired.join(", ")
+                        )
                     },
                     if cell.failures.is_empty() {
                         ""
@@ -877,9 +892,7 @@ fn run(options: &Options) -> BenchResult<bool> {
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
 
     let config = build_config(options, group);
-    if !options.with_probe.is_empty() && group != Group::Publishable {
-        return Err("--with runs in the publishable group".into());
-    }
+    check_probes_group(group, &options.with_probe)?;
     let mut probes = Vec::new();
     for name in &options.with_probe {
         // `gust-setup` and `gust-device` have a device of their own (set up like GUST's); the others share the hand device.
@@ -900,7 +913,7 @@ fn run(options: &Options) -> BenchResult<bool> {
     if group.is_table()
         && let Some(wanted) = &options.backends
     {
-        group::require_full_set(group, wanted, gust_gpu::backend_id())?;
+        group::require_full_set(group, wanted)?;
     }
     select_backends(&mut backends, options.backends.as_ref())?;
 
@@ -1408,6 +1421,23 @@ mod tests {
         assert!(refused.contains("spirv-route"), "{refused}");
     }
 
+    /// `--with` probes (hand-WGSL host-shape probes of the checked baseline) run in the publishable group only.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn with_probes_are_refused_outside_the_publishable_group() {
+        let probes = vec!["bind-group-reuse".to_owned()];
+        assert!(check_probes_group(Group::Publishable, &probes).is_ok());
+        assert!(check_probes_group(Group::Publishable, &[]).is_ok());
+        for group in [Group::Spirv, Group::Ablation] {
+            let refused = check_probes_group(group, &probes).unwrap_err();
+            assert!(
+                refused.contains("--with") && refused.contains(group.name()),
+                "{refused}"
+            );
+            assert!(check_probes_group(group, &[]).is_ok());
+        }
+    }
+
     #[test]
     fn the_spirv_group_parses_and_the_unchecked_probe_is_gone() {
         let args = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
@@ -1430,14 +1460,14 @@ mod tests {
     fn the_run_config_pairs_against_the_groups_reference() {
         let options = parse(&[]).unwrap();
         assert_eq!(
-            build_config(&options, Group::Publishable).reference,
+            build_config(&options, Group::Publishable).group.reference(),
             "wgsl-prebuilt"
         );
         assert_eq!(
-            build_config(&options, Group::Spirv).reference,
+            build_config(&options, Group::Spirv).group.reference(),
             "wgsl-prebuilt-unchecked"
         );
-        assert_eq!(build_config(&options, Group::Spirv).group, "spirv");
+        assert_eq!(build_config(&options, Group::Spirv).group.name(), "spirv");
     }
 
     #[test]

@@ -22,13 +22,20 @@ fn e2e_comparable(workload: &str) -> bool {
 const E2E_NOTE: &str = "GUST's read-back converts a typed `Vec<Particle>` into the harness's words inside the end-to-end sample (a second allocation and a per-field copy) where the baseline reads raw words with one copy, so no GUST end-to-end ratio, overhead row, bandwidth figure or break-even is shown; the dispatch timings are not affected.";
 
 /// What a W6 (staged pipeline) table's samples time, by form: the two GUST forms are different programs on the host side and the table must say so.
-fn pipeline_note(workload: &str) -> Option<&'static str> {
+fn pipeline_note(workload: &str, names: &Names, gust: &str) -> Option<String> {
+    let runs_form = if names.group == "spirv" {
+        gust.to_owned()
+    } else {
+        "gust-gpu and gust-gpu-spirv".to_owned()
+    };
+    let reference = names.reference;
     match workload {
-        "W6-graph" => Some(
-            "W6 as a `StagedGraph`: every gust-gpu sample builds the graph of the six calls (derived edges), validates it, encodes the six dispatches into one command buffer (one compute pass each) and submits once, all inside the timed region; the end-to-end sample adds five upload nodes and one read-back node. The graph has no GPU timestamps, so there is no batch figure for it. The baselines are the hand-ordered rows of this workload (wgsl-prebuilt: six passes, one submit, nothing rebuilt), so the gap includes the graph's per-call host work, which is what a program that uses a `StagedGraph` pays; only gust-gpu and gust-gpu-spirv run this form (the CPU backends have no graph; their rows are under W6-hand).",
-        ),
+        "W6-graph" => Some(format!(
+            "W6 as a `StagedGraph`: every {gust} sample builds the graph of the six calls (derived edges), validates it, encodes the six dispatches into one command buffer (one compute pass each) and submits once, all inside the timed region; the end-to-end sample adds five upload nodes and one read-back node. The graph has no GPU timestamps, so there is no batch figure for it. The baselines are the hand-ordered rows of this workload ({reference}: six passes, one submit, nothing rebuilt), so the gap includes the graph's per-call host work, which is what a program that uses a `StagedGraph` pays; only {runs_form} run this form (the CPU backends have no graph; their rows are under W6-hand).",
+        )),
         "W6-hand" => Some(
-            "W6 in hand order: the same six GUST kernels dispatched in stage order with one `dispatch_batch` (six passes, one submit), no graph; the end-to-end sample adds five uploads and the read-back. Every backend of the table runs this form: the hand WGSL runs six entry points in six passes with one submit, the CPU backends compute one element's six stages at a time (rayon, serial) or run the six kernels one after another (gust-cpu, gust-twin). The batch bandwidth counts the traffic of six passes (68 bytes per element: 11 reads and 6 writes of 4 bytes), which a fused kernel would not do; the end-to-end bandwidth, for the GPU rows and for rayon-N alike, counts 24 bytes per element (five uploads and one read-back, which is also what the fused CPU loop touches).",
+            "W6 in hand order: the same six GUST kernels dispatched in stage order with one `dispatch_batch` (six passes, one submit), no graph; the end-to-end sample adds five uploads and the read-back. Every backend of the table runs this form: the hand WGSL runs six entry points in six passes with one submit, the CPU backends compute one element's six stages at a time (rayon, serial) or run the six kernels one after another (gust-cpu, gust-twin). The batch bandwidth counts the traffic of six passes (68 bytes per element: 11 reads and 6 writes of 4 bytes), which a fused kernel would not do; the end-to-end bandwidth, for the GPU rows and for rayon-N alike, counts 24 bytes per element (five uploads and one read-back, which is also what the fused CPU loop touches)."
+            .to_owned(),
         ),
         _ => None,
     }
@@ -85,7 +92,7 @@ const METRICS: [(&str, &str); 4] = [
 const RUST_GPU: &str = "rustgpu-wgpu";
 
 /// What a table with `rustgpu-wgpu` cells says about that backend: its toolchain and status, what it runs, how it differs.
-const RUST_GPU_NOTE: &str = "rustgpu-wgpu: the same four kernels written in Rust with rust-gpu 0.11.0 (spirv-std and spirv-builder 0.11.0, a project that calls itself \"not yet production-ready\"), compiled on the nightly toolchain nightly-2026-08-15 to one committed SPIR-V module for Vulkan 1.1 and loaded through wgpu's passthrough route, so wgpu and naga do not translate or validate it. It has W1 to W4 only, each the same algorithm, workgroup size and binding order as the hand WGSL, on the host side of wgsl-prebuilt (its own device, bind group and staging buffer built once). Its bounds policy is rust-gpu's own: an out-of-range index ends the invocation early (docs/BENCHMARKS.md, \"Bounds policy\"), unlike the WGSL route's. It is not part of the GUST kill rule.";
+const RUST_GPU_NOTE: &str = "rustgpu-wgpu: the same four kernels written in Rust with rust-gpu 0.11.0 (spirv-std and spirv-builder 0.11.0, a project that calls itself \"not yet production-ready\"), compiled on the nightly toolchain nightly-2026-08-15 to one committed SPIR-V module for Vulkan 1.1 and loaded through wgpu's passthrough route, so wgpu and naga do not translate or validate it. It has W1 to W4 only, each the same algorithm, workgroup size and binding order as the hand WGSL, on the host side of wgsl-prebuilt (its own device, bind group and staging buffer built once). Its bounds policy is rust-gpu's own: an out-of-range index ends the invocation early (docs/BENCHMARKS.md, \"Bounds policy\"), unlike the WGSL route's. Because it is loaded through passthrough, wgpu's runtime checks are off for this row while `wgsl-prebuilt` has them on, so its ratio to `wgsl-prebuilt` is not like-for-like in D193's sense. It is not part of the GUST kill rule.";
 
 /// Column order of the backends.
 const BACKENDS: [&str; 21] = [
@@ -209,10 +216,12 @@ type PairedTable = BTreeMap<(String, u64, String, String), PairedPoint>;
 const MIN_REPRODUCIBILITY_RUNS: usize = 3;
 
 /// The reproducibility clause (plan R1.3-4) over the run files of one build: an offender of the kill rule counts when it
-/// recurs in every run (3/3 seeds) and its control (`wgsl-percall` on the same cell) is within tolerance in each of those
-/// runs. Single-run hits are listed with their count, not counted.
+/// recurs in every run (3/3 seeds) in the same direction (slower or faster than the window) and its control (the group's:
+/// `wgsl-percall`, or `wgsl-percall-unchecked` in the `spirv` group, on the same cell) is within tolerance in each of
+/// those runs. A cell slower in one run and faster in another recurs in neither direction. Single-run hits are listed
+/// with their count, not counted.
 fn reproducibility(runs: &[Value]) -> Value {
-    type Key = (String, String, u64, String);
+    type Key = (String, String, u64, String, &'static str);
     let mut seen: BTreeMap<Key, (usize, usize, Vec<f64>)> = BTreeMap::new();
     for run in runs {
         for offender in run["kill_rule"]["offenders"]
@@ -220,11 +229,19 @@ fn reproducibility(runs: &[Value]) -> Value {
             .into_iter()
             .flatten()
         {
+            // Files written before the direction field existed: the ratio says which side of the window it is on.
+            let direction = match offender["direction"].as_str() {
+                Some("faster") => "faster",
+                Some("slower") => "slower",
+                _ if offender["median_ratio"].as_f64().unwrap_or(f64::NAN) > 1.0 => "slower",
+                _ => "faster",
+            };
             let key = (
                 offender["backend"].as_str().unwrap_or("").to_owned(),
                 offender["workload"].as_str().unwrap_or("").to_owned(),
                 offender["n"].as_u64().unwrap_or(0),
                 offender["quantity"].as_str().unwrap_or("").to_owned(),
+                direction,
             );
             let entry = seen.entry(key).or_default();
             entry.0 += 1;
@@ -246,9 +263,9 @@ fn reproducibility(runs: &[Value]) -> Value {
     let enough = total >= MIN_REPRODUCIBILITY_RUNS && distinct;
     let rows = seen
         .into_iter()
-        .map(|((backend, workload, n, quantity), (hits, control_ok, ratios))| {
+        .map(|((backend, workload, n, quantity, direction), (hits, control_ok, ratios))| {
             json!({
-                "backend": backend, "workload": workload, "n": n, "quantity": quantity,
+                "backend": backend, "workload": workload, "n": n, "quantity": quantity, "direction": direction,
                 "runs_with_offender": hits, "runs": total, "runs_with_control_in_tolerance": control_ok,
                 "ratios": ratios,
                 "counts": enough && hits == total && control_ok == total,
@@ -256,7 +273,7 @@ fn reproducibility(runs: &[Value]) -> Value {
         })
         .collect::<Vec<_>>();
     json!({
-        "clause": "an offender counts when it recurs in every run (at least 3 runs, distinct seeds) with the control within tolerance on that cell in each; other hits are listed, not counted",
+        "clause": "an offender counts when it recurs in every run (at least 3 runs, distinct seeds) in the same direction with the control within tolerance on that cell in each; other hits are listed, not counted",
         "runs": total,
         "seeds": seeds,
         "enough_runs_with_distinct_seeds": enough,
@@ -908,12 +925,14 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         "build": runs[0]["build"],
         "adapter": runs[0]["adapter"],
         "group": runs[0]["group"],
+        "reference": reference,
+        "control": control,
         "dram_peak": peak.map(|(gbps, source)| json!({ "gb_per_s": gbps, "source": source })),
         "above_dram_peak": flags,
         "meta": runs[0]["meta"],
         "config": runs[0]["config"],
         "runs": runs.iter().map(|run| json!({
-            "label": run["label"], "group": run["group"], "kill_rule": run["kill_rule"], "run_seed": run["run_seed"], "sidecar": run["sampler"]["sidecar"], "publishable": run["publishable"], "publishable_reason": run["publishable_reason"], "window": run["window"], "load_before": run["load_before"], "load_after": run["load_after"],
+            "label": run["label"], "group": run["group"], "functional": run["functional"] == true, "kill_rule": run["kill_rule"], "run_seed": run["run_seed"], "sidecar": run["sampler"]["sidecar"], "publishable": run["publishable"], "publishable_reason": run["publishable_reason"], "window": run["window"], "load_before": run["load_before"], "load_after": run["load_after"],
             "gpu_before": run["gpu_before"], "gpu_after": run["gpu_after"],
             "wall_s": run["wall_s"], "failures": run["failures"],
         })).collect::<Vec<_>>(),
@@ -945,7 +964,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     }
     writeln!(
         md,
-        "Shader source of gust-gpu's cold start: {}. Warm-up with load to P0 before each GPU cell, capped at {} s.\n",
+        "Shader source of {gust}'s cold start: {}. Warm-up with load to P0 before each GPU cell, capped at {} s.\n",
         runs[0]["config"]["shader_source"].as_str().unwrap_or("?"),
         runs[0]["config"]["warmup_cap_s"]
     )?;
@@ -996,27 +1015,31 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     if !rows.is_empty() {
         writeln!(
             md,
-            "\nKill-rule offenders against the reproducibility clause (an offender counts when it recurs in all {} runs, at least 3 with distinct seeds, with the control within tolerance on its cell in each; seeds {}):\n",
+            "\nKill-rule offenders against the reproducibility clause (an offender counts when it recurs in all {} runs, at least 3 with distinct seeds, in the same direction, with the control {control} within tolerance on its cell in each; seeds {}):\n",
             runs.len(),
             repro["seeds"]
         )?;
         for row in &rows {
+            let direction = row["direction"].as_str().unwrap_or("?");
+            let verdict = match (row["counts"] == true, names.group == "spirv", direction) {
+                (false, _, _) => "listed, not counted",
+                (true, false, _) => "counts",
+                (true, true, "slower") => "counts: re-opens C",
+                (true, true, _) => "counts: reading step, does not re-open C",
+            };
             writeln!(
                 md,
-                "- {} {} n={} {}: in {} of {} runs, control in tolerance in {}, ratios {} -> {}",
+                "- {} {} n={} {}, {}: in {} of {} runs, control in tolerance in {}, ratios {} -> {}",
                 row["backend"].as_str().unwrap_or("?"),
                 row["workload"].as_str().unwrap_or("?"),
                 row["n"],
                 row["quantity"].as_str().unwrap_or("?"),
+                direction,
                 row["runs_with_offender"],
                 row["runs"],
                 row["runs_with_control_in_tolerance"],
                 row["ratios"],
-                if row["counts"] == true {
-                    "counts"
-                } else {
-                    "listed, not counted"
-                }
+                verdict
             )?;
         }
     }
@@ -1095,7 +1118,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         if !e2e_comparable(workload) {
             writeln!(md, "{E2E_NOTE}\n")?;
         }
-        if let Some(note) = pipeline_note(workload) {
+        if let Some(note) = pipeline_note(workload, &names, gust) {
             writeln!(md, "{note}\n")?;
         }
         // A GFLOP/s column (2 N^3 flops for W9, plan 2.3) is b5's: it goes beside the bandwidth table below.
@@ -1826,12 +1849,24 @@ mod tests {
     /// forms keep distinct ids (so they are never merged into one table or one ratio).
     #[test]
     fn the_two_w6_forms_have_their_own_notes_and_ids() {
-        let graph = pipeline_note("W6-graph").expect("the graph form is described");
-        let hand = pipeline_note("W6-hand").expect("the hand-ordered form is described");
+        let names = names_of("publishable");
+        let note = |workload: &str| pipeline_note(workload, &names, "gust-gpu");
+        let graph = note("W6-graph").expect("the graph form is described");
+        let hand = note("W6-hand").expect("the hand-ordered form is described");
         assert!(graph.contains("StagedGraph") && graph.contains("no GPU timestamps"));
         assert!(hand.contains("no graph") && hand.contains("one submit"));
         assert_ne!(graph, hand);
-        assert!(pipeline_note("W1").is_none() && pipeline_note("W5").is_none());
+        assert!(note("W1").is_none() && note("W5").is_none());
+        // The spirv group names its own reference and its one GUST row, never the checked rows.
+        let spirv = names_of("spirv");
+        let graph = pipeline_note("W6-graph", &spirv, "gust-gpu-spirv").unwrap();
+        assert!(
+            graph.contains("wgsl-prebuilt-unchecked: six passes")
+                && !graph.contains("(wgsl-prebuilt:")
+        );
+        assert!(
+            graph.contains("only gust-gpu-spirv run this form") && !graph.contains("gust-gpu and")
+        );
         assert_ne!(Workload::PipelineGraph.id(), Workload::PipelineHand.id());
         assert_eq!(size_header("W6-hand"), "elements");
     }
@@ -1974,6 +2009,76 @@ mod tests {
         assert_eq!(clocks.len(), 3);
         assert_eq!(clocks[0]["sm_mhz"], json!([2400.0]));
         assert_eq!(clocks[0]["pstate"], json!(["P0"]));
+    }
+
+    /// A spirv-group run of one seed whose kill rule lists one offender of `gust-gpu-spirv` at the given ratio.
+    fn spirv_run(seed: u64, ratio: f64) -> Value {
+        let mut one = run("spirv", "GPU A", &format!("s{seed}.json"));
+        one["group"] = json!("spirv");
+        one["run_seed"] = json!(seed);
+        one["label"] = json!(format!("seed {seed}"));
+        one["cells"] = json!([
+            gpu_cell("wgsl-percall-unchecked", 2.0, true, 2400.0),
+            gpu_cell("wgsl-prebuilt-unchecked", 1.0, true, 2600.0),
+            gpu_cell("gust-gpu-spirv", 1.5, true, 2600.0),
+        ]);
+        let faster = ratio < 1.0;
+        one["kill_rule"] = json!({
+            "group": "spirv", "reference": "wgsl-prebuilt-unchecked", "judged": true, "checked": 4, "unpaired": 0,
+            "c_reopened": !faster, "reading_step": faster,
+            "offenders": [{
+                "backend": "gust-gpu-spirv", "workload": "W1", "n": 4096, "quantity": "gpu_single",
+                "median_ratio": ratio, "direction": if faster { "faster" } else { "slower" },
+                "control_in_tolerance": true,
+            }],
+            "control": { "backend": "wgsl-percall-unchecked", "outside_tolerance": 0 },
+            "excluded": [],
+        });
+        one
+    }
+
+    /// S1: a whole spirv-group aggregate end to end: its tables are against the unchecked reference, carry none of the
+    /// checked rows, and say what a faster offender asks for.
+    #[test]
+    fn a_spirv_group_aggregate_renders_against_its_own_reference() {
+        let dir = scratch("spirv-aggregate");
+        let inputs = write_runs(
+            &dir,
+            &[spirv_run(1, 0.8), spirv_run(2, 0.8), spirv_run(3, 0.8)],
+        );
+        let (out_json, out_md) = (dir.join("o.json"), dir.join("o.md"));
+        aggregate(
+            &inputs,
+            out_json.to_str().unwrap(),
+            out_md.to_str().unwrap(),
+        )
+        .unwrap();
+        let md = fs::read_to_string(&out_md).unwrap();
+        assert!(
+            md.contains("## Paired ratios to wgsl-prebuilt-unchecked"),
+            "{md}"
+        );
+        assert!(md.contains("Hand-shape rows, checks off on both sides"));
+        assert!(md.contains("kill rule of the spirv group"));
+        assert!(md.contains("reading step = true"));
+        assert!(md.contains("counts: reading step, does not re-open C"));
+        assert!(!md.contains("counts: re-opens C"));
+        assert!(!md.contains("| wgsl-prebuilt |") && !md.contains("wgsl-percall batch"));
+        assert!(!md.contains("Ablation (hand WGSL host shape"));
+        assert!(!md.contains("Shader source of gust-gpu's"));
+        let summary: Value = serde_json::from_str(&fs::read_to_string(&out_json).unwrap()).unwrap();
+        assert_eq!(summary["group"], "spirv");
+        assert_eq!(summary["reference"], "wgsl-prebuilt-unchecked");
+        assert_eq!(summary["control"], "wgsl-percall-unchecked");
+        assert_eq!(
+            summary["kill_rule_reproducibility"]["offenders"][0]["direction"],
+            "faster"
+        );
+        assert_eq!(
+            summary["kill_rule_reproducibility"]["offenders"][0]["counts"],
+            true
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2186,6 +2291,37 @@ mod reproducibility_tests {
         ]);
         assert_eq!(missing["offenders"][0]["runs_with_offender"], 1);
         assert_eq!(missing["offenders"][0]["counts"], false);
+    }
+
+    fn run_at(seed: u64, ratio: f64) -> Value {
+        let direction = if ratio > 1.0 { "slower" } else { "faster" };
+        json!({ "run_seed": seed, "kill_rule": { "offenders": [{
+            "backend": "gust-gpu-spirv", "workload": "W1", "n": 4096, "quantity": "gpu_single",
+            "median_ratio": ratio, "direction": direction, "control_in_tolerance": true,
+        }] } })
+    }
+
+    /// M1: a recurrence has to keep its direction; a cell slower once and faster twice recurs in neither.
+    #[test]
+    fn a_recurrence_keeps_its_direction() {
+        let mixed = reproducibility(&[run_at(1, 1.2), run_at(2, 0.8), run_at(3, 1.2)]);
+        let rows = mixed["offenders"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row["counts"] == false));
+        let faster = reproducibility(&[run_at(1, 0.8), run_at(2, 0.8), run_at(3, 0.8)]);
+        assert_eq!(faster["offenders"][0]["counts"], true);
+        assert_eq!(faster["offenders"][0]["direction"], "faster");
+        let slower = reproducibility(&[run_at(1, 1.2), run_at(2, 1.2), run_at(3, 1.2)]);
+        assert_eq!(slower["offenders"][0]["counts"], true);
+        assert_eq!(slower["offenders"][0]["direction"], "slower");
+        // A file written before the field existed falls back to the side of 1.0 its ratio is on.
+        let old = reproducibility(&[
+            run_seeded(true, 1),
+            run_seeded(true, 2),
+            run_seeded(true, 3),
+        ]);
+        assert_eq!(old["offenders"][0]["direction"], "slower");
+        assert_eq!(old["offenders"][0]["counts"], true);
     }
 
     #[test]

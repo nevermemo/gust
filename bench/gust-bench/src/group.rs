@@ -120,12 +120,13 @@ pub fn check_route(group: Group, spirv_route: bool) -> Result<(), String> {
 }
 
 /// A table group keeps the whole group: `--backends` may not leave out the group's reference, control or GUST backend
-/// (`gust_id`, the build's own), because the paired ratios and the kill rule need all three. Use `--group ablation`
+/// (`Group::gust_backend`), because the paired ratios and the kill rule need all three. Use `--group ablation`
 /// for any subset.
-pub fn require_full_set(group: Group, wanted: &[String], gust_id: &str) -> Result<(), String> {
+pub fn require_full_set(group: Group, wanted: &[String]) -> Result<(), String> {
     if group == Group::Ablation {
         return Ok(());
     }
+    let gust_id = group.gust_backend();
     let missing = [gust_id, group.reference(), group.control()]
         .into_iter()
         .filter(|id| !wanted.iter().any(|w| w == id))
@@ -165,6 +166,8 @@ pub fn require_full_set(group: Group, wanted: &[String], gust_id: &str) -> Resul
 /// `control` carries the same ratio for the group's control (same kernel text as the reference, so its distance from
 /// 1.0 is the noise floor of the method); it does not enter the rule. Returns the record that goes into the run file.
 pub fn kill_rule(group: Group, cells: &[Value]) -> Value {
+    // The ablation group has no reference of its own to judge against: it is not a table group (`is_table`).
+    debug_assert!(group.is_table(), "the kill rule judges a table group");
     let gust_backend = group.gust_backend();
     let reference = group.reference();
     let control_backend = group.control();
@@ -558,28 +561,28 @@ mod tests {
     fn a_table_run_needs_the_whole_group_in_its_backends() {
         let names = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let full = names(&["gust-gpu", "wgsl-prebuilt", "wgsl-percall", "cpu-serial"]);
-        assert!(require_full_set(Group::Publishable, &full, "gust-gpu").is_ok());
+        assert!(require_full_set(Group::Publishable, &full).is_ok());
         let no_percall = names(&["gust-gpu", "wgsl-prebuilt"]);
-        let message = require_full_set(Group::Publishable, &no_percall, "gust-gpu").unwrap_err();
+        let message = require_full_set(Group::Publishable, &no_percall).unwrap_err();
         assert!(message.contains("wgsl-percall"), "{message}");
         // The route twin of the other build does not stand in for this build's GUST backend.
         let wrong_route = names(&["gust-gpu-spirv", "wgsl-prebuilt", "wgsl-percall"]);
-        assert!(require_full_set(Group::Publishable, &wrong_route, "gust-gpu").is_err());
+        assert!(require_full_set(Group::Publishable, &wrong_route).is_err());
         // The spirv group has its own three: the checked hand rows do not stand in for the unchecked ones.
-        assert!(require_full_set(Group::Spirv, &wrong_route, "gust-gpu-spirv").is_err());
+        assert!(require_full_set(Group::Spirv, &wrong_route).is_err());
         let spirv = names(&[
             "gust-gpu-spirv",
             "wgsl-prebuilt-unchecked",
             "wgsl-percall-unchecked",
             "serial",
         ]);
-        assert!(require_full_set(Group::Spirv, &spirv, "gust-gpu-spirv").is_ok());
+        assert!(require_full_set(Group::Spirv, &spirv).is_ok());
         let no_control = names(&["gust-gpu-spirv", "wgsl-prebuilt-unchecked"]);
-        let message = require_full_set(Group::Spirv, &no_control, "gust-gpu-spirv").unwrap_err();
+        let message = require_full_set(Group::Spirv, &no_control).unwrap_err();
         assert!(message.contains("wgsl-percall-unchecked"), "{message}");
         assert!(message.contains("spirv"), "{message}");
         // The ablation group takes any subset.
-        assert!(require_full_set(Group::Ablation, &names(&["wgsl-percall"]), "gust-gpu").is_ok());
+        assert!(require_full_set(Group::Ablation, &names(&["wgsl-percall"])).is_ok());
     }
 
     #[test]

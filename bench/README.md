@@ -99,7 +99,8 @@ A run is one **group**, chosen by `--group publishable|spirv|ablation` (default 
   publishable group's rows. The `spirv-route` build refuses `--group publishable`, the WGSL build refuses `--group spirv`.
 - `ablation`: `wgsl-percall`, `wgsl-prebuilt` and the switch ablations, with no GUST backend. Its rows are compared
   only with the `wgsl-percall` and `wgsl-prebuilt` of the same run, never with numbers from a publishable run.
-  `--ablation` without `--group ablation` is an error.
+  `--ablation` without `--group ablation` is an error. In the `spirv-route` build `--group ablation` runs only the checked
+  hand rows and the switches (no GUST row, and no `--with` probes), while the run file still says `route: spirv`.
 
 The route and the profile are properties of the build, not of a flag, so each build is its own result file, and a run
 names its build in the JSON: `route` (`wgsl`, `spirv` or `cpu`), `build.features`, `build.gust_profile`,
@@ -139,7 +140,7 @@ judged on the event of the pipeline it ran, the kernel's latest event, which an 
 
 **Reproducibility clause (plan R1.3-4).** Each offender in `kill_rule.offenders` carries `control_median_ratio` and
 `control_in_tolerance` for its own cell. An offender counts only when it recurs in every run of the build, with at least 3 runs of distinct
-seeds (`run_seed`; two files, or one seed twice, never count), and the control in tolerance on that cell in each of those runs;
+seeds (`run_seed`; two files, or one seed twice, never count), the same direction (slower or faster) in each, and the group's control (`wgsl-percall`, or `wgsl-percall-unchecked` in the `spirv` group) in tolerance on that cell in each of those runs;
 `aggregate` writes the count to `kill_rule_reproducibility` (with the seeds, once) and a list to the report. A hit that does not
 meet this is listed, not counted. Per-point `per_run_p5_ms`, `per_run_p95_ms`, `per_run_outliers_gt_3mad` and
 `two_state_suspect` are written beside the median for the bimodal cells (a p5 or p95 missing from an old run file is `null`, never the
@@ -314,7 +315,7 @@ mkdir -p "$OUT"
 ```
 
 `run` options: `--quick` (two small sizes, 5 samples, for smoke tests), `--workloads W1,W2`, `--sizes N,N`,
-`--backends gust-gpu,rayon-N`, `--group publishable|ablation`, `--samples N`, `--cap-secs S`, `--label NAME`,
+`--backends gust-gpu,rayon-N`, `--group publishable|spirv|ablation` (default per build: `publishable` in the WGSL build, `spirv` in the `spirv-route` build; `spirv` runs only in the `spirv-route` build, `publishable` only outside it, `ablation` in either), `--with LIST` (probe backends, `publishable` group only, so never in the `spirv-route` build), `--samples N`, `--cap-secs S`, `--label NAME`,
 `--ablation LIST|all` (ablation group only), `--seed N`, `--settle-secs S`, `--window-secs S`, `--warmup-secs S`,
 `--no-sampler`, `--functional` (correctness only, below). Every
 path comes from an argument. `aggregate` also refuses to mix runs with and without the sampler (`sampler.enabled`). A build without `--cfg gust_dual` still works and simply has no `gust-twin` row. The builds

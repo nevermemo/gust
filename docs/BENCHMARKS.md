@@ -303,7 +303,7 @@ that skips them too, and **checks are off on both sides** in that group; its rat
 `wgsl-prebuilt`, and the two groups' tables are never merged. The `spirv-route` build refuses `--group publishable`
 (its default is `spirv`), and the WGSL build refuses `--group spirv`. `wgsl-percall`
 also has three ablation switches (bind-group reuse, staging reuse, one submission); they run only in the ablation group,
-whose rows are never part of a table.
+whose rows are never part of a table. `--group ablation` also runs in the `spirv-route` build, but only with the checked hand rows (no GUST row), and the file still says `route: spirv`; the `--with` probes run in the `publishable` group only, so they are unavailable in that build.
 
 ### The rust-gpu comparator
 
@@ -353,6 +353,7 @@ default), never in the default build, CI or the lock.
   guards, loop shapes, key assignment); `Workload::same_kernel()` is about GUST and the hand WGSL and says nothing about
   this backend. W5 to W9 have no rust-gpu kernel at all. The GUST kill rule judges GUST against its group's hand reference only and
   does not see this backend.
+- Checks: the module is loaded through passthrough, so wgpu's runtime checks are off for this row while `wgsl-prebuilt` has them on; its ratio to `wgsl-prebuilt` is therefore not like-for-like in D193's sense (the like-for-like reference of a checks-off row is `wgsl-prebuilt-unchecked`, which exists only in the `spirv` group of the `spirv-route` build, and the row stays in the `publishable` group of a `rust-gpu` build, labelled so in the report).
 - Host side: the backend's own device (the run's third, after GUST's and the hand-WGSL one) on the same adapter
   selection as `wgsl-prebuilt`'s (default limits, timestamps), opened only when the run selects the backend, bind group
   and staging buffer built once, one submission per end-to-end sample. Every sample is judged by the same checker as
@@ -487,7 +488,7 @@ reason.)
 
 ## The kill rule
 
-For each cell of the publishable group the harness takes the paired ratio of the GUST backend's GPU time to
+For each cell of the publishable group the harness takes the paired ratio of `gust-gpu`'s GPU time to
 `wgsl-prebuilt`'s (`gpu_single` and `gpu_batch_per_dispatch`). A ratio more than 10 percent off 1.0 on any cell marks the
 run "C re-opened" (an evidence flag that the GUST path adds cost the plan did not expect); the run file lists the
 offending cells. The rule judges only a complete run: a cell without a ratio counts as unpaired and the verdict is then
@@ -521,9 +522,12 @@ still shown and judged by the report; W6-hand has GPU timestamps and stays in th
 the plan's "any cell", recorded beside D190 by the coordinator; no `crates/` change was made for it.
 
 **Reproducibility clause.** A gap counts only if it recurs: the same cell must be more than 10 percent off in all three
-seeds of a confirming run (at least three runs with distinct seeds), with the control (`wgsl-percall`) inside its tolerance
-on that cell in each of those runs. A cell that recurs with the control out of tolerance, or in fewer seeds, is listed and
-not counted.
+seeds of a confirming run (at least three runs with distinct seeds), with the group's control (`wgsl-percall`; in the
+`spirv` group `wgsl-percall-unchecked`) inside its tolerance on that cell in each of those runs. A cell that recurs with the
+control out of tolerance, or in fewer seeds, is listed and not counted. In the `spirv` group the recurrence must also keep
+its direction: a cell more than 10 percent slower in one seed and more than 10 percent faster in another recurs in neither
+direction, and a counted offender is reported as "re-opens C" (slower) or "reading step, does not re-open C" (faster);
+each row of the aggregate carries its `direction`.
 
 **The control's limits for the batch quantity.** (In the `spirv` group read `wgsl-percall-unchecked` and `wgsl-prebuilt-unchecked` for the two names below: the limit is the same.) `wgsl-percall` runs the same kernel text as `wgsl-prebuilt`, so its
 distance from 1.0 is a noise floor for `gpu_single`. For `gpu_batch_per_dispatch` it is not a pure noise floor: it

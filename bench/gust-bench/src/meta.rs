@@ -205,6 +205,11 @@ pub fn build_features() -> Vec<&'static str> {
     if cfg!(feature = "wgpu-trace") {
         features.push("wgpu-trace");
     }
+    // A third device on the adapter and one more backend in the rotation (m10.b4), so a run from it is not a publishable
+    // table until that has been measured not to change the other backends.
+    if cfg!(feature = "rust-gpu") {
+        features.push("rust-gpu");
+    }
     features
 }
 

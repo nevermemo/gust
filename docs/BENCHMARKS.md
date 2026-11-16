@@ -289,6 +289,7 @@ so the report shows none; a GFLOP/s column is not part of this slice.
 | `gust-gpu-spirv` | the same on the opt-in SPIR-V route (the `spirv-route` build) |
 | `wgsl-prebuilt` | hand-written WGSL on plain wgpu, host side built the careful way: bind group and staging buffer made once |
 | `wgsl-percall` | the same WGSL with a host side shaped like `gust-wgpu`'s: a bind group per dispatch, a fresh staging buffer, two submissions |
+| `rustgpu-wgpu` | the `rust-gpu` build only: W1 to W4 written in Rust with rust-gpu 0.11.0, compiled on a pinned nightly to a committed SPIR-V module and loaded through wgpu's passthrough route; the host side of `wgsl-prebuilt` |
 | `gust-twin`, `gust-cpu`, `gust-cpu-par` | GUST's CPU twin, the production CPU target and its element-wise parallel map |
 | `rayon-1`, `rayon-N`, `serial` | `par_iter` on one thread and on all cores, and a plain loop |
 
@@ -296,6 +297,60 @@ A build holds one GUST route, so the two routes are separate result files, each 
 `wgsl-percall`, and are compared through their paired ratios to their own run's `wgsl-prebuilt`. `wgsl-percall`
 also has three ablation switches (bind-group reuse, staging reuse, one submission); they run only in the ablation group,
 whose rows are never part of a table.
+
+### The rust-gpu comparator
+
+`rustgpu-wgpu` answers a different question from the hand WGSL: what the same four kernels cost when written in Rust
+and compiled by rust-gpu, the other Rust-to-GPU route. It is in a build of its own (`--features rust-gpu`, off by
+default), never in the default build, CI or the lock.
+
+- Toolchain: rust-gpu 0.11.0 (`spirv-std`, `spirv-builder`), which needs the pinned nightly `nightly-2026-08-15` with
+  `rust-src`, `rustc-dev` and `llvm-tools`; the project calls itself "not yet production-ready". The shader crate and
+  its builder are outside the bench workspace (own lock, own `rust-toolchain.toml`); the built module is committed with a
+  manifest (toolchain, crate versions, entry points, sha256) and a test ties the bytes to it. The module targets
+  Vulkan 1.1 (`spirv-val --target-env vulkan1.1` clean) and declares the Vulkan memory model, as every rust-gpu Vulkan
+  module does. wgpu-hal 30.0.2 enables that device feature only together with cooperative matrices, so the backend's
+  device does not have it enabled although the module declares the capability: a strictness gap of the combination
+  (spec-wise the device should enable it), not hit as a failure on the adapters tried. `bench/README.md` has the rebuild
+  command.
+- Loading: `Features::PASSTHROUGH_SHADERS` and `create_shader_module_passthrough`, the call GUST's SPIR-V route makes,
+  so neither naga nor wgpu's shader validation sees the module. An adapter without the feature refuses with the reason
+  and the backend is left out of the run (`config.backends_not_run`): the cell is not run, never a fallback to WGSL.
+- Kernels, each against its hand WGSL (`bench/shaders/`), all with workgroup size 256 and the hand WGSL's bindings:
+
+  | workload | entry point | same as the hand WGSL | differs |
+  |---|---|---|---|
+  | W1 vector add (`f32`) | `w1_f32` | algorithm, guard on the output length | rust-gpu's own index checks (below) |
+  | W2 saxpy | `w2_saxpy` | algorithm; the scalar is a one-element read-only storage buffer at binding 0, not a uniform, so neither side has a cheaper scalar path; guard on the output length and a non-empty scalar buffer | rust-gpu's own index checks |
+  | W3 polynomial, degrees 4, 16, 64 | `w3_horner` | Horner's rule, the loop bounded by 64 that leaves at the degree, the three guards | rust-gpu's own index checks |
+  | W4 histogram, four cases | `w4_histogram` | key assignment (a workgroup owns 1024 keys, each lane takes four, strided by 256), the bin guard; an atomic add per key | the add is `OpAtomicIAdd` at queue-family scope (device scope needs a Vulkan memory-model capability wgpu does not enable) on a `&mut [u32]`, relaxed like the WGSL `atomicAdd` |
+  | W5, W6, W7, W9 | none | | no rust-gpu kernel: the backend does not run them |
+
+  A fifth entry point, `w1_u32`, is in the module and validated with it; no workload runs it. Every kernel is the
+  hand WGSL's algorithm, so no W1 to W4 pairing of this backend with `wgsl-prebuilt` is outside `same_kernel()` the way
+  W7 is (there is no rust-gpu kernel for W7 at all). The GUST kill rule judges GUST against `wgsl-prebuilt` only and
+  does not see this backend.
+- Host side: the second device on the same adapter selection as `wgsl-prebuilt`'s (default limits, timestamps), bind
+  group and staging buffer built once, one submission per end-to-end sample. Every sample is judged by the same checker
+  as every other GPU backend (the poison alone fails it).
+- A run from the `rust-gpu` build is marked not publishable (`build.features` lists the feature): a third device and one
+  more backend in the rotation have not been measured to leave the other rows unchanged. No timing of this backend is
+  claimed in this document.
+
+### Bounds policy
+
+An index outside a storage buffer is outside the benchmark's domain: no workload produces one, and the harness checks
+every sample against the reference. The backends still differ in what the shader does if one occurs, and the table
+should say so:
+
+| backend | an out-of-range storage index |
+|---|---|
+| WGSL route (naga, `wgsl-prebuilt`, `wgsl-percall`, `gust-gpu`) | made safe by wgpu's shader runtime checks, which the `unchecked` probe turns off |
+| GUST's SPIR-V route (`gust-gpu-spirv`, D174) | the route's own guards (an index clamp, on whenever the route is on), and naga-like behaviour where `robustBufferAccess2` is present; a D39 limitation (`docs/SEMANTICS.md` section 15) |
+| `rustgpu-wgpu` (rust-gpu 0.11.0) | the invocation ends early: every slice index is guarded by an array-length test and the failing edge returns, so no load or store happens (read from the module's disassembly and from rust-gpu's source, where the panic paths of `core` become an abort that the linker turns into `OpReturn`; one dispatch of an unguarded W1 with 256 extra invocations on a 2^20-element buffer left the result intact and the device healthy, which is consistent with it but does not prove that the extra invocations wrote nothing) |
+
+The hand kernels and the rust-gpu kernels also carry explicit guards on the output length, so for the workloads here the
+two policies never run.
 
 ## The four timings
 

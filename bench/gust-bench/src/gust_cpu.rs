@@ -11,15 +11,15 @@
 use std::cell::Cell;
 
 use gust::{
-    Independent,
+    Extent, Independent,
     cpu::{CpuBuffer, CpuDevice},
 };
 
 use crate::{
     backend::{Backend, BenchResult, Kind},
     workloads::{
-        Inputs, Workload, counts_as_words, hist_threads, histogram, normalize_counts, polynomial,
-        saxpy, vector_add,
+        Inputs, Workload, counts_as_words, hist_threads, histogram, matmul, normalize_counts,
+        polynomial, saxpy, vector_add,
     },
 };
 
@@ -43,6 +43,12 @@ enum Data {
     Hist {
         keys: CpuBuffer<u32>,
         bins: CpuBuffer<u32>,
+    },
+    MatMul {
+        dims: CpuBuffer<u32>,
+        a: CpuBuffer<f32>,
+        b: CpuBuffer<f32>,
+        c: CpuBuffer<f32>,
     },
 }
 
@@ -91,6 +97,14 @@ impl GustCpu {
                 Independent(keys),
                 Independent(bins),
             )?,
+            Data::MatMul { dims, a, b, c } => matmul::kernel::matmul::dispatch_extent(
+                &self.device,
+                Extent::new(n, n, 1),
+                Independent(dims),
+                Independent(a),
+                Independent(b),
+                Independent(c),
+            )?,
         }
         Ok(())
     }
@@ -99,6 +113,7 @@ impl GustCpu {
         match &self.resident().data {
             Data::Add { out, .. } | Data::Saxpy { out, .. } | Data::Poly { out, .. } => out.read(),
             Data::Hist { bins, .. } => counts_as_words(bins.read()),
+            Data::MatMul { c, .. } => c.read(),
         }
     }
 }
@@ -122,6 +137,16 @@ impl Backend for GustCpu {
 
     fn kind(&self) -> Kind {
         Kind::Cpu
+    }
+
+    /// The twin runs W9 (a 2-D kernel with a twin); the production CPU target is not on W9's list, and no GUST CPU
+    /// backend sums (W7 is `gust-algo`'s, which has no CPU path of its own to time here).
+    fn supports(&self, workload: Workload) -> bool {
+        match workload.family() {
+            "W7" => false,
+            "W9" => !gust::profile::IS_CPU,
+            _ => true,
+        }
     }
 
     fn prepare(&mut self, workload: Workload, inputs: &Inputs) -> BenchResult<()> {
@@ -148,6 +173,13 @@ impl Backend for GustCpu {
                 x: d.buffer(&inputs.x),
                 out: d.buffer(&vec![f32::NAN; n]),
             },
+            "W7" => return Err("the GUST CPU backends have no W7".into()),
+            "W9" => Data::MatMul {
+                dims: d.buffer(&[n as u32]),
+                a: d.buffer(&inputs.x),
+                b: d.buffer(&inputs.y),
+                c: d.buffer(&vec![f32::NAN; n * n]),
+            },
             _ => Data::Hist {
                 keys: d.buffer(&inputs.keys),
                 bins: d.buffer(&vec![0u32; inputs.bins]),
@@ -165,6 +197,7 @@ impl Backend for GustCpu {
                 out.write(&vec![f32::NAN; r.n])?
             }
             Data::Hist { bins, .. } => bins.write(&vec![0u32; bins.read().len()])?,
+            Data::MatMul { c, .. } => c.write(&vec![f32::NAN; r.n * r.n])?,
         }
         self.passes.set(0);
         Ok(())
@@ -182,6 +215,10 @@ impl Backend for GustCpu {
                 keys.write(&inputs.keys)?;
                 bins.write(&vec![0u32; inputs.bins])?;
             }
+            Data::MatMul { a, b, .. } => {
+                a.write(&inputs.x)?;
+                b.write(&inputs.y)?;
+            }
         }
         self.run(r)?;
         self.passes.set(1);
@@ -197,7 +234,7 @@ impl Backend for GustCpu {
 
     fn read_back(&mut self, out: &mut Vec<f32>) -> BenchResult<()> {
         *out = self.words();
-        if self.resident().workload.bins().is_some() {
+        if self.resident().workload.accumulates() {
             normalize_counts(out, self.passes.get());
         }
         Ok(())
@@ -293,8 +330,14 @@ mod tests {
     /// Runs every workload through `backend` (end to end, then dispatch twice and read back) and checks each against
     /// its bound or exact counts; the poison alone must fail.
     fn passes_everything(mut backend: impl Backend, workloads: &[Workload]) {
-        for &w in workloads {
-            let inputs = gen_inputs(w, 5000);
+        let supported = workloads
+            .iter()
+            .copied()
+            .filter(|w| backend.supports(*w))
+            .collect::<Vec<_>>();
+        for w in supported {
+            // W9's `n` is the matrix side: a small one keeps the cubic naive product short.
+            let inputs = gen_inputs(w, crate::workloads::test_size(w));
             let want = reference(w, &inputs);
             backend.prepare(w, &inputs).unwrap();
             let mut out = Vec::new();

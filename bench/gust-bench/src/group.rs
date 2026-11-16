@@ -20,6 +20,8 @@
 
 use serde_json::{Value, json};
 
+use crate::workloads::Workload;
+
 /// The paired-ratio window of the kill rule: more than 10 % off 1.0 reopens candidate C.
 pub const KILL_TOLERANCE: f64 = 0.10;
 
@@ -79,6 +81,11 @@ pub fn require_full_set(wanted: &[String], gust_id: &str) -> Result<(), String> 
 /// [`KILL_QUANTITIES`]. Every GUST cell and quantity without a ratio (a failed or dropped backend, a missing metric)
 /// is counted in `unpaired`, and so is every (workload, size) that has a hand-WGSL cell but no GUST cell. The rule
 /// judged the run only if `checked > 0 && unpaired == 0` (`judged`); otherwise `c_reopened` is `null`, never `false`.
+/// A workload whose GUST and hand-WGSL paths are not the same kernel (`Workload::same_kernel`, W7: GUST runs the public
+/// `gust_algo::reduce`, which exposes no GPU timestamps, so its cell has no paired GPU-time ratio by construction) is
+/// outside the rule, on the GUST and the hand-WGSL side alike. The exclusion is recorded, not silent: `excluded` lists
+/// every such cell of the rule's backends (`backend`, `workload`, `n`, `reason`), so a reader of the run file sees W7 was
+/// present and left out on purpose (coordinator decision D190, a deviation from the plan's "any cell").
 /// `control` carries the same ratio for wgsl-percall (same kernel text as wgsl-prebuilt, so its distance from 1.0 is
 /// the noise floor of the method); it does not enter the rule. Returns the record that goes into the run file.
 pub fn kill_rule(cells: &[Value]) -> Value {
@@ -88,12 +95,29 @@ pub fn kill_rule(cells: &[Value]) -> Value {
     let mut with_gust = std::collections::BTreeSet::new();
     let mut with_wgsl = std::collections::BTreeSet::new();
     let mut control = Vec::new();
+    let mut excluded = Vec::new();
     for cell in cells {
         let backend = cell["backend"].as_str().unwrap_or("");
         let key = (
             cell["workload"].as_str().unwrap_or("").to_owned(),
             cell["n"].as_u64().unwrap_or(0),
         );
+        // A workload that is not a same-kernel pairing (W7: GUST runs `gust-algo`'s sum and the hand backends a reduction of
+        // their own, and `gust-algo` has no public GPU timestamps, so a W7 GUST cell has no paired GPU-time ratio by
+        // construction) is outside the rule, on the GUST and the hand-WGSL side alike; it would otherwise count as
+        // `unpaired` and keep every run that includes it from being judged. The cell is listed in `excluded`.
+        if Workload::parse(&key.0).is_some_and(|w| !w.same_kernel()) {
+            if GUST_BACKENDS.contains(&backend)
+                || backend == "wgsl-prebuilt"
+                || backend == CONTROL_BACKEND
+            {
+                excluded.push(json!({
+                    "backend": backend, "workload": key.0, "n": key.1,
+                    "reason": "no same-kernel GUST/hand pairing: GUST runs the library's sum, which exposes no GPU timestamps",
+                }));
+            }
+            continue;
+        }
         if backend == CONTROL_BACKEND {
             for quantity in KILL_QUANTITIES {
                 if let Some(ratio) =
@@ -162,6 +186,7 @@ pub fn kill_rule(cells: &[Value]) -> Value {
         "unpaired": unpaired,
         "judged": judged,
         "c_reopened": if judged { json!(!offenders.is_empty()) } else { Value::Null },
+        "excluded": excluded,
         "offenders": offenders,
         "reproducibility_clause": "an offender counts when it recurs in 3/3 seeds with `control_in_tolerance` true on that cell in each of those runs; a single-seed hit is listed, not counted (plan R1.3-4; `aggregate` counts the seeds and needs at least 3 runs with distinct seeds)",
         "control": {
@@ -245,6 +270,80 @@ mod tests {
         let mut value = cell(backend, single, batch);
         value["n"] = json!(n);
         value
+    }
+
+    /// W7 is a different algorithm on each side (gust-algo's sum against a hand reduction) and gust-algo has no GPU
+    /// timestamps, so a W7 cell is outside the rule on both sides: it neither counts as unpaired nor is judged.
+    #[test]
+    fn w7_cells_are_outside_the_rule_on_both_sides() {
+        let w7 = |backend: &str, single: Option<f64>| {
+            let mut value = named(backend, 1 << 20, single, single);
+            value["workload"] = json!("W7-f32");
+            value
+        };
+        let mut cells = vec![
+            w7("gust-gpu", None),
+            w7("wgsl-prebuilt", Some(1.0)),
+            w7("wgsl-percall", Some(1.7)),
+            named("gust-gpu", 1, Some(1.0), Some(1.0)),
+            named("wgsl-prebuilt", 1, Some(1.0), Some(1.0)),
+        ];
+        let record = kill_rule(&cells);
+        assert_eq!(record["checked"], 2, "only the W1 cell is judged");
+        assert_eq!(record["unpaired"], 0, "the W7 cells are not unpaired");
+        assert_eq!(record["judged"], true);
+        assert_eq!(record["c_reopened"], false);
+        assert_eq!(
+            record["control"]["checked"], 0,
+            "a W7 control is not recorded"
+        );
+        // The exclusion is listed, not silent: every W7 cell of the rule's backends and of the control, with its reason.
+        let listed = record["excluded"].as_array().expect("excluded is a list");
+        assert_eq!(listed.len(), 3);
+        assert!(
+            listed
+                .iter()
+                .all(|e| e["workload"] == "W7-f32" && e["n"] == (1u64 << 20))
+        );
+        assert!(listed.iter().any(|e| e["backend"] == "gust-gpu"));
+        assert!(
+            listed[0]["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("timestamps"))
+        );
+        // A W7 GUST cell with a wild ratio would not reopen C either.
+        cells[0] = w7("gust-gpu", Some(3.0));
+        assert_eq!(kill_rule(&cells)["c_reopened"], false);
+        // A run of W7 alone judges nothing, and says null.
+        let only = kill_rule(&cells[..3]);
+        assert_eq!(only["judged"], false);
+        assert!(only["c_reopened"].is_null());
+    }
+
+    /// A run that has a W7 GUST cell (no ratio by construction) is still judged, on its other cells, and says what it
+    /// left out (decision D190).
+    #[test]
+    fn a_run_with_a_w7_gust_cell_is_judged_and_lists_the_exclusion() {
+        let mut w7 = named("gust-gpu", 1 << 20, None, None);
+        w7["workload"] = json!("W7-u32");
+        let record = kill_rule(&[
+            w7,
+            named("gust-gpu", 1, Some(1.0), Some(1.0)),
+            named("wgsl-prebuilt", 1, Some(1.0), Some(1.0)),
+        ]);
+        assert_eq!(record["judged"], true);
+        assert_eq!(record["c_reopened"], false, "judged, not null");
+        assert_eq!(record["unpaired"], 0);
+        assert_eq!(
+            record["excluded"],
+            json!([{
+                "backend": "gust-gpu", "workload": "W7-u32", "n": 1 << 20,
+                "reason": "no same-kernel GUST/hand pairing: GUST runs the library's sum, which exposes no GPU timestamps",
+            }])
+        );
+        // A run with nothing excluded lists nothing.
+        let plain = kill_rule(&[named("gust-gpu", 1, Some(1.0), Some(1.0))]);
+        assert_eq!(plain["excluded"], json!([]));
     }
 
     #[test]

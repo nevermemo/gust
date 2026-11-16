@@ -4,7 +4,37 @@ use std::{collections::BTreeMap, fmt::Write as _, fs};
 
 use serde_json::{Value, json};
 
-use crate::{backend::BenchResult, harness::median};
+use crate::{backend::BenchResult, harness::median, workloads::Workload};
+
+/// Whether a GUST/hand ratio of the workload (by id) compares the same kernel (`Workload::same_kernel`). W7 does not: GUST
+/// runs the library's sum, the baseline a reduction of its own, so no GUST ratio to the baseline is shown for it. An id
+/// this crate does not know is taken as a same-kernel workload (the older run files).
+fn pairs_same_kernel(workload: &str) -> bool {
+    Workload::parse(workload).is_none_or(Workload::same_kernel)
+}
+
+fn is_gust(backend: &str) -> bool {
+    backend.starts_with("gust-gpu")
+}
+
+/// The header of the size column: W9's size is the matrix side `N` (the matrices hold `N * N` words), every other
+/// workload's is a count of elements.
+fn size_header(workload: &str) -> &'static str {
+    if workload == "W9" || workload.starts_with("W9-") {
+        "N (matrix side)"
+    } else {
+        "elements"
+    }
+}
+
+/// A size in prose: `N = 1024` for W9, `1048576 elements` for the rest.
+fn size_phrase(workload: &str, n: u64) -> String {
+    if size_header(workload) == "elements" {
+        format!("{n} elements")
+    } else {
+        format!("N = {n}")
+    }
+}
 
 pub const BANNER: &str = "shared machine, not publishable";
 
@@ -214,6 +244,10 @@ fn gather_paired(runs: &[Value]) -> PairedTable {
             ) else {
                 continue;
             };
+            // No GUST ratio to the baseline for a workload whose two paths run different algorithms (W7).
+            if is_gust(backend) && !pairs_same_kernel(workload) {
+                continue;
+            }
             for (metric, _) in METRICS {
                 let paired = &cell["metrics"][metric]["paired_vs_prebuilt"];
                 let Some(ratio) = paired["median_ratio"].as_f64() else {
@@ -448,11 +482,13 @@ fn ablation_rows(table: &Table, sizes: &BTreeMap<String, Vec<u64>>) -> Vec<Value
                 let (prebuilt, percall) = (get("wgsl-prebuilt"), get("wgsl-percall"));
                 for backend in ABLATION {
                     let Some(ms) = get(backend) else { continue };
+                    // The time is shown, the ratio is not, where GUST and the baseline run different algorithms (W7).
+                    let comparable = !is_gust(backend) || pairs_same_kernel(workload);
                     rows.push(json!({
                         "workload": workload, "n": n, "metric": metric, "backend": backend,
                         "median_ms": ms,
-                        "ratio_vs_prebuilt": prebuilt.map(|p| ms / p),
-                        "ratio_vs_percall": percall.map(|p| ms / p),
+                        "ratio_vs_prebuilt": prebuilt.filter(|_| comparable).map(|p| ms / p),
+                        "ratio_vs_percall": percall.filter(|_| comparable).map(|p| ms / p),
                     }));
                 }
             }
@@ -821,14 +857,15 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         if run["kill_rule"].is_object() {
             writeln!(
                 md,
-                "- {}: kill rule, C re-opened = {} (judged: {}; {} paired GPU-time ratios checked, {} unpaired, offenders: {}; control wgsl-percall/wgsl-prebuilt: {} outside the window)",
+                "- {}: kill rule, C re-opened = {} (judged: {}; {} paired GPU-time ratios checked, {} unpaired, offenders: {}; control wgsl-percall/wgsl-prebuilt: {} outside the window; {} cells excluded as no same-kernel pairing, listed in the run file)",
                 run["label"].as_str().unwrap_or("run"),
                 run["kill_rule"]["c_reopened"],
                 run["kill_rule"]["judged"],
                 run["kill_rule"]["checked"],
                 run["kill_rule"]["unpaired"],
                 run["kill_rule"]["offenders"],
-                run["kill_rule"]["control"]["outside_tolerance"]
+                run["kill_rule"]["control"]["outside_tolerance"],
+                run["kill_rule"]["excluded"].as_array().map_or(0, Vec::len)
             )?;
         }
     }
@@ -884,7 +921,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                     })
                 })
                 .collect::<Vec<_>>();
-            write!(md, "| elements |")?;
+            write!(md, "| {} |", size_header(workload))?;
             for c in &columns {
                 write!(md, " {c} (ms) |")?;
             }
@@ -922,13 +959,29 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             writeln!(md)?;
         }
 
+        if !pairs_same_kernel(workload) {
+            writeln!(
+                md,
+                "No {gust} / wgsl-prebuilt ratio is shown for {workload}: the two run different algorithms (GUST the library's sum with its own schedule, the baseline a tree of its own), and the library's sum exposes no GPU timestamps. The times above are each backend's own.\n"
+            )?;
+        }
+        // A GFLOP/s column (2 N^3 flops for W9, plan 2.3) is b5's: it goes beside the bandwidth table below.
+        if bytes == 0.0 {
+            writeln!(
+                md,
+                "Achieved bandwidth is not applicable to {workload}: it is not a per-element stream (each matrix is read many times), so no bytes-per-element figure is defined.\n"
+            )?;
+            crossover(&mut md, &table, workload, list, &link_of, gust)?;
+            continue;
+        }
         writeln!(
             md,
             "### Achieved bandwidth (GB/s, {bytes} bytes per element), from the batch timestamps and from end to end\n"
         )?;
         writeln!(
             md,
-            "| elements | {gust} batch | wgsl-prebuilt batch | wgsl-percall batch | {gust} e2e | wgsl-prebuilt e2e | rayon-N e2e | PCIe link (GPU e2e) |"
+            "| {} | {gust} batch | wgsl-prebuilt batch | wgsl-percall batch | {gust} e2e | wgsl-prebuilt e2e | rayon-N e2e | PCIe link (GPU e2e) |",
+            size_header(workload)
         )?;
         writeln!(md, "|---|---|---|---|---|---|---|---|")?;
         for n in list {
@@ -979,7 +1032,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     )?;
     writeln!(
         md,
-        "| workload | elements | timing | gust-gpu (ms) | wgsl-prebuilt (ms) | ratio | difference (us) | wgsl-percall (ms) | ratio | PCIe link (end to end) |"
+        "| workload | elements (W9: side N) | timing | gust-gpu (ms) | wgsl-prebuilt (ms) | ratio | difference (us) | wgsl-percall (ms) | ratio | PCIe link (end to end) |"
     )?;
     writeln!(md, "|---|---|---|---|---|---|---|---|---|---|")?;
     for row in &overhead {
@@ -1020,7 +1073,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     for (metric, _) in METRICS {
         for workload in sizes.keys() {
             writeln!(md, "### {workload}, {metric}\n")?;
-            write!(md, "| elements |")?;
+            write!(md, "| {} |", size_header(workload))?;
             for backend in ABLATION {
                 write!(md, " {backend} |")?;
             }
@@ -1068,7 +1121,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     for metric in ["end_to_end", "dispatch_host"] {
         for workload in sizes.keys() {
             writeln!(md, "### {workload}, {metric}\n")?;
-            write!(md, "| elements |")?;
+            write!(md, "| {} |", size_header(workload))?;
             for backend in ABLATION {
                 write!(md, " {backend} |")?;
             }
@@ -1125,7 +1178,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     )?;
     writeln!(
         md,
-        "| workload | elements | cells reaching P0 | SM MHz at start (min to max) | memory MHz at start | pstates at start | pstates after | memory MHz after | PCIe gen now (max gen) |"
+        "| workload | elements (W9: side N) | cells reaching P0 | SM MHz at start (min to max) | memory MHz at start | pstates at start | pstates after | memory MHz after | PCIe gen now (max gen) |"
     )?;
     writeln!(md, "|---|---|---|---|---|---|---|---|---|")?;
     let mut by_size: BTreeMap<(String, u64), ClockSpan> = BTreeMap::new();
@@ -1202,7 +1255,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     )?;
     writeln!(
         md,
-        "| workload | elements | backend | first in process, per run (ms) | rest median (ms) | rest (ms) | note |"
+        "| workload | elements (W9: side N) | backend | first in process, per run (ms) | rest median (ms) | rest (ms) | note |"
     )?;
     writeln!(md, "|---|---|---|---|---|---|---|")?;
     let list = |values: &[f64]| {
@@ -1355,7 +1408,8 @@ fn crossover(
         match winner {
             Some(n) => writeln!(
                 md,
-                "End-to-end break-even, {gpu} against rayon-N: first faster at {n} elements (PCIe link {}).",
+                "End-to-end break-even, {gpu} against rayon-N: first faster at {} (PCIe link {}).",
+                size_phrase(workload, n),
                 link_of(workload, n)
             )?,
             None => writeln!(
@@ -1374,6 +1428,10 @@ fn crossover(
 fn overhead_rows(table: &Table, sizes: &BTreeMap<String, Vec<u64>>, gust: &str) -> Vec<Value> {
     let mut rows = Vec::new();
     for (workload, list) in sizes {
+        // W7: GUST runs the library's sum and the baseline its own tree, so the pair is no overhead of GUST.
+        if !pairs_same_kernel(workload) {
+            continue;
+        }
         for n in list {
             for (metric, _) in METRICS.iter().rev() {
                 let get = |backend: &str| {

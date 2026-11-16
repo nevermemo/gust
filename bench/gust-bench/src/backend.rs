@@ -32,6 +32,14 @@ pub trait Backend {
         true
     }
 
+    /// The worst-case error of this backend's `f32` sum (W7) for `n` values whose absolute values add up to at most
+    /// `abs_sum`, when it knows a bound tighter than the serial worst case that covers every order of summation. `None`
+    /// (the default) means the serial bound judges it. Asked once per cell, after `prepare`. The f64 reference's own
+    /// error is added by the check, not here.
+    fn sum_tree_bound(&self, _n: usize, _abs_sum: f64) -> Option<f64> {
+        None
+    }
+
     /// Allocates the buffers for `inputs`, uploads them and builds the pipeline. Not timed. After it returns,
     /// everything is resident and idle.
     fn prepare(&mut self, workload: Workload, inputs: &Inputs) -> BenchResult<()>;

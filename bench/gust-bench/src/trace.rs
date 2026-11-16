@@ -105,8 +105,8 @@ fn trace_gust(
     // platform it is run on, the call is `SetEnvironmentVariableW`, which is not racy with the loader's own reads. Do not
     // run `trace` on another platform without moving the variable into a wrapper process.
     unsafe { std::env::set_var("GUST_WGPU_TRACE_DIR", &dir) };
-    let device = Rc::new(gust_wgpu::HeadlessDevice::new()?);
-    let mut backend = crate::gust_gpu::GustGpu::new(Rc::clone(&device));
+    let device = gust_wgpu::DeviceHandle::new(gust_wgpu::HeadlessDevice::new()?);
+    let mut backend = crate::gust_gpu::GustGpu::new(gust_wgpu::DeviceHandle::clone(&device));
     backend.prepare(workload, inputs)?;
     backend.poison()?;
     match op {

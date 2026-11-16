@@ -20,7 +20,9 @@ use serde_json::{Value, json};
 use crate::{
     backend::{Backend, BenchResult, Kind},
     meta,
-    workloads::{Inputs, Reference, Workload, check, gen_inputs, reference},
+    workloads::{
+        Inputs, Judging, Reference, Rounding, Workload, check_with, gen_inputs, reference,
+    },
 };
 
 #[derive(Clone, Debug)]
@@ -304,14 +306,30 @@ pub struct CellInput<'a> {
     pub cold: bool,
 }
 
+/// How the results of `backend` are judged: its rounding (a GPU's bound uses `u = 2^-23`, a host's `2^-24`) and, for the
+/// `f32` sum, the bound it has for its own order of summation, asked after `prepare` (`Backend::sum_tree_bound`; `None`
+/// for every other workload and for a backend with no bound of its own, which the serial worst case then judges).
+fn tree_bound(backend: &dyn Backend, input: &CellInput<'_>) -> Judging {
+    let tree = if input.workload == Workload::SumF32 {
+        backend.sum_tree_bound(input.inputs.n, input.reference.abs_sum)
+    } else {
+        None
+    };
+    Judging {
+        rounding: Rounding::of(backend.kind()),
+        tree,
+    }
+}
+
 fn verify(
     workload: Workload,
     inputs: &Inputs,
     want: &Reference,
+    tree: Judging,
     got: &[f32],
     checks: &mut u64,
 ) -> BenchResult<()> {
-    check(workload, inputs, want, got)
+    check_with(workload, inputs, want, got, tree)
         .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
     *checks += 1;
     Ok(())
@@ -334,6 +352,7 @@ pub fn run_cell(backend: &mut dyn Backend, input: &CellInput<'_>, config: &Confi
 
     let outcome = (|| -> BenchResult<()> {
         backend.prepare(input.workload, input.inputs)?;
+        let tree = tree_bound(&*backend, input);
 
         if input.cold && backend.kind() == Kind::Gpu {
             let mut values = Vec::new();
@@ -376,6 +395,7 @@ pub fn run_cell(backend: &mut dyn Backend, input: &CellInput<'_>, config: &Confi
                 input.workload,
                 input.inputs,
                 input.reference,
+                tree,
                 &out,
                 &mut checks,
             )?;
@@ -395,6 +415,7 @@ pub fn run_cell(backend: &mut dyn Backend, input: &CellInput<'_>, config: &Confi
                 input.workload,
                 input.inputs,
                 input.reference,
+                tree,
                 &out,
                 &mut checks,
             )?;
@@ -415,6 +436,7 @@ pub fn run_cell(backend: &mut dyn Backend, input: &CellInput<'_>, config: &Confi
                     input.workload,
                     input.inputs,
                     input.reference,
+                    tree,
                     &out,
                     &mut checks,
                 )?;
@@ -487,6 +509,8 @@ struct Member {
     cold_routes: Vec<Value>,
     alive: bool,
     misses_before: Option<u64>,
+    /// The `f32` sum's bound for this backend's order of summation, asked after its `prepare` (W7 only).
+    tree: Judging,
 }
 
 /// SplitMix64: a small deterministic generator, enough for shuffling a handful of backends (no dependency).
@@ -674,6 +698,7 @@ pub fn run_gpu_group(
             cold_routes: Vec::new(),
             alive: true,
             misses_before: None,
+            tree: Judging::default(),
         })
         .collect::<Vec<_>>();
     let mut warmup = Value::Null;
@@ -682,6 +707,7 @@ pub fn run_gpu_group(
     for (backend, member) in group.iter_mut().zip(members.iter_mut()) {
         let outcome = (|| -> BenchResult<()> {
             backend.prepare(input.workload, input.inputs)?;
+            member.tree = tree_bound(&**backend, input);
             if input.cold {
                 let mut values = Vec::new();
                 member.cold_first =
@@ -759,7 +785,14 @@ pub fn run_gpu_group(
                 let started = Instant::now();
                 backend.end_to_end(inputs, &mut out)?;
                 let elapsed = started.elapsed();
-                verify(workload, inputs, reference, &out, &mut member.checks)?;
+                verify(
+                    workload,
+                    inputs,
+                    reference,
+                    member.tree,
+                    &out,
+                    &mut member.checks,
+                )?;
                 Ok(Some(ms(elapsed)))
             },
         );
@@ -775,7 +808,14 @@ pub fn run_gpu_group(
                 backend.dispatch()?;
                 let elapsed = started.elapsed();
                 backend.read_back(&mut out)?;
-                verify(workload, inputs, reference, &out, &mut member.checks)?;
+                verify(
+                    workload,
+                    inputs,
+                    reference,
+                    member.tree,
+                    &out,
+                    &mut member.checks,
+                )?;
                 Ok(Some(ms(elapsed)))
             },
         );
@@ -792,7 +832,14 @@ pub fn run_gpu_group(
                         return Ok(None);
                     };
                     backend.read_back(&mut out)?;
-                    verify(workload, inputs, reference, &out, &mut member.checks)?;
+                    verify(
+                        workload,
+                        inputs,
+                        reference,
+                        member.tree,
+                        &out,
+                        &mut member.checks,
+                    )?;
                     Ok(Some(ms(elapsed) / passes as f64))
                 },
             );
@@ -959,6 +1006,7 @@ mod tests {
                 cold_routes: Vec::new(),
                 alive: true,
                 misses_before: None,
+                tree: Judging::default(),
             })
             .collect()
     }

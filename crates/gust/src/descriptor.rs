@@ -4,6 +4,31 @@ use crate::capability::Capability;
 use crate::target::Target;
 
 /// Marker implemented by the zero-sized host handle generated for each kernel.
+///
+/// The handle is the type that carries the kernel's name inside its `#[gpu]` module, so generic code can take a kernel
+/// by type:
+///
+/// ```
+/// use gust::{Kernel, gpu};
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn workgroup_size_of<K: Kernel>() -> [u32; 3] {
+///     K::DESCRIPTOR.workgroup_size
+/// }
+///
+/// assert_eq!(workgroup_size_of::<ops::double>(), [64, 1, 1]);
+/// assert_eq!(ops::double::DESCRIPTOR, <ops::double as Kernel>::DESCRIPTOR);
+/// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a GUST kernel handle",
     label = "pass the zero-sized handle that `#[gpu]` generates for a `#[kernel]` function; it implements `Kernel`"
@@ -14,6 +39,15 @@ pub trait Kernel {
 }
 
 /// A `#[gpu]` module as the macro describes it: its name and its kernels.
+///
+/// ```
+/// use gust::{KernelDescriptor, ModuleDescriptor};
+///
+/// const RUN: KernelDescriptor = KernelDescriptor::new("demo", "run", "gpu_demo_run", [64, 1, 1], &[], "// slang");
+/// const DEMO: ModuleDescriptor = ModuleDescriptor::new("demo", &[RUN]);
+/// assert_eq!(DEMO.name, "demo");
+/// assert_eq!(DEMO.kernels[0].name, "run");
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ModuleDescriptor {
@@ -41,6 +75,17 @@ impl ModuleDescriptor {
 /// setters, each a `const fn`, so a descriptor can still be a `const`. The fields [`variant`](Self::variant),
 /// [`requires`](Self::requires) and [`target`](Self::target) are new. Struct-update syntax
 /// (`KernelDescriptor { shape, ..BASE }`) becomes `BASE.with_shape(shape)`.
+///
+/// ```
+/// use gust::{KernelDescriptor, Shape};
+///
+/// const BASE: KernelDescriptor = KernelDescriptor::new("demo", "run", "gpu_demo_run", [64, 1, 1], &[], "// slang");
+/// const PIXEL: KernelDescriptor = BASE.with_shape(Shape::Pixel).with_name("shade");
+/// assert_eq!((BASE.module, BASE.name, BASE.workgroup_size), ("demo", "run", [64, 1, 1]));
+/// assert_eq!(BASE.shape, Shape::Grid);
+/// assert_eq!((PIXEL.shape, PIXEL.name), (Shape::Pixel, "shade"));
+/// assert_eq!(BASE.qualified_name().to_string(), "demo::run");
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct KernelDescriptor {
@@ -149,10 +194,24 @@ macro_rules! __gust_descriptor {
 /// (`gust-compute-macros` keeps its own copy, since a proc-macro crate cannot depend on `gust-compute`; a test of this
 /// crate compares the emitted text with this constant), and the host draws attachments of this width, so the two must
 /// be the same number. It is WebGPU's baseline `maxTextureDimension2D`, which every device has.
+///
+/// ```
+/// use gust::PIXEL_ROW_WIDTH;
+///
+/// // Element `i` of a `pixel` call is the fragment at x = i % width, y = i / width.
+/// let i = 8195u32;
+/// assert_eq!((i % PIXEL_ROW_WIDTH, i / PIXEL_ROW_WIDTH), (3, 1));
+/// ```
 pub const PIXEL_ROW_WIDTH: u32 = 8192;
 
 /// The most elements one `pixel` call covers (Option S): `PIXEL_ROW_WIDTH` columns by 8192 rows, the baseline texture
 /// size in both directions. A host refuses a larger call by name.
+///
+/// ```
+/// use gust::{PIXEL_MAX_ELEMENTS, PIXEL_ROW_WIDTH};
+///
+/// assert_eq!(PIXEL_MAX_ELEMENTS, PIXEL_ROW_WIDTH * 8192);
+/// ```
 pub const PIXEL_MAX_ELEMENTS: u32 = 1 << 26;
 
 /// The execution shape of a kernel: how its invocations are laid out, and with it the Slang stage of its entry point
@@ -160,6 +219,16 @@ pub const PIXEL_MAX_ELEMENTS: u32 = 1 << 26;
 ///
 /// `cpu` is a target (D51), never a shape. The enum is `#[non_exhaustive]` so that a later shape is not a breaking
 /// change for a `match` outside this crate.
+///
+/// ```
+/// use gust::Shape;
+///
+/// assert_eq!(Shape::Grid.name(), "grid");
+/// assert_eq!(Shape::from_name("pixel"), Some(Shape::Pixel));
+/// assert_eq!(Shape::from_name("cpu"), None);
+/// assert_eq!(Shape::Grid.slang_stage(), "compute");
+/// assert_eq!(Shape::Pixel.slang_stage(), "fragment");
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Shape {
@@ -202,6 +271,15 @@ impl Shape {
 /// emitted Slang lines back to Rust lines (DX19).
 ///
 /// The table is a line index over the generated text, not an IR.
+///
+/// ```
+/// use gust::{KernelDescriptor, SourceOrigin};
+///
+/// const RUN: KernelDescriptor = KernelDescriptor::new("demo", "run", "gpu_demo_run", [64, 1, 1], &[], "// slang");
+/// // A hand-written descriptor has no known Rust location.
+/// assert_eq!(RUN.source, SourceOrigin::UNKNOWN);
+/// assert!(RUN.source.file.is_empty() && RUN.source.lines.is_empty());
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceOrigin {
     /// Rust source path with `/` separators, never absolute: a relative path as
@@ -234,6 +312,26 @@ impl SourceOrigin {
 }
 
 /// An inclusive, 1-based Slang line range generated from one Rust line.
+///
+/// ```
+/// use gust::{Kernel, gpu};
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// // The macro records which Rust line each generated Slang line came from.
+/// let origin = ops::double::DESCRIPTOR.source;
+/// assert!(!origin.lines.is_empty());
+/// assert!(origin.lines.iter().all(|span| span.slang_start <= span.slang_end && span.rust_line >= 1));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LineSpan {
     /// The first Slang line of the range.
@@ -406,6 +504,15 @@ impl KernelDescriptor {
     }
 }
 
+/// A kernel's `module::name`, from [`KernelDescriptor::qualified_name`].
+///
+/// ```
+/// use gust::KernelDescriptor;
+///
+/// const RUN: KernelDescriptor = KernelDescriptor::new("demo", "run", "gpu_demo_run", [64, 1, 1], &[], "// slang");
+/// let name = RUN.qualified_name();
+/// assert_eq!(format!("{name}"), "demo::run");
+/// ```
 pub struct QualifiedName<'a>(&'a KernelDescriptor);
 
 impl fmt::Display for QualifiedName<'_> {
@@ -415,6 +522,28 @@ impl fmt::Display for QualifiedName<'_> {
 }
 
 /// One kernel parameter: what it is, how the kernel uses it and where the shader binds it.
+///
+/// A `#[gpu]` kernel's descriptor lists them in declaration order:
+///
+/// ```
+/// use gust::{Access, Kernel, ParameterKind, gpu};
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// let parameters = ops::double::DESCRIPTOR.parameters;
+/// let out = parameters.iter().find(|parameter| parameter.name == "out").expect("the buffer");
+/// assert_eq!((out.kind, out.access), (ParameterKind::Storage, Access::ReadWrite));
+/// assert!(out.resource_layout.is_some());
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParameterDescriptor {
     /// The parameter's name in the kernel.
@@ -433,6 +562,25 @@ pub struct ParameterDescriptor {
 }
 
 /// Backend-neutral shader resource address assigned from a kernel parameter.
+///
+/// ```
+/// use gust::{Kernel, ResourceBinding, gpu};
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// // The invocation id takes no binding; the one buffer is binding 0 of group 0.
+/// let bindings: Vec<_> = ops::double::DESCRIPTOR.parameters.iter().filter_map(|parameter| parameter.binding).collect();
+/// assert_eq!(bindings, [ResourceBinding { group: 0, binding: 0 }]);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResourceBinding {
     /// The bind group.
@@ -450,6 +598,19 @@ pub struct ResourceBinding {
 /// produces both kinds since mx.t3 (a `Texture2D<T>`, `StorageTexture2D<F>`, `WriteTexture2D<F>` or `Sampler` kernel
 /// parameter), and `cargo-gust`'s record reader and the macro's artifact writer know the names `texture` and
 /// `sampler`.
+///
+/// ```
+/// use gust::ParameterKind;
+///
+/// let words = |kind: ParameterKind| match kind {
+///     ParameterKind::Storage | ParameterKind::Uniform => "a buffer",
+///     ParameterKind::Texture | ParameterKind::Sampler => "a texture or sampler",
+///     // The enum is `#[non_exhaustive]`: a `match` outside this crate needs a wildcard arm.
+///     _ => "not a resource",
+/// };
+/// assert_eq!(words(ParameterKind::Uniform), "a buffer");
+/// assert_eq!(words(ParameterKind::Invocation), "not a resource");
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ParameterKind {
@@ -471,6 +632,29 @@ pub enum ParameterKind {
 }
 
 /// How a kernel accesses a parameter.
+///
+/// ```
+/// use gust::{Access, Kernel, gpu};
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn copy(id: SV_DispatchThreadID, src: StructuredBuffer<float>, mut dst: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < dst.len() {
+///             dst[i] = src[i];
+///         }
+///     }
+/// }
+///
+/// let access: Vec<Access> = ops::copy::DESCRIPTOR
+///     .parameters
+///     .iter()
+///     .filter(|parameter| parameter.binding.is_some())
+///     .map(|parameter| parameter.access)
+///     .collect();
+/// assert_eq!(access, [Access::ReadOnly, Access::ReadWrite]);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
     /// The kernel only reads it: a read-only storage buffer, a uniform, or a sampled texture.

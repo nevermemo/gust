@@ -26,6 +26,22 @@ use crate::{
 };
 
 /// Handle to one node of a [`StagedGraph`], in insertion order.
+///
+/// Every node-adding method returns one; pass it as a dependency or to [`GraphOutput::readback`]:
+///
+/// ```
+/// use gust_wgpu::{GpuBufferAccess, HeadlessDevice, StagedGraph};
+///
+/// let device = HeadlessDevice::new()?;
+/// let buffer = device.create_typed_buffer("values", &[0u32; 2], GpuBufferAccess::ReadWrite);
+/// let values = [5u32, 6];
+/// let mut graph = StagedGraph::new();
+/// let first = graph.write(&buffer, &values);
+/// let second = graph.read(&buffer);
+/// assert_eq!((first.index(), second.index()), (0, 1));
+/// assert_eq!(graph.dependency_indices(second), [first.index()]);
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
 
@@ -37,6 +53,23 @@ impl NodeId {
 }
 
 /// The direction of a transfer between the host and the GPU.
+///
+/// The report of an executed graph tags each [`TransferRecord`] with one:
+///
+/// ```
+/// use gust_wgpu::{GpuBufferAccess, HeadlessDevice, StagedGraph, TransferDirection};
+///
+/// let device = HeadlessDevice::new()?;
+/// let buffer = device.create_typed_buffer("values", &[0u32; 2], GpuBufferAccess::ReadWrite);
+/// let values = [5u32, 6];
+/// let mut graph = StagedGraph::new();
+/// graph.write(&buffer, &values);
+/// graph.read(&buffer);
+/// let report = device.execute_graph(&graph)?.report;
+/// let directions: Vec<_> = report.transfers.iter().map(|record| record.direction).collect();
+/// assert_eq!(directions, [TransferDirection::Upload, TransferDirection::Readback]);
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferDirection {
     /// Host data written to a GPU buffer.
@@ -46,6 +79,24 @@ pub enum TransferDirection {
 }
 
 /// One host/GPU transfer performed by an executed graph.
+///
+/// Only the crate builds one; read the fields of [`GraphReport::transfers`]:
+///
+/// ```
+/// use gust_wgpu::{GpuBufferAccess, HeadlessDevice, StagedGraph, TransferDirection};
+///
+/// let device = HeadlessDevice::new()?;
+/// let buffer = device.create_typed_buffer("values", &[0u32; 4], GpuBufferAccess::ReadWrite);
+/// let values = [1u32, 2, 3, 4];
+/// let mut graph = StagedGraph::new();
+/// let upload = graph.write(&buffer, &values);
+/// let report = device.execute_graph(&graph)?.report;
+/// let record = report.transfers[0];
+/// assert_eq!(record.node, upload);
+/// assert_eq!(record.direction, TransferDirection::Upload);
+/// assert_eq!(record.bytes, 16);
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TransferRecord {
@@ -58,6 +109,26 @@ pub struct TransferRecord {
 }
 
 /// What an execution moved across the host boundary and what stayed resident.
+///
+/// `GraphOutput::report` holds one. A graph that uploads four `u32` values and reads them back moves 16 bytes each
+/// way and runs no dispatch:
+///
+/// ```
+/// use gust_wgpu::{GpuBufferAccess, HeadlessDevice, StagedGraph};
+///
+/// let device = HeadlessDevice::new()?;
+/// let buffer = device.create_typed_buffer("values", &[0u32; 4], GpuBufferAccess::ReadWrite);
+/// let values = [1u32, 2, 3, 4];
+/// let mut graph = StagedGraph::new();
+/// graph.write(&buffer, &values);
+/// graph.read(&buffer);
+/// let report = device.execute_graph(&graph)?.report;
+/// assert_eq!((report.upload_bytes, report.readback_bytes), (16, 16));
+/// assert_eq!(report.dispatches, 0);
+/// assert_eq!(report.derived_edges, 1);
+/// assert_eq!(report.declared_edges, 0);
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct GraphReport {
@@ -144,6 +215,48 @@ fn readback_kind<'a, T: GpuPod>(buffer: &'a GpuBuffer<T>) -> NodeKind<'a> {
 
 /// An ordered set of execution nodes over resident typed buffers. Explicit nodes carry declared
 /// edges; typed nodes carry edges the graph derives.
+///
+/// Build the graph with `write`, `run` and `read`, then run it with [`HeadlessDevice::execute_graph`]. Data that no
+/// node reads back never leaves the GPU. This graph squares four numbers in two dispatches over one resident buffer
+/// and moves only the input and the result across the host boundary:
+///
+/// ```
+/// use gust::gpu;
+/// use gust_wgpu::{GpuBufferAccess, HeadlessDevice, StagedGraph};
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn square(id: SV_DispatchThreadID, mut data: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < data.len() {
+///             data[i] = data[i] * data[i];
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), gust_wgpu::Error> {
+///     let device = HeadlessDevice::new()?;
+///     let data = device.create_typed_buffer("data", &[0.0f32; 4], GpuBufferAccess::ReadWrite);
+///     let input = [1.0f32, 2.0, 3.0, 4.0];
+///     let first = ops::square::call(4, &data);
+///     let second = ops::square::call(4, &data);
+///
+///     let mut graph = StagedGraph::new();
+///     let write = graph.write(&data, &input);
+///     let one = graph.run(&first);
+///     let two = graph.run(&second);
+///     let read = graph.read(&data);
+///     assert_eq!(graph.len(), 4);
+///     assert_eq!(graph.dependency_indices(two), [one.index()]);
+///     assert!(graph.dependency_indices(one).contains(&write.index()));
+///
+///     let output = device.execute_graph(&graph)?;
+///     assert_eq!(output.readback::<f32>(read)?, [1.0, 16.0, 81.0, 256.0]);
+///     assert_eq!(output.report.dispatches, 2);
+///     Ok(())
+/// }
+/// ```
 #[derive(Default)]
 pub struct StagedGraph<'a> {
     nodes: Vec<Node<'a>>,
@@ -559,6 +672,25 @@ struct PendingReadback {
 }
 
 /// Readbacks and the transfer report of one executed graph.
+///
+/// [`HeadlessDevice::execute_graph`] returns one. Decode a readback by the node that made it, with the element type
+/// of its buffer; another type is [`Error::GraphReadbackType`]:
+///
+/// ```
+/// use gust_wgpu::{Error, GpuBufferAccess, HeadlessDevice, StagedGraph};
+///
+/// let device = HeadlessDevice::new()?;
+/// let buffer = device.create_typed_buffer("values", &[0u32; 3], GpuBufferAccess::ReadWrite);
+/// let values = [7u32, 8, 9];
+/// let mut graph = StagedGraph::new();
+/// graph.write(&buffer, &values);
+/// let read = graph.read(&buffer);
+/// let output = device.execute_graph(&graph)?;
+/// assert_eq!(output.readback::<u32>(read)?, [7, 8, 9]);
+/// assert!(matches!(output.readback::<f32>(read), Err(Error::GraphReadbackType { .. })));
+/// assert_eq!(output.report.readback_bytes, 12);
+/// # Ok::<(), Error>(())
+/// ```
 pub struct GraphOutput {
     /// What the execution moved and kept resident.
     pub report: GraphReport,

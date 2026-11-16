@@ -29,6 +29,18 @@ use crate::{GpuPod, Resource, TypedDevice};
 /// The buffer type is the device's own typed resource, so a generated `Run` can bind it without conversion. Lengths
 /// are `u32` because a map call's element count is (a longer slice is [`Error::TooLong`] before the device is
 /// touched).
+///
+/// ```
+/// use gust::cpu::CpuDevice;
+/// use gust::map::MapHost;
+///
+/// let device = CpuDevice::new();
+/// let input = device.upload(&[1.0_f32, 2.0, 3.0])?;
+/// let zeros = device.zeroed::<f32>(2)?;
+/// assert_eq!(device.readback(&input)?, [1.0, 2.0, 3.0]);
+/// assert_eq!(device.readback(&zeros)?, [0.0, 0.0]);
+/// # Ok::<(), gust::cpu::Error>(())
+/// ```
 pub trait MapHost: TypedDevice<Error: error::Error + Send + Sync + 'static> {
     /// The device's buffer for a vector of `T`: a [`Resource`] of this very device, so a call can take it.
     type Buffer<T: GpuPod>: Resource<Element = T, Device = Self, Kind = crate::kind::Storage>;
@@ -62,6 +74,23 @@ pub trait MapHost: TypedDevice<Error: error::Error + Send + Sync + 'static> {
 }
 
 /// The error of a map call. Profile-stable: every build reports the same variants, whichever device ran.
+///
+/// ```
+/// use gust::map::Error;
+///
+/// let error = Error::LengthMismatch { parameter: "ys", expected: 3, found: 2 };
+/// assert!(error.to_string().contains("`ys` has 2 elements"));
+/// // `Empty` is the error of a call made of broadcast scalars alone; a device error is recovered with `downcast_ref`.
+/// assert_eq!(Error::Empty.to_string(), "the call has no slice argument to take its length from");
+/// assert!(Error::Empty.downcast_ref::<std::fmt::Error>().is_none());
+/// let wrapped = Error::device(std::fmt::Error);
+/// assert!(wrapped.downcast_ref::<std::fmt::Error>().is_some());
+/// // The enum is non-exhaustive: match it with a wildcard arm.
+/// match wrapped {
+///     Error::Device(_) => {}
+///     _ => unreachable!(),
+/// }
+/// ```
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
@@ -161,11 +190,33 @@ pub const CEILING: u32 = 65_535 * WORKGROUP_SIZE;
 /// that the kernel reads at index 0 (a buffer of length 1 is read at index 0 whatever the element index is; a call
 /// with other arguments longer than 1 element cannot mistake a real vector for it, because those must all have the
 /// call's length).
+///
+/// ```
+/// use gust::cpu::CpuDevice;
+/// use gust::map::{Broadcast, MapArg};
+///
+/// // A broadcast has no length of its own; it is uploaded as a one-element buffer.
+/// let scale = Broadcast(2.0_f32);
+/// assert_eq!(MapArg::<f32, CpuDevice>::shape(&scale), None);
+/// let device = CpuDevice::new();
+/// let bound = MapArg::<f32, CpuDevice>::bind(scale, &device)?;
+/// assert_eq!(bound.len(), 1);
+/// # Ok::<(), gust::map::Error>(())
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Broadcast<T>(pub T);
 
 /// A buffer that is already on the device of a map call and has a length: a `GpuVec` of the GPU backend, a
 /// `GpuBuffer`, a `CpuBuffer`. `&R` is a [`MapArg`] for every such `R`, bound without a copy.
+///
+/// ```
+/// use gust::cpu::CpuDevice;
+/// use gust::map::Resident;
+///
+/// let device = CpuDevice::new();
+/// let buffer = device.buffer(&[1_u32, 2, 3, 4]);
+/// assert_eq!(buffer.resident_len(), 4);
+/// ```
 pub trait Resident: Resource<Kind = crate::kind::Storage> {
     /// The number of elements.
     fn resident_len(&self) -> usize;
@@ -213,6 +264,20 @@ mod sealed {
 /// takes `&[bool]`, `&Vec<bool>`, `&[bool; N]` and `Broadcast<bool>` (converted to 0/1 words) and never the `u32`
 /// forms of those; a resident 0/1 vector is a `GpuVec<u32>`, the buffer element of `bool` (a resident buffer is typed
 /// by its element, so it serves a `bool` and a `u32` parameter alike).
+///
+/// ```
+/// use gust::cpu::CpuDevice;
+/// use gust::map::MapArg;
+///
+/// let device = CpuDevice::new();
+/// let values = [1.0_f32, 2.0, 3.0];
+/// // A host slice has a shape and is uploaded when bound.
+/// let slice: &[f32] = &values;
+/// assert_eq!(MapArg::<f32, CpuDevice>::shape(&slice), Some(3));
+/// let bound = MapArg::<f32, CpuDevice>::bind(slice, &device)?;
+/// assert_eq!(bound.len(), 3);
+/// # Ok::<(), gust::map::Error>(())
+/// ```
 pub trait MapArg<H: MapElement, D: MapHost> {
     /// The typed resource the kernel is called with.
     type Res: Resource<Element = H::Element, Device = D, Kind = crate::kind::Storage>;

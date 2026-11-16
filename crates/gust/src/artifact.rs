@@ -28,6 +28,15 @@ use crate::{
 };
 
 /// The compiler output format of an [`Artifact`].
+///
+/// ```
+/// use gust::artifact::Format;
+/// use gust::slang::Target;
+///
+/// assert_eq!(Format::Wgsl.target(), Target::Wgsl);
+/// assert_eq!(Target::from(Format::Spirv), Target::Spirv);
+/// assert_eq!(Format::ALL, [Format::Wgsl, Format::Spirv]);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Format {
@@ -58,6 +67,18 @@ impl From<Format> for Target {
 }
 
 /// Compiler output for one kernel plus the helper's raw reflection JSON for it.
+///
+/// The struct is `#[non_exhaustive]`: build one with `new` (a `const fn`) and change a field with the `with_*`
+/// methods.
+///
+/// ```
+/// use gust::artifact::{Artifact, Format};
+///
+/// const WGSL: Artifact = Artifact::new(Format::Wgsl, "0123456789abcdef", b"// wgsl", "{}");
+/// let spirv = WGSL.with_format(Format::Spirv).with_bytes(&[3, 2, 35, 7]);
+/// assert_eq!(WGSL.format, Format::Wgsl);
+/// assert_eq!((spirv.format, spirv.key, spirv.bytes), (Format::Spirv, "0123456789abcdef", &[3u8, 2, 35, 7][..]));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Artifact {
@@ -120,7 +141,50 @@ impl Artifact {
     }
 }
 
-/// What [`verify_artifact`] established about an artifact.
+/// What [`verify_artifact`] established about an artifact: the compiler output with its reflection, and one
+/// cross-check per storage parameter. A real one needs a compiled kernel, so this example compiles one (it needs the
+/// `slang-runtime` feature and the pinned Slang) and verifies it as a precompiled artifact:
+///
+/// ```
+/// use gust::gpu;
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     #[cfg(feature = "slang-runtime")]
+///     {
+///         use gust::artifact::{Artifact, Format, content_key, verify_artifact};
+///         use gust::reflect::{compile_reflected_clean, native_compiler_path};
+///         use gust::slang::Target;
+///
+///         let kernel = &ops::double::DESCRIPTOR;
+///         let clean = compile_reflected_clean(kernel, Target::Wgsl, native_compiler_path())?;
+///         let key = format!("{:016x}", content_key(kernel.entry_point, kernel.slang_source));
+///         // An `Artifact` is normally a build-time `const` of `'static` data. The leaks give this one
+///         // `'static` data at run time; do not copy them into an application.
+///         let artifact = Artifact::new(
+///             Format::Wgsl,
+///             Box::leak(key.into_boxed_str()),
+///             Box::leak(clean.compiled.artifact.into_boxed_slice()),
+///             Box::leak(clean.reflection_json.into_boxed_str()),
+///         );
+///         let verified = verify_artifact(kernel, &artifact)?;
+///         assert_eq!(verified.compiled.entry_point, kernel.entry_point);
+///         assert_eq!(verified.cross_checks.len(), 1);
+///         assert!(verified.cross_checks[0].is_full_abi_match());
+///     }
+///     Ok(())
+/// }
+/// ```
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Verified {
@@ -142,6 +206,27 @@ pub struct Verified {
 ///
 /// Identity failures are [`Error::Invalid`] and name the value that differed; a descriptor
 /// that disagrees with the stored layouts is [`Error::Mismatch`] or [`Error::Incomplete`].
+///
+/// An artifact whose stored reflection is not a reflection document is refused before anything else is compared:
+///
+/// ```
+/// use gust::artifact::{Artifact, Format, verify_artifact};
+/// use gust::gpu;
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// let bogus = Artifact::new(Format::Wgsl, "0000000000000000", b"// not compiler output", "not json");
+/// assert!(verify_artifact(&ops::double::DESCRIPTOR, &bogus).is_err());
+/// ```
 pub fn verify_artifact(kernel: &KernelDescriptor, artifact: &Artifact) -> Result<Verified, Error> {
     let compiled = CompiledReflection::from_output(
         kernel,
@@ -159,6 +244,15 @@ pub fn verify_artifact(kernel: &KernelDescriptor, artifact: &Artifact) -> Result
 
 /// The key of a kernel's artifacts: FNV-1a 64 over the entry point, one zero byte and the
 /// kernel's clean Slang text (`KernelDescriptor::slang_source`). Format it with `{:016x}`.
+///
+/// ```
+/// use gust::artifact::content_key;
+///
+/// let key = content_key("main", "// slang");
+/// assert_eq!(key, content_key("main", "// slang"));
+/// assert_ne!(key, content_key("other", "// slang"));
+/// assert_eq!(format!("{key:016x}").len(), 16);
+/// ```
 pub fn content_key(entry_point: &str, slang_source: &str) -> u64 {
     fnv1a64(&[entry_point.as_bytes(), &[0], slang_source.as_bytes()])
 }

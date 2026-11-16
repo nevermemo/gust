@@ -18,13 +18,49 @@ use crate::{Error, GpuBuffer, GpuBufferAccess, HeadlessDevice, assert_pod_matche
 /// The handle a resident buffer holds to its device: `Arc<HeadlessDevice>` on native, where the device is `Send` and
 /// `Sync`, and `Rc<HeadlessDevice>` on `wasm32`, where wgpu's WebGPU device is neither (checked under `check-web`,
 /// m7.a0 S3). `GpuVec` is `Send + Sync` on native only.
+///
+/// `DeviceHandle::new` wraps a device you opened, and cloning the handle shares it:
+///
+/// ```
+/// use gust_wgpu::{DeviceHandle, HeadlessDevice};
+///
+/// let handle = DeviceHandle::new(HeadlessDevice::new()?);
+/// let shared = DeviceHandle::clone(&handle);
+/// assert_eq!(shared.id(), handle.id());
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 #[cfg(not(target_arch = "wasm32"))]
 pub type DeviceHandle = Arc<HeadlessDevice>;
 /// The handle a resident buffer holds to its device: `Rc<HeadlessDevice>` on `wasm32` (see the native alias).
+///
+/// `DeviceHandle::new` wraps a device you opened, and cloning the handle shares it (on `wasm32` the device comes from
+/// `HeadlessDevice::new_async`, since `new` does not exist there):
+///
+/// ```
+/// # use gust_wgpu::HeadlessDevice;
+/// use gust_wgpu::DeviceHandle;
+///
+/// # fn share(device: HeadlessDevice) {
+/// let handle = DeviceHandle::new(device);
+/// let shared = DeviceHandle::clone(&handle);
+/// assert_eq!(shared.id(), handle.id());
+/// # }
+/// ```
 #[cfg(target_arch = "wasm32")]
 pub type DeviceHandle = std::rc::Rc<HeadlessDevice>;
 
 /// Which adapter [`HeadlessDevice::new_async_with`] opens.
+///
+/// The default is the high-performance adapter; `NameContains` picks by name, ignoring letter case:
+///
+/// ```
+/// use gust_wgpu::{AdapterChoice, DeviceOptions};
+///
+/// assert_eq!(AdapterChoice::default(), AdapterChoice::HighPerformance);
+/// let options =
+///     DeviceOptions::default().with_adapter(AdapterChoice::NameContains("nvidia".to_owned()));
+/// assert_eq!(options.adapter, AdapterChoice::NameContains("nvidia".to_owned()));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum AdapterChoice {
@@ -46,6 +82,18 @@ pub enum AdapterChoice {
 /// [`default_device`] allows storage bindings up to the adapter's size (2 GiB on the adapters measured in S7.6),
 /// where the browser allows 128 MiB. A program that must behave the same on both sets
 /// [`Default`](Self::Default) through [`set_default_options`].
+///
+/// ```
+/// use gust_wgpu::{DeviceOptions, HeadlessDevice, LimitsPolicy};
+///
+/// assert_eq!(LimitsPolicy::default(), LimitsPolicy::Default);
+/// let options = DeviceOptions::default().with_limits(LimitsPolicy::Default);
+/// assert_eq!(options.limits, LimitsPolicy::Default);
+/// let device = HeadlessDevice::with_options(options)?;
+/// // `Default` asks for wgpu's default storage binding size, 128 MiB.
+/// assert_eq!(device.limits().max_storage_buffer_binding_size, 128 << 20);
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum LimitsPolicy {
@@ -96,6 +144,18 @@ impl LimitsPolicy {
 ///
 /// The enum is `#[non_exhaustive]`: a later release may add a policy, so a `match` outside this crate needs a wildcard
 /// arm.
+///
+/// With [`Default`](Self::Default) the device enables no optional feature, so `float32-filterable` is off:
+///
+/// ```
+/// use gust_wgpu::{DeviceOptions, FeaturesPolicy, HeadlessDevice};
+///
+/// assert_eq!(FeaturesPolicy::default(), FeaturesPolicy::Default);
+/// let options = DeviceOptions::default().with_features(FeaturesPolicy::Default);
+/// let device = HeadlessDevice::with_options(options)?;
+/// assert!(!device.float32_filterable());
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum FeaturesPolicy {
@@ -135,6 +195,25 @@ impl FeaturesPolicy {
 /// [`DeviceOptions::default()`](Default::default) and the `with_*` methods, which set one field each
 /// (`DeviceOptions::default().with_adapter(AdapterChoice::LowPower)`). The fields stay public to read and to assign
 /// on a value you already hold.
+///
+/// ```
+/// use gust_wgpu::{AdapterChoice, DeviceOptions, FeaturesPolicy, HeadlessDevice, LimitsPolicy};
+///
+/// let options = DeviceOptions::default()
+///     .with_adapter(AdapterChoice::HighPerformance)
+///     .with_limits(LimitsPolicy::Default)
+///     .with_features(FeaturesPolicy::Default);
+/// assert_eq!(options.adapter, AdapterChoice::HighPerformance);
+///
+/// // A field of a value you hold can be assigned too.
+/// let mut again = options.clone();
+/// again.adapter = AdapterChoice::Index(0);
+/// assert_ne!(again, options);
+///
+/// let device = HeadlessDevice::with_options(options)?;
+/// assert!(!device.adapter_info().name.is_empty());
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DeviceOptions {
@@ -703,6 +782,20 @@ mod web_default {
 
 /// Set the options of the default device. They apply to the first [`default_device`] (or
 /// [`default_device_async`]) of the process; after the device is open this is `Error::DefaultDeviceOpened`.
+///
+/// ```
+/// use gust_wgpu::{DeviceOptions, Error, LimitsPolicy, default_device, set_default_options};
+///
+/// set_default_options(DeviceOptions::default().with_limits(LimitsPolicy::Default))?;
+/// let device = default_device()?;
+/// assert!(!device.adapter_info().name.is_empty());
+/// // Once the device is open the options are fixed.
+/// assert!(matches!(
+///     set_default_options(DeviceOptions::default()),
+///     Err(Error::DefaultDeviceOpened)
+/// ));
+/// # Ok::<(), Error>(())
+/// ```
 pub fn set_default_options(options: DeviceOptions) -> Result<(), Error> {
     #[cfg(not(target_arch = "wasm32"))]
     return native_default::set_options(options);
@@ -721,6 +814,15 @@ pub fn set_default_options(options: DeviceOptions) -> Result<(), Error> {
 ///
 /// On `wasm32` nothing may block: this returns the device [`default_device_async`] already opened, or
 /// `Error::NoAdapter` before that.
+///
+/// ```
+/// use gust_wgpu::default_device;
+///
+/// let first = default_device()?;
+/// let second = default_device()?;
+/// assert_eq!(first.id(), second.id());
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 pub fn default_device() -> Result<DeviceHandle, Error> {
     #[cfg(not(target_arch = "wasm32"))]
     return native_default::get();
@@ -730,6 +832,21 @@ pub fn default_device() -> Result<DeviceHandle, Error> {
 
 /// [`default_device`] for the browser, where opening the device is asynchronous. On native it opens the device on
 /// the calling thread and returns at once (the adapter retry may sleep it, as `HeadlessDevice::new_async` does).
+///
+/// ```
+/// use std::{future::Future, pin::pin, task::{Context, Poll, Waker}};
+/// use gust_wgpu::{default_device, default_device_async};
+///
+/// // A minimal executor: on native this future is ready on its first poll.
+/// let mut context = Context::from_waker(Waker::noop());
+/// let mut future = pin!(default_device_async());
+/// let Poll::Ready(opened) = future.as_mut().poll(&mut context) else {
+///     panic!("the default device opens without waiting on native");
+/// };
+/// let opened = opened?;
+/// assert_eq!(opened.id(), default_device()?.id());
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 pub async fn default_device_async() -> Result<DeviceHandle, Error> {
     #[cfg(not(target_arch = "wasm32"))]
     return native_default::get();

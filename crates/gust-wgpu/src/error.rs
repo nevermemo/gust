@@ -17,6 +17,24 @@ pub(crate) const INDIRECT_ARGUMENTS: &str = "<indirect dispatch arguments>";
 ///
 /// The enum is `#[non_exhaustive]`: a later release can add a variant without a breaking change, so a `match` in
 /// another crate needs a wildcard arm.
+///
+/// A rejected call names what is wrong. Writing three values into a two-element buffer is
+/// [`Error::PersistentBufferLength`], found before any GPU work:
+///
+/// ```
+/// use gust_wgpu::{Error, GpuBufferAccess, HeadlessDevice};
+///
+/// let device = HeadlessDevice::new()?;
+/// let buffer = device.create_typed_buffer("pair", &[1u32, 2], GpuBufferAccess::ReadWrite);
+/// let error = device.write_typed_buffer(&buffer, &[1u32, 2, 3]).unwrap_err();
+/// match &error {
+///     Error::PersistentBufferLength { expected, actual } => assert_eq!((*expected, *actual), (2, 3)),
+///     // The enum is `#[non_exhaustive]`: a match outside this crate needs a wildcard arm.
+///     other => panic!("unexpected error: {other}"),
+/// }
+/// assert_eq!(error.to_string(), "persistent buffer expects 2 elements, got 3");
+/// # Ok::<(), Error>(())
+/// ```
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {

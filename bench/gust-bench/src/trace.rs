@@ -103,7 +103,7 @@ fn trace_gust(
     // `trace` is a diagnostic subcommand that runs no sampler or rayon pool and spawns no thread of its own (a driver
     // opened by an earlier loop iteration may own threads). What carries the soundness is that on Windows, the only
     // platform it is run on, the call is `SetEnvironmentVariableW`, which is not racy with the loader's own reads. Do not
-    // run `trace` from a multi-threaded caller on another platform.
+    // run `trace` on another platform without moving the variable into a wrapper process.
     unsafe { std::env::set_var("GUST_WGPU_TRACE_DIR", &dir) };
     let device = Rc::new(gust_wgpu::HeadlessDevice::new()?);
     let mut backend = crate::gust_gpu::GustGpu::new(Rc::clone(&device));

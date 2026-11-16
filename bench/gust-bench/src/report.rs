@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::{backend::BenchResult, harness::median};
 
-const BANNER: &str = "shared machine, not publishable";
+pub const BANNER: &str = "shared machine, not publishable";
 
 /// Metric ids in report order, with a label and what each one is.
 const METRICS: [(&str, &str); 4] = [
@@ -53,7 +53,7 @@ const BACKENDS: [&str; 19] = [
 
 /// The (p95 - p5) / median above which a run of a `gpu_batch_per_dispatch` cell is flagged as possibly two-state
 /// (README, "Reproducibility clause", for the calibration). 0.10 sits above every unflagged batch cell (0.004-0.086) and
-/// below the flagged ones' widest run (0.105-0.30) in the m10.b1c run files, and is not fitted beyond them. Whether the
+/// below the flagged ones' widest run (0.111-0.30) in the m10.b1c run files, and is not fitted beyond them. Whether the
 /// flagged W2 and W3 cells are two-state is not established.
 const TWO_STATE_GAP: f64 = 0.10;
 
@@ -251,6 +251,32 @@ fn fmt_ms(value: f64) -> String {
     } else {
         format!("{value:.4}")
     }
+}
+
+/// The sampler sidecars of the input runs, read from beside each run file, as one document
+/// (`{"runs":[{label, run_seed, sidecar, header, windows}]}`), and the names of the ones that could not be read.
+fn merge_sidecars(inputs: &[String], runs: &[Value]) -> (Value, Vec<String>) {
+    let mut merged = Vec::new();
+    let mut missing = Vec::new();
+    for (path, run) in inputs.iter().zip(runs) {
+        let name = run["sampler"]["sidecar"].as_str().unwrap_or("");
+        let document = (!name.is_empty())
+            .then(|| std::path::Path::new(path).with_file_name(name))
+            .and_then(|sidecar| fs::read_to_string(sidecar).ok())
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+        match document {
+            Some(document) => merged.push(json!({
+                "label": run["label"], "run_seed": run["run_seed"], "sidecar": name,
+                "header": document["header"], "windows": document["windows"],
+            })),
+            None => missing.push(if name.is_empty() {
+                path.clone()
+            } else {
+                name.to_owned()
+            }),
+        }
+    }
+    (json!({ "runs": merged }), missing)
 }
 
 fn load(paths: &[String]) -> BenchResult<Vec<Value>> {
@@ -657,6 +683,24 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
 
     let repro = reproducibility(&runs);
 
+    // The judgement of the aggregate (plan 2.4): every run publishable, three runs, one session, and every run's
+    // sampler sidecar present beside its file (the quiet-window evidence travels with the table).
+    let (mut publishable, mut publishable_reasons) = crate::judge::judge_aggregate(&runs);
+    let (merged_sidecar, missing) = merge_sidecars(inputs, &runs);
+    for name in missing {
+        publishable = false;
+        publishable_reasons.push(format!(
+            "the sampler sidecar of {name} is missing or unreadable"
+        ));
+    }
+    let sidecar_out = crate::sampler::sidecar_path(out_json);
+    fs::write(&sidecar_out, serde_json::to_string(&merged_sidecar)? + "\n")?;
+    let publishable_reason = if publishable {
+        "every run and the set passed plan 2.4 items 1 to 3; the attestation (item 5) is the results commit's".to_owned()
+    } else {
+        publishable_reasons.join("; ")
+    };
+
     // ---- JSON ----
     let points = table
         .iter()
@@ -704,9 +748,12 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
             )
         });
     let summary = json!({
-        "banner": BANNER,
-        "publishable": crate::meta::PUBLISHABLE,
-        "publishable_reason": crate::meta::PUBLISHABLE_REASON,
+        "banner": (!publishable).then_some(BANNER),
+        "publishable": publishable,
+        "publishable_reason": &publishable_reason,
+        "publishable_reasons": &publishable_reasons,
+        "thresholds": crate::judge::THRESHOLDS.json(),
+        "sidecar": sidecar_out.file_name().and_then(|n| n.to_str()),
         "route": runs[0]["route"],
         "build": runs[0]["build"],
         "adapter": runs[0]["adapter"],
@@ -716,7 +763,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         "meta": runs[0]["meta"],
         "config": runs[0]["config"],
         "runs": runs.iter().map(|run| json!({
-            "label": run["label"], "group": run["group"], "kill_rule": run["kill_rule"], "run_seed": run["run_seed"], "sidecar": run["sampler"]["sidecar"], "load_before": run["load_before"], "load_after": run["load_after"],
+            "label": run["label"], "group": run["group"], "kill_rule": run["kill_rule"], "run_seed": run["run_seed"], "sidecar": run["sampler"]["sidecar"], "publishable": run["publishable"], "publishable_reason": run["publishable_reason"], "window": run["window"], "load_before": run["load_before"], "load_after": run["load_after"],
             "gpu_before": run["gpu_before"], "gpu_after": run["gpu_after"],
             "wall_s": run["wall_s"], "failures": run["failures"],
         })).collect::<Vec<_>>(),
@@ -735,11 +782,17 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
     // ---- Markdown ----
     let mut md = String::new();
     writeln!(md, "# M10 premise measurement results\n")?;
-    writeln!(
-        md,
-        "**{BANNER}.** {} The conditions of each run are at the end.\n",
-        crate::meta::PUBLISHABLE_REASON
-    )?;
+    if publishable {
+        writeln!(
+            md,
+            "{publishable_reason}. The conditions of each run are at the end.\n"
+        )?;
+    } else {
+        writeln!(
+            md,
+            "**{BANNER}.** {publishable_reason}. The conditions of each run are at the end.\n"
+        )?;
+    }
     writeln!(
         md,
         "Shader source of gust-gpu's cold start: {}. Warm-up with load to P0 before each GPU cell, capped at {} s.\n",
@@ -1540,9 +1593,12 @@ mod tests {
         .unwrap();
         let summary: Value = serde_json::from_str(&fs::read_to_string(&out_json).unwrap()).unwrap();
         assert_eq!(summary["publishable"], false);
-        assert_eq!(
-            summary["publishable_reason"],
-            crate::meta::PUBLISHABLE_REASON
+        assert_eq!(summary["banner"], BANNER);
+        let reason = summary["publishable_reason"].as_str().unwrap();
+        assert!(reason.contains("at least 3 are needed"), "{reason}");
+        assert!(
+            reason.contains("sidecar of a.samples.json is missing"),
+            "{reason}"
         );
         assert_eq!(summary["runs"][0]["sidecar"], "a.samples.json");
         assert_eq!(summary["runs"][1]["sidecar"], "b.samples.json");

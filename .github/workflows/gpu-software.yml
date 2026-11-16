@@ -352,6 +352,17 @@ jobs:
         run: |
           set -o pipefail
           cargo --locked xtask check-ledger 2>&1 | tee "$RUNNER_TEMP/ledger-release.log"
+      - name: Benchmark harness, functional run on lavapipe (nightly list)
+        # `cargo xtask check-bench --functional` (m10.b1b) runs the bench harness (a workspace of its own) with
+        # `run --functional --quick` on whatever adapter is there and fails unless every correctness check passed. It
+        # times nothing for publication. The bench's target directory is kept outside the workspace. It builds a
+        # second workspace, so it is a nightly list step (the budget rule above), and it carries `!cancelled() &&`
+        # like the nightly steps after the differential test.
+        if: ${{ !cancelled() && env.GPU_SOFTWARE_NIGHTLY == 'true' }}
+        env:
+          BENCH_TARGET: ${{ runner.temp }}/bench-target
+        run: |
+          CARGO_TARGET_DIR="$BENCH_TARGET" cargo --locked xtask check-bench --functional --quick
       - name: Collect the evidence
         if: always()
         run: |

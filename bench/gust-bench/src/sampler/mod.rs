@@ -10,9 +10,12 @@
 //! - The harness's PID ancestry (harness, its shell-like parent chain, the harness's own descendants; the shell's other children are recorded apart as siblings), computed from the
 //!   start table and recorded; no process is dropped from the record, only flagged by the ancestry block.
 //!
-//! Nothing here judges anything: there are no thresholds and the `publishable` flag stays false (b1b sets thresholds
-//! from these records). Everything goes to the `<results>.samples.json` sidecar. On a platform without the counters
-//! the record says so and carries no samples.
+//! Nothing in this module judges anything: `judge` reads the window this module records and decides whether it was
+//! quiet (thresholds in `judge.rs`). Everything goes to the `<results>.samples.json` sidecar, each window with its
+//! attempt number and verdict. On a platform without the counters the record says so and carries no samples.
+
+// The counter, process-walk and mapping helpers run on Windows only; their unit tests run everywhere.
+#![cfg_attr(not(windows), allow(dead_code))]
 
 #[cfg(windows)]
 mod win;
@@ -20,9 +23,11 @@ mod win;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    thread,
     time::{Duration, Instant},
 };
+
+#[cfg(windows)]
+use std::thread;
 
 use serde_json::{Value, json};
 
@@ -172,8 +177,8 @@ pub struct Ancestry {
     /// Every descendant of the harness itself (its helper processes, their children). Excluded.
     pub descendants: Vec<u32>,
     /// Direct children of the other chain members that are not the harness or its descendants: a `cargo build`
-    /// started from the same terminal, a logger started from the same shell. These are **foreign** load until b1b
-    /// decides otherwise; they carry the mark `sibling_of_harness` in the sidecar.
+    /// started from the same terminal, a logger started from the same shell. These are **foreign** load (the judgement, `judge.rs`,
+    /// counts them: a builder under the same shell is load the run does not own); they carry the mark `sibling_of_harness`.
     pub siblings: Vec<u32>,
     /// The first ancestor that is not shell-like (not excluded), and why the walk ended.
     pub stopped_at: Option<u32>,
@@ -436,6 +441,14 @@ fn process_rows(table: &ProcTable) -> Value {
     )
 }
 
+/// The adapter under test as the sampler needs it: the PCI ids and the name wgpu reports.
+#[derive(Clone, Copy, Debug)]
+pub struct AdapterIdent<'a> {
+    pub vendor: u32,
+    pub device: u32,
+    pub name: &'a str,
+}
+
 /// The sampler: opened once per run, used once per cell.
 pub struct Sampler {
     timing: Timing,
@@ -446,21 +459,28 @@ pub struct Sampler {
 }
 
 impl Sampler {
-    pub fn open(timing: Timing, adapter: &wgpu::AdapterInfo) -> Self {
+    /// `adapter` is the adapter under test; `None` for a build without a GPU runtime (the `cpu` build), where the
+    /// mapping fails by construction and every adapter's activity counts (the stricter fallback).
+    pub fn open(timing: Timing, adapter: Option<AdapterIdent<'_>>) -> Self {
         #[cfg(windows)]
         let adapters = win::dxgi_adapters();
         #[cfg(not(windows))]
-        let adapters = Err("the GPU-engine counters exist on Windows only".to_owned());
-        let mapping = match &adapters {
-            Ok(list) => map_adapter(list, adapter.vendor, adapter.device, &adapter.name),
-            Err(reason) => Mapping::Failed(format!("DXGI enumeration failed: {reason}")),
+        let adapters: Result<Vec<DxgiAdapter>, String> =
+            Err("the GPU-engine counters exist on Windows only".to_owned());
+        let mapping = match (&adapters, &adapter) {
+            (Err(reason), _) => Mapping::Failed(format!("DXGI enumeration failed: {reason}")),
+            (Ok(_), None) => Mapping::Failed("no adapter under test in this build".to_owned()),
+            (Ok(list), Some(adapter)) => {
+                map_adapter(list, adapter.vendor, adapter.device, adapter.name)
+            }
         };
         Self {
             timing,
             own_pid: std::process::id(),
             adapters,
             mapping,
-            adapter_name: adapter.name.clone(),
+            adapter_name: adapter
+                .map_or_else(|| "none (no GPU runtime)".to_owned(), |a| a.name.to_owned()),
         }
     }
 
@@ -493,9 +513,8 @@ impl Sampler {
         json!({
             "schema": 1,
             "source": "PDH \\GPU Engine(*)\\Utilization Percentage; ToolHelp process table with GetProcessTimes",
-            "judgement": "none: recording only, thresholds are set later from these records",
-            "publishable": crate::meta::PUBLISHABLE,
-            "publishable_reason": crate::meta::PUBLISHABLE_REASON,
+            "judgement": "each window carries its `verdict` (judge.rs); the thresholds in force are `thresholds`",
+            "thresholds": crate::judge::THRESHOLDS.json(),
             "settle_s": self.timing.settle.as_secs_f64(),
             "window_s": self.timing.window.as_secs_f64(),
             "rate_hz": self.timing.rate_hz,
@@ -598,6 +617,7 @@ impl Sampler {
 
 /// The largest per-sample total utilisation of `pid` on each adapter LUID over the readings (the statistic plan 2.4
 /// uses is a maximum over the window).
+#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
 pub fn max_by_luid(readings: &[Reading], pid: u32) -> BTreeMap<Luid, f64> {
     let mut max = BTreeMap::new();
     for reading in readings {
@@ -618,6 +638,7 @@ pub fn max_by_luid(readings: &[Reading], pid: u32) -> BTreeMap<Luid, f64> {
 #[cfg(windows)]
 impl Sampler {
     /// Samples the GPU-engine counters for `duration` at the sampler's rate, without settling or a process table.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
     pub fn observe(&self, duration: Duration) -> Result<Vec<Reading>, String> {
         let pdh = win::Pdh::open()?;
         pdh.collect()?;
@@ -726,7 +747,7 @@ mod tests {
         assert_eq!(a.stopped_at, Some(10));
         assert_eq!(a.reason, "first ancestor that is not a shell or cargo");
         assert_eq!(a.descendants, vec![51]);
-        // rustc under the same shell is a sibling of the harness, foreign until b1b decides; its child is neither.
+        // rustc under the same shell is a sibling of the harness, foreign to the judgement; its child is neither.
         assert_eq!(a.siblings, vec![60]);
     }
 
@@ -1005,7 +1026,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sidecar_header_says_not_publishable_and_why() {
+    fn the_sidecar_header_records_the_thresholds_the_windows_were_judged_against() {
         let sampler = Sampler {
             timing: Timing::default(),
             own_pid: 1,
@@ -1014,11 +1035,18 @@ mod tests {
             adapter_name: "x".to_owned(),
         };
         let header = sampler.header();
-        assert_eq!(header["publishable"], false);
-        assert_eq!(
-            header["publishable_reason"],
-            crate::meta::PUBLISHABLE_REASON
-        );
-        assert!(!crate::meta::PUBLISHABLE_REASON.is_empty());
+        assert_eq!(header["thresholds"], crate::judge::THRESHOLDS.json());
+        assert_eq!(header["thresholds"]["t_gpu_percent"], 5.0);
+        assert_eq!(header["thresholds"]["attempts_per_cell"], 5);
+        // The judgement of a window lives in the window, not in the header: the header no longer carries a flag.
+        assert!(header["publishable"].is_null());
+        assert_eq!(header["luid_mapping"], "failed: every adapter is recorded");
+    }
+
+    #[test]
+    fn a_build_without_an_adapter_maps_nothing_and_counts_every_adapter() {
+        let sampler = Sampler::open(Timing::default(), None);
+        assert_eq!(sampler.mapped_luid(), None);
+        assert!(sampler.header()["luid_mapping_failure"].is_string());
     }
 }

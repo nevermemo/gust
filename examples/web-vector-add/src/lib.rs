@@ -5,7 +5,7 @@
 //! under `GUST_PROFILE=web`, runs `wasm-bindgen --target web`, serves `index.html` with the result from a loopback
 //! server, opens it in headless Chrome and reads the one line that [`run`] logs to the console:
 //!
-//! - `GUST_OK <vendor> <architecture> | selected <module.kernel=key:variant:n ...> | subgroups MissingCapability` when both forms of the kernel (the `grid` form, a compute pass, and the
+//! - `GUST_OK <vendor> <architecture> | selected <module.kernel=key:variant:n ...> | subgroups MissingCapability` when `create_zeroed_buffer_async` returns an output buffer that reads back as all `0.0` (a wasm32-only function that no native test reaches), and when both forms of the kernel (the `grid` form, a compute pass, and the
 //!   `pixel` form, a render pass whose fragments write the output buffer, D120) equal the host reference and each
 //!   other to the last bit, at [`LENGTH`] and at [`TWO_DRAWS`] elements, where the two words are what the browser says
 //!   about the adapter (`GPUAdapter.info`; wgpu's own `name` is empty there), and when the `WgpuJob` contract of the
@@ -291,7 +291,8 @@ fn check_job_contract(
     Ok(())
 }
 
-/// Both forms of the vector add over `length` elements: the `grid` form against the host reference, then the `pixel` form
+/// Both forms of the vector add over `length` elements: first the zero-fill contract of `create_zeroed_buffer_async` on
+/// the output buffer, then the `grid` form against the host reference, then the `pixel` form
 /// against the host reference and the grid result, all bit for bit.
 async fn both_forms(device: &HeadlessDevice, length: usize) -> Result<(), String> {
     // Small integers and halves: every sum is exact in f32, so the comparison below is exact.
@@ -301,7 +302,23 @@ async fn both_forms(device: &HeadlessDevice, length: usize) -> Result<(), String
 
     let a = device.create_typed_buffer("web a", &a, GpuBufferAccess::ReadOnly);
     let b = device.create_typed_buffer("web b", &b, GpuBufferAccess::ReadOnly);
-    let out = device.create_typed_buffer("web out", &vec![0.0; length], GpuBufferAccess::ReadWrite);
+    // The output buffer comes from `create_zeroed_buffer_async` (wasm32 only, so this page is the only place that reaches
+    // it), and the zero-fill contract is observed before any dispatch: every element reads back as `0.0`.
+    let out = device
+        .create_zeroed_buffer_async::<f32>("web out", length, GpuBufferAccess::ReadWrite)
+        .await
+        .map_err(|error| format!("n = {length}: create_zeroed_buffer_async failed: {error}"))?;
+    let zeros = device
+        .read_typed_buffer_async(&out)
+        .await
+        .map_err(|error| format!("n = {length}: zeroed buffer read-back failed: {error}"))?;
+    if zeros.len() != length || zeros.iter().any(|&value| value != 0.0) {
+        return Err(format!(
+            "n = {length}: create_zeroed_buffer_async did not zero-fill: {} values read back, {} of them not 0.0",
+            zeros.len(),
+            zeros.iter().filter(|&&value| value != 0.0).count()
+        ));
+    }
     // The job is not waited on: in the browser `WgpuJob::wait` returns an error (see its documentation). The awaited
     // readback below is what resolves when the dispatch and the copy are done.
     let job = vector_add::add::submit(device, length as u32, &a, &b, &out)

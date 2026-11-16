@@ -81,6 +81,7 @@ impl Selection {
             "device_type": format!("{:?}", self.info.device_type),
             "backend": format!("{:?}", self.info.backend),
             "driver": self.info.driver,
+            "pci_bus_id": self.info.device_pci_bus_id,
         })
     }
 

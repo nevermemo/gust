@@ -11,6 +11,8 @@
 //! in parallel. The sum (W7): rayon folds a chunk per task and reduces the partial sums (`wrapping_add` for `u32`, `+` for `f32`, so
 //! its order of summation is a tree whose shape depends on the splits); the serial row adds left to right. The naive
 //! matrix product (W9): the serial loop is `matmul::row` for every row, rayon takes the rows in parallel.
+//!
+//! The staged pipeline (W6): one element's six stages at a time (`signal_pipeline::element`), in the hand-ordered form only.
 
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
@@ -18,7 +20,9 @@ use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 
 use crate::{
     backend::{Backend, BenchResult, Kind},
-    workloads::{Inputs, Workload, matmul, particles, polynomial, saxpy, sum, vector_add},
+    workloads::{
+        Inputs, Workload, matmul, particles, polynomial, saxpy, signal_pipeline, sum, vector_add,
+    },
 };
 
 pub struct CpuLoop {
@@ -79,6 +83,7 @@ impl CpuLoop {
             }
             "W3" => self.run_poly(&inputs.coeffs, &inputs.x, out),
             "W5" => self.particles(inputs, out),
+            "W6" => self.pipeline(inputs, out),
             "W7" => out[0] = self.sum(workload, inputs),
             "W9" => self.matmul(inputs, out),
             _ => self.histogram(&inputs.keys, inputs.bins, out),
@@ -165,6 +170,26 @@ impl CpuLoop {
         }
     }
 
+    /// The staged pipeline (W6): the six stages of one element in a row, an element at a time (the CPU has no use for six
+    /// passes over memory; `signal_pipeline::element` is the six statements, each stage rounded to `f32`).
+    fn pipeline(&self, inputs: &Inputs, out: &mut [f32]) {
+        let [s, b, g, bi, sc] = &inputs.pipeline[..] else {
+            panic!("W6 has five input streams")
+        };
+        match &self.pool {
+            None => {
+                for (i, o) in out.iter_mut().enumerate() {
+                    *o = signal_pipeline::element(s[i], b[i], g[i], bi[i], sc[i]);
+                }
+            }
+            Some(pool) => pool.install(|| {
+                out.par_iter_mut().enumerate().for_each(|(i, o)| {
+                    *o = signal_pipeline::element(s[i], b[i], g[i], bi[i], sc[i]);
+                });
+            }),
+        }
+    }
+
     /// The naive product, a row of `C` at a time.
     fn matmul(&self, inputs: &Inputs, out: &mut [f32]) {
         let n = inputs.n;
@@ -227,6 +252,11 @@ impl Backend for CpuLoop {
 
     fn kind(&self) -> Kind {
         Kind::Cpu
+    }
+
+    /// W6 runs in its hand-ordered form only: a CPU loop has no graph, so the `StagedGraph` form has no row here.
+    fn supports(&self, workload: Workload) -> bool {
+        !workload.is_graph_form()
     }
 
     fn prepare(&mut self, workload: Workload, inputs: &Inputs) -> BenchResult<()> {

@@ -19,6 +19,7 @@ A custom harness in a nested, unpublished workspace. It measures six workload fa
   and the hand WGSL run different algorithms on W7 and GUST's sum exposes no GPU timestamps, so W7 has no GUST/hand ratio
   in the report, and its cells are outside the kill rule and listed in `kill_rule.excluded`.
 - **W5 particle step** (`W5`), 2^16 and 2^20 particles (a 28-byte std430 struct element: nested position and velocity pairs, a mass, a `u32` tag, an `i32` charge), 16 explicit-Euler steps per invocation. Backends: GUST (and the SPIR-V route), `gust-twin`, `gust-cpu`, rayon, serial and the hand WGSL (`shaders/particles.wgsl`, same layout, asserted against GUST's reflection). The integers and the mass are bit-exact; each float field is inside a bound derived from the expression tree (`gust-bench/src/workloads/particles.rs`, `docs/BENCHMARKS.md`). The size is the particle count.
+- **W6 staged pipeline** (`W6-graph` and `W6-hand`), `signal-pipeline`'s six statements as six kernels in a chain, `f32`, 2^20 and 2^22 elements (quick: 2^20), five input streams, a buffer between stages, one output. `W6-graph` is GUST's `StagedGraph` (graph build, validation and execution inside every timed sample, no GPU timestamps); `W6-hand` is the same six calls as one `dispatch_batch`, no graph. Backends: `gust-gpu` (both forms, and the SPIR-V route build), `gust-twin` and `gust-cpu` (`W6-hand` only: they have no graph), rayon, serial and the hand WGSL (`shaders/signal_pipeline.wgsl`, six entry points, six passes, one submit; the baseline of both forms). The last stage is checked against a bound derived from the expression tree (`gust-bench/src/workloads/signal_pipeline.rs`, `docs/BENCHMARKS.md`), and a unit test checks every stage. The size is the element count.
 - **W9 naive matrix product** (`W9-naive`), `N x N` f32 with `N` 256, 512, 1024, 2048, one output entry per invocation (a
   16 by 16 workgroup, a 2-D dispatch). Backends: GUST, hand WGSL, rayon, serial, and `gust-twin` in a `--cfg gust_dual`
   build (and `gust-gpu-spirv` in the `spirv-route` build). Correct when every entry is inside Higham's inner-product bound
@@ -27,7 +28,7 @@ A custom harness in a nested, unpublished workspace. It measures six workload fa
 
 `--adapter "<name substring>"` opens both devices (GUST's and the hand wgpu one) on the one Vulkan adapter whose name contains the text, case-insensitively; no match or several matches is an error listing the adapters found, and without the flag the harness keeps its high-performance choice. The selection is recorded in the run file (`meta.adapter_selection`, and the hand device's own adapter in `meta.hand_wgsl_adapter_info`; the run fails if the devices, or the selection, are not on one adapter by name, vendor, device, backend and PCI bus id). Two adapters with identical names cannot be told apart by name, so `--adapter` reports them as ambiguous and cannot select one. `profile` and `trace` open their own devices on the default adapter and refuse the flag.
 
-`--workloads` takes a workload id or a family (`W3` is the three degrees, `W4` the four histograms, `W5` the particle step, `W7` the two sums). Every workload
+`--workloads` takes a workload id or a family (`W3` is the three degrees, `W4` the four histograms, `W5` the particle step, `W6` the two staged-pipeline forms, `W7` the two sums). Every workload
 runs its own size ladder (`gust-bench list`); `--sizes` overrides it for all of them (for W9 the values are matrix sides,
 and a value above 4096 is refused beside W9). On these backends:
 
@@ -195,7 +196,7 @@ pipeline was already created once on the same device by `prepare`).
 The `#[gpu]` macro embeds artifacts found in `gust-artifacts/` beside the Cargo.toml of the package that compiles it.
 `gust-bench` has none, so it compiles Slang at run time. `gust-bench-pre` is the same harness sources (its binary
 `gust-bench-pre` has `path = "../gust-bench/src/main.rs"`) in a package of its own, with the committed artifacts in
-`gust-bench-pre/gust-artifacts/` (every kernel the build has: add, saxpy, horner, histogram, matmul and step); a build of it embeds them and its
+`gust-bench-pre/gust-artifacts/` (every kernel the build has: add, saxpy, horner, histogram, matmul and step, and the six W6 stage kernels: center, amplify, shift, rescale, energy and combine); a build of it embeds them and its
 results say `config.shader_source = "precompiled"`. It is built with `GUST_PROFILE=native`, which refuses
 `slang-runtime` and requires an artifact for every kernel, so in that build the artifact path is the only possible one.
 To regenerate them after a kernel changes: `cargo gust build --manifest-path bench/gust-bench-pre/Cargo.toml` (the
@@ -315,7 +316,7 @@ Correctness: before every sample the device output is overwritten with NaN (outs
 and after every sample the output is read back and compared with a serial reference. W1 must match bit for bit; W2 must stay inside the derived
 two-operation bound of `docs/BENCHMARKS.md` (a GPU compiler may fuse the multiply-add, which is inside it); W3 must stay inside
 its Higham bound; W4 must match the serial counts exactly (its bins start at zero, because the kernel adds into them, so a dispatch
-that does not run reads back all zeros and fails); W5 must keep `mass`, `tag` and `charge` bit for bit and keep each float field inside its per-field bound; W7 `u32` must match the wrapping sum exactly and W7 `f32` stay inside the bound of the summation order it runs; W9 must keep every entry inside Higham's inner-product bound. A NaN never passes.
+that does not run reads back all zeros and fails); W6 must keep its final stage inside the composed bound (and each stage inside its own, in a unit test); W5 must keep `mass`, `tag` and `charge` bit for bit and keep each float field inside its per-field bound; W7 `u32` must match the wrapping sum exactly and W7 `f32` stay inside the bound of the summation order it runs; W9 must keep every entry inside Higham's inner-product bound. A NaN never passes.
 A failed check or a moved cache counter marks the run as failed.
 
 Statistics are median, min, p5, p95, MAD and the count of samples beyond 3 MAD (counted, never dropped). The aggregate

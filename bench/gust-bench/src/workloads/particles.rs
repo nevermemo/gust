@@ -60,7 +60,8 @@
 //!
 //! (`Chain`). Each `vx_k` is itself such a chain, and its bound enters the product `vx_k dt`, a term of the position chain.
 //! The product-form bound is loose, not a guess: it is rigorous for every grouping and never smaller than the bound of the
-//! written order. Tests evaluate the step with the additions reversed and in a pairwise tree and show both inside it.//!
+//! written order. Tests evaluate the step with the additions reversed, in a pairwise tree and largest first, and show all three inside it.
+//!
 //! The reference is the same recurrence in f64 (`dt` as the exact f64 of the f32 constant), which has its own error,
 //! carried with `u = 2^-53`, no `eta` and an exact `dt`. A field's bound is the sum of the f32 model's final `e` and the
 //! f64 reference's, and a factor `1 + 1e-9` that covers the f64 evaluation of the bound itself and the difference between

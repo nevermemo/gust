@@ -10,6 +10,11 @@
 //! called on a resident `GpuVec` and read back to the host, which is the public call a program makes. It needs the
 //! `algo` feature (`gust-bench-pre` has none: gust-algo ships no precompiled artifacts), has no GPU timestamps, and its
 //! `f32` result is judged against `gust-algo`'s own bound for the schedule that ran (`Backend::sum_tree_bound`).
+//!
+//! W6 (staged pipeline) is six kernels of this crate in two forms: `PipelineHand` builds the six typed calls and runs them as one
+//! `dispatch_batch` (six passes, one submit); `PipelineGraph` builds a `StagedGraph` of the six calls (derived edges) and
+//! executes it inside every timed sample, so graph construction and validation are part of that sample. The graph has no GPU
+//! timestamps (`gpu_time` is `None`), and its end-to-end sample puts the uploads and the read-back in the same graph.
 
 use std::{
     cell::{Cell, RefCell},
@@ -19,7 +24,7 @@ use std::{
 use gust::{Extent, Independent};
 #[cfg(feature = "algo")]
 use gust_wgpu::GpuVec;
-use gust_wgpu::{BufferDispatch, DeviceHandle, GpuBuffer, GpuBufferAccess};
+use gust_wgpu::{BufferDispatch, DeviceHandle, GpuBuffer, GpuBufferAccess, StagedGraph};
 use serde_json::Value;
 
 use crate::{
@@ -27,7 +32,7 @@ use crate::{
     route,
     workloads::{
         self, Inputs, Workload, counts_as_words, hist_threads, histogram, matmul, normalize_counts,
-        particles, polynomial, saxpy, vector_add,
+        particles, polynomial, saxpy, signal_pipeline, vector_add,
     },
 };
 
@@ -68,6 +73,13 @@ enum Data {
         host_input: Vec<particles::kernel::Particle>,
         host_acceleration: Vec<particles::kernel::Pair>,
         poison: Vec<particles::kernel::Particle>,
+    },
+    /// W6: the five resident input streams (`signal`, `baseline`, `gain`, `bias`, `scale`) and the six stage outputs
+    /// (`centered`, `amplified`, `biased`, `normalized`, `energy`, `out`). The stage outputs are read-write buffers (a
+    /// read-write buffer binds to a read-only parameter), so the graph form can read any of them back.
+    Pipeline {
+        inputs: Vec<GpuBuffer<f32>>,
+        stages: Vec<GpuBuffer<f32>>,
     },
     /// W7 on `gust-algo`: the resident input and the word the last sum returned (the output of this backend, which has
     /// no device-side output buffer to read: the public sum returns its value to the host).
@@ -137,7 +149,7 @@ pub struct GustGpu {
     /// Route events of the cell's kernel already on the device when `prepare` began: the events are cumulative over the
     /// device's life (the W3 cells share `kernel::horner`), so a cell's own share is the total minus this.
     #[cfg(feature = "spirv-route")]
-    events_before_prepare: Cell<usize>,
+    events_before_prepare: RefCell<Vec<usize>>,
 }
 
 /// Whether the public sum runs its v1 schedule on a device with these limits: a replica of `gust_algo::limits::admits`
@@ -194,7 +206,7 @@ impl GustGpu {
             passes: Cell::new(0),
             route: RefCell::new(None),
             #[cfg(feature = "spirv-route")]
-            events_before_prepare: Cell::new(0),
+            events_before_prepare: RefCell::new(Vec::new()),
         }
     }
 
@@ -285,11 +297,84 @@ impl GustGpu {
                 let call = particles::kernel::step::call(n, input, acceleration, out);
                 run(BufferDispatch::from(&call))
             }
+            Data::Pipeline { .. } => {
+                unreachable!("W6 has six calls: see `with_pipeline`")
+            }
             #[cfg(feature = "algo")]
             Data::SumF32(_) | Data::SumU32(_) => {
                 unreachable!("W7 runs gust-algo's sum, not a kernel call of this crate")
             }
         }
+    }
+
+    /// W6: builds the six typed calls over the resident buffers, in stage order, and hands them to `run` as the call
+    /// value and the dispatch of each. The `Call` values are the ones a user of `kernel::dispatch` builds.
+    fn with_pipeline<R>(&self, run: impl FnOnce(Vec<BufferDispatch<'_>>) -> R) -> R {
+        use signal_pipeline::kernel;
+        let r = self.resident();
+        let n = r.n as u32;
+        let Data::Pipeline {
+            inputs: i,
+            stages: s,
+        } = &r.data
+        else {
+            unreachable!("with_pipeline is for W6")
+        };
+        let c0 = kernel::center::call(n, &i[0], &i[1], &s[0]);
+        let c1 = kernel::amplify::call(n, &s[0], &i[2], &s[1]);
+        let c2 = kernel::shift::call(n, &s[1], &i[3], &s[2]);
+        let c3 = kernel::rescale::call(n, &s[2], &i[4], &s[3]);
+        let c4 = kernel::energy::call(n, &s[3], &s[4]);
+        let c5 = kernel::combine::call(n, &s[4], &s[3], &s[5]);
+        run(vec![
+            BufferDispatch::from(&c0),
+            BufferDispatch::from(&c1),
+            BufferDispatch::from(&c2),
+            BufferDispatch::from(&c3),
+            BufferDispatch::from(&c4),
+            BufferDispatch::from(&c5),
+        ])
+    }
+
+    /// W6, the `StagedGraph` form: builds the graph of the six calls (derived edges), validates and executes it, all inside
+    /// the call. With `inputs` the graph also has an upload node per input stream and a readback of the output, and the
+    /// output words come back (the end-to-end sample); without, it is the six dispatches only (the timed `dispatch`).
+    fn run_graph(&self, inputs: Option<&Inputs>) -> BenchResult<Option<Vec<f32>>> {
+        use signal_pipeline::kernel;
+        let r = self.resident();
+        let n = r.n as u32;
+        let Data::Pipeline {
+            inputs: i,
+            stages: s,
+        } = &r.data
+        else {
+            unreachable!("run_graph is for W6")
+        };
+        let c0 = kernel::center::call(n, &i[0], &i[1], &s[0]);
+        let c1 = kernel::amplify::call(n, &s[0], &i[2], &s[1]);
+        let c2 = kernel::shift::call(n, &s[1], &i[3], &s[2]);
+        let c3 = kernel::rescale::call(n, &s[2], &i[4], &s[3]);
+        let c4 = kernel::energy::call(n, &s[3], &s[4]);
+        let c5 = kernel::combine::call(n, &s[4], &s[3], &s[5]);
+        let mut graph = StagedGraph::new();
+        if let Some(host) = inputs {
+            for (buffer, values) in i.iter().zip(&host.pipeline) {
+                graph.write(buffer, values.as_slice());
+            }
+        }
+        graph.run(&c0);
+        graph.run(&c1);
+        graph.run(&c2);
+        graph.run(&c3);
+        graph.run(&c4);
+        graph.run(&c5);
+        let read = inputs.map(|_| graph.read(&s[5]));
+        let output = self.device.execute_graph(&graph)?;
+        let words = match read {
+            Some(node) => Some(output.readback::<f32>(node)?),
+            None => None,
+        };
+        Ok(words)
     }
 
     /// One complete run of the workload on the resident data: a kernel dispatch, or for W7 the public sum (which waits and
@@ -310,6 +395,14 @@ impl GustGpu {
                 return Ok(());
             }
             _ => {}
+        }
+        if self.resident().workload.is_pipeline() {
+            if self.resident().workload.is_graph_form() {
+                self.run_graph(None)?;
+            } else {
+                self.with_pipeline(|dispatches| self.device.dispatch_batch(&dispatches))?;
+            }
+            return Ok(());
         }
         self.with_dispatch(|dispatch| self.device.dispatch_batch(&[dispatch]))?;
         Ok(())
@@ -336,6 +429,9 @@ impl GustGpu {
             Data::MatMul { c, .. } => d.read_typed_buffer(c)?,
             // The typed read-back as the harness's words: the conversion is inside an end-to-end sample (see BENCHMARKS.md).
             Data::Particles { out, .. } => particles::from_particles(&d.read_typed_buffer(out)?),
+            Data::Pipeline { stages, .. } => {
+                d.read_typed_buffer(&stages[signal_pipeline::STAGES - 1])?
+            }
             #[cfg(feature = "algo")]
             Data::SumF32(_) | Data::SumU32(_) => {
                 let device_word = self.resident().sum_dev.borrow();
@@ -421,9 +517,14 @@ impl Backend for GustGpu {
         self.resident = None;
         #[cfg(feature = "spirv-route")]
         {
-            let kernel = workloads::descriptor(workload).qualified_name().to_string();
-            self.events_before_prepare
-                .set(self.route_events_of(&kernel).len());
+            let before = workloads::descriptors(workload)
+                .iter()
+                .map(|descriptor| {
+                    self.route_events_of(&descriptor.qualified_name().to_string())
+                        .len()
+                })
+                .collect();
+            *self.events_before_prepare.borrow_mut() = before;
         }
         let d = &self.device;
         let n = inputs.n;
@@ -474,6 +575,35 @@ impl Backend for GustGpu {
                     poison,
                 };
                 (data, nan, Vec::new())
+            }
+            "W6" => {
+                let nan = vec![f32::NAN; n];
+                let names = ["signal", "baseline", "gain", "bias", "scale"];
+                let mut buffers = Vec::new();
+                for (name, values) in names.iter().zip(&inputs.pipeline) {
+                    let buffer = d.create_typed_buffer(name, values, read_only);
+                    d.write_typed_buffer_timed(&buffer, values)?;
+                    buffers.push(buffer);
+                }
+                let stages = [
+                    "centered",
+                    "amplified",
+                    "biased",
+                    "normalized",
+                    "energy",
+                    "out",
+                ]
+                .iter()
+                .map(|name| d.create_typed_buffer(name, &nan, read_write))
+                .collect();
+                (
+                    Data::Pipeline {
+                        inputs: buffers,
+                        stages,
+                    },
+                    nan,
+                    Vec::new(),
+                )
             }
             "W7" => (Self::sum_data(d, workload, inputs)?, Vec::new(), Vec::new()),
             "W9" => {
@@ -529,6 +659,12 @@ impl Backend for GustGpu {
             Data::Particles { out, poison, .. } => {
                 self.device.write_typed_buffer_timed(out, poison)?;
             }
+            // Every stage output: a stage that did not run leaves its NaN, and the final one never keeps a stale value.
+            Data::Pipeline { stages, .. } => {
+                for stage in stages {
+                    self.device.write_typed_buffer_timed(stage, &r.nan)?;
+                }
+            }
             #[cfg(feature = "algo")]
             Data::SumF32(_) | Data::SumU32(_) => {
                 r.sum_word.set(r.workload.poison_word());
@@ -566,6 +702,22 @@ impl Backend for GustGpu {
                 self.device
                     .write_typed_buffer(acceleration, host_acceleration)?;
             }
+            // W6, graph form: the uploads, the six dispatches and the readback are one graph, built and executed here.
+            Data::Pipeline { .. } if r.workload.is_graph_form() => {
+                *out = self
+                    .run_graph(Some(inputs))?
+                    .expect("a graph with a readback returns its words");
+                self.passes.set(1);
+                return Ok(());
+            }
+            // W6, hand order: five uploads, then the six passes in one submission, then the readback.
+            Data::Pipeline {
+                inputs: buffers, ..
+            } => {
+                for (buffer, values) in buffers.iter().zip(&inputs.pipeline) {
+                    self.device.write_typed_buffer(buffer, values)?;
+                }
+            }
             // W7: the upload is an in-place write into the resident `GpuVec`'s buffer, as the hand path does.
             #[cfg(feature = "algo")]
             Data::SumF32(values) => self
@@ -599,6 +751,19 @@ impl Backend for GustGpu {
         if self.resident().workload.family() == "W7" {
             return Ok(None);
         }
+        if self.resident().workload.is_pipeline() {
+            // The graph form has no GPU timestamps (`execute_graph` records none).
+            if self.resident().workload.is_graph_form() {
+                return Ok(None);
+            }
+            let timing = self.with_pipeline(|dispatches| {
+                let repeated: Vec<_> = (0..batch).flat_map(|_| dispatches.clone()).collect();
+                self.device.dispatch_batch_timed(&repeated)
+            })?;
+            self.passes
+                .set(self.passes.get().wrapping_add(batch as u32));
+            return Ok(timing.gpu_elapsed);
+        }
         let timing = self.with_dispatch(|dispatch| {
             let batch = vec![dispatch; batch];
             self.device.dispatch_batch_timed(&batch)
@@ -618,63 +783,87 @@ impl Backend for GustGpu {
 
     #[cfg(feature = "spirv-route")]
     fn route_check(&self) -> Result<(), String> {
-        let kernel = workloads::descriptor(self.resident().workload)
-            .qualified_name()
-            .to_string();
-        let events = self.route_events_of(&kernel);
         let want = if gust_wgpu::SPIRV_ROUTE {
             "spirv"
         } else {
             "wgsl"
         };
-        route_verdict(
-            &kernel,
-            want,
-            own_events(&events, self.events_before_prepare.get()),
-            events.last().copied(),
-        )
+        let before = self.events_before_prepare.borrow();
+        for (index, descriptor) in workloads::descriptors(self.resident().workload)
+            .iter()
+            .enumerate()
+        {
+            let kernel = descriptor.qualified_name().to_string();
+            let events = self.route_events_of(&kernel);
+            route_verdict(
+                &kernel,
+                want,
+                own_events(&events, before.get(index).copied().unwrap_or(0)),
+                events.last().copied(),
+            )?;
+        }
+        Ok(())
     }
 
+    /// The route evidence of the cell: the sums over its kernels (W6 has six), the last event of the last kernel.
     #[cfg(feature = "spirv-route")]
     fn route_evidence(&self) -> Option<Value> {
-        let kernel = workloads::descriptor(self.resident().workload)
-            .qualified_name()
-            .to_string();
-        let events = self.route_events_of(&kernel);
         let want = if gust_wgpu::SPIRV_ROUTE {
             "spirv"
         } else {
             "wgsl"
         };
-        let own = own_events(&events, self.events_before_prepare.get());
-        let on_build_route = own.iter().filter(|route| **route == want).count();
-        let last = self.last_event(&kernel);
+        let before = self.events_before_prepare.borrow();
+        let descriptors = workloads::descriptors(self.resident().workload);
+        let names: Vec<String> = descriptors
+            .iter()
+            .map(|descriptor| descriptor.qualified_name().to_string())
+            .collect();
+        let (mut own_total, mut on_route, mut cumulative) = (0, 0, 0);
+        for (index, kernel) in names.iter().enumerate() {
+            let events = self.route_events_of(kernel);
+            let own = own_events(&events, before.get(index).copied().unwrap_or(0));
+            own_total += own.len();
+            on_route += own.iter().filter(|route| **route == want).count();
+            cumulative += events.len();
+        }
+        let last = names.last().and_then(|kernel| self.last_event(kernel));
         Some(serde_json::json!({
-            "kernel": kernel,
+            "kernel": names.join(","),
+            "kernels": names.len(),
             "build_route": want,
-            "events": own.len(),
-            "events_on_build_route": on_build_route,
-            "events_off_build_route": own.len() - on_build_route,
-            "events_cumulative": events.len(),
+            "events": own_total,
+            "events_on_build_route": on_route,
+            "events_off_build_route": own_total - on_route,
+            "events_cumulative": cumulative,
             "last_route": last.as_ref().map(|event| event.route),
             "last_reason": last.and_then(|event| event.reason),
-            "source": "HeadlessDevice::route_events, read after the cell (the same events route_check reads); the three `events` counts are this cell's own (since its prepare; 0 for a warm cell, which runs the pipeline an earlier cell built, and route_check then judges it on the kernel's latest event), `events_cumulative` is the device's whole life",
+            "source": "HeadlessDevice::route_events, read after the cell (the same events route_check reads), summed over the cell's kernels (one, or six for W6); the three `events` counts are this cell's own (since its prepare; 0 for a warm cell, which runs the pipeline an earlier cell built, and route_check then judges it on each kernel's latest event), `events_cumulative` is the device's whole life",
         }))
     }
 
+    /// The route record of the cold start: the first kernel's (the only one, except for W6, whose record also lists the
+    /// kernel count; every one of its six pipelines is compiled by the cold sample, since the cache is cleared first).
     fn cold_start(&mut self) -> BenchResult<Option<Duration>> {
         self.device.clear_pipeline_cache();
         let started = Instant::now();
         self.dispatch()?;
         let elapsed = started.elapsed();
-        let descriptor = workloads::descriptor(self.resident().workload);
+        let workload = self.resident().workload;
+        let descriptor = workloads::descriptor(workload);
         let kernel = descriptor.qualified_name().to_string();
-        let record = route::record(&route::Evidence {
+        let mut record = route::record(&route::Evidence {
             event: self.last_event(&kernel),
             embedded_artifacts: descriptor.artifacts.len(),
             strict_profile: gust::profile::STRICT,
             kernel: &kernel,
         });
+        if let Some(object) = record.as_object_mut().filter(|_| workload.is_pipeline()) {
+            object.insert(
+                "kernels".into(),
+                serde_json::json!(workloads::descriptors(workload).len()),
+            );
+        }
         *self.route.borrow_mut() = Some(record);
         Ok(Some(elapsed))
     }
@@ -779,6 +968,37 @@ mod tests {
                 backend.read_back(&mut out).unwrap();
                 check_with(w, &inputs, &reference, &out, tree)
                     .unwrap_or_else(|e| panic!("{} 16-pass batch: {e}", w.id()));
+            }
+        }
+    }
+
+    /// W6, both GUST forms: after one dispatch every stage's buffer is inside that stage's own GPU bound
+    /// (`signal_pipeline::stage_exact_and_bound`), not only the final output.
+    #[test]
+    fn every_gust_stage_is_inside_its_own_bound_in_both_forms() {
+        let (_gpu, device) = gpu();
+        for w in [Workload::PipelineHand, Workload::PipelineGraph] {
+            let mut backend = GustGpu::new(DeviceHandle::clone(&device));
+            let inputs = gen_inputs(w, workloads::test_size(w));
+            backend.prepare(w, &inputs).unwrap();
+            backend.poison().unwrap();
+            backend.dispatch().unwrap();
+            let Data::Pipeline { stages, .. } = &backend.resident().data else {
+                panic!("W6 has the pipeline data")
+            };
+            for (stage, buffer) in stages.iter().enumerate() {
+                let got: Vec<f32> = device.read_typed_buffer(buffer).unwrap();
+                let (exact, _, bound_gpu) =
+                    signal_pipeline::stage_exact_and_bound(&inputs.pipeline, stage);
+                for (i, ((got, exact), bound)) in got.iter().zip(&exact).zip(&bound_gpu).enumerate()
+                {
+                    let err = (f64::from(*got) - exact).abs();
+                    assert!(
+                        err <= *bound,
+                        "{} stage {stage} element {i}: {err} against {bound}",
+                        w.id()
+                    );
+                }
             }
         }
     }

@@ -21,6 +21,19 @@ fn e2e_comparable(workload: &str) -> bool {
 /// Why W5 has no GUST end-to-end ratio, overhead row, bandwidth figure or break-even.
 const E2E_NOTE: &str = "GUST's read-back converts a typed `Vec<Particle>` into the harness's words inside the end-to-end sample (a second allocation and a per-field copy) where the baseline reads raw words with one copy, so no GUST end-to-end ratio, overhead row, bandwidth figure or break-even is shown; the dispatch timings are not affected.";
 
+/// What a W6 (staged pipeline) table's samples time, by form: the two GUST forms are different programs on the host side and the table must say so.
+fn pipeline_note(workload: &str) -> Option<&'static str> {
+    match workload {
+        "W6-graph" => Some(
+            "W6 as a `StagedGraph`: every gust-gpu sample builds the graph of the six calls (derived edges), validates it, encodes the six dispatches into one command buffer (one compute pass each) and submits once, all inside the timed region; the end-to-end sample adds five upload nodes and one read-back node. The graph has no GPU timestamps, so there is no batch figure for it. The baselines are the hand-ordered rows of this workload (wgsl-prebuilt: six passes, one submit, nothing rebuilt), so the gap includes the graph's per-call host work, which is what a program that uses a `StagedGraph` pays; only gust-gpu runs this form (the CPU backends have no graph; their rows are under W6-hand).",
+        ),
+        "W6-hand" => Some(
+            "W6 in hand order: the same six GUST kernels dispatched in stage order with one `dispatch_batch` (six passes, one submit), no graph; the end-to-end sample adds five uploads and the read-back. Every backend of the table runs this form: the hand WGSL runs six entry points in six passes with one submit, the CPU backends compute one element's six stages at a time (rayon, serial) or run the six kernels one after another (gust-cpu, gust-twin). Bandwidth counts the traffic of six passes (11 reads and 6 writes of 4 bytes per element), which a fused kernel would not do.",
+        ),
+        _ => None,
+    }
+}
+
 fn is_gust(backend: &str) -> bool {
     backend.starts_with("gust-gpu")
 }
@@ -983,6 +996,9 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
         if !e2e_comparable(workload) {
             writeln!(md, "{E2E_NOTE}\n")?;
         }
+        if let Some(note) = pipeline_note(workload) {
+            writeln!(md, "{note}\n")?;
+        }
         // A GFLOP/s column (2 N^3 flops for W9, plan 2.3) is b5's: it goes beside the bandwidth table below.
         if bytes == 0.0 {
             writeln!(
@@ -1601,6 +1617,20 @@ mod tests {
         .unwrap();
         let md = fs::read_to_string(&out_md).unwrap();
         assert_eq!(md.matches(E2E_NOTE).count(), 1);
+    }
+
+    /// W6 has two forms with two different timed regions: each has its own note, other workloads have none, and the two
+    /// forms keep distinct ids (so they are never merged into one table or one ratio).
+    #[test]
+    fn the_two_w6_forms_have_their_own_notes_and_ids() {
+        let graph = pipeline_note("W6-graph").expect("the graph form is described");
+        let hand = pipeline_note("W6-hand").expect("the hand-ordered form is described");
+        assert!(graph.contains("StagedGraph") && graph.contains("no GPU timestamps"));
+        assert!(hand.contains("no graph") && hand.contains("one submit"));
+        assert_ne!(graph, hand);
+        assert!(pipeline_note("W1").is_none() && pipeline_note("W5").is_none());
+        assert_ne!(Workload::PipelineGraph.id(), Workload::PipelineHand.id());
+        assert_eq!(size_header("W6-hand"), "elements");
     }
 
     #[test]

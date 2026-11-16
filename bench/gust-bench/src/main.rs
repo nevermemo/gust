@@ -1319,7 +1319,16 @@ mod tests {
         assert_eq!(workloads.len(), 4);
         assert!(workloads.contains(&Workload::Hist256Zipf));
         assert!(parse(&args(&["--group", "nope"])).is_err());
-        assert!(parse(&args(&["--workloads", "W6"])).is_err());
+        // W6 is the two staged-pipeline forms; W8 is not a workload.
+        let pipeline = parse(&args(&["--workloads", "W6"]))
+            .unwrap()
+            .workloads
+            .unwrap();
+        assert_eq!(
+            pipeline,
+            vec![Workload::PipelineGraph, Workload::PipelineHand]
+        );
+        assert!(parse(&args(&["--workloads", "W8"])).is_err());
         let sums = parse(&args(&["--workloads", "W7,W9"]))
             .unwrap()
             .workloads

@@ -78,9 +78,10 @@ impl WgpuContext {
         Self::open_with(None, false, adapter_limits, adapter, false)
     }
 
-    /// The device of the `rustgpu-wgpu` backend: a second device on the adapter selection (the `--adapter` substring or the
-    /// high-performance choice) with default limits, `TIMESTAMP_QUERY` and `PASSTHROUGH_SHADERS`. `Err` with the reason when the adapter has no
-    /// passthrough.
+    /// The device of the `rustgpu-wgpu` backend: its own device (the run's third) on the adapter selection (the `--adapter`
+    /// substring or the high-performance choice) with default limits, `TIMESTAMP_QUERY` and `PASSTHROUGH_SHADERS`.
+    /// `Err(Refusal)` when the adapter lacks a capability the module needs (see `open_with`); any other `Err` is a failure
+    /// to open the device.
     #[cfg(feature = "rust-gpu")]
     pub fn open_passthrough_on(adapter: Option<&str>) -> BenchResult<Self> {
         Self::open_with(None, false, false, adapter, true)
@@ -121,18 +122,10 @@ impl WgpuContext {
         descriptor.backends = wgpu::Backends::VULKAN;
         let instance = wgpu::Instance::new(descriptor);
         let adapter = Self::pick_adapter(&instance, adapter_name)?;
-        // A passthrough device (the rust-gpu comparator) needs `PASSTHROUGH_SHADERS`; an adapter without it refuses, with
-        // the reason, and the backend is not run (never a fallback to another shader path).
-        if passthrough
-            && !adapter
-                .features()
-                .contains(wgpu::Features::PASSTHROUGH_SHADERS)
-        {
-            return Err(format!(
-                "adapter {} lacks wgpu's PASSTHROUGH_SHADERS feature, so the rust-gpu SPIR-V module cannot be loaded",
-                adapter.get_info().name
-            )
-            .into());
+        // A passthrough device (the rust-gpu comparator) is refused, with the reason and as a `Refusal`, when the adapter
+        // lacks a capability the module needs; the backend is then not run (never a fallback to another shader path).
+        if passthrough {
+            Self::require_passthrough_capabilities(&adapter)?;
         }
         let timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let mut required_limits = wgpu::Limits::default();
@@ -173,6 +166,53 @@ impl WgpuContext {
             info: adapter.get_info(),
             timestamps,
         })
+    }
+
+    /// The capabilities the rust-gpu module needs of an adapter, each a typed `Refusal` when missing:
+    /// - wgpu's `PASSTHROUGH_SHADERS` (a defensive check: wgpu-hal 30.0.2 sets it on every Vulkan adapter);
+    /// - the Vulkan memory model the module declares (`OpCapability VulkanMemoryModel`). wgpu-hal 30.0.2 creates every
+    ///   device with `vulkanMemoryModel` off (it turns it on only with cooperative matrices), which breaks a valid-usage
+    ///   rule of the module, so the backend runs only where the physical device's Vulkan API version is 1.3 or later (the
+    ///   version that requires the feature to be supported). The adapter's own feature query is not reachable through
+    ///   wgpu's HAL access without a Vulkan dependency of the bench, so the version stands for it.
+    #[cfg(feature = "rust-gpu")]
+    fn require_passthrough_capabilities(
+        adapter: &wgpu::Adapter,
+    ) -> Result<(), crate::rustgpu_module::Refusal> {
+        use crate::rustgpu_module::Refusal;
+        let name = adapter.get_info().name;
+        if !adapter
+            .features()
+            .contains(wgpu::Features::PASSTHROUGH_SHADERS)
+        {
+            return Err(Refusal(format!(
+                "adapter {name} lacks wgpu's PASSTHROUGH_SHADERS feature, so the rust-gpu SPIR-V module cannot be loaded"
+            )));
+        }
+        // Vulkan 1.3 as the packed version number: variant 0, major 1, minor 3, patch 0.
+        const VULKAN_1_3: u32 = (1 << 22) | (3 << 12);
+        // SAFETY: `as_hal` only borrows the adapter's Vulkan HAL object, which is read (a version number), not modified.
+        let api_version = unsafe {
+            adapter
+                .as_hal::<wgpu::hal::api::Vulkan>()
+                .map(|hal| hal.physical_device_capabilities().properties().api_version)
+        };
+        match api_version {
+            Some(version) if version >= VULKAN_1_3 => Ok(()),
+            Some(version) => Err(Refusal(format!(
+                "adapter {name} reports Vulkan {}.{}, below 1.3, so it is not known to support the Vulkan memory model the rust-gpu module declares",
+                version >> 22,
+                (version >> 12) & 0x3ff
+            ))),
+            None => Err(Refusal(format!(
+                "adapter {name} has no Vulkan HAL adapter, so its Vulkan memory model support cannot be read"
+            ))),
+        }
+    }
+
+    #[cfg(not(feature = "rust-gpu"))]
+    fn require_passthrough_capabilities(_adapter: &wgpu::Adapter) -> BenchResult<()> {
+        unreachable!("a passthrough device needs a build with the rust-gpu feature")
     }
 
     fn wait(&self, submission: wgpu::SubmissionIndex) -> BenchResult<()> {

@@ -308,14 +308,31 @@ default), never in the default build, CI or the lock.
   `rust-src`, `rustc-dev` and `llvm-tools`; the project calls itself "not yet production-ready". The shader crate and
   its builder are outside the bench workspace (own lock, own `rust-toolchain.toml`); the built module is committed with a
   manifest (toolchain, crate versions, entry points, sha256) and a test ties the bytes to it. The module targets
-  Vulkan 1.1 (`spirv-val --target-env vulkan1.1` clean) and declares the Vulkan memory model, as every rust-gpu Vulkan
-  module does. wgpu-hal 30.0.2 enables that device feature only together with cooperative matrices, so the backend's
-  device does not have it enabled although the module declares the capability: a strictness gap of the combination
-  (spec-wise the device should enable it), not hit as a failure on the adapters tried. `bench/README.md` has the rebuild
-  command.
+  Vulkan 1.1 (`spirv-val --target-env vulkan1.1` clean). `bench/README.md` has the rebuild command, with `--locked`;
+  reproduction of the committed bytes was shown on one machine (the build machine), and a test in the default build
+  checks the bytes against the manifest and the toolchain and crate pins against both `rust-toolchain.toml` and both
+  `Cargo.toml` files. A run file records the module's identity under `versions.rust_gpu` (rust-gpu version, toolchain,
+  target, the sha256 of the module the binary embeds).
+- The Vulkan memory model, stated plainly: the module declares it (`OpCapability VulkanMemoryModel`,
+  `OpMemoryModel Logical Vulkan`, as every rust-gpu Vulkan module does, and W4's queue-family-scope atomic needs it),
+  and wgpu-hal 30.0.2 creates the device with `vulkanMemoryModel` off unless cooperative matrices are requested. That
+  breaks a Vulkan valid-usage rule (VUID-VkShaderModuleCreateInfo-pCode-08740: a capability needs its feature), so the
+  behaviour is undefined by the spec. It ran correctly on the two adapters tried (RTX 5090, Radeon 890M). Under the
+  Khronos validation layer (Vulkan SDK 1.4.357) a functional quick run reports it for this module:
+  VUID-VkShaderModuleCreateInfo-pCode-08740 and, for the queue-family scope of W4's atomic,
+  VUID-RuntimeSpirv-vulkanMemoryModel-06266. The same run also reports VUID-StandaloneSpirv-None-10684 (an
+  explicit-layout Function variable) for the module of some other backend; it is not from this module, which has no
+  Function-storage variable, and it was not investigated here. Because Vulkan 1.3 requires the feature to be
+  supported, the backend runs only on a physical device that reports Vulkan 1.3 or later
+  (`WgpuContext::open_passthrough_on`; the adapter's feature query itself is not reachable through wgpu's HAL access
+  without a Vulkan dependency of the bench, so the API version stands for it); on any other adapter it is refused with
+  the reason. Not done here, and a condition of any publishable rust-gpu row: a device that actually enables
+  `vulkanMemoryModel` (an own Vulkan device creation handed to wgpu, or an upstream wgpu change).
 - Loading: `Features::PASSTHROUGH_SHADERS` and `create_shader_module_passthrough`, the call GUST's SPIR-V route makes,
-  so neither naga nor wgpu's shader validation sees the module. An adapter without the feature refuses with the reason
-  and the backend is left out of the run (`config.backends_not_run`): the cell is not run, never a fallback to WGSL.
+  so neither naga nor wgpu's shader validation sees the module. The backend is refused, with the reason, only for a
+  missing capability (the Vulkan 1.3 gate above, or passthrough shaders, which wgpu-hal sets on every Vulkan adapter,
+  so that check is defensive): it is then left out of the run (`config.backends_not_run`), the cell is not run, never a
+  fallback to WGSL, and naming it with `--backends` is an error. Any other failure to open the device fails the run.
 - Kernels, each against its hand WGSL (`bench/shaders/`), all with workgroup size 256 and the hand WGSL's bindings:
 
   | workload | entry point | same as the hand WGSL | differs |
@@ -326,16 +343,20 @@ default), never in the default build, CI or the lock.
   | W4 histogram, four cases | `w4_histogram` | key assignment (a workgroup owns 1024 keys, each lane takes four, strided by 256), the bin guard; an atomic add per key | the add is `OpAtomicIAdd` at queue-family scope (device scope needs a Vulkan memory-model capability wgpu does not enable) on a `&mut [u32]`, relaxed like the WGSL `atomicAdd` |
   | W5, W6, W7, W9 | none | | no rust-gpu kernel: the backend does not run them |
 
-  A fifth entry point, `w1_u32`, is in the module and validated with it; no workload runs it. Every kernel is the
-  hand WGSL's algorithm, so no W1 to W4 pairing of this backend with `wgsl-prebuilt` is outside `same_kernel()` the way
-  W7 is (there is no rust-gpu kernel for W7 at all). The GUST kill rule judges GUST against `wgsl-prebuilt` only and
+  A fifth entry point, `w1_u32`, is in the module and validated with it; no workload runs it. The "same algorithm"
+  column is what was compared: each rust-gpu kernel against the hand WGSL of its workload, line by line (bindings,
+  guards, loop shapes, key assignment); `Workload::same_kernel()` is about GUST and the hand WGSL and says nothing about
+  this backend. W5 to W9 have no rust-gpu kernel at all. The GUST kill rule judges GUST against `wgsl-prebuilt` only and
   does not see this backend.
-- Host side: the second device on the same adapter selection as `wgsl-prebuilt`'s (default limits, timestamps), bind
-  group and staging buffer built once, one submission per end-to-end sample. Every sample is judged by the same checker
-  as every other GPU backend (the poison alone fails it).
+- Host side: the backend's own device (the run's third, after GUST's and the hand-WGSL one) on the same adapter
+  selection as `wgsl-prebuilt`'s (default limits, timestamps), opened only when the run selects the backend, bind group
+  and staging buffer built once, one submission per end-to-end sample. Every sample is judged by the same checker as
+  every other GPU backend (the poison alone fails it).
 - A run from the `rust-gpu` build is marked not publishable (`build.features` lists the feature): a third device and one
-  more backend in the rotation have not been measured to leave the other rows unchanged. No timing of this backend is
-  claimed in this document.
+  more backend in the rotation have not been measured to leave the other rows unchanged. The mark is lifted only when
+  both hold: (1) a run where the rust-gpu device cannot disturb the others (the backend in a group or a process of its
+  own, or a measured no-interference result), and (2) a device that enables `vulkanMemoryModel` (above). No timing of
+  this backend is claimed in this document.
 
 ### Bounds policy
 

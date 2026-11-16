@@ -42,6 +42,8 @@ mod report;
 mod route;
 #[cfg(feature = "rust-gpu")]
 mod rustgpu;
+#[cfg(any(test, feature = "rust-gpu"))]
+mod rustgpu_module;
 mod sampler;
 #[cfg(feature = "wgpu-trace")]
 mod trace;
@@ -341,40 +343,39 @@ fn gpu_backends(
 #[cfg(feature = "gpu")]
 type RustGpuSetup = (Option<Box<dyn Backend>>, Vec<Value>);
 
-/// The rust-gpu comparator `rustgpu-wgpu` (m10.b4), in the publishable group's rotation of a `rust-gpu` build: a second
-/// device on the run's adapter selection, opened with wgpu's passthrough feature. An adapter without it, or a device that
-/// cannot be opened, leaves the backend out with the reason (printed and recorded in the run file as `backends_not_run`),
-/// never a fallback to another shader path; asking for the backend by name with `--backends` makes that an error.
+/// The rust-gpu comparator `rustgpu-wgpu` (m10.b4), in the publishable group's rotation of a `rust-gpu` build: its own
+/// device (the run's third) on the run's adapter selection, opened with wgpu's passthrough feature, only when the run
+/// selects the backend (no `--backends` list, or one naming it). An adapter that lacks a capability the module needs
+/// leaves the backend out with the reason (printed and recorded in the run file as `backends_not_run`), never a
+/// fallback to another shader path; naming it with `--backends` then makes that an error, and any other failure to open
+/// the device fails the run (`rustgpu_module::decide`).
 #[cfg(all(feature = "gpu", feature = "rust-gpu"))]
 fn rust_gpu_backend(
     options: &Options,
     group: Group,
     adapter: &wgpu::AdapterInfo,
 ) -> BenchResult<RustGpuSetup> {
+    use rustgpu_module::{Decision, decide};
     if group != Group::Publishable {
         return Ok((None, Vec::new()));
     }
-    match WgpuContext::open_passthrough_on(options.adapter.as_deref()) {
-        Ok(ctx) => {
+    if let Some(wanted) = &options.backends
+        && !wanted.iter().any(|name| name == "rustgpu-wgpu")
+    {
+        return Ok((None, Vec::new()));
+    }
+    let opened = WgpuContext::open_passthrough_on(options.adapter.as_deref());
+    match decide(opened, options.backends.as_deref())? {
+        Decision::Run(ctx) => {
             adapter::require_same(&[("GUST device", adapter), ("rust-gpu device", &ctx.info)])?;
             Ok((Some(Box::new(HandWgsl::rust_gpu(Rc::new(ctx)))), Vec::new()))
         }
-        Err(error) => {
-            let reason = error.to_string();
-            eprintln!("rustgpu-wgpu not run: {reason}");
-            if options
-                .backends
-                .as_ref()
-                .is_some_and(|wanted| wanted.iter().any(|name| name == "rustgpu-wgpu"))
-            {
-                return Err(
-                    format!("--backends names rustgpu-wgpu, which cannot run: {reason}").into(),
-                );
-            }
-            Ok((
-                None,
-                vec![json!({ "backend": "rustgpu-wgpu", "reason": reason })],
-            ))
+        Decision::NotRun(entry) => {
+            eprintln!(
+                "rustgpu-wgpu not run: {}",
+                entry["reason"].as_str().unwrap_or_default()
+            );
+            Ok((None, vec![entry]))
         }
     }
 }

@@ -236,10 +236,18 @@ fn machine_common(rayon_threads: usize) -> serde_json::Map<String, Value> {
             "features": build_features(),
         },
     });
-    match value {
+    #[cfg_attr(not(feature = "rust-gpu"), allow(unused_mut))]
+    let mut map = match value {
         Value::Object(map) => map,
         _ => serde_json::Map::new(),
+    };
+    // The comparator's identity (m10.b4): the rust-gpu version, the toolchain and target that built the module, and the
+    // sha256 of the module this binary embeds.
+    #[cfg(feature = "rust-gpu")]
+    if let Some(Value::Object(versions)) = map.get_mut("versions") {
+        versions.insert("rust_gpu".to_owned(), crate::rustgpu_module::identity());
     }
+    map
 }
 
 /// Everything about the machine and the build that a reader needs to reproduce the table.

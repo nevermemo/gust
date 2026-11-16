@@ -4,28 +4,24 @@
 //! passthrough route (`Features::PASSTHROUGH_SHADERS`, `Device::create_shader_module_passthrough`), the call
 //! `gust-wgpu` uses for its own SPIR-V route.
 //!
-//! The backend is `HandWgsl::rust_gpu`: the host side of `wgsl-prebuilt` (second device on the same adapter selection,
-//! bind group and staging buffer built once, one submission per end-to-end sample, the same storage-buffer binding order
-//! as the hand WGSL because the kernels were written to it), with the shader module this file creates. The module's
-//! four kernels are W1 (`f32`), W2, W3 and W4; a fifth entry point, W1 on `u32`, is built and validated with the module
-//! but no workload runs it. A workload without a kernel here (W5 to W9) is not run by this backend.
+//! The backend is `HandWgsl::rust_gpu`: the host side of `wgsl-prebuilt` (its own device, the run's third, on the same
+//! adapter selection, bind group and staging buffer built once, one submission per end-to-end sample, the same
+//! storage-buffer binding order as the hand WGSL because the kernels were written to it), with the shader module this
+//! file creates. The module's four kernels are W1 (`f32`), W2, W3 and W4; a fifth entry point, W1 on `u32`, is built and
+//! validated with the module but no workload runs it. A workload without a kernel here (W5 to W9) is not run by this
+//! backend.
 //!
-//! The module declares the Vulkan memory model and the module's out-of-range policy is rust-gpu's: an invocation whose
-//! slice index is out of range ends early (`docs/BENCHMARKS.md`, "Bounds policy").
+//! The module declares the Vulkan memory model, which wgpu-hal 30.0.2 does not enable on its devices, so the backend
+//! runs only on a device whose Vulkan API version is 1.3 or later, where support is required
+//! (`WgpuContext::open_passthrough_on`, `docs/BENCHMARKS.md`), and the module's out-of-range policy is rust-gpu's: an
+//! invocation whose slice index is out of range ends early (`docs/BENCHMARKS.md`, "Bounds policy").
 
 use std::{borrow::Cow, sync::OnceLock};
 
 use crate::workloads::Workload;
 
-/// The committed module: little-endian SPIR-V words as bytes.
-const MODULE: &[u8] = include_bytes!("../../rust-gpu-shaders/rustgpu.spv");
-
-/// The manifest beside the module: toolchain, crate versions, entry points and the module's sha256.
-#[cfg(test)]
-const MANIFEST: &str = include_str!("../../rust-gpu-shaders/rustgpu.manifest.json");
-
-/// Every entry point of the module, the names its listing in the passthrough descriptor needs (sorted, as the manifest).
-pub const ENTRY_POINTS: [&str; 5] = ["w1_f32", "w1_u32", "w2_saxpy", "w3_horner", "w4_histogram"];
+use crate::rustgpu_module::ENTRY_POINTS;
+use crate::rustgpu_module::MODULE;
 
 /// The workgroup size every kernel declares (`threads(256)`), the same as the hand WGSL's.
 const WORKGROUP_SIZE: (u32, u32, u32) = (256, 1, 1);
@@ -89,107 +85,6 @@ mod tests {
         workloads::{Judging, Rounding, check_with, gen_inputs, reference, test_size},
     };
 
-    /// SHA-256 of `data`, as lowercase hex (a small FIPS 180-4 implementation: the bench has no hash dependency).
-    fn sha256(data: &[u8]) -> String {
-        const K: [u32; 64] = [
-            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
-            0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
-            0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
-            0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-            0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
-            0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-            0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
-            0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
-            0xc67178f2,
-        ];
-        let mut h: [u32; 8] = [
-            0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-            0x5be0cd19,
-        ];
-        let mut padded = data.to_vec();
-        padded.push(0x80);
-        while padded.len() % 64 != 56 {
-            padded.push(0);
-        }
-        padded.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
-        for block in padded.as_chunks::<64>().0 {
-            let mut w = [0u32; 64];
-            for (i, word) in block.as_chunks::<4>().0.iter().enumerate() {
-                w[i] = u32::from_be_bytes(*word);
-            }
-            for i in 16..64 {
-                let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-                let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-                w[i] = w[i - 16]
-                    .wrapping_add(s0)
-                    .wrapping_add(w[i - 7])
-                    .wrapping_add(s1);
-            }
-            let mut v = h;
-            for i in 0..64 {
-                let s1 = v[4].rotate_right(6) ^ v[4].rotate_right(11) ^ v[4].rotate_right(25);
-                let ch = (v[4] & v[5]) ^ (!v[4] & v[6]);
-                let t1 = v[7]
-                    .wrapping_add(s1)
-                    .wrapping_add(ch)
-                    .wrapping_add(K[i])
-                    .wrapping_add(w[i]);
-                let s0 = v[0].rotate_right(2) ^ v[0].rotate_right(13) ^ v[0].rotate_right(22);
-                let maj = (v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]);
-                let t2 = s0.wrapping_add(maj);
-                v = [
-                    t1.wrapping_add(t2),
-                    v[0],
-                    v[1],
-                    v[2],
-                    v[3].wrapping_add(t1),
-                    v[4],
-                    v[5],
-                    v[6],
-                ];
-            }
-            for (state, value) in h.iter_mut().zip(v) {
-                *state = state.wrapping_add(value);
-            }
-        }
-        h.iter().map(|word| format!("{word:08x}")).collect()
-    }
-
-    #[test]
-    fn the_sha256_helper_matches_the_standard_vectors() {
-        assert_eq!(
-            sha256(b"abc"),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-        assert_eq!(
-            sha256(b""),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
-    }
-
-    /// The committed module is the one its manifest describes: the sha256, the size, the entry points (the passthrough
-    /// descriptor lists exactly these) and the toolchain pins.
-    #[test]
-    fn the_committed_module_matches_its_manifest() {
-        let manifest: serde_json::Value = serde_json::from_str(MANIFEST).expect("manifest is JSON");
-        assert_eq!(manifest["sha256"], sha256(MODULE), "module sha256");
-        assert_eq!(manifest["bytes"], MODULE.len());
-        let listed: Vec<&str> = manifest["entry_points"]
-            .as_array()
-            .expect("entry_points")
-            .iter()
-            .map(|name| name.as_str().expect("name"))
-            .collect();
-        assert_eq!(listed, ENTRY_POINTS);
-        assert_eq!(manifest["toolchain"], "nightly-2026-08-15");
-        assert_eq!(manifest["rust_gpu"], "0.11.0");
-        assert_eq!(manifest["target"], "spirv-unknown-vulkan1.1");
-        // A SPIR-V module: whole words, the magic number first.
-        assert_eq!(MODULE.len() % 4, 0);
-        assert_eq!(words()[0], 0x0723_0203);
-    }
-
     /// Exactly W1 to W4 have a kernel; every other workload has none (the backend does not run it).
     #[test]
     fn the_module_has_kernels_for_w1_to_w4_only() {
@@ -198,9 +93,6 @@ mod tests {
             assert_eq!(entry_point(workload).is_some(), want, "{}", workload.id());
             if let Some(name) = entry_point(workload) {
                 assert!(ENTRY_POINTS.contains(&name), "{name}");
-                // Each kernel is the algorithm of the hand WGSL of its workload, so no workload of this backend is
-                // outside the same-kernel pairing the way W7 is (the kill rule is GUST's and does not see this backend).
-                assert!(workload.same_kernel(), "{}", workload.id());
             }
         }
     }

@@ -246,23 +246,43 @@ Rebuild (from the repository root; the builder's inner cargo needs `RUSTUP_TOOLC
 `rust-toolchain.toml` is not enough when the builder is started from another directory):
 
 ```sh
-RUSTUP_TOOLCHAIN=nightly-2026-08-15 cargo run --release --manifest-path bench/rust-gpu-shaders/builder/Cargo.toml -- \
-  bench/rust-gpu-shaders/shader OUT_DIR      # writes OUT_DIR/rustgpu.spv; use bench/rust-gpu-shaders to replace the committed module
-cmp OUT_DIR/rustgpu.spv bench/rust-gpu-shaders/rustgpu.spv                        # a rebuild reproduces the committed bytes
-sha256sum OUT_DIR/rustgpu.spv                                                     # then update sha256 and bytes in rustgpu.manifest.json by hand if the module changed
+RUSTUP_TOOLCHAIN=nightly-2026-08-15 cargo run --locked --release \
+  --manifest-path bench/rust-gpu-shaders/builder/Cargo.toml -- bench/rust-gpu-shaders/shader OUT_DIR
+# writes OUT_DIR/rustgpu.spv; use bench/rust-gpu-shaders as OUT_DIR to replace the committed module
+cmp OUT_DIR/rustgpu.spv bench/rust-gpu-shaders/rustgpu.spv   # a rebuild reproduces the committed bytes
+sha256sum OUT_DIR/rustgpu.spv   # if the module changed, update sha256 and bytes in rustgpu.manifest.json by hand
 "$VULKAN_SDK/Bin/spirv-val" --target-env vulkan1.1 bench/rust-gpu-shaders/rustgpu.spv
+git status --short bench/rust-gpu-shaders   # both Cargo.lock files must be unchanged (--locked enforces it)
 ```
 
-The first build compiles `rustc_codegen_spirv` and about 170 crates (several minutes); later builds take under a minute.
+The first build compiles `rustc_codegen_spirv` and about 170 crates (several minutes); later builds take under a
+minute. A rebuild reproducing the committed bytes has been shown on one machine (the build machine); a test in the
+default build checks the committed bytes against the manifest and the toolchain and crate pins against the two
+`rust-toolchain.toml` and `Cargo.toml` files, but only a rebuild shows that the sources produce the bytes.
 
-The backend opens a second wgpu device on the run's adapter selection with `Features::PASSTHROUGH_SHADERS` and loads the module through `create_shader_module_passthrough`, the call GUST's own SPIR-V route
-uses. Its host side is `wgsl-prebuilt`'s. The module declares the Vulkan memory model (rust-gpu's Vulkan targets always
-do), which wgpu-hal 30.0.2 enables on a device only for cooperative matrices, so the device the backend runs on does not have
-that feature enabled; the module validates and runs on the adapters tried (see `docs/BENCHMARKS.md`), but strictly it
-asks for more than the device was created with. An adapter without passthrough shaders refuses with the reason: the backend
-is left out of the run and the run file lists it under `config.backends_not_run`; naming it with `--backends` on such an
-adapter is an error. The `rust-gpu` feature is listed in `build.features` and makes a run not publishable (a third
-device and one more backend in the rotation have not been shown to leave the other rows unchanged).
+The backend opens its own wgpu device (the run's third, after GUST's and the hand-WGSL one) on the run's adapter
+selection, only when the run selects the backend, with `Features::PASSTHROUGH_SHADERS`, and loads the module through
+`create_shader_module_passthrough`, the call GUST's own SPIR-V route uses. Its host side is `wgsl-prebuilt`'s.
+
+The module declares the Vulkan memory model (rust-gpu's Vulkan targets always do), and wgpu-hal 30.0.2 creates the
+device with `vulkanMemoryModel` off unless cooperative matrices are requested. That breaks a Vulkan valid-usage rule
+(VUID-VkShaderModuleCreateInfo-pCode-08740), so the behaviour is undefined by the spec; it ran correctly on the two
+adapters tried. Under the Khronos validation layer (Vulkan SDK 1.4.357) a functional run reports it for this
+module: VUID-VkShaderModuleCreateInfo-pCode-08740 and, for the queue-family scope of W4's atomic,
+VUID-RuntimeSpirv-vulkanMemoryModel-06266. The backend therefore runs only on a physical device that reports
+Vulkan 1.3 or later, where the feature must be supported, and is refused on any other. Making the device enable the
+feature (an own Vulkan device creation, or an upstream wgpu change) is not done and is a condition of any publishable
+rust-gpu row (`docs/BENCHMARKS.md`).
+
+A refusal (a missing capability: the Vulkan 1.3 gate, or passthrough shaders, a defensive check because wgpu-hal sets
+them on every Vulkan adapter) leaves the backend out of the run, and the run file lists it under
+`config.backends_not_run` with the reason; naming it with `--backends` is then an error, and any other failure to open the
+device fails the run. A run file records the module's identity under `versions.rust_gpu`.
+
+The `rust-gpu` feature is listed in `build.features` and makes a run not publishable: a third device and one more
+backend in the rotation have not been shown to leave the other rows unchanged. The mark is lifted by a run where the
+rust-gpu device cannot disturb the others (the backend in a group or a process of its own, or a measured no-interference
+result) together with a device that enables `vulkanMemoryModel`.
 
 ## Build and run
 

@@ -243,6 +243,21 @@ impl WgpuContext {
     }
 }
 
+/// The sum of the spans of timestamp pairs `(ticks[2i], ticks[2i+1])`, and the number of pairs. `period` is the queue's
+/// nanoseconds per tick.
+fn span_sum(ticks: &[u64], period: f32) -> (Duration, usize) {
+    let (pairs, _) = ticks.as_chunks::<2>();
+    let count = pairs.len();
+    let nanoseconds: f64 = pairs
+        .iter()
+        .map(|pair| pair[1].wrapping_sub(pair[0]) as f64 * f64::from(period))
+        .sum();
+    (
+        Duration::from_secs_f64(nanoseconds / 1_000_000_000.0),
+        count,
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Prebuilt,
@@ -407,6 +422,8 @@ pub struct HandWgsl {
     resident: Option<Resident>,
     /// Dispatches since the bins were last cleared (a histogram accumulates; see `Backend::dispatch`).
     passes: Cell<u32>,
+    /// W7: the timestamp pairs the last `gpu_time` read (one per repeat; tests pin it to `batch`).
+    last_spans: Cell<usize>,
 }
 
 impl HandWgsl {
@@ -429,6 +446,7 @@ impl HandWgsl {
             counters: Counters::default(),
             resident: None,
             passes: Cell::new(0),
+            last_spans: Cell::new(0),
         }
     }
 
@@ -946,6 +964,19 @@ impl HandWgsl {
         batch: usize,
         timestamps: bool,
     ) {
+        self.record_with(encoder, r, batch, timestamps, None);
+    }
+
+    /// [`Self::record`], and with `spans` (W7 only) every pass writes its own begin and end query, `2 * index` and
+    /// `2 * index + 1`, so a batch reports the per-repeat spans (first pass begin to last pass end of each repeat).
+    fn record_with(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        r: &Resident,
+        batch: usize,
+        timestamps: bool,
+        spans: Option<&wgpu::QuerySet>,
+    ) {
         if r.workload.is_pipeline() {
             return self.record_staged(encoder, r, batch, timestamps);
         }
@@ -958,14 +989,21 @@ impl HandWgsl {
                 per_call = Self::create_bind_group(&self.ctx, &r.pipeline, &r.buffers);
                 &per_call
             };
-            let timestamp_writes = (timestamps && (index == 0 || index == batch - 1))
-                .then_some(r.query_set.as_ref())
-                .flatten()
-                .map(|query_set| wgpu::ComputePassTimestampWrites {
+            let timestamp_writes = match spans {
+                Some(query_set) => Some(wgpu::ComputePassTimestampWrites {
                     query_set,
-                    beginning_of_pass_write_index: (index == 0).then_some(0),
-                    end_of_pass_write_index: (index == batch - 1).then_some(1),
-                });
+                    beginning_of_pass_write_index: Some(2 * index as u32),
+                    end_of_pass_write_index: Some(2 * index as u32 + 1),
+                }),
+                None => (timestamps && (index == 0 || index == batch - 1))
+                    .then_some(r.query_set.as_ref())
+                    .flatten()
+                    .map(|query_set| wgpu::ComputePassTimestampWrites {
+                        query_set,
+                        beginning_of_pass_write_index: (index == 0).then_some(0),
+                        end_of_pass_write_index: (index == batch - 1).then_some(1),
+                    }),
+            };
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("bench pass"),
                 timestamp_writes,
@@ -1000,6 +1038,50 @@ impl HandWgsl {
             wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         );
         (query_set, resolve, timestamp_read)
+    }
+
+    /// W7 GPU time: every one of the `batch` repeats is a pass with its own begin and end timestamp (a query set of
+    /// `2 * batch`, still one submission), and the result is the sum of the per-repeat spans, which is what GUST's W7
+    /// batch figure is (`gust_algo::timed` sums per-sum spans): the transitions between repeats are outside it on both sides.
+    /// Only W7 does this; every other workload's batch is one pair around all its passes.
+    fn gpu_time_per_repeat(&self, batch: usize) -> BenchResult<Option<Duration>> {
+        let r = self.resident();
+        let ctx = &self.ctx;
+        let queries = 2 * batch as u32;
+        let query_set = ctx.device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("bench W7 span timestamps"),
+            ty: wgpu::QueryType::Timestamp,
+            count: queries,
+        });
+        let bytes = 8 * u64::from(queries);
+        let resolve = ctx.buffer(
+            "bench W7 span resolve",
+            bytes,
+            wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+        );
+        let read = ctx.buffer(
+            "bench W7 span read",
+            bytes,
+            wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        );
+        let mut encoder = self.encoder();
+        self.record_with(&mut encoder, r, batch, true, Some(&query_set));
+        encoder.resolve_query_set(&query_set, 0..queries, &resolve, 0);
+        encoder.copy_buffer_to_buffer(&resolve, 0, &read, 0, bytes);
+        let submission = self.submit(encoder.finish());
+        self.passes
+            .set(self.passes.get().wrapping_add(batch as u32));
+        ctx.wait(submission)?;
+        let ticks = ctx.map_read(&read, |view| {
+            view.as_chunks::<8>()
+                .0
+                .iter()
+                .map(|chunk| u64::from_ne_bytes(*chunk))
+                .collect::<Vec<_>>()
+        })?;
+        let (total, spans) = span_sum(&ticks, ctx.queue.get_timestamp_period());
+        self.last_spans.set(spans);
+        Ok(Some(total))
     }
 
     fn encoder(&self) -> wgpu::CommandEncoder {
@@ -1258,6 +1340,9 @@ impl Backend for HandWgsl {
         let Some(query_set) = &r.query_set else {
             return Ok(None);
         };
+        if r.workload.family() == "W7" {
+            return self.gpu_time_per_repeat(batch);
+        }
         let ctx = &self.ctx;
         let mut encoder = self.encoder();
         self.record(&mut encoder, r, batch, true);
@@ -1418,6 +1503,32 @@ mod tests {
                     backend.read_back(&mut out).unwrap();
                     check_with(w, &inputs, &reference, &out, judging)
                         .unwrap_or_else(|e| panic!("{} {mode:?} batch: {e}", w.id()));
+                }
+            }
+        }
+    }
+
+    /// W7's batch figure is the sum of per-repeat spans (a pair of timestamps per repeat, one submission), the same
+    /// shape as GUST's `gust_algo::timed`: `batch` repeats read `batch` pairs, and the pure sum adds the per-pair spans
+    /// (and not the gaps between pairs).
+    #[test]
+    fn a_w7_batch_reads_one_timestamp_pair_per_repeat() {
+        let (total, pairs) = span_sum(&[10, 14, 100, 103, 1_000, 1_005], 2.0);
+        assert_eq!(pairs, 3);
+        assert_eq!(total, Duration::from_nanos(2 * (4 + 3 + 5)));
+        assert_eq!(span_sum(&[], 1.0), (Duration::ZERO, 0));
+        let (_gpu, ctx) = gpu_context();
+        for mode in [Mode::Prebuilt, Mode::PerCall] {
+            for w in [Workload::SumU32, Workload::SumF32] {
+                let inputs = gen_inputs(w, workloads::test_size(w));
+                let mut backend = HandWgsl::new(Rc::clone(&ctx), mode);
+                backend.prepare(w, &inputs).unwrap();
+                for batch in [1usize, 5, 16] {
+                    let time = backend.gpu_time(batch).unwrap();
+                    assert_eq!(time.is_some(), ctx.timestamps, "{}", w.id());
+                    if time.is_some() {
+                        assert_eq!(backend.last_spans.get(), batch, "{} {mode:?}", w.id());
+                    }
                 }
             }
         }

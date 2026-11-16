@@ -25,6 +25,13 @@
 
 use serde_json::{Value, json};
 
+use crate::workloads::Workload;
+
+/// What a W7 GPU-time ratio is, wherever the report or the run file shows one: GUST's path is the public `gust-algo`
+/// sum, the baseline's a hand tree.
+pub const W7_RATIO_NOTE: &str =
+    "public `gust-algo` sum against the hand tree: an algorithm comparison, not a GUST overhead";
+
 /// The paired-ratio window of the kill rule: more than 10 % off 1.0 reopens candidate C.
 pub const KILL_TOLERANCE: f64 = 0.10;
 
@@ -200,11 +207,20 @@ pub fn kill_rule(group: Group, cells: &[Value]) -> Value {
                     checked += 1;
                     // The small slack keeps a ratio of exactly 1.10 inside (1.10 - 1.0 is not exactly 0.10 in f64).
                     if (ratio - 1.0).abs() > KILL_TOLERANCE + 1e-12 {
-                        offenders.push(json!({
+                        let mut offender = json!({
                             "backend": backend, "workload": cell["workload"], "n": cell["n"],
                             "quantity": quantity, "median_ratio": ratio,
                             "direction": if ratio > 1.0 { "slower" } else { "faster" },
-                        }));
+                        });
+                        // W7 is no same-kernel pairing: its offender says what the ratio compares.
+                        if cell["workload"]
+                            .as_str()
+                            .and_then(Workload::parse)
+                            .is_some_and(|w| !w.same_kernel())
+                        {
+                            offender["note"] = json!(W7_RATIO_NOTE);
+                        }
+                        offenders.push(offender);
                     }
                 }
                 None => unpaired += 1,
@@ -393,6 +409,12 @@ mod tests {
             let wild = kill_rule(&cells);
             assert_eq!(wild["c_reopened"], true, "{workload}");
             assert_eq!(wild["offenders"][0]["workload"], workload);
+            // A W7 offender says what the ratio compares; a same-kernel one carries no note.
+            assert_eq!(
+                wild["offenders"][0].get("note").is_some(),
+                workload.starts_with("W7"),
+                "{workload}"
+            );
             // No GPU time on the GUST side (no timestamp queries): unpaired, so the run is not judged, never `false`.
             cells[0] = on(workload, "gust-gpu", 1 << 20, None);
             let missing = kill_rule(&cells);

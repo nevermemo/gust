@@ -79,7 +79,9 @@ A cell is one backend on one workload at one size. Each GPU cell is sampled for 
 2. `dispatch_host`: one dispatch on resident data, host wall clock from the call to completion.
 3. `gpu_single`: GPU timestamps around one compute pass.
 4. `gpu_batch_per_dispatch`: GPU timestamps from the first to the last of 16 back-to-back passes in one submission,
-   divided by 16.
+   divided by 16. For W7 each of the 16 repeats has its own pair and the figure is the sum of the per-repeat spans, on GUST
+   and on the hand paths alike (the gaps between repeats are outside it), so W7's two GPU-time quantities are like-for-like;
+   W6 is per six-pass run.
 
 The CPU backends have no GPU clock, so their cells carry the first two only.
 

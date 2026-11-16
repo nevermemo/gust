@@ -38,6 +38,23 @@ use crate::{
     },
 };
 
+/// The GPU time of `runs` runs when the scope counted `counted` units (`gust_algo` dispatch batches for W7, one per sum; graph
+/// dispatch passes for W6-graph, six per run): the harness divides by the run count, so a different count would make the
+/// per-run time wrong (a silent bias), and is an error instead.
+fn per_run(
+    counted: usize,
+    expected: usize,
+    elapsed: Option<Duration>,
+) -> BenchResult<Option<Duration>> {
+    if counted != expected {
+        return Err(format!(
+            "the timed span counted {counted} units where {expected} were expected: the GPU time per run would be wrong"
+        )
+        .into());
+    }
+    Ok(elapsed)
+}
+
 /// The buffers of a prepared workload, in the order of the kernel's parameters.
 enum Data {
     Add {
@@ -349,13 +366,13 @@ impl GustGpu {
     /// span can bracket `6 x repeats` passes, as W6-hand's batch does). With `timed` the graph runs through
     /// `execute_graph_timed` and the second value is `GraphReport.gpu_elapsed` (first dispatch pass begin to last pass end;
     /// uploads, the read-back mapping and the host work of building and validating the graph are outside it); untimed it
-    /// is `None`.
+    /// is `None`. The third value is `GraphReport.dispatches`, which a timed batch checks against `6 x repeats`.
     fn run_graph_with(
         &self,
         inputs: Option<&Inputs>,
         repeats: usize,
         timed: bool,
-    ) -> BenchResult<(Option<Vec<f32>>, Option<Duration>)> {
+    ) -> BenchResult<(Option<Vec<f32>>, Option<Duration>, usize)> {
         use signal_pipeline::kernel;
         let r = self.resident();
         let n = r.n as u32;
@@ -396,7 +413,7 @@ impl GustGpu {
             Some(node) => Some(output.readback::<f32>(node)?),
             None => None,
         };
-        Ok((words, output.report.gpu_elapsed))
+        Ok((words, output.report.gpu_elapsed, output.report.dispatches))
     }
 
     /// W7 GPU time: `batch` public sums inside one `gust_algo::timed` scope. `f32` makes the call the host-timed
@@ -408,14 +425,7 @@ impl GustGpu {
     #[cfg(feature = "algo")]
     fn gpu_time_sum(&self, batch: usize) -> BenchResult<Option<Duration>> {
         let timed = self.timed_sums(batch)?;
-        if timed.batches != batch {
-            return Err(format!(
-                "{batch} sums made {} dispatch batches, not one each: the GPU time per sum would be wrong",
-                timed.batches
-            )
-            .into());
-        }
-        Ok(timed.gpu_elapsed)
+        per_run(timed.batches, batch, timed.gpu_elapsed)
     }
 
     /// `batch` public sums of the resident data in one `timed` scope: the scope's `GpuTime` (tests read `batches`).
@@ -824,13 +834,10 @@ impl Backend for GustGpu {
         if self.resident().workload.family() == "W7" {
             return self.gpu_time_sum(batch);
         }
-        #[cfg(not(feature = "algo"))]
-        if self.resident().workload.family() == "W7" {
-            return Ok(None);
-        }
         if self.resident().workload.is_pipeline() {
             if self.resident().workload.is_graph_form() {
-                return Ok(self.run_graph_with(None, batch, true)?.1);
+                let (_, elapsed, dispatches) = self.run_graph_with(None, batch, true)?;
+                return per_run(dispatches, signal_pipeline::STAGES * batch, elapsed);
             }
             let timing = self.with_pipeline(|dispatches| {
                 let repeated: Vec<_> = (0..batch).flat_map(|_| dispatches.clone()).collect();
@@ -1110,6 +1117,19 @@ mod tests {
         }
     }
 
+    /// The refusal of a count that is not the run count: the pure check `gpu_time` applies to W7 (`batches`) and to
+    /// W6-graph (`dispatches`).
+    #[test]
+    fn a_count_that_is_not_the_run_count_is_refused() {
+        let elapsed = Some(Duration::from_micros(7));
+        assert_eq!(per_run(16, 16, elapsed).unwrap(), elapsed);
+        assert_eq!(per_run(96, 96, None).unwrap(), None);
+        for (counted, expected) in [(32, 16), (15, 16), (0, 16), (6, 96)] {
+            let error = per_run(counted, expected, elapsed).unwrap_err().to_string();
+            assert!(error.contains("were expected"), "{error}");
+        }
+    }
+
     /// W6-graph takes its GPU time from `execute_graph_timed`: a graph of one run and a graph of 16 repeated runs both
     /// report a time exactly where the adapter has timestamp queries, and the repeated graph is a valid graph (the
     /// output is checked by the every-workload test above after `gpu_time(16)`).
@@ -1121,6 +1141,9 @@ mod tests {
         let inputs = gen_inputs(w, workloads::test_size(w));
         backend.prepare(w, &inputs).unwrap();
         for batch in [1usize, 16] {
+            // The batch graph holds `batch` repeats of the six dispatches, so the division by `batch` is per run.
+            let (_, _, dispatches) = backend.run_graph_with(None, batch, true).unwrap();
+            assert_eq!(dispatches, 6 * batch);
             let time = backend.gpu_time(batch).unwrap();
             assert_eq!(time.is_some(), device.supports_gpu_timestamps(), "{batch}");
             if let Some(time) = time {

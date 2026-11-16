@@ -4,11 +4,7 @@ use std::{collections::BTreeMap, fmt::Write as _, fs};
 
 use serde_json::{Value, json};
 
-use crate::{backend::BenchResult, harness::median, workloads::Workload};
-
-/// What a W7 GPU-time ratio is, in every place the report shows one.
-const W7_RATIO_NOTE: &str =
-    "public `gust-algo` sum against the hand tree: an algorithm comparison, not a GUST overhead";
+use crate::{backend::BenchResult, group::W7_RATIO_NOTE, harness::median, workloads::Workload};
 
 /// Whether a GUST/hand ratio of the workload (by id) compares the same kernel (`Workload::same_kernel`). W7 does not: GUST
 /// runs the library's sum, the baseline a reduction of its own, so no GUST dispatch or end-to-end ratio and no overhead
@@ -915,6 +911,7 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                         "median_ratio": p.median(), "run_min_ratio": p.lowest(), "run_max_ratio": p.highest(),
                         "per_run_median_ratio": p.run_medians, "per_run_p5_ratio": p.run_p5,
                         "per_run_p95_ratio": p.run_p95,
+                        "note": (!pairs_same_kernel(workload)).then_some(W7_RATIO_NOTE),
                     })),
                 "pcie_link": (metric == "end_to_end").then(|| link_of(workload, *n)),
             })
@@ -1036,6 +1033,22 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                 run["kill_rule"]["offenders"],
                 run["kill_rule"]["control"]["outside_tolerance"]
             )?;
+            // A W7 offender is an algorithm comparison, said where the verdict is read.
+            if run["kill_rule"]["offenders"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|o| {
+                    o["workload"]
+                        .as_str()
+                        .is_some_and(|w| !pairs_same_kernel(w))
+                })
+            {
+                writeln!(
+                    md,
+                    "  - the offenders on W7 are the {W7_RATIO_NOTE}; they do not say GUST adds cost."
+                )?;
+            }
         }
     }
     let rows = repro["offenders"].as_array().cloned().unwrap_or_default();
@@ -1064,9 +1077,17 @@ pub fn aggregate(inputs: &[String], out_json: &str, out_md: &str) -> BenchResult
                 (true, true, "slower") => "counts: re-opens C",
                 (true, true, _) => "counts: reading step, does not re-open C",
             };
+            let label = if row["workload"]
+                .as_str()
+                .is_some_and(|w| !pairs_same_kernel(w))
+            {
+                format!(" [{W7_RATIO_NOTE}]")
+            } else {
+                String::new()
+            };
             writeln!(
                 md,
-                "- {} {} n={} {}{}: in {} of {} runs, control in tolerance in {}, ratios {} -> {}",
+                "- {} {} n={} {}{}: in {} of {} runs, control in tolerance in {}, ratios {} -> {}{label}",
                 row["backend"].as_str().unwrap_or("?"),
                 row["workload"].as_str().unwrap_or("?"),
                 row["n"],
@@ -1866,6 +1887,71 @@ mod tests {
         };
         assert!(has("gpu_single"));
         assert!(!has("end_to_end"));
+    }
+
+    /// A run whose only offender is W7 says, next to "C re-opened", in the offender row and in the aggregate JSON, that the
+    /// ratio is the public `gust-algo` sum against the hand tree (an algorithm comparison, not a GUST overhead); an
+    /// offender on a same-kernel workload carries no such label.
+    #[test]
+    fn a_w7_offender_is_labelled_where_the_verdict_is_read() {
+        let dir = scratch("w7label");
+        let mut one = run("wgsl", "GPU A", "a.json");
+        let mut cells = vec![];
+        for (backend, ms) in [("gust-gpu", 3.0), ("wgsl-prebuilt", 1.0)] {
+            let mut cell = gpu_cell(backend, ms, true, 2600.0);
+            cell["workload"] = json!("W7-f32");
+            let paired = cell["metrics"]["end_to_end"].clone();
+            cell["metrics"]["gpu_single"] = paired;
+            cells.push(cell);
+        }
+        one["cells"] = json!(cells);
+        let offender = |workload: &str| {
+            json!({
+                "backend": "gust-gpu", "workload": workload, "n": 4096, "quantity": "gpu_single",
+                "median_ratio": 1.5, "direction": "slower", "control_in_tolerance": true,
+            })
+        };
+        one["kill_rule"] = json!({
+            "group": "publishable", "reference": "wgsl-prebuilt", "judged": true, "checked": 2, "unpaired": 0,
+            "c_reopened": true, "reading_step": null, "offenders": [offender("W7-f32")],
+            "control": { "backend": "wgsl-percall", "outside_tolerance": 0 },
+        });
+        let inputs = write_runs(&dir, &[one.clone()]);
+        let (out_json, out_md) = (dir.join("o.json"), dir.join("o.md"));
+        aggregate(
+            &inputs,
+            out_json.to_str().unwrap(),
+            out_md.to_str().unwrap(),
+        )
+        .unwrap();
+        let md = fs::read_to_string(&out_md).unwrap();
+        assert!(
+            md.contains("the offenders on W7 are the public `gust-algo` sum"),
+            "{md}"
+        );
+        let json: Value = serde_json::from_str(&fs::read_to_string(&out_json).unwrap()).unwrap();
+        let w7_point = json["points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| {
+                p["workload"] == "W7-f32"
+                    && p["backend"] == "gust-gpu"
+                    && p["metric"] == "gpu_single"
+            })
+            .expect("the W7 GUST GPU-time point");
+        assert_eq!(w7_point["paired_vs_prebuilt"]["note"], W7_RATIO_NOTE);
+        // A same-kernel offender has no W7 label.
+        one["kill_rule"]["offenders"] = json!([offender("W1")]);
+        let inputs = write_runs(&dir, &[one]);
+        aggregate(
+            &inputs,
+            out_json.to_str().unwrap(),
+            out_md.to_str().unwrap(),
+        )
+        .unwrap();
+        let md = fs::read_to_string(&out_md).unwrap();
+        assert!(!md.contains("the offenders on W7"), "{md}");
     }
 
     /// W5: GUST's end-to-end sample includes a conversion copy the baseline does not pay, so there is no GUST end-to-end

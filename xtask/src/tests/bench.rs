@@ -622,18 +622,28 @@ fn a_spirv_file_of_functional_or_unpublishable_runs_is_refused() {
             ruled.replace("{ \"run_seed\":", "{ \"functional\": true, \"run_seed\":"),
             "holds a functional run",
         ),
+        // F2: the per-run `publishable` alone changes (the file-level field stays true), so only `check_group` can refuse
+        // the file, and the message is its own: `false`, `null` and a missing field are each refused.
         (
-            ruled.replace("\"publishable\": true", "\"publishable\": false"),
-            "not publishable",
+            ruled.replace(
+                "\"run_seed\": 11, \"publishable\": true",
+                "\"run_seed\": 11, \"publishable\": false",
+            ),
+            "holds a run that is not publishable (its `publishable` is false, missing or null)",
         ),
-        // F2 (b3d re-check): a missing or null per-run `publishable` is refused for a spirv file as well.
         (
-            ruled.replace(", \"publishable\": true", ""),
-            "not publishable",
+            ruled.replace(
+                "\"run_seed\": 22, \"publishable\": true",
+                "\"run_seed\": 22, \"publishable\": null",
+            ),
+            "holds a run that is not publishable (its `publishable` is false, missing or null)",
         ),
         (
-            ruled.replace("\"publishable\": true", "\"publishable\": null"),
-            "not publishable",
+            ruled.replace(
+                "\"run_seed\": 33, \"publishable\": true",
+                "\"run_seed\": 33",
+            ),
+            "holds a run that is not publishable (its `publishable` is false, missing or null)",
         ),
         (
             aggregate_of("spirv", "spirv", "gust-gpu-spirv", None).replace(

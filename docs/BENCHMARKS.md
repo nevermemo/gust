@@ -259,8 +259,12 @@ read-back inside the library call. They are different algorithms, so no GUST/han
 refuses a cell where it does not, and a test pins it), which makes the division per sum. The span is, per sum, the time from
 the beginning of the first compute pass to the end of the last (the v1 block kernels, each dispatch a pass), summed over
 the sums: the zero-fill of the pooled partials (its own submissions), the gaps between sums and the read-back mapping are
-outside it, so for a batch GUST's figure leaves out the inter-sum transitions that the hand path's single timestamp pair
-around `batch` repeats includes. The hand paths time their two-dispatch tree the same way (first to last pass). `f32` runs
+outside it. The hand paths measure W7 the same way (only W7: every other workload's batch is one pair around all its
+passes): each of the `batch` repeats is one pass with its own begin and end timestamp (a query set of `2 x batch`, still
+one submission), the figure is the sum of the per-repeat spans, and the gaps between repeats are outside it. So
+`gpu_batch_per_dispatch` is, on both sides, the sum of per-run first-pass-begin to last-pass-end spans divided by `batch`,
+and `gpu_single` and `gpu_batch_per_dispatch` are like-for-like for W7. What stays outside GUST's span only is the zero-fill
+of the pooled partials, GPU work the public sum does and the hand tree does not. `f32` runs
 `reduce::sum_on_device` (the one-word result stays on the device, read back outside the timed region, like the hand
 dispatch), `u32` the public `sum_wrapping`. The host-timed `dispatch_host` of `f32` is the same
 call, and it still draws and zeroes its pooled partials per call, which the hand dispatch does not. `u32` has no on-device
@@ -404,7 +408,9 @@ than 30 collected is marked F in the tables):
 2. `dispatch_host`: one dispatch on resident data, host wall clock from the call to completion.
 3. `gpu_single`: GPU timestamps around one compute pass.
 4. `gpu_batch_per_dispatch`: timestamps from the first to the last of 16 back-to-back passes in one submission, divided
-   by 16.
+   by 16. For W7 each of the 16 repeats has its own pair and the figure is the sum of the per-repeat spans, on GUST and on
+   the hand paths alike (the gaps between repeats are outside it), so W7's two GPU-time quantities are like-for-like; W6 is
+   per six-pass run.
 
 The GPU backends of a cell are sampled together in interleaved rounds, each round in a seeded random order, and each
 backend is paired against `wgsl-prebuilt` round by round. The warm-up runs real load until the clock query reports P0,
@@ -541,8 +547,8 @@ control out of tolerance, or in fewer seeds, is listed and not counted. In the `
 off in either direction in every run counts. In the `spirv` group the recurrence must also keep
 its direction: a cell more than 10 percent slower in one seed and more than 10 percent faster in another recurs in neither
 direction, and a counted offender is reported as "re-opens C" (slower) or "reading step, does not re-open C" (faster);
-each row of the aggregate carries its `direction`. An offender whose direction is unknown (a run file that does not carry it)
-never counts in the `spirv` group.
+each row of the aggregate carries its `direction`. An offender whose direction is unknown (neither a `direction` nor a
+ratio; a file without `direction` takes it from the ratio) never counts in the `spirv` group.
 
 **The control's limits for the batch quantity.** (In the `spirv` group read `wgsl-percall-unchecked` and `wgsl-prebuilt-unchecked` for the two names below: the limit is the same.) `wgsl-percall` runs the same kernel text as `wgsl-prebuilt`, so its
 distance from 1.0 is a noise floor for `gpu_single`. For `gpu_batch_per_dispatch` it is not a pure noise floor: it

@@ -379,7 +379,9 @@ resident dispatches and one timestamped batch, unmeasured). A quantity stops ear
 3. **`gpu_single`**: GPU timestamps around one compute pass (the pass-bracketing query that `dispatch_batch_timed`
    uses; `wgsl-*` use the same query writes on their own pass).
 4. **`gpu_batch_per_dispatch`**: timestamps from the first to the last of 16 back-to-back passes in one submission,
-   divided by 16. This is the like-for-like device figure for small sizes, where one pass is dominated by fixed cost.
+   divided by 16. For W7 each of the 16 repeats has its own pair and the figure is the sum of the per-repeat spans, on GUST
+   and on the hand paths alike (the gaps between repeats are outside it), so W7's two GPU-time quantities are like-for-like;
+   W6 is per six-pass run. This is the like-for-like device figure for small sizes, where one pass is dominated by fixed cost.
 
 "Steady state" means after the warm-up with the pipeline cache warm; the harness asserts that GUST's pipeline-cache
 `misses` did not move across the timed samples, and the run fails if it did. The **cold start** is reported separately:
@@ -408,7 +410,8 @@ workgroups and is rejected). Three f32 streams of the last size are 192 MiB, bey
 
 - The Khronos validation layer reports `VUID-StandaloneSpirv-None-10684` ("invalid explicit layout decorations") on
   modules that naga compiled to SPIR-V: any `var<workgroup>` array (at every SPIR-V version, so the W7 hand reductions and
-  GUST's own `gust-algo` reduction and scan kernels, which go through naga on the WGSL route) and, from SPIR-V 1.5, a
+  those of GUST's own `gust-algo` reduction and scan kernels that use workgroup memory, which go through naga on the WGSL
+  route) and, from SPIR-V 1.5, a
   `Function` or `Private` struct or array copy (the W5 particle step, which wgpu-hal compiles for SPIR-V 1.6 on Vulkan
   1.3 devices). The cause is naga 30.0.1's SPIR-V backend, which puts `ArrayStride` and `Offset` on a type whatever its
   storage class (upstream gfx-rs/wgpu issue 7696, with fixes in flight); GUST's generated WGSL is legal, and slangc's own

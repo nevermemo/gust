@@ -1136,16 +1136,18 @@ guard stays, because the WGSL route is the default.
 
 **Known validation-layer message (VUID 10684), not a ledger row.** Under the Khronos Vulkan validation layer, modules that
 naga compiled to SPIR-V report `VUID-StandaloneSpirv-None-10684` ("invalid explicit layout decorations"). It appears for
-`Workgroup` arrays at every SPIR-V version, and for `Function` and `Private` structs and arrays from SPIR-V 1.5 on, which
-wgpu-hal requests on Vulkan 1.3 and later devices. The cause is naga 30.0.1's SPIR-V backend, which decorates every array
+`Workgroup` arrays at every SPIR-V version, and for `Function` and `Private` structs and arrays from SPIR-V 1.5 on;
+wgpu-hal requests SPIR-V 1.6 on Vulkan 1.3 and later devices. The cause is naga 30.0.1's SPIR-V backend, which decorates every array
 and struct member with `ArrayStride` and `Offset` whatever the storage class of the variable that uses the type (upstream
 gfx-rs/wgpu issue 7696; fixes are open and not merged). GUST's generated WGSL is legal and the slangc SPIR-V route is not the
-cause: the SPIR-V that slangc produced for the bench and `gust-algo` kernels passed `spirv-val`. No result is affected: the
+cause: the SPIR-V that slangc produced for the bench kernels and for the `gust-algo` kernels that were checked (a sample
+compiled from the golden fixtures, not every variant) passed `spirv-val`. No result is affected: the
 bench cells that ran with the layer on (the W5 and W7 hand and GUST cells among them) passed their checks, and the message is the
 only symptom. This is a documented limitation and not something GUST works around (workgroup memory cannot be avoided in
-generated WGSL; avoiding struct copies would distort the benchmarks). It was not tested whether any driver other than the
-RTX 5090's and the Radeon 890M's reacts to the decorations. Re-run the validation layer after a wgpu bump that includes the naga
-fix.
+generated WGSL; avoiding struct copies would distort the benchmarks). The cells that ran with the layer on passed their
+checks; that the decorations are harmless on the RTX 5090 and the Radeon 890M is an inference (the layouts are hints on memory
+the driver lays out itself, and the strides equal the natural sizes), not a proof, and no other driver was tested. Re-run the
+validation layer after a wgpu bump that includes the naga fix.
 
 ## 8. What is proven
 

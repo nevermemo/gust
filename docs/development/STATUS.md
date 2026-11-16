@@ -432,6 +432,23 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   reproducibility clause, p5-p95 and the two-state flag in the bench) and m10.k1 (`6dfeb3d`, PR #57; guide chapters
   7, 9, 11 and 12; GPU suite pin 465 over 49; every public item documented, items with an example: gust-compute
   about 2.5 %, gust-compute-wgpu 0.8 % on x86_64 and 1.3 % on wasm32, on rustdoc's denominator, guide excluded).
+- Merged 2026-11-15 to 16, still under the release hold: m10.d1 (`9ffc0c9`, PR #58; drift between the docs and
+  the code fixed: SEMANTICS §11 and its intro, README, crate READMEs, ARCHITECTURE, two design notes, NEXT_TASKS,
+  the web-hello README, and the xtask PATH probe through `/bin/sh` off Windows); m10.b1b (`f22f492`, PR #59; the
+  bench's publishable rule set from recorded quiet-window data, `check-bench --functional --quick` and
+  `--render`, docs/BENCHMARKS.md with no result tables, a functional check-bench step on lavapipe; a follow-up
+  fix builds the sampler on Linux, and the bench gates now include Linux-target clippy); m10.k3 (`fba5757`,
+  PR #61; guide chapter 10, benchmarks, with BENCHMARKS.md's header mirrored and checked); m10.b3a (`ec22a23`,
+  PR #62; workloads W7 sum and W9 naive matmul with derived bounds, unit roundoff `2^-23` on GPU backends and
+  `2^-24` on CPU backends, W3 corrected the same way, the kill-rule exclusion of D190); m10.k2 (`3e8a505`,
+  PR #60; one example per public type; doctests run where their resources exist: the required Unit check runs
+  the gust-compute doctests that need no slangc (191 and 18 `compile_fail`) and the adapter-free
+  gust-compute-wgpu ones (11 and 2), Slangc runs all gust-compute doctests, the gpu-software job the adapter
+  ones; GPU suite pin 504 over 49). Two research probes, no code merged: m10.b2p (CubeCL 0.11.4 builds on
+  rustc 1.95, not 1.90, and runs on the RTX 5090 over Vulkan; two unmodified MPL-2.0 dependencies, `buildid`
+  and `option-ext`, wait for the owner's licence answer before b2) and m10.b4p (rust-gpu 0.11.0 on
+  nightly-2026-08-15 builds W1 and W2 to one SPIR-V module that passes `spirv-val` and matches the CPU loop at
+  2^20 through wgpu passthrough; b4 may proceed).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

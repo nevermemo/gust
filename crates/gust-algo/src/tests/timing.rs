@@ -144,6 +144,28 @@ fn no_module_but_timing_dispatches_a_batch_itself() {
         ("schedule.rs", include_str!("../schedule.rs")),
         ("variant.rs", include_str!("../variant.rs")),
     ];
+    // The list covers every module lib.rs declares (timing and the test module aside), so a new module cannot be left
+    // out of the scan.
+    let lib = include_str!("../lib.rs");
+    let declared: Vec<&str> = lib
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let rest = line
+                .strip_prefix("pub mod ")
+                .or_else(|| line.strip_prefix("mod "))?;
+            rest.strip_suffix(';')
+        })
+        .filter(|name| !matches!(*name, "timing" | "tests"))
+        .collect();
+    assert!(declared.len() >= 13, "found only {declared:?} in lib.rs");
+    for module in &declared {
+        let file = format!("{module}.rs");
+        assert!(
+            modules.iter().any(|(name, _)| *name == file),
+            "lib.rs declares `{module}`, which the source scan does not list; add `{file}`"
+        );
+    }
     for (name, source) in modules {
         // Test code of a module (a `#[cfg(test)]` item) may call the device directly.
         let production = source.split("#[cfg(test)]").next().unwrap_or(source);
@@ -151,6 +173,8 @@ fn no_module_but_timing_dispatches_a_batch_itself() {
             ".dispatch_batch(",
             ".dispatch_batch_timed(",
             ".submit_batch(",
+            "HeadlessDevice::dispatch_batch",
+            "HeadlessDevice::submit_batch",
         ] {
             assert!(
                 !production.contains(needle),

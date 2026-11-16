@@ -1651,6 +1651,14 @@ fn gpu_timed_calls_return_the_untimed_values_and_report_one_batch() {
         }
         (Err(plain), Err(timed)) => {
             eprintln!("evidence::sum_u32 NOT timed on this adapter or build: {plain}");
+            // Only a build that selected the subgroup body may be refused (a missing capability or a subgroup size
+            // below the minimum); the portable body runs on any adapter, so a refusal there is a failure.
+            assert!(
+                !evidence::block_sum_kernels::block_sum::DESCRIPTOR
+                    .requires
+                    .is_empty(),
+                "the portable evidence body was refused: {plain}"
+            );
             assert_eq!(plain.to_string(), timed.to_string());
         }
         (plain, timed) => {

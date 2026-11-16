@@ -13,7 +13,7 @@ makes one is an open decision. The tables near the end are generated from filed 
 
 ## Workloads
 
-The harness lives in `bench/` (a workspace of its own; see `bench/README.md` for every command). Four families, each
+The harness lives in `bench/` (a workspace of its own; see `bench/README.md` for every command). Six families (W1 to W4, W7 and W9), each
 checked against a reference on every sample; a sample that fails its check fails the cell.
 
 | id | what it is | correct when |
@@ -22,9 +22,19 @@ checked against a reference on every sample; a sample that fails its check fails
 | W2 saxpy | `out = a * x + y`, f32, memory-bandwidth bound | within two f32 epsilons of `|a x| + |y|` (room for a fused multiply-add) |
 | W3 Horner polynomial | degree 4, 16 or 64, f32, arithmetic bound (`2 d` flops per 8 bytes) | within the derived bound below |
 | W4 u32 atomic histogram | 256 or 65536 bins, uniform or Zipf keys, atomic-contention bound | every bin equals the serial count exactly |
+| W7 sum | `u32` (wrapping) and `f32`, 2^20 to 2^27 values, one output word, a reduction; GUST runs `gust-algo`'s public sum | `u32`: the wrapping sum exactly; `f32`: within the bound of the summation order the backend runs (below) |
+| W9 naive matrix product | `C = A B` of two `N x N` f32 matrices, `N` from 256 to 2048, one output entry per invocation (the tiled form is not in this set) | every entry within the derived bound below |
 
-**The W3 bound.** Every f32 add and multiply is modelled as `fl(a op b) = (a op b)(1 + delta) + eta` with
-`|delta| <= 2^-24` and `|eta| <= 2^-126`. Higham (Accuracy and Stability of Numerical Algorithms, 2nd ed., section 5.1)
+**The unit roundoff, per backend.** Every f32 add and multiply is modelled as `fl(a op b) = (a op b)(1 + delta) + eta`
+with `|eta| <= 2^-126` and `|delta| <= u`, where `u` is the backend's: `u = 2^-24` for the CPU backends (`serial`, rayon,
+`gust-twin`: host arithmetic, IEEE round to nearest) and `u = 2^-23` for every GPU backend (GUST, its SPIR-V route and
+the hand WGSL). `docs/SEMANTICS.md` section 4 lets a GPU add or multiply round to either neighbour, within 1 ULP, which is
+a relative error of up to `2^-23`; `gust_algo::bound::C_GPU` encodes the same constant. The reference carries both bounds
+and the check picks the one of the backend's kind (`Rounding`). W3's bound was first written with `2^-24` for the GPU
+backends too; it was corrected with W7 and W9 (no backend had failed it, so this widens nothing that failed, it makes the
+stated model the one the semantics grant).
+
+**The W3 bound.** Higham (Accuracy and Stability of Numerical Algorithms, 2nd ed., section 5.1)
 bounds Horner's rule by `gamma_{2d} S` with `S = sum |c_k| |x|^k`. The reference is Horner's rule in f64, which obeys the
 same theorem with the f64 unit roundoff, so the check is
 
@@ -34,6 +44,94 @@ same theorem with the f64 unit roundoff, so the check is
 
 The last term allows underflow. A backend that fuses multiply-add is inside the bound (a test shows it) and a perturbed
 result is outside it. The bound is never widened to make a backend pass.
+
+**The W7 checks.** The `u32` sum is exact and is the wrapping one (modulo 2^32): `gust_algo::reduce::sum_wrapping` is
+defined modulo 2^32 for every input, WGSL integer addition wraps, and the CPU backends use `wrapping_add`; the inputs are
+32-bit hash words, so the true sum passes 2^32 by far and a lost or doubled element changes the word. The `f32` sum has
+no single order, so each backend is judged by the bound of the order it runs, all of the form `gamma_K S` with
+`S = sum |x_i|` (Higham, section 4.2: every value meets at most `K` roundings, whatever the grouping), plus the f64
+reference's own error `(n - 1) 2^-53 S` (`gust_algo::bound::f64_reference_error` has the same formula; a test pins them
+equal, and another that the f64 reference sum is exact for these inputs, so the first-order form is no looser than the
+rigorous `gamma64_{n-1} S`):
+
+```text
+GUST's tree (gust-gpu, gust-gpu-spirv):  |s - s_f64| <= gust_algo::bound::f32_sum_bound_v1(n, 2^-23, S) + (n - 1) 2^-53 S
+hand WGSL tree (wgsl-prebuilt/-percall): |s - s_f64| <= gamma_K(2^-23) S + (n - 1) 2^-53 S,  K = chain_1 + 8 + chain_2 + 8
+serial, rayon-1, rayon-N (u = 2^-24):    |s - s_f64| <= ((1 + u)^{n-1} - 1) S + (n - 1) 2^-126 (1 + factor) + (n - 1) 2^-53 S
+```
+
+*GUST's tree.* `c = 2^-23` is the library's constant (`bound::C_GPU`). Which GUST schedule ran is not reported by the
+public API (`limits::admits` is private): the harness repeats its test from the public device limits (workgroup memory
+for the v1 kernels, the input within the storage binding, the first pass within the workgroup limit) and takes
+`f32_sum_bound_v1` where it holds; where it does not it takes the larger of `f32_sum_bound` (v0) and the v1 bound. That
+repeated test is an assumption of the harness (a test shows the branch and the fallback).
+
+*The hand tree* has a known order, so it has its own bound (the plan's serial worst case still bounds it; a test shows
+the tree bound is inside it, and this is a tightening the coordinator recorded). Pass one is a grid-stride reduction:
+`blocks = min(ceil(n / 2048), max_compute_workgroups_per_dimension)` workgroups of 256 lanes, so the grid grows with `n`
+(512 workgroups at 2^20, 65535 at 2^27). A lane adds `chain_1 = ceil(n / (256 blocks))` values one after the other, then
+the 256 lane values of the workgroup are added in a tree of 8 rounds; pass two is one workgroup in which a lane adds
+`chain_2 = ceil(blocks / 256)` partials and then the same 8-round tree. `K = chain_1 + 8 + chain_2 + 8` counts the first
+add of a chain (into a zero accumulator, exact on IEEE hardware) too, the conservative reading of "either neighbour"; a
+compiler's reassociation (WGSL section 15.7.5) does not lengthen a chain. K is 26 at 2^20 and 281 at 2^27.
+
+*The host backends* (`serial`, `rayon-1`, `rayon-N`, `u = 2^-24`). The order of `serial` is sequential and of rayon
+unknown, so they are judged by the serial worst case, which covers every order: `((1 + u)^{n-1} - 1) S` is Higham's
+product form (`|prod(1 + delta_j) - 1| <= (1 + u)^k - 1` for every `k`), used everywhere in place of `gamma_{n-1}`: it is
+never larger than `gamma_{n-1}`, exists for every `n` (`gamma_k` needs `k u < 1`, which fails above `n = 2^24`) and grows
+with `n`. No tighter bound is invented for them. **Where the `f32` check is vacuous.** On `serial`, `rayon-1` and `rayon-N`
+the factor is 0.065 at 2^20, 0.28 at 2^22, 0.65 at 2^23 and above 1 from 2^24 (1.7 at 2^24, then larger): from `n = 2^24`
+the bound exceeds `S >= |s|`, so a result of `0.0` passes whatever the data, and 2^22 to 2^23 is weak (over a quarter of
+`S`). The check on those three backends is therefore meaningful at 2^20 and 2^21 only. Correctness of the `serial` and
+rayon cells at 2^22 to 2^27 rests on the same code passing at the small sizes (the code does not branch on `n`) and on
+W7-`u32` being exact on the same backends and sizes (a lost or doubled element changes the `u32` word). The `f32` check on
+GUST's tree and the hand tree is meaningful at every size (the bound is a few times `1e-5 S` at most). `S` is itself
+computed in f64, so the code scales it up by `1 / (1 - gamma64_{n-1})`.
+
+The `f32` inputs are multiples of 2^-23 in `[-0.5, 1.5)`, so every addition rounds (a test shows a left-to-right sum
+differs from the f64 one) and no partial sum overflows or goes subnormal. A backend that fails the bound fails the cell,
+and a failure of the `f32` sum against its bound on any backend stops the slice that added it; the bound is never
+widened to pass.
+
+*The two algorithms differ.* GUST's v1 sum (`gust_algo::reduce`) gives a workgroup 8192 elements (256 lanes, each a chain
+of up to 32 terms), tree-adds the lane values in 8 rounds into one partial per workgroup, and repeats over the partials:
+one to three block-reduce dispatches (three at 2^27), with pooled partial buffers it zeroes on every call. The hand
+reduction is two dispatches (above): one grid-stride pass whose grid grows with `n` and one workgroup. Remaining
+differences: GUST's per-call pooling and zeroing, a different chain length and workgroup count, and (for `u32`) the
+read-back inside the library call. They are different algorithms, so no GUST/hand ratio is a GUST overhead.
+
+*What the timings of W7 are.* `gust-algo`'s sum exposes no GPU timestamps, so a W7 cell of GUST has no GPU time. Its
+`dispatch_host` is `reduce::sum_on_device` for `f32` (the one-word result stays on the device, read back outside the timed
+region, like the hand dispatch), but it still draws and zeroes its pooled partials per call, which the hand dispatch does
+not. `u32` has no on-device sum, so W7-`u32`'s GUST `dispatch_host` is the public `sum_wrapping` call **including the
+4-byte read-back**; the hand `dispatch_host` has none. The report shows no GUST/hand ratio for W7 and the kill rule leaves
+W7 out (see "The kill rule").
+
+*Devices.* Inputs above 2^25 words need a storage binding above the portable 128 MiB limit, so a run that includes them
+(the default W7 ladder does) opens both GPU devices with the adapter's own limits (`LimitsPolicy::Adapter` for GUST, the
+same three limits for the hand device), for every workload of that run. Both sides change the same way, so no pairing is
+biased, but such a run is not directly comparable with an earlier run on the portable limits. Both grants are in the run
+file's machine block (`wgpu_limits` and `wgpu_limits_hand_wgsl`).
+
+**The W9 bound.** The entry `c_ij` is an inner product of length `N`: `N` multiplies and `N - 1` adds, in whatever order a
+backend groups them. With the same rounding model as W3, Higham (section 3.1, eq. 3.5 and 3.13) gives `|C^ - C| <=
+gamma_N |A| |B|` entrywise for the exact product `C` of the f32 inputs, and a fused multiply-add only has less error. The
+reference is the product in f64 with `|A||B|` computed beside it (non-negative terms, relative error at most `gamma64_N`),
+so the check, as W3's, is
+
+```text
+|c_ij - c_f64_ij| <= (gamma_N + gamma64_N) * (|A||B|)_ij * (1 + gamma64_N) + 2N * 2^-126
+```
+
+with `u = 2^-24` for the CPU backends (`serial`, rayon, `gust-twin`) and `u = 2^-23` for every GPU backend (GUST, its
+SPIR-V route, the hand WGSL), as in "The unit roundoff, per backend" (the accumulation is a recursive sum of depth
+`N - 1`, inside the theorem). The underflow term is first-order and moot here: the inputs are multiples of 2^-23, so the
+smallest non-zero product is 2^-46 and nothing is subnormal. The matrices have full-mantissa entries in `[-1, 1)`, so the
+products round. Tests show a plain result and a fused multiply-add result inside the bound (under both units), a result
+between the two bounds passing for a GPU and failing for a CPU backend, and a result one f32 step past the bound outside;
+the bound is never widened to pass. W9's size is the matrix side `N` (the matrices hold `N * N` words), and `--sizes` is
+refused beside W9 above 4096 for that reason. Achieved bandwidth is not applicable to W9 (each matrix is read many times),
+so the report shows none; a GFLOP/s column is not part of this slice.
 
 ## Backends and routes
 
@@ -166,6 +264,14 @@ run "C re-opened" (an evidence flag that the GUST path adds cost the plan did no
 offending cells. The rule judges only a complete run: a cell without a ratio counts as unpaired and the verdict is then
 `null`, never `false`.
 
+**Cells outside the rule.** A workload whose GUST and hand paths are not the same kernel is outside the rule, on both
+sides (`Workload::same_kernel`; today only W7): GUST runs `gust-algo`'s public sum, which exposes no GPU timestamps, so its
+cell has no paired GPU-time ratio by construction, and the hand reduction is another algorithm. Such a cell is neither
+counted as unpaired nor judged (it would otherwise keep every run that includes W7 from being judged, `c_reopened` always
+null), and it is **listed**: the rule's record in the run file has `excluded: [{backend, workload, n, reason}]` for each
+of them, so a reader sees W7 was present and left out on purpose. This is a deviation from the plan's "any cell of the
+publishable group" (decision D190). It does not affect whether a run is publishable.
+
 **Reproducibility clause.** A gap counts only if it recurs: the same cell must be more than 10 percent off in all three
 seeds of a confirming run (at least three runs with distinct seeds), with the control (`wgsl-percall`) inside its tolerance
 on that cell in each of those runs. A cell that recurs with the control out of tolerance, or in fewer seeds, is listed and
@@ -240,6 +346,7 @@ the binary embeds its build commit and whether tracked files had uncommitted cha
 differs from the checked-out one, or whose build was dirty (or whose build state is unknown), is not publishable.
 
 ```text
+mkdir -p OUTSIDE_THE_WORK_TREE
 GUST_PROFILE=dev cargo build --release --locked -p gust-bench
 ./target/release/gust-bench run --out OUTSIDE_THE_WORK_TREE/run1.json --label run1 --seed 1
 ```

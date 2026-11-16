@@ -30,7 +30,7 @@ use std::{
     },
 };
 
-use gust_wgpu::HeadlessDevice;
+use gust_wgpu::{DeviceHandle, HeadlessDevice};
 use serde_json::{Value, json};
 
 use crate::{
@@ -404,14 +404,17 @@ fn measure(backend: &mut dyn Backend, cell: &CellSpec<'_>) -> BenchResult<Value>
     if cell.op != Op::EndToEnd {
         backend.read_back(&mut out)?;
     }
-    workloads::check(cell.workload, cell.inputs, cell.reference, &out).map_err(|e| {
-        format!(
-            "{} {} {}: {e}",
-            backend.id(),
-            cell.workload.id(),
-            cell.op.id()
-        )
-    })?;
+    let rounding = workloads::Rounding::of(backend.kind());
+    workloads::check_on(cell.workload, cell.inputs, cell.reference, &out, rounding).map_err(
+        |e| {
+            format!(
+                "{} {} {}: {e}",
+                backend.id(),
+                cell.workload.id(),
+                cell.op.id()
+            )
+        },
+    )?;
 
     let mut api = serde_json::Map::new();
     for (index, name) in NAMES.iter().enumerate() {
@@ -440,7 +443,7 @@ const WARM_CALLS: usize = 5;
 pub fn run(options: &Options) -> BenchResult<bool> {
     let out = options.out.as_deref().ok_or("--out is required")?;
     install_tap()?;
-    let device = Rc::new(HeadlessDevice::new()?);
+    let device = DeviceHandle::new(HeadlessDevice::new()?);
     let ctx = Rc::new(WgpuContext::new()?);
     let adapter = device.adapter_info();
     if adapter.name != ctx.info.name {
@@ -457,8 +460,9 @@ pub fn run(options: &Options) -> BenchResult<bool> {
         .unwrap_or_else(|| [Workload::VectorAdd, Workload::Saxpy].to_vec());
 
     // GUST first, then the whole hand-WGSL ladder: percall, prebuilt, each switch alone and all-on.
-    let mut backends: Vec<Box<dyn Backend>> =
-        vec![Box::new(gust_gpu::GustGpu::new(Rc::clone(&device)))];
+    let mut backends: Vec<Box<dyn Backend>> = vec![Box::new(gust_gpu::GustGpu::new(
+        DeviceHandle::clone(&device),
+    ))];
     backends.extend(gpu_backends(
         Group::Ablation,
         &device,

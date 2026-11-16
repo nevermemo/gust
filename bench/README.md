@@ -1,6 +1,6 @@
 # GUST benchmark harness (M10 spike B1)
 
-A custom harness in a nested, unpublished workspace. It measures four workload families:
+A custom harness in a nested, unpublished workspace. It measures six workload families:
 
 - **W1 vector-add** and **W2 saxpy** (f32, memory-bandwidth bound), 4096 to 16 776 960 elements.
 - **W3 Horner polynomial** (f32, `W3-d4`, `W3-d16`, `W3-d64`), 2^20 and 2^22 elements: arithmetic-bound, `2 d` flops per
@@ -9,9 +9,24 @@ A custom harness in a nested, unpublished workspace. It measures four workload f
   fails for a perturbed result.
 - **W4 u32 atomic histogram** (`W4-256-uniform`, `W4-256-zipf`, `W4-65536-uniform`, `W4-65536-zipf`), 2^20 and 2^24
   keys, four keys per thread: atomic-contention-bound. Correct when every bin count equals the serial count exactly.
+- **W7 sum** (`W7-u32` wrapping, `W7-f32`), 2^20 to 2^27 values, one output word. GUST runs `gust-algo`'s public sum (the
+  `algo` feature, in `gust-bench` only: `gust-bench-pre` has no W7 GUST backend, since gust-algo ships no precompiled
+  artifacts); the hand WGSL is a two-dispatch workgroup-tree reduction whose grid grows with `n`. `u32` is exact; `f32` is
+  checked against a bound for the order of summation (GUST's library bound for its tree, the hand tree's own depth bound
+  for the hand WGSL, the serial worst case for `serial` and rayon; derived in `gust-bench/src/workloads/sum.rs`, with the
+  sizes where the serial worst case says nothing, `docs/BENCHMARKS.md`). The two largest sizes need the adapter's own
+  storage-binding limit, which a run asks for only when it includes them (and then for every workload of that run). GUST
+  and the hand WGSL run different algorithms on W7 and GUST's sum exposes no GPU timestamps, so W7 has no GUST/hand ratio
+  in the report, and its cells are outside the kill rule and listed in `kill_rule.excluded`.
+- **W9 naive matrix product** (`W9-naive`), `N x N` f32 with `N` 256, 512, 1024, 2048, one output entry per invocation (a
+  16 by 16 workgroup, a 2-D dispatch). Backends: GUST, hand WGSL, rayon, serial, and `gust-twin` in a `--cfg gust_dual`
+  build (and `gust-gpu-spirv` in the `spirv-route` build). Correct when every entry is inside Higham's inner-product bound
+  (derived in `gust-bench/src/workloads/matmul.rs`; `u = 2^-24` for the CPU backends, `2^-23` for every GPU backend). The
+  size is the matrix side `N`, not an element count.
 
-`--workloads` takes a workload id or a family (`W3` is the three degrees, `W4` the four histograms). Every workload
-runs its own size ladder (`gust-bench list`); `--sizes` overrides it for all of them. On these backends:
+`--workloads` takes a workload id or a family (`W3` is the three degrees, `W4` the four histograms, `W7` the two sums). Every workload
+runs its own size ladder (`gust-bench list`); `--sizes` overrides it for all of them (for W9 the values are matrix sides,
+and a value above 4096 is refused beside W9). On these backends:
 
 | id | what it is |
 |---|---|
@@ -94,8 +109,10 @@ their own run (the ratio of the two ratios), not through a direct pairing.
 
 **Kill rule** (`group::kill_rule`, in the run file as `kill_rule` for the publishable group): a gust-gpu (or
 gust-gpu-spirv) GPU-time (`gpu_single`, `gpu_batch_per_dispatch`) paired ratio to `wgsl-prebuilt` more than 10 % off 1.0
-on any cell marks the run "C re-opened" (`kill_rule.c_reopened`, with the offending cells listed). It judges only a complete run: every GUST cell and quantity needs a ratio, and any
-cell without one (a failed or dropped backend, a size with no GUST cell) counts in `kill_rule.unpaired`; `kill_rule.judged` is true only when `checked > 0` and `unpaired == 0`, and otherwise `c_reopened` is `null`, never `false`. `kill_rule.control` carries the same ratio for `wgsl-percall` (same kernel text as `wgsl-prebuilt`, so its distance from 1.0 is the noise floor of the method); it is a record beside the rule, not an input, and the rule's threshold and inputs are unchanged. The control is a noise floor for `gpu_single` only. For `gpu_batch_per_dispatch` it also differs from
+on any cell marks the run "C re-opened" (`kill_rule.c_reopened`, with the offending cells listed). A workload with no same-kernel
+GUST/hand pairing (`Workload::same_kernel`, W7) is outside the rule and every such cell is listed in `kill_rule.excluded`
+(`backend`, `workload`, `n`, `reason`), not silently absent. It judges only a complete run: every other GUST cell and quantity needs a ratio, and any
+cell without one (a failed or dropped backend, a size with no GUST cell) counts in `kill_rule.unpaired`; `kill_rule.judged` is true only when `checked > 0` and `unpaired == 0`, and otherwise `c_reopened` is `null`, never `false`. `kill_rule.control` carries the same ratio for `wgsl-percall` (same kernel text as `wgsl-prebuilt`, so its distance from 1.0 is the noise floor of the method); it is a record beside the rule, not an input, and the rule's threshold and quantities are unchanged. The control is a noise floor for `gpu_single` only. For `gpu_batch_per_dispatch` it also differs from
 `wgsl-prebuilt` in the per-pass bind groups (percall builds a fresh one each pass, as GUST does; prebuilt reuses one), so its
 batch excess (1.08-1.13 on W1 1M in the m10.b1c run) may be a real effect of that and not noise. A control that is stream-identical for
 the batch quantity would be a second `wgsl-prebuilt` instance, or `bind_group_reuse` on; until then "control out of tolerance" voids a
@@ -214,7 +231,8 @@ written inside it makes the tree dirty and the run is then not publishable.
 cd bench
 GUST_PROFILE=dev cargo build --release --locked -p gust-bench
 # the native Slang helper is found through GUST_SLANG_REFLECT, as for the main workspace
-./target/release/gust-bench run --out "$OUT/run1.json" --label run1 --seed 1   # about 30 minutes (the large sizes poison and verify 64 MiB per sample); repeat for run2.json, run3.json with other seeds
+mkdir -p "$OUT"
+./target/release/gust-bench run --out "$OUT/run1.json" --label run1 --seed 1   # long (the large sizes poison and verify 64 MiB per sample; W7 and W9 lengthen it, not re-measured); repeat for run2.json, run3.json with other seeds
 ./target/release/gust-bench aggregate --json "$OUT/results.json" --md "$OUT/results.md" "$OUT/run1.json" "$OUT/run2.json" "$OUT/run3.json"
 ./target/release/gust-bench dump-wgsl                 # the WGSL GUST generates for each kernel
 ./target/release/gust-bench list

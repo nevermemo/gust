@@ -46,6 +46,21 @@
       "name": "histogram"
     },
     {
+      "clean_sha256": "7f1a75da06de34cc004299eac02f6e5032d71e4f724cc44bca6134f6abd72033",
+      "entry_point": "gpu_kernel_matmul",
+      "formats": [
+        {
+          "file": "d75d85b7dd6c4338.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "3c604176e61e9d26565b85626354811f336bc97b788d9e4bc19c801d8ca023c9",
+          "sha256": "0b995c9a96050ec57c71cd5d54d57a44243060f2d56a2cd93f90991847fbd229"
+        }
+      ],
+      "key": "d75d85b7dd6c4338",
+      "module": "kernel",
+      "name": "matmul"
+    },
+    {
       "clean_sha256": "905eca6e3a07e95814ea9ec1f74e2f7a47ceb7792e9c9abaa0b698529d32f2c3",
       "entry_point": "gpu_kernel_saxpy",
       "formats": [

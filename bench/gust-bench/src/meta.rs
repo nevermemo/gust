@@ -244,6 +244,7 @@ pub fn machine(
     timestamps: bool,
     rayon_threads: usize,
     limits: &wgpu::Limits,
+    hand_limits: &wgpu::Limits,
 ) -> Value {
     let mut map = machine_common(rayon_threads);
     map.insert(
@@ -272,6 +273,16 @@ pub fn machine(
             "max_compute_workgroups_per_dimension": limits.max_compute_workgroups_per_dimension,
             "max_storage_buffer_binding_size": limits.max_storage_buffer_binding_size,
             "max_compute_invocations_per_workgroup": limits.max_compute_invocations_per_workgroup,
+        }),
+    );
+    // The hand-WGSL device is a second device on the same adapter; both are opened with the same limit policy, and
+    // both grants are recorded so a reader can see they match.
+    map.insert(
+        "wgpu_limits_hand_wgsl".to_owned(),
+        json!({
+            "max_compute_workgroups_per_dimension": hand_limits.max_compute_workgroups_per_dimension,
+            "max_storage_buffer_binding_size": hand_limits.max_storage_buffer_binding_size,
+            "max_compute_invocations_per_workgroup": hand_limits.max_compute_invocations_per_workgroup,
         }),
     );
     Value::Object(map)

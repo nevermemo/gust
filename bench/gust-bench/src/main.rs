@@ -51,7 +51,7 @@ use std::{process::ExitCode, time::Duration, time::Instant};
 use backend::{Backend, BenchResult, Kind};
 use group::Group;
 #[cfg(feature = "gpu")]
-use gust_wgpu::HeadlessDevice;
+use gust_wgpu::{DeviceHandle, DeviceOptions, HeadlessDevice};
 use harness::{CellInput, Config, prepare_case, run_cell, run_gpu_group};
 #[cfg(feature = "gpu")]
 use sampler::AdapterIdent;
@@ -266,13 +266,35 @@ fn sizes_for(options: &Options, workload: Workload) -> Vec<usize> {
     }
 }
 
+/// The largest `--sizes` value W9 takes: its size is the matrix side `N` (the matrices hold `N * N` words), so 4096 is
+/// 64 MiB a matrix; an element count such as `--sizes 1048576` meant for W1 would ask for 2^40 words.
+#[cfg(feature = "gpu")]
+const MATMUL_MAX_SIDE: usize = 4096;
+
+/// Refuses a `--sizes` list that cannot be a matrix side for a W9 selected beside other workloads (the ladder is not
+/// affected: it is always sides). Errors name the cause.
+#[cfg(feature = "gpu")]
+fn check_sizes(options: &Options, workloads: &[Workload]) -> Result<(), String> {
+    let Some(sizes) = &options.sizes else {
+        return Ok(());
+    };
+    if workloads.contains(&Workload::MatMul)
+        && let Some(n) = sizes.iter().find(|n| **n > MATMUL_MAX_SIDE)
+    {
+        return Err(format!(
+            "--sizes {n} is too large for W9: its size is the matrix side N (at most {MATMUL_MAX_SIDE}), not an element count; run W9 with its own --sizes in a separate run (--workloads W9 --sizes 256,512)"
+        ));
+    }
+    Ok(())
+}
+
 /// The GPU backends of a group. The publishable group is GUST (the route of this build: `gust-gpu`, or `gust-gpu-spirv`
 /// in the `spirv-route` build), wgsl-prebuilt and wgsl-percall; the ablation group is wgsl-percall and wgsl-prebuilt
 /// plus the switch ablations, with no GUST backend.
 #[cfg(feature = "gpu")]
 fn gpu_backends(
     group: Group,
-    device: &Rc<HeadlessDevice>,
+    device: &DeviceHandle,
     ctx: &Rc<WgpuContext>,
     ablation: &[Switch],
     all_on: bool,
@@ -280,7 +302,7 @@ fn gpu_backends(
 ) -> Vec<Box<dyn Backend>> {
     let mut backends: Vec<Box<dyn Backend>> = match group {
         Group::Publishable => vec![
-            Box::new(gust_gpu::GustGpu::new(Rc::clone(device))),
+            Box::new(gust_gpu::GustGpu::new(DeviceHandle::clone(device))),
             Box::new(HandWgsl::new(Rc::clone(ctx), Mode::Prebuilt)),
             Box::new(HandWgsl::new(Rc::clone(ctx), Mode::PerCall)),
         ],
@@ -715,8 +737,29 @@ fn run(options: &Options) -> BenchResult<bool> {
         Some(list) => parse_ablation(list)?,
         None => (Vec::new(), false),
     };
-    let gust_device = Rc::new(HeadlessDevice::new()?);
-    let ctx = Rc::new(WgpuContext::new()?);
+    let workload_list = options
+        .workloads
+        .clone()
+        .unwrap_or_else(|| Workload::ALL.to_vec());
+    check_sizes(options, &workload_list)?;
+    // The default wgpu limits cap a storage binding at 128 MiB, which a W7 input above 2^25 words exceeds: a run with such
+    // a case opens both devices (GUST's and the hand one) with the adapter's own limits; every other run keeps the
+    // portable defaults. The granted limits are recorded in the run file's machine block.
+    let adapter_limits = workload_list.iter().any(|w| {
+        sizes_for(options, *w)
+            .iter()
+            .any(|n| workloads::needs_adapter_limits(*w, *n))
+    });
+    let gust_device = DeviceHandle::new(if adapter_limits {
+        HeadlessDevice::with_options(DeviceOptions::default())?
+    } else {
+        HeadlessDevice::new()?
+    });
+    let ctx = Rc::new(if adapter_limits {
+        WgpuContext::open_adapter_limits()?
+    } else {
+        WgpuContext::new()?
+    });
     let adapter = gust_device.adapter_info();
     // A software adapter (lavapipe) runs only the functional check: its times are never published (plan 2.4).
     let software = matches!(adapter.device_type, wgpu::DeviceType::Cpu);
@@ -737,10 +780,6 @@ fn run(options: &Options) -> BenchResult<bool> {
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
 
     let config = build_config(options, group);
-    let workload_list = options
-        .workloads
-        .clone()
-        .unwrap_or_else(|| Workload::ALL.to_vec());
     if !options.with_probe.is_empty() && group != Group::Publishable {
         return Err("--with runs in the publishable group".into());
     }
@@ -769,11 +808,13 @@ fn run(options: &Options) -> BenchResult<bool> {
     select_backends(&mut backends, options.backends.as_ref())?;
 
     let limits = gust_device.limits();
+    let hand_limits = ctx.device.limits();
     let machine = meta::machine(
         adapter,
         gust_device.supports_gpu_timestamps(),
         threads,
         limits,
+        &hand_limits,
     );
     let load_before = meta::load_snapshot();
     let gpu_before = meta::gpu_snapshot();
@@ -1227,7 +1268,15 @@ mod tests {
         assert_eq!(workloads.len(), 4);
         assert!(workloads.contains(&Workload::Hist256Zipf));
         assert!(parse(&args(&["--group", "nope"])).is_err());
-        assert!(parse(&args(&["--workloads", "W9"])).is_err());
+        assert!(parse(&args(&["--workloads", "W5"])).is_err());
+        let sums = parse(&args(&["--workloads", "W7,W9"]))
+            .unwrap()
+            .workloads
+            .unwrap();
+        assert_eq!(
+            sums,
+            vec![Workload::SumU32, Workload::SumF32, Workload::MatMul]
+        );
     }
 
     /// The method flags a run changes away from the defaults, as `run_inputs` names them, for a command line.
@@ -1284,6 +1333,24 @@ mod tests {
         // `--quick` sets its own cap, which is not an override; an explicit `--cap-secs` on top of it is not named either.
         assert!(overrides_of(&["--quick"]).is_empty());
         assert!(overrides_of(&["--quick", "--cap-secs", "5"]).is_empty());
+    }
+
+    /// `--sizes` is a matrix side for W9: an element count meant for the other workloads is refused beside it.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn a_sizes_list_too_large_for_a_matrix_side_is_refused_beside_w9() {
+        let mut options = parse(&["--out".to_owned(), "x.json".to_owned()]).unwrap();
+        let both = [Workload::VectorAdd, Workload::MatMul];
+        assert!(
+            check_sizes(&options, &both).is_ok(),
+            "no --sizes: the ladders"
+        );
+        options.sizes = Some(vec![1_048_576]);
+        let error = check_sizes(&options, &both).unwrap_err();
+        assert!(error.contains("matrix side"), "{error}");
+        assert!(check_sizes(&options, &[Workload::VectorAdd]).is_ok());
+        options.sizes = Some(vec![256, 4096]);
+        assert!(check_sizes(&options, &both).is_ok());
     }
 
     #[test]

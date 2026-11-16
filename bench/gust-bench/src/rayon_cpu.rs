@@ -6,6 +6,10 @@
 //! The histogram (W4): the rayon rows count into one shared array of `AtomicU32` (the counterpart of the GPU's atomic
 //! add, contended the same way: a Zipf stream hits few counters from every thread); the serial row counts into a plain
 //! `u32` array. Every call clears its bins first, so a call is one complete histogram, like a GPU end-to-end sample.
+//!
+//! The sum (W7): rayon folds a chunk per task and reduces the partial sums (`wrapping_add` for `u32`, `+` for `f32`, so
+//! its order of summation is a tree whose shape depends on the splits); the serial row adds left to right. The naive
+//! matrix product (W9): the serial loop is `matmul::row` for every row, rayon takes the rows in parallel.
 
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
@@ -13,7 +17,7 @@ use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 
 use crate::{
     backend::{Backend, BenchResult, Kind},
-    workloads::{Inputs, Workload, polynomial, saxpy, vector_add},
+    workloads::{Inputs, Workload, matmul, polynomial, saxpy, sum, vector_add},
 };
 
 pub struct CpuLoop {
@@ -73,6 +77,8 @@ impl CpuLoop {
                 });
             }
             "W3" => self.run_poly(&inputs.coeffs, &inputs.x, out),
+            "W7" => out[0] = self.sum(workload, inputs),
+            "W9" => self.matmul(inputs, out),
             _ => self.histogram(&inputs.keys, inputs.bins, out),
         }
     }
@@ -104,6 +110,51 @@ impl CpuLoop {
                 out.par_iter_mut()
                     .zip(x.par_iter())
                     .for_each(|(o, x)| *o = polynomial::element(coeffs, *x));
+            }),
+        }
+    }
+
+    /// The sum as one output word (the `u32` sum as its bit pattern).
+    fn sum(&self, workload: Workload, inputs: &Inputs) -> f32 {
+        if workload == Workload::SumU32 {
+            let values = &inputs.values;
+            let total = match &self.pool {
+                None => sum::wrapping_sum(values),
+                Some(pool) => pool.install(|| {
+                    values
+                        .par_iter()
+                        .fold(|| 0u32, |sum, v| sum.wrapping_add(*v))
+                        .reduce(|| 0u32, u32::wrapping_add)
+                }),
+            };
+            return f32::from_bits(total);
+        }
+        let values = &inputs.x;
+        match &self.pool {
+            None => sum::serial_f32(values),
+            Some(pool) => pool.install(|| {
+                values
+                    .par_iter()
+                    .fold(|| 0.0f32, |sum, v| sum + *v)
+                    .reduce(|| 0.0f32, |a, b| a + b)
+            }),
+        }
+    }
+
+    /// The naive product, a row of `C` at a time.
+    fn matmul(&self, inputs: &Inputs, out: &mut [f32]) {
+        let n = inputs.n;
+        let (a, b) = (&inputs.x, &inputs.y);
+        match &self.pool {
+            None => {
+                for (i, row) in out.chunks_mut(n).enumerate() {
+                    matmul::row(n, a, b, i, row);
+                }
+            }
+            Some(pool) => pool.install(|| {
+                out.par_chunks_mut(n)
+                    .enumerate()
+                    .for_each(|(i, row)| matmul::row(n, a, b, i, row));
             }),
         }
     }
@@ -196,7 +247,8 @@ mod tests {
     #[test]
     fn every_workload_passes_on_every_cpu_backend_and_the_poison_fails() {
         for w in Workload::ALL {
-            let inputs = gen_inputs(w, 5000);
+            // W9's `n` is the side of the matrices: a small one keeps the cubic naive product short.
+            let inputs = gen_inputs(w, crate::workloads::test_size(w));
             let reference = reference(w, &inputs);
             for mut backend in [CpuLoop::serial(), CpuLoop::rayon(1), CpuLoop::rayon(3)] {
                 backend.prepare(w, &inputs).unwrap();

@@ -1169,3 +1169,224 @@ fn a_uniform_of_another_device_cannot_be_written_in_a_graph() {
         Error::ForeignPersistentBuffer
     ));
 }
+
+// ---- opt-in GPU timestamps (m10.ts2, D194) ----
+//
+// `execute_graph_timed` runs the same graph and reports `gpu_elapsed` from the first dispatch pass's begin to the end
+// of the last. The value is `Some` exactly when the adapter has timestamp queries and a dispatch pass ran.
+
+#[gust::gpu]
+mod stamped {
+    #[kernel(shape = pixel)]
+    pub fn pixel_copy(
+        id: SV_DispatchThreadID,
+        src: StructuredBuffer<u32>,
+        mut dst: RWStructuredBuffer<u32>,
+    ) {
+        let i = id.x;
+        dst[i] = src[i] + 1u32;
+    }
+}
+
+/// What a timed graph that ran exactly `passes` dispatch passes must report on this device: `Some` only where the
+/// adapter has timestamp queries and a pass ran, and then a duration that is neither a wrapped difference nor an
+/// absolute clock reading (a wrong stamp slot would give one of those).
+#[track_caller]
+fn assert_stamped(device: &HeadlessDevice, report: &gust_wgpu::GraphReport, passes: usize) {
+    assert_eq!(report.dispatches, passes);
+    let adapter = device.adapter_info().name.clone();
+    assert_eq!(
+        report.gpu_elapsed.is_some(),
+        device.supports_gpu_timestamps() && passes > 0,
+        "adapter {adapter:?}"
+    );
+    if let Some(elapsed) = report.gpu_elapsed {
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "implausible GPU time {elapsed:?} on {adapter:?}"
+        );
+    }
+}
+
+#[test]
+fn a_timed_graph_returns_the_outputs_of_an_untimed_one() {
+    let device = device();
+    let run = |timed: bool| {
+        let input = floats(&device, "in", &ramp(1.0));
+        let middle = floats(&device, "mid", &vec![0.0; COUNT]);
+        let output = floats(&device, "out", &vec![0.0; COUNT]);
+        let first = small::copy::call(COUNT as u32, &input, &middle);
+        let second = small::copy::call(COUNT as u32, &middle, &output);
+        let mut graph = StagedGraph::new();
+        let host = ramp(1.0);
+        graph.write(&input, &host);
+        graph.run(&first);
+        graph.run(&second);
+        let read = graph.read(&output);
+        let result = if timed {
+            device.execute_graph_timed(&graph)
+        } else {
+            device.execute_graph(&graph)
+        }
+        .unwrap();
+        let values = result.readback::<f32>(read).unwrap();
+        (result.report, values)
+    };
+    let (untimed, untimed_values) = run(false);
+    let (timed, timed_values) = run(true);
+    assert_eq!(untimed_values, ramp(1.0));
+    assert_eq!(timed_values, untimed_values);
+    assert_eq!(untimed.gpu_elapsed, None);
+    assert_stamped(&device, &timed, 2);
+    // Evidence line for the gate log (`-- --nocapture`): whether the `Some` path ran on this adapter.
+    println!(
+        "ts2 evidence: adapter={:?} supports_gpu_timestamps={} gpu_elapsed={:?}",
+        device.adapter_info().name,
+        device.supports_gpu_timestamps(),
+        timed.gpu_elapsed
+    );
+    // Every field except the two elapsed times is deterministic and must agree.
+    let strip = |report: &gust_wgpu::GraphReport| {
+        let mut report = report.clone();
+        report.host_elapsed = std::time::Duration::ZERO;
+        report.gpu_elapsed = None;
+        report
+    };
+    assert_eq!(strip(&timed), strip(&untimed));
+}
+
+#[test]
+fn a_timed_graph_with_an_indirect_pass_first_or_last_is_bracketed() {
+    let device = device();
+    let args = device
+        .create_indirect_buffer("args", &[indirect::DispatchArgs { x: 1, y: 1, z: 1 }])
+        .unwrap();
+    let seen = device.create_typed_buffer("seen", &[0_u32], GpuBufferAccess::ReadWrite);
+    let inspect = indirect::inspect::call(0, Independent(&args), Independent(&seen));
+    let input = floats(&device, "in", &ramp(1.0));
+    let output = floats(&device, "out", &vec![0.0; COUNT]);
+    let copy = small::copy::call(COUNT as u32, &input, &output);
+
+    // Indirect then direct, direct then indirect, indirect twice; then one indirect pass alone (first and last are the same pass).
+    for order in [[true, false], [false, true], [true, true]] {
+        device.write_typed_buffer(&seen, &[0_u32]).unwrap();
+        let mut graph = StagedGraph::new();
+        for indirect_node in order {
+            if indirect_node {
+                graph.run_indirect(&inspect, &args);
+            } else {
+                graph.run(&copy);
+            }
+        }
+        let result = device.execute_graph_timed(&graph).unwrap();
+        assert_eq!(
+            result.report.indirect_dispatches,
+            order.iter().filter(|node| **node).count()
+        );
+        assert_stamped(&device, &result.report, 2);
+        assert_eq!(device.read_typed_buffer(&seen).unwrap(), [101]);
+    }
+
+    let mut only = StagedGraph::new();
+    only.run_indirect(&inspect, &args);
+    let result = device.execute_graph_timed(&only).unwrap();
+    assert_eq!(result.report.indirect_dispatches, 1);
+    assert_stamped(&device, &result.report, 1);
+}
+
+#[test]
+fn a_timed_graph_with_pixel_passes_first_and_last_is_bracketed() {
+    let device = device();
+    let src = device.create_typed_buffer("src", &[1_u32, 2, 3, 4], GpuBufferAccess::ReadWrite);
+    let mid = device.create_typed_buffer("mid", &[0_u32; 4], GpuBufferAccess::ReadWrite);
+    let dst = device.create_typed_buffer("dst", &[0_u32; 4], GpuBufferAccess::ReadWrite);
+    let first = stamped::pixel_copy::call(4, &src, &mid);
+    let second = stamped::pixel_copy::call(4, &mid, &dst);
+    let mut graph = StagedGraph::new();
+    graph.run(&first);
+    graph.run(&second);
+    let result = device.execute_graph_timed(&graph).unwrap();
+    assert_eq!(result.report.dispatches, 2);
+    assert_stamped(&device, &result.report, 2);
+    assert_eq!(device.read_typed_buffer(&dst).unwrap(), [3, 4, 5, 6]);
+}
+
+#[test]
+fn a_timed_graph_without_a_dispatch_pass_reports_none() {
+    let device = device();
+    let buffer = device.create_typed_buffer("values", &[0_u32; 4], GpuBufferAccess::ReadWrite);
+    let mut graph = StagedGraph::new();
+    graph.write(&buffer, &[1_u32, 2, 3, 4]);
+    let read = graph.read(&buffer);
+    let result = device.execute_graph_timed(&graph).unwrap();
+    assert_eq!(result.readback::<u32>(read).unwrap(), [1, 2, 3, 4]);
+    assert_eq!(result.report.gpu_elapsed, None);
+
+    // A zero-element dispatch runs no pass either.
+    let input = floats(&device, "in", &[]);
+    let out = floats(&device, "out", &[]);
+    let empty = small::copy::call(0, &input, &out);
+    let mut graph = StagedGraph::new();
+    graph.run(&empty);
+    let result = device.execute_graph_timed(&graph).unwrap();
+    assert_eq!(result.report.dispatches, 0);
+    assert_eq!(result.report.gpu_elapsed, None);
+}
+
+#[test]
+fn zero_element_dispatches_at_either_end_do_not_carry_the_stamps() {
+    let device = device();
+    let input = floats(&device, "in", &ramp(1.0));
+    let output = floats(&device, "out", &vec![0.0; COUNT]);
+    let empty_in = floats(&device, "e-in", &[]);
+    let empty_out = floats(&device, "e-out", &[]);
+    let empty = small::copy::call(0, &empty_in, &empty_out);
+    let copy = small::copy::call(COUNT as u32, &input, &output);
+    let mut graph = StagedGraph::new();
+    graph.run(&empty);
+    graph.run(&copy);
+    graph.run(&empty);
+    let result = device.execute_graph_timed(&graph).unwrap();
+    assert_eq!(result.report.dispatches, 1);
+    assert_stamped(&device, &result.report, 1);
+    assert_eq!(device.read_typed_buffer(&output).unwrap(), ramp(1.0));
+}
+
+#[test]
+fn timed_graphs_and_timed_batches_share_the_profiler_without_deadlock() {
+    const ROUNDS: usize = 20;
+    let device = device();
+    let input = floats(&device, "in", &ramp(1.0));
+    let graph_out = floats(&device, "g-out", &vec![0.0; COUNT]);
+    let batch_out = floats(&device, "b-out", &vec![0.0; COUNT]);
+    let graph_call = small::copy::call(COUNT as u32, &input, &graph_out);
+    let batch_call = small::copy::call(COUNT as u32, &input, &batch_out);
+    // Both threads meet at a barrier, so the loops start together and overlap; each does a bounded number of rounds
+    // and the scope joins them; no sleep, no timeout.
+    let start = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            start.wait();
+            for _ in 0..ROUNDS {
+                let mut graph = StagedGraph::new();
+                graph.run(&graph_call);
+                let result = device.execute_graph_timed(&graph).unwrap();
+                assert_stamped(&device, &result.report, 1);
+            }
+        });
+        scope.spawn(|| {
+            start.wait();
+            for _ in 0..ROUNDS {
+                let timing = device
+                    .dispatch_batch_timed(&[(&batch_call).into()])
+                    .unwrap();
+                assert_eq!(
+                    timing.gpu_elapsed.is_some(),
+                    device.supports_gpu_timestamps()
+                );
+            }
+        });
+    });
+    assert_eq!(device.read_typed_buffer(&graph_out).unwrap(), ramp(1.0));
+    assert_eq!(device.read_typed_buffer(&batch_out).unwrap(), ramp(1.0));
+}

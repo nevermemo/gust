@@ -316,7 +316,7 @@ Correctness: before every sample the device output is overwritten with NaN (outs
 and after every sample the output is read back and compared with a serial reference. W1 must match bit for bit; W2 must stay inside the derived
 two-operation bound of `docs/BENCHMARKS.md` (a GPU compiler may fuse the multiply-add, which is inside it); W3 must stay inside
 its Higham bound; W4 must match the serial counts exactly (its bins start at zero, because the kernel adds into them, so a dispatch
-that does not run reads back all zeros and fails); W6 must keep its final stage inside the composed bound (and each stage inside its own, in a unit test); W5 must keep `mass`, `tag` and `charge` bit for bit and keep each float field inside its per-field bound; W7 `u32` must match the wrapping sum exactly and W7 `f32` stay inside the bound of the summation order it runs; W9 must keep every entry inside Higham's inner-product bound. A NaN never passes.
+that does not run reads back all zeros and fails); W5 must keep `mass`, `tag` and `charge` bit for bit and keep each float field inside its per-field bound; W6 must keep its final stage inside the composed bound (and each stage inside its own, in a unit test); W7 `u32` must match the wrapping sum exactly and W7 `f32` stay inside the bound of the summation order it runs; W9 must keep every entry inside Higham's inner-product bound. A NaN never passes.
 A failed check or a moved cache counter marks the run as failed.
 
 Statistics are median, min, p5, p95, MAD and the count of samples beyond 3 MAD (counted, never dropped). The aggregate

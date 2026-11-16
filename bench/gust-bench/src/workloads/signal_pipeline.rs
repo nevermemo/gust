@@ -1,7 +1,7 @@
 //! W6: a staged pipeline, the six steps of `examples/signal-pipeline`'s `transform` as six kernels of their own, `f32`,
 //! one invocation per element, a buffer between every two stages. The example runs them as one kernel (six statements, one
 //! dispatch); here each statement is a kernel, so a run is six dispatches in a chain and the workload is about what
-//! sequencing them costs: GUST's `StagedGraph` (the graph derives the order and the barriers) against the same six
+//! sequencing them costs: GUST's `StagedGraph` (the graph derives the edges from the buffers, checks them at execution and runs the nodes in the order added) against the same six
 //! dispatches in hand order (GUST's `dispatch_batch`, the hand WGSL's six passes).
 //!
 //! ```text

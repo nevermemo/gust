@@ -99,7 +99,8 @@ pub enum Workload {
     Hist65536Uniform,
     Hist65536Zipf,
     Particles,
-    /// W6, GUST's `StagedGraph` form: the six stages as nodes of one graph (derived order and edges), built and executed
+    /// W6, GUST's `StagedGraph` form: the six stages as nodes of one graph (derived edges, checked at execution; the nodes run in
+    /// the order added), built and executed
     /// inside every timed sample. GUST only (the hand WGSL runs its own hand-ordered passes beside it as the baseline).
     PipelineGraph,
     /// W6, the hand-ordered form: the same six dispatches one pass each in the order written, no graph (GUST's
@@ -227,12 +228,21 @@ impl Workload {
         self.bins().is_some()
     }
 
-    /// Whether GUST and the hand-WGSL baseline run the same kernel on this workload, so that a GUST/hand pairing (the
-    /// kill rule's ratios, the report's overhead rows) compares the same algorithm and the same timed work. `false` for
-    /// W7: GUST runs the public `gust_algo::reduce` (v1 schedule, no GPU timestamps exposed, `u32` read-back inside the
-    /// call) and the baseline runs its own tree, so no ratio between them is a GUST overhead.
+    /// Whether GUST and the hand-WGSL baseline run the same kernel work on this workload, so that a GUST/hand pairing
+    /// (the report's overhead rows, the dispatch and end-to-end ratios) compares the same algorithm. `false` for W7: GUST
+    /// runs the public `gust_algo::reduce` (v1 schedule, no GPU timestamps exposed, `u32` read-back inside the call) and
+    /// the baseline runs its own tree, so no ratio between them is a GUST overhead. It promises the same kernel work, not
+    /// identical timed work: W6-graph's dispatch and end-to-end samples include the graph's build and validation by
+    /// design (that is what the form measures), which the hand-ordered baseline does not do.
     pub fn same_kernel(self) -> bool {
         self.family() != "W7"
+    }
+
+    /// Whether GUST's path on this workload records GPU timestamps, so that its GPU-time quantities (`gpu_single`,
+    /// `gpu_batch_per_dispatch`) exist and can enter the kill rule. `false` for W6-graph: `StagedGraph` runs through
+    /// `execute_graph`, which records none. (W7 has none either and is outside the rule through `same_kernel`.)
+    pub fn gust_gpu_timestamps(self) -> bool {
+        self != Workload::PipelineGraph
     }
 
     /// Whether GUST's end-to-end sample times the same work as the hand-WGSL baseline's, so that a GUST end-to-end ratio,
@@ -322,7 +332,8 @@ impl Workload {
     /// value read only (one word out). W5: per particle, the 28-byte particle and the 8-byte acceleration read and the
     /// 28-byte particle written (the 16 steps run in registers). W6: the traffic of the six stages added up, 68 bytes
     /// (five stages of two reads and a write, the energy stage of one read and a write), the intermediates counted as the
-    /// streams they are (they are small enough to live in the GPU's cache at the quick size). W9: not a per-element
+    /// streams they are; this is the device traffic of one six-pass run, the figure of the dispatch and batch columns
+    /// (what an end-to-end sample moves is [`Workload::bytes_per_element_end_to_end`]). W9: not a per-element
     /// stream (the matrices are read many times), so none is counted.
     pub fn bytes_per_element(self) -> u64 {
         match self.family() {
@@ -332,6 +343,17 @@ impl Workload {
             "W4" | "W7" => 4,
             "W9" => 0,
             _ => 12,
+        }
+    }
+
+    /// Bytes per element of what an end-to-end sample moves (the end-to-end columns, GPU and rayon-N alike): the same
+    /// as [`Workload::bytes_per_element`] except W6, where five input uploads and one read-back cross the bus (24 bytes)
+    /// and the fused CPU loop touches the same 24, not the 68 of the six device passes (whose intermediates never leave
+    /// the device).
+    pub fn bytes_per_element_end_to_end(self) -> u64 {
+        match self.family() {
+            "W6" => 24,
+            _ => self.bytes_per_element(),
         }
     }
 

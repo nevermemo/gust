@@ -121,10 +121,13 @@ harness) does not support W5, like W7 and W9.
 **W6, the staged pipeline.** `examples/signal-pipeline`'s `transform` is six statements in one kernel. W6 makes each statement a
 kernel of its own (`bench/gust-bench/src/workloads/signal_pipeline.rs`: `center`, `amplify`, `shift`, `rescale`, `energy`,
 `combine`), `f32`, one invocation per element, a buffer between every two stages, 2^20 and 2^22 elements (quick: 2^20), so a
-run is a chain of six dispatches and the workload is about what sequencing them costs. The brief said "six kernels" for the
-six statements; it is six stage kernels here, which is the only reading in which a graph has six nodes. The inputs are the
+run is a chain of six dispatches and the workload is about what sequencing them costs. The plan's W6 row names six kernels;
+the example has one kernel, `transform`, with six statements, and a one-node graph has no edges and nothing to sequence. W6
+makes each statement a kernel, the only reading in which a graph has more than one node. The inputs are the
 example's five periodic streams in the example's ranges. The traffic of the six passes is 11 reads and 6 writes of 4 bytes per
-element (68 bytes), which is what the bandwidth table divides by (a fused kernel would move 24 bytes).
+element (68 bytes), which is what the dispatch and batch bandwidth columns divide by. The end-to-end bandwidth columns (GPU
+and rayon-N alike) divide by 24 bytes per element instead: what an end-to-end sample moves over the bus is five uploads and
+one read-back (20 + 4 bytes), and a fused CPU loop touches the same 24; the intermediates never leave the device.
 
 There are two GUST forms, reported as two workload ids that share the kernels, the inputs and the bound:
 
@@ -137,14 +140,18 @@ Both forms of GUST and the hand WGSL do one submit with six compute passes per r
 The hand WGSL (`bench/shaders/signal_pipeline.wgsl`, six entry points of one module, one three-binding layout, one bind group per
 stage, dispatched in hand order) is the baseline of both forms: `wgsl-prebuilt` builds its bind groups once, `wgsl-percall`
 builds one per pass per run. The graph form has no GPU timestamps (`execute_graph` records none), so it has no batch
-figure and no batch bandwidth; `W6-hand` has them (one timestamp pair around the six passes of a batch). Both forms are
+figure and no batch bandwidth (and it is outside the kill rule, see "The kill rule"); `W6-hand` has them: for W6,
+`gpu_single` brackets one six-pass run and `gpu_batch_per_dispatch` is per six-pass run (one timestamp pair around the
+`6 x batch` passes, divided by `batch`), not per compute pass. Both forms are
 `same_kernel()` (the same six kernels in the same order, on every path) and `end_to_end_comparable()` (every buffer is
 typed `f32` on every path, nothing is converted), so the renderer pairs them with the hand WGSL, and the pairing says
 `W6-graph` includes the graph's per-call host work and `W6-hand` does not; the two ids are never merged into one row. The CPU
 backends have no `StagedGraph`: `gust-cpu` and `gust-twin` run the six kernels one after another through `CpuDevice` (the
 `W6-hand` form only), and `rayon-1`, `rayon-N` and `serial` compute one element's six stages at a time
 (`signal_pipeline::element`, each stage rounded to `f32`, so the result is the same one a stage-by-stage run gives); none of them
-is in the `W6-graph` table. `wgsl-gust-shader` does not run W6, like W5, W7 and W9. CubeCL is not in W6.
+is in the `W6-graph` table (so that table has no rayon-N row, and the renderer says so instead of stating a break-even).
+`wgsl-gust-shader` does not run W6, like W5, W7 and W9, and neither do the order probes `wgsl-prebuilt+gust-device` and
+`wgsl-prebuilt+gust-setup` (they need the generated shader and its order). CubeCL is not in W6.
 
 **The W6 bound.** Every operation is modelled as `fl(a op b) = (a op b)(1 + delta) + eta`, `|delta| <= u`, `|eta| <= 2^-126`,
 with `u = 2^-24` for a CPU backend and `u = 2^-23` for a GPU (the unit roundoff section above); the division uses `u_div = u`
@@ -411,6 +418,14 @@ counted as unpaired nor judged (it would otherwise keep every run that includes 
 null), and it is **listed**: the rule's record in the run file has `excluded: [{backend, workload, n, reason}]` for each
 of them, so a reader sees W7 was present and left out on purpose. This is a deviation from the plan's "any cell of the
 publishable group" (decision D190). It does not affect whether a run is publishable.
+
+W6-graph is outside the rule too, for a different reason and through a predicate of its own
+(`Workload::gust_gpu_timestamps`, not `same_kernel`): `StagedGraph` runs through `execute_graph`, which records no GPU
+timestamps, so the graph form has no GPU-time samples (`gpu_single` and `gpu_batch_per_dispatch` do not exist for it) and
+no GPU-time pairing. Its cells are listed in `excluded` with that reason, and it is not counted as unpaired (it would
+otherwise keep every full run from being judged). W6-graph stays `same_kernel`, so its dispatch and end-to-end ratios are
+still shown and judged by the report; W6-hand has GPU timestamps and stays in the rule. This is a second deviation from
+the plan's "any cell", recorded beside D190 by the coordinator; no `crates/` change was made for it.
 
 **Reproducibility clause.** A gap counts only if it recurs: the same cell must be more than 10 percent off in all three
 seeds of a confirming run (at least three runs with distinct seeds), with the control (`wgsl-percall`) inside its tolerance

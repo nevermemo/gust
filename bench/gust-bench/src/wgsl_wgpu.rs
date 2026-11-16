@@ -461,7 +461,9 @@ impl HandWgsl {
     fn gust_source(workload: Workload) -> (&'static str, &'static str) {
         match workload.family() {
             // `supports` leaves the probes out of the workloads whose GUST kernel has no artifact here.
-            "W5" | "W7" | "W9" => unreachable!("{} has no GUST artifact probe", workload.id()),
+            "W5" | "W6" | "W7" | "W9" => {
+                unreachable!("{} has no GUST artifact probe", workload.id())
+            }
             "W1" => (
                 include_str!("../../gust-bench-pre/gust-artifacts/2446cbf187eae739.wgsl"),
                 "gpu_kernel_add",
@@ -685,6 +687,9 @@ impl HandWgsl {
         })
     }
 
+    /// W6: the index of the first stage output among the buffers (the five inputs come before it).
+    const STAGE_FIRST_OUTPUT: usize = 5;
+
     /// W6: the buffers of the pipeline in creation order (`signal`, `baseline`, `gain`, `bias`, `scale`, then the
     /// outputs of stages 0 to 5, the last being the final output) and, per stage, the three buffers it binds.
     const STAGE_BINDINGS: [[usize; 3]; 6] = [
@@ -745,6 +750,12 @@ impl HandWgsl {
     /// W6's `prepare`: the five input buffers (written once), the six stage outputs, one module with the six entry
     /// points, and one bind group per stage.
     fn prepare_pipeline(&mut self, workload: Workload, inputs: &Inputs) -> BenchResult<()> {
+        // `supports` leaves W6 out of the probes; `profile` does not filter by it, so this makes a probe asked for W6 loud
+        // instead of running the hand shader under the probe's id.
+        assert!(
+            !self.gust_shader && !self.gust_order,
+            "W6 is not run by the GUST-shader or device-order probes"
+        );
         let ctx = &self.ctx;
         let n = inputs.n;
         let bytes = (n * size_of::<f32>()) as u64;
@@ -946,8 +957,10 @@ impl Backend for HandWgsl {
     /// the probe has no W7 (the library's own kernels), no W5 and no W9 arm (their artifacts exist in `gust-bench-pre` for the
     /// pre-built GUST backend, but the probe path does not take it).
     ///
-    /// W6 is left out of every probe: the shader probes have no artifact for it, and the device-order probe's resource
-    /// order (timestamp objects first) is not built by the staged `prepare`.
+    /// W6 is left out of every probe: the artifacts for its six kernels exist (in `gust-bench-pre`, as for W5 and W9)
+    /// but the shader probe path does not take them, and the device-order probe's resource order (timestamp objects
+    /// first) is not built by the staged `prepare`. Both the `gust-shader` and the `gust-device` and `gust-setup`
+    /// (`gust_order`) probes skip it.
     fn supports(&self, workload: Workload) -> bool {
         !(self.gust_shader && matches!(workload.family(), "W5" | "W6" | "W7" | "W9"))
             && !(self.gust_order && workload.is_pipeline())
@@ -1041,9 +1054,19 @@ impl Backend for HandWgsl {
 
     fn poison(&mut self) -> BenchResult<()> {
         let r = self.resident();
-        self.ctx
-            .queue
-            .write_buffer(Self::out_buffer(r), 0, cast_slice(&r.poison));
+        if r.workload.is_pipeline() {
+            // W6: every stage output (buffers 5 to 10; 0 to 4 are the inputs), as GUST poisons all six, so a pass that
+            // stopped writing an intermediate cannot read the previous sample's correct value and still pass.
+            for buffer in &r.buffers[Self::STAGE_FIRST_OUTPUT..] {
+                self.ctx
+                    .queue
+                    .write_buffer(buffer, 0, cast_slice(&r.poison));
+            }
+        } else {
+            self.ctx
+                .queue
+                .write_buffer(Self::out_buffer(r), 0, cast_slice(&r.poison));
+        }
         self.passes.set(0);
         self.ctx.flush()
     }

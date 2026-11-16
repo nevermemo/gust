@@ -459,6 +459,19 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   `W6-hand` in one `dispatch_batch`, per-stage bounds, W6-graph's GPU-time quantities excluded from the kill rule
   (D191), end-to-end bandwidth counted at 24 bytes per element). A functional run with `--adapter 890M` over
   every workload passed all 90 cells on the Radeon 890M; no timing is recorded.
+  m10.b4 (`ef1b8bf`, PR #66; a rust-gpu comparator, `rustgpu-wgpu`, behind the off-by-default bench feature
+  `rust-gpu`: a committed SPIR-V module built with rust-gpu 0.11.0, rebuilt byte for byte, checked by `spirv-val`
+  and by `xtask lint` against its manifest, loaded through wgpu's SPIR-V passthrough on Vulkan 1.3 or later with a
+  typed refusal elsewhere; the row stays unpublished, because W4 needs `vulkanMemoryModel`, which wgpu-hal 30.0.2
+  does not enable); m10.ts1 (`60fc2b1`, PR #67; D194: `gust_algo::timing::timed` adds the GPU time of every
+  gust-algo call inside its closure, `None` without timestamp queries); m10.ts2 (`481f259`, PR #68; D194:
+  `HeadlessDevice::execute_graph_timed`, whose `GraphReport.gpu_elapsed` sums the graph's compute passes, read-back
+  mapping outside the span; GPU suite pin 512 over 49); m10.b3d (`19b148c`, PR #69; D193: the `spirv`
+  group, GUST's SPIR-V route against hand WGSL with runtime checks off, built only with the `spirv-route` feature,
+  whose kill rule tells a slower offender (re-opens C) from a faster one (a reading step); the publishable group's
+  pre-registered rule is unchanged). VUID-StandaloneSpirv-None-10684 under the validation layer comes from naga
+  30.0.1's SPIR-V backend (upstream gfx-rs/wgpu issue 7696), not from GUST's code; it is recorded as a documented
+  limitation in m10.b3e.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

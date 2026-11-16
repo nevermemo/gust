@@ -27,6 +27,9 @@
 //! pattern. The v0 kernels run on `gust::cpu::CpuDevice` through their twins in test and dual builds ([`cpu`]); a twin
 //! result is never GPU evidence.
 //!
+//! Opt-in GPU timestamps: [`timed`] runs any calls of this crate in a scope and reports the GPU time of the batches
+//! they dispatched ([`Timed`], [`GpuTime`]); calls outside a scope pay one thread-local read per batch (D194).
+//!
 //! [`evidence`] is the subgroup form of the reduction's block step, kept as measured evidence: not for users, and not part
 //! of what this crate promises (see `docs/development/VALIDATION.md`, "Subgroup evidence").
 //!
@@ -46,9 +49,11 @@ pub mod reduce;
 pub mod scan;
 pub mod scan_kernels;
 pub mod schedule;
+mod timing;
 pub mod variant;
 
 pub use error::Error;
+pub use timing::{GpuTime, Timed, timed};
 pub use variant::Variant;
 
 #[cfg(test)]

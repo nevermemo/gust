@@ -1592,3 +1592,156 @@ fn gpu_evidence_block_sum_equals_the_reference_and_v1_whichever_body_the_build_s
         }
     }
 }
+
+/// The GPU-time rule of `timed` on this adapter: a time exactly when it can report one.
+fn assert_time_rule(device: &HeadlessDevice, time: crate::GpuTime, batches: usize) {
+    assert_eq!(time.batches, batches);
+    assert_eq!(
+        time.gpu_elapsed.is_some(),
+        device.supports_gpu_timestamps() && batches > 0,
+        "gpu_elapsed must be Some exactly when the adapter reports timestamps and a batch ran"
+    );
+}
+
+/// D194: a timed call returns what the untimed call returns, and reports one batch and a time per the adapter.
+#[test]
+fn gpu_timed_calls_return_the_untimed_values_and_report_one_batch() {
+    let device = device();
+    let words: Vec<u32> = (0..20_000u32)
+        .map(|i| i.wrapping_mul(2_654_435_761) % 1000)
+        .collect();
+    let floats: Vec<f32> = (0..9_000u32).map(|i| (i % 64) as f32 - 31.0).collect();
+    let ints = GpuVec::from_slice_on(&device, &words).unwrap();
+    let reals = GpuVec::from_slice_on(&device, &floats).unwrap();
+
+    let t = crate::timed(|| reduce::sum(&ints)).unwrap();
+    assert_eq!(t.value, reduce::sum(&ints).unwrap());
+    assert_time_rule(&device, t.time, 1);
+    let t = crate::timed(|| reduce::min(&ints)).unwrap();
+    assert_eq!(t.value, reduce::min(&ints).unwrap());
+    assert_time_rule(&device, t.time, 1);
+    let t = crate::timed(|| reduce::max(&ints)).unwrap();
+    assert_eq!(t.value, reduce::max(&ints).unwrap());
+    assert_time_rule(&device, t.time, 1);
+    let t = crate::timed(|| reduce::sum_wrapping(&ints)).unwrap();
+    assert_eq!(t.value, reduce::sum_wrapping(&ints).unwrap());
+    assert_time_rule(&device, t.time, 1);
+    // A float sum may group differently between two runs of the same call only within the bound; v1's grouping is
+    // fixed per input, so the two runs agree bit for bit here.
+    let t = crate::timed(|| reduce::sum(&reals)).unwrap();
+    assert_eq!(t.value.to_bits(), reduce::sum(&reals).unwrap().to_bits());
+    assert_time_rule(&device, t.time, 1);
+    // The v0 fallback form is one batch too.
+    let t = crate::timed(|| reduce::sum_with(Variant::V0, &ints)).unwrap();
+    assert_eq!(t.value, reduce::sum_with(Variant::V0, &ints).unwrap());
+    assert_time_rule(&device, t.time, 1);
+
+    for exclusive in [false, true] {
+        let run = |input: &GpuVec<u32>| {
+            if exclusive {
+                scan::exclusive(input)
+            } else {
+                scan::inclusive(input)
+            }
+        };
+        let t = crate::timed(|| run(&ints)).unwrap();
+        assert_eq!(
+            t.value.to_vec().unwrap(),
+            run(&ints).unwrap().to_vec().unwrap()
+        );
+        // One batch however many dispatches the scan has.
+        assert_time_rule(&device, t.time, 1);
+    }
+
+    let values = GpuVec::from_slice_on(&device, &[10u32, 20, 30, 40]).unwrap();
+    let indices = GpuVec::from_slice_on(&device, &[3u32, 1, 0, 0]).unwrap();
+    let count = GpuVec::from_slice_on(&device, &[2u32]).unwrap();
+    let t = crate::timed(|| compact::gather_u32(&values, &indices, &count)).unwrap();
+    assert_eq!(t.value.to_vec().unwrap(), [40, 20, 0, 0]);
+    assert_time_rule(&device, t.time, 1);
+}
+
+/// D194: a multi-batch operation sums its batches (and says how many), and so does a closure of several calls.
+#[test]
+fn gpu_timed_multi_batch_operations_sum_their_batches() {
+    let device = device();
+    let flags: Vec<u32> = (0..5_000u32).map(|i| u32::from(i % 3 == 0)).collect();
+    let flags = GpuVec::from_slice_on(&device, &flags).unwrap();
+
+    let t = crate::timed(|| compact::count(&flags)).unwrap();
+    assert_eq!(t.value.to_vec().unwrap(), [1667]);
+    assert_time_rule(&device, t.time, 2);
+
+    let t = crate::timed(|| compact::indices(&flags)).unwrap();
+    let (indices, count) = &t.value;
+    assert_eq!(count.to_vec().unwrap(), [1667]);
+    assert_eq!(&indices.to_vec().unwrap()[..4], [0, 3, 6, 9]);
+    assert_time_rule(&device, t.time, 4);
+
+    let ints = GpuVec::from_slice_on(&device, &[1u32, 2, 3]).unwrap();
+    let t = crate::timed(|| {
+        let a = reduce::sum(&ints)?;
+        let b = reduce::max(&ints)?;
+        Ok((a, b))
+    })
+    .unwrap();
+    assert_eq!(t.value, (6, 3));
+    assert_time_rule(&device, t.time, 2);
+
+    // Nested: the inner scope has its own total, the outer one includes it.
+    let t = crate::timed(|| {
+        let inner = crate::timed(|| reduce::sum(&ints))?;
+        assert_time_rule(&device, inner.time, 1);
+        reduce::min(&ints)
+    })
+    .unwrap();
+    assert_eq!(t.value, 1);
+    assert_time_rule(&device, t.time, 2);
+}
+
+/// D194: an empty input dispatches no batch, an error comes back as the error, and a thread other than the caller is
+/// not counted.
+#[test]
+fn gpu_timed_empty_error_and_other_threads() {
+    let device = device();
+    let empty = GpuVec::<u32>::from_slice_on(&device, &[]).unwrap();
+    let t = crate::timed(|| reduce::sum(&empty)).unwrap();
+    assert_eq!(t.value, 0);
+    assert_eq!(t.time.batches, 0);
+    assert_eq!(t.time.gpu_elapsed, None);
+    assert!(matches!(
+        crate::timed(|| reduce::min(&empty)),
+        Err(Error::Empty)
+    ));
+
+    let ints = GpuVec::from_slice_on(&device, &[4u32, 5, 6]).unwrap();
+    let t = crate::timed(|| {
+        // The sum on another thread is not part of this scope; the one on this thread is.
+        let elsewhere =
+            std::thread::scope(|scope| scope.spawn(|| reduce::sum(&ints)).join().unwrap())?;
+        assert_eq!(elsewhere, 15);
+        reduce::max(&ints)
+    })
+    .unwrap();
+    assert_eq!(t.value, 6);
+    assert_time_rule(&device, t.time, 1);
+}
+
+/// D194: after timed scopes (one that failed, one that panicked) an untimed call is unchanged and a new scope starts
+/// from zero.
+#[test]
+fn gpu_untimed_calls_are_unaffected_by_earlier_timed_scopes() {
+    let device = device();
+    let ints = GpuVec::from_slice_on(&device, &[1u32, 2, 3, 4]).unwrap();
+    assert!(crate::timed(|| reduce::sum(&ints).and(Err::<(), _>(Error::Empty))).is_err());
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = crate::timed(|| -> Result<(), Error> {
+            reduce::sum(&ints)?;
+            panic!("inside the scope");
+        });
+    }));
+    assert!(panicked.is_err());
+    assert_eq!(reduce::sum(&ints).unwrap(), 10);
+    let t = crate::timed(|| reduce::sum(&ints)).unwrap();
+    assert_time_rule(&device, t.time, 1);
+}

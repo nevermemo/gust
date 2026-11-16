@@ -9,8 +9,10 @@
 //! never exits on its own in headless mode, so the check kills it (the whole process tree) as soon as it has a result,
 //! on a timeout and on every error path, and deletes its fresh profile directory.
 //!
-//! What this is evidence for: the real `gust-compute-wgpu` vector-add ran on the browser's GPU in both forms (grid and pixel,
-//! mx.w), and each equalled the host reference and the other bit for bit.
+//! What this is evidence for: the real `gust-compute-wgpu` vector-add ran on the browser's GPU in both forms (grid and
+//! pixel), and each equalled the host reference and the other bit for bit. The page's module doc
+//! (`examples/web-vector-add/src/lib.rs`) is the one full list of what the page checks (the zero-fill of
+//! `create_zeroed_buffer_async`, the `WgpuJob` contract, `map_async`, `map_gpu` and `to_vec_async`, and more).
 //! The page also reports, after the adapter words, the key each kernel selected (M8, slice m8.e); the check compares them
 //! with the committed manifest (`selected_key_problems`) and requires the page to say that a device opened with the
 //! `subgroups` capability was refused with `MissingCapability` (the browser backend offers no capability, D142).

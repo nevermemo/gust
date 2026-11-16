@@ -1029,7 +1029,7 @@ pub(crate) struct GpuSuitePin {
 /// `pool_reserve_grows_geometrically_and_keeps_the_live_prefix` in `tests/typed.rs`, and
 /// `enumerate_async_lists_the_adapters_enumerate_lists` and
 /// `coherent_storage_is_reported_only_when_the_adapter_offers_it` in `tests/device_options.rs`.
-/// (`create_zeroed_buffer_async` exists on `wasm32` only, so no native test reaches it; the browser check
+/// (`create_zeroed_buffer_async` exists on `wasm32` only, so no native test reaches it; since m10.zb the browser check
 /// `cargo xtask check-web` calls it and reads the buffer back as all zeros.)
 ///
 /// Slice m10.k0: 458 over 49 became 459 over 49. One new doctest in `gust_wgpu`: the `gust_wgpu::guide` page compiles

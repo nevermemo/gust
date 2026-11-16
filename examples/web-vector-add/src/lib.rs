@@ -5,14 +5,17 @@
 //! under `GUST_PROFILE=web`, runs `wasm-bindgen --target web`, serves `index.html` with the result from a loopback
 //! server, opens it in headless Chrome and reads the one line that [`run`] logs to the console:
 //!
-//! - `GUST_OK <vendor> <architecture> | selected <module.kernel=key:variant:n ...> | subgroups MissingCapability` when `create_zeroed_buffer_async` returns an output buffer that reads back as all `0.0` (a wasm32-only function that no native test reaches), and when both forms of the kernel (the `grid` form, a compute pass, and the
+//! - `GUST_OK <vendor> <architecture> | selected <module.kernel=key:variant:n ...> | subgroups MissingCapability`
+//!   when `create_zeroed_buffer_async` (wasm32 only, so no native test reaches it) returns an output buffer that
+//!   reads back as all `+0.0` bits, and when both forms of the kernel (the `grid` form, a compute pass, and the
 //!   `pixel` form, a render pass whose fragments write the output buffer, D120) equal the host reference and each
 //!   other to the last bit, at [`LENGTH`] and at [`TWO_DRAWS`] elements, where the two words are what the browser says
 //!   about the adapter (`GPUAdapter.info`; wgpu's own `name` is empty there), and when the `WgpuJob` contract of the
 //!   browser holds for each submission (D69, `check_job_contract`): `status` is `Pending` right after the submit (in
 //!   the same synchronous run, so deterministic) and `Complete` after the awaited readback, `wait` and `wait_timeout`
-//!   return `Error::WouldBlock`, and so does the generated `dispatch`; and when the resident `map_gpu` of a function
-//!   (which submits and does not wait there) reads back, through `to_vec_async`, what the host computes; and when a device
+//!   return `Error::WouldBlock`, and so does the generated `dispatch`; and when the element-wise `map_async` of a
+//!   function (which opens the default device itself) returns what the host computes, and its resident `map_gpu`
+//!   (which submits and does not wait there) reads back, through `to_vec_async`, the same; and when a device
 //!   opened with the `subgroups` capability is refused with `Error::MissingCapability` (wgpu's WebGPU backend maps no
 //!   subgroup feature, D142; M8, slice m8.e). The `selected` part names, for each kernel, the key of the artifact the build
 //!   embedded, the variant it selected (`-` for the portable body) and how many capabilities that body requires
@@ -303,7 +306,8 @@ async fn both_forms(device: &HeadlessDevice, length: usize) -> Result<(), String
     let a = device.create_typed_buffer("web a", &a, GpuBufferAccess::ReadOnly);
     let b = device.create_typed_buffer("web b", &b, GpuBufferAccess::ReadOnly);
     // The output buffer comes from `create_zeroed_buffer_async` (wasm32 only, so this page is the only place that reaches
-    // it), and the zero-fill contract is observed before any dispatch: every element reads back as `0.0`.
+    // it), and the zero-fill contract is observed before any dispatch: every element reads back as `+0.0` bits. The
+    // buffer is fresh (outside the pool, zeroed by WebGPU), so this cannot catch a pool-reuse regression.
     let out = device
         .create_zeroed_buffer_async::<f32>("web out", length, GpuBufferAccess::ReadWrite)
         .await
@@ -312,11 +316,11 @@ async fn both_forms(device: &HeadlessDevice, length: usize) -> Result<(), String
         .read_typed_buffer_async(&out)
         .await
         .map_err(|error| format!("n = {length}: zeroed buffer read-back failed: {error}"))?;
-    if zeros.len() != length || zeros.iter().any(|&value| value != 0.0) {
+    if zeros.len() != length || zeros.iter().any(|&value| value.to_bits() != 0) {
         return Err(format!(
-            "n = {length}: create_zeroed_buffer_async did not zero-fill: {} values read back, {} of them not 0.0",
+            "n = {length}: create_zeroed_buffer_async did not zero-fill: {} values read back, {} of them not +0.0 bits",
             zeros.len(),
-            zeros.iter().filter(|&&value| value != 0.0).count()
+            zeros.iter().filter(|&&value| value.to_bits() != 0).count()
         ));
     }
     // The job is not waited on: in the browser `WgpuJob::wait` returns an error (see its documentation). The awaited

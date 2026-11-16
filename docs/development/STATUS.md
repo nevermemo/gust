@@ -449,6 +449,16 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   and `option-ext`, wait for the owner's licence answer before b2) and m10.b4p (rust-gpu 0.11.0 on
   nightly-2026-08-15 builds W1 and W2 to one SPIR-V module that passes `spirv-val` and matches the CPU loop at
   2^20 through wgpu passthrough; b4 may proceed).
+- Merged 2026-11-16, still under the release hold: m10.zb (`e1d9b07`, PR #63; the web page creates the `grid`
+  form's output buffer zeroed with `create_zeroed_buffer_async` and checks that it reads back zero; the example's
+  module doc is the one list of what the page checks); m10.b3b (`74ab631`, PR #64; W2's bound re-derived under
+  D190, `--adapter "<name substring>"` with both devices on the chosen adapter and a run-time check that they
+  are, and W5, the particle step, with a bound that holds for any grouping on GPU backends; W5's GUST end-to-end
+  ratio is not shown because the read-back converts the struct); m10.b3c (`03d8c8f`, PR #65; W6, the staged
+  pipeline: signal-pipeline's `transform` split into six stage kernels, `W6-graph` through `StagedGraph` and
+  `W6-hand` in one `dispatch_batch`, per-stage bounds, W6-graph's GPU-time quantities excluded from the kill rule
+  (D191), end-to-end bandwidth counted at 24 bytes per element). A functional run with `--adapter 890M` over
+  every workload passed all 90 cells on the Radeon 890M; no timing is recorded.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -5,7 +5,7 @@
 //! # The bound (derived here, plan 2.1)
 //!
 //! Model every f32 add and multiply of a backend, fused or not, as `fl(a op b) = (a op b)(1 + delta) + eta` with
-//! `|delta| <= u = 2^-24` (round to nearest) and `|eta| <= 2^-126` (an absolute error only where a result underflows;
+//! `|delta| <= u` and `|eta| <= 2^-126` (an absolute error only where a result underflows;
 //! gradual underflow makes it `2^-149`, flushing makes it `2^-126`, so the larger is taken). A fused multiply-add rounds
 //! once and so has only less error than its two parts. Horner's rule does `2 d` such operations, and Higham, *Accuracy
 //! and Stability of Numerical Algorithms*, 2nd ed., section 5.1 (eq. 5.3), gives for the computed value `p^`:
@@ -29,6 +29,13 @@
 //! Domain the derivation needs (pinned by a test): finite inputs, no intermediate overflow (`|c_k| <= 1` and `|x| <= 1`
 //! keep every partial result below `sum |c_k| < d + 1`), and a backend whose multiply and add are correctly rounded
 //! (WGSL and Vulkan state that for `+` and `*`; a backend that fuses is inside the bound as shown).
+//!
+//! The unit roundoff is the backend's: `u = 2^-24` for the CPU backends (host arithmetic, IEEE round to nearest, and
+//! `gust-twin`), and `u = 2^-23` for every GPU backend (GUST, its SPIR-V route and the hand WGSL), because
+//! `docs/SEMANTICS.md` section 4 lets a GPU add or multiply round to either neighbour (within 1 ULP), which is what
+//! `gust_algo::bound::C_GPU` encodes. `Reference::bound` holds the first, `Reference::bound_gpu` the second; the check
+//! picks by the backend's [`Rounding`](super::Rounding). The correction (b3a, review M1) widens nothing that failed: no
+//! backend was outside the narrower bound; it makes the stated model the one the project's semantics grant.
 
 use gust::gpu;
 
@@ -65,8 +72,10 @@ pub fn coefficients(degree: usize) -> Vec<f32> {
         .collect()
 }
 
-const U32: f64 = 1.0 / 16_777_216.0; // 2^-24
-const U64: f64 = 1.0 / 9_007_199_254_740_992.0; // 2^-53
+pub(super) const U32: f64 = 1.0 / 16_777_216.0; // 2^-24, round to nearest (the CPU backends)
+/// `2^-23`: the unit roundoff of a GPU backend (either neighbour, within 1 ULP; `docs/SEMANTICS.md` section 4).
+pub(super) const U32_GPU: f64 = 1.0 / 8_388_608.0;
+pub(super) const U64: f64 = 1.0 / 9_007_199_254_740_992.0; // 2^-53
 
 /// `gamma_k = k u / (1 - k u)`.
 pub fn gamma(k: usize, u: f64) -> f64 {
@@ -74,15 +83,18 @@ pub fn gamma(k: usize, u: f64) -> f64 {
     ku / (1.0 - ku)
 }
 
-/// The exact value (Horner in f64) and the derived absolute bound of the f32 Horner result at each `x`.
-pub fn exact_and_bound(coeffs: &[f32], xs: &[f32]) -> (Vec<f64>, Vec<f64>) {
+/// The exact value (Horner in f64) and the derived absolute bound of the f32 Horner result at each `x`, for a backend
+/// that rounds to nearest (`u = 2^-24`) and for one that may round to either neighbour (`u = 2^-23`, a GPU).
+pub fn exact_and_bound(coeffs: &[f32], xs: &[f32]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let degree = coeffs.len() - 1;
     let factor = gamma(2 * degree, U32) + gamma(2 * degree, U64);
+    let factor_gpu = gamma(2 * degree, U32_GPU) + gamma(2 * degree, U64);
     let eta = 2.0 * degree as f64 * f64::from(f32::MIN_POSITIVE);
     // S is itself computed in f64: `S_f64 <= (1 + gamma64) S`.
     let s_slack = 1.0 + gamma(2 * degree, U64);
     let mut exact = Vec::with_capacity(xs.len());
     let mut bound = Vec::with_capacity(xs.len());
+    let mut bound_gpu = Vec::with_capacity(xs.len());
     for x in xs {
         let x = f64::from(*x);
         let (mut p, mut s) = (f64::from(coeffs[degree]), f64::from(coeffs[degree]).abs());
@@ -92,8 +104,9 @@ pub fn exact_and_bound(coeffs: &[f32], xs: &[f32]) -> (Vec<f64>, Vec<f64>) {
         }
         exact.push(p);
         bound.push(factor * s * s_slack + eta);
+        bound_gpu.push(factor_gpu * s * s_slack + eta);
     }
-    (exact, bound)
+    (exact, bound, bound_gpu)
 }
 
 /// The element function of the CPU backends: Horner in f32, one multiply and one add per step, never fused.
@@ -110,7 +123,7 @@ pub fn element(coeffs: &[f32], x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workloads::{Workload, check, gen_inputs, reference};
+    use crate::workloads::{Rounding, Workload, check, check_on, gen_inputs, reference};
 
     #[test]
     fn gamma_matches_its_definition() {
@@ -119,6 +132,36 @@ mod tests {
         assert!(gamma(128, U32) > gamma(8, U32));
         // For d = 64 the factor is about 128 * 2^-24 = 7.6e-6.
         assert!((gamma(128, U32) - 7.63e-6).abs() < 2e-8);
+    }
+
+    /// A GPU's bound is the one with `u = 2^-23` (review M1): about twice the round-to-nearest one, and a result that is
+    /// inside the first and outside the second is only the CPU's to give.
+    #[test]
+    fn a_gpu_bound_is_the_either_neighbour_one() {
+        let w = Workload::Poly16;
+        let inputs = gen_inputs(w, 4096);
+        let reference = reference(w, &inputs);
+        for (nearest, either) in reference.bound.iter().zip(&reference.bound_gpu) {
+            assert!(either > nearest && *either < 2.1 * nearest);
+        }
+        let i = 77;
+        let result = inputs
+            .x
+            .iter()
+            .map(|x| element(&inputs.coeffs, *x))
+            .collect::<Vec<_>>();
+        let (exact, near, far) = (
+            reference.exact[i],
+            reference.bound[i],
+            reference.bound_gpu[i],
+        );
+        let mut between = result.clone();
+        between[i] = (exact + 0.5 * (near + far)) as f32;
+        assert!(check_on(w, &inputs, &reference, &between, Rounding::Either).is_ok());
+        assert!(check_on(w, &inputs, &reference, &between, Rounding::Nearest).is_err());
+        let mut past = result;
+        past[i] = (exact + 1.5 * far) as f32;
+        assert!(check_on(w, &inputs, &reference, &past, Rounding::Either).is_err());
     }
 
     #[test]

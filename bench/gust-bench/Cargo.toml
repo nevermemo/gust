@@ -11,6 +11,7 @@ build = "build.rs"
 [dependencies]
 gust = { package = "gust-compute", path = "../../crates/gust" }
 gust-wgpu = { package = "gust-compute-wgpu", path = "../../crates/gust-wgpu", optional = true }
+gust-algo = { path = "../../crates/gust-algo", optional = true }
 bytemuck = "=1.25.2"
 log = { version = "=0.4.34", optional = true }
 pollster = { version = "=0.4.0", optional = true }
@@ -31,8 +32,11 @@ windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Graphics
 # no wgpu and no Slang bridge (D21); its GUST backend is `gust-cpu`.
 [features]
 default = ["gpu", "slang-runtime"]
-gpu = ["dep:gust-wgpu", "dep:wgpu", "dep:pollster"]
-slang-runtime = ["gpu", "gust/slang-runtime", "gust-wgpu/slang-runtime"]
+gpu = ["dep:gust-wgpu", "dep:wgpu", "dep:pollster", "algo"]
+# GUST's W7 (sum) goes through `gust-algo`'s public reduction, which ships no precompiled artifacts: a build that embeds
+# every artifact (`gust-bench-pre`) cannot take it and has no W7 GUST backend (its `algo` feature is declared but off).
+algo = ["dep:gust-algo"]
+slang-runtime = ["gpu", "gust/slang-runtime", "gust-wgpu/slang-runtime", "gust-algo/slang-runtime"]
 spirv-route = ["gpu", "gust-wgpu/spirv-route"]
 # The `profile` subcommand: a counting global allocator and a `log` tap on wgpu-core's API log (off by default, so a
 # timing build never pays for either).

@@ -5,22 +5,28 @@
 //! (slangc's SPIR-V through passthrough) and names it `gust-gpu-spirv`; the default build is `gust-gpu` on WGSL through
 //! naga. One process holds one GUST route (the feature changes the emitted kernels), so the two are separate builds and
 //! separate result files, each with its own `wgsl-prebuilt` to pair against.
+//!
+//! W7 (sum) is not a kernel of this crate: GUST's sum is `gust_algo::reduce` (`sum`, and `sum_wrapping` for `u32`),
+//! called on a resident `GpuVec` and read back to the host, which is the public call a program makes. It needs the
+//! `algo` feature (`gust-bench-pre` has none: gust-algo ships no precompiled artifacts), has no GPU timestamps, and its
+//! `f32` result is judged against `gust-algo`'s own bound for the schedule that ran (`Backend::sum_tree_bound`).
 
 use std::{
     cell::{Cell, RefCell},
-    rc::Rc,
     time::{Duration, Instant},
 };
 
-use gust::Independent;
-use gust_wgpu::{BufferDispatch, GpuBuffer, GpuBufferAccess, HeadlessDevice};
+use gust::{Extent, Independent};
+#[cfg(feature = "algo")]
+use gust_wgpu::GpuVec;
+use gust_wgpu::{BufferDispatch, DeviceHandle, GpuBuffer, GpuBufferAccess};
 use serde_json::Value;
 
 use crate::{
     backend::{Backend, BenchResult, Kind},
     route,
     workloads::{
-        self, Inputs, Workload, counts_as_words, hist_threads, histogram, normalize_counts,
+        self, Inputs, Workload, counts_as_words, hist_threads, histogram, matmul, normalize_counts,
         polynomial, saxpy, vector_add,
     },
 };
@@ -47,6 +53,18 @@ enum Data {
         keys: GpuBuffer<u32>,
         bins: GpuBuffer<u32>,
     },
+    MatMul {
+        dims: GpuBuffer<u32>,
+        a: GpuBuffer<f32>,
+        b: GpuBuffer<f32>,
+        c: GpuBuffer<f32>,
+    },
+    /// W7 on `gust-algo`: the resident input and the word the last sum returned (the output of this backend, which has
+    /// no device-side output buffer to read: the public sum returns its value to the host).
+    #[cfg(feature = "algo")]
+    SumF32(GpuVec<f32>),
+    #[cfg(feature = "algo")]
+    SumU32(GpuVec<u32>),
 }
 
 struct Resident {
@@ -56,6 +74,13 @@ struct Resident {
     /// The poison words of the f32 output (NaN), or empty for a histogram, whose poison is zeroed bins.
     nan: Vec<f32>,
     zeros: Vec<u32>,
+    /// W7: the word the last sum returned, the poison word before the first and after every `poison`.
+    #[cfg(feature = "algo")]
+    sum_word: Cell<f32>,
+    /// W7 (`f32`): the one-word result of the last `dispatch` (`reduce::sum_on_device`), which `read_back` reads; `None`
+    /// after a `poison` or an `end_to_end` (whose word is in `sum_word`).
+    #[cfg(feature = "algo")]
+    sum_dev: RefCell<Option<GpuVec<f32>>>,
 }
 
 /// The events a cell produced: those after the `before` that were on the device when its `prepare` began.
@@ -94,7 +119,7 @@ fn route_verdict(
 }
 
 pub struct GustGpu {
-    device: Rc<HeadlessDevice>,
+    device: DeviceHandle,
     resident: Option<Resident>,
     /// Dispatches since the bins were last cleared (a histogram accumulates; see `Backend::dispatch`).
     passes: Cell<u32>,
@@ -103,6 +128,43 @@ pub struct GustGpu {
     /// device's life (the W3 cells share `kernel::horner`), so a cell's own share is the total minus this.
     #[cfg(feature = "spirv-route")]
     events_before_prepare: Cell<usize>,
+}
+
+/// Whether the public sum runs its v1 schedule on a device with these limits: a replica of `gust_algo::limits::admits`
+/// (private), from the public `device.limits()`: workgroup memory for the v1 kernels (`3 * 256 * 4` bytes), the input
+/// (`n * 4` bytes) inside one storage binding, and the first pass's workgroup count inside
+/// `max_compute_workgroups_per_dimension`. The replication is an assumption of the bench (the library does not say which
+/// schedule it ran); where it is wrong the bound it picks is still the looser one, see [`sum_bound_from`].
+#[cfg(feature = "algo")]
+pub(crate) fn v1_admitted(
+    n: u32,
+    workgroup_storage: u32,
+    binding: u64,
+    per_dimension: u32,
+) -> bool {
+    use gust_algo::schedule::BlockSchedule;
+    BlockSchedule::new(n).is_some_and(|schedule| {
+        let first = schedule.passes().first().map_or(1, |pass| pass.workgroups);
+        workgroup_storage >= 3 * 256 * 4
+            && u64::from(n) * 4 <= binding
+            && u64::from(first) <= u64::from(per_dimension)
+    })
+}
+
+/// The bound of `gust-algo`'s `f32` sum of `n` values with `sum |x_i| <= abs_sum`: `f32_sum_bound_v1` where the shipped
+/// variant is v1 and the launch is `admitted` ([`v1_admitted`]), else the looser of the v0 and v1 bounds (the library's own
+/// advice, `bound.rs`: v0 runs, or the call errors). `c` is `C_GPU = 2^-23`, the library's GPU constant.
+#[cfg(feature = "algo")]
+pub(crate) fn sum_bound_from(n: u32, abs_sum: f64, admitted: bool) -> f64 {
+    use gust_algo::{
+        bound::{C_GPU, f32_sum_bound, f32_sum_bound_v1},
+        variant::{Operation, Variant, shipped},
+    };
+    let v1 = f32_sum_bound_v1(n, C_GPU, abs_sum);
+    match shipped(Operation::Sum) {
+        Variant::V1 if admitted => v1,
+        _ => f32_sum_bound(n, C_GPU, abs_sum).max(v1),
+    }
 }
 
 /// The id of this backend in the build: the route is part of it.
@@ -115,7 +177,7 @@ pub const fn backend_id() -> &'static str {
 }
 
 impl GustGpu {
-    pub fn new(device: Rc<HeadlessDevice>) -> Self {
+    pub fn new(device: DeviceHandle) -> Self {
         Self {
             device,
             resident: None,
@@ -128,6 +190,43 @@ impl GustGpu {
 
     fn resident(&self) -> &Resident {
         self.resident.as_ref().expect("prepare was called")
+    }
+
+    /// The resident input of a W7 workload, uploaded through the public `GpuVec`.
+    #[cfg(feature = "algo")]
+    fn sum_data(d: &DeviceHandle, workload: Workload, inputs: &Inputs) -> BenchResult<Data> {
+        Ok(if workload == Workload::SumU32 {
+            Data::SumU32(GpuVec::from_slice_on(d, &inputs.values)?)
+        } else {
+            Data::SumF32(GpuVec::from_slice_on(d, &inputs.x)?)
+        })
+    }
+
+    #[cfg(not(feature = "algo"))]
+    fn sum_data(_: &DeviceHandle, _: Workload, _: &Inputs) -> BenchResult<Data> {
+        Err("W7 needs the `algo` feature (gust-algo)".into())
+    }
+
+    /// See `Backend::sum_tree_bound`.
+    #[cfg(feature = "algo")]
+    fn sum_bound(&self, n: usize, abs_sum: f64) -> Option<f64> {
+        if self.resident().workload != Workload::SumF32 {
+            return None;
+        }
+        let n = u32::try_from(n).ok()?;
+        let limits = self.device.limits();
+        let admitted = v1_admitted(
+            n,
+            limits.max_compute_workgroup_storage_size,
+            limits.max_storage_buffer_binding_size,
+            limits.max_compute_workgroups_per_dimension,
+        );
+        Some(sum_bound_from(n, abs_sum, admitted))
+    }
+
+    #[cfg(not(feature = "algo"))]
+    fn sum_bound(&self, _n: usize, _abs_sum: f64) -> Option<f64> {
+        None
     }
 
     /// Builds the generated typed call for the resident buffers and hands the resulting dispatch to `run`. The call
@@ -157,7 +256,55 @@ impl GustGpu {
                 );
                 run(BufferDispatch::from(&call))
             }
+            Data::MatMul { dims, a, b, c } => {
+                let call = matmul::kernel::matmul::call_extent(
+                    Extent::new(n, n, 1),
+                    Independent(dims),
+                    Independent(a),
+                    Independent(b),
+                    Independent(c),
+                );
+                run(BufferDispatch::from(&call))
+            }
+            #[cfg(feature = "algo")]
+            Data::SumF32(_) | Data::SumU32(_) => {
+                unreachable!("W7 runs gust-algo's sum, not a kernel call of this crate")
+            }
         }
+    }
+
+    /// One complete run of the workload on the resident data: a kernel dispatch, or for W7 the public sum (which waits and
+    /// reads its value back, so its word is the result). Used by `end_to_end` and the W7 warm-up; the timed `dispatch`
+    /// of W7 `f32` is [`Self::dispatch_sum_f32`] (no read-back inside the timed region).
+    fn run_once(&self) -> BenchResult<()> {
+        #[cfg(feature = "algo")]
+        match &self.resident().data {
+            Data::SumF32(values) => {
+                let sum = gust_algo::reduce::sum(values)?;
+                self.resident().sum_word.set(sum);
+                self.resident().sum_dev.replace(None);
+                return Ok(());
+            }
+            Data::SumU32(values) => {
+                let sum = gust_algo::reduce::sum_wrapping(values)?;
+                self.resident().sum_word.set(f32::from_bits(sum));
+                return Ok(());
+            }
+            _ => {}
+        }
+        self.with_dispatch(|dispatch| self.device.dispatch_batch(&[dispatch]))?;
+        Ok(())
+    }
+
+    /// W7 `f32`, the resident data: one `reduce::sum_on_device` call. It waits for the dispatches, and leaves the one-word
+    /// result on the device (the same shape as the hand dispatch: no read-back, no host word in the timed region); it
+    /// still draws and zeroes its pooled partials per call, which the hand path does not (stated in BENCHMARKS.md).
+    /// `read_back` then reads the word. `u32` has no on-device form, so its `dispatch` is `run_once` (with the read-back).
+    #[cfg(feature = "algo")]
+    fn dispatch_sum_f32(&self, values: &GpuVec<f32>) -> BenchResult<()> {
+        let out = gust_algo::reduce::sum_on_device(values)?;
+        self.resident().sum_dev.replace(Some(out));
+        Ok(())
     }
 
     fn read_words(&self) -> BenchResult<Vec<f32>> {
@@ -167,6 +314,15 @@ impl GustGpu {
                 d.read_typed_buffer(out)?
             }
             Data::Hist { bins, .. } => counts_as_words(d.read_typed_buffer(bins)?),
+            Data::MatMul { c, .. } => d.read_typed_buffer(c)?,
+            #[cfg(feature = "algo")]
+            Data::SumF32(_) | Data::SumU32(_) => {
+                let device_word = self.resident().sum_dev.borrow();
+                match device_word.as_ref() {
+                    Some(word) => word.to_vec()?,
+                    None => vec![self.resident().sum_word.get()],
+                }
+            }
         })
     }
 
@@ -226,6 +382,20 @@ impl Backend for GustGpu {
         Kind::Gpu
     }
 
+    /// W7 needs `gust-algo` (the `algo` feature); every other workload is a kernel of this crate.
+    fn supports(&self, workload: Workload) -> bool {
+        workload.family() != "W7" || cfg!(feature = "algo")
+    }
+
+    /// The bound of `gust-algo`'s `f32` sum for the schedule that runs: `f32_sum_bound_v1` where the shipped variant is v1
+    /// and the launch is admitted, else the looser of the two bounds. The public API does not say which ran: `limits::admits`
+    /// is private, so its test is repeated here from the public `device.limits()` (workgroup memory for the v1 kernels,
+    /// the storage binding for the input, the workgroup count of the first pass), an assumption; where it fails, v0 runs
+    /// or the call errors, and the larger of the two bounds covers v0. `c` is `C_GPU`, the library's GPU constant.
+    fn sum_tree_bound(&self, n: usize, abs_sum: f64) -> Option<f64> {
+        self.sum_bound(n, abs_sum)
+    }
+
     fn prepare(&mut self, workload: Workload, inputs: &Inputs) -> BenchResult<()> {
         self.resident = None;
         #[cfg(feature = "spirv-route")]
@@ -263,6 +433,17 @@ impl Backend for GustGpu {
                 d.write_typed_buffer_timed(&x, &inputs.x)?;
                 (Data::Poly { coeffs, x, out }, nan, Vec::new())
             }
+            "W7" => (Self::sum_data(d, workload, inputs)?, Vec::new(), Vec::new()),
+            "W9" => {
+                let nan = vec![f32::NAN; n * n];
+                let dims = d.create_typed_buffer("bench dims", &[n as u32], read_only);
+                let a = d.create_typed_buffer("bench a", &inputs.x, read_only);
+                let b = d.create_typed_buffer("bench b", &inputs.y, read_only);
+                let c = d.create_typed_buffer("bench c", &nan, read_write);
+                d.write_typed_buffer_timed(&a, &inputs.x)?;
+                d.write_typed_buffer_timed(&b, &inputs.y)?;
+                (Data::MatMul { dims, a, b, c }, nan, Vec::new())
+            }
             _ => {
                 let zeros = vec![0u32; inputs.bins];
                 let keys = d.create_typed_buffer("bench keys", &inputs.keys, read_only);
@@ -278,7 +459,15 @@ impl Backend for GustGpu {
             data,
             nan,
             zeros,
+            #[cfg(feature = "algo")]
+            sum_word: Cell::new(workload.poison_word()),
+            #[cfg(feature = "algo")]
+            sum_dev: RefCell::new(None),
         });
+        // W7: the first sum builds the pipelines and flushes the upload of the input, so no timed call carries them.
+        if workload.family() == "W7" {
+            self.run_once()?;
+        }
         Ok(())
     }
 
@@ -291,6 +480,14 @@ impl Backend for GustGpu {
             }
             Data::Hist { bins, .. } => {
                 self.device.write_typed_buffer_timed(bins, &r.zeros)?;
+            }
+            Data::MatMul { c, .. } => {
+                self.device.write_typed_buffer_timed(c, &r.nan)?;
+            }
+            #[cfg(feature = "algo")]
+            Data::SumF32(_) | Data::SumU32(_) => {
+                r.sum_word.set(r.workload.poison_word());
+                r.sum_dev.replace(None);
             }
         }
         self.passes.set(0);
@@ -309,20 +506,43 @@ impl Backend for GustGpu {
                 self.device.write_typed_buffer(keys, &inputs.keys)?;
                 self.device.write_typed_buffer(bins, &r.zeros)?;
             }
+            Data::MatMul { a, b, .. } => {
+                self.device.write_typed_buffer(a, &inputs.x)?;
+                self.device.write_typed_buffer(b, &inputs.y)?;
+            }
+            // W7: the upload is an in-place write into the resident `GpuVec`'s buffer, as the hand path does.
+            #[cfg(feature = "algo")]
+            Data::SumF32(values) => self
+                .device
+                .write_typed_buffer(values.as_buffer(), &inputs.x)?,
+            #[cfg(feature = "algo")]
+            Data::SumU32(values) => self
+                .device
+                .write_typed_buffer(values.as_buffer(), &inputs.values)?,
         }
-        self.with_dispatch(|dispatch| self.device.dispatch_batch(&[dispatch]))?;
+        self.run_once()?;
         self.passes.set(1);
         *out = self.read_words()?;
         Ok(())
     }
 
     fn dispatch(&mut self) -> BenchResult<()> {
-        self.with_dispatch(|dispatch| self.device.dispatch_batch(&[dispatch]))?;
+        #[cfg(feature = "algo")]
+        if let Data::SumF32(values) = &self.resident().data {
+            self.dispatch_sum_f32(values)?;
+            self.passes.set(self.passes.get().wrapping_add(1));
+            return Ok(());
+        }
+        self.run_once()?;
         self.passes.set(self.passes.get().wrapping_add(1));
         Ok(())
     }
 
+    /// `None` for W7: `gust-algo`'s public sum has no timestamps.
     fn gpu_time(&mut self, batch: usize) -> BenchResult<Option<Duration>> {
+        if self.resident().workload.family() == "W7" {
+            return Ok(None);
+        }
         let timing = self.with_dispatch(|dispatch| {
             let batch = vec![dispatch; batch];
             self.device.dispatch_batch_timed(&batch)
@@ -334,7 +554,7 @@ impl Backend for GustGpu {
 
     fn read_back(&mut self, out: &mut Vec<f32>) -> BenchResult<()> {
         *out = self.read_words()?;
-        if self.resident().workload.kind() == workloads::Kind::U32 {
+        if self.resident().workload.accumulates() {
             normalize_counts(out, self.passes.get());
         }
         Ok(())
@@ -415,7 +635,7 @@ impl Backend for GustGpu {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workloads::{check, gen_inputs, reference};
+    use crate::workloads::{Judging, Rounding, check_with, gen_inputs, reference};
 
     #[test]
     fn the_route_check_judges_a_warm_cell_on_the_latest_event_and_a_cold_cell_on_its_own() {
@@ -447,11 +667,12 @@ mod tests {
     }
 
     /// The GPU tests take turns: creating several Vulkan instances at once made adapter discovery fail now and then.
-    fn gpu() -> (std::sync::MutexGuard<'static, ()>, Rc<HeadlessDevice>) {
+    fn gpu() -> (std::sync::MutexGuard<'static, ()>, DeviceHandle) {
         static GPU: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let guard = GPU.lock().unwrap_or_else(|e| e.into_inner());
-        let device = HeadlessDevice::new().expect("an adapter is needed for the GUST GPU test");
-        (guard, Rc::new(device))
+        let device =
+            gust_wgpu::HeadlessDevice::new().expect("an adapter is needed for the GUST GPU test");
+        (guard, DeviceHandle::new(device))
     }
 
     /// Every workload on GUST: end to end, a resident dispatch and a 16-pass batch each match the reference, and a
@@ -460,36 +681,47 @@ mod tests {
     fn every_workload_passes_its_bound_on_gust_and_an_undispatched_output_fails() {
         let (_gpu, device) = gpu();
         for w in Workload::ALL {
-            let n = if w.family() == "W4" { 5000 } else { 4096 + 7 };
-            let inputs = gen_inputs(w, n);
+            let mut backend = GustGpu::new(DeviceHandle::clone(&device));
+            if !backend.supports(w) {
+                continue;
+            }
+            let inputs = gen_inputs(w, workloads::test_size(w));
             let reference = reference(w, &inputs);
-            let mut backend = GustGpu::new(Rc::clone(&device));
             backend.prepare(w, &inputs).unwrap();
+            let tree = backend.sum_tree_bound(inputs.n, reference.abs_sum);
+            assert_eq!(
+                tree.is_some(),
+                w == Workload::SumF32 && cfg!(feature = "algo")
+            );
+            let tree = Judging {
+                rounding: Rounding::Either,
+                tree,
+            };
             let mut out = Vec::new();
 
             backend.poison().unwrap();
             backend.read_back(&mut out).unwrap();
             assert!(
-                check(w, &inputs, &reference, &out).is_err(),
+                check_with(w, &inputs, &reference, &out, tree).is_err(),
                 "{}: the poison alone must fail the check",
                 w.id()
             );
 
             backend.poison().unwrap();
             backend.end_to_end(&inputs, &mut out).unwrap();
-            check(w, &inputs, &reference, &out)
+            check_with(w, &inputs, &reference, &out, tree)
                 .unwrap_or_else(|e| panic!("{} end to end: {e}", w.id()));
 
             backend.poison().unwrap();
             backend.dispatch().unwrap();
             backend.read_back(&mut out).unwrap();
-            check(w, &inputs, &reference, &out)
+            check_with(w, &inputs, &reference, &out, tree)
                 .unwrap_or_else(|e| panic!("{} dispatch: {e}", w.id()));
 
             backend.poison().unwrap();
             if backend.gpu_time(16).unwrap().is_some() {
                 backend.read_back(&mut out).unwrap();
-                check(w, &inputs, &reference, &out)
+                check_with(w, &inputs, &reference, &out, tree)
                     .unwrap_or_else(|e| panic!("{} 16-pass batch: {e}", w.id()));
             }
         }
@@ -536,5 +768,78 @@ mod tests {
             backend.cold_route().expect("recorded again")["kernel"],
             record["kernel"]
         );
+    }
+
+    /// The real tree bound of the public sum (`f32_sum_bound_v1`, as `GustGpu::sum_bound` returns it) judges a result
+    /// just inside it as a pass and the next f32 above as a failure (review S6).
+    #[cfg(feature = "algo")]
+    #[test]
+    fn a_sum_just_past_the_real_v1_bound_fails_and_one_just_inside_passes() {
+        let w = Workload::SumF32;
+        let inputs = gen_inputs(w, 4103);
+        let reference = reference(w, &inputs);
+        let tree = sum_bound_from(4103, reference.abs_sum, true);
+        assert!(tree > 0.0 && tree < 0.1, "{tree}");
+        let judging = Judging {
+            rounding: Rounding::Either,
+            tree: Some(tree),
+        };
+        let exact = reference.exact[0];
+        let limit = tree + reference.ref_error;
+        let mut inside = (exact + limit) as f32;
+        while f64::from(inside) - exact > limit {
+            inside = inside.next_down();
+        }
+        while f64::from(inside.next_up()) - exact <= limit {
+            inside = inside.next_up();
+        }
+        check_with(w, &inputs, &reference, &[inside], judging).unwrap();
+        let outside = inside.next_up();
+        assert!(f64::from(outside) - exact > limit);
+        assert!(check_with(w, &inputs, &reference, &[outside], judging).is_err());
+        // And on the low side.
+        let mut inside = (exact - limit) as f32;
+        while exact - f64::from(inside) > limit {
+            inside = inside.next_up();
+        }
+        while exact - f64::from(inside.next_down()) <= limit {
+            inside = inside.next_down();
+        }
+        check_with(w, &inputs, &reference, &[inside], judging).unwrap();
+        assert!(check_with(w, &inputs, &reference, &[inside.next_down()], judging).is_err());
+    }
+
+    /// Where the v1 launch is not admitted (too little workgroup memory, a storage binding too small, too few workgroups
+    /// per dimension) the bound is the looser of the v0 and v1 ones; where it is admitted it is v1's (review S6).
+    #[cfg(feature = "algo")]
+    #[test]
+    fn the_bound_falls_back_to_the_looser_of_v0_and_v1_where_v1_is_not_admitted() {
+        use gust_algo::bound::{C_GPU, f32_sum_bound, f32_sum_bound_v1};
+        let (n, s) = (4103u32, 1234.5f64);
+        let (v0, v1) = (f32_sum_bound(n, C_GPU, s), f32_sum_bound_v1(n, C_GPU, s));
+        assert_eq!(sum_bound_from(n, s, true), v1);
+        assert_eq!(sum_bound_from(n, s, false), v0.max(v1));
+        assert!(sum_bound_from(n, s, false) >= sum_bound_from(n, s, true));
+        // The replicated admission test, term by term (default limits: 16 KiB workgroup memory, 128 MiB binding, 65535).
+        let ok = (16384u32, 128u64 << 20, 65535u32);
+        assert!(v1_admitted(n, ok.0, ok.1, ok.2));
+        assert!(
+            !v1_admitted(n, 3 * 256 * 4 - 1, ok.1, ok.2),
+            "workgroup memory"
+        );
+        assert!(v1_admitted(n, 3 * 256 * 4, ok.1, ok.2));
+        assert!(!v1_admitted(n, ok.0, u64::from(n) * 4 - 1, ok.2), "binding");
+        assert!(v1_admitted(n, ok.0, u64::from(n) * 4, ok.2));
+        // 2^27 values need 16384 workgroups in the first pass.
+        assert!(!v1_admitted(1 << 27, ok.0, 1 << 30, 100), "workgroups");
+        // On a device the replica agrees with the library: the default headless device admits a small input.
+        let (_gpu, device) = gpu();
+        let limits = device.limits();
+        assert!(v1_admitted(
+            n,
+            limits.max_compute_workgroup_storage_size,
+            limits.max_storage_buffer_binding_size,
+            limits.max_compute_workgroups_per_dimension
+        ));
     }
 }

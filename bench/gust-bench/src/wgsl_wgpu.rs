@@ -15,7 +15,13 @@
 //!
 //! The device is a second `wgpu::Device` on the same adapter selection (Vulkan, high performance) with default limits
 //! and `TIMESTAMP_QUERY`, exactly what `HeadlessDevice` requests. `HeadlessDevice` does not expose its own device,
-//! so sharing one is not possible through the public API.
+//! so sharing one is not possible through the public API. A run with W7 inputs above 2^25 words opens it (and GUST's
+//! device) with the adapter's own buffer and storage-binding limits instead (`WgpuContext::open_adapter_limits`).
+//!
+//! W7 (sum) is a two-dispatch workgroup-tree reduction in one compute pass: `reduce_blocks` (`workloads::sum::hand_blocks`
+//! workgroups, one per 2048 values, capped by the device's workgroup limit: grid-stride sums per lane, then a tree in
+//! workgroup memory) and `reduce_total` (one workgroup, each lane adding its share of the partials, then a tree).
+//! W9 (naive matrix product) is one dispatch of `N / 16` by `N / 16` workgroups of 16 by 16.
 
 use std::{
     cell::Cell,
@@ -46,16 +52,27 @@ impl WgpuContext {
 
     /// Opens the device; with `trace` (a `wgpu-trace` build) wgpu writes its API trace of this device into that directory.
     pub fn open(trace: Option<&std::path::Path>) -> BenchResult<Self> {
-        Self::open_with(trace, false)
+        Self::open_with(trace, false, false)
+    }
+
+    /// The same device, requesting the adapter's own `max_buffer_size`, `max_storage_buffer_binding_size` and
+    /// `max_compute_workgroups_per_dimension` (every other limit at wgpu's default), as `LimitsPolicy::Adapter` does for
+    /// `HeadlessDevice`: the one a W7 input above 2^25 words needs.
+    pub fn open_adapter_limits() -> BenchResult<Self> {
+        Self::open_with(None, false, true)
     }
 
     /// A device set up the way `HeadlessDevice` sets its own up (the m10.b1c probe `gust-setup`): it also requests
     /// `MEMORY_DECORATION_COHERENT` when the adapter has it (`gust-wgpu` `lib.rs`, `HeadlessDevice::open`).
     pub fn open_like_gust() -> BenchResult<Self> {
-        Self::open_with(None, true)
+        Self::open_with(None, true, false)
     }
 
-    fn open_with(trace: Option<&std::path::Path>, like_gust: bool) -> BenchResult<Self> {
+    fn open_with(
+        trace: Option<&std::path::Path>,
+        like_gust: bool,
+        adapter_limits: bool,
+    ) -> BenchResult<Self> {
         #[cfg(not(feature = "wgpu-trace"))]
         if trace.is_some() {
             return Err("a wgpu trace needs a build with the wgpu-trace feature".into());
@@ -68,6 +85,15 @@ impl WgpuContext {
             ..Default::default()
         }))?;
         let timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        let mut required_limits = wgpu::Limits::default();
+        if adapter_limits {
+            let available = adapter.limits();
+            required_limits.max_buffer_size = available.max_buffer_size;
+            required_limits.max_storage_buffer_binding_size =
+                available.max_storage_buffer_binding_size;
+            required_limits.max_compute_workgroups_per_dimension =
+                available.max_compute_workgroups_per_dimension;
+        }
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("bench hand-WGSL device"),
@@ -84,6 +110,7 @@ impl WgpuContext {
                 } else {
                     wgpu::Features::empty()
                 },
+                required_limits,
                 ..Default::default()
             }))?;
         Ok(Self {
@@ -236,7 +263,8 @@ fn bump(cell: &Cell<u64>) {
 }
 
 struct Pipeline {
-    pipeline: wgpu::ComputePipeline,
+    /// One compute pipeline per entry point of the workload (two for the W7 reduction, one for the rest), on one module.
+    pipelines: Vec<wgpu::ComputePipeline>,
     layout: wgpu::BindGroupLayout,
 }
 
@@ -247,7 +275,8 @@ struct Resident {
     /// Bytes of the output buffer.
     bytes: u64,
     /// In binding order: `[a, b, out]` for vector-add, `[scale, x, y, out]` for saxpy, `[coeffs, x, out]` for the
-    /// polynomial, `[keys, bins]` for the histogram. The output is always last.
+    /// polynomial, `[keys, bins]` for the histogram, `[x, partials, out]` for the sum and `[dims, a, b, c]` for the
+    /// matrix product. The output is always last.
     buffers: Vec<wgpu::Buffer>,
     /// The buffers (indexes into `buffers`) an end-to-end sample uploads from the host inputs, in the order of
     /// [`HandWgsl::input_bytes`].
@@ -260,7 +289,11 @@ struct Resident {
     timestamp_read: wgpu::Buffer,
     /// The output's poison words (NaN, or zero for the histogram, which is also what a histogram clears to).
     poison: Vec<f32>,
-    groups: u32,
+    /// The dispatches of one pass of the workload, in order: the pipeline (index into `Pipeline::pipelines`) and the
+    /// workgroup counts.
+    steps: Vec<(usize, [u32; 3])>,
+    /// W7: the workgroups of the first dispatch (0 for every other workload).
+    blocks: u32,
 }
 
 pub struct HandWgsl {
@@ -394,6 +427,8 @@ impl HandWgsl {
     /// a GUST wgpu trace for W1 and W2).
     fn gust_source(workload: Workload) -> (&'static str, &'static str) {
         match workload.family() {
+            // `supports` leaves the probes out of the workloads whose GUST kernel has no artifact here.
+            "W7" | "W9" => unreachable!("{} has no GUST artifact probe", workload.id()),
             "W1" => (
                 include_str!("../../gust-bench-pre/gust-artifacts/2446cbf187eae739.wgsl"),
                 "gpu_kernel_add",
@@ -418,20 +453,35 @@ impl HandWgsl {
             "W1" => include_str!("../../shaders/vector_add.wgsl"),
             "W2" => include_str!("../../shaders/saxpy.wgsl"),
             "W3" => include_str!("../../shaders/polynomial.wgsl"),
+            "W7" if workload == Workload::SumU32 => include_str!("../../shaders/sum_u32.wgsl"),
+            "W7" => include_str!("../../shaders/sum_f32.wgsl"),
+            "W9" => include_str!("../../shaders/matmul.wgsl"),
             _ => include_str!("../../shaders/histogram.wgsl"),
         }
     }
 
-    /// Whether binding `index` of the workload is written by the kernel: the last one, in every workload.
+    /// Whether binding `index` of the workload is written by the kernel: the last one, in every workload but the sum,
+    /// whose partials (binding 1) are written by the first dispatch and read by the second.
     fn writable(workload: Workload, index: usize) -> bool {
-        index + 1 == Self::binding_count(workload)
+        index + 1 == Self::binding_count(workload) || (workload.family() == "W7" && index == 1)
     }
 
     fn binding_count(workload: Workload) -> usize {
         match workload.family() {
-            "W1" | "W3" => 3,
-            "W2" => 4,
+            "W1" | "W3" | "W7" => 3,
+            "W2" | "W9" => 4,
             _ => 2,
+        }
+    }
+
+    /// The entry points of the workload's module, in dispatch order.
+    fn entry_points(workload: Workload, gust_kernel: bool) -> Vec<&'static str> {
+        if gust_kernel {
+            return vec![Self::gust_source(workload).1];
+        }
+        match workload.family() {
+            "W7" => vec!["reduce_blocks", "reduce_total"],
+            _ => vec!["main"],
         }
     }
 
@@ -440,18 +490,37 @@ impl HandWgsl {
         match workload.family() {
             "W1" | "W2" => vec![cast_slice(&inputs.x), cast_slice(&inputs.y)],
             "W3" => vec![cast_slice(&inputs.x)],
+            "W7" if workload == Workload::SumU32 => vec![cast_slice(&inputs.values)],
+            "W7" => vec![cast_slice(&inputs.x)],
+            "W9" => vec![cast_slice(&inputs.x), cast_slice(&inputs.y)],
             _ => vec![cast_slice(&inputs.keys)],
         }
     }
 
-    /// Invocations of a launch: one per element, or one per [`workloads::KEYS_PER_THREAD`] keys.
-    fn groups(workload: Workload, n: usize) -> u32 {
-        let threads = if workload.bins().is_some() {
-            hist_threads(n)
-        } else {
-            n
-        };
-        threads.div_ceil(WORKGROUP) as u32
+    /// Workgroups of the first W7 dispatch (256 lanes each, a grid-stride loop over the input): one per 2048 values,
+    /// capped by the device's per-dimension workgroup limit (a standard grid-stride reduction whose grid grows with `n`).
+    fn sum_blocks(ctx: &WgpuContext, n: usize) -> u32 {
+        workloads::sum::hand_blocks(n, ctx.device.limits().max_compute_workgroups_per_dimension)
+    }
+
+    /// The dispatches of one pass: one per element (or per [`workloads::KEYS_PER_THREAD`] keys) of 256-wide workgroups,
+    /// the two reduction dispatches of W7, or the 2-D grid of 16 by 16 workgroups of W9.
+    fn steps(workload: Workload, n: usize, blocks: u32) -> Vec<(usize, [u32; 3])> {
+        match workload.family() {
+            "W7" => vec![(0, [blocks, 1, 1]), (1, [1, 1, 1])],
+            "W9" => {
+                let side = n.div_ceil(workloads::matmul::TILE) as u32;
+                vec![(0, [side, side, 1])]
+            }
+            _ => {
+                let threads = if workload.bins().is_some() {
+                    hist_threads(n)
+                } else {
+                    n
+                };
+                vec![(0, [threads.div_ceil(WORKGROUP) as u32, 1, 1])]
+            }
+        }
     }
 
     /// The same objects `gust-wgpu` creates for a kernel: bind group layout, pipeline layout, shader module,
@@ -489,10 +558,10 @@ impl HandWgsl {
                 bind_group_layouts: &[Some(&layout)],
                 immediate_size: 0,
             });
-        let (text, entry) = if gust_kernel {
-            Self::gust_source(workload)
+        let text = if gust_kernel {
+            Self::gust_source(workload).0
         } else {
-            (Self::source(workload), "main")
+            Self::source(workload)
         };
         let descriptor = wgpu::ShaderModuleDescriptor {
             label: Some("bench hand WGSL"),
@@ -510,17 +579,21 @@ impl HandWgsl {
         } else {
             ctx.device.create_shader_module(descriptor)
         };
-        let pipeline = ctx
-            .device
-            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("bench pipeline"),
-                layout: Some(&pipeline_layout),
-                module: &module,
-                entry_point: Some(entry),
-                compilation_options: Default::default(),
-                cache: None,
-            });
-        Pipeline { pipeline, layout }
+        let pipelines = Self::entry_points(workload, gust_kernel)
+            .into_iter()
+            .map(|entry| {
+                ctx.device
+                    .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some("bench pipeline"),
+                        layout: Some(&pipeline_layout),
+                        module: &module,
+                        entry_point: Some(entry),
+                        compilation_options: Default::default(),
+                        cache: None,
+                    })
+            })
+            .collect();
+        Pipeline { pipelines, layout }
     }
 
     fn create_bind_group(
@@ -573,9 +646,11 @@ impl HandWgsl {
                 label: Some("bench pass"),
                 timestamp_writes,
             });
-            pass.set_pipeline(&r.pipeline.pipeline);
             pass.set_bind_group(0, bind_group, &[]);
-            pass.dispatch_workgroups(r.groups, 1, 1);
+            for (pipeline, [x, y, z]) in &r.steps {
+                pass.set_pipeline(&r.pipeline.pipelines[*pipeline]);
+                pass.dispatch_workgroups(*x, *y, *z);
+            }
         }
     }
 
@@ -661,6 +736,21 @@ impl Backend for HandWgsl {
         Kind::Gpu
     }
 
+    /// The worst-case error of the hand tree (`workloads::sum::hand_tree_bound`): its order is known, so it is judged by
+    /// its own depth with `c = 2^-23`, not by the serial worst case. Only for the `f32` sum, only after `prepare`.
+    fn sum_tree_bound(&self, n: usize, abs_sum: f64) -> Option<f64> {
+        let r = self.resident.as_ref()?;
+        (r.workload == Workload::SumF32)
+            .then(|| workloads::sum::hand_tree_bound(n, r.blocks, abs_sum))
+    }
+
+    /// The GUST-shader probes run GUST's generated WGSL, which this crate embeds as precompiled artifacts for W1 to W4;
+    /// the probe has no W7 (the library's own kernels) and no W9 arm (its artifact exists in `gust-bench-pre` for the
+    /// pre-built GUST backend, but the probe path does not take it).
+    fn supports(&self, workload: Workload) -> bool {
+        !(self.gust_shader && matches!(workload.family(), "W7" | "W9"))
+    }
+
     fn prepare(&mut self, workload: Workload, inputs: &Inputs) -> BenchResult<()> {
         self.resident = None;
         let ctx = &self.ctx;
@@ -673,14 +763,19 @@ impl Backend for HandWgsl {
         let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         let mut buffers = Vec::new();
         // A one-element or short read-only buffer that is not re-uploaded per sample: the scalar, the coefficients.
-        let fixed: Option<(&str, &[f32])> = match workload.family() {
-            "W2" => Some(("bench scale", std::slice::from_ref(&inputs.scale))),
-            "W3" => Some(("bench coeffs", &inputs.coeffs)),
+        let dims = [n as u32];
+        let fixed: Option<(&str, &[u8])> = match workload.family() {
+            "W2" => Some((
+                "bench scale",
+                cast_slice(std::slice::from_ref(&inputs.scale)),
+            )),
+            "W3" => Some(("bench coeffs", cast_slice(&inputs.coeffs))),
+            "W9" => Some(("bench dims", cast_slice(&dims))),
             _ => None,
         };
         if let Some((label, values)) = fixed {
-            let buffer = ctx.buffer(label, size_of_val(values) as u64, storage);
-            ctx.queue.write_buffer(&buffer, 0, cast_slice(values));
+            let buffer = ctx.buffer(label, values.len() as u64, storage);
+            ctx.queue.write_buffer(&buffer, 0, values);
             buffers.push(buffer);
         }
         let mut uploads = Vec::new();
@@ -692,6 +787,19 @@ impl Backend for HandWgsl {
             ctx.queue.write_buffer(&buffer, 0, values);
             uploads.push(buffers.len());
             buffers.push(buffer);
+        }
+        let blocks = if workload.family() == "W7" {
+            Self::sum_blocks(ctx, n)
+        } else {
+            0
+        };
+        if workload.family() == "W7" {
+            // One partial sum per workgroup of the first dispatch, read by the second.
+            buffers.push(ctx.buffer(
+                "bench partials",
+                u64::from(blocks) * size_of::<f32>() as u64,
+                storage,
+            ));
         }
         buffers.push(ctx.buffer("bench out", bytes, storage | wgpu::BufferUsages::COPY_SRC));
         let pipeline = Self::create_pipeline(ctx, workload, self.gust_shader, self.unchecked);
@@ -718,7 +826,8 @@ impl Backend for HandWgsl {
             resolve,
             timestamp_read,
             poison: vec![workload.poison_word(); out_len],
-            groups: Self::groups(workload, n),
+            steps: Self::steps(workload, n, blocks),
+            blocks,
         });
         Ok(())
     }
@@ -738,7 +847,7 @@ impl Backend for HandWgsl {
         for (index, values) in r.uploads.iter().zip(Self::input_bytes(r.workload, inputs)) {
             ctx.queue.write_buffer(&r.buffers[*index], 0, values);
         }
-        if r.workload.kind() == workloads::Kind::U32 {
+        if r.workload.accumulates() {
             // A histogram adds into its bins: a host call starts from clean bins, so the clear is part of the sample.
             ctx.queue
                 .write_buffer(Self::out_buffer(r), 0, cast_slice(&r.poison));
@@ -827,7 +936,7 @@ impl Backend for HandWgsl {
             out.resize(r.out_len, 0.0);
             out.copy_from_slice(cast_slice(bytes));
         })?;
-        if r.workload.kind() == workloads::Kind::U32 {
+        if r.workload.accumulates() {
             normalize_counts(out, self.passes.get());
         }
         Ok(())
@@ -848,7 +957,7 @@ impl Backend for HandWgsl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workloads::{check, gen_inputs, reference};
+    use crate::workloads::{Judging, Rounding, check, check_with, gen_inputs, reference};
 
     const N: usize = 4096;
     /// The GPU tests take turns: creating several Vulkan instances at once made adapter discovery fail now and then.
@@ -900,32 +1009,37 @@ mod tests {
         let (_gpu, ctx) = gpu_context();
         for mode in [Mode::Prebuilt, Mode::PerCall] {
             for w in Workload::ALL {
-                let n = if w.family() == "W4" { 5000 } else { 4096 + 7 };
-                let inputs = gen_inputs(w, n);
+                let inputs = gen_inputs(w, workloads::test_size(w));
                 let reference = reference(w, &inputs);
                 let mut backend = HandWgsl::new(Rc::clone(&ctx), mode);
                 backend.prepare(w, &inputs).unwrap();
+                // A GPU's rounding, and for the f32 sum the hand tree's own bound.
+                let judging = Judging {
+                    rounding: Rounding::Either,
+                    tree: backend.sum_tree_bound(inputs.n, reference.abs_sum),
+                };
+                assert_eq!(judging.tree.is_some(), w == Workload::SumF32);
                 let mut out = Vec::new();
                 backend.poison().unwrap();
                 backend.read_back(&mut out).unwrap();
                 assert!(
-                    check(w, &inputs, &reference, &out).is_err(),
+                    check_with(w, &inputs, &reference, &out, judging).is_err(),
                     "{} poison",
                     w.id()
                 );
                 backend.poison().unwrap();
                 backend.end_to_end(&inputs, &mut out).unwrap();
-                check(w, &inputs, &reference, &out)
+                check_with(w, &inputs, &reference, &out, judging)
                     .unwrap_or_else(|e| panic!("{} {mode:?} end to end: {e}", w.id()));
                 backend.poison().unwrap();
                 backend.dispatch().unwrap();
                 backend.read_back(&mut out).unwrap();
-                check(w, &inputs, &reference, &out)
+                check_with(w, &inputs, &reference, &out, judging)
                     .unwrap_or_else(|e| panic!("{} {mode:?} dispatch: {e}", w.id()));
                 backend.poison().unwrap();
                 if backend.gpu_time(16).unwrap().is_some() {
                     backend.read_back(&mut out).unwrap();
-                    check(w, &inputs, &reference, &out)
+                    check_with(w, &inputs, &reference, &out, judging)
                         .unwrap_or_else(|e| panic!("{} {mode:?} batch: {e}", w.id()));
                 }
             }

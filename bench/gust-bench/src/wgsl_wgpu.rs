@@ -243,6 +243,22 @@ impl WgpuContext {
     }
 }
 
+/// wgpu's limit on the queries of one query set.
+const MAX_QUERIES: usize = 4096;
+
+/// Refuses a W7 batch whose `2 * batch` timestamps would not fit one query set (batches over 2048); it is not split.
+fn check_span_batch(batch: usize) -> BenchResult<()> {
+    if 2 * batch > MAX_QUERIES {
+        return Err(format!(
+            "a W7 batch of {batch} needs {} timestamp queries, over wgpu's limit of {MAX_QUERIES} per query set (the batch must be at most {})",
+            2 * batch,
+            MAX_QUERIES / 2
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// The sum of the spans of timestamp pairs `(ticks[2i], ticks[2i+1])`, and the number of pairs. `period` is the queue's
 /// nanoseconds per tick.
 fn span_sum(ticks: &[u64], period: f32) -> (Duration, usize) {
@@ -1045,6 +1061,7 @@ impl HandWgsl {
     /// batch figure is (`gust_algo::timed` sums per-sum spans): the transitions between repeats are outside it on both sides.
     /// Only W7 does this; every other workload's batch is one pair around all its passes.
     fn gpu_time_per_repeat(&self, batch: usize) -> BenchResult<Option<Duration>> {
+        check_span_batch(batch)?;
         let r = self.resident();
         let ctx = &self.ctx;
         let queries = 2 * batch as u32;
@@ -1513,6 +1530,12 @@ mod tests {
     /// (and not the gaps between pairs).
     #[test]
     fn a_w7_batch_reads_one_timestamp_pair_per_repeat() {
+        assert!(check_span_batch(2048).is_ok());
+        let refusal = check_span_batch(2049).unwrap_err().to_string();
+        assert!(
+            refusal.contains("4096") && refusal.contains("2049"),
+            "{refusal}"
+        );
         let (total, pairs) = span_sum(&[10, 14, 100, 103, 1_000, 1_005], 2.0);
         assert_eq!(pairs, 3);
         assert_eq!(total, Duration::from_nanos(2 * (4 + 3 + 5)));

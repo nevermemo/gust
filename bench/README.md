@@ -380,8 +380,8 @@ resident dispatches and one timestamped batch, unmeasured). A quantity stops ear
    uses; `wgsl-*` use the same query writes on their own pass).
 4. **`gpu_batch_per_dispatch`**: timestamps from the first to the last of 16 back-to-back passes in one submission,
    divided by 16. For W7 each of the 16 repeats has its own pair and the figure is the sum of the per-repeat spans, on GUST
-   and on the hand paths alike (the gaps between repeats are outside it), so W7's two GPU-time quantities are like-for-like;
-   W6 is per six-pass run. This is the like-for-like device figure for small sizes, where one pass is dominated by fixed cost.
+   and on the hand paths alike (the gaps between repeats are outside it), so W7's two GPU-time quantities are like-for-like
+   except the zero-fill of gust-algo's pooled partials (see W7); W6 is per six-pass run. This is the like-for-like device figure for small sizes, where one pass is dominated by fixed cost.
 
 "Steady state" means after the warm-up with the pipeline cache warm; the harness asserts that GUST's pipeline-cache
 `misses` did not move across the timed samples, and the run fails if it did. The **cold start** is reported separately:

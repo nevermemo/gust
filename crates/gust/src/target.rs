@@ -8,6 +8,16 @@
 use crate::Kernel;
 
 /// The target a kernel is built for. The enum is `#[non_exhaustive]`: a later release may add one.
+///
+/// ```
+/// use gust::target::Target;
+///
+/// assert_eq!(Target::Gpu.name(), "gpu");
+/// assert_eq!(Target::from_name("cpu"), Some(Target::Cpu));
+/// assert_eq!(Target::from_name("tpu"), None);
+/// // `ALL` lists every target this release knows.
+/// assert!(Target::ALL.contains(&Target::Gpu));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Target {

@@ -64,6 +64,18 @@ use std::{fs, path::Path, process::Command};
 ///
 /// The enum is `#[non_exhaustive]`: a later release can add a variant without a breaking change, so a `match` in
 /// another crate needs a wildcard arm.
+///
+/// ```
+/// use gust::reflect::Error;
+///
+/// let error = Error::Invalid("no `entryPoints` array".to_string());
+/// assert_eq!(error.to_string(), "invalid Slang reflection: no `entryPoints` array");
+/// // The enum is non-exhaustive: match it with a wildcard arm.
+/// match error {
+///     Error::Invalid(_) | Error::Mismatch(_) | Error::Incomplete(_) => {}
+///     _ => {}
+/// }
+/// ```
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
@@ -127,6 +139,22 @@ fn invalid(s: impl Into<String>) -> Error {
 /// What one reflection document reports about a compiled entry point: its target, its stage, its buffer, texture and
 /// sampler bindings and its colour outputs. Read with [`Reflection::from_json`], and checked against a kernel
 /// descriptor by [`Reflection::cross_check_kernel`].
+///
+/// ```
+/// use gust::reflect::{Reflection, Stage};
+/// use gust::slang::Target;
+///
+/// // A minimal document with one structured buffer of `u32`, at binding 7 of space 2.
+/// let document = r#"{"parameters":[{"name":"a","binding":{"kind":"descriptorTableSlot","index":7,"space":2},"type":{"kind":"resource","baseShape":"structuredBuffer","resultType":{"kind":"scalar","scalarType":"uint32"}}}]}"#;
+/// let reflection = Reflection::from_json(Target::Spirv, document)?;
+/// // This grammar is schema 1: a compute entry point with buffers only.
+/// assert_eq!(reflection.schema_version, 1);
+/// assert_eq!(reflection.stage, Stage::Compute);
+/// assert_eq!(reflection.resources.len(), 1);
+/// assert!(reflection.textures.is_empty() && reflection.samplers.is_empty() && reflection.targets.is_empty());
+/// assert_eq!((reflection.resources[0].binding, reflection.resources[0].space), (7, 2));
+/// # Ok::<(), gust::reflect::Error>(())
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reflection {
     /// The compile target the document describes.
@@ -147,6 +175,14 @@ pub struct Reflection {
     pub targets: Vec<ReflectedTarget>,
 }
 /// The pipeline stage of a reflected entry point (decision D89: it is the stage of the kernel's [`Shape`]).
+///
+/// ```
+/// use gust::Shape;
+/// use gust::reflect::Stage;
+///
+/// assert_eq!(Stage::of(Shape::Grid), Stage::Compute);
+/// assert_eq!(Stage::of(Shape::Pixel).name(), "fragment");
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Stage {
@@ -173,6 +209,30 @@ impl Stage {
     }
 }
 /// A 2-D texture binding of a schema-3 document.
+///
+/// ```
+/// use gust::reflect::{ReflectedType, ReflectedTypeKind, ReflectedTexture};
+/// use gust::texture::Format;
+/// use gust::{ScalarKind, TextureAccess, TextureDimension};
+///
+/// // Only a schema-3 document carries a texture binding, and reading one takes the compiler, so this one is built by hand.
+/// let texture = ReflectedTexture {
+///     name: "image".to_string(),
+///     binding: 0,
+///     space: 0,
+///     dimension: TextureDimension::D2,
+///     access: TextureAccess::WriteOnly,
+///     result: ReflectedType {
+///         name: None,
+///         size: None,
+///         alignment: None,
+///         stride: None,
+///         kind: ReflectedTypeKind::Scalar(ScalarKind::F32),
+///     },
+///     format: Some(Format::R32Float),
+/// };
+/// assert_eq!(texture.format, Some(Format::R32Float));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReflectedTexture {
     /// The texture's name in the shader.
@@ -193,6 +253,14 @@ pub struct ReflectedTexture {
     pub format: Option<TexelFormat>,
 }
 /// A sampler binding of a schema-3 document.
+///
+/// ```
+/// use gust::reflect::ReflectedSampler;
+///
+/// // Only a schema-3 document carries a sampler binding, and reading one takes the compiler, so this one is built by hand.
+/// let sampler = ReflectedSampler { name: "linear".to_string(), binding: 1, space: 0 };
+/// assert_eq!(sampler.binding, 1);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReflectedSampler {
     /// The sampler's name in the shader.
@@ -203,6 +271,24 @@ pub struct ReflectedSampler {
     pub space: u32,
 }
 /// One colour output of a fragment entry point.
+///
+/// ```
+/// use gust::ScalarKind;
+/// use gust::reflect::{ReflectedTarget, ReflectedType, ReflectedTypeKind};
+///
+/// // Only a schema-3 fragment document carries colour outputs, and reading one takes the compiler, so this one is built by hand.
+/// let target = ReflectedTarget {
+///     index: 0,
+///     ty: ReflectedType {
+///         name: None,
+///         size: None,
+///         alignment: None,
+///         stride: None,
+///         kind: ReflectedTypeKind::Vector { scalar: ScalarKind::F32, count: 4 },
+///     },
+/// };
+/// assert_eq!(target.index, 0);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReflectedTarget {
     /// The `SV_Target` index.
@@ -211,6 +297,19 @@ pub struct ReflectedTarget {
     pub ty: ReflectedType,
 }
 /// What kind of shader resource a [`ReflectedResource`] is.
+///
+/// ```
+/// use gust::reflect::ReflectedResourceKind;
+///
+/// // The enum is non-exhaustive: match it with a wildcard arm.
+/// let kind = ReflectedResourceKind::StructuredBuffer;
+/// let name = match kind {
+///     ReflectedResourceKind::StructuredBuffer => "structured buffer",
+///     ReflectedResourceKind::ConstantBuffer => "constant buffer",
+///     _ => "other",
+/// };
+/// assert_eq!(name, "structured buffer");
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ReflectedResourceKind {
@@ -220,6 +319,22 @@ pub enum ReflectedResourceKind {
     ConstantBuffer,
 }
 /// One buffer binding of an entry point, as the reflection document reports it.
+///
+/// ```
+/// use gust::reflect::{Reflection, ReflectedResourceKind, ReflectedTypeKind};
+/// use gust::slang::Target;
+/// use gust::ScalarKind;
+///
+/// let document = r#"{"parameters":[{"name":"a","binding":{"kind":"descriptorTableSlot","index":7,"space":2},"type":{"kind":"resource","baseShape":"structuredBuffer","resultType":{"kind":"scalar","scalarType":"uint32"}}}]}"#;
+/// let reflection = Reflection::from_json(Target::Spirv, document)?;
+/// let resource = &reflection.resources[0];
+/// assert_eq!(resource.name, "a");
+/// assert_eq!(resource.kind, ReflectedResourceKind::StructuredBuffer);
+/// assert_eq!(resource.element.kind, ReflectedTypeKind::Scalar(ScalarKind::U32));
+/// // `from_json` (the CLI path) never reads layout sizes; the native path (`compile_reflected`) fills them in.
+/// assert_eq!(resource.element_stride, None);
+/// # Ok::<(), gust::reflect::Error>(())
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReflectedResource {
     /// The buffer's name in the shader.
@@ -237,8 +352,22 @@ pub struct ReflectedResource {
     /// None means the compiler JSON did not report a buffer element stride.
     pub element_stride: Option<u32>,
 }
-/// A type as the reflection document reports it. A size, alignment or stride that the document did not report is
-/// `None`.
+/// A type as the reflection document reports it. A size, alignment or stride that is not known is `None`:
+/// `Reflection::from_json` never reads them, and the native path (`compile_reflected`) fills them in.
+///
+/// ```
+/// use gust::ScalarKind;
+/// use gust::reflect::{Reflection, ReflectedTypeKind};
+/// use gust::slang::Target;
+///
+/// let document = r#"{"parameters":[{"name":"a","binding":{"kind":"descriptorTableSlot","index":0,"space":0},"type":{"kind":"resource","baseShape":"structuredBuffer","resultType":{"kind":"scalar","scalarType":"float32"}}}]}"#;
+/// let reflection = Reflection::from_json(Target::Spirv, document)?;
+/// let ty = &reflection.resources[0].element;
+/// assert_eq!(ty.kind, ReflectedTypeKind::Scalar(ScalarKind::F32));
+/// // `from_json` leaves the layout sizes unread.
+/// assert_eq!((ty.size, ty.alignment, ty.stride), (None, None, None));
+/// # Ok::<(), gust::reflect::Error>(())
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReflectedType {
     /// The type's name, when the document gives one.
@@ -253,6 +382,20 @@ pub struct ReflectedType {
     pub kind: ReflectedTypeKind,
 }
 /// The structure of a [`ReflectedType`].
+///
+/// ```
+/// use gust::ScalarKind;
+/// use gust::reflect::ReflectedTypeKind;
+///
+/// let kind = ReflectedTypeKind::Vector { scalar: ScalarKind::F32, count: 3 };
+/// // The enum is non-exhaustive: match it with a wildcard arm.
+/// let components = match &kind {
+///     ReflectedTypeKind::Scalar(_) => 1,
+///     ReflectedTypeKind::Vector { count, .. } => *count,
+///     _ => 0,
+/// };
+/// assert_eq!(components, 3);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ReflectedTypeKind {
@@ -290,6 +433,27 @@ pub enum ReflectedTypeKind {
     },
 }
 /// One field of a reflected struct.
+///
+/// ```
+/// use gust::ScalarKind;
+/// use gust::reflect::{ReflectedField, ReflectedType, ReflectedTypeKind};
+///
+/// let field = ReflectedField {
+///     name: "x".to_string(),
+///     offset: 0,
+///     size: 4,
+///     ty: ReflectedType {
+///         name: None,
+///         size: Some(4),
+///         alignment: Some(4),
+///         stride: None,
+///         kind: ReflectedTypeKind::Scalar(ScalarKind::U32),
+///     },
+/// };
+/// // A struct kind holds its fields in document order.
+/// let kind = ReflectedTypeKind::Struct(vec![field]);
+/// assert!(matches!(kind, ReflectedTypeKind::Struct(ref fields) if fields.len() == 1));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReflectedField {
     /// The field's name.
@@ -302,6 +466,32 @@ pub struct ReflectedField {
     pub ty: ReflectedType,
 }
 /// Coverage includes every nested type, not just the outer element.
+///
+/// ```
+/// use gust::reflect::{ReflectedResource, ReflectedResourceKind, ReflectedType, ReflectedTypeKind};
+/// use gust::{Access, ScalarKind};
+///
+/// let resource = ReflectedResource {
+///     name: "out".to_string(),
+///     kind: ReflectedResourceKind::StructuredBuffer,
+///     access: Access::ReadWrite,
+///     binding: 0,
+///     space: 0,
+///     element: ReflectedType {
+///         name: Some("float".to_string()),
+///         size: Some(4),
+///         alignment: Some(4),
+///         stride: Some(4),
+///         kind: ReflectedTypeKind::Scalar(ScalarKind::F32),
+///     },
+///     element_stride: Some(4),
+/// };
+/// use gust::reflect::cross_check_pod;
+///
+/// let check = cross_check_pod::<f32>(&resource)?;
+/// assert!(check.is_full_abi_match());
+/// # Ok::<(), gust::reflect::Error>(())
+/// ```
 #[must_use = "Inspect coverage: a successful cross-check may still lack full ABI evidence"]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PodCrossCheck {
@@ -322,6 +512,36 @@ impl PodCrossCheck {
 }
 
 /// The result of a native compile: the compiler output and the reflection of the same linked program.
+///
+/// ```
+/// use gust::gpu;
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     // Needs the `slang-runtime` feature and the pinned Slang.
+///     #[cfg(feature = "slang-runtime")]
+///     {
+///         use gust::reflect::{compile_reflected, Reflection};
+///         use gust::slang::Target;
+///
+///         let compiled = compile_reflected(&ops::double::DESCRIPTOR, Target::Wgsl)?;
+///         let reflection: &Reflection = &compiled.reflection;
+///         assert_eq!(reflection.resources.len(), 1);
+///         assert!(!compiled.compiler_version.is_empty());
+///     }
+///     Ok(())
+/// }
+/// ```
 #[derive(Debug)]
 pub struct CompiledReflection {
     /// The compiler output for the target, as bytes.
@@ -346,6 +566,15 @@ pub struct CompiledReflection {
 /// call that reports the problem.
 #[cfg(feature = "slang-runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
+///
+/// ```
+/// use gust::reflect::native_compiler_path;
+///
+/// // The helper is looked up by the toolchain rules; this call only names it and never fails. Under the default
+/// // rules it is a path to `gust-slang-reflect`, or that bare name.
+/// let helper = native_compiler_path();
+/// assert!(helper.file_name().is_some());
+/// ```
 pub fn native_compiler_path() -> PathBuf {
     crate::toolchain::helper_candidate_in(&crate::toolchain::Env::from_process())
 }
@@ -354,6 +583,32 @@ pub fn native_compiler_path() -> PathBuf {
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 /// Compile and reflect the same linked program using the native Slang helper ([`native_compiler_path`]). An unusable
 /// `GUST_SLANG_REFLECT` or `GUST_SLANG_HOME` is an error here, with the variable and its value in the text.
+///
+/// ```
+/// use gust::gpu;
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     use gust::reflect::compile_reflected;
+///     use gust::slang::Target;
+///
+///     let compiled = compile_reflected(&ops::double::DESCRIPTOR, Target::Wgsl)?;
+///     assert_eq!(compiled.entry_point, ops::double::DESCRIPTOR.entry_point);
+///     assert_eq!(compiled.workgroup_size, [64, 1, 1]);
+///     assert!(!compiled.artifact.is_empty());
+///     Ok(())
+/// }
+/// ```
 pub fn compile_reflected(
     kernel: &KernelDescriptor,
     target: Target,
@@ -378,6 +633,31 @@ pub fn compile_reflected(
 /// to the kernel.
 #[cfg(feature = "slang-runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
+///
+/// ```
+/// use gust::gpu;
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     use gust::reflect::{compile_reflected_with_helper, native_compiler_path};
+///     use gust::slang::Target;
+///
+///     let compiled =
+///         compile_reflected_with_helper(&ops::double::DESCRIPTOR, Target::Wgsl, native_compiler_path())?;
+///     assert_eq!(compiled.reflection.resources.len(), 1);
+///     Ok(())
+/// }
+/// ```
 pub fn compile_reflected_with_helper(
     kernel: &KernelDescriptor,
     target: Target,
@@ -466,6 +746,32 @@ fn outdated_helper_note(output: &std::process::Output) -> &'static str {
 /// What [`compile_reflected_clean`] produced: the parsed result and the helper's JSON, verbatim.
 #[cfg(feature = "slang-runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
+///
+/// ```
+/// use gust::gpu;
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     use gust::reflect::{compile_reflected_clean, native_compiler_path};
+///     use gust::slang::Target;
+///
+///     let clean =
+///         compile_reflected_clean(&ops::double::DESCRIPTOR, Target::Wgsl, native_compiler_path())?;
+///     assert!(!clean.compiled.artifact.is_empty());
+///     assert!(!clean.reflection_json.is_empty());
+///     Ok(())
+/// }
+/// ```
 #[derive(Debug)]
 pub struct CleanCompilation {
     /// The artifact and layouts, checked by `from_output` against the clean text.
@@ -483,6 +789,32 @@ pub struct CleanCompilation {
 /// Rust lines as `compile_reflected_with_helper` does.
 #[cfg(feature = "slang-runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
+///
+/// ```
+/// use gust::gpu;
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     use gust::reflect::{compile_reflected_clean, native_compiler_path};
+///     use gust::slang::Target;
+///
+///     let clean =
+///         compile_reflected_clean(&ops::double::DESCRIPTOR, Target::Wgsl, native_compiler_path())?;
+///     assert!(clean.reflection_json.contains("schemaVersion"));
+///     assert_eq!(clean.compiled.workgroup_size, [64, 1, 1]);
+///     Ok(())
+/// }
+/// ```
 pub fn compile_reflected_clean(
     kernel: &KernelDescriptor,
     target: Target,
@@ -715,6 +1047,32 @@ fn slangc_reflection_command(
 #[cfg(feature = "slang-runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 /// Compile exactly this target and entry point, requesting Slang's JSON metadata.
+///
+/// ```
+/// use gust::gpu;
+///
+/// #[gpu]
+/// mod ops {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = out[i] * 2.0;
+///         }
+///     }
+/// }
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     use gust::reflect::{Stage, reflect};
+///     use gust::slang::Target;
+///
+///     let reflection = reflect(&ops::double::DESCRIPTOR, Target::Wgsl)?;
+///     assert_eq!(reflection.stage, Stage::Compute);
+///     assert_eq!(reflection.resources.len(), 1);
+///     assert_eq!(reflection.resources[0].name, "out");
+///     Ok(())
+/// }
+/// ```
 pub fn reflect(kernel: &KernelDescriptor, target: Target) -> Result<Reflection, Error> {
     let directory = TemporaryDirectory::create()?;
     let source = directory.path().join("kernel.slang");
@@ -4342,6 +4700,31 @@ fn read_type(value: &Json, complete: bool, schema: u32) -> Result<ReflectedType,
 }
 
 /// Check all available compiler field metadata against `T`, retaining explicit gaps.
+///
+/// ```
+/// use gust::reflect::{ReflectedResource, ReflectedResourceKind, ReflectedType, ReflectedTypeKind, cross_check_pod};
+/// use gust::{Access, ScalarKind};
+///
+/// let resource = ReflectedResource {
+///     name: "out".to_string(),
+///     kind: ReflectedResourceKind::StructuredBuffer,
+///     access: Access::ReadWrite,
+///     binding: 0,
+///     space: 0,
+///     element: ReflectedType {
+///         name: Some("float".to_string()),
+///         size: Some(4),
+///         alignment: Some(4),
+///         stride: Some(4),
+///         kind: ReflectedTypeKind::Scalar(ScalarKind::F32),
+///     },
+///     element_stride: Some(4),
+/// };
+/// assert!(cross_check_pod::<f32>(&resource)?.is_full_abi_match());
+/// // A `u32` buffer does not match the scalar kind the document reports.
+/// assert!(cross_check_pod::<u32>(&resource).is_err());
+/// # Ok::<(), gust::reflect::Error>(())
+/// ```
 pub fn cross_check_pod<T: GpuPod>(resource: &ReflectedResource) -> Result<PodCrossCheck, Error> {
     let host = T::LAYOUT;
     if !host.is_storage_v2()

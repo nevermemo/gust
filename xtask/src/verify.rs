@@ -1029,7 +1029,8 @@ pub(crate) struct GpuSuitePin {
 /// `pool_reserve_grows_geometrically_and_keeps_the_live_prefix` in `tests/typed.rs`, and
 /// `enumerate_async_lists_the_adapters_enumerate_lists` and
 /// `coherent_storage_is_reported_only_when_the_adapter_offers_it` in `tests/device_options.rs`.
-/// (`create_zeroed_buffer_async` exists on `wasm32` only, so no native test reaches it.)
+/// (`create_zeroed_buffer_async` exists on `wasm32` only, so no native test reaches it; since m10.zb the browser check
+/// `cargo xtask check-web` calls it and reads the buffer back as all zeros.)
 ///
 /// Slice m10.k0: 458 over 49 became 459 over 49. One new doctest in `gust_wgpu`: the `gust_wgpu::guide` page compiles
 /// the whole hello-gust program (`no_run`), counted on the existing `Doc-tests gust_wgpu` result line. The merge of k0
@@ -1042,8 +1043,13 @@ pub(crate) struct GpuSuitePin {
 /// Slice m10.k1: 464 over 49 became 465 over 49. One new doctest in `gust_wgpu`, on the same result line: the first
 /// block of guide chapter 9 (the kernel and host reference of the browser page, a `rust` block with an empty `main`,
 /// compiled and run). The browser-side listing of that chapter is a plain-text block, not an ignored test.
+///
+/// Slice m10.k2: 465 over 49 became 504 over 49. Thirty-nine new doctests in `gust_wgpu`, on the same result line: one
+/// example for each public host type of the crate (the device and policy types, the buffer, uniform, texture and
+/// sampler types, the pool, graph and report types, the error and the job). They compile and run on the adapter, like
+/// the other doctests of the crate.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 465,
+    passed: 504,
     result_lines: 49,
 };
 

@@ -1,6 +1,13 @@
 use std::time::Duration;
 
 /// Backend-neutral state of an asynchronous GPU submission.
+///
+/// ```
+/// use gust::JobStatus;
+///
+/// assert!(JobStatus::Complete.is_complete());
+/// assert!(!JobStatus::Pending.is_complete());
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum JobStatus {
@@ -18,6 +25,19 @@ impl JobStatus {
 }
 
 /// Backend-neutral completion contract for submitted GPU work.
+///
+/// ```
+/// use gust::cpu::CpuDevice;
+/// use gust::{Device, Job, JobStatus};
+///
+/// // A CPU device finishes inside `submit`, so its job is complete at once.
+/// let device = CpuDevice::new();
+/// let job = device.submit(&[])?;
+/// assert_eq!(job.status()?, JobStatus::Complete);
+/// assert!(job.is_complete()?);
+/// job.wait()?;
+/// # Ok::<(), gust::cpu::Error>(())
+/// ```
 pub trait Job {
     /// The error a poll or a wait can return.
     type Error;
@@ -38,6 +58,16 @@ pub trait Job {
 }
 
 /// Backend-neutral device contract for dispatch descriptions and asynchronous jobs.
+///
+/// ```
+/// use gust::cpu::CpuDevice;
+/// use gust::Device;
+///
+/// // `dispatch` is `submit` followed by `wait`; an empty batch is a valid submission.
+/// let device = CpuDevice::new();
+/// device.dispatch(&[])?;
+/// # Ok::<(), gust::cpu::Error>(())
+/// ```
 pub trait Device {
     /// The error a submission, a poll or a wait can return.
     type Error;

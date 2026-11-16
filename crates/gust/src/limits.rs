@@ -27,6 +27,17 @@
 /// The limits of the portable floor, by `wgpu`'s names. Read them from [`PORTABLE`]; a later release may add a limit,
 /// so the struct is `#[non_exhaustive]`: it cannot be built with a struct literal outside this crate, though a copy of
 /// [`PORTABLE`] can have its fields assigned.
+///
+/// ```
+/// use gust::limits::PORTABLE;
+///
+/// // Read a limit by field, or walk all of them with `entries`.
+/// assert_eq!(PORTABLE.max_compute_invocations_per_workgroup, 256);
+/// for (name, value) in PORTABLE.entries() {
+///     assert!(name.starts_with("max_"));
+///     assert!(value > 0);
+/// }
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PortableLimits {

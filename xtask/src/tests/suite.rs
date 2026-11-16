@@ -114,6 +114,19 @@ const UNIT: [Step; 26] = [
         "--features",
         "slang-runtime",
         "--doc",
+        "--",
+        "--skip",
+        "slang::compile",
+        "--skip",
+        "reflect::compile_reflected",
+        "--skip",
+        "reflect::CompiledReflection",
+        "--skip",
+        "reflect::CleanCompilation",
+        "--skip",
+        "reflect::reflect",
+        "--skip",
+        "artifact::Verified",
     ]),
     Step::CountedCargo(&[
         "test",
@@ -123,6 +136,12 @@ const UNIT: [Step; 26] = [
         "--features",
         "slang-runtime",
         "--doc",
+        "--",
+        "guide",
+        "device::AdapterChoice",
+        "GpuBuffer<T>",
+        "GpuUniform<T>",
+        "HeadlessDevice::read_typed_buffer_async",
     ]),
     Step::CountedCargo(&[
         "test",
@@ -212,10 +231,96 @@ fn unit_runs_tests_lint_docs_and_architecture_without_external_tools() {
     assert_eq!(Suite::Unit.steps(), UNIT.to_vec());
 }
 
+/// Some doc tests of `gust-compute` launch slangc or the native reflection helper and most of those of
+/// `gust-compute-wgpu` need an adapter (CI run 43774079389). Unit, the required check, keeps exactly two filtered doc
+/// steps (the tool-free gust-compute ones and the adapter-free wgpu ones); Slangc has those and then the unfiltered gust-compute
+/// step right after the Unit steps; the other wgpu doc tests run in the Gpu suite through its
+/// `cargo test -p gust-compute-wgpu` call.
+#[test]
+fn doc_tests_run_where_their_resources_exist() {
+    let is_doc = |step: &Step| match step {
+        Step::Cargo(args) | Step::CountedCargo(args) => args.contains(&"--doc"),
+        _ => false,
+    };
+    let tool_free = Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
+        "--features",
+        "slang-runtime",
+        "--doc",
+        "--",
+        "--skip",
+        "slang::compile",
+        "--skip",
+        "reflect::compile_reflected",
+        "--skip",
+        "reflect::CompiledReflection",
+        "--skip",
+        "reflect::CleanCompilation",
+        "--skip",
+        "reflect::reflect",
+        "--skip",
+        "artifact::Verified",
+    ]);
+    let guide = Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute-wgpu",
+        "--features",
+        "slang-runtime",
+        "--doc",
+        "--",
+        "guide",
+        "device::AdapterChoice",
+        "GpuBuffer<T>",
+        "GpuUniform<T>",
+        "HeadlessDevice::read_typed_buffer_async",
+    ]);
+    let unfiltered = Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
+        "--features",
+        "slang-runtime",
+        "--doc",
+    ]);
+    let unit: Vec<Step> = Suite::Unit.steps().into_iter().filter(is_doc).collect();
+    assert_eq!(unit, [tool_free, guide]);
+    let slangc = Suite::Slangc.steps();
+    assert_eq!(slangc[0], Step::RequireTool("slangc"));
+    let docs: Vec<&Step> = slangc.iter().filter(|step| is_doc(step)).collect();
+    assert_eq!(docs, [&unit[0], &unit[1], &unfiltered]);
+    assert_eq!(slangc[1 + UNIT.len()], unfiltered);
+    assert!(Suite::Gpu.covers().contains("doc tests of that crate"));
+    assert!(
+        Suite::Slangc
+            .covers()
+            .contains("all the doc tests of gust-compute")
+    );
+    assert!(
+        Suite::Unit
+            .covers()
+            .contains("doc tests of gust-compute that need no tool")
+    );
+}
+
 #[test]
 fn slangc_is_unit_plus_the_core_library_tests_and_requires_slangc() {
     let mut expected = vec![Step::RequireTool("slangc")];
     expected.extend(UNIT);
+    expected.push(Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
+        "--features",
+        "slang-runtime",
+        "--doc",
+    ]));
     expected.push(Step::Cargo(&[
         "test",
         "--locked",

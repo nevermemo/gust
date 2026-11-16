@@ -124,6 +124,26 @@ fn wgpu_usages(uses: TextureUse) -> wgpu::TextureUsages {
 /// back with [`HeadlessDevice::read_texture_async`]. It is a [`Resource`] of kind `kind::Texture`: a typed call
 /// takes it where a kernel declares a texture parameter, and the use it was created with ([`TextureUse`]) must fit that
 /// parameter (a sampled one needs `SAMPLED`, a storage one `STORAGE`), checked at submit ([`Error::TextureUse`]).
+///
+/// The texel type comes from the format marker (`f32` for `R32Float`), and a texture starts as zeros:
+///
+/// ```
+/// use gust::TextureUse;
+/// use gust::texture::{Format, R32Float, TextureFormat};
+/// use gust_wgpu::{GpuTexture2d, HeadlessDevice};
+///
+/// let device = HeadlessDevice::new()?;
+/// let texture: GpuTexture2d<R32Float> = device.create_texture_2d(2, 2, TextureUse::SAMPLED)?;
+/// assert_eq!((texture.width(), texture.height()), (2, 2));
+/// assert_eq!(texture.format(), R32Float::FORMAT);
+/// assert_eq!(texture.format(), Format::R32Float);
+/// assert_eq!(texture.uses(), TextureUse::SAMPLED);
+/// assert_eq!(device.read_texture(&texture)?, [0.0; 4]);
+///
+/// device.write_texture(&texture, &[1.0, 2.0, 3.0, 4.0])?;
+/// assert_eq!(device.read_texture(&texture)?, [1.0, 2.0, 3.0, 4.0]);
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 pub struct GpuTexture2d<F: TextureFormat> {
     raw: wgpu::Texture,
     view: wgpu::TextureView,
@@ -170,6 +190,18 @@ impl<F: TextureFormat> GpuTexture2d<F> {
 ///
 /// It is a [`SamplerArg`], not a [`Resource`]. A [`Filter::Linear`] sampler can be created on any device but bound
 /// only on one that enabled `float32-filterable` ([`HeadlessDevice::float32_filterable`]).
+///
+/// ```
+/// use gust::texture::{Address, Filter, SamplerOptions};
+/// use gust_wgpu::HeadlessDevice;
+///
+/// let device = HeadlessDevice::new()?;
+/// let options = SamplerOptions::new(Filter::Nearest, Address::Repeat);
+/// let sampler = device.create_sampler(options)?;
+/// assert_eq!(sampler.options(), options);
+/// assert_eq!(sampler.device_id(), device.id());
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 pub struct GpuSampler {
     raw: wgpu::Sampler,
     options: SamplerOptions,
@@ -194,6 +226,19 @@ impl GpuSampler {
 }
 
 /// The erased binding of a [`GpuSampler`] for one dispatch ([`SamplerDevice::SamplerBinding`]).
+///
+/// [`crate::BufferDispatch::with_samplers`] takes a slice of them, one per `Sampler` parameter of the kernel:
+///
+/// ```
+/// use gust::texture::{Address, Filter, SamplerOptions};
+/// use gust_wgpu::{GpuSamplerBinding, HeadlessDevice};
+///
+/// let device = HeadlessDevice::new()?;
+/// let sampler = device.create_sampler(SamplerOptions::new(Filter::Nearest, Address::ClampToEdge))?;
+/// let binding = GpuSamplerBinding::new(&sampler);
+/// assert_eq!(binding.options(), sampler.options());
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 #[derive(Clone, Copy)]
 pub struct GpuSamplerBinding<'a> {
     raw: &'a wgpu::Sampler,

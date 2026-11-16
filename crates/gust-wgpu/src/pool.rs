@@ -11,6 +11,22 @@ use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use crate::{Error, GpuBuffer, GpuBufferAccess, HeadlessDevice};
 
 /// Evidence for one host-driven growth step.
+///
+/// `HeadlessDevice::pool_reserve` and `pool_push` return one when they grew the pool, and
+/// [`GpuPool::growth_history`] keeps them:
+///
+/// ```
+/// use gust_wgpu::HeadlessDevice;
+///
+/// let device = HeadlessDevice::new()?;
+/// let mut pool = device.create_pool("items", &[1u32, 2, 3, 4], 4);
+/// let growth = device.pool_reserve(&mut pool, 6)?.expect("capacity 4 is too small for 6");
+/// assert_eq!(growth.old_capacity, 4);
+/// assert_eq!(growth.new_capacity, 8);
+/// assert_eq!(growth.copied_bytes, 16);
+/// assert_eq!(pool.growth_history(), [growth]);
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct GrowthRecord {
@@ -29,6 +45,27 @@ struct Retired {
 
 /// A growable, GPU-resident, element-typed collection with an explicit logical
 /// length, capacity, and a one-element count buffer kernels can read.
+///
+/// Create one with [`HeadlessDevice::create_pool`]; a push that fits needs no growth, and one that does not
+/// copies the live prefix GPU-to-GPU into a larger allocation:
+///
+/// ```
+/// use gust_wgpu::HeadlessDevice;
+///
+/// let device = HeadlessDevice::new()?;
+/// let mut pool = device.create_pool("items", &[1u32, 2, 3], 4);
+/// assert_eq!((pool.len(), pool.capacity(), pool.generation()), (3, 4, 0));
+///
+/// assert!(device.pool_push(&mut pool, &[4])?.is_none());
+/// let growth = device.pool_push(&mut pool, &[5, 6])?.expect("six elements do not fit in four");
+/// assert_eq!(growth.new_capacity, 8);
+/// assert_eq!((pool.len(), pool.capacity(), pool.generation()), (6, 8, 1));
+/// assert_eq!(device.pool_read(&pool)?, [1, 2, 3, 4, 5, 6]);
+///
+/// device.pool_truncate(&mut pool, 2)?;
+/// assert_eq!(device.pool_read(&pool)?, [1, 2]);
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 pub struct GpuPool<T: GpuPod> {
     buffer: GpuBuffer<T>,
     count: GpuBuffer<u32>,
@@ -310,6 +347,25 @@ pub const EXACT_CLASS_BYTES: u64 = 64 * 1024;
 pub const DEFAULT_POOL_BYTES_MAX: u64 = 1 << 30;
 
 /// Counters of a [`BufferPool`], for tests and diagnostics.
+///
+/// [`HeadlessDevice::buffer_pool_stats`] returns one. A vector that drops hands its allocation back, and the next
+/// vector of the same size class takes it:
+///
+/// ```
+/// use gust_wgpu::{DeviceHandle, GpuVec, HeadlessDevice};
+///
+/// let device = DeviceHandle::new(HeadlessDevice::new()?);
+/// let first = GpuVec::from_slice_on(&device, &[1u32, 2, 3, 4])?;
+/// let stats = device.buffer_pool_stats();
+/// assert_eq!((stats.misses, stats.hits, stats.outstanding), (1, 0, 1));
+/// drop(first);
+/// let stats = device.buffer_pool_stats();
+/// assert_eq!((stats.returned, stats.free_buffers, stats.outstanding), (1, 1, 0));
+///
+/// let _second = GpuVec::from_slice_on(&device, &[5u32, 6, 7, 8])?;
+/// assert_eq!(device.buffer_pool_stats().hits, 1);
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PoolStats {
@@ -403,6 +459,27 @@ impl PoolShared {
 ///   one), a fresh one is zero by wgpu's guarantee. Buffers filled from a slice are written over their whole logical
 ///   range.
 /// * A buffer with a mapping pending or active is never put back, so it can never be handed out while mapped.
+///
+/// [`HeadlessDevice::buffer_pool`] is the pool of a device. `clear` drops the idle buffers, and `set_max_bytes`
+/// changes the idle cap:
+///
+/// ```
+/// use gust_wgpu::{DeviceHandle, GpuVec, HeadlessDevice};
+///
+/// let device = DeviceHandle::new(HeadlessDevice::new()?);
+/// let pool = device.buffer_pool();
+/// drop(GpuVec::from_slice_on(&device, &[1u32, 2, 3, 4])?);
+/// assert_eq!(pool.stats().free_buffers, 1);
+/// pool.clear();
+/// assert_eq!(pool.stats().free_buffers, 0);
+///
+/// pool.set_max_bytes(0);
+/// drop(GpuVec::from_slice_on(&device, &[1u32, 2, 3, 4])?);
+/// // Nothing may stay idle under a cap of zero bytes.
+/// assert_eq!(pool.stats().free_buffers, 0);
+/// assert_eq!(pool.stats().max_bytes, 0);
+/// # Ok::<(), gust_wgpu::Error>(())
+/// ```
 #[derive(Clone)]
 pub struct BufferPool {
     shared: Arc<PoolShared>,

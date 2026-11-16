@@ -67,6 +67,15 @@ use crate::{Access, Device, GpuPod, Kernel, KernelDescriptor, ParameterKind};
 /// uniform parameter is rejected at run time. The typed surface rules that out at compile time through
 /// [`Resource::Kind`]. A sampler has no binding kind: it is not a [`Resource`] but the call's own argument kind
 /// ([`SamplerArg`]).
+///
+/// ```
+/// use gust::{BindingKind, ParameterKind};
+///
+/// assert_eq!(BindingKind::of(ParameterKind::Storage), Some(BindingKind::Storage));
+/// assert_eq!(BindingKind::of(ParameterKind::Texture), Some(BindingKind::Texture));
+/// // A sampler is not bound as a resource.
+/// assert_eq!(BindingKind::of(ParameterKind::Sampler), None);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BindingKind {
@@ -99,6 +108,15 @@ impl BindingKind {
 /// They are named by path (`gust::kind::Storage`, `gust::kind::Uniform`, `gust::kind::Texture`) because
 /// `gust::Storage` and `gust::Uniform` are the kernel-side parameter types. The trait is sealed: the three kinds are
 /// the only ones a binding can have.
+///
+/// ```
+/// use gust::BindingKind;
+/// use gust::kind::{ResourceKind, Storage, Texture, Uniform};
+///
+/// assert_eq!(<Storage as ResourceKind>::BINDING, BindingKind::Storage);
+/// assert_eq!(<Uniform as ResourceKind>::BINDING, BindingKind::Uniform);
+/// assert_eq!(<Texture as ResourceKind>::BINDING, BindingKind::Texture);
+/// ```
 pub mod kind {
     use super::BindingKind;
 
@@ -107,22 +125,49 @@ pub mod kind {
     }
 
     /// The kind of a [`Resource`](super::Resource): [`Storage`], [`Uniform`] or [`Texture`].
+    ///
+    /// ```
+    /// use gust::kind::{ResourceKind, Storage};
+    ///
+    /// fn binding_of<K: ResourceKind>() -> gust::BindingKind {
+    ///     K::BINDING
+    /// }
+    /// assert_eq!(binding_of::<Storage>(), gust::BindingKind::Storage);
+    /// ```
     pub trait ResourceKind: sealed::Sealed + 'static {
         /// The [`BindingKind`] a binding of this resource carries.
         const BINDING: BindingKind;
     }
 
     /// Marker: the resource is a storage buffer (many elements, every length rule applies).
+    ///
+    /// ```
+    /// use gust::kind::{ResourceKind, Storage};
+    ///
+    /// assert_eq!(Storage::BINDING, gust::BindingKind::Storage);
+    /// ```
     #[derive(Clone, Copy, Debug)]
     pub enum Storage {}
 
     /// Marker: the resource is a uniform buffer (one value, always `Independent` for the length rule).
+    ///
+    /// ```
+    /// use gust::kind::{ResourceKind, Uniform};
+    ///
+    /// assert_eq!(Uniform::BINDING, gust::BindingKind::Uniform);
+    /// ```
     #[derive(Clone, Copy, Debug)]
     pub enum Uniform {}
 
     /// Marker: the resource is a 2-D texture (a width and a height, always `Independent` for the length rule). The
     /// typed call bounds a texture parameter with `Kind = gust::kind::Texture`, so a buffer where a texture is
     /// expected, or a texture where a buffer is expected, is a compile error.
+    ///
+    /// ```
+    /// use gust::kind::{ResourceKind, Texture};
+    ///
+    /// assert_eq!(Texture::BINDING, gust::BindingKind::Texture);
+    /// ```
     #[derive(Clone, Copy, Debug)]
     pub enum Texture {}
 
@@ -146,6 +191,24 @@ pub mod kind {
 /// Extension of [`Device`] for typed calls (implemented by `gust-compute-wgpu` in m2.c).
 ///
 /// [`Device`] is not modified: the binding type lives here so a backend that has no typed surface yet keeps compiling.
+///
+/// ```
+/// use gust::cpu::CpuDevice;
+/// use gust::{Access, LengthRule, Resource, TypedDevice};
+///
+/// // A typed device names the erased, `Copy` view that one bound buffer becomes for a dispatch.
+/// fn bind_buffer<'r, D: TypedDevice, R: Resource<Device = D>>(buffer: &'r R) -> D::Binding<'r> {
+///     buffer.bind(Access::ReadOnly, LengthRule::Shared)
+/// }
+///
+/// let device = CpuDevice::new();
+/// let buffer = device.buffer(&[1u32, 2, 3]);
+/// let binding = bind_buffer(&buffer);
+/// // The view is `Copy`: using it twice does not move it.
+/// let again = binding;
+/// assert_eq!(format!("{binding:?}"), format!("{again:?}"));
+/// assert!(format!("{binding:?}").starts_with("CpuBinding"));
+/// ```
 pub trait TypedDevice: Device {
     /// Erased, backend-specific, `Copy` view of one bound resource for one dispatch.
     type Binding<'r>: Copy;
@@ -157,6 +220,24 @@ pub trait TypedDevice: Device {
 /// sampler holds no elements. It is the call's own argument kind, [`SamplerArg`], and its erased view is
 /// [`SamplerDevice::SamplerBinding`]. The trait is separate from [`TypedDevice`] so that a backend with no samplers
 /// (and every implementor that existed before textures) compiles unchanged; a backend that has them implements both.
+///
+/// ```
+/// use gust::cpu::CpuDevice;
+/// use gust::texture::SamplerOptions;
+/// use gust::{SamplerArg, SamplerDevice};
+///
+/// // A sampler device names the erased, `Copy` view that one bound sampler becomes for a dispatch.
+/// fn bind_sampler<'r, S: SamplerArg>(sampler: &'r S) -> <S::Device as SamplerDevice>::SamplerBinding<'r> {
+///     sampler.bind()
+/// }
+///
+/// let device = CpuDevice::new();
+/// let sampler = device.sampler(SamplerOptions::default());
+/// let binding = bind_sampler(&sampler);
+/// let again = binding;
+/// assert_eq!(format!("{binding:?}"), format!("{again:?}"));
+/// assert!(format!("{binding:?}").starts_with("CpuSamplerBinding"));
+/// ```
 pub trait SamplerDevice: TypedDevice {
     /// Erased, backend-specific, `Copy` view of one bound sampler for one dispatch.
     type SamplerBinding<'r>: Copy;
@@ -172,6 +253,18 @@ pub trait SamplerDevice: TypedDevice {
     message = "`{Self}` is not a GUST sampler of a typed device",
     label = "typed calls take the sampler type of a GUST backend; create it through that backend, and pass buffers and textures only where the kernel has a buffer or a texture"
 )]
+///
+/// ```
+/// use gust::cpu::CpuDevice;
+/// use gust::texture::SamplerOptions;
+/// use gust::SamplerArg;
+///
+/// // `CpuSampler` is the sampler of a `CpuDevice`: its `Device` is that type, and `bind` makes the erased view.
+/// let device = CpuDevice::new();
+/// let sampler = device.sampler(SamplerOptions::default());
+/// let binding = sampler.bind();
+/// assert!(format!("{binding:?}").starts_with("CpuSamplerBinding"));
+/// ```
 pub trait SamplerArg {
     /// The device type this sampler belongs to; it must be the device of the call's other arguments.
     type Device: SamplerDevice;
@@ -191,6 +284,14 @@ mod sampler_set {
 /// A backend's validation function bounds its `Call`'s `X` by this trait, so that it can check every sampler binding
 /// (the device instance a sampler belongs to) in the one place that validates a call, whatever the shape of `X`. A
 /// backend `Run` impl that validates through that function cannot skip the sampler check.
+///
+/// ```
+/// use gust::SamplerSet;
+///
+/// // A call with no sampler carries `()`, which has no bindings; one with samplers carries an array of them.
+/// assert!(().sampler_bindings().is_empty());
+/// assert_eq!([7_u8, 8].sampler_bindings(), &[7, 8]);
+/// ```
 pub trait SamplerSet: sampler_set::Sealed {
     /// One erased sampler binding; [`Infallible`](core::convert::Infallible) when there is none.
     type Binding: Copy;
@@ -233,6 +334,56 @@ impl<B: Copy, const S: usize> SamplerSet for [B; S] {
 /// The returned job is tied to the device (`'d`), not to the borrowed buffers (`'r`), as for [`Device::submit`]: a CPU
 /// backend must finish the work inside `submit_call` (or hold owned handles), because the buffers may be released
 /// when the call returns. Backends check every binding against `call.kernel()` (see the module documentation).
+///
+/// ```
+/// # use gust::*;
+/// # use core::{marker::PhantomData, time::Duration};
+/// # struct Dev;
+/// # struct Done;
+/// # impl Job for Done {
+/// #     type Error = ();
+/// #     fn status(&self) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait_timeout(&self, _: Duration) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait(&self) -> Result<(), ()> { Ok(()) }
+/// # }
+/// # impl Device for Dev {
+/// #     type Error = ();
+/// #     type Dispatch<'r> = ();
+/// #     type Job<'d> = Done where Self: 'd;
+/// #     fn submit<'d, 'r>(&'d self, _: &[()]) -> Result<Done, ()> { Ok(Done) }
+/// # }
+/// # impl TypedDevice for Dev { type Binding<'r> = (); }
+/// # struct Buf<K, T>(PhantomData<(K, T)>);
+/// # impl<K: gust::kind::ResourceKind, T: GpuPod> Resource for Buf<K, T> {
+/// #     type Element = T;
+/// #     type Device = Dev;
+/// #     type Kind = K;
+/// #     fn bind<'r>(&'r self, _: Access, _: LengthRule) {}
+/// # }
+/// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+/// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+/// # }
+/// # struct Probe;
+/// # impl Kernel for Probe {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)], "");
+/// # }
+/// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, Dev, Probe, 2>
+/// # where
+/// #     R0: Resource<Element = f32, Device = Dev, Kind = gust::kind::Storage> + 'r,
+/// #     R1: Resource<Element = f32, Device = Dev, Kind = gust::kind::Storage> + 'r,
+/// # {
+/// #     Call::new(n, [a.into().bind(Access::ReadOnly), b.into().bind(Access::ReadWrite)])
+/// # }
+/// impl Run<Probe, 2> for Dev {
+///     fn submit_call<'d>(&'d self, _: &Call<'_, Dev, Probe, 2>) -> Result<Done, ()> { Ok(Done) }
+/// }
+/// let a = Buf::<gust::kind::Storage, f32>(PhantomData);
+/// let b = Buf::<gust::kind::Storage, f32>(PhantomData);
+/// let built = call(4, &a, &b);
+/// // `dispatch_call` is `submit_call` followed by `wait`.
+/// Dev.dispatch_call(&built)?;
+/// # Ok::<(), ()>(())
+/// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot run the kernel `{K}`",
     label = "this device has no executable form of the kernel; GPU devices run every kernel that has a typed call, CPU twins only those emitted for them",
@@ -257,6 +408,20 @@ pub trait Run<K: Kernel, const N: usize, X = ()>: TypedDevice {
 }
 
 /// How a binding's length relates to the call's extent (its element count for a one-dimensional call).
+///
+/// ```
+/// use gust::cpu::CpuDevice;
+/// use gust::{Arg, Independent, LengthRule};
+///
+/// let device = CpuDevice::new();
+/// let data = device.buffer(&[1.0_f32, 2.0, 3.0]);
+/// let settings = device.buffer(&[0.5_f32]);
+/// // `Shared` is the default of a plain argument; `Independent(&settings)` opts a buffer out.
+/// let plain: Arg<'_, _> = (&data).into();
+/// let opted_out: Arg<'_, _> = Independent(&settings).into();
+/// assert_eq!(plain.length, LengthRule::Shared);
+/// assert_eq!(opted_out.length, LengthRule::Independent);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LengthRule {
@@ -282,6 +447,19 @@ pub enum LengthRule {
 ///
 /// The global invocation id is `(x, y, z)` with every axis below its rounded extent, so `LocalId` and `GroupId`
 /// (`id % size`, `id / size` per axis) stay exact.
+///
+/// ```
+/// use gust::Extent;
+///
+/// let extent = Extent::new(100, 50, 2);
+/// assert_eq!(extent.checked_total(), Some(10_000));
+/// // Axes round up to whole workgroups of the kernel's size.
+/// assert_eq!(extent.rounded_axes([64, 8, 1]), Some([128, 56, 2]));
+/// assert_eq!(Extent::linear(7), Extent::from(7));
+/// assert!(Extent::new(0, 5, 5).is_empty());
+/// assert_eq!(Extent::from([1, 2, 3]).to_array(), [1, 2, 3]);
+/// assert_eq!(Extent::MAX_INVOCATIONS, 1 << 32);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Extent {
     /// Invocations along x.
@@ -642,6 +820,52 @@ pub trait Resource {
 }
 
 /// One argument of a typed call: a borrowed resource plus its length rule.
+///
+/// ```
+/// # use gust::*;
+/// # use core::{marker::PhantomData, time::Duration};
+/// # struct Dev;
+/// # struct Done;
+/// # impl Job for Done {
+/// #     type Error = ();
+/// #     fn status(&self) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait_timeout(&self, _: Duration) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait(&self) -> Result<(), ()> { Ok(()) }
+/// # }
+/// # impl Device for Dev {
+/// #     type Error = ();
+/// #     type Dispatch<'r> = ();
+/// #     type Job<'d> = Done where Self: 'd;
+/// #     fn submit<'d, 'r>(&'d self, _: &[()]) -> Result<Done, ()> { Ok(Done) }
+/// # }
+/// # impl TypedDevice for Dev { type Binding<'r> = (); }
+/// # struct Buf<K, T>(PhantomData<(K, T)>);
+/// # impl<K: gust::kind::ResourceKind, T: GpuPod> Resource for Buf<K, T> {
+/// #     type Element = T;
+/// #     type Device = Dev;
+/// #     type Kind = K;
+/// #     fn bind<'r>(&'r self, _: Access, _: LengthRule) {}
+/// # }
+/// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+/// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+/// # }
+/// # struct Probe;
+/// # impl Kernel for Probe {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)], "");
+/// # }
+/// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, Dev, Probe, 2>
+/// # where
+/// #     R0: Resource<Element = f32, Device = Dev, Kind = gust::kind::Storage> + 'r,
+/// #     R1: Resource<Element = f32, Device = Dev, Kind = gust::kind::Storage> + 'r,
+/// # {
+/// #     Call::new(n, [a.into().bind(Access::ReadOnly), b.into().bind(Access::ReadWrite)])
+/// # }
+/// let buffer = Buf::<gust::kind::Storage, f32>(PhantomData);
+/// let arg: Arg<'_, _> = (&buffer).into();
+/// assert_eq!(arg.length, LengthRule::Shared);
+/// // `bind` makes the backend's erased binding with the access the kernel declares.
+/// let () = arg.bind(Access::ReadOnly);
+/// ```
 #[derive(Debug)]
 pub struct Arg<'r, R: Resource> {
     /// The borrowed buffer.
@@ -662,6 +886,50 @@ impl<'r, R: Resource> From<&'r R> for Arg<'r, R> {
 /// Call-site opt-in: this buffer's length may differ from the element count.
 ///
 /// `kernel::call(n, &a, Independent(&settings), &out)` marks only `settings`.
+///
+/// ```
+/// # use gust::*;
+/// # use core::{marker::PhantomData, time::Duration};
+/// # struct Dev;
+/// # struct Done;
+/// # impl Job for Done {
+/// #     type Error = ();
+/// #     fn status(&self) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait_timeout(&self, _: Duration) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait(&self) -> Result<(), ()> { Ok(()) }
+/// # }
+/// # impl Device for Dev {
+/// #     type Error = ();
+/// #     type Dispatch<'r> = ();
+/// #     type Job<'d> = Done where Self: 'd;
+/// #     fn submit<'d, 'r>(&'d self, _: &[()]) -> Result<Done, ()> { Ok(Done) }
+/// # }
+/// # impl TypedDevice for Dev { type Binding<'r> = (); }
+/// # struct Buf<K, T>(PhantomData<(K, T)>);
+/// # impl<K: gust::kind::ResourceKind, T: GpuPod> Resource for Buf<K, T> {
+/// #     type Element = T;
+/// #     type Device = Dev;
+/// #     type Kind = K;
+/// #     fn bind<'r>(&'r self, _: Access, _: LengthRule) {}
+/// # }
+/// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+/// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+/// # }
+/// # struct Probe;
+/// # impl Kernel for Probe {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)], "");
+/// # }
+/// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, Dev, Probe, 2>
+/// # where
+/// #     R0: Resource<Element = f32, Device = Dev, Kind = gust::kind::Storage> + 'r,
+/// #     R1: Resource<Element = f32, Device = Dev, Kind = gust::kind::Storage> + 'r,
+/// # {
+/// #     Call::new(n, [a.into().bind(Access::ReadOnly), b.into().bind(Access::ReadWrite)])
+/// # }
+/// let settings = Buf::<gust::kind::Storage, f32>(PhantomData);
+/// let arg: Arg<'_, _> = Independent(&settings).into();
+/// assert_eq!(arg.length, LengthRule::Independent);
+/// ```
 #[derive(Debug)]
 pub struct Independent<T>(pub T);
 
@@ -771,6 +1039,54 @@ impl KernelDescriptor {
 /// exactly as before textures. A kernel with `S` samplers takes `Call<'r, D, K, N, [D::SamplerBinding<'r>; S]>`, which
 /// [`SampledCall`] spells and [`Call::new_with_samplers`] builds. A sampler is not a [`Resource`], so it is not among
 /// the `N` and has no length rule.
+///
+/// ```
+/// # use gust::*;
+/// # use core::{marker::PhantomData, time::Duration};
+/// # struct Dev;
+/// # struct Done;
+/// # impl Job for Done {
+/// #     type Error = ();
+/// #     fn status(&self) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait_timeout(&self, _: Duration) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait(&self) -> Result<(), ()> { Ok(()) }
+/// # }
+/// # impl Device for Dev {
+/// #     type Error = ();
+/// #     type Dispatch<'r> = ();
+/// #     type Job<'d> = Done where Self: 'd;
+/// #     fn submit<'d, 'r>(&'d self, _: &[()]) -> Result<Done, ()> { Ok(Done) }
+/// # }
+/// # impl TypedDevice for Dev { type Binding<'r> = (); }
+/// # struct Buf<K, T>(PhantomData<(K, T)>);
+/// # impl<K: gust::kind::ResourceKind, T: GpuPod> Resource for Buf<K, T> {
+/// #     type Element = T;
+/// #     type Device = Dev;
+/// #     type Kind = K;
+/// #     fn bind<'r>(&'r self, _: Access, _: LengthRule) {}
+/// # }
+/// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+/// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+/// # }
+/// # struct Probe;
+/// # impl Kernel for Probe {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)], "");
+/// # }
+/// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, Dev, Probe, 2>
+/// # where
+/// #     R0: Resource<Element = f32, Device = Dev, Kind = gust::kind::Storage> + 'r,
+/// #     R1: Resource<Element = f32, Device = Dev, Kind = gust::kind::Storage> + 'r,
+/// # {
+/// #     Call::new(n, [a.into().bind(Access::ReadOnly), b.into().bind(Access::ReadWrite)])
+/// # }
+/// let a = Buf::<gust::kind::Storage, f32>(PhantomData);
+/// let b = Buf::<gust::kind::Storage, f32>(PhantomData);
+/// let built = call(8, &a, &b);
+/// assert_eq!(built.kernel().name, "probe");
+/// assert_eq!(built.element_count(), 8);
+/// assert_eq!(built.extent(), Extent::linear(8));
+/// assert_eq!(built.bindings().len(), 2);
+/// ```
 #[must_use = "a `Call` does nothing until a device runs it"]
 pub struct Call<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize, X = ()> {
     kernel: &'static KernelDescriptor,
@@ -781,6 +1097,65 @@ pub struct Call<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize, X = ()> 
 }
 
 /// The call of a kernel with `S` sampler parameters (decision D64): [`Call`] with the sampler bindings of device `D`.
+///
+/// ```
+/// # use gust::*;
+/// # use core::{marker::PhantomData, time::Duration};
+/// # struct Dev;
+/// # struct Done;
+/// # impl Job for Done {
+/// #     type Error = ();
+/// #     fn status(&self) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait_timeout(&self, _: Duration) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait(&self) -> Result<(), ()> { Ok(()) }
+/// # }
+/// # impl Device for Dev {
+/// #     type Error = ();
+/// #     type Dispatch<'r> = ();
+/// #     type Job<'d> = Done where Self: 'd;
+/// #     fn submit<'d, 'r>(&'d self, _: &[()]) -> Result<Done, ()> { Ok(Done) }
+/// # }
+/// # impl TypedDevice for Dev { type Binding<'r> = (); }
+/// # struct Buf<K, T>(PhantomData<(K, T)>);
+/// # impl<K: gust::kind::ResourceKind, T: GpuPod> Resource for Buf<K, T> {
+/// #     type Element = T;
+/// #     type Device = Dev;
+/// #     type Kind = K;
+/// #     fn bind<'r>(&'r self, _: Access, _: LengthRule) {}
+/// # }
+/// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+/// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+/// # }
+/// # struct Probe;
+/// # impl Kernel for Probe {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)], "");
+/// # }
+/// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, Dev, Probe, 2>
+/// # where
+/// #     R0: Resource<Element = f32, Device = Dev, Kind = gust::kind::Storage> + 'r,
+/// #     R1: Resource<Element = f32, Device = Dev, Kind = gust::kind::Storage> + 'r,
+/// # {
+/// #     Call::new(n, [a.into().bind(Access::ReadOnly), b.into().bind(Access::ReadWrite)])
+/// # }
+/// # impl SamplerDevice for Dev { type SamplerBinding<'r> = (); }
+/// # struct Smp;
+/// # impl SamplerArg for Smp {
+/// #     type Device = Dev;
+/// #     fn bind(&self) {}
+/// # }
+/// # struct Sampled;
+/// # impl Kernel for Sampled {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "sampled", "m_sampled", [1, 1, 1], &[
+/// #         p("a", Access::ReadOnly),
+/// #         ParameterDescriptor { name: "s", rust_type: "Sampler", kind: ParameterKind::Sampler, access: Access::ReadOnly, resource_layout: None, binding: None },
+/// #     ], "");
+/// # }
+/// // `Sampled` has one storage parameter and one sampler parameter: `N = 1`, `S = 1`.
+/// let a = Buf::<gust::kind::Storage, f32>(PhantomData);
+/// let call: SampledCall<'_, Dev, Sampled, 1, 1> =
+///     Call::new_with_samplers(4, [Arg::from(&a).bind(Access::ReadOnly)], [Smp.bind()]);
+/// assert_eq!(call.samplers().len(), 1);
+/// ```
 pub type SampledCall<'r, D, K, const N: usize, const S: usize> =
     Call<'r, D, K, N, [<D as SamplerDevice>::SamplerBinding<'r>; S]>;
 

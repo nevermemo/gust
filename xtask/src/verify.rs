@@ -933,7 +933,7 @@ pub(crate) const ALGO_GPU_CALL: [&str; 4] = ["test", "--locked", "-p", "gust-alg
 /// The `gpu::` tests of `gust-algo`, by name: each must be reported `ok`, and no other `tests::gpu::` test may exist
 /// ([`check_algo_gpu_counts`]), so a deleted or an unpinned adapter test fails the gate. The twins would still satisfy
 /// a plain "at least one test ran". Adding or removing a `gpu::` test changes this list in the same commit.
-pub(crate) const ALGO_GPU_TESTS: [&str; 50] = [
+pub(crate) const ALGO_GPU_TESTS: [&str; 54] = [
     "tests::gpu::gpu_a_compaction_chain_runs_on_the_device_with_the_device_count",
     "tests::gpu::gpu_a_compaction_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch",
     "tests::gpu::gpu_a_compaction_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch",
@@ -966,6 +966,10 @@ pub(crate) const ALGO_GPU_TESTS: [&str; 50] = [
     "tests::gpu::gpu_scans_leave_the_input_alone_and_return_their_buffers",
     "tests::gpu::gpu_scans_past_the_domain_wrap",
     "tests::gpu::gpu_sum_on_device_keeps_the_result_resident",
+    "tests::gpu::gpu_timed_calls_return_the_untimed_values_and_report_one_batch",
+    "tests::gpu::gpu_timed_empty_error_and_other_threads",
+    "tests::gpu::gpu_timed_multi_batch_operations_sum_their_batches",
+    "tests::gpu::gpu_untimed_calls_are_unaffected_by_earlier_timed_scopes",
     "tests::gpu::gpu_v0_float_min_and_max_are_exact",
     "tests::gpu::gpu_v0_float_sums_are_within_the_per_level_bound",
     "tests::gpu::gpu_v0_integer_sums_min_and_max_are_exact_at_every_boundary",
@@ -1048,8 +1052,13 @@ pub(crate) struct GpuSuitePin {
 /// example for each public host type of the crate (the device and policy types, the buffer, uniform, texture and
 /// sampler types, the pool, graph and report types, the error and the job). They compile and run on the adapter, like
 /// the other doctests of the crate.
+///
+/// Slice m10.ts2: 504 over 49 became 512 over 49. One unit test (`stamp_slots` in `graph.rs`), six new tests in
+/// `tests/graph.rs` (the timed graph: same outputs as an untimed one, indirect passes, `pixel` passes, no dispatch
+/// pass, zero-element dispatches at both ends, and the shared profiler under two threads) and one new doctest,
+/// `HeadlessDevice::execute_graph_timed`; 504 + 1 + 6 + 1 = 512.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 504,
+    passed: 512,
     result_lines: 49,
 };
 

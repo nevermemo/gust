@@ -250,6 +250,13 @@ proof.
 - `Artifact::with_format`, `with_key`, `with_bytes`, `with_reflection`, `Artifact::new` and `ModuleDescriptor::new`
   (m10.api2a.1): the constructors that the `#[non_exhaustive]` structs of B6 need (B5's record structs get none; only
   the crate builds them).
+- `HeadlessDevice::execute_graph_timed` (m10.ts2, D194) runs a `StagedGraph` like `execute_graph` and also reports
+  `GraphReport::gpu_elapsed`, the GPU time from the beginning of the first dispatch pass (compute, indirect or `pixel`)
+  to the end of the last; copies between dispatches are inside, uploads before and read-backs after are not. `None`
+  on an adapter without timestamp queries or for a graph that ran no dispatch pass, and always `None` from
+  `execute_graph`, which takes no lock and is otherwise unchanged. Native only. An addition: `GraphReport` is
+  `#[non_exhaustive]`. If reading the timestamps fails, the device's timestamp read-back buffer can stay mapped and a
+  later timed call on that device can fail (also true of `dispatch_batch_timed`).
 
 ### Deprecated
 
@@ -396,8 +403,9 @@ which gate of `main` builds it (`check-examples` builds the examples but `web-ve
     gust::target::GpuKernel for Blur {}` (three of the `expected.txt` files only change a line number).
   - One is a version literal: `tests/precompiled/kernels` named its `gust` path dependency `0.2.0-dev` (it is `0.2.0`
     in the release); its manifest and one reflection file are also written again by the new Slang.
-  - Ten only gained things (and `tests/difftest` a re-stamped seed file): `crates/gust-algo` (the `evidence` module and
-    an example, additive; not published), `examples/web-vector-add` (an added `check-web` assertion that a subgroup
+  - Ten only gained things (and `tests/difftest` a re-stamped seed file): `crates/gust-algo` (the `evidence` module,
+    an example, and opt-in GPU timestamps: `timed`, `Timed` and `GpuTime` report the summed GPU time of the batches
+    that a closure of gust-algo calls dispatches on its thread, D194; additive; not published), `examples/web-vector-add` (an added `check-web` assertion that a subgroup
     request is refused, and re-written artifacts), `tests/cpu-target` and its `kernels` (a `routed` crate and a
     `variant` module), `tests/dual` with its `consumer` and `kernel-lib` (a routed module and binary), `tests/difftest`
     (the format 7 harness and the profile flags; `seeds.txt` takes the new format stamp and all eight program hashes),

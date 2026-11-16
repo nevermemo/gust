@@ -25,7 +25,7 @@ A custom harness in a nested, unpublished workspace. It measures six workload fa
   (derived in `gust-bench/src/workloads/matmul.rs`; `u = 2^-24` for the CPU backends, `2^-23` for every GPU backend). The
   size is the matrix side `N`, not an element count.
 
-`--adapter "<name substring>"` opens both devices (GUST's and the hand wgpu one) on the one Vulkan adapter whose name contains the text, case-insensitively; no match or several matches is an error listing the adapters found, and without the flag the harness keeps its high-performance choice. The selection is recorded in the run file (`machine.adapter_selection`).
+`--adapter "<name substring>"` opens both devices (GUST's and the hand wgpu one) on the one Vulkan adapter whose name contains the text, case-insensitively; no match or several matches is an error listing the adapters found, and without the flag the harness keeps its high-performance choice. The selection is recorded in the run file (`meta.adapter_selection`, and the hand device's own adapter in `meta.hand_wgsl_adapter_info`; the run fails if the devices, or the selection, are not on one adapter by name, vendor, device, backend and PCI bus id). Two adapters with identical names cannot be told apart by name, so `--adapter` reports them as ambiguous and cannot select one. `profile` and `trace` open their own devices on the default adapter and refuse the flag.
 
 `--workloads` takes a workload id or a family (`W3` is the three degrees, `W4` the four histograms, `W5` the particle step, `W7` the two sums). Every workload
 runs its own size ladder (`gust-bench list`); `--sizes` overrides it for all of them (for W9 the values are matrix sides,
@@ -195,7 +195,7 @@ pipeline was already created once on the same device by `prepare`).
 The `#[gpu]` macro embeds artifacts found in `gust-artifacts/` beside the Cargo.toml of the package that compiles it.
 `gust-bench` has none, so it compiles Slang at run time. `gust-bench-pre` is the same harness sources (its binary
 `gust-bench-pre` has `path = "../gust-bench/src/main.rs"`) in a package of its own, with the committed artifacts in
-`gust-bench-pre/gust-artifacts/` (every kernel the build has: add, saxpy, horner, histogram, the W3 and W9 kernels and the W5 step); a build of it embeds them and its
+`gust-bench-pre/gust-artifacts/` (every kernel the build has: add, saxpy, horner, histogram, matmul and step); a build of it embeds them and its
 results say `config.shader_source = "precompiled"`. It is built with `GUST_PROFILE=native`, which refuses
 `slang-runtime` and requires an artifact for every kernel, so in that build the artifact path is the only possible one.
 To regenerate them after a kernel changes: `cargo gust build --manifest-path bench/gust-bench-pre/Cargo.toml` (the
@@ -315,7 +315,7 @@ Correctness: before every sample the device output is overwritten with NaN (outs
 and after every sample the output is read back and compared with a serial reference. W1 must match bit for bit; W2 must stay inside the derived
 two-operation bound of `docs/BENCHMARKS.md` (a GPU compiler may fuse the multiply-add, which is inside it); W3 must stay inside
 its Higham bound; W4 must match the serial counts exactly (its bins start at zero, because the kernel adds into them, so a dispatch
-that does not run reads back all zeros and fails). A NaN never passes.
+that does not run reads back all zeros and fails); W5 must keep `mass`, `tag` and `charge` bit for bit and keep each float field inside its per-field bound; W7 `u32` must match the wrapping sum exactly and W7 `f32` stay inside the bound of the summation order it runs; W9 must keep every entry inside Higham's inner-product bound. A NaN never passes.
 A failed check or a moved cache counter marks the run as failed.
 
 Statistics are median, min, p5, p95, MAD and the count of samples beyond 3 MAD (counted, never dropped). The aggregate
@@ -342,7 +342,7 @@ workgroups and is rejected). Three f32 streams of the last size are 192 MiB, bey
   release profile for every backend.
 - On a CPU the three streams of the largest sizes are memory bound; rayon-N did not beat one thread there on this
   machine (see the results), so the CPU rows say as much about DRAM bandwidth as about the schedulers.
-- Not covered by this spike: workloads W6 and W8, other comparators (CubeCL, rust-gpu), multi-dimensional dispatch.
+- Not covered by this spike: workloads W6 and W8 and other comparators (CubeCL, rust-gpu); the spike did not have multi-dimensional dispatch, which W9 now has.
 - W4's histogram accumulates across dispatches (a batch of passes keeps counting); the harness counts the passes since
   the bins were cleared and divides the counts by that number, and a count that is not a multiple of it fails the check.
   The bytes per element of W4 (4) count the key stream only, so its GB/s is the compulsory traffic, not the atomics'.

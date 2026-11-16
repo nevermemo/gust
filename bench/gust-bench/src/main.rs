@@ -772,19 +772,18 @@ fn run(options: &Options) -> BenchResult<bool> {
         adapter_limits,
     )?);
     let adapter = gust_device.adapter_info();
+    // Prove, not assume, that every device of the run is on one adapter (the selection too, when there is one).
+    let mut devices = vec![("GUST device", adapter), ("hand-WGSL device", &ctx.info)];
+    if let Some(selected) = &selection {
+        devices.push(("--adapter selection", &selected.info));
+    }
+    adapter::require_same(&devices)?;
     // A software adapter (lavapipe) runs only the functional check: its times are never published (plan 2.4).
     let software = matches!(adapter.device_type, wgpu::DeviceType::Cpu);
     if software && !options.functional {
         return Err(format!(
             "software adapter selected: {} (only `--functional` runs on one, and it publishes no timing)",
             adapter.name
-        )
-        .into());
-    }
-    if adapter.name != ctx.info.name {
-        return Err(format!(
-            "GUST ran on `{}` but the hand-WGSL device on `{}`; refusing to compare",
-            adapter.name, ctx.info.name
         )
         .into());
     }
@@ -802,9 +801,7 @@ fn run(options: &Options) -> BenchResult<bool> {
         } else {
             Rc::clone(&ctx)
         };
-        if probe.info.name != ctx.info.name {
-            return Err("the probe device landed on another adapter".into());
-        }
+        adapter::require_same(&[("GUST device", adapter), (name.as_str(), &probe.info)])?;
         probes.push((name.clone(), probe));
     }
     let mut backends = gpu_backends(group, &gust_device, &ctx, &ablation, all_on, &probes);
@@ -831,6 +828,7 @@ fn run(options: &Options) -> BenchResult<bool> {
     machine["adapter_selection"] = selection
         .as_ref()
         .map_or(Value::Null, adapter::Selection::record);
+    machine["hand_wgsl_adapter_info"] = adapter::info_record(&ctx.info);
     eprintln!(
         "adapter: {} ({})",
         adapter.name,
@@ -1205,12 +1203,25 @@ fn list() {
     println!("gust_dual (CPU twin built in): {}", cfg!(gust_dual));
 }
 
+/// `--adapter` belongs to `run`: `profile` and `trace` open their own devices on the default adapter, so they refuse it
+/// rather than ignore it.
+fn adapter_only_for_run(command: &str, options: &Options) -> BenchResult<()> {
+    if options.adapter.is_some() && command != "run" {
+        return Err(format!(
+            "--adapter is an option of `run`; `{command}` always uses the default adapter"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn real_main() -> BenchResult<bool> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let Some((command, rest)) = args.split_first() else {
         return Err(USAGE.into());
     };
     let options = parse(rest)?;
+    adapter_only_for_run(command, &options)?;
     match command.as_str() {
         "run" => run(&options),
         "aggregate" => {
@@ -1277,6 +1288,20 @@ mod tests {
             resolve_group(Some(Group::Ablation), Some("all-on")).unwrap(),
             (Group::Ablation, Some("all-on".to_owned()))
         );
+    }
+
+    #[test]
+    fn adapter_is_refused_outside_run() {
+        let args = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        let options = parse(&args(&["--adapter", "5090"])).unwrap();
+        assert!(adapter_only_for_run("run", &options).is_ok());
+        for command in ["profile", "trace"] {
+            let error = adapter_only_for_run(command, &options)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(command), "{error}");
+        }
+        assert!(adapter_only_for_run("profile", &parse(&args(&[])).unwrap()).is_ok());
     }
 
     #[test]

@@ -82,10 +82,27 @@ mod tests {
         assert!(far > near && far < 2.1 * near);
     }
 
+    /// Inputs that really round (the benchmark's own W2 inputs are exact by construction, so a run of it cannot observe a
+    /// rounding or a contraction): full 24-bit significands from a hash and a scale that is not a power of two.
+    fn rounding_inputs(n: usize) -> crate::workloads::Inputs {
+        let mut inputs = gen_inputs(Workload::Saxpy, n);
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            ((state >> 40) as f32 / (1u32 << 23) as f32) - 1.0
+        };
+        inputs.x = (0..n).map(|_| next()).collect();
+        inputs.y = (0..n).map(|_| next()).collect();
+        inputs.scale = 1.1;
+        inputs
+    }
+
     #[test]
     fn a_plain_and_a_fused_result_are_inside_the_bound_under_both_units() {
         let w = Workload::Saxpy;
-        let inputs = gen_inputs(w, 4096);
+        let inputs = rounding_inputs(4096);
         let reference = reference(w, &inputs);
         let plain = reference.want.clone();
         let fused = inputs
@@ -94,6 +111,24 @@ mod tests {
             .zip(&inputs.y)
             .map(|(x, y)| inputs.scale.mul_add(*x, *y))
             .collect::<Vec<_>>();
+        // The test means something only if fusing changes the result and the rounding is visible: a stated share of
+        // elements (at least a tenth) differ, and the worst plain error is a real fraction of the bound.
+        let differ = plain.iter().zip(&fused).filter(|(a, b)| a != b).count();
+        assert!(
+            differ * 10 >= inputs.n,
+            "{differ} of {} elements differ",
+            inputs.n
+        );
+        let worst = (0..inputs.n)
+            .map(|i| {
+                (f64::from(plain[i]) - exact(inputs.scale, inputs.x[i], inputs.y[i])).abs()
+                    / bound(Rounding::Nearest, inputs.scale, inputs.x[i], inputs.y[i])
+            })
+            .fold(0.0, f64::max);
+        assert!(
+            worst > 0.1 && worst <= 1.0,
+            "worst plain error is {worst} of the bound"
+        );
         for result in [&plain, &fused] {
             check(w, &inputs, &reference, result).unwrap();
             for rounding in [Rounding::Nearest, Rounding::Either] {

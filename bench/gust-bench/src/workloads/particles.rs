@@ -31,8 +31,8 @@
 //! with the backend's unit roundoff `u` ([`Rounding`](super::Rounding): `2^-24` for the CPU backends, `2^-23` for every
 //! GPU backend). A fused multiply-add rounds once and so has only less error than the multiply and add it replaces
 //! (the same argument as W2's), so the bound covers a compiler that contracts. The forward error of an expression
-//! tree is carried through the 16 steps numerically, in f64, along the exact trajectory: a value is a pair
-//! `(v, e)` with the computed value within `e` of the exact one, and
+//! tree is carried through the 16 steps numerically, in f64, along the f64 trajectory (the exact one differs from it by about
+//! `1e-14` relative, which the factor below covers): a value is a pair `(v, e)` with the computed value within `e` of the exact one, and
 //!
 //! ```text
 //! add:  v = a.v + b.v        e = (a.e + b.e)(1 + u) + u |v| + eta
@@ -47,6 +47,20 @@
 //! neighbour; the model lets it be either neighbour (the "either neighbour" reading of `docs/SEMANTICS.md` section 4),
 //! as an error `|dt| 2^-23` on the constant's operand.
 //!
+//! **Grouping.** The CPU adds in the written order (Rust and the twin never reassociate floats), so the recurrence above
+//! is its bound. A GPU may regroup a chain of additions with no accuracy condition (`docs/SEMANTICS.md` section 4, WGSL
+//! 15.7.5), so for `Rounding::Either` every chain is bounded over *every* grouping: `vx_k = vx_0 + c + ... + c` (`k + 1`
+//! terms, `c = fx dt`), likewise `vy_k`, and the final `px = px_0 + vx_1 dt + ... + vx_16 dt` (17 terms), likewise `py`. For
+//! a chain of `k + 1` terms `t_i`, each computed within `e_i`, Higham's order-free product bound (section 4.2: a sum
+//! of `k` additions in any order or grouping) is
+//!
+//! ```text
+//! e <= (1 + u)^k sum e_i + ((1 + u)^k - 1) sum |t_i| + k (1 + u)^k eta
+//! ```
+//!
+//! (`Chain`). Each `vx_k` is itself such a chain, and its bound enters the product `vx_k dt`, a term of the position chain.
+//! The product-form bound is loose, not a guess: it is rigorous for every grouping and never smaller than the bound of the
+//! written order. Tests evaluate the step with the additions reversed and in a pairwise tree and show both inside it.//!
 //! The reference is the same recurrence in f64 (`dt` as the exact f64 of the f32 constant), which has its own error,
 //! carried with `u = 2^-53`, no `eta` and an exact `dt`. A field's bound is the sum of the f32 model's final `e` and the
 //! f64 reference's, and a factor `1 + 1e-9` that covers the f64 evaluation of the bound itself and the difference between
@@ -213,6 +227,39 @@ struct Model {
     u: f64,
     eta: f64,
     dt_err: f64,
+    /// Bound every addition chain over any grouping (the GPU: `docs/SEMANTICS.md` section 4 lets it regroup), not in the
+    /// written order (the CPU).
+    regroup: bool,
+}
+
+/// An addition chain `t_0 + ... + t_k` judged for every grouping: Higham's order-free product bound
+/// `(1+u)^k sum e_i + ((1+u)^k - 1) sum |t_i|`, plus `k` underflow terms. Terms are pushed one at a time.
+#[derive(Clone, Copy, Default)]
+struct Chain {
+    val: f64,
+    err_sum: f64,
+    abs_sum: f64,
+    terms: i32,
+}
+
+impl Chain {
+    fn push(&mut self, t: Tracked) {
+        self.val += t.val;
+        self.err_sum += t.err;
+        self.abs_sum += t.val.abs();
+        self.terms += 1;
+    }
+
+    fn tracked(self, model: Model) -> Tracked {
+        let k = self.terms - 1;
+        let growth = (1.0 + model.u).powi(k);
+        Tracked {
+            val: self.val,
+            err: growth * self.err_sum
+                + (growth - 1.0) * self.abs_sum
+                + f64::from(k) * growth * model.eta,
+        }
+    }
 }
 
 impl Model {
@@ -246,11 +293,30 @@ impl Model {
         let (mut px, mut py) = (exact(particle[0]), exact(particle[1]));
         let (mut vx, mut vy) = (exact(particle[2]), exact(particle[3]));
         let (fx, fy) = (exact(force[0]), exact(force[1]));
-        for _ in 0..STEPS {
-            vx = self.add(vx, self.mul(fx, dt));
-            vy = self.add(vy, self.mul(fy, dt));
-            px = self.add(px, self.mul(vx, dt));
-            py = self.add(py, self.mul(vy, dt));
+        if self.regroup {
+            let chain = |first: Tracked| {
+                let mut chain = Chain::default();
+                chain.push(first);
+                chain
+            };
+            let (mut cpx, mut cpy, mut cvx, mut cvy) = (chain(px), chain(py), chain(vx), chain(vy));
+            for _ in 0..STEPS {
+                cvx.push(self.mul(fx, dt));
+                cvy.push(self.mul(fy, dt));
+                vx = cvx.tracked(self);
+                vy = cvy.tracked(self);
+                cpx.push(self.mul(vx, dt));
+                cpy.push(self.mul(vy, dt));
+            }
+            px = cpx.tracked(self);
+            py = cpy.tracked(self);
+        } else {
+            for _ in 0..STEPS {
+                vx = self.add(vx, self.mul(fx, dt));
+                vy = self.add(vy, self.mul(fy, dt));
+                px = self.add(px, self.mul(vx, dt));
+                py = self.add(py, self.mul(vy, dt));
+            }
         }
         [px, py, vx, vy]
     }
@@ -267,6 +333,7 @@ fn model_of(rounding: Rounding) -> Model {
             Rounding::Nearest => 0.0,
             Rounding::Either => f64::from(DT) * u,
         },
+        regroup: rounding == Rounding::Either,
     }
 }
 
@@ -275,6 +342,7 @@ const REFERENCE: Model = Model {
     u: U64,
     eta: 0.0,
     dt_err: 0.0,
+    regroup: false,
 };
 
 /// Covers the f64 evaluation of the bound itself and the exact-versus-f64 trajectory inside its terms (see the notes).
@@ -327,7 +395,7 @@ mod tests {
     /// order at the same offsets. GUST's side is read from the `GpuPod` layout the macro derives, the hand side from the
     /// shader's text.
     #[test]
-    fn the_hand_wgsl_layout_matches_gusts_reflection() {
+    fn the_hand_wgsl_layout_matches_gusts_derived_layout() {
         use gust::TypeLayoutKind;
         let layout = <kernel::Particle as GpuPod>::LAYOUT;
         assert_eq!(
@@ -374,6 +442,58 @@ mod tests {
         );
         assert_eq!(layout.size as usize, WORDS * 4);
         assert_eq!(pair.size as usize, ACCEL_WORDS * 4);
+    }
+
+    /// N6: the committed Slang reflection of the step kernel (`gust-bench-pre/gust-artifacts`, the layout the shader compiler
+    /// itself produced) says what the macro-derived layout and the hand shader assume: stride 28 and these offsets.
+    #[test]
+    fn the_committed_reflection_of_the_step_kernel_has_the_layout_the_hand_shader_assumes() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../gust-bench-pre/gust-artifacts");
+        let mut found = 0;
+        for entry in std::fs::read_dir(&dir).expect("the committed artifacts") {
+            let path = entry.unwrap().path();
+            if !path.to_string_lossy().ends_with(".reflection.json") {
+                continue;
+            }
+            let json: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            if json["entryPoint"] != "gpu_kernel_step" {
+                continue;
+            }
+            found += 1;
+            let input = &json["parameters"][0]["type"]["resultType"];
+            assert_eq!(
+                (
+                    input["size"].as_u64(),
+                    input["alignment"].as_u64(),
+                    input["stride"].as_u64()
+                ),
+                (Some(28), Some(4), Some(28))
+            );
+            let fields = input["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| {
+                    (
+                        f["name"].as_str().unwrap().to_owned(),
+                        f["binding"]["offset"].as_u64().unwrap(),
+                        f["binding"]["size"].as_u64().unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let want = [
+                ("position", 0, 8),
+                ("velocity", 8, 8),
+                ("mass", 16, 4),
+                ("tag", 20, 4),
+                ("charge", 24, 4),
+            ]
+            .map(|(n, o, s)| (n.to_owned(), o, s));
+            assert_eq!(fields, want);
+        }
+        assert_eq!(found, 1, "one committed reflection for the step kernel");
     }
 
     #[test]
@@ -423,10 +543,110 @@ mod tests {
     fn the_bound_is_a_small_multiple_of_the_roundings_it_covers() {
         let (x, y) = inputs(4103);
         let (exact, bound, bound_gpu) = exact_and_bound(&x, &y);
-        for i in 0..exact.len() {
-            let scale = exact[i].abs().max(1.0);
-            assert!(bound[i] < 1e-5 * scale, "{i}: {} of {}", bound[i], exact[i]);
-            assert!(bound_gpu[i] < 2e-5 * scale, "{i}");
+        let ratio = |b: &[f64]| {
+            (0..exact.len())
+                .map(|i| b[i] / (f64::from(f32::EPSILON) * exact[i].abs().max(1.0)))
+                .fold(0.0, f64::max)
+        };
+        // 16 steps of 4 operations each: measured at about 8 (CPU) and 20 (GPU, every grouping) epsilons of the scale at
+        // most, so 12 and 28 mean a few rounding errors per step and not a fraction of the value.
+        assert!(ratio(&bound) < 12.0, "{}", ratio(&bound));
+        assert!(ratio(&bound_gpu) < 28.0, "{}", ratio(&bound_gpu));
+    }
+
+    /// The written-order f32 step of every particle of `inputs` into `out`.
+    fn step_all(inputs: &crate::workloads::Inputs, out: &mut [f32]) {
+        for i in 0..out.len() / WORDS {
+            step_words(
+                &inputs.x[i * WORDS..],
+                &inputs.y[i * ACCEL_WORDS..],
+                &mut out[i * WORDS..(i + 1) * WORDS],
+            );
+        }
+    }
+
+    /// Sums `terms` in a reversed order, or as a pairwise tree, in f32 (a grouping the written order does not use).
+    fn grouped_sum(terms: &[f32], tree: bool) -> f32 {
+        if !tree {
+            return terms.iter().rev().fold(0.0, |sum, t| sum + t);
+        }
+        match terms.len() {
+            1 => terms[0],
+            len => grouped_sum(&terms[..len / 2], true) + grouped_sum(&terms[len / 2..], true),
+        }
+    }
+
+    /// The step with every addition chain regrouped: `reversed` (last term first), `tree` (pairwise), or `largest` first.
+    fn regrouped_step(p: &[f32], a: &[f32], tree: bool, largest_first: bool) -> [f32; FIELDS] {
+        let order = |mut terms: Vec<f32>| {
+            if largest_first {
+                terms.sort_by(|x, y| y.abs().total_cmp(&x.abs()));
+                terms.iter().fold(0.0, |sum, t| sum + t)
+            } else {
+                grouped_sum(&terms, tree)
+            }
+        };
+        let (cx, cy) = (a[0] * DT, a[1] * DT);
+        let (mut vxs, mut vys) = (vec![], vec![]);
+        for k in 1..=STEPS {
+            let mut tx = vec![p[2]];
+            tx.extend(std::iter::repeat_n(cx, k));
+            let mut ty = vec![p[3]];
+            ty.extend(std::iter::repeat_n(cy, k));
+            vxs.push(order(tx));
+            vys.push(order(ty));
+        }
+        let mut tx = vec![p[0]];
+        tx.extend(vxs.iter().map(|v| v * DT));
+        let mut ty = vec![p[1]];
+        ty.extend(vys.iter().map(|v| v * DT));
+        [order(tx), order(ty), vxs[STEPS - 1], vys[STEPS - 1]]
+    }
+
+    /// M1: a GPU may regroup the chains (`docs/SEMANTICS.md` section 4); reversed, pairwise and largest-first evaluations
+    /// are inside the GPU bound (they really do differ from the written order), and the GPU bound is never below the
+    /// written-order one.
+    #[test]
+    fn a_regrouped_step_is_inside_the_gpu_bound() {
+        let w = Workload::Particles;
+        let n = 4103;
+        let inputs = gen_inputs(w, n);
+        let reference = reference(w, &inputs);
+        let mut plain = vec![0.0f32; n * WORDS];
+        step_all(&inputs, &mut plain);
+        for (tree, largest) in [(false, false), (true, false), (false, true)] {
+            let mut got = inputs.x.clone();
+            for i in 0..n {
+                let r = regrouped_step(
+                    &inputs.x[i * WORDS..],
+                    &inputs.y[i * ACCEL_WORDS..],
+                    tree,
+                    largest,
+                );
+                got[i * WORDS..i * WORDS + FIELDS].copy_from_slice(&r);
+            }
+            assert_ne!(
+                got, plain,
+                "tree={tree} largest={largest}: the grouping changes some rounding"
+            );
+            check_on(w, &inputs, &reference, &got, Rounding::Either).unwrap();
+        }
+        // The written-order model of the GPU (the bound before the grouping fix) is never above the grouped one.
+        let written = Model {
+            regroup: false,
+            ..model_of(Rounding::Either)
+        };
+        for i in 0..n {
+            let (p, f) = (&inputs.x[i * WORDS..], &inputs.y[i * ACCEL_WORDS..]);
+            let (g, w2) = (model_of(Rounding::Either).run(p, f), written.run(p, f));
+            for field in 0..FIELDS {
+                assert!(
+                    g[field].err >= w2[field].err * (1.0 - 1e-12),
+                    "{i} {field}: {} against {}",
+                    g[field].err,
+                    w2[field].err
+                );
+            }
         }
     }
 

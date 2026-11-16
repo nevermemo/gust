@@ -215,6 +215,15 @@ impl Workload {
         self.family() != "W7"
     }
 
+    /// Whether GUST's end-to-end sample times the same work as the hand-WGSL baseline's, so that a GUST end-to-end ratio,
+    /// overhead row, bandwidth figure or break-even is a statement about GUST. `false` for W5: GUST's read-back is typed
+    /// (`Vec<Particle>`, then a second allocation and a per-field copy into the harness's words), inside the timed region,
+    /// where the baseline reads raw words with one copy. The dispatch-only timings are unaffected and stay. (`gust-cpu` and
+    /// `gust-twin` convert the same way; they are in no GUST/hand pairing, but their end-to-end times carry the copy.)
+    pub fn end_to_end_comparable(self) -> bool {
+        self.family() != "W5"
+    }
+
     /// The default size ladder of the workload.
     pub fn sizes(self) -> &'static [usize] {
         match self.family() {

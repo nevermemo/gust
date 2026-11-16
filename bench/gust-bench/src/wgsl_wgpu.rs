@@ -773,7 +773,7 @@ impl Backend for HandWgsl {
     }
 
     /// The GUST-shader probes run GUST's generated WGSL, which this crate embeds as precompiled artifacts for W1 to W4;
-    /// the probe has no W7 (the library's own kernels) and no W9 arm (its artifact exists in `gust-bench-pre` for the
+    /// the probe has no W7 (the library's own kernels), no W5 and no W9 arm (their artifacts exist in `gust-bench-pre` for the
     /// pre-built GUST backend, but the probe path does not take it).
     fn supports(&self, workload: Workload) -> bool {
         !(self.gust_shader && matches!(workload.family(), "W5" | "W7" | "W9"))

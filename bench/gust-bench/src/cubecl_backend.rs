@@ -146,8 +146,9 @@ pub fn decide<T>(
 }
 
 /// The pinned CubeCL version the run file records, and the version the `wgpu_features` note is stated as of.
-/// Two tests (`the_recorded_cubecl_version_is_the_cargo_toml_pin`, `every_live_mention_of_the_cubecl_version_is_the_recorded_one`)
-/// keep it equal to the exact pin in `Cargo.toml` and to every version the code and the docs state.
+/// Two tests (`the_recorded_cubecl_version_is_the_cargo_toml_pin` and
+/// `every_live_mention_of_the_cubecl_version_is_the_recorded_one`) keep it equal to the exact pin in `Cargo.toml`
+/// and to every version the code and the docs state.
 const CUBECL_VERSION: &str = "0.11.4";
 
 /// What a run file records about the comparator (`versions.cubecl`): the CubeCL version, the compiler it ran, and what each
@@ -874,12 +875,14 @@ mod tests {
 
     /// Every live mention of the CubeCL version in the code, the manifest and the docs is the one `CUBECL_VERSION`
     /// records. The needles are built so that this test's own source does not match them. `STATUS.md` and
-    /// `DECISIONS.md` are history and keep the version of their day, so they are not scanned.
+    /// `DECISIONS.md` are history and keep the version of their day, so they are not scanned. A version follows the
+    /// name after spaces, line breaks, comment prefixes, a string continuation or the mark of an exact pin; its token
+    /// runs over ASCII letters, digits, dots and hyphens (so a pre-release suffix counts), without a trailing dot or
+    /// hyphen, and ends at a quote, backtick, space, bracket or comma.
     #[test]
     fn every_live_mention_of_the_cubecl_version_is_the_recorded_one() {
-        let name_then_space = ["CubeCL", " "].concat();
-        let name_then_pin = ["CubeCL", " `="].concat();
-        let pinned_then_pin = ["pinned", " `="].concat();
+        let name = ["Cube", "CL"].concat();
+        let readme_pin = ["Cube", "CL is pinned `="].concat();
         let files: [(&str, &str); 5] = [
             (
                 "src/cubecl_backend.rs",
@@ -908,24 +911,39 @@ mod tests {
                 )),
             ),
         ];
-        // The version token after each needle that is followed by a digit: digits and dots, without a trailing dot.
         let tokens_after = |text: &str, needle: &str| -> Vec<String> {
             text.match_indices(needle)
-                .map(|(at, _)| &text[at + needle.len()..])
+                .map(|(at, _)| {
+                    // Skip what can sit between the name and the version: spaces, line breaks, comment prefixes, a
+                    // string continuation and the mark of an exact pin.
+                    let mut rest = &text[at + needle.len()..];
+                    loop {
+                        let trimmed = rest.trim_start();
+                        let next = ["///", "//!", "//", "#", "\\", "`="]
+                            .iter()
+                            .find_map(|skip| trimmed.strip_prefix(skip))
+                            .unwrap_or(trimmed);
+                        if next.len() == rest.len() {
+                            break;
+                        }
+                        rest = next;
+                    }
+                    rest
+                })
                 .filter(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
                 .map(|rest| {
                     let token: String = rest
                         .chars()
-                        .take_while(|c| c.is_ascii_digit() || *c == '.')
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-')
                         .collect();
-                    token.trim_end_matches('.').to_string()
+                    token.trim_end_matches(['.', '-']).to_string()
                 })
                 .collect()
         };
         let mut wrong = Vec::new();
         for (file, text) in files {
             let mut hits = 0;
-            for needle in [&name_then_space, &name_then_pin, &pinned_then_pin] {
+            for needle in [&name, &readme_pin] {
                 for version in tokens_after(text, needle) {
                     hits += 1;
                     if version != CUBECL_VERSION {

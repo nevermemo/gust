@@ -191,8 +191,10 @@ summary into `STATUS.md`. Never commit machine-specific paths: the repository is
 Other parts of the repository have their own checks. `bench/` is a workspace of its own (the benchmark harness, run
 with `GUST_PROFILE=dev`; see `bench/README.md` and `docs/BENCHMARKS.md`): `cargo xtask check-bench` runs its
 functional check and renders the page, and it never produces a speed claim by itself. `gallery/` holds the ten gallery
-programs: `cargo xtask check-gallery` builds them and runs their CPU twins (`--no-slang` is the
-CPU-only form; the GPU part belongs to `check-full`). The rustdoc guide is the chapters under `crates/gust/src/guide/`
+programs: `cargo xtask check-gallery` with no flag runs all three parts (the Slang part, the no-Slang part with the
+CPU twins, and the GPU part, so it needs the pinned Slang and an adapter); `--slang`, `--no-slang` and `--gpu` select
+the parts (CI runs the first two; `check-full` runs the GPU part alone). The rustdoc guide is the chapters under
+`crates/gust/src/guide/`
 and `crates/gust-wgpu/src/guide/`: prose with doctests, checked by `cargo xtask docs-check` and the doctests of
 `gust-compute` and `gust-compute-wgpu`. Nothing is published and no speed claim is made while the release hold (D189,
 D198) is in force.

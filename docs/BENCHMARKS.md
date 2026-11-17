@@ -350,9 +350,9 @@ their timing is claimed in this document.
   gate refuses: an error of CubeCL's own initialisation fails the run. CubeCL's flush policy is pinned (`tasks_max` 64,
   more than twice the largest timed batch of 16, and the default memory configuration) instead of read from
   `CUBECL_WGPU_MAX_TASKS`, and the run file records it under `versions.cubecl`.
-- Rows: `cubecl-wgpu` is the same-algorithm row, not a like-for-like one (it has its own device, an input copy inside the
-  timed sample, CubeCL's own submissions for W7, a different bounds policy and wgpu's default features, all listed
-  here): CubeCL's default checked launch, 256-wide cubes (W9 16 by 16), line size 1 and
+- Rows: `cubecl-wgpu` is the same-algorithm row, not a like-for-like one (it has its own device, an input copy inside
+  the timed sample, CubeCL's own submissions for W7, a different bounds policy and wgpu's default features, all
+  listed here): CubeCL's default checked launch, 256-wide cubes (W9 16 by 16), line size 1 and
   the algorithm of the hand WGSL of each workload. `cubecl-wgpu-tuned` is the same kernels through the unchecked launch
   and, for W1 to W3 where the length is a multiple of four, with line size 4 (one invocation per four elements); it has
   no autotune, because CubeCL's autotune applies to tunable operation sets, not to hand-launched kernels. A run file
@@ -626,10 +626,12 @@ Closed as "unexplained, not tuned".
 - An earlier quiet-window run on an RTX 5090, which the harness marks not publishable, showed GUST's 16-pass batched
   GPU time at 1.12 to 1.21 times hand WGSL's (a ratio of the two GPU times) on W1 at 1M and 4M elements and W2 at 1M,
   with `gpu_single` at parity (mostly; the single-dispatch offenders are listed under "Limitation as measured") and
-  the control at 0.99 to 1.00. Which is which: 1.12 to 1.21 is the WGSL build's range (per-run values 1.118 to 1.210
-  in the three seeds of the b1q runs, against the checked `wgsl-prebuilt`); D187 and STATUS give 1.10 to 1.24 for the
-  same three cells over both builds, because the SPIR-V build's per-run values (also against the checked
-  `wgsl-prebuilt`, before D193) run from 1.104 to 1.240.
+  the control at 0.99 to 1.00. Which is which: 1.12 to 1.21 is the WGSL build's range (the eight offending per-run
+  values of the three cells in the three seeds of the b1q runs, 1.118 to 1.210, against the checked `wgsl-prebuilt`;
+  with the one in-tolerance value, W2 1M in seed 33 at 1.033, the full per-run range is 1.033 to 1.210); D187 and
+  STATUS give 1.10 to 1.24 for the same three cells over both builds, because the SPIR-V build's eight offending
+  per-run values (also against the checked `wgsl-prebuilt`, before D193) run from 1.104 to 1.240 (with W1 1M in seed 33
+  at 1.096, the full per-run range is 1.096 to 1.240).
 - The wgpu API traces of GUST's batch and the hand batch differ in one per-pass item: GUST binds a fresh bind group in
   each pass and `wgsl-prebuilt` reuses one. `wgsl-percall` matches GUST's stream.
 - In the confirming run (seeds 11, 22, 33; on the same RTX 5090, in runs the harness marks not publishable) the gap
@@ -644,14 +646,17 @@ Closed as "unexplained, not tuned".
 **Limitation as measured.** On an RTX 5090, in runs the harness marks not publishable, the ratio of GUST's batched GPU
 time (16 dispatches) to hand WGSL's on vector-add at 1M elements is 1.22 to 1.28 in the last measurement. Over earlier
 quiet runs the ratio reached 1.12 to 1.21 on vector-add and saxpy at 1M to 4M (the WGSL build; 1.10 to 1.24 over both
-builds, as above). The ratio for single-dispatch GPU time is mostly 0.99 to 1.03, but that range leaves out the
-single-dispatch offenders of the b1q runs, listed as observed and not counted (none recurred in all three seeds with
-the control in tolerance, so by the reproducibility clause they are not counted): W3-d4 at 1M at 1.144 and 1.103 (two
-of three seeds), W3-d4 at 4M at 1.122 (one seed), W1 at 64K at 1.110 (one seed), and on the SPIR-V build W2 at 1M at
-1.121 (one seed). So `gpu_single` is at parity on most cells and not on these. The cell is bimodal for every backend
-(about 6.1 and 7.9 microseconds per dispatch on W1 1M), and the identical-kernel control moved by up to 1.13 times on the same cell. The
-excess is unexplained and not tuned. It is not in the generated kernel: running GUST's WGSL in the hand path gave 1.00
-times in a probe during m10.b0p and m10.b1x. That is not a repository check: no test or run file in the repository
+builds, as above). The ratio for single-dispatch GPU time is mostly 0.99 to 1.03 (on the SPIR-V build the W3-d16 and
+W3-d64 single-dispatch ratios are 0.67 to 0.83, see the next section), but that range leaves out the above-tolerance
+single-dispatch offenders of the b1q runs, listed as observed and not counted (none recurred in all three seeds of one
+build with the control in tolerance, so by the reproducibility clause they are not counted). On the WGSL build: W3-d4
+at 1M at 1.144 and 1.103 (two of three seeds), W3-d4 at 4M at 1.122 (one seed) and W1 at 64K at 1.110 (one seed). On
+the SPIR-V build: W3-d4 at 1M at 1.115 (one seed), W2 at 64K at 1.180 (one seed) and W2 at 1M at 1.121 (one seed). So
+W3-d4 at 1M offends in three of the six runs across both builds, and `gpu_single` is at parity on most cells and not
+on these. The cell is bimodal for every backend (about 6.1 and 7.9 microseconds per dispatch on W1 1M), and the
+identical-kernel control moved by up to 1.13 times on the same cell. The excess is unexplained and not tuned. It is
+not in the generated kernel: running GUST's WGSL in the hand path gave 1.00 times in a probe during m10.b0p (D184
+records the equivalence of the W1 WGSL texts). That is not a repository check: no test or run file in the repository
 holds it, and D188 and STATUS record the m10.b1c outcome (including the separate-device probe above), not this probe.
 
 ## An observation, beside the method: the SPIR-V route on W3
@@ -712,9 +717,10 @@ cargo xtask check-bench --functional --quick   # the correctness run on any adap
 
 ### Why the harness is its own
 
-The harness does not use criterion, divan or wgpu-profiler. criterion and divan are CPU timers: they have no paired,
-seeded cross-backend rotation, no per-sample correctness check and no quiet-window gate, which are what this method
-needs, so adopting one would gain little. `wgpu-profiler` wraps timestamp queries, and `gust-wgpu` already has its own
+The harness does not use criterion, divan or wgpu-profiler. criterion and divan time on the CPU by default
+(criterion's `iter_custom` can take a GPU span), but neither has a paired, seeded cross-backend rotation, a
+per-sample correctness check or a quiet-window gate, which are what this method needs, so adopting one would gain
+little. `wgpu-profiler` wraps timestamp queries, and `gust-wgpu` already has its own
 (the harness reads those for the GPU time). The CubeCL rows are the one place where an existing suite could tell more:
 CubeCL ships its own benchmark suite, and the rows are to be cross-checked once against it before any table is built
 from them (a follow-up in NEXT_TASKS, "M10 follow-ups"). This was reasoned from prior knowledge of those tools, not

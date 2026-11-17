@@ -1,7 +1,8 @@
 # Release checklist: publishing the GUST crates to crates.io
 
 This is the procedure for the first public release, 0.2.0 (not yet published), and the
-template for later ones. 0.1.0 was prepared on the branch `release/0.1` and was never published (D177): that procedure was not used and `release/0.1` has no tag.
+template for later ones. 0.1.0 was prepared on the branch `release/0.1` and was never published (D177): that
+procedure was not used and `release/0.1` has no tag.
 Publishing, tagging, the GitHub release and yanking are the owner's acts (D115, amended by D177); the coordinator
 prepares everything up to a green gate and the commands below. The crate names are the published ones (D48, D106):
 `gust-compute-macros`, `gust-compute`, `gust-compute-wgpu` and `cargo-gust`. This is the release checklist of the
@@ -209,6 +210,11 @@ The proof that none is left is `rg -n '0\.2\.0-dev|~0\.1' --glob '!target'`; the
   0.1.0" sentence of "Textures and samplers" (each says which release the statement was last checked for: re-check,
   then name 0.2.0), and the README's "Version" note and "Install from crates.io" sentence, which m10.r2 reworded for
   the first release (read them once);
+- the "not published yet" prose that slice m10.z added, which would otherwise ship to docs.rs saying that no usable
+  version exists: the opening paragraph of `crates/gust/src/guide/02-install-a.md` (the guide is rustdoc of
+  `gust-compute`, so docs.rs shows it for 0.2.0), the "No release commit exists yet" sentence at the start of the
+  CHANGELOG's 0.2.0 entry and the "as a record of that commit" sentences of its "Compatibility with the unpublished
+  0.1.0 line" part, and the similar "(not yet published)" and "not published" wording of this file (read them once);
 - `tests/precompiled/kernels/Cargo.toml`: the `version = "0.2.0-dev"` of its `gust` path dependency becomes `"0.2.0"`;
 - `CHANGELOG.md`: "Unreleased (0.2.0)" becomes "0.2.0" and loses its sentence about the workspace version (the
   opening, that 0.2.0 is the first public release, stays). The 0.1.0 entry stays as history and already says it was

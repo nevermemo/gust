@@ -43,8 +43,8 @@ decision of its own, not a detail of a feature.
 - **`tests/` and `gallery/`**: fixture workspaces (compile-fail cases in `tests/ui`, the differential tests, the CPU
   target and routing fixtures) and the gallery programs that this guide's listings come from.
 
-The four published packages share one version. `gust-algo` (reduce, scan, compact) lives in the repository and is not
-published.
+The four packages that are to be published (none is yet) share one version. `gust-algo` (reduce, scan, compact) lives
+in the repository and is not to be published.
 
 ## The gates
 

@@ -14,7 +14,8 @@
 //!   `slang-runtime`. The tests run once per entry (`cargo test -p <entry>`), and each entry's output is judged on its
 //!   own ([`check_entry_tests`]): none failed, no ignored test but the ones its rule names, and at least its number of
 //!   CPU-twin tests (a test whose name contains `twin`) reported `ok`, so an entry whose twin tests were ignored or
-//!   deleted fails by name instead of hiding in a total. The children run without `GUST_PROFILE`. Then the anchor check of every gallery source and the guide-listing sync check (a packaged listing
+//!   deleted fails by name instead of hiding in a total. The children run without `GUST_PROFILE`. Then the anchor
+//!   check of every gallery source and the guide-listing sync check (a packaged listing
 //!   equals the anchored region of its gallery file, both with LF line ends).
 //! - **GPU part**: `cargo run --release` per entry on an adapter; the output must contain the entry's expected line and an
 //!   `adapter:` line, which is printed. It reuses the release build of the no-Slang part when that ran before in the same
@@ -1332,7 +1333,7 @@ pub(crate) fn check_entry_tests(entry: &str, output: &str) -> Result<usize, Stri
             failed.join(", ")
         ));
     }
-    if ignored.len() != rule.ignored {
+    if ignored.len() > rule.ignored {
         return Err(format!(
             "gallery entry `{entry}`: {} ignored test(s) ({}), expected {}; its CPU-twin tests must run",
             ignored.len(),
@@ -1340,10 +1341,23 @@ pub(crate) fn check_entry_tests(entry: &str, output: &str) -> Result<usize, Stri
             rule.ignored
         ));
     }
+    if ignored.len() < rule.ignored {
+        return Err(format!(
+            "gallery entry `{entry}`: {} ignored test(s){}, expected {}; the test its rule keeps ignored (its GPU \
+             test) is missing or no longer ignored",
+            ignored.len(),
+            if ignored.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", ignored.join(", "))
+            },
+            rule.ignored
+        ));
+    }
     if passed_twins < rule.min_twin {
         return Err(format!(
-            "gallery entry `{entry}`: {passed_twins} CPU-twin test(s) (a test whose name contains `twin`) ran and passed, \
-             expected at least {}",
+            "gallery entry `{entry}`: {passed_twins} CPU-twin test(s) (a test whose name contains `twin`) ran and \
+             passed, expected at least {}",
             rule.min_twin
         ));
     }

@@ -402,17 +402,23 @@ which gate of `main` builds it (`check-examples` builds the examples but `web-ve
 `check-cpu` their twins; `check-ui` the `tests/ui` fixtures; `check-dual`, `check-cpu-target`, `check-precompiled` and
 `check-difftest` the fixture workspaces of the same names; `check-feature algo` and the Gpu suite `gust-algo`):
 
-- **94 unchanged**: no file in the crate's directory differs.
+- **88 unchanged**: no file in the crate's directory differs. (Method, recounted at the M10 close: for each of the 113
+  manifests, `git diff --name-only release/0.1 <commit> -- <the manifest's directory>` is empty. A nested crate
+  counts in its parent's directory too.)
 - **4 changed only in derived files**, source untouched: `examples/map-chain` (its committed artifacts, written again
   for Slang 2026.21), `tests/difftest/template` (its `Cargo.lock`) and the `tests/ui` crates `profile-native-artifact`
   and `profile-native-no-manifest` (one artifact file each).
-- **15 changed in a source file or a manifest.**
+- **21 changed in a source file or a manifest.**
   - Four are the B1 migration (both parts), the only edits that existing code needed: the `tests/ui` crates
     `typed-call-buffer-for-sampler`, `typed-call-buffer-for-texture`, `typed-call-sampler-for-buffer` and
     `typed-call-texture-ok` wrote a `KernelDescriptor` literal and now call `KernelDescriptor::new(..)` and add `impl
     gust::target::GpuKernel for Blur {}` (three of the `expected.txt` files only change a line number).
   - One is a version literal: `tests/precompiled/kernels` named its `gust` path dependency `0.2.0-dev` (it is `0.2.0`
     in the release); its manifest and one reflection file are also written again by the new Slang.
+  - Six are deprecation migrations of slice m10.api2a.2 (the W3 deprecations): `examples/component-pool`,
+    `examples/particle-step`, `examples/polynomial`, `examples/signal-pipeline`, `examples/vector-add` and
+    `tests/precompiled/app` moved their `create_f32_buffer`, `read_f32_buffer` and `_timed` calls to the typed
+    ones. The old calls still compile (deprecated, not removed), so these edits were not needed for 0.1.0 code to build.
   - Ten only gained things (and `tests/difftest` a re-stamped seed file): `crates/gust-algo` (the `evidence` module,
     an example, and opt-in GPU timestamps: `timed`, `Timed` and `GpuTime` report the summed GPU time of the batches
     that a closure of gust-algo calls dispatches on its thread, D194; additive; not published), `examples/web-vector-add` (an added `check-web` assertion that a subgroup

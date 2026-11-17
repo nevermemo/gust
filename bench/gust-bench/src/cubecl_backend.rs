@@ -12,8 +12,8 @@
 //! autotune or kernel cache on disk, and no `ureq` (network) in the resolved graph. See `docs/BENCHMARKS.md`.
 //!
 //! Two rows, both outside the publishable group's kill rule:
-//! - `cubecl-wgpu` (same algorithm): the default checked launch (`launch`), `CubeDim::new_1d(256)` (W9: `new_2d(16, 16)`,
-//!   the hand shader's 16 by 16), line size 1, the algorithm of the hand WGSL of each workload;
+//! - `cubecl-wgpu` (same algorithm): the default checked launch (`launch`), `CubeDim::new_1d(256)` (W9:
+//!   `new_2d(16, 16)`, the hand shader's 16 by 16), line size 1, the algorithm of the hand WGSL of each workload;
 //! - `cubecl-wgpu-tuned`: the same kernels through `launch_unchecked` (no bounds rewrite), and for W1 to W3 the line size
 //!   4 (`Vector<f32, N>` buffers, one invocation per four elements) when the length is a multiple of four.
 //!   CubeCL's autotune only applies to `Tunable` operation sets (matmul, reduce), not to a hand-launched kernel, so the
@@ -1196,8 +1196,8 @@ mod tests {
     }
 
     /// The bounds policy's claim, checked without an out-of-range access: on in-range sizes the checked launch (the
-    /// same-algorithm row) and the unchecked one (the tuned row) give the same words for the kernels both rows run with the
-    /// same operation sequence (W1, W4, the sums, W9): the clamp changes nothing in range.
+    /// same-algorithm row) and the unchecked one (the tuned row) give the same words for the kernels both rows run with
+    /// the same operation sequence (W1, W4, the sums, W9): the clamp changes nothing in range.
     #[test]
     fn checked_and_unchecked_launches_agree_on_in_range_sizes() {
         let (_gpu, ctx) = gpu_context();

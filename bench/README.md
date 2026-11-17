@@ -133,7 +133,8 @@ GUST/hand pairing (`Workload::same_kernel`, W7) is judged on its GPU-time ratios
 labelled "public `gust-algo` sum against the hand tree: an algorithm comparison, not a GUST overhead". It judges only a complete run: every other GUST cell and quantity needs a ratio, and any
 cell without one (a failed or dropped backend, a size with no GUST cell) counts in `kill_rule.unpaired`; `kill_rule.judged` is true only when `checked > 0` and `unpaired == 0`, and otherwise `c_reopened` is `null`, never `false`. `kill_rule.control` carries the same ratio for the group's control (`wgsl-percall`, or `wgsl-percall-unchecked`; same kernel text as the reference, so its distance from 1.0 is the noise floor of the method); it is a record beside the rule, not an input, and the rule's threshold and quantities are unchanged. The control is a noise floor for `gpu_single` only. For `gpu_batch_per_dispatch` it also differs from
 `wgsl-prebuilt` in the per-pass bind groups (percall builds a fresh one each pass, as GUST does; prebuilt reuses one), so its
-batch excess (1.08-1.13 on W1 1M in the m10.b1c run, a run the harness marks not publishable, held for the review) may be a real effect of that and not noise. A control that is stream-identical for
+batch excess (1.08-1.13 on W1 1M in the m10.b1c run, a run the harness marks not publishable, held for the review)
+may be a real effect of that and not noise. A control that is stream-identical for
 the batch quantity would be a second `wgsl-prebuilt` instance, or `bind_group_reuse` on; until then "control out of tolerance" voids a
 batch cell on a confounded control. A `publishable` run refuses a `--backends` list that leaves out `gust-gpu`, `wgsl-prebuilt` or `wgsl-percall`, and a `spirv` run one that leaves out `gust-gpu-spirv`, `wgsl-prebuilt-unchecked` or `wgsl-percall-unchecked` (use `--group ablation` for subsets). After every GUST cell of a `spirv-route` build the device's route events for that kernel are checked: a cell fails on any event of its own that is off the build's route, and otherwise needs the kernel's latest event over the device's life to exist and be on the route, naming only the build route (the no-event error names no event at all). That check is also written into the cell, as `route_evidence`
 (build route; the number of route events for the kernel since this cell's `prepare`, how many of those are on and off the build's
@@ -144,7 +145,7 @@ judged on the event of the pipeline it ran, the kernel's latest event, which an 
 
 **Reproducibility clause (plan R1.3-4).** Each offender in `kill_rule.offenders` carries `control_median_ratio` and
 `control_in_tolerance` for its own cell. An offender counts only when it recurs in every run of the build, with at least 3 runs of distinct
-seeds (`run_seed`; two files, or one seed twice, never count), and the group's control (`wgsl-percall`, or `wgsl-percall-unchecked` in the `spirv` group) in tolerance on that cell in each of those runs. In the `publishable` group the clause is two-sided as pre-registered (a cell more than 10 percent off in either direction in every run counts); in the `spirv` group the recurrence must also keep its direction (slower or faster), each row carries `direction`, and an offender with no direction and no ratio is `unknown` and never counts;
+seeds (`run_seed`; two files, or one seed twice, never count), and the group's control (`wgsl-percall`, or `wgsl-percall-unchecked` in the `spirv` group) in tolerance on that cell in each of those runs. In the `publishable` group the clause is two-sided as pre-registered (a cell more than 10 percent off in either direction in every run counts); in the `spirv` group the recurrence must also keep its direction (slower or faster), each row carries `direction`, and an offender with no direction and no ratio is `unknown` and never counts.
 `aggregate` writes the count to `kill_rule_reproducibility` (with the seeds, once) and a list to the report. A hit that does not
 meet this is listed, not counted. Per-point `per_run_p5_ms`, `per_run_p95_ms`, `per_run_outliers_gt_3mad` and
 `two_state_suspect` are written beside the median for the bimodal cells (a p5 or p95 missing from an old run file is `null`, never the
@@ -313,7 +314,8 @@ next to the hand WGSL. Workloads: W1, W2, W3, W4, W7 and W9 (naive). W5 and W6 a
   the rows are left out and the run file lists them under `config.backends_not_run` with the reason; naming one with
   `--backends` is then an error. Only that adapter gate refuses; an error of CubeCL's own initialisation fails the run.
   CubeCL's flush policy is pinned (`tasks_max` 64, default memory configuration) and recorded in the run file.
-- `cubecl-wgpu` is the same-algorithm row (not like-for-like: see the differences listed in docs/BENCHMARKS.md) (checked launch, 256-wide cubes, W9 16 by 16, line size 1);
+- `cubecl-wgpu` is the same-algorithm row (not like-for-like: see the differences listed in docs/BENCHMARKS.md)
+  (checked launch, 256-wide cubes, W9 16 by 16, line size 1);
   `cubecl-wgpu-tuned` uses the unchecked launch and line size 4 for W1 to W3 where the length is a multiple of four.
   Neither has autotune. Their bounds policies are in `docs/BENCHMARKS.md`, "Bounds policy".
 - The CubeCL rows have no cold-start figure. W7's GPU time is the sum of one profiling window per repeat, all closed

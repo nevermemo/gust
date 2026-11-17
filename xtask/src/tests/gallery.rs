@@ -1107,10 +1107,41 @@ fn reduce_scan_may_ignore_exactly_its_gpu_test() {
     assert!(check_entry_tests("reduce-scan", &test_output(&[twin, gpu, other])).is_err());
 }
 
+/// The functions of `text` that carry a `#[test]` attribute and whose name contains `twin`: a helper such as
+/// `on_twin` has no `#[test]` and is not counted. The attributes (and doc comments) before a `fn` line are the ones
+/// since the last line that is neither.
+fn count_twin_test_functions(text: &str) -> usize {
+    let mut is_test = false;
+    let mut count = 0;
+    for line in text.lines().map(str::trim_start) {
+        if line.starts_with("#[test]") {
+            is_test = true;
+        } else if line.starts_with("#[") || line.starts_with("///") || line.is_empty() {
+            // Another attribute or a doc comment of the same item.
+        } else {
+            if is_test && line.starts_with("fn ") {
+                let name = line["fn ".len()..].split('(').next().unwrap_or("");
+                if name.contains("twin") {
+                    count += 1;
+                }
+            }
+            is_test = false;
+        }
+    }
+    count
+}
+
+#[test]
+fn the_twin_counter_counts_test_functions_only() {
+    let text = "fn on_twin(x: u32) {}\n\n#[test]\nfn the_twin_runs() {}\n\n#[test]\n#[ignore = \"gpu\"]\n/// Doc.\nfn \
+                a_twin_gpu_run() {}\n\n#[test]\nfn other_test() {}\n\nfn pixel_on_twin() {}\n";
+    assert_eq!(count_twin_test_functions(text), 2);
+}
+
 #[test]
 fn the_rules_match_the_twin_tests_the_gallery_sources_declare() {
-    // The source of each entry has at least as many `fn ..twin..` test functions as its rule demands, and exactly the
-    // ignored attributes the rule allows (a drift guard between the table and the programs).
+    // The source of each entry has at least as many `#[test] fn ..twin..` functions as its rule demands, and
+    // exactly the ignored attributes the rule allows (a drift guard between the table and the programs).
     let root = workspace_root().expect("the repository root");
     for rule in &TWIN_RULES {
         let source = if rule.dir == "web-hello" {
@@ -1121,10 +1152,7 @@ fn the_rules_match_the_twin_tests_the_gallery_sources_declare() {
         let text = fs::read_to_string(root.join("gallery").join(rule.dir).join(source))
             .unwrap_or_else(|error| panic!("{}: {error}", rule.dir))
             .replace("\r\n", "\n");
-        let twins = text
-            .lines()
-            .filter(|line| line.trim_start().starts_with("fn ") && line.contains("twin"))
-            .count();
+        let twins = count_twin_test_functions(&text);
         assert!(
             twins >= rule.min_twin,
             "{}: {twins} twin test function(s), rule {}",

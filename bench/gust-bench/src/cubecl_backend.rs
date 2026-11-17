@@ -146,6 +146,9 @@ pub fn decide<T>(
 }
 
 /// The pinned CubeCL version the run file records, and the version the `wgpu_features` note is stated as of.
+/// Two tests (`the_recorded_cubecl_version_is_the_cargo_toml_pin` and
+/// `every_live_mention_of_the_cubecl_version_is_the_recorded_one`) keep it equal to the exact pin in `Cargo.toml`
+/// and to every version the code and the docs state.
 const CUBECL_VERSION: &str = "0.11.4";
 
 /// What a run file records about the comparator (`versions.cubecl`): the CubeCL version, the compiler it ran, and what each
@@ -853,6 +856,113 @@ mod tests {
         (guard, Rc::new(ctx))
     }
 
+    /// `CUBECL_VERSION` goes into every run file, while the real version is the exact pin in `Cargo.toml`.
+    #[test]
+    fn the_recorded_cubecl_version_is_the_cargo_toml_pin() {
+        let manifest = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
+        let line = manifest
+            .lines()
+            .find(|line| line.trim_start().starts_with("cubecl = {"))
+            .expect("Cargo.toml has a `cubecl = {` dependency line");
+        let pin = format!("version = \"={CUBECL_VERSION}\"");
+        assert!(
+            line.contains(&pin),
+            "CUBECL_VERSION is {CUBECL_VERSION:?} but the Cargo.toml line is `{}`; it must contain `{pin}`: change the \
+             const and the pin together",
+            line.trim()
+        );
+    }
+
+    /// Every live mention of the CubeCL version in the code, the manifest and the docs is the one `CUBECL_VERSION`
+    /// records. The needles are built so that this test's own source does not match them. `STATUS.md` and
+    /// `DECISIONS.md` are history and keep the version of their day, so they are not scanned. A version follows the
+    /// name after spaces, line breaks, comment prefixes, a string continuation or the mark of an exact pin; its token
+    /// runs over ASCII letters, digits, dots and hyphens (so a pre-release suffix counts), without a trailing dot or
+    /// hyphen, and ends at a quote, backtick, space, bracket or comma.
+    #[test]
+    fn every_live_mention_of_the_cubecl_version_is_the_recorded_one() {
+        let name = ["Cube", "CL"].concat();
+        let readme_pin = ["Cube", "CL is pinned `="].concat();
+        let files: [(&str, &str); 5] = [
+            (
+                "src/cubecl_backend.rs",
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/src/cubecl_backend.rs"
+                )),
+            ),
+            (
+                "src/report.rs",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/report.rs")),
+            ),
+            (
+                "Cargo.toml",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")),
+            ),
+            (
+                "bench/README.md",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../README.md")),
+            ),
+            (
+                "docs/BENCHMARKS.md",
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../docs/BENCHMARKS.md"
+                )),
+            ),
+        ];
+        let tokens_after = |text: &str, needle: &str| -> Vec<String> {
+            text.match_indices(needle)
+                .map(|(at, _)| {
+                    // Skip what can sit between the name and the version: spaces, line breaks, comment prefixes, a
+                    // string continuation and the mark of an exact pin.
+                    let mut rest = &text[at + needle.len()..];
+                    loop {
+                        let trimmed = rest.trim_start();
+                        let next = ["///", "//!", "//", "#", "\\", "`="]
+                            .iter()
+                            .find_map(|skip| trimmed.strip_prefix(skip))
+                            .unwrap_or(trimmed);
+                        if next.len() == rest.len() {
+                            break;
+                        }
+                        rest = next;
+                    }
+                    rest
+                })
+                .filter(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+                .map(|rest| {
+                    let token: String = rest
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-')
+                        .collect();
+                    token.trim_end_matches(['.', '-']).to_string()
+                })
+                .collect()
+        };
+        let mut wrong = Vec::new();
+        for (file, text) in files {
+            let mut hits = 0;
+            for needle in [&name, &readme_pin] {
+                for version in tokens_after(text, needle) {
+                    hits += 1;
+                    if version != CUBECL_VERSION {
+                        wrong.push(format!("{file}: {version}"));
+                    }
+                }
+            }
+            assert!(
+                hits > 0,
+                "{file} has no CubeCL version mention left to check; was it renamed or reworded?"
+            );
+        }
+        assert!(
+            wrong.is_empty(),
+            "CUBECL_VERSION is {CUBECL_VERSION:?} but these mentions differ (`file: version`): {wrong:?}; change them \
+             and the Cargo.toml pin together"
+        );
+    }
+
     /// The init errors of CubeCL are failures of the run, never refusals; only the adapter gate refuses.
     #[test]
     fn a_cubecl_init_error_fails_the_run_and_the_flush_policy_is_pinned() {
@@ -927,7 +1037,7 @@ mod tests {
         assert_eq!(LIKE_FOR_LIKE, "cubecl-wgpu");
         assert_eq!(TUNED, "cubecl-wgpu-tuned");
         let identity = identity();
-        assert_eq!(identity["cubecl"], "0.11.4");
+        assert_eq!(identity["cubecl"], CUBECL_VERSION);
         for id in [LIKE_FOR_LIKE, TUNED] {
             assert!(identity["rows"][id].is_string(), "{id} is described");
         }

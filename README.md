@@ -5,9 +5,9 @@ a GPU-centric ECS game engine. **Today it is a working experimental Rust → Sla
 compute subsystem**. There is no ECS,
 renderer, rustc semantic integration, or execution-graph compiler yet.
 
-> **Version.** This tree is 0.2.0, the planned first public release (D177). **Nothing is published yet:** the
-> packages are not on crates.io, and the release waits for the owner's review of the whole project (milestone M11,
-> D189, D198). A 0.1.0 was prepared on the branch `release/0.1`; it was not published and will not be, and that
+> **Version.** This tree is 0.2.0, the planned first public release (D177). **No usable version is published yet:**
+> the four package names on crates.io hold only empty 0.0.0 placeholders (D48), and the release waits for the
+> owner's review of the whole project (milestone M11, D189, D198). A 0.1.0 was prepared on the branch `release/0.1`; it was not published and will not be, and that
 > branch has no tag.
 
 Rust supplies the higher-level language and checking environment; Slang owns GPU
@@ -245,15 +245,17 @@ devices.
 
 ## Install from crates.io
 
-> **Not published yet.** The four packages below are not on crates.io. The 0.2.0 release candidate is built and
-> gated, and the release waits for the owner's review of the whole project (milestone M11, D189, D198), so the
-> `cargo add` and `cargo install` commands in this section cannot resolve them until then. This section is the
-> recipe for the day they are published; to try GUST before that, build from this repository.
+> **No usable version yet.** No version of the four packages below is usable: the names on crates.io hold only empty
+> 0.0.0 placeholders (D48), which a bare `cargo add` would fetch. The 0.2.0 release candidate is built and gated,
+> and the release waits for the owner's review of the whole project (milestone M11, D189, D198), so the `0.2`
+> requirements and `cargo install` commands in this section resolve nothing until then. This section is the recipe
+> for the day 0.2.0 is published; to try GUST before that, build from this repository (the programs in `gallery/`
+> use path dependencies on it).
 
 The two code blocks below are the recipe that `cargo xtask check-release` builds word for word from the packaged
 crates.
 
-GUST is released as four packages that always share one version (0.2.0 will be the first release; a 0.1.0 was
+GUST will be released as four packages that always share one version (0.2.0 will be the first release; a 0.1.0 was
 never published, D177):
 
 | Package | Library name | What it is |
@@ -524,8 +526,8 @@ case is `Cpu` evidence.
 ## Stability
 
 GUST is an experimental compiler, and 0.2.0 will be its first public release (D177; it is not published yet, and a
-0.1.0 was prepared and never published). This is the promise it will carry. It follows SemVer for 0.x (D111): a change that breaks existing code bumps the minor version (0.2 to 0.3),
-and a patch release only adds or fixes: a construct may be added to the `#[gpu]` language in a patch and is refused
+0.1.0 was prepared and never published). This is the promise it will carry. It follows SemVer for 0.x (D111): a change that breaks existing code bumps the minor
+version (0.2 to 0.3), and a patch release only adds or fixes: a construct may be added to the `#[gpu]` language in a patch and is refused
 only in a minor. The four packages are released together at one version and depend on each other with exact versions,
 so upgrade them together. Each release is described in [CHANGELOG](CHANGELOG.md). GUST is pre-1.0: nothing here
 promises that the API stops changing between minors, only how a change is made and announced.
@@ -567,7 +569,8 @@ not cover either:
 - the Slang text of a kernel: the content key of a precompiled artifact may change in a minor release (B4 did), while a
   patch release keeps committed artifacts valid;
 - the guide modules `gust::guide` and `gust_wgpu::guide` and the chapter modules inside them, which are the only
-  documentation-only modules: their chapter set may change, and they hold no items, only documentation;
+  documentation-only modules: their chapter set may change, and they hold nothing but empty chapter modules, only
+  documentation;
 - the `cargo xtask` commands and the evidence tiers, which belong to this repository and are not published.
 
 The minimum Rust version is 1.90 for the 0.2 line ("Minimum Rust" below). The promise is that the four crates build on
@@ -588,7 +591,8 @@ phone, may show a difference the tests have not seen ([Shapes](#shapes-grid-and-
 
 This section is for code built against the branch `release/0.1` or this repository's earlier history. It is not an
 upgrade guide for registry users: 0.1.0 was never published (D177), so 0.2.0 will be the first version on crates.io
-and there is nothing to upgrade from there. Against `release/0.1`, 0.2.0 has four breaks: B1, in two parts (the descriptor
+and there is nothing to upgrade from there.
+Against `release/0.1`, 0.2.0 has four breaks: B1, in two parts (the descriptor
 constructor and setters, and the `GpuKernel` bound), which is the last one of its kind; B2, reserved subgroup function
 names; B3, recursion refused; and B4, more renamed names. The API audit of m10.api1 adds B5 to B7 (record structs and
 `Route` marked `#[non_exhaustive]`, three more structs likewise, and two items hidden from the docs), which the
@@ -1025,6 +1029,7 @@ Map is for resident chains and compute-dense functions. For a cheap function (on
 host slices did not beat the CPU at any size measured, up to 4.2e6 elements; the planning break-even of the design study
 was about 1e7 elements.
 
+These are M7 measurements that predate the release hold (D189); the review decides whether they stay.
 Measured 2026-11-04 on an NVIDIA GeForce RTX 5090 (Vulkan) with 24 logical cores, release build with
 `-C target-cpu=native`: two runs of an out-of-repository probe (`plans/m7/probe/a2` of the work area) built against
 `ea258f9`, in a quiet window (no other build, test or GPU job of this project ran; the GPU was at 0 % before each run).
@@ -1243,15 +1248,18 @@ known-mismatch ledger.
 `bench/` is a workspace of its own and is not published: a harness that times GUST kernels against comparators on the
 same workloads. The workloads are eight families: vector add, saxpy, a Horner polynomial, a `u32` histogram, a
 particle step, a staged pipeline of six kernels, a sum and a naive matrix product, each checked on every sample
-against a reference inside a derived error bound. It times four quantities apart (end to end, a host-timed dispatch,
+against a reference, exactly where the result is integer or bit-exact and inside a derived error bound where it is
+floating point. It times four quantities apart (end to end, a host-timed dispatch,
 the GPU time of one dispatch and the GPU time per dispatch in a batch) and never mixes them in one column. The GUST
 routes it measures are the default WGSL route, the opt-in SPIR-V route (`spirv-route`), the CPU twin and the
-production `cpu` target. The comparators are rayon, hand-written
-WGSL on wgpu, CubeCL on its wgpu runtime and rust-gpu through wgpu's SPIR-V passthrough; the last two are built only
+production `cpu` target. The comparators are rayon,
+hand-written WGSL on wgpu, CubeCL on its wgpu runtime and rust-gpu through wgpu's SPIR-V passthrough; the last two are built only
 by an optional feature, and a comparator that does not build is reported as not measured. They run inside GUST's
-harness with the settings it states, not in their authors' recommended configuration. **No result table is
-published, and this README makes no speed claim**: a table needs three runs in a quiet window and the owner's
-review first (D189, D198). [docs/BENCHMARKS.md](docs/BENCHMARKS.md) has the method, the rules a result must pass and
+harness with the settings it states, not in their authors' recommended configuration. **No benchmark
+table is published, and this section makes no speed claim**: a table needs three runs in a quiet window and the
+owner's review first (D189, D198). The older measurements elsewhere in this README (the "Element-wise maps" table
+and the `gust-algo` and parallel CPU map statements) are M7 results that predate the release hold; they stay for
+now, and the review decides whether they remain (D189). [docs/BENCHMARKS.md](docs/BENCHMARKS.md) has the method, the rules a result must pass and
 the known limits, and `bench/README.md` has the commands; `cargo xtask check-bench` runs the harness's functional
 check and renders that page.
 

@@ -807,8 +807,8 @@ descriptor without a table compiles the clean text as before.
 Three parts of the repository sit beside the crates and are not part of the published surface (M10).
 
 - **`bench/`** (D179, D180) is a nested workspace of its own, not published, with its own `Cargo.lock`. It is outside
-  the root dependency graph, so its comparators (rayon, wgpu with hand-written WGSL, CubeCL, rust-gpu) never enter the
-  root lockfile, the `msrv` job, `check-arch` or `check-full`. `gust-bench` is the harness and `gust-bench-pre` the
+  the root dependency graph, so its comparator-only dependencies (rayon and CubeCL) never enter the
+  root lockfile, nor does the harness enter the `msrv` job, `check-arch` or `check-full`. `gust-bench` is the harness and `gust-bench-pre` the
   build against precompiled artifacts; `rust-gpu-shaders` holds the rust-gpu comparator's committed SPIR-V module,
   whose build needs a pinned nightly. The CubeCL and rust-gpu comparators are off-by-default features of the harness.
   Its method, rules and limits are in [BENCHMARKS](BENCHMARKS.md), and the commands in `bench/README.md`. `cargo xtask
@@ -824,7 +824,8 @@ Three parts of the repository sit beside the crates and are not part of the publ
   attached with `#[doc = include_str!]` to empty chapter modules. Every listing is a doctest or a packaged copy of an
   anchored region of a gallery program, and `check-gallery` keeps the copies identical to the regions. The chapter set
   carries no semver promise. docs.rs will host it with each release; nothing is published yet, so there is no hosted
-  copy, and `cargo doc` renders it from a checkout.
+  copy, and `cargo doc` renders it from a checkout (the links between the two guides are docs.rs addresses, which are
+  dead in a local render until the publish).
 
 ## Deliberate non-goals for this slice
 

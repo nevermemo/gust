@@ -174,14 +174,28 @@ cargo xtask check-workspace
 
 Use stable Rust, the pinned `slangc` on PATH (`cargo gust slang install` installs it;
 `GUST_SLANG_HOME` moves that install), and a Vulkan adapter. For release evidence run
-`cargo xtask check-full`: it requires SPIRV-Tools, runs every example, validates
-all exported SPIR-V files, and runs the whole `check-precompiled` and `check-web`
-(`--skip-web` leaves out the browser run and is recorded). Missing tools are blockers, not passes. Baseline versions
+`cargo xtask check-full` (its steps are in `xtask/src/verify.rs`; it requires SPIRV-Tools and a Vulkan adapter):
+the cheap checks (lint, docs-check, check-arch, check-ui); rustc and slangc versions; fmt and clippy; the workspace
+tests and the harness crate's checks; the release Slang tests and the mismatch ledger; every example's tests with
+`--include-ignored`, then each example run; the strict subgroups example; the Gpu suite under `dev+subgroups`;
+`check-dual`; every exported and golden SPIR-V validated with `spirv-val`; then `check-precompiled`, the full
+`check-release`, `check-web` and `check-difftest`; and last the GPU part of `check-gallery` (each gallery program on the
+adapter, `web-hello` in Chrome). `--skip-web` leaves out `check-web` and the gallery's browser entry; the skip is
+recorded. Missing tools are blockers, not passes. Baseline versions
 and actual results belong in `docs/development/STATUS.md`; commands alone are not evidence.
 The command overwrites `.ai/VALIDATION.json` with the latest pass/failure record;
 inspect its timestamp and scope before using it as evidence. That file is local and
 untracked, and xtask redacts the workspace root and home directory in it; copy the
 summary into `STATUS.md`. Never commit machine-specific paths: the repository is public.
+
+Other parts of the repository have their own checks. `bench/` is a workspace of its own (the benchmark harness, run
+with `GUST_PROFILE=dev`; see `bench/README.md` and `docs/BENCHMARKS.md`): `cargo xtask check-bench` runs its
+functional check and renders the page, and it never produces a speed claim by itself. `gallery/` holds the ten gallery
+programs: `cargo xtask check-gallery` builds them and runs their CPU twins (`--no-slang` is the
+CPU-only form; the GPU part belongs to `check-full`). The rustdoc guide is the chapters under `crates/gust/src/guide/`
+and `crates/gust-wgpu/src/guide/`: prose with doctests, checked by `cargo xtask docs-check` and the doctests of
+`gust-compute` and `gust-compute-wgpu`. Nothing is published and no speed claim is made while the release hold (D189,
+D198) is in force.
 
 ## Artifact and collaboration rules
 

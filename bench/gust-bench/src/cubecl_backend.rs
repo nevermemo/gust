@@ -12,7 +12,7 @@
 //! autotune or kernel cache on disk, and no `ureq` (network) in the resolved graph. See `docs/BENCHMARKS.md`.
 //!
 //! Two rows, both outside the publishable group's kill rule:
-//! - `cubecl-wgpu` (like-for-like): the default checked launch (`launch`), `CubeDim::new_1d(256)` (W9: `new_2d(16, 16)`,
+//! - `cubecl-wgpu` (same algorithm): the default checked launch (`launch`), `CubeDim::new_1d(256)` (W9: `new_2d(16, 16)`,
 //!   the hand shader's 16 by 16), line size 1, the algorithm of the hand WGSL of each workload;
 //! - `cubecl-wgpu-tuned`: the same kernels through `launch_unchecked` (no bounds rewrite), and for W1 to W3 the line size
 //!   4 (`Vector<f32, N>` buffers, one invocation per four elements) when the length is a multiple of four.
@@ -38,7 +38,7 @@ use crate::{
     workloads::{self, Inputs, WORKGROUP, Workload, hist_threads, normalize_counts},
 };
 
-/// The id of the like-for-like row.
+/// The id of the same-algorithm row (the checked launch).
 pub const LIKE_FOR_LIKE: &str = "cubecl-wgpu";
 /// The id of the tuned row.
 pub const TUNED: &str = "cubecl-wgpu-tuned";
@@ -244,7 +244,7 @@ impl CubeclContext {
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Kernels. Each is the algorithm of the hand WGSL of the workload (bench/shaders/*.wgsl), with the same guards.
-// `launch` is the like-for-like row's checked launch, `launch_unchecked` the tuned row's.
+// `launch` is the same-algorithm row's checked launch, `launch_unchecked` the tuned row's.
 // ---------------------------------------------------------------------------------------------------------------------
 
 /// W1, vector add: one invocation per element, the bound the output's own length.
@@ -684,7 +684,7 @@ impl Backend for Cubecl {
         if self.tuned {
             "CubeCL 0.11.4 kernels on its wgpu runtime (WGSL), tuned: launch_unchecked, line size 4 for W1 to W3 where n is a multiple of 4; W1 to W4, W7, W9"
         } else {
-            "CubeCL 0.11.4 kernels on its wgpu runtime (WGSL), like for like: checked launch (out-of-range index clamped), CubeDim 256 (W9 16 by 16), line size 1; W1 to W4, W7, W9"
+            "CubeCL 0.11.4 kernels on its wgpu runtime (WGSL), same algorithm: checked launch (out-of-range index clamped), CubeDim 256 (W9 16 by 16), line size 1; W1 to W4, W7, W9"
         }
     }
 
@@ -1196,7 +1196,7 @@ mod tests {
     }
 
     /// The bounds policy's claim, checked without an out-of-range access: on in-range sizes the checked launch (the
-    /// like-for-like row) and the unchecked one (the tuned row) give the same words for the kernels both rows run with the
+    /// same-algorithm row) and the unchecked one (the tuned row) give the same words for the kernels both rows run with the
     /// same operation sequence (W1, W4, the sums, W9): the clamp changes nothing in range.
     #[test]
     fn checked_and_unchecked_launches_agree_on_in_range_sizes() {

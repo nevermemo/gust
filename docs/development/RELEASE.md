@@ -1,7 +1,7 @@
 # Release checklist: publishing the GUST crates to crates.io
 
-This is the procedure for the first public release, 0.2.0, and the template for later ones. 0.1.0 was prepared on the
-branch `release/0.1` and was never published (D177): that procedure was not used and `release/0.1` has no tag.
+This is the procedure for the first public release, 0.2.0 (not yet published), and the
+template for later ones. 0.1.0 was prepared on the branch `release/0.1` and was never published (D177): that procedure was not used and `release/0.1` has no tag.
 Publishing, tagging, the GitHub release and yanking are the owner's acts (D115, amended by D177); the coordinator
 prepares everything up to a green gate and the commands below. The crate names are the published ones (D48, D106):
 `gust-compute-macros`, `gust-compute`, `gust-compute-wgpu` and `cargo-gust`. This is the release checklist of the
@@ -26,8 +26,9 @@ The owner does, in this order:
 - steps 2 to 4: `cargo login`, `cargo publish`, `cargo yank`;
 - steps 5 and 6: the post-publish consumer (the coordinator may run it for the record), the tag, the GitHub release.
 
-The coordinator then records the outcome (the m10.r3 close): docs.rs status (step 7), the report of step 8 in STATUS, the DECISIONS
-rows and the ROADMAP row MR.
+After the publish, the coordinator will record the outcome: docs.rs status (step 7), the report of step 8 in STATUS,
+the DECISIONS rows and the ROADMAP row MR. Nothing is published yet: the owner's release hold (D189, kept by D198)
+is in force, and the m10.r3 slice that would have done this is carried to the review milestone M11.
 
 Never put a registry token in the repository, in a file the agents read, in a command line, or in a chat. `cargo login`
 asks for it on the owner's terminal and stores it in the owner's cargo home.
@@ -57,6 +58,10 @@ It cannot prove that the crates.io index accepts the upload, that docs.rs builds
 has the right scope; steps 2, 3 and 7 are where those show.
 
 ## Steps
+
+The candidate `83124ad` was the gated one (full `check-full` and `check-release` passed on it), but `main` has moved
+past it and it stays unpublished under the hold. A publish therefore starts from a new candidate commit `<C>`, with a
+fresh `check-full`, a full `check-release` and a rerun of `semver` on that commit (NEXT_TASKS, "M10 follow-ups").
 
 Run from a clean checkout of `<C>`, not from a worktree that lanes use. Step 1 needs the pinned Slang and the reflection
 helper, and `cargo xtask` does not read the managed cache for either: the `slangc` of the pin must be first on `PATH`,
@@ -153,7 +158,8 @@ crates.io keeps every uploaded version forever: nothing published can be retract
 
 ## Release lines
 
-0.2.0 is the first public release (D177, owner, 2026-11-14). 0.1.0 is never published: `release/0.1` stays a branch
+0.2.0 is to be the first public release (D177, owner, 2026-11-14), and it is not published: the release hold D189,
+kept by D198, stops every publish until the owner lifts it. 0.1.0 is never published: `release/0.1` stays a branch
 with no tag and no `v0.1.0`, and nothing below uses it except as the semver baseline until 0.2.0 is on the registry.
 
 - **Before the publish**, `main` is the development line (`0.2.0-dev` until the release candidate merges, `0.2.0`

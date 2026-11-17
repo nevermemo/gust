@@ -686,7 +686,25 @@ not rows of docs/DECISIONS.md.
     The first non-publishable samples suggest it will. Watch the first publishable run for it; what a W7 verdict means
     is a review item (D195);
   - the Radeon 890M table (the coordinator's; only a functional pass with no timing exists), then `check-bench --render`
-    and the README paragraph's table text. W8 (inclusive prefix sum) and the tiled W9 are not built.
+    and the README paragraph's table text. W8 (inclusive prefix sum) and the tiled W9 are not built;
+  - before b5, the build identity of a run (Codex sanity check, m10.z): the publishable rule's "release build" test is
+    `!cfg!(debug_assertions)` (`bench/gust-bench/src/main.rs` near line 893, `meta.rs` near 443, `report.rs` near 415),
+    which an unoptimised build with debug assertions switched off also satisfies (for example a dev profile with
+    `CARGO_PROFILE_DEV_DEBUG_ASSERTIONS=false`). Record the build profile, the opt-level and the compiler identity in
+    the run file, and bind the aggregation to them (every run of one aggregate must agree, and a non-release profile
+    or opt-level is not publishable);
+  - before b5, test the quiet rule against a known WSL or vLLM load (Opus sanity check): `vmmem` was never observed in
+    any run, so whether the sampler sees WSL's CPU load is unproven. Start a known load (a vLLM or WSL job), run the
+    sampler, and record whether the window is judged not quiet;
+  - before any table that shows a CubeCL row, cross-check the CubeCL rows once against CubeCL's own benchmark suite (the
+    "Why the harness is its own" paragraph of `docs/BENCHMARKS.md` says why no timing library is adopted);
+  - a risk to carry: the sampler reads Windows counters only, so a run on any other operating system can never be
+    publishable (Fable and Opus sanity checks). A Linux or macOS sampler, or a decision that publishable runs are
+    Windows-only, belongs to the review;
+  - the single-dispatch observations of the b1q runs (Opus sanity check; listed in `docs/BENCHMARKS.md`, "Known
+    outcome: the batch path"): W3-d4 at 1M elements at 1.144 and 1.103 (two of three seeds) and at 4M at 1.122, W1 at
+    64K at 1.110, and on the spirv build W2 at 1M at 1.121. They are listed, not counted (they did not recur in 3/3
+    seeds); re-read them together with D188 before a published `gpu_single` table.
 - D189's held items, for the review (rulings become new decision rows): the project's self-description (pack V1;
   README's opening paragraph and `docs/VISION.md` still describe the engine direction); the source vocabulary (pack D1:
   Slang-shaped and Rust-shaped spellings); the `spirv-route` Cargo feature's unification across a dependency graph (pack

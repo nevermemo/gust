@@ -11,7 +11,10 @@
 //!   variable that names Slang, no `PATH` folder with `slangc` or `gust-slang-reflect`, `GUST_SLANG_HOME` an empty
 //!   directory so the default cache is not consulted), which is asserted Slang-free, including a lookup of `slangc` by the
 //!   shell; the entry and the library crates are cleaned first, and `cargo tree -e features` must show no
-//!   `slang-runtime`. The children run without `GUST_PROFILE`. Then the anchor check of every gallery source and the guide-listing sync check (a packaged listing
+//!   `slang-runtime`. The tests run once per entry (`cargo test -p <entry>`), and each entry's output is judged on its
+//!   own ([`check_entry_tests`]): none failed, no ignored test but the ones its rule names, and at least its number of
+//!   CPU-twin tests (a test whose name contains `twin`) reported `ok`, so an entry whose twin tests were ignored or
+//!   deleted fails by name instead of hiding in a total. The children run without `GUST_PROFILE`. Then the anchor check of every gallery source and the guide-listing sync check (a packaged listing
 //!   equals the anchored region of its gallery file, both with LF line ends).
 //! - **GPU part**: `cargo run --release` per entry on an adapter; the output must contain the entry's expected line and an
 //!   `adapter:` line, which is printed. It reuses the release build of the no-Slang part when that ran before in the same
@@ -1195,14 +1198,29 @@ fn no_slang_part(root: &Path) -> Result<String, String> {
             entry.dir
         ));
     }
-    let mut test = no_slang_cargo(&gallery, &target, &environment)?;
-    test.args(["test", "--locked", "--workspace"]);
-    let done = require(exec(test, "cargo test --locked (no Slang)")?, "cargo test")?;
-    let passed = crate::process::sum_test_results(&done.stdout);
-    if passed.passed == 0 {
-        return Err("cargo test ran no test in the gallery".to_owned());
+    // One call per entry, so that each entry's tests are judged on their own (a total would let one entry lose its twin
+    // tests while the others still pass).
+    let mut total = 0;
+    for entry in &ENTRIES {
+        let mut test = no_slang_cargo(&gallery, &target, &environment)?;
+        test.args(["test", "--locked", "-p", entry.dir]);
+        let label = format!("cargo test --locked -p {} (no Slang)", entry.dir);
+        let done = require(exec(test, &label)?, &label)?;
+        let passed = crate::process::sum_test_results(&done.stdout);
+        if passed.passed == 0 {
+            return Err(format!(
+                "cargo test ran no test in gallery entry `{}`",
+                entry.dir
+            ));
+        }
+        let twins = check_entry_tests(entry.dir, &done.stdout)?;
+        total += passed.passed;
+        lines.push(format!(
+            "{}: {} test(s) passed, {twins} of them CPU-twin tests",
+            entry.dir, passed.passed
+        ));
     }
-    lines.push(format!("cargo test: {} test(s) passed", passed.passed));
+    lines.push(format!("cargo test: {total} test(s) passed"));
     let (files, anchors) = check_gallery_anchors(root)?;
     lines.push(format!(
         "anchors: {anchors} in {files} source file(s), all well formed"
@@ -1212,6 +1230,124 @@ fn no_slang_part(root: &Path) -> Result<String, String> {
         "guide listings: {listings} listings, all byte-identical to their anchored regions"
     ));
     Ok(lines.join("\n"))
+}
+
+/// What the no-Slang part requires of one entry's tests (`cargo test -p <dir>`): the least number of CPU-twin tests (a
+/// test whose name contains `twin`) that must run and pass, and the exact number of ignored tests. The gallery promises
+/// that every entry's program is checked against a CPU twin without a GPU, so an entry may not lose its twin tests,
+/// whatever the total says. The one ignored test of the gallery is the GPU test of `reduce-scan` (it needs an adapter
+/// and runs in the GPU part). A new twin test raises nothing; a new entry needs a rule (a unit test compares the list
+/// with [`ENTRIES`]).
+pub(crate) struct TwinRule {
+    pub(crate) dir: &'static str,
+    pub(crate) min_twin: usize,
+    pub(crate) ignored: usize,
+}
+
+/// One [`TwinRule`] per entry of [`ENTRIES`], in the same order.
+pub(crate) const TWIN_RULES: [TwinRule; 10] = [
+    TwinRule {
+        dir: "hello-gust",
+        min_twin: 2,
+        ignored: 0,
+    },
+    TwinRule {
+        dir: "saxpy-uniform",
+        min_twin: 3,
+        ignored: 0,
+    },
+    TwinRule {
+        dir: "histogram",
+        min_twin: 2,
+        ignored: 0,
+    },
+    TwinRule {
+        dir: "particles",
+        min_twin: 2,
+        ignored: 0,
+    },
+    TwinRule {
+        dir: "image-threshold",
+        min_twin: 3,
+        ignored: 0,
+    },
+    TwinRule {
+        dir: "reduce-scan",
+        min_twin: 1,
+        ignored: 1,
+    },
+    TwinRule {
+        dir: "state-machine",
+        min_twin: 2,
+        ignored: 0,
+    },
+    TwinRule {
+        dir: "routed",
+        min_twin: 2,
+        ignored: 0,
+    },
+    TwinRule {
+        dir: "variants",
+        min_twin: 2,
+        ignored: 0,
+    },
+    TwinRule {
+        dir: "web-hello",
+        min_twin: 2,
+        ignored: 0,
+    },
+];
+
+/// Judges the standard output of `cargo test -p <entry>` for one entry against its [`TwinRule`]: returns the number of
+/// twin tests that passed, or an error that names the entry. Reads the `test NAME ... STATUS` lines of libtest.
+pub(crate) fn check_entry_tests(entry: &str, output: &str) -> Result<usize, String> {
+    let rule = TWIN_RULES
+        .iter()
+        .find(|rule| rule.dir == entry)
+        .ok_or_else(|| {
+            format!("gallery entry `{entry}` has no test rule (add one to TWIN_RULES)")
+        })?;
+    let (mut passed_twins, mut failed, mut ignored) = (0_usize, Vec::new(), Vec::new());
+    for line in output.lines() {
+        let Some(rest) = line.trim().strip_prefix("test ") else {
+            continue;
+        };
+        let Some((name, status)) = rest.rsplit_once(" ... ") else {
+            continue;
+        };
+        let status = status.trim();
+        if status == "ok" {
+            if name.contains("twin") {
+                passed_twins += 1;
+            }
+        } else if status.starts_with("FAILED") {
+            failed.push(name.to_owned());
+        } else if status.starts_with("ignored") {
+            ignored.push(name.to_owned());
+        }
+    }
+    if !failed.is_empty() {
+        return Err(format!(
+            "gallery entry `{entry}`: test(s) failed: {}",
+            failed.join(", ")
+        ));
+    }
+    if ignored.len() != rule.ignored {
+        return Err(format!(
+            "gallery entry `{entry}`: {} ignored test(s) ({}), expected {}; its CPU-twin tests must run",
+            ignored.len(),
+            ignored.join(", "),
+            rule.ignored
+        ));
+    }
+    if passed_twins < rule.min_twin {
+        return Err(format!(
+            "gallery entry `{entry}`: {passed_twins} CPU-twin test(s) (a test whose name contains `twin`) ran and passed, \
+             expected at least {}",
+            rule.min_twin
+        ));
+    }
+    Ok(passed_twins)
 }
 
 /// What an entry's output must contain: its expected line, as a whole line.

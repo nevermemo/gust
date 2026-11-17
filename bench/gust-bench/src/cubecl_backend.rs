@@ -146,7 +146,8 @@ pub fn decide<T>(
 }
 
 /// The pinned CubeCL version the run file records, and the version the `wgpu_features` note is stated as of.
-/// A test (`the_recorded_cubecl_version_is_the_cargo_toml_pin`) keeps it equal to the exact pin in `Cargo.toml`.
+/// Two tests (`the_recorded_cubecl_version_is_the_cargo_toml_pin`, `every_live_mention_of_the_cubecl_version_is_the_recorded_one`)
+/// keep it equal to the exact pin in `Cargo.toml` and to every version the code and the docs state.
 const CUBECL_VERSION: &str = "0.11.4";
 
 /// What a run file records about the comparator (`versions.cubecl`): the CubeCL version, the compiler it ran, and what each
@@ -860,14 +861,87 @@ mod tests {
         let manifest = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
         let line = manifest
             .lines()
-            .find(|line| line.trim_start().starts_with("cubecl = "))
-            .expect("Cargo.toml has a `cubecl = ` dependency line");
+            .find(|line| line.trim_start().starts_with("cubecl = {"))
+            .expect("Cargo.toml has a `cubecl = {` dependency line");
         let pin = format!("version = \"={CUBECL_VERSION}\"");
         assert!(
             line.contains(&pin),
             "CUBECL_VERSION is {CUBECL_VERSION:?} but the Cargo.toml line is `{}`; it must contain `{pin}`: change the \
              const and the pin together",
             line.trim()
+        );
+    }
+
+    /// Every live mention of the CubeCL version in the code, the manifest and the docs is the one `CUBECL_VERSION`
+    /// records. The needles are built so that this test's own source does not match them. `STATUS.md` and
+    /// `DECISIONS.md` are history and keep the version of their day, so they are not scanned.
+    #[test]
+    fn every_live_mention_of_the_cubecl_version_is_the_recorded_one() {
+        let name_then_space = ["CubeCL", " "].concat();
+        let name_then_pin = ["CubeCL", " `="].concat();
+        let pinned_then_pin = ["pinned", " `="].concat();
+        let files: [(&str, &str); 5] = [
+            (
+                "src/cubecl_backend.rs",
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/src/cubecl_backend.rs"
+                )),
+            ),
+            (
+                "src/report.rs",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/report.rs")),
+            ),
+            (
+                "Cargo.toml",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")),
+            ),
+            (
+                "bench/README.md",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../README.md")),
+            ),
+            (
+                "docs/BENCHMARKS.md",
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../docs/BENCHMARKS.md"
+                )),
+            ),
+        ];
+        // The version token after each needle that is followed by a digit: digits and dots, without a trailing dot.
+        let tokens_after = |text: &str, needle: &str| -> Vec<String> {
+            text.match_indices(needle)
+                .map(|(at, _)| &text[at + needle.len()..])
+                .filter(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+                .map(|rest| {
+                    let token: String = rest
+                        .chars()
+                        .take_while(|c| c.is_ascii_digit() || *c == '.')
+                        .collect();
+                    token.trim_end_matches('.').to_string()
+                })
+                .collect()
+        };
+        let mut wrong = Vec::new();
+        for (file, text) in files {
+            let mut hits = 0;
+            for needle in [&name_then_space, &name_then_pin, &pinned_then_pin] {
+                for version in tokens_after(text, needle) {
+                    hits += 1;
+                    if version != CUBECL_VERSION {
+                        wrong.push(format!("{file}: {version}"));
+                    }
+                }
+            }
+            assert!(
+                hits > 0,
+                "{file} has no CubeCL version mention left to check; was it renamed or reworded?"
+            );
+        }
+        assert!(
+            wrong.is_empty(),
+            "CUBECL_VERSION is {CUBECL_VERSION:?} but these mentions differ (`file: version`): {wrong:?}; change them \
+             and the Cargo.toml pin together"
         );
     }
 
@@ -945,7 +1019,7 @@ mod tests {
         assert_eq!(LIKE_FOR_LIKE, "cubecl-wgpu");
         assert_eq!(TUNED, "cubecl-wgpu-tuned");
         let identity = identity();
-        assert_eq!(identity["cubecl"], "0.11.4");
+        assert_eq!(identity["cubecl"], CUBECL_VERSION);
         for id in [LIKE_FOR_LIKE, TUNED] {
             assert!(identity["rows"][id].is_string(), "{id} is described");
         }

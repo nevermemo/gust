@@ -592,11 +592,12 @@ phone, may show a difference the tests have not seen ([Shapes](#shapes-grid-and-
 
 This section is for code built against the branch `release/0.1` or this repository's earlier history. It is not an
 upgrade guide for registry users: 0.1.0 was never published (D177), so 0.2.0 will be the first version on crates.io
-and there is nothing to upgrade from there. Against `release/0.1`, 0.2.0 has four breaks: B1, in two parts (the
-descriptor constructor and setters, and the `GpuKernel` bound), which is the last one of its kind; B2, reserved subgroup
-function names; B3, recursion refused; and B4, more renamed names. The API audit of m10.api1 adds B5 to B7 (record
-structs and `Route` marked `#[non_exhaustive]`, three more structs likewise, and two items hidden from the docs), which
-the [CHANGELOG](CHANGELOG.md) lists with their migrations. The rest of M8 and M9 only adds (the CHANGELOG has the full
+and there is nothing to upgrade from there. Against `release/0.1`, 0.2.0 has seven listed breaks, B1 to B7. B1 to B4
+came with M8 and M9: B1, in two parts (the descriptor constructor and setters, and the `GpuKernel` bound), which is the
+last one of its kind; B2, reserved subgroup function names; B3, recursion refused; and B4, more renamed names. The API
+audit of m10.api1 added B5 to B7 (record structs and `Route` marked `#[non_exhaustive]`, three more structs likewise,
+and two items hidden from the docs). The [CHANGELOG](CHANGELOG.md) lists all seven with their
+migrations. The rest of M8 and M9 only adds (the CHANGELOG has the full
 list; the `semver` CI job covers the public API against that branch).
 
 - **B1, part 1: `KernelDescriptor` is `#[non_exhaustive]`.** A struct literal, or a struct update from a base value, no
@@ -1259,7 +1260,9 @@ GUST's harness with the settings it states, not in their authors' recommended co
 table is published, and this section makes no speed claim**: a table needs three runs in a quiet window and the
 owner's review first (D189, D198). The older measurements elsewhere in this README (the "Element-wise maps" table,
 the `gust-algo` and parallel CPU map statements, the subgroup form "not faster" statements and the lockstep twin
-timing) are M7 and M8 results that predate the release hold; they stay for
+timing) are M7 and M8 results that predate the release hold, and so are the W3 figures in
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md) ("An observation, beside the method": the SPIR-V route at 0.80 and 0.70 of
+hand WGSL, and the word "faster" there); they stay for
 now, and the review decides whether they remain (D189). [docs/BENCHMARKS.md](docs/BENCHMARKS.md) has the method, the
 rules a result must pass and the known limits, and `bench/README.md` has the commands; `cargo xtask check-bench` runs
 the harness's functional check and renders that page.

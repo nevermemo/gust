@@ -5,11 +5,11 @@ use std::{
 };
 
 use super::{
-    ENTRIES, LISTINGS, Listing, Parts, WEB_HELLO, adapter_name, anchor_names, anchored_region,
-    browser_skipped_line, check_listings, folder_holds, lf_line_ends, listing_matches,
-    no_slang_environment, output_has_line, required_files, shared_folder_problems,
-    slang_home_problem, slangc_cannot_be_found, tail, tree_difference, tree_has_slang_runtime,
-    workspace_members,
+    ENTRIES, LISTINGS, Listing, Parts, TWIN_RULES, WEB_HELLO, adapter_name, anchor_names,
+    anchored_region, browser_skipped_line, check_entry_tests, check_listings, folder_holds,
+    lf_line_ends, listing_matches, no_slang_environment, output_has_line, required_files,
+    shared_folder_problems, slang_home_problem, slangc_cannot_be_found, tail, tree_difference,
+    tree_has_slang_runtime, workspace_members,
 };
 use crate::{
     precompiled::{StripReport, child_environment, directory_has_slang_tool, slang_free_problems},
@@ -992,4 +992,174 @@ fn the_browser_build_of_the_gallery_clears_the_flag_variables_and_check_web_clea
         ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"]
     );
     assert!(crate::web::WEB_VECTOR_ADD.cleared_env.is_empty());
+}
+
+/// A libtest output with the given `(name, status)` lines.
+fn test_output(lines: &[(&str, &str)]) -> String {
+    let mut text = format!("running {} tests\n", lines.len());
+    for (name, status) in lines {
+        text.push_str(&format!("test {name} ... {status}\n"));
+    }
+    text.push_str("\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n");
+    text
+}
+
+#[test]
+fn every_entry_has_one_twin_rule_in_the_same_order() {
+    let entries = ENTRIES.iter().map(|entry| entry.dir).collect::<Vec<_>>();
+    let rules = TWIN_RULES.iter().map(|rule| rule.dir).collect::<Vec<_>>();
+    assert_eq!(entries, rules);
+    assert!(TWIN_RULES.iter().all(|rule| rule.min_twin >= 1));
+}
+
+#[test]
+fn an_entry_whose_twin_tests_all_pass_is_judged_ok_and_the_other_tests_do_not_count() {
+    let output = test_output(&[
+        ("tests::the_twin_matches_the_program_values", "ok"),
+        ("tests::the_twin_matches_the_host_reference", "ok"),
+        ("tests::some_other_test", "ok"),
+    ]);
+    assert_eq!(check_entry_tests("hello-gust", &output), Ok(2));
+}
+
+#[test]
+fn an_entry_with_an_ignored_twin_test_is_refused_and_named() {
+    let output = test_output(&[
+        ("tests::the_twin_matches_the_program_values", "ok"),
+        ("tests::the_twin_matches_the_host_reference", "ignored"),
+        ("tests::some_other_test", "ok"),
+    ]);
+    let error = check_entry_tests("hello-gust", &output).unwrap_err();
+    assert!(error.contains("`hello-gust`"), "{error}");
+    assert!(error.contains("1 ignored"), "{error}");
+    assert!(
+        error.contains("the_twin_matches_the_host_reference"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_entry_with_no_twin_test_at_all_is_refused_and_named() {
+    let output = test_output(&[("tests::some_other_test", "ok")]);
+    let error = check_entry_tests("histogram", &output).unwrap_err();
+    assert!(error.contains("`histogram`"), "{error}");
+    assert!(error.contains("0 CPU-twin"), "{error}");
+    let empty = test_output(&[]);
+    let error = check_entry_tests("histogram", &empty).unwrap_err();
+    assert!(
+        error.contains("`histogram`") && error.contains("0 CPU-twin"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_entry_that_lost_one_twin_test_is_refused_even_when_others_pass() {
+    // `image-threshold` has three twin tests (text, pixel and grid); two ran.
+    let output = test_output(&[
+        ("tests::the_twin_matches_hand_computed_values", "ok"),
+        (
+            "tests::the_pixel_twin_matches_the_host_reference_exactly",
+            "ok",
+        ),
+    ]);
+    let error = check_entry_tests("image-threshold", &output).unwrap_err();
+    assert!(
+        error.contains("2 CPU-twin") && error.contains("at least 3"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_failed_test_and_an_unknown_entry_are_errors() {
+    let output = test_output(&[
+        ("tests::the_twin_matches_the_program_values", "FAILED"),
+        ("tests::the_twin_matches_the_host_reference", "ok"),
+    ]);
+    let error = check_entry_tests("hello-gust", &output).unwrap_err();
+    assert!(
+        error.contains("failed") && error.contains("the_twin_matches_the_program_values"),
+        "{error}"
+    );
+    assert!(
+        check_entry_tests("no-such-entry", &output)
+            .unwrap_err()
+            .contains("no test rule")
+    );
+}
+
+#[test]
+fn reduce_scan_may_ignore_exactly_its_gpu_test() {
+    let gpu = (
+        "tests::the_gpu_matches_the_host_references_exactly",
+        "ignored, needs a Vulkan compute adapter",
+    );
+    let twin = (
+        "tests::the_add_offsets_twin_completes_the_host_scan_exactly",
+        "ok",
+    );
+    assert_eq!(
+        check_entry_tests("reduce-scan", &test_output(&[twin, gpu])),
+        Ok(1)
+    );
+    // Without its ignored GPU test, or with a second ignored test, the rule is not met.
+    assert!(check_entry_tests("reduce-scan", &test_output(&[twin])).is_err());
+    let other = ("tests::another", "ignored");
+    assert!(check_entry_tests("reduce-scan", &test_output(&[twin, gpu, other])).is_err());
+}
+
+/// The functions of `text` that carry a `#[test]` attribute and whose name contains `twin`: a helper such as
+/// `on_twin` has no `#[test]` and is not counted. The attributes (and doc comments) before a `fn` line are the ones
+/// since the last line that is neither.
+fn count_twin_test_functions(text: &str) -> usize {
+    let mut is_test = false;
+    let mut count = 0;
+    for line in text.lines().map(str::trim_start) {
+        if line.starts_with("#[test]") {
+            is_test = true;
+        } else if line.starts_with("#[") || line.starts_with("///") || line.is_empty() {
+            // Another attribute or a doc comment of the same item.
+        } else {
+            if is_test && line.starts_with("fn ") {
+                let name = line["fn ".len()..].split('(').next().unwrap_or("");
+                if name.contains("twin") {
+                    count += 1;
+                }
+            }
+            is_test = false;
+        }
+    }
+    count
+}
+
+#[test]
+fn the_twin_counter_counts_test_functions_only() {
+    let text = "fn on_twin(x: u32) {}\n\n#[test]\nfn the_twin_runs() {}\n\n#[test]\n#[ignore = \"gpu\"]\n/// Doc.\nfn \
+                a_twin_gpu_run() {}\n\n#[test]\nfn other_test() {}\n\nfn pixel_on_twin() {}\n";
+    assert_eq!(count_twin_test_functions(text), 2);
+}
+
+#[test]
+fn the_rules_match_the_twin_tests_the_gallery_sources_declare() {
+    // The source of each entry has at least as many `#[test] fn ..twin..` functions as its rule demands, and
+    // exactly the ignored attributes the rule allows (a drift guard between the table and the programs).
+    let root = workspace_root().expect("the repository root");
+    for rule in &TWIN_RULES {
+        let source = if rule.dir == "web-hello" {
+            "src/lib.rs"
+        } else {
+            "src/main.rs"
+        };
+        let text = fs::read_to_string(root.join("gallery").join(rule.dir).join(source))
+            .unwrap_or_else(|error| panic!("{}: {error}", rule.dir))
+            .replace("\r\n", "\n");
+        let twins = count_twin_test_functions(&text);
+        assert!(
+            twins >= rule.min_twin,
+            "{}: {twins} twin test function(s), rule {}",
+            rule.dir,
+            rule.min_twin
+        );
+        let ignored = text.matches("#[ignore").count();
+        assert_eq!(ignored, rule.ignored, "{}: ignored attributes", rule.dir);
+    }
 }

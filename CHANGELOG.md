@@ -12,9 +12,10 @@ review of the whole project (milestone M11; D189, D198). A 0.1.0 was prepared on
 published: it has no tag and is not on crates.io, so there is nothing to upgrade from, and a reader who meets 0.2.0 on
 crates.io can skip "Changed, and may break code written for the unpublished 0.1.0 line" and "Compatibility with the
 unpublished 0.1.0 line" below. Those two parts are kept for this repository's own fixtures and for anyone who built
-from `release/0.1`. This list is what the milestones M8, M9 and M10 merged, up to the release commit.
-Against `release/0.1` the tree has four listed breaks, and the API audit of m10.api1 adds B5 to B7 (below; they break
-no released version, because none exists). B1, below, in two
+from `release/0.1`. This list describes `main` as of the M10 close: what the milestones M8, M9 and M10 merged. No
+release commit exists yet, and the semver report below will be rerun on the commit that is published.
+Against `release/0.1` the tree has seven listed breaks, B1 to B7: B1 to B4 came with M8 and M9, and the API audit of
+m10.api1 added B5 to B7 (below; they break no released version, because none exists). B1, below, in two
 parts (the descriptor constructor and setters, and the `GpuKernel` bound), is the last of its kind: the descriptor is
 `#[non_exhaustive]` from now on. B2 is a function name in a `#[gpu]` module that is now reserved (the 21 subgroup
 operations). B3 is that recursion is refused (`GUST-E0120`). B4 is that more names are renamed in the emitted Slang,
@@ -380,8 +381,9 @@ form that was written by hand would refuse the form a published crate carries. T
 
 The `semver` job of CI compares `gust-compute` and `gust-compute-wgpu` with the branch `release/0.1` (the unpublished
 0.1.0; it is the baseline until 0.2.0 is on crates.io) with `cargo-semver-checks` 0.51.0, `--release-type patch`. On
-the release candidate (`ci.yml` run 43719222853, job `semver`, at `9895659`; the job treats its findings as expected and
-stays green; the commit after it changed this record only, so the counts hold), the job found:
+the commit `9895659` (`ci.yml` run 43719222853, job `semver`; the job treats its findings as expected and stays green;
+the commit after it changed this record only, so the counts hold), the job found, as a record of that commit and not of
+the commit that will be published (the semver job will be run again on that one):
 
 - `gust-compute`: 229 checks, 228 passed, 31 skipped, 1 failed: `struct_marked_non_exhaustive` for `KernelDescriptor`
   (B1), `ModuleDescriptor`, `Artifact` and `Verified` (B6). The tool says a new major version is required (for 0.x,
@@ -400,17 +402,23 @@ which gate of `main` builds it (`check-examples` builds the examples but `web-ve
 `check-cpu` their twins; `check-ui` the `tests/ui` fixtures; `check-dual`, `check-cpu-target`, `check-precompiled` and
 `check-difftest` the fixture workspaces of the same names; `check-feature algo` and the Gpu suite `gust-algo`):
 
-- **94 unchanged**: no file in the crate's directory differs.
+- **88 unchanged**: no file in the crate's directory differs. (Method, recounted at the M10 close: for each of the 113
+  manifests, `git diff --name-only release/0.1 <commit> -- <the manifest's directory>` is empty. A nested crate
+  counts in its parent's directory too.)
 - **4 changed only in derived files**, source untouched: `examples/map-chain` (its committed artifacts, written again
   for Slang 2026.21), `tests/difftest/template` (its `Cargo.lock`) and the `tests/ui` crates `profile-native-artifact`
   and `profile-native-no-manifest` (one artifact file each).
-- **15 changed in a source file or a manifest.**
+- **21 changed in a source file or a manifest.**
   - Four are the B1 migration (both parts), the only edits that existing code needed: the `tests/ui` crates
     `typed-call-buffer-for-sampler`, `typed-call-buffer-for-texture`, `typed-call-sampler-for-buffer` and
     `typed-call-texture-ok` wrote a `KernelDescriptor` literal and now call `KernelDescriptor::new(..)` and add `impl
     gust::target::GpuKernel for Blur {}` (three of the `expected.txt` files only change a line number).
   - One is a version literal: `tests/precompiled/kernels` named its `gust` path dependency `0.2.0-dev` (it is `0.2.0`
     in the release); its manifest and one reflection file are also written again by the new Slang.
+  - Six are deprecation migrations of slice m10.api2a.2 (the W3 deprecations): `examples/component-pool`,
+    `examples/particle-step`, `examples/polynomial`, `examples/signal-pipeline`, `examples/vector-add` and
+    `tests/precompiled/app` moved their `create_f32_buffer`, `read_f32_buffer` and `_timed` calls to the typed
+    ones. The old calls still compile (deprecated, not removed), so these edits were not needed for 0.1.0 code to build.
   - Ten only gained things (and `tests/difftest` a re-stamped seed file): `crates/gust-algo` (the `evidence` module,
     an example, and opt-in GPU timestamps: `timed`, `Timed` and `GpuTime` report the summed GPU time of the batches
     that a closure of gust-algo calls dispatches on its thread, D194; additive; not published), `examples/web-vector-add` (an added `check-web` assertion that a subgroup

@@ -1,6 +1,11 @@
 # Install and the first program
 
-GUST is published as four packages that always share one version:
+**No usable version of GUST is published yet.** The four package names on crates.io hold only empty 0.0.0
+placeholders, and the first release, 0.2.0, waits for the owner's review of the whole project. Until then, build from
+the repository (its `gallery/` programs use path dependencies). The commands below are the recipe for the day 0.2.0 is
+published; before then a bare `cargo add` fetches only the empty 0.0.0 placeholders.
+
+GUST will be released as four packages that always share one version:
 
 | Package | Library name | What it is |
 | --- | --- | --- |
@@ -11,9 +16,9 @@ GUST is published as four packages that always share one version:
 
 The package name and the library name differ, so you add one and write the other: `cargo add gust-compute
 gust-compute-wgpu`, then `use gust::gpu;` and `use gust_wgpu::...` in the code. Do not run `cargo add gust`: that name
-belongs to an unrelated crate. From crates.io a requirement such as `0.2` is enough. A pre-release (a `-dev` version
-taken by git or path, say) is not matched by `0.2`, so where such a dependency line carries a `version` key, name the
-pre-release in full; the library crates pin each other to one exact version.
+belongs to an unrelated crate. Once 0.2.0 is on crates.io, a requirement such as `0.2` is enough. A pre-release (a
+`-dev` version taken by git or path, say) is not matched by `0.2`, so where such a dependency line carries a `version`
+key, name the pre-release in full; the library crates pin each other to one exact version.
 
 A kernel runs in one of two ways. During development it is compiled at run time through Slang, which needs the pinned
 Slang release and a native helper. In a release build it was compiled ahead of time by `cargo gust build` and is

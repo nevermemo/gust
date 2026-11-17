@@ -802,6 +802,31 @@ used by `slang::compile*` and by both reflection paths; the exported `.slang`
 (`write_source`, `KernelDescriptor::slang_source`) never contains a directive. A
 descriptor without a table compiles the clean text as before.
 
+## Benchmarks, gallery and guide
+
+Three parts of the repository sit beside the crates and are not part of the published surface (M10).
+
+- **`bench/`** (D179, D180) is a nested workspace of its own, not published, with its own `Cargo.lock`. It is outside
+  the root dependency graph, so its comparator-only dependencies (rayon and CubeCL) never enter the
+  root lockfile, nor does the harness enter the `msrv` job, `check-arch` or `check-full`. `gust-bench` is the harness
+  and `gust-bench-pre` the build against precompiled artifacts; `rust-gpu-shaders` holds the rust-gpu comparator's
+  committed SPIR-V module, whose build needs a pinned nightly. The CubeCL and rust-gpu comparators are off-by-default
+  features of the harness. Its method, rules and limits are in [BENCHMARKS](BENCHMARKS.md), and the commands in
+  `bench/README.md`. `cargo xtask check-bench` runs a functional check and renders that page; it is not part of
+  `check-full`. No result is published yet, and the page makes no speed claim.
+- **`gallery/`** (D181) is a nested workspace of its own with its own `Cargo.lock`: ten complete programs shaped like
+  a user's crate. Each depends on the library crates by path under the package names a user writes, commits the
+  `gust-artifacts/` that `cargo gust build` wrote, builds in release without Slang, and has a CPU-twin test and an
+  independent host reference. `cargo xtask check-gallery` checks them in three parts (the Slang part, the no-Slang
+  part and the GPU part), and its GPU part is a step of `check-full`.
+- **The guide** (D182) is rustdoc, not a separate book: the documentation-only modules `gust::guide` in
+  `crates/gust/src/guide/` and `gust_wgpu::guide` in `crates/gust-wgpu/src/guide/`, whose chapters are Markdown files
+  attached with `#[doc = include_str!]` to empty chapter modules. Every listing is a doctest or a packaged copy of an
+  anchored region of a gallery program, and `check-gallery` keeps the copies identical to the regions. The chapter set
+  carries no semver promise. docs.rs will host it with each release; nothing is published yet, so there is no hosted
+  copy, and `cargo doc` renders it from a checkout (the links between the two guides are docs.rs addresses, which are
+  dead in a local render until the publish).
+
 ## Deliberate non-goals for this slice
 
 - Recreating Slang IR or optimization in Rust.

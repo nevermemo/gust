@@ -5,8 +5,10 @@ a GPU-centric ECS game engine. **Today it is a working experimental Rust → Sla
 compute subsystem**. There is no ECS,
 renderer, rustc semantic integration, or execution-graph compiler yet.
 
-> **Version.** This is 0.2.0, the first public release (D177). A 0.1.0 was prepared on the branch `release/0.1`; it was
-> not published and will not be, and that branch has no tag.
+> **Version.** This tree is 0.2.0, the planned first public release (D177). **No usable version is published yet:**
+> the four package names on crates.io hold only empty 0.0.0 placeholders (D48), and the release waits for the
+> owner's review of the whole project (milestone M11, D189, D198). A 0.1.0 was prepared on the branch
+> `release/0.1`; it was not published and will not be, and that branch has no tag.
 
 Rust supplies the higher-level language and checking environment; Slang owns GPU
 code generation; GUST will connect intentional CPU and GPU execution. We preserve
@@ -52,9 +54,9 @@ a strict profile needs neither Slang nor the helper, D45):
 
 - The stable Rust toolchain: 1.90 or newer (the `msrv` CI job type-checks the workspace on 1.90.0);
   this checkout's checks ran on stable 1.98.0 (see "Minimum Rust")
-- Outside this checkout, `cargo install cargo-gust --locked --version "~0.2"` installs the
-  `cargo gust` tool; it works without `GUST_PROFILE` ("Install from crates.io" has the whole setup for a crate of your
-  own)
+- Outside this checkout, once 0.2.0 is on crates.io (it is not yet), `cargo install cargo-gust --locked --version
+  "~0.2"` installs the `cargo gust` tool; it works without `GUST_PROFILE` ("Install from crates.io" has the whole
+  setup for a crate of your own)
 - `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.22 (`cargo gust slang install` installs it, and
   `cargo gust doctor` names a `slangc` of another version). `cargo gust` finds its managed install itself (in
   `GUST_SLANG_HOME` when set), and so does the run-time bridge, but `cargo xtask` launches plain `slangc`, so put the
@@ -206,6 +208,8 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask check-dual [--check-only]` | Cross-crate dual-build evidence; `--check-only` needs no slangc and no GPU | refuses a preset `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS` or `CARGO_BUILD_RUSTFLAGS`; checks `tests/dual` with fmt and clippy, builds the workspace with `--cfg gust_dual` (through `CARGO_ENCODED_RUSTFLAGS`) in `<target>/dual`, runs clippy `-D warnings` on vector-add and polynomial with the cfg, then checks the `tests/dual` fixture: without the cfg a dependent's own `cfg(test)` (E1) and a production binary (E3) get no CPU twin of a library kernel (one E0277 each); with it the twin test runs and passes (E2). The full mode (GPU) also runs vector-add and polynomial with the cfg, which must print `CPU twin: matches (N elements, max ULP k)`, and vector-add without it, which must not. CI's `unit` job runs `--check-only`; `check-full` runs the full mode |
 | `cargo xtask check-cpu-target` | Production CPU target evidence (`Cpu` tier; no slangc, no GPU) | builds the fixture `tests/cpu-target` in release under `GUST_PROFILE=cpu` and runs it against host references (E-a); scans the binary for `slangc`, `gust-slang-reflect`, `wgpu` and `vulkan` and reads `cargo tree -e features` (E-b); builds with `--cfg gust_dual` (E-c); checks four refusals (E-d to E-g: the missing twin without the profile, `gust-wgpu` under `cpu`, the bridge feature under `cpu`, an opted-out kernel); flips the profile six times in one target directory (E-h); runs `cargo test -p kernels` under `cpu` (E-i). Stops at the first failing step and names it. CI runs it as the job `cpu-target`, beside `unit` |
 | `cargo xtask check-routing [--check-only] [--case NAME]` | Routing driver evidence (cargo only with `--check-only`; CI job `routing`) | copies the fixture `tests/routing` to a scratch directory and checks plain cargo, seven `gust.toml` and profile states (the probe's targets, `routes.json` and a golden table agree), nine refused files (file, line and tag), `cargo gust test` and `run` (the plain-cargo control must fail with the E0277 "cannot run the kernel"), the flip of the route variable in both directions in one target directory, and rustfmt and clippy on the fixture, each package under its own route; without `--check-only` the GPU-routed kernel also runs on the adapter the machine has (named in the output) |
+| `cargo xtask check-gallery [--slang] [--no-slang] [--gpu]` | Example gallery `gallery/` (M10; D181) | three parts, no flag runs all: the Slang part (`cargo gust build` into a scratch copy, byte-equal to the committed artifacts), the no-Slang part (release build and tests with Slang proved absent, anchors and guide listings in sync) and the GPU part (each program on the adapter, `web-hello` in Chrome); `check-full` runs the GPU part |
+| `cargo xtask check-bench --functional \| --render` | Benchmark harness `bench/` (M10; D179) | `--functional` runs a quick check of every backend against the CPU reference and times nothing for publication; `--render` renders `docs/BENCHMARKS.md` from filed publishable results (none are filed); not part of `check-full` |
 | `cargo xtask bless` | Update reviewed Slang goldens | reruns the golden tests with `BLESS_GOLDEN=1`, which rewrites changed `tests/fixtures/*.slang`, prints a line diff and fails the test; lists changed fixtures with `git diff --stat`. Exits non-zero whenever a fixture changed: review the diff, then run `cargo xtask check-feature macro` |
 | `cargo xtask test --suite Unit\|Cpu\|Slangc\|Spirv\|Reflect\|Gpu\|Full [--skip-difftest]` | One evidence tier as one command; `--skip-difftest` (CI) leaves out the differential harness steps, which have their own job | Unit: macro and xtask tests, lint, docs-check, check-arch, check-ui, check-cpu, the `gust::cpu` unit tests, the format check, clippy and tests of `tests/difftest`, the CPU-only differential batch. Cpu: `check-cpu-target`. Slangc: Unit plus `gust` library tests. Spirv: `check-artifacts`. Reflect: `check-feature reflection`. Gpu: all `gust-wgpu` tests, all `gust-algo` tests (its `gpu::` tests required by name), then the differential batch of 8 seeds. Full: `check-full`. Each suite prints what it does not cover; a missing tool or adapter fails it |
 | `cargo xtask check-fast` | Fast routine confidence | policy lint, docs-check, check-arch, check-ui, helper version check, fmt check, macro tests, core lib tests, wgpu tests (all `--locked`) |
@@ -241,11 +245,18 @@ devices.
 
 ## Install from crates.io
 
+> **No usable version yet.** No version of the four packages below is usable: the names on crates.io hold only empty
+> 0.0.0 placeholders (D48), which a bare `cargo add` would fetch. The 0.2.0 release candidate is built and gated,
+> and the release waits for the owner's review of the whole project (milestone M11, D189, D198), so the `0.2`
+> requirements and `cargo install` commands in this section resolve nothing until then. This section is the recipe
+> for the day 0.2.0 is published; to try GUST before that, build from this repository (the programs in `gallery/`
+> use path dependencies on it).
+
 The two code blocks below are the recipe that `cargo xtask check-release` builds word for word from the packaged
 crates.
 
-GUST is published as four packages that always share one version (0.2.0 is the first release; a 0.1.0 was never
-published, D177):
+GUST will be released as four packages that always share one version (0.2.0 will be the first release; a 0.1.0 was
+never published, D177):
 
 | Package | Library name | What it is |
 | --- | --- | --- |
@@ -514,12 +525,13 @@ case is `Cpu` evidence.
 
 ## Stability
 
-GUST is an experimental compiler and 0.2.0 is its first public release (D177; a 0.1.0 was prepared and never
-published). It follows SemVer for 0.x (D111): a change that breaks existing code bumps the minor version (0.2 to 0.3),
-and a patch release only adds or fixes: a construct may be added to the `#[gpu]` language in a patch and is refused
-only in a minor. The four packages are released together at one version and depend on each other with exact versions,
-so upgrade them together. Each release is described in [CHANGELOG](CHANGELOG.md). GUST is pre-1.0: nothing here
-promises that the API stops changing between minors, only how a change is made and announced.
+GUST is an experimental compiler, and 0.2.0 will be its first public release (D177; it is not published yet, and a
+0.1.0 was prepared and never published). This is the promise it will carry. It follows SemVer for 0.x (D111): a change
+that breaks existing code bumps the minor version (0.2 to 0.3), and a patch release only adds or fixes: a construct may
+be added to the `#[gpu]` language in a patch and is refused only in a minor. The four packages are released together at
+one version and depend on each other with exact versions, so upgrade them together. Each release is described in
+[CHANGELOG](CHANGELOG.md). GUST is pre-1.0: nothing here promises that the API stops changing between minors, only how a
+change is made and announced.
 
 The promise covers:
 
@@ -557,8 +569,9 @@ not cover either:
 - the other `GUST_*` environment variables: `GUST_SPIRV_ROUTE_LOG` and the ones that only tests read;
 - the Slang text of a kernel: the content key of a precompiled artifact may change in a minor release (B4 did), while a
   patch release keeps committed artifacts valid;
-- the guide modules `gust::guide` and `gust_wgpu::guide`: their chapter set may change, and they hold no items, only
-  documentation;
+- the guide modules `gust::guide` and `gust_wgpu::guide` and the chapter modules inside them, which are the only
+  documentation-only modules: their chapter set may change, the guide modules hold nothing but empty chapter
+  modules, and the chapter modules hold only documentation;
 - the `cargo xtask` commands and the evidence tiers, which belong to this repository and are not published.
 
 The minimum Rust version is 1.90 for the 0.2 line ("Minimum Rust" below). The promise is that the four crates build on
@@ -578,12 +591,12 @@ phone, may show a difference the tests have not seen ([Shapes](#shapes-grid-and-
 ### Code built against `release/0.1`
 
 This section is for code built against the branch `release/0.1` or this repository's earlier history. It is not an
-upgrade guide for registry users: 0.1.0 was never published (D177), so 0.2.0 is the first version on crates.io and
-there is nothing to upgrade from there. Against `release/0.1`, 0.2.0 has four breaks: B1, in two parts (the descriptor
-constructor and setters, and the `GpuKernel` bound), which is the last one of its kind; B2, reserved subgroup function
-names; B3, recursion refused; and B4, more renamed names. The API audit of m10.api1 adds B5 to B7 (record structs and
-`Route` marked `#[non_exhaustive]`, three more structs likewise, and two items hidden from the docs), which the
-[CHANGELOG](CHANGELOG.md) lists with their migrations. The rest of M8 and M9 only adds (the CHANGELOG has the full
+upgrade guide for registry users: 0.1.0 was never published (D177), so 0.2.0 will be the first version on crates.io
+and there is nothing to upgrade from there. Against `release/0.1`, 0.2.0 has four breaks: B1, in two parts (the
+descriptor constructor and setters, and the `GpuKernel` bound), which is the last one of its kind; B2, reserved subgroup
+function names; B3, recursion refused; and B4, more renamed names. The API audit of m10.api1 adds B5 to B7 (record
+structs and `Route` marked `#[non_exhaustive]`, three more structs likewise, and two items hidden from the docs), which
+the [CHANGELOG](CHANGELOG.md) lists with their migrations. The rest of M8 and M9 only adds (the CHANGELOG has the full
 list; the `semver` CI job covers the public API against that branch).
 
 - **B1, part 1: `KernelDescriptor` is `#[non_exhaustive]`.** A struct literal, or a struct update from a base value, no
@@ -636,8 +649,8 @@ says so.
 
 ## Authoring model
 
-The preferred source vocabulary deliberately resembles Slang (the snippet needs `cargo add gust-compute`; the library
-is named `gust`):
+The preferred source vocabulary deliberately resembles Slang (the snippet needs `cargo add gust-compute`, once 0.2.0 is
+published; the library is named `gust`):
 
 ```rust
 use gust::gpu;
@@ -996,7 +1009,7 @@ not apply to it, and the kernel that writes the arguments must clamp. See the co
 
 `#[gpu]` on a free function of scalars (or vectors) generates the kernel, the buffers, the bounds handling and the
 dispatch of an element-wise call (D60). The function stays an ordinary Rust function; its module of the same name
-holds the calls (this snippet needs `cargo add gust-compute` too):
+holds the calls (this snippet needs `cargo add gust-compute` too, once 0.2.0 is published):
 
 ```rust
 use gust::{gpu, map::Broadcast};
@@ -1016,6 +1029,7 @@ Map is for resident chains and compute-dense functions. For a cheap function (on
 host slices did not beat the CPU at any size measured, up to 4.2e6 elements; the planning break-even of the design study
 was about 1e7 elements.
 
+These are M7 measurements that predate the release hold (D189); the review decides whether they stay.
 Measured 2026-11-04 on an NVIDIA GeForce RTX 5090 (Vulkan) with 24 logical cores, release build with
 `-C target-cpu=native`: two runs of an out-of-repository probe (`plans/m7/probe/a2` of the work area) built against
 `ea258f9`, in a quiet window (no other build, test or GPU job of this project ran; the GPU was at 0 % before each run).
@@ -1228,6 +1242,27 @@ has identical CPU and GPU operational semantics outside a defined domain. The CP
 of a kernel agrees with the GPU inside that domain and may differ outside it; the
 [semantics contract](docs/SEMANTICS.md) states the domain, the float bounds and the
 known-mismatch ledger.
+
+## Benchmarks
+
+`bench/` is a workspace of its own and is not published: a harness that times GUST kernels against comparators on the
+same workloads. The workloads are eight families: vector add, saxpy, a Horner polynomial, a `u32` histogram, a
+particle step, a staged pipeline of six kernels, a sum and a naive matrix product, each checked on every sample
+against a reference, exactly where the result is integer or bit-exact and inside a derived error bound where it is
+floating point. It times four quantities apart (end to end, a host-timed dispatch,
+the GPU time of one dispatch and the GPU time per dispatch in a batch) and never mixes them in one column. The GUST
+routes it measures are the default WGSL route, the opt-in SPIR-V route (`spirv-route`), the CPU twin and the
+production `cpu` target. The comparators are rayon,
+hand-written WGSL on wgpu, CubeCL on its wgpu runtime and rust-gpu through wgpu's SPIR-V passthrough; the last two are
+built only by an optional feature, and a comparator that does not build is reported as not measured. They run inside
+GUST's harness with the settings it states, not in their authors' recommended configuration. **No benchmark
+table is published, and this section makes no speed claim**: a table needs three runs in a quiet window and the
+owner's review first (D189, D198). The older measurements elsewhere in this README (the "Element-wise maps" table,
+the `gust-algo` and parallel CPU map statements, the subgroup form "not faster" statements and the lockstep twin
+timing) are M7 and M8 results that predate the release hold; they stay for
+now, and the review decides whether they remain (D189). [docs/BENCHMARKS.md](docs/BENCHMARKS.md) has the method, the
+rules a result must pass and the known limits, and `bench/README.md` has the commands; `cargo xtask check-bench` runs
+the harness's functional check and renders that page.
 
 ## Current subset
 
@@ -1520,7 +1555,8 @@ resource layouts need the same compiler evidence before they enter the runtime.
 New ECS work starts with a small GPU-resident component pool, not a full engine rewrite.
 
 See [the architecture note](docs/ARCHITECTURE.md) for the boundary decisions and
-their rationale.
+their rationale. What comes next is in the [roadmap](docs/ROADMAP.md), which names milestone M11, Realignment, before
+any release.
 
 Licensed under MIT or Apache-2.0.
 

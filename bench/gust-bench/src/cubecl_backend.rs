@@ -146,6 +146,7 @@ pub fn decide<T>(
 }
 
 /// The pinned CubeCL version the run file records, and the version the `wgpu_features` note is stated as of.
+/// A test (`the_recorded_cubecl_version_is_the_cargo_toml_pin`) keeps it equal to the exact pin in `Cargo.toml`.
 const CUBECL_VERSION: &str = "0.11.4";
 
 /// What a run file records about the comparator (`versions.cubecl`): the CubeCL version, the compiler it ran, and what each
@@ -851,6 +852,23 @@ mod tests {
         let ctx = CubeclContext::open_on(None, false)
             .expect("an adapter CubeCL can run on is needed for the CubeCL tests");
         (guard, Rc::new(ctx))
+    }
+
+    /// `CUBECL_VERSION` goes into every run file, while the real version is the exact pin in `Cargo.toml`.
+    #[test]
+    fn the_recorded_cubecl_version_is_the_cargo_toml_pin() {
+        let manifest = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
+        let line = manifest
+            .lines()
+            .find(|line| line.trim_start().starts_with("cubecl = "))
+            .expect("Cargo.toml has a `cubecl = ` dependency line");
+        let pin = format!("version = \"={CUBECL_VERSION}\"");
+        assert!(
+            line.contains(&pin),
+            "CUBECL_VERSION is {CUBECL_VERSION:?} but the Cargo.toml line is `{}`; it must contain `{pin}`: change the \
+             const and the pin together",
+            line.trim()
+        );
     }
 
     /// The init errors of CubeCL are failures of the run, never refusals; only the adapter gate refuses.

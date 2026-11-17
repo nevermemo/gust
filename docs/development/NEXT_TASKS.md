@@ -642,8 +642,8 @@ test module; do not mix that mechanical move with behavior changes.
 
 M10 closed without publishing anything (D198): the release hold D189 stays in force until the owner lifts it at the
 joint review, which is milestone M11, Realignment. Everything below that waits for the hold carries to M11 and the
-milestones after it. Ids written "pack D1", "pack V1" and so on are the review pack's (work area, plans/review/pack.md), not rows of
-docs/DECISIONS.md.
+milestones after it. Ids written "pack D1", "pack V1" and so on are the review pack's (work area, plans/review/pack.md),
+not rows of docs/DECISIONS.md.
 
 - The 0.2.0 candidate and the release lines (m10.r3; D177, D189, D198). The candidate `83124ad` (PR #54) passed the full
   `check-release` and `check-full` and stays gated and unpublished. Not done: RELEASE.md steps 0 to 8 (publish the four
@@ -665,9 +665,9 @@ docs/DECISIONS.md.
   output and a `gust.toml` version key, and `RoutedDevice`'s uniform and texture paths (D183). api3 is the 0.3.0
   candidate and release lines, only if api2b carried a break. The 1.0 list stays: remove the deprecated f32 and u32
   call family, settle the deferred hardening (D183).
-- m10.b5, the publishable benchmark runs (plan section 5; D179, D187, D188, D197), none done. D188 says to revisit its record (the batch-path gap, outcome D;
-  W1 1048576 is listed, not counted) before a published batch-time table. No result is filed, so
-  `docs/BENCHMARKS.md` has no table. What b5 needs:
+- m10.b5, the publishable benchmark runs (plan section 5; D179, D187, D188, D197), none done. D188 says to revisit its
+  record (the batch-path gap, outcome D; W1 1048576 is listed, not counted) before a published batch-time table. No
+  result is filed, so `docs/BENCHMARKS.md` has no table. What b5 needs:
   - three quiet-window runs per route on the RTX 5090, against the thresholds version 1 that `docs/BENCHMARKS.md` states
     (`T_gpu` 5.0, `T_cpu` not set, 5 attempts per cell, 3 runs, a 12 hour session span), each run's commit carrying the
     `Quiet-window attestation:` line; the quiet windows are the coordinator's to arrange;
@@ -687,26 +687,26 @@ docs/DECISIONS.md.
     is a review item (D195);
   - the Radeon 890M table (the coordinator's; only a functional pass with no timing exists), then `check-bench --render`
     and the README paragraph's table text. W8 (inclusive prefix sum) and the tiled W9 are not built.
-- D189's held items, for the review (rulings become new decision rows): the project's self-description (pack V1; README's
-  opening paragraph and `docs/VISION.md` still describe the engine direction); the source vocabulary (pack D1: Slang-shaped
-  and Rust-shaped spellings); the `spirv-route` Cargo feature's unification across a dependency graph (pack D5; D178 would
-  promise the feature name); the two meanings of "default limits" (pack D6); the read-back API (api2b, above); and public
-  speed claims (pack D8; D180 names third-party projects in a published table, the owner's call; README's map table under
-  "Element-wise maps" carries measured map-versus-CPU and map-versus-hand ratios from M7's quiet-window runs on
-  `ea258f9`, which predate the hold: the review decides whether they stay). D192 and D193 answered
+- D189's held items, for the review (rulings become new decision rows): the project's self-description (pack V1;
+  README's opening paragraph and `docs/VISION.md` still describe the engine direction); the source vocabulary (pack D1:
+  Slang-shaped and Rust-shaped spellings); the `spirv-route` Cargo feature's unification across a dependency graph (pack
+  D5; D178 would promise the feature name); the two meanings of "default limits" (pack D6); the read-back API (api2b,
+  above); and public speed claims (pack D8; D180 names third-party projects in a published table, the owner's call;
+  README's map table under "Element-wise maps" carries measured map-versus-CPU and map-versus-hand ratios from M7's
+  quiet-window runs on `ea258f9`, which predate the hold: the review decides whether they stay). D192 and D193 answered
   Q13 and Q14, and D197 answered one b5 question; the pack's other items are open.
 - Revisit at the review, as D195 says: D190 (per-backend unit roundoff, the stated W7 weakness), D191 (W6-graph's
   six-stage reading) and D194 (opt-in GPU timestamps), with D195 that carried D194 out. The kill-rule exclusions of
   D190 and D191 are already gone (D195), so the open part is whether the algorithm comparison for W7 belongs inside the
   kill rule at all, and whether D193's separate group for the SPIR-V route (the answer to Q14) stays as it is.
 - gfx-rs/wgpu issue 7696 (optional): modules that naga compiles to SPIR-V trigger VUID-StandaloneSpirv-None-10684
-  under the validation layer (workgroup arrays at every SPIR-V version; function and private structs and arrays from 1.5),
-  so everything naga compiles inherits it: the hand-written WGSL rows of the bench (the W7 hand reductions among
-  them), GUST's WGSL route, `gust-algo`'s workgroup-memory kernels and the W5 struct
+  under the validation layer (workgroup arrays at every SPIR-V version; function and private structs and arrays from
+  1.5), so every naga-compiled module with those patterns inherits it: the hand-written WGSL rows of the bench (the W7
+  hand reductions among them), GUST's WGSL route, `gust-algo`'s workgroup-memory kernels and the W5 struct
   copy. The cause is naga 30.0.1's SPIR-V backend, not GUST: the generated WGSL is legal and the slangc SPIR-V route
-  did not trigger it on the bench kernels checked (recorded in SEMANTICS and `bench/README.md`, m10.b3e; trace in the work area, plans/m10/probe/r10684/).
-  A comment on the upstream issue is a public act, and so is an upstream wgpu change that would enable
-  `vulkanMemoryModel` for passthrough modules (D197): the owner says yes per item.
+  did not trigger it on the bench kernels checked (recorded in SEMANTICS and `bench/README.md`, m10.b3e; trace in the
+  work area, plans/m10/probe/r10684/). A comment on the upstream issue is a public act, and so is an upstream wgpu
+  change that would enable `vulkanMemoryModel` for passthrough modules (D197): the owner says yes per item.
 - Open items from the M10 slices:
   - the m10.b2g review nits (plans/m10/review-m10b2g-opus.md): a future mention of "CubeCL" followed by a number that
     is not a version fails the version test loudly (a false failure, never a silent pass); rare forms, such as `v0.x`,

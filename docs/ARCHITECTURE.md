@@ -808,12 +808,12 @@ Three parts of the repository sit beside the crates and are not part of the publ
 
 - **`bench/`** (D179, D180) is a nested workspace of its own, not published, with its own `Cargo.lock`. It is outside
   the root dependency graph, so its comparator-only dependencies (rayon and CubeCL) never enter the
-  root lockfile, nor does the harness enter the `msrv` job, `check-arch` or `check-full`. `gust-bench` is the harness and `gust-bench-pre` the
-  build against precompiled artifacts; `rust-gpu-shaders` holds the rust-gpu comparator's committed SPIR-V module,
-  whose build needs a pinned nightly. The CubeCL and rust-gpu comparators are off-by-default features of the harness.
-  Its method, rules and limits are in [BENCHMARKS](BENCHMARKS.md), and the commands in `bench/README.md`. `cargo xtask
-  check-bench` runs a functional check and renders that page; it is not part of `check-full`. No result is published
-  yet, and the page makes no speed claim.
+  root lockfile, nor does the harness enter the `msrv` job, `check-arch` or `check-full`. `gust-bench` is the harness
+  and `gust-bench-pre` the build against precompiled artifacts; `rust-gpu-shaders` holds the rust-gpu comparator's
+  committed SPIR-V module, whose build needs a pinned nightly. The CubeCL and rust-gpu comparators are off-by-default
+  features of the harness. Its method, rules and limits are in [BENCHMARKS](BENCHMARKS.md), and the commands in
+  `bench/README.md`. `cargo xtask check-bench` runs a functional check and renders that page; it is not part of
+  `check-full`. No result is published yet, and the page makes no speed claim.
 - **`gallery/`** (D181) is a nested workspace of its own with its own `Cargo.lock`: ten complete programs shaped like
   a user's crate. Each depends on the library crates by path under the package names a user writes, commits the
   `gust-artifacts/` that `cargo gust build` wrote, builds in release without Slang, and has a CPU-twin test and an

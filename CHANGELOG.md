@@ -262,8 +262,9 @@ proof.
   rustdoc chapters (why GUST, install and a first program, the authoring model, running kernels, GPU concepts,
   profiles and routing, semantics and the twin, the newer language features, the browser, benchmark methods,
   stability and platforms, and internals for contributors). Each listing is a doctest or a copy of a region of a
-  gallery program, and every public type has an example (m10.k2). The modules hold nothing but empty chapter modules, and the chapter set
-  carries no semver promise. The ten gallery programs (`gallery/`) belong to the repository, not to the packages.
+  gallery program, and every public type has an example (m10.k2). The modules hold nothing but empty chapter modules,
+  and the chapter set carries no semver promise. The ten gallery programs (`gallery/`) belong to the repository, not to
+  the packages.
 
 ### Deprecated
 
@@ -426,9 +427,9 @@ the diff, not about a run: whether each gate is green on a commit is recorded in
 
 History, kept as a record. 0.1.0 was prepared as the first release and was never published (D177, the owner's choice of
 2026-11-14): the packages named 0.1.0 are not on crates.io, there is no `v0.1.0` tag, and `release/0.1` stays a branch
-with no tag. 0.2.0 will be the first public release and builds on it, with the changes its own entry lists (the pinned
-Slang below is 2026.20; 0.2.0 pins 2026.22). The entry describes the state of that branch, an experimental compiler
-from a restricted subset of Rust to Slang for compute kernels.
+with no tag. 0.2.0 will be the first public release and will build on it, with the changes its own entry lists (the
+pinned Slang below is 2026.20; 0.2.0 pins 2026.22). The entry describes the state of that branch, an experimental
+compiler from a restricted subset of Rust to Slang for compute kernels.
 
 ### What you can do
 

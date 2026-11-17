@@ -7,8 +7,8 @@ renderer, rustc semantic integration, or execution-graph compiler yet.
 
 > **Version.** This tree is 0.2.0, the planned first public release (D177). **No usable version is published yet:**
 > the four package names on crates.io hold only empty 0.0.0 placeholders (D48), and the release waits for the
-> owner's review of the whole project (milestone M11, D189, D198). A 0.1.0 was prepared on the branch `release/0.1`; it was not published and will not be, and that
-> branch has no tag.
+> owner's review of the whole project (milestone M11, D189, D198). A 0.1.0 was prepared on the branch
+> `release/0.1`; it was not published and will not be, and that branch has no tag.
 
 Rust supplies the higher-level language and checking environment; Slang owns GPU
 code generation; GUST will connect intentional CPU and GPU execution. We preserve
@@ -526,11 +526,12 @@ case is `Cpu` evidence.
 ## Stability
 
 GUST is an experimental compiler, and 0.2.0 will be its first public release (D177; it is not published yet, and a
-0.1.0 was prepared and never published). This is the promise it will carry. It follows SemVer for 0.x (D111): a change that breaks existing code bumps the minor
-version (0.2 to 0.3), and a patch release only adds or fixes: a construct may be added to the `#[gpu]` language in a patch and is refused
-only in a minor. The four packages are released together at one version and depend on each other with exact versions,
-so upgrade them together. Each release is described in [CHANGELOG](CHANGELOG.md). GUST is pre-1.0: nothing here
-promises that the API stops changing between minors, only how a change is made and announced.
+0.1.0 was prepared and never published). This is the promise it will carry. It follows SemVer for 0.x (D111): a change
+that breaks existing code bumps the minor version (0.2 to 0.3), and a patch release only adds or fixes: a construct may
+be added to the `#[gpu]` language in a patch and is refused only in a minor. The four packages are released together at
+one version and depend on each other with exact versions, so upgrade them together. Each release is described in
+[CHANGELOG](CHANGELOG.md). GUST is pre-1.0: nothing here promises that the API stops changing between minors, only how a
+change is made and announced.
 
 The promise covers:
 
@@ -569,8 +570,8 @@ not cover either:
 - the Slang text of a kernel: the content key of a precompiled artifact may change in a minor release (B4 did), while a
   patch release keeps committed artifacts valid;
 - the guide modules `gust::guide` and `gust_wgpu::guide` and the chapter modules inside them, which are the only
-  documentation-only modules: their chapter set may change, and they hold nothing but empty chapter modules, only
-  documentation;
+  documentation-only modules: their chapter set may change, the guide modules hold nothing but empty chapter
+  modules, and the chapter modules hold only documentation;
 - the `cargo xtask` commands and the evidence tiers, which belong to this repository and are not published.
 
 The minimum Rust version is 1.90 for the 0.2 line ("Minimum Rust" below). The promise is that the four crates build on
@@ -591,12 +592,11 @@ phone, may show a difference the tests have not seen ([Shapes](#shapes-grid-and-
 
 This section is for code built against the branch `release/0.1` or this repository's earlier history. It is not an
 upgrade guide for registry users: 0.1.0 was never published (D177), so 0.2.0 will be the first version on crates.io
-and there is nothing to upgrade from there.
-Against `release/0.1`, 0.2.0 has four breaks: B1, in two parts (the descriptor
-constructor and setters, and the `GpuKernel` bound), which is the last one of its kind; B2, reserved subgroup function
-names; B3, recursion refused; and B4, more renamed names. The API audit of m10.api1 adds B5 to B7 (record structs and
-`Route` marked `#[non_exhaustive]`, three more structs likewise, and two items hidden from the docs), which the
-[CHANGELOG](CHANGELOG.md) lists with their migrations. The rest of M8 and M9 only adds (the CHANGELOG has the full
+and there is nothing to upgrade from there. Against `release/0.1`, 0.2.0 has four breaks: B1, in two parts (the
+descriptor constructor and setters, and the `GpuKernel` bound), which is the last one of its kind; B2, reserved subgroup
+function names; B3, recursion refused; and B4, more renamed names. The API audit of m10.api1 adds B5 to B7 (record
+structs and `Route` marked `#[non_exhaustive]`, three more structs likewise, and two items hidden from the docs), which
+the [CHANGELOG](CHANGELOG.md) lists with their migrations. The rest of M8 and M9 only adds (the CHANGELOG has the full
 list; the `semver` CI job covers the public API against that branch).
 
 - **B1, part 1: `KernelDescriptor` is `#[non_exhaustive]`.** A struct literal, or a struct update from a base value, no
@@ -649,8 +649,8 @@ says so.
 
 ## Authoring model
 
-The preferred source vocabulary deliberately resembles Slang (the snippet needs `cargo add gust-compute`; the library
-is named `gust`):
+The preferred source vocabulary deliberately resembles Slang (the snippet needs `cargo add gust-compute`, once 0.2.0 is
+published; the library is named `gust`):
 
 ```rust
 use gust::gpu;
@@ -1009,7 +1009,7 @@ not apply to it, and the kernel that writes the arguments must clamp. See the co
 
 `#[gpu]` on a free function of scalars (or vectors) generates the kernel, the buffers, the bounds handling and the
 dispatch of an element-wise call (D60). The function stays an ordinary Rust function; its module of the same name
-holds the calls (this snippet needs `cargo add gust-compute` too):
+holds the calls (this snippet needs `cargo add gust-compute` too, once 0.2.0 is published):
 
 ```rust
 use gust::{gpu, map::Broadcast};
@@ -1253,15 +1253,16 @@ floating point. It times four quantities apart (end to end, a host-timed dispatc
 the GPU time of one dispatch and the GPU time per dispatch in a batch) and never mixes them in one column. The GUST
 routes it measures are the default WGSL route, the opt-in SPIR-V route (`spirv-route`), the CPU twin and the
 production `cpu` target. The comparators are rayon,
-hand-written WGSL on wgpu, CubeCL on its wgpu runtime and rust-gpu through wgpu's SPIR-V passthrough; the last two are built only
-by an optional feature, and a comparator that does not build is reported as not measured. They run inside GUST's
-harness with the settings it states, not in their authors' recommended configuration. **No benchmark
+hand-written WGSL on wgpu, CubeCL on its wgpu runtime and rust-gpu through wgpu's SPIR-V passthrough; the last two are
+built only by an optional feature, and a comparator that does not build is reported as not measured. They run inside
+GUST's harness with the settings it states, not in their authors' recommended configuration. **No benchmark
 table is published, and this section makes no speed claim**: a table needs three runs in a quiet window and the
-owner's review first (D189, D198). The older measurements elsewhere in this README (the "Element-wise maps" table
-and the `gust-algo` and parallel CPU map statements) are M7 results that predate the release hold; they stay for
-now, and the review decides whether they remain (D189). [docs/BENCHMARKS.md](docs/BENCHMARKS.md) has the method, the rules a result must pass and
-the known limits, and `bench/README.md` has the commands; `cargo xtask check-bench` runs the harness's functional
-check and renders that page.
+owner's review first (D189, D198). The older measurements elsewhere in this README (the "Element-wise maps" table,
+the `gust-algo` and parallel CPU map statements, the subgroup form "not faster" statements and the lockstep twin
+timing) are M7 and M8 results that predate the release hold; they stay for
+now, and the review decides whether they remain (D189). [docs/BENCHMARKS.md](docs/BENCHMARKS.md) has the method, the
+rules a result must pass and the known limits, and `bench/README.md` has the commands; `cargo xtask check-bench` runs
+the harness's functional check and renders that page.
 
 ## Current subset
 

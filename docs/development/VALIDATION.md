@@ -49,10 +49,10 @@ The run-time Slang bridge is the `slang-runtime` feature of `gust-compute` and `
 `assert_stamped` and the `dispatch_batch_timed` check; the timing tests of `gust-algo`,
 `crates/gust-algo/src/tests/gpu.rs`) assert that `gpu_elapsed` is `Some` exactly when the adapter supports timestamp
 queries (`supports_gpu_timestamps()`). On an adapter without the feature they pass with `gpu_elapsed == None`; the
-adapter's name appears in their failure messages and in one evidence print (`graph.rs`, near line 1243), not in every
-timed test. So a green run of them proves the GPU time only where the adapter has the
-feature; a Gpu label for a timed call names an adapter that
-has it, and a benchmark or a claim about GPU time on any other adapter has no such evidence.
+adapter's name appears in one of their failure messages (`assert_stamped`) and in one evidence print (`graph.rs`, near
+line 1243), not in every timed test. So a green run of them proves the GPU time only where the adapter has the feature;
+a Gpu label for a timed call names an adapter that has it, and a benchmark or a claim about GPU time on any other
+adapter has no such evidence.
 
 Label format: `done (Gpu: NVIDIA GeForce RTX 5090, Vulkan, slangc 2026.22, <commit>)`. The `Cpu` tier is labelled
 `done (Cpu: <commit>)`. It is distinct from Unit, whose twin runs under `cfg(test)` (shadow-semantics evidence), and it

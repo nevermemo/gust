@@ -645,19 +645,19 @@ Closed as "unexplained, not tuned".
 
 **Limitation as measured.** On an RTX 5090, in runs the harness marks not publishable, the ratio of GUST's batched GPU
 time (16 dispatches) to hand WGSL's on vector-add at 1M elements is 1.22 to 1.28 in the last measurement. Over earlier
-quiet runs the ratio reached 1.12 to 1.21 on vector-add and saxpy at 1M to 4M (the WGSL build; 1.10 to 1.24 over both
-builds, as above). The ratio for single-dispatch GPU time is mostly 0.99 to 1.03 (on the SPIR-V build the W3-d16 and
-W3-d64 single-dispatch ratios are 0.67 to 0.83, see the next section), but that range leaves out the above-tolerance
+quiet runs the ratio reached 1.12 to 1.21 on vector-add at 1M and 4M and saxpy at 1M (the WGSL build; 1.10 to 1.24 over
+both builds, as above). The ratio for single-dispatch GPU time is mostly 0.99 to 1.03 (on the SPIR-V build the W3-d16
+and W3-d64 single-dispatch ratios are 0.67 to 0.83, see the next section), but that range leaves out the above-tolerance
 single-dispatch offenders of the b1q runs, listed as observed and not counted (none recurred in all three seeds of one
-build with the control in tolerance, so by the reproducibility clause they are not counted). On the WGSL build: W3-d4
-at 1M at 1.144 and 1.103 (two of three seeds), W3-d4 at 4M at 1.122 (one seed) and W1 at 64K at 1.110 (one seed). On
-the SPIR-V build: W3-d4 at 1M at 1.115 (one seed), W2 at 64K at 1.180 (one seed) and W2 at 1M at 1.121 (one seed). So
-W3-d4 at 1M offends in three of the six runs across both builds, and `gpu_single` is at parity on most cells and not
-on these. The cell is bimodal for every backend (about 6.1 and 7.9 microseconds per dispatch on W1 1M), and the
-identical-kernel control moved by up to 1.13 times on the same cell. The excess is unexplained and not tuned. It is
-not in the generated kernel: running GUST's WGSL in the hand path gave 1.00 times in a probe during m10.b0p (D184
-records the equivalence of the W1 WGSL texts). That is not a repository check: no test or run file in the repository
-holds it, and D188 and STATUS record the m10.b1c outcome (including the separate-device probe above), not this probe.
+build with the control in tolerance, so by the reproducibility clause they are not counted). On the WGSL build: W3-d4 at
+1M at 1.144 and 1.103 (two of three seeds), W3-d4 at 4M at 1.122 (one seed) and W1 at 64K at 1.110 (one seed). On the
+SPIR-V build: W3-d4 at 1M at 1.115 (one seed), W2 at 64K at 1.180 (one seed) and W2 at 1M at 1.121 (one seed). So W3-d4
+at 1M offends in three of the six runs across both builds, and `gpu_single` is at parity on most cells and not on these.
+The cell is bimodal for every backend (about 6.1 and 7.9 microseconds per dispatch on W1 1M), and the identical-kernel
+control moved by up to 1.13 times on the same cell. The excess is unexplained and not tuned. It is not in the generated
+kernel: running GUST's WGSL in the hand path gave 1.00 times in a probe during m10.b0p (D184 records the equivalence of
+the W1 WGSL texts). That is not a repository check: no test or run file in the repository holds it, and D188 and STATUS
+record the m10.b1c outcome (including the separate-device probe above), not this probe.
 
 ## An observation, beside the method: the SPIR-V route on W3
 

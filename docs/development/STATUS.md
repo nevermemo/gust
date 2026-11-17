@@ -1,6 +1,6 @@
 # Current status
 
-## Active: roadmap M10 (2026-11-14; M9 closed, D176; M10 plan adopted, D177 to D183)
+## Active: roadmap M11 (2026-11-17; M10 closed, D185; M11 is the owner's joint review, D198)
 
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
 2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done; M0.15
@@ -425,7 +425,7 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   2026-11-15: before `<C>`, m10.g9 (`a0d676b`, PR #52, gallery G9 `web-hello` in the browser, G7 through Tint once)
   and m10.b0p (`ea5c1ae`, PR #53, the host-side profile: GUST's host work per call matches the hand-written
   per-call path); after it, m10.g3b (`deaec08`, PR #55, guide chapters 3 to 6 and 8; GPU suite pin 464 over 49),
-  which ships with the next release.
+  which a later release carries (none is published yet, D189).
 - Release hold (D189, owner, 2026-11-15): nothing is published, tagged or branched for release until the joint
   project review; `<C>` = `83124ad` stays gated and unpublished. Merged on 2026-11-15 after `<C>`, besides g3b:
   m10.b1c (`9b618c0`, PR #56; outcome D for the batch-path GPU-time excess, D188; per-cell route evidence, the
@@ -487,6 +487,16 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   `Cargo.toml` pin and to every live mention in the code, `bench/README.md` and `docs/BENCHMARKS.md`). Owner
   rulings the same day: a publishable rust-gpu row requires `vulkanMemoryModel` (D197); M10 closes now and the
   joint review becomes M11, Realignment (D198).
+- M10 close records (2026-11-17; D185). (i) `cargo xtask check-full` and the full `check-release` passed on `575a13c`
+  (07:13 to 09:14Z) and on `0b51612`, the merge of the close fixes (11:32 to 12:39Z, clean tree); NVIDIA GeForce RTX
+  5090 / Vulkan, driver 610.88, Slang 2026.22; on the merge, `web-hello` ran in Chrome 157 through WebGPU on the adapter
+  Chrome chose, reported as `amd rdna-3`. (ii) Main CI on the merge: ci 44074861272, gpu-software 44074861322,
+  spirv-route 44074861287, all green. (iii) The sanity checks at `9105913`, Fable, Opus and Codex, all said "proceed
+  with fixes"; m10.z (PR #75; Opus review, one fix round, re-check "merge") made the fixes. The CHANGELOG census against
+  `release/0.1` is now 88 unchanged, 4 derived-only and 21 changed (the M8 record above said 94 and 15 before
+  m10.api2a.2). (iv) Nothing is published; no benchmark table is publishable. Rustdoc coverage: gust-compute 712
+  documented (100 %), 181 with examples; gust-compute-wgpu 342 (100 %), 44 with examples. (v) What carries is in
+  NEXT_TASKS, "M10 follow-ups"; M11 is next.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -480,6 +480,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   rule; the feature needs rustc 1.95 and turns on wgpu's default features for every row, so its runs are not
   publishable; `buildid` is MPL-2.0 under D192). Functional CubeCL runs on the RTX 5090 and the Radeon 890M
   passed; no timing is recorded.
+- Merged 2026-11-17, under the release hold: m10.b2f (`4ed440d`, PR #72; follow-ups from the m10.b2 review: the
+  CubeCL `wgpu_features` note is stated as of the pinned version, the task budget is asserted against the batch
+  size, and `xtask` refuses a publishable file that holds a `cubecl-` or `rustgpu-` row) and m10.b2g (`1508dc2`,
+  PR #73; two tests under the `cubecl` feature keep the CubeCL version a run file records equal to the
+  `Cargo.toml` pin and to every live mention in the code, `bench/README.md` and `docs/BENCHMARKS.md`). Owner
+  rulings the same day: a publishable rust-gpu row requires `vulkanMemoryModel` (D197); M10 closes now and the
+  joint review becomes M11, Realignment (D198).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

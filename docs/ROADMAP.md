@@ -75,7 +75,7 @@ audit), benchmarks (the harness from spike B1, a premise re-measurement first), 
 rustdoc guide. The roadmap row: benchmarks against rayon, hand-written
 WGSL with wgpu, CubeCL and rust-gpu; a "Rust program to GPU" example gallery; docs and a book; the API stability
 pass toward 1.0; the crates.io releases after MR's first (each publish is the owner's act, D148). What M9 carried
-out is in NEXT_TASKS, "M9 follow-ups".
+out is in NEXT_TASKS, "M9 follow-ups". The owner's rulings of 2026-11-17: M10 closes now by its own procedure with the release hold in force, and the joint review becomes M11, Realignment (D198); a publishable rust-gpu row requires `vulkanMemoryModel` (D197).
 
 **Done: M9, language breadth II** (closed 2026-11-14, D176; plan adopted 2026-11-09, D154 to D164). The fix slice
 m9.0 (merge `65e6bac`)
@@ -257,10 +257,11 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 | M8 Capability variants | Capability-keyed variants with platform aliases; exhaustiveness checked against the crate's declared target list, with CPU as a target; one rustc-checked signature; subgroup operations first (D23). Compile-time portable floor for workgroup size and storage counts; `with_limits` is the runtime half (D36). Build-time routing per function tag (D65 to D67) lands alongside, after m7.a. Precondition (M5 sanity check): decide how D65's CPU bodies in `dev`, `native` and `web` production builds meet D26 (the `typed-call-no-cpu-twin` fixture, check-dual E1 and E3) and the macro's one process-wide profile read | done (2026-11-09, D153); plan adopted 2026-11-06 (D136 to D147; owner-delegated): Fable plan, Codex rework, Opus adopt with changes, revisions 1 and 1.1; ships as 0.2.0; spikes M8-S0, S1 and S3 done; slices: m8.d, m8.a, m8.w1, m8.b1, m8.w2, m8.f, m8.b2, m8.s and m8.v merged (`e11a3f0`, D148), the Slang 2026.21 pin m8.p (`b6d7c61`, D150), routing at expansion m8.r1 (`b859af7`), subgroup evidence m8.e (`e9150ad`), the routing driver m8.r2 (`5238deb`, D151), the tidy pass's code half m8.x1 (`c245266`), the prose half m8.x2 (`4219bb5`, D152), the close fixes m8.z (`2f96e69`) |
 | M9 Language breadth II | Methods in `impl` blocks; user enums with `match`; tuples; fixed-size arrays; non-capturing closures; then traits mapped to Slang interfaces and generics | done (2026-11-14, D176); plan adopted 2026-11-09 (D154 to D164; owner-delegated); slices: m9.0 (`65e6bac`), m9.s0 (probes), m9.r2h (`80a0cf9`), m9.a1 (`cd44fa5`), m9.h1 (`b4ddc53`, D165), m9.a2 (`4f477ad`), m9.r1m (measurement), m9.r2b (`ea13399`), m9.e1 (`0f9bc16`), m9.d1a (`cce661d`), m9.e2 (`f6b6156`), m9.f1 (`b2d6826`), m9.t (`8a69d82`), m9.d1b (`ccc829e`), m9.r1 (`6d8ec45`), m9.d1c (`c0d5d27`), m9.r2a (`f8fef97`), m9.d1d (`c4a35ba`), m9.c (`ab19167`), m9.d1e (`13d2651`), m9.k (checkpoint), m9.shift (`bedb1de`), m9.sen (`92e8312`), m9.pa (`28eaf73`), m9.g1 (`6c875d6`), m9.p (`48b3bf3`), m9.g2 (`4090483`), m9.rt2 (`0e05776`), m9.d2 (`6e6d79c`), m9.x2 (`cfc5241`), m9.x1 (`ce0cf5c`), m9.z (`9c38524`), m9.x3 (`ef2a73b`) |
 | M10 Publication | Benchmarks against rayon, hand-written WGSL with wgpu, CubeCL and rust-gpu; a "Rust program to GPU" example gallery; docs and a book; the API stability pass toward 1.0; the crates.io releases after MR's first | active: plan adopted 2026-11-14 (D177 to D183) |
+| M11 Realignment | The owner's joint review of the whole project (D189, D198): its decisions, misalignments with the owner's vision, and drift between docs and code; the rulings recorded as decision rows and folded into the roadmap; the release hold lifted or kept by the owner. The milestones after M11 follow its rulings | planned: after the M10 close (D198) |
 
 Order after M5 (owner, 2026-11-02, D75): M6, M7, MX (execution shapes and textures), MR (the first public
 crates.io release), then M8, M9 and M10. MX and MR keep letters so that the decisions naming M8 to M10 stay
-valid.
+valid. M11, Realignment, follows M10: the owner's joint review (D198), before any release or new milestone.
 
 ## Parking lot
 

@@ -638,6 +638,82 @@ test module; do not mix that mechanical move with behavior changes.
   `execute_shapes` and `Options.export_dir` (`--shrink` with `--export-dir` is refused since m9.x1). GUST-E0712's message says "same Slang text" when only
   the `.kernel.json` record differs (gust-macros `collision_message`).
 
+## M10 follow-ups (filed at the M10 close, D185)
+
+M10 closed without publishing anything (D198): the release hold D189 stays in force until the owner lifts it at the
+joint review, which is milestone M11, Realignment. Everything below that waits for the hold carries to M11 and the
+milestones after it. Ids such as D1, D5 and V1 are the review pack's (work area, plans/review/pack.md).
+
+- The 0.2.0 candidate and the release lines (m10.r3; D177, D189, D198). The candidate `83124ad` (PR #54) passed the full
+  `check-release` and `check-full` and stays gated and unpublished. Not done: RELEASE.md steps 0 to 8 (publish the four
+  packages, post-publish verification, the `v0.2.0` tag and the GitHub release, the 0.0.0 yanks after 0.2.0 is up),
+  cutting `release/0.2` at the published commit, moving `main` to the next `-dev` version, and the `semver` job's
+  baseline switching from `release/0.1` to the published version. All are the owner's acts or follow them. Main has
+  merged more since `83124ad` (STATUS lists the slices): the commit that is published needs its own `check-full`, full
+  `check-release` and `semver` rerun. docs.rs hosts the guide only after the publish, so the guide has no hosted copy
+  yet, and README and the crate READMEs say the packages are not on crates.io.
+- api2b and api3 (D189's held list; plan section 5; the API audit, work area plans/m10/api-audit.md). api2b is the
+  read-back and prepared-call API (reusable read-back, no fresh `Vec` per call) that b0's host-side finding named
+  (D184; the profile slice m10.b0p later found GUST's host work per call equal to the hand-written per-call path, so the
+  case for a break is open). The audit's deferred list is api2b's input, with a 0.3.0 if any item is a break:
+  `ParameterDescriptor` hardening (G7b: 123 literal sites and a constructor design), `ResourceBinding`, `LineSpan`,
+  `TypeLayout` and `StructFieldLayout` kept open as complete values (G7c, G9), the `with_limits` name overlap, `--json`
+  output and a `gust.toml` version key, and `RoutedDevice`'s uniform and texture paths (D183). api3 is the 0.3.0
+  candidate and release lines, only if api2b carried a break. The 1.0 list stays: remove the deprecated f32 and u32
+  call family, settle the deferred hardening (D183).
+- m10.b5, the publishable benchmark runs (plan section 5; D179, D187, D197), none done. No result is filed, so
+  `docs/BENCHMARKS.md` has no table. What b5 needs:
+  - three quiet-window runs per route on the RTX 5090, against the thresholds version 1 that `docs/BENCHMARKS.md` states
+    (`T_gpu` 5.0, `T_cpu` not set, 5 attempts per cell, 3 runs, a 12 hour session span), each run's commit carrying the
+    `Quiet-window attestation:` line; the quiet windows are the coordinator's to arrange;
+  - D197's condition: a publishable rust-gpu row requires the `vulkanMemoryModel` feature on the device it ran on. The
+    bench is to enable it on a device it creates itself (no upstream wgpu change). Not done: today the backend only
+    gates on an adapter that reports Vulkan 1.3 or later, where the feature must be supported, and wgpu-hal creates
+    the device with the feature off. The device creation and the real feature query need `ash` as a bench dependency
+    (m10.b4 re-check of fix 2, nit 4; plans/m10/review-m10b4-opus.md). The `rust-gpu` feature also makes a run not
+    publishable until the backend cannot disturb the other rows (`bench/README.md`);
+  - the placement of the `rustgpu-wgpu` row (the publishable group of a `rust-gpu` build, or the `spirv` group) is the
+    owner's call, open. xtask refuses a publishable file that holds a `cubecl-` or `rustgpu-` row (m10.b2f), so showing
+    either row needs a rule change first, and the CubeCL feature needs rustc 1.95 and turns on wgpu's default features
+    for every row, so a CubeCL run is not publishable as it stands;
+  - the W7 kill-rule watch (D194, D195): W7's two GPU-time ratios are inside the kill rule and compare the public sum
+    against a hand-written tree, so a W7 cell can re-open C on the public sum's speed alone, without any GUST overhead.
+    The first non-publishable samples suggest it will. Watch the first publishable run for it; what a W7 verdict means
+    is a review item (D195);
+  - the Radeon 890M table (the coordinator's; only a functional pass with no timing exists), then `check-bench --render`
+    and the README paragraph's table text. W8 (inclusive prefix sum) and the tiled W9 are not built.
+- D189's held items, for the review (rulings become new decision rows): the project's self-description (V1; README's
+  opening paragraph and `docs/VISION.md` still describe the engine direction); the source vocabulary (D1: Slang-shaped
+  and Rust-shaped spellings); the `spirv-route` Cargo feature's unification across a dependency graph (D5; D178 would
+  promise the feature name); the two meanings of "default limits" (D6); the read-back API (api2b, above); and public
+  speed claims (D8; D180 names third-party projects in a published table, the owner's call; README's map table under
+  "Element-wise maps" carries measured map-versus-CPU and map-versus-hand ratios from M7's quiet-window runs on
+  `ea258f9`, which predate the hold: the review decides whether they stay). D192 and D193 answered
+  Q13 and Q14, and D197 answered one b5 question; the pack's other items are open.
+- Revisit at the review, as D195 says: D190 (per-backend unit roundoff, the stated W7 weakness), D191 (W6-graph's
+  six-stage reading) and D194 (opt-in GPU timestamps), with D195 that carried D194 out. The kill-rule exclusions of
+  D190 and D191 are already gone (D195), so the open part is whether the algorithm comparison for W7 belongs inside the
+  kill rule at all, and Q14's treatment of the SPIR-V route (D193 set a group of its own).
+- gfx-rs/wgpu issue 7696 (optional): modules that naga compiles to SPIR-V trigger VUID-StandaloneSpirv-None-10684
+  under the validation layer (workgroup arrays at every SPIR-V version; function and private struct copies from 1.5),
+  so the WGSL route inherits it in the W7 hand reductions, `gust-algo`'s workgroup-memory kernels and the W5 struct
+  copy. The cause is naga 30.0.1's SPIR-V backend, not GUST: the generated WGSL is legal and the slangc SPIR-V route
+  is clean (recorded in SEMANTICS and `bench/README.md`, m10.b3e; trace in the work area, plans/m10/probe/r10684/).
+  A comment on the upstream issue is a public act, and so is an upstream wgpu change that would enable
+  `vulkanMemoryModel` for passthrough modules (D197): the owner says yes per item.
+- Open coordinator items, from the M10 slices:
+  - the strictness of the `measure.sh` freshness check (a script of the coordinator's work area, not in the repository;
+    named in the coordinator's checkpoint);
+  - RELEASE.md's list of lockfiles to regenerate at a version bump omits `tests/difftest/Cargo.lock`, although its `rg`
+    command still finds every lockfile that names `gust-compute` (m10.r3; the check at the commit to publish);
+  - the m10.b2g review nits (plans/m10/review-m10b2g-opus.md): a future mention of "CubeCL" followed by a number that
+    is not a version fails the version test loudly (a false failure, never a silent pass); rare forms, such as `v0.x`,
+    a lower-case "cubecl" and a bare backtick before the number, are not scanned.
+- What M10 cut or did not reach (plan section 3.4 and STATUS): the benchmark tables and the 890M column (above), W8 and
+  the tiled W9, and every public speed claim. Nothing in the gallery or the guide was cut: all ten entries and all
+  twelve chapters are written. M9's follow-ups above are unchanged by M10 except the items already marked closed in
+  place (O8 and check-release R5).
+
 ## Deferred language/runtime breadth
 
 Additional binding groups and

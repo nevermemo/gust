@@ -3,11 +3,13 @@
 ## Current state
 
 - Branch: `main`
-- Active: M9 (language breadth II) is closed (D176); M10 (publication) is next, and its plan comes first. M8
-  (capability variants, 0.2.0) is closed (D153). The 0.2.0 publish stays the owner's act (D148, RELEASE.md). M7
-  (D126) and MX (D129) are closed, and M6
-  (language breadth I) is closed (D86). See the "Now and next" section of [ROADMAP.md](../ROADMAP.md) and
-  [STATUS.md](STATUS.md).
+- Active: M10 (publication) is closing under D198, and M11 (Realignment, the owner's joint review of the whole
+  project) is next. The release hold D189 is in force, so M10 published nothing: the 0.2.0 candidate `83124ad`
+  stays gated and unpublished, and its release lines, api2b, api3, the publishable benchmark runs and every public
+  speed claim carry to NEXT_TASKS, "M10 follow-ups". Publishing, tagging and yanking stay the owner's acts (D148,
+  RELEASE.md). M9 (language breadth II) is closed (D176), M8 (capability variants) is closed (D153), M7 (D126) and
+  MX (D129) are closed, and M6 (language breadth I) is closed (D86). See the "Now and next" section of
+  [ROADMAP.md](../ROADMAP.md) and [STATUS.md](STATUS.md).
 - M0 is closed (D28), and M0.15 (the CI `unit` job is a required check on `main`) followed on
   2026-11-01. M1 (diagnostics) is closed (D33), M2 (typed host API) is closed (D37), and
   M3 (dual test builds) is closed (D43; `check-full` passed at `5971c12`). M4 (build-time targets and
@@ -26,8 +28,10 @@
 
 ## Evidence
 
-- Last full record: `cargo xtask check-full` and the full `check-release` passed at `ef2a73b` (2026-11-14, 16:16 to 17:40Z, clean tree,
-  M9 close, RTX 5090 / Vulkan, driver 610.88, Slang 2026.22); details in STATUS and D176.
+- Last full record: `cargo xtask check-full` and the full `check-release` at `<to be filled at the close>` (the M10
+  close; the coordinator fills the commit, date, adapter and time); details in STATUS and D185. Before it: both
+  passed on the 0.2.0 candidate `83124ad` (2026-11-15, RTX 5090 / Vulkan) and at `ef2a73b` (2026-11-14, 16:16 to
+  17:40Z, clean tree, M9 close, driver 610.88, Slang 2026.22; D176).
 - CI `unit` and `msrv` jobs green on main.
 - Evidence tiers and labels: [VALIDATION.md](VALIDATION.md).
 

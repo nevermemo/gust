@@ -7,7 +7,8 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## 0.2.0
 
-0.2.0 is the first public release of GUST (D177). A 0.1.0 was prepared on the branch `release/0.1` and was never
+0.2.0 will be the first public release of GUST (D177). It is not published yet: the release waits for the owner's
+review of the whole project (milestone M11; D189, D198). A 0.1.0 was prepared on the branch `release/0.1` and was never
 published: it has no tag and is not on crates.io, so there is nothing to upgrade from, and a reader who meets 0.2.0 on
 crates.io can skip "Changed, and may break code written for the unpublished 0.1.0 line" and "Compatibility with the
 unpublished 0.1.0 line" below. Those two parts are kept for this repository's own fixtures and for anyone who built
@@ -257,6 +258,12 @@ proof.
   `execute_graph`, which takes no lock and is otherwise unchanged. Native only. An addition: `GraphReport` is
   `#[non_exhaustive]`. If reading the timestamps fails, the device's timestamp read-back buffer can stay mapped and a
   later timed call on that device can fail (also true of `dispatch_batch_timed`).
+- The guide (m10.k0 to m10.k3, D182): the documentation-only modules `gust::guide` and `gust_wgpu::guide`, written as
+  rustdoc chapters (why GUST, install and a first program, the authoring model, running kernels, GPU concepts,
+  profiles and routing, semantics and the twin, the newer language features, the browser, benchmark methods,
+  stability and platforms, and internals for contributors). Each listing is a doctest or a copy of a region of a
+  gallery program, and every public type has an example (m10.k2). The modules hold no items, and the chapter set
+  carries no semver promise. The ten gallery programs (`gallery/`) belong to the repository, not to the packages.
 
 ### Deprecated
 

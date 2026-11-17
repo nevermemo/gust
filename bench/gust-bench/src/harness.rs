@@ -56,13 +56,16 @@ pub struct Config {
     pub group: crate::group::Group,
 }
 
+/// The default number of launches the harness times in one window (`Config::batch`).
+pub(crate) const BATCH: usize = 16;
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             samples: crate::judge::SAMPLES_TARGET,
             min_samples: crate::judge::SAMPLES_FLOOR,
             cap: Duration::from_secs_f64(crate::judge::SAMPLE_CAP_SECS),
-            batch: 16,
+            batch: BATCH,
             warmup_end_to_end: 3,
             warmup_dispatch: 5,
             cold_repeats: 3,

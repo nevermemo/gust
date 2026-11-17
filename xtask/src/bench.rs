@@ -458,6 +458,21 @@ const SPIRV_GROUP_ROWS: [&str; 9] = [
     "serial",
 ];
 
+/// The comparator backends that are never table rows: the row id prefix, the comparator's name, and why. Their builds
+/// (`cubecl`, `rust-gpu`) are in `tainting_features`, so a run of them is never publishable.
+const COMPARATOR_ROWS: [(&str, &str, &str); 2] = [
+    (
+        "cubecl-",
+        "CubeCL",
+        "its build is not publishable, and its bounds policy is not the hand rows'",
+    ),
+    (
+        "rustgpu-",
+        "rust-gpu",
+        "its build is not publishable, and its module is not the hand rows' WGSL",
+    ),
+];
+
 /// The group of a filed aggregate against its route (D193). Only the table groups are filed: `publishable` (the WGSL
 /// build) and `spirv` (the SPIR-V route's, checks off on both sides). A `spirv` file must come from the SPIR-V route,
 /// hold only its own rows (`gust-gpu-spirv`, `wgsl-prebuilt-unchecked`, `wgsl-percall-unchecked` and the CPU rows),
@@ -482,10 +497,12 @@ fn check_group(file: &Json, group: &str, route: &str) -> Result<bool, String> {
     };
     match group {
         "publishable" => {
-            if let Some(backend) = points().find(|backend| backend.starts_with("cubecl-")) {
-                return Err(format!(
-                    "a publishable file holds the CubeCL row `{backend}`: the CubeCL comparator is never a table row (its build is not publishable, and its bounds policy is not the hand rows')"
-                ));
+            for (prefix, name, why) in COMPARATOR_ROWS {
+                if let Some(backend) = points().find(|backend| backend.starts_with(prefix)) {
+                    return Err(format!(
+                        "a publishable file holds the {name} row `{backend}`: the {name} comparator is never a table row ({why})"
+                    ));
+                }
             }
             if let Some(backend) = points().find(|backend| backend.ends_with("-unchecked")) {
                 return Err(format!(

@@ -602,6 +602,24 @@ fn a_spirv_group_file_must_come_from_the_spirv_route_with_its_own_rule_and_other
             .replace("\"wgsl-prebuilt-unchecked\"", "\"cubecl-wgpu\""),
             "`cubecl-wgpu`, which is not the spirv group's",
         ),
+        // m10.b4: the rust-gpu comparator row is in no filed table either (its build is not publishable).
+        (
+            "0123456789ab-wgsl",
+            aggregate_of("wgsl", "publishable", "gust-gpu", None)
+                .replace("\"wgsl-prebuilt\"", "\"rustgpu-wgpu\""),
+            "the rust-gpu row `rustgpu-wgpu`",
+        ),
+        (
+            "0123456789ab-spirv",
+            aggregate_of(
+                "spirv",
+                "spirv",
+                "gust-gpu-spirv",
+                Some("wgsl-prebuilt-unchecked"),
+            )
+            .replace("\"wgsl-prebuilt-unchecked\"", "\"rustgpu-wgpu\""),
+            "`rustgpu-wgpu`, which is not the spirv group's",
+        ),
         // A spirv file with no runs, or a timed run without a record, is refused.
         (
             "0123456789ab-spirv",

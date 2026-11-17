@@ -374,7 +374,6 @@ their timing is claimed in this document.
 - A run from the `cubecl` build is marked not publishable (`build.features` lists the feature): a device of its own and
   two more backends in the rotation have not been measured to leave the other rows unchanged, wgpu's default features are
   on for every row (above), and the launches differ in bounds policy from the hand rows (below).
-
 - Licences: the resolved graph with the feature on is permissive (MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, Zlib,
   BSD, ISC, Unlicense, BSL-1.0, Unicode-3.0 and combinations) with one exception, `buildid` 1.1.0 under MPL-2.0 (pulled
   in by `cubecl-runtime`), which D192 admits. D192 also admits `option-ext` under MPL-2.0; it is not in this graph. No

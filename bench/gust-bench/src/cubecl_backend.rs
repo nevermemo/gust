@@ -47,11 +47,11 @@ pub const TUNED: &str = "cubecl-wgpu-tuned";
 const LINE_SIZE: usize = 4;
 
 /// CubeCL's flush policy, pinned (its default is 32 from `CUBECL_WGPU_MAX_TASKS`, read from the environment): it submits
-/// whenever this many tasks are queued. The harness times at most 16 launches in one window, so 64 is more than twice the
-/// largest timed batch and a window never spans a policy submission.
+/// whenever this many tasks are queued. The harness times at most `harness::BATCH` (16) launches in one window, so 64 is
+/// more than twice the largest timed batch and a window never spans a policy submission.
 const TASKS_MAX: usize = 64;
 const _: () = assert!(
-    TASKS_MAX >= 2 * 16,
+    TASKS_MAX >= 2 * crate::harness::BATCH,
     "at least twice the largest timed batch"
 );
 
@@ -145,16 +145,19 @@ pub fn decide<T>(
     }
 }
 
+/// The pinned CubeCL version the run file records, and the version the `wgpu_features` note is stated as of.
+const CUBECL_VERSION: &str = "0.11.4";
+
 /// What a run file records about the comparator (`versions.cubecl`): the CubeCL version, the compiler it ran, and what each
 /// row is, so the file says what the tuned row did.
 pub fn identity() -> Value {
     json!({
-        "cubecl": "0.11.4",
+        "cubecl": CUBECL_VERSION,
         "features": "default-features = false, features = [\"wgpu\"]",
         "compiler": "WGSL (no `spirv` feature): CubeCL emits WGSL, wgpu and naga translate it",
         "tasks_max": TASKS_MAX,
         "memory_config": "default",
-        "wgpu_features": "the cubecl build turns on wgpu's default features for every row of the run (dx12, gles, metal, webgpu, web, parking_lot and others, besides std, vulkan and wgsl): every instance stays Vulkan-only, but wgpu's host-side locking differs from the default build's",
+        "wgpu_features": format!("as of cubecl-wgpu {CUBECL_VERSION}, the cubecl build turns on wgpu's default features for every row of the run (dx12, gles, metal, webgpu, web, parking_lot and others, besides std, vulkan and wgsl): every instance stays Vulkan-only, but wgpu's host-side locking differs from the default build's"),
         "rows": {
             LIKE_FOR_LIKE: "default checked launch (CubeCL clamps an out-of-range buffer index to the last element), CubeDim 1d(256) (W9: 2d(16,16)), line size 1, the hand WGSL's algorithm per workload",
             TUNED: "launch_unchecked (no bounds rewrite), line size 4 (Vector<f32, 4>) for W1 to W3 when n is a multiple of 4, else line size 1; same cube dims; no autotune (it applies to Tunable operation sets, not to hand-launched kernels)",
@@ -869,11 +872,13 @@ mod tests {
         let identity = identity();
         assert_eq!(identity["tasks_max"], TASKS_MAX);
         assert_eq!(identity["memory_config"], "default");
-        assert!(
-            identity["wgpu_features"]
-                .as_str()
-                .is_some_and(|text| text.contains("parking_lot") && text.contains("dx12"))
-        );
+        assert!(identity["wgpu_features"].as_str().is_some_and(|text| {
+            text.starts_with(&format!(
+                "as of cubecl-wgpu {}",
+                identity["cubecl"].as_str().unwrap()
+            )) && text.contains("parking_lot")
+                && text.contains("dx12")
+        }));
     }
 
     #[test]

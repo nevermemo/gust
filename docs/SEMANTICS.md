@@ -260,9 +260,11 @@ describes the intended behaviour and is not evidence.
     `integrate` on the allocation, the active count and the indirect arguments the GPU frame started from and
     produced. All four kernels have a twin, and none uses the opt-out.
 - **Language subset.** 32-bit `f32`, `i32`, `u32`, `bool` and module structs of them (README, "Current subset"). Float
-  arithmetic is `+ - * /`, comparisons and casts: the validator accepts no other method than `.len()`,
-  `.global_id()`, the `Option` / `Result` helpers, the vector and matrix methods and the integer-only `wrapping_*`
-  methods (section 3, slice m7.w), so there is no `sqrt`, `fma` or trigonometry to bound.
+  arithmetic is `+ - * /`, comparisons and casts, and the float math methods of slice m11.math (one row each in the
+  table of section 4, with the bound the WGSL accuracy table allows and the error observed): the validator accepts no
+  other method than `.len()`, `.global_id()`, the `Option` / `Result` helpers, the vector and matrix methods, the
+  integer-only `wrapping_*` methods (section 3, slice m7.w) and those float math methods, so there is no `fma`,
+  `round`, `asin`, `acos` or `hypot` to bound.
   The validator accepts `%` on floats (it rejects only an integer-literal zero as the right operand of `/`, `%`, `/=` and `%=`),
   and no bound is stated for it.
 - **Independent references stay.** Tests of the translator keep an independent host reference as the expected value
@@ -560,13 +562,38 @@ bound, not an observation.
 | `i32 as f32`, `u32 as f32` | any | Nearest, ties to even. | Exact when the value is representable (all `abs(x)` up to 2^24); otherwise either neighbour (15.7.6). | Identical up to 2^24 in magnitude; above it at most 1 ULP, not measured. |
 | `f32 as i32`, `f32 as u32` | truncated value fits the target type | Truncates toward zero. | Truncates toward zero (15.7.6). | Identical. Only in-range `f32 as i32` has a test (`numeric`, against a host reference, on the GPU and on the twin); no test covers `f32 as u32` inside the domain. |
 | float `%` | accepted by the validator, not covered | Not stated. | WGSL inherits it from `x - y * trunc(x/y)` (15.7.4.1). | No bound stated. |
+| `x.abs()`, `a.min(b)`, `a.max(b)`, `x.clamp(lo, hi)`, `x.floor()`, `x.ceil()`, `x.trunc()` (`f32`; m11.math) | domain; `lo <= hi`, no NaN | Exact. | "Correctly rounded" (WGSL 15.7.4.1; `clamp` may differ when `lo > hi`, outside the domain). | Largest error observed 0 over 5000 inputs including edges (equal as values; the sign of a zero is not compared). Measured on the Radeon 890M only; other adapters unmeasured. |
+| `x.fract()` (`f32`; m11.math) | domain | Rust's `x - x.trunc()`, exact. | The helper `x - trunc(x)`: exact subtraction of an exact result. The spec row (WGSL 15.7.4.1) is inherited from `x - floor(x)`, which differs below zero, so ours is a deliberate own helper. | Largest error observed 0 (same inputs as above, negative values included). Measured on the Radeon 890M only; other adapters unmeasured. |
+| `min`, `max`, `clamp`, `abs` on `u32` and `i32` (m11.math) | any value; `lo <= hi`; `abs` not of `i32::MIN` | Exact. | Exact integer result (the Slang intrinsic of the same name). | Identical in 5000 inputs including `u32::MAX`, `i32::MAX`, `i32::MIN` (as a bound) and `2^31`. Measured on the Radeon 890M only; other adapters unmeasured. |
+| `x.sqrt()` (m11.math) | `x >= 0`, normal | The `std` call (IEEE square root, correctly rounded). | Inherited from `1.0 / inverseSqrt(x)` (WGSL 15.7.4.1; `inverseSqrt` 2 ULP, division 2.5 ULP). The test uses 6.5 ULP of the exact value: the 2 ULP of the reciprocal root is up to 4 ULP of its inverse, plus 2.5. | Largest error observed 0.84 ULP of the exact value over 5000 inputs in `(0.001, 10000)`. Measured on the Radeon 890M only; other adapters unmeasured. |
+| `x.sin()`, `x.cos()` (m11.math) | `abs(x) <= pi` | The `std` call; held to the GPU's bound in the test, its own error not measured. | Absolute error at most `2^-11` on `[-pi, pi]` (WGSL 15.7.4.1). | Largest absolute error observed 2.48e-7 (`sin`) and 2.39e-7 (`cos`). Measured on the Radeon 890M only; other adapters unmeasured. |
+| `x.tan()` (m11.math) | `abs(x) <= 1.2` | The `std` call; held to the GPU's bound in the test, its own error not measured. | Inherited from `sin(x) / cos(x)` (WGSL 15.7.4.1); the test propagates `2^-11` through the quotient and adds 3 ULP. | Largest absolute error observed 8.26e-7. Measured on the Radeon 890M only; other adapters unmeasured. |
+| `x.atan()`, `y.atan2(x)` (m11.math) | `abs(x) <= 50` for `atan`; `abs(x)` in `[2^-126, 2^126]`, `y` finite and normal for `atan2` (the test uses `abs(x) >= 0.01`, `abs(y) >= 0.01`, `abs(x), abs(y) <= 10`) | The `std` call; held to the GPU's bound in the test, its own error not measured. | 4096 ULP (WGSL 15.7.4.1; `atan2` on the domain stated). | Largest error observed 325 ULP (`atan`) and 336 ULP (`atan2`). Measured on the Radeon 890M only; other adapters unmeasured. |
+| `x.exp()`, `x.exp2()` (m11.math) | `abs(x) <= 10` for `exp`, `abs(x) <= 14` for `exp2` | The `std` call; held to the GPU's bound in the test, its own error not measured. | `3 + 2 * abs(x)` ULP (WGSL 15.7.4.1). | Largest error observed 7.6 ULP (`exp`) and 0.75 ULP (`exp2`). Measured on the Radeon 890M only; other adapters unmeasured. |
+| `x.ln()`, `x.log2()` (m11.math) | `x` in `(0.001, 10000)` | The `std` call; held to the GPU's bound in the test, its own error not measured. | Absolute error `2^-21` on `[0.5, 2]`, else 3 ULP (WGSL 15.7.4.1). | Largest error observed 1.8 ULP (`ln`) and 1.0 ULP (`log2`) outside `[0.5, 2]`; absolute 5.4e-8 (`ln`) and 5.6e-8 (`log2`) inside it, over a sweep of 300 inputs in `[0.5, 2]`. Measured on the Radeon 890M only; other adapters unmeasured. |
+| `b.powf(e)` (m11.math) | `b` in `[0.25, 8]`, `e` in `[-3, 3]` | The `std` call; held to the GPU's bound in the test, its own error not measured. | Inherited from `exp2(e * log2(b))` (WGSL 15.7.4.1). The test derives it from the `exp2` row (`3 + 2 * abs(z)` ULP, `z = e * log2(b)`) plus the `log2` error carried through `e` and the product rounding (`powf_bound_ulps` in `float_math.rs`). | Largest error observed 10.9 ULP. Measured on the Radeon 890M only; other adapters unmeasured. |
+| `std::f32::consts::{PI, TAU, E}` (m11.math) | any | The `f32` constants. | The same bits (a literal that round-trips). | Bit-equal on the GPU and the twin. Measured on the Radeon 890M only; other adapters unmeasured. |
 | NaN, infinity, subnormal operands or results, out-of-range casts | outside the domain | IEEE 754, kept subnormals, saturating casts. | Indeterminate, flushable, clamped (15.7.2, 15.7.6). | Ledger rows KM-05 to KM-08. |
 
 Nothing in this table has been measured on a GPU except through the ledger rows, and the table is not a claim about
 the RTX 5090. Several existing tests compare float results exactly with a host value (for example
 `translated_semantics_execute_on_gpu` and two tests in `typed.rs`), but on exactly representable inputs, so no
 existing test exercises float rounding. The first such test is the polynomial example's twin-versus-GPU assertion
-(m3.c, below). None of this makes a row above proven.
+(m3.c, below). None of this makes a row above proven. The rows of the float math methods (slice m11.math) are the
+exception to "nothing measured": `crates/gust-wgpu/tests/float_math.rs` ran on the Radeon 890M only, and its bounds are the f32
+rows of the WGSL accuracy table (15.7.4.1, read from the gpuweb editor's draft source), the inherited ones derived from
+the rows the specification names, never fitted to observations.
+
+**Edges of the float math methods (slice m11.math; D39: documented, never chased).** None of these inputs is fed to the
+twin or the GPU by a test. `min` and `max` on a `bool`, `Option` or array receiver pass rustc but are not supported: the lowering emits the Slang call
+unchanged and whatever slangc does is unspecified. `a.min(b)` and `a.max(b)` with a NaN operand: the twin returns the other operand, the GPU is
+unspecified. `x.clamp(lo, hi)` with `lo > hi` or a NaN bound: the twin panics, the GPU is unspecified. `i32::MIN.abs()`:
+the twin panics in a debug build, the GPU is unspecified. `b.powf(e)` with a negative `b`: the twin gives NaN or the
+`pow` rule, the GPU is unspecified (WGSL inherits it from `exp2(e * log2(b))`). `ln` and `log2` of zero and of a negative:
+the twin gives `-inf` and NaN, the GPU is unspecified. `sin`, `cos` and `tan` outside `[-pi, pi]` (and `tan` near its
+poles), `sqrt` of a negative, `atan2` with both operands zero, and any NaN, infinity or subnormal operand: outside the
+domain of the bounds above. An unsuffixed integer literal operand of `min`, `max` or `clamp` is refused (GUST-E0326),
+because Slang types it `int` where rustc may type it `u32`.
 
 **Limitation: reassociation.** WGSL 15.7.5 lets an implementation regroup a chain of additions with no accuracy
 condition, so the GPU may add in a different order than the source. The twin adds in the written order.

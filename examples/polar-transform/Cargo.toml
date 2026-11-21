@@ -1,0 +1,15 @@
+[package]
+name = "polar-transform"
+description = "Float math in a kernel: polar coordinates and rotation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+gust.workspace = true
+gust-wgpu = { workspace = true, features = ["slang-runtime"] }
+
+[lints]
+workspace = true

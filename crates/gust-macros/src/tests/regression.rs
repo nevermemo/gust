@@ -1002,7 +1002,7 @@ fn expression_and_binding_rejections_carry_their_codes() {
     for (body, code) in [
         ("let y = foo(1u32);", Code::UnknownCall),
         ("let y = id.global_id::<u32>();", Code::BuiltinTypeArguments),
-        ("let y = x.abs();", Code::UnsupportedMethod),
+        ("let y = x.round();", Code::UnsupportedMethod),
         ("let y = out.global_id();", Code::GlobalIdReceiver),
         ("let f = async |a: u32| -> u32 { a };", Code::Closure),
         ("let f = |a: u32| a;", Code::ClosureSignature),
@@ -1194,7 +1194,7 @@ fn unsupported_name_paths_are_rejected() {
             Code::ForeignPath,
         ),
         (
-            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let v = core::f32::consts::PI; } }",
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let v = core::f32::consts::LN_2; } }",
             Code::ForeignPath,
         ),
         (
@@ -5320,14 +5320,14 @@ fn wrapping_methods_are_checked_by_name_and_argument_count() {
         "let y = x.wrapping_div(1u32);",
         "let y = x.wrapping_rem(1u32);",
         "let y = x.pow(2u32);",
-        "let y = x.min(3u32);",
+        "let y = x.hypot(3u32);",
         "let y = x.checked_add(1u32);",
         "let y = x.saturating_sub(1u32);",
     ] {
         assert_rejected(&kernel_with_body(body), Code::MethodNotInDialect);
     }
     for body in [
-        "let y = x.abs();",
+        "let y = x.round();",
         "let y = x.wrapping_abs();",
         "let y = x.count_ones();",
     ] {
@@ -5370,7 +5370,7 @@ fn the_not_in_the_dialect_text_lists_the_accepted_methods() {
     // The old text said built-ins "do not accept arguments"; that is no longer the message for a non-built-in.
     assert!(!text.contains("do not accept arguments"), "{text}");
     // E0305 lists the same methods.
-    let text = translate(&kernel_with_body("let y = x.abs();"))
+    let text = translate(&kernel_with_body("let y = x.round();"))
         .unwrap_err()
         .to_string();
     assert!(
@@ -5401,7 +5401,7 @@ fn names_in_fn(source: &str, signature: &str) -> Vec<String> {
 fn every_method_table_name_has_an_emitter_arm_and_is_in_the_accepted_text() {
     let validate = include_str!("../validate/mod.rs");
     let math = include_str!("../math_types.rs");
-    let accepted = translate(&kernel_with_body("let y = x.abs();"))
+    let accepted = translate(&kernel_with_body("let y = x.round();"))
         .unwrap_err()
         .to_string();
     let wrapping = names_in_fn(validate, "pub(crate) fn wrapping_arity");
@@ -5437,7 +5437,7 @@ fn a_type_argument_on_a_method_outside_the_dialect_reports_the_method() {
         Code::MethodNotInDialect,
     );
     assert_rejected(
-        &kernel_with_body("let y = x.abs::<u32>();"),
+        &kernel_with_body("let y = x.round::<u32>();"),
         Code::UnsupportedMethod,
     );
     let text = translate(&kernel_with_body("let y = x.checked_add::<u32>(1u32);"))
@@ -10054,5 +10054,157 @@ fn raw_global_id_len_option_and_result_methods_are_the_plain_ones() {
         let plain = translate(&plain_source).unwrap_or_else(|error| panic!("{method}: {error}"));
         let raw = translate(&raw_source).unwrap_or_else(|error| panic!("{method} (raw): {error}"));
         assert_eq!(plain, raw, "{method}");
+    }
+}
+
+/// Slice m11.math: the lowered text of every scalar math method, written by hand from the rules of the brief and
+/// independent of the emitter's table.
+#[test]
+fn scalar_math_methods_lower_to_the_slang_intrinsics() {
+    for (body, expected) in [
+        ("let y = f.abs();", "var y = abs(f);"),
+        ("let y = f.min(1.0);", "var y = min(f, 1.0);"),
+        ("let y = f.max(1.0);", "var y = max(f, 1.0);"),
+        ("let y = f.clamp(0.0, 1.0);", "var y = clamp(f, 0.0, 1.0);"),
+        ("let y = f.floor();", "var y = floor(f);"),
+        ("let y = f.ceil();", "var y = ceil(f);"),
+        ("let y = f.trunc();", "var y = trunc(f);"),
+        ("let y = f.sqrt();", "var y = sqrt(f);"),
+        ("let y = f.sin();", "var y = sin(f);"),
+        ("let y = f.cos();", "var y = cos(f);"),
+        ("let y = f.tan();", "var y = tan(f);"),
+        ("let y = f.atan();", "var y = atan(f);"),
+        ("let y = f.exp();", "var y = exp(f);"),
+        ("let y = f.exp2();", "var y = exp2(f);"),
+        ("let y = f.log2();", "var y = log2(f);"),
+        ("let y = f.ln();", "var y = log(f);"),
+        ("let y = f.powf(2.0);", "var y = pow(f, 2.0);"),
+        // The receiver is y: `y.atan2(x)` is `atan2(y, x)`.
+        ("let y = f.atan2(1.0);", "var y = atan2(f, 1.0);"),
+        // Rust's `fract` is `x - x.trunc()`, not Slang's `frac` (`x - floor(x)`), and the receiver is written once.
+        ("let y = f.fract();", "var y = __gust_fract(f);"),
+        ("let y = x.min(3u32);", "var y = min(x, uint(3));"),
+        (
+            "let y = x.max(1u32).clamp(2u32, 9u32);",
+            "var y = clamp(max(x, uint(1)), uint(2), uint(9));",
+        ),
+        ("let y = std::f32::consts::PI;", "var y = float(3.1415927);"),
+        (
+            "let y = core::f32::consts::TAU;",
+            "var y = float(6.2831855);",
+        ),
+        ("let y = std::f32::consts::E;", "var y = float(2.7182817);"),
+    ] {
+        let source = translate(&kernel_with_body(&format!("let f = 2.5f32; {body}")))
+            .unwrap_or_else(|error| panic!("{body}: {error}"));
+        assert!(source.contains(expected), "{body}: {source}");
+        assert_eq!(
+            source.contains("float __gust_fract(float x) { return x - trunc(x); }"),
+            body.contains("fract"),
+            "{body}: the fract helper is defined exactly when used"
+        );
+        assert!(!source.contains("frac("), "{body}: {source}");
+    }
+}
+
+#[test]
+fn the_constants_round_trip_as_f32() {
+    for (text, value) in [
+        ("3.1415927", std::f32::consts::PI),
+        ("6.2831855", std::f32::consts::TAU),
+        ("2.7182817", std::f32::consts::E),
+    ] {
+        assert_eq!(text.parse::<f32>().unwrap().to_bits(), value.to_bits());
+    }
+    // Only these three, and only the `std` and `core` paths.
+    for body in [
+        "let y = std::f32::consts::LN_2;",
+        "let y = f32::consts::PI;",
+        "let y = std::f64::consts::PI;",
+        "let y = f32::EPSILON;",
+    ] {
+        assert!(translate(&kernel_with_body(body)).is_err(), "{body}");
+    }
+}
+
+#[test]
+fn every_scalar_math_name_has_an_emitter_arm_and_is_in_the_accepted_text() {
+    let validate = include_str!("../validate/mod.rs");
+    let accepted = translate(&kernel_with_body("let y = x.round();"))
+        .unwrap_err()
+        .to_string();
+    let names = names_in_fn(validate, "pub(crate) fn scalar_math_arity");
+    assert_eq!(names.len(), 19, "{names:?}");
+    for name in &names {
+        let arity = crate::validate::scalar_math_arity(name).expect("a table name has an arity");
+        let arguments = ["", "1.0", "0.0, 1.0"][arity];
+        let body = format!("let f = 2.5f32; let y = f.{name}({arguments});");
+        // The emitter panics on a name without an arm, so this fails when one is missing.
+        let source =
+            translate(&kernel_with_body(&body)).unwrap_or_else(|error| panic!("{body}: {error}"));
+        assert!(source.contains("var y = "), "{name}: {source}");
+        assert!(
+            accepted.contains(&format!(".{name}(")),
+            "`.{name}(` is missing from the accepted text: {accepted}"
+        );
+    }
+}
+
+#[test]
+fn scalar_math_methods_check_their_argument_counts() {
+    for body in [
+        "let y = f.sqrt(1.0);",
+        "let y = f.min();",
+        "let y = f.clamp(1.0);",
+        "let y = f.atan2();",
+    ] {
+        assert_rejected(
+            &kernel_with_body(&format!("let f = 2.5f32; {body}")),
+            Code::BuiltinArguments,
+        );
+    }
+    assert_rejected(
+        &kernel_with_body("let f = 2.5f32; let y = f.sqrt::<f32>();"),
+        Code::BuiltinTypeArguments,
+    );
+}
+
+#[test]
+fn an_unsuffixed_integer_literal_operand_of_min_max_and_clamp_is_refused() {
+    // Slang types `3` `int`; rustc types it `u32` from the receiver: the two differ (GUST-E0326's trap).
+    for body in [
+        "let y = x.min(3);",
+        "let y = x.max(3);",
+        "let y = x.clamp(1, 9u32);",
+        "let y = x.clamp(1u32, 9);",
+        "let y = x.min((3));",
+        "let y = x.min(1 + 2);",
+        "let y = 3.min(x);",
+    ] {
+        assert_rejected(&kernel_with_body(body), Code::UnsuffixedLiteralLet);
+    }
+    let text = translate(&kernel_with_body("let y = x.min(3);"))
+        .unwrap_err()
+        .to_string();
+    assert!(text.contains("add a suffix"), "{text}");
+    // A suffix, an annotation-free float literal and a typed operand are accepted.
+    for body in [
+        "let y = x.min(3u32);",
+        "let f = 2.5f32; let y = f.min(3.0);",
+        "let y = x.min(x + 1u32);",
+        "let y = x.min(7u32 as u32);",
+    ] {
+        translate(&kernel_with_body(body)).unwrap_or_else(|error| panic!("{body}: {error}"));
+    }
+}
+
+#[test]
+fn the_names_of_the_scalar_math_methods_are_reserved_for_module_methods() {
+    for name in ["abs", "min", "sqrt", "fract", "atan2", "powf", "ln"] {
+        let source = format!(
+            "mod bad {{ pub struct S {{ pub a: f32 }} impl S {{ pub fn {name}(&self) -> f32 {{ self.a }} }} \
+             #[kernel] pub fn run(id: SV_DispatchThreadID) {{}} }}"
+        );
+        assert_rejected(&source, Code::MethodNameClash);
     }
 }

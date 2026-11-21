@@ -1057,9 +1057,12 @@ pub(crate) struct GpuSuitePin {
 /// `tests/graph.rs` (the timed graph: same outputs as an untimed one, indirect passes, `pixel` passes, no dispatch
 /// pass, zero-element dispatches at both ends, and the shared profiler under two threads) and one new doctest,
 /// `HeadlessDevice::execute_graph_timed`; 504 + 1 + 6 + 1 = 512.
+///
+/// Slice m11.math: 512 over 49 became 516 over 50. The new test file `tests/float_math.rs` holds four tests and adds
+/// one `test result:` line. Updated by count, not from a full Gpu suite run.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 512,
-    result_lines: 49,
+    passed: 516,
+    result_lines: 50,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

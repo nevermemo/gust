@@ -12,6 +12,7 @@ members = [
     "examples/map-chain",
     "examples/polynomial",
     "examples/particle-step",
+    "examples/polar-transform",
     "examples/shape-bench",
     "examples/signal-pipeline",
     "examples/staged-graph",

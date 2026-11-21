@@ -1066,11 +1066,11 @@ pub(crate) struct GpuSuitePin {
 /// `rem_euclid`, the integer methods, `asin` and `acos`; the file runs eight tests, the one `test result:` line is
 /// unchanged). Updated by count, not from a full Gpu suite run.
 ///
-/// Slice m11.fetch: 520 over 50 became 522 over 51. The new test file `tests/fetch.rs` holds two tests (the scatter by
-/// the old value of `atomic_add`, the signed ticket cell) and adds one `test result:` line. Updated by count, not from
+/// Slice m11.fetch: 520 over 50 became 524 over 51 (522 in the first round, four tests after the fix round). The new test file `tests/fetch.rs` holds four tests (the scatter by
+/// the old value of `atomic_add` in 1-wide and 64-wide workgroups, the signed ticket cell, the wrapping `u32` ticket cell) and adds one `test result:` line. Updated by count, not from
 /// a full Gpu suite run.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 522,
+    passed: 524,
     result_lines: 51,
 };
 

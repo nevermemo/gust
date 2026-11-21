@@ -1628,6 +1628,24 @@ fn the_old_value_of_atomic_add_is_the_whole_initializer_of_a_let() {
         statement.contains("    counter[id.x].add(uint(1));"),
         "the statement form: {statement}"
     );
+    // The message of `atomic_add` outside a `let` initializer names the accepted form; the others keep the old text.
+    let message = |body: &str| {
+        translate(&format!(
+            "mod m {{ #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>, mut out: RWStructuredBuffer<uint>) {{ {body} }} }}"
+        ))
+        .expect_err(body)
+        .to_string()
+    };
+    let add = message("out[0] = atomic_add(&mut counter[0], 1u32);");
+    assert!(
+        add.contains("only as the whole initializer of a `let`"),
+        "{add}"
+    );
+    let exchange = message("let old = atomic_exchange(&mut counter[0], 1u32);");
+    assert!(
+        exchange.contains("`atomic_exchange` is supported only as a statement, not as a value"),
+        "{exchange}"
+    );
     // A float cell, a shared reference and a read of the atomic buffer keep their codes.
     assert_rejected(
         "mod m { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<float>) { let old = atomic_add(&mut counter[0], 1.0f32); } }",

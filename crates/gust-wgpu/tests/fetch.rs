@@ -5,7 +5,8 @@
 //! Which item gets which slot is schedule-dependent and unspecified (docs/SEMANTICS.md, `m11.fetch`), so nothing here
 //! compares a per-item slot: the counts are checked exactly against the host, and for every cell the ids written in
 //! slots `0..count` are compared as a multiset with the host's list for that cell, with every other slot untouched.
-//! `ticket_signed` checks the old values of a contended `i32` cell as a set. The twin is checked the same way, and
+//! `scatter_wide` is the same scatter in 64-wide workgroups with a bounds check. `ticket_signed` checks the old values of
+//! a contended `i32` cell as a set, and `ticket_wrap` those of a `u32` cell that wraps past 2^32. The twin is checked the same way, and
 //! its own order (ascending, one invocation at a time) is asserted separately.
 
 include!("../../../tests/fixtures/fetch.rs");
@@ -77,8 +78,11 @@ fn check_scatter(who: &str, counts: &[u32], out: &[u32], cells: &[Vec<u32>]) -> 
     checked
 }
 
+/// A scatter test of the fixture kernel `$kernel` (the same checks on the GPU and on the twin).
+macro_rules! scatter_test {
+    ($name:ident, $kernel:ident) => {
 #[test]
-fn atomic_add_old_values_scatter_items_to_their_cells() {
+fn $name() {
     let (keys, cells) = host_cells();
     let heaviest = cells.iter().map(Vec::len).max().unwrap();
     assert!(heaviest <= CAP, "the host's heaviest cell must fit CAP");
@@ -105,7 +109,7 @@ fn atomic_add_old_values_scatter_items_to_their_cells() {
     );
     device
         .dispatch_buffers(
-            &fetch::scatter::DESCRIPTOR,
+            &fetch::$kernel::DESCRIPTOR,
             ITEMS,
             &[
                 BufferBinding::read_only(&key_buffer).independent_length(),
@@ -127,7 +131,7 @@ fn atomic_add_old_values_scatter_items_to_their_cells() {
     let twin_keys = cpu.buffer(&keys);
     let twin_counts = cpu.buffer(&[0u32; CELLS as usize]);
     let twin_out = cpu.buffer(&vec![UNWRITTEN; CELLS as usize * CAP]);
-    fetch::scatter::dispatch(
+    fetch::$kernel::dispatch(
         &cpu,
         ITEMS,
         Independent(&twin_keys),
@@ -148,6 +152,14 @@ fn atomic_add_old_values_scatter_items_to_their_cells() {
         );
     }
 }
+    };
+}
+
+scatter_test!(atomic_add_old_values_scatter_items_to_their_cells, scatter);
+scatter_test!(
+    atomic_add_old_values_scatter_in_64_wide_workgroups,
+    scatter_wide
+);
 
 #[test]
 fn signed_atomic_add_old_values_are_a_set_of_prefix_sums() {
@@ -199,4 +211,56 @@ fn signed_atomic_add_old_values_are_a_set_of_prefix_sums() {
     let mut sorted = twin;
     sorted.sort_unstable();
     assert_eq!(sorted, expected, "twin: the same set as the GPU");
+}
+
+#[test]
+fn unsigned_atomic_add_old_values_wrap_modulo_2_pow_32() {
+    const N: u32 = 257;
+    const START: u32 = u32::MAX - 100;
+    // The prefix sums modulo 2^32: 101 values below the wrap, then 0, 1, ..
+    let expected: Vec<u32> = (0..N).map(|k| START.wrapping_add(k)).collect();
+    let mut expected_sorted = expected.clone();
+    expected_sorted.sort_unstable();
+    assert!(
+        expected.contains(&0) && expected.contains(&u32::MAX),
+        "the case must cross zero"
+    );
+
+    let device =
+        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let info = device.adapter_info();
+    eprintln!("adapter: {} backend: {:?}", info.name, info.backend);
+    let cell = device.create_typed_buffer("fetch wrap cell", &[START], GpuBufferAccess::ReadWrite);
+    let out = device.create_typed_buffer(
+        "fetch wrap out",
+        &vec![0u32; N as usize],
+        GpuBufferAccess::ReadWrite,
+    );
+    device
+        .dispatch_buffers(
+            &fetch::ticket_wrap::DESCRIPTOR,
+            N,
+            &[
+                BufferBinding::read_write(&cell).independent_length(),
+                BufferBinding::read_write(&out).independent_length(),
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        device.read_typed_buffer(&cell).unwrap(),
+        vec![START.wrapping_add(N)],
+        "gpu: the cell total wraps exactly"
+    );
+    let mut gpu = device.read_typed_buffer(&out).unwrap();
+    gpu.sort_unstable();
+    assert_eq!(gpu, expected_sorted, "gpu: the old values, as a set");
+
+    let cpu = CpuDevice::new();
+    let twin_cell = cpu.buffer(&[START]);
+    let twin_out = cpu.buffer(&vec![0u32; N as usize]);
+    fetch::ticket_wrap::dispatch(&cpu, N, Independent(&twin_cell), Independent(&twin_out)).unwrap();
+    assert_eq!(twin_cell.read(), vec![START.wrapping_add(N)], "twin total");
+    let mut twin = twin_out.read();
+    twin.sort_unstable();
+    assert_eq!(twin, expected_sorted, "twin: the same set as the GPU");
 }

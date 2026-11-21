@@ -1065,12 +1065,13 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   type annotation) binds the value the cell held before this invocation's add; the call must be the whole initializer
   of the `let`. It lowers to the same Slang call as the statement form, `c[i].add(..)` (Slang's `Atomic<T>.add` returns
   the old value), with the result bound to the local. With n adds to one cell in one dispatch, the old values returned
-  are a permutation of the prefix sums that the adds produce in some order (for adds of 1 to a cell that held 0: the
-  values 0 to n-1, each once); which invocation gets which value is schedule-dependent and unspecified on the GPU and
+  are, for a cell that receives only `atomic_add` in the dispatch, a permutation of the prefix sums that the adds
+  produce in some order, modulo 2^32 (for adds of 1 to a cell that held 0: the values 0 to n-1, each once; a cell that
+  also receives another kind of operation has no such statement); which invocation gets which value is schedule-dependent and unspecified on the GPU and
   on the twin, and the per-cell total stays exact. The twin runs one invocation at a time in ascending order, so it
   returns the prefix sums in invocation order (the invocation with id k gets k for adds of 1 to a cell that held 0):
   one member of the set, its own order and nothing else. Tests of such kernels compare sets (the multiset of values or of the ids written by slot, with
-  every slot below the count filled and none above), never a per-invocation value, and never the twin's slot against
+  every slot below the count filled and none above), never a per-invocation GPU value, and never the twin's slot against
   the GPU's. The value of `atomic_min`, `atomic_max`, `atomic_exchange` and `atomic_compare_exchange`, and the value of
   `atomic_add` in any other position (an operand, an index, an argument, an assignment, a condition), stay
   `GUST-E0606`.
@@ -1215,7 +1216,8 @@ A statement here has the **proven** label of section 2: one test asserts the sam
 and against an independent host reference, on the inputs the test uses, and the result lies inside the set that the
 WGSL specification allows. It is a statement about those inputs and operations inside the defined domain (section 3),
 not a general theorem. The twin half is `cfg(test)` code of the test crate (slice m3.d); the GPU half ran on the
-adapter in section 1.
+adapter in section 1, except the old value of `atomic_add` (`fetch.rs`, `m11.fetch`), whose GPU half ran on the AMD
+Radeon 890M only.
 
 - **Integer, `bool` and control-flow results of the fixture kernels**, with element counts 1, 63, 64, 65 and 257:
   `semantics` (`translated_semantics_execute_on_gpu`: integers and the float branches on small exactly representable
@@ -1225,8 +1227,9 @@ adapter in section 1.
   compare-exchange, and signed `atomic_add` and `atomic_exchange`. Not proven: the succeeding compare-exchange (single
   and signed), because a weak compare-exchange may fail spuriously on the GPU (section 6), and the contended
   exchange and compare-exchange, where the targets are allowed to differ (KM-09). The old value of `atomic_add`
-  (`fetch.rs`, `m11.fetch`): a scatter of items to cells by the slot that the old value gives, and a signed ticket cell,
-  compared as sets on the GPU and on the twin.
+  (`fetch.rs`, `m11.fetch`): a scatter of items to cells by the slot that the old value gives (one invocation per
+  workgroup and a 64-wide workgroup with a bounds check, which exercises wave-aggregated atomics), a signed ticket cell,
+  and a `u32` ticket cell that wraps past 2^32, compared as sets on the GPU (Radeon 890M only) and on the twin.
 - **The wrapping methods** (slice m7.w): `wrapping_add`, `wrapping_sub`, `wrapping_mul` and `wrapping_neg` on `u32` and
   `i32`, asserted equal on the GPU, on the twin, in plain Rust's own `wrapping_*` and against exact `i128` arithmetic
   reduced modulo 2^32, over every operation on every pair of seven edge values per type, including `u32::MAX`,

@@ -970,7 +970,8 @@ recorded in D18. The `loops` fixture locks the Slang, both targets compile, and 
 real-GPU test matches an independent host reference (closed forms where possible) at
 workgroup boundaries, including a body that shrinks its own end bound.
 
-Atomics are statement-only calls on a direct `&mut buffer[index]` element of a
+Atomics are statement calls (the old value of `atomic_add` may also be the initializer of a `let`, m11.fetch; the others
+return no value) on a direct `&mut buffer[index]` element of a
 `RWStructuredBuffer<u32>` or `RWStructuredBuffer<i32>` (T10). `u32` accepts
 `atomic_add`, `atomic_min`, `atomic_max`, `atomic_exchange`, and
 `atomic_compare_exchange`; `i32` accepts all of them except min and max. A buffer used

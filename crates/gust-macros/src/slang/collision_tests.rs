@@ -108,6 +108,8 @@ fn expected_pieces(position: Position, emitted: &str) -> Vec<String> {
 fn reachable(position: Position, name: &str) -> bool {
     !name.starts_with("__Gust")
         && !(position == Position::Struct && MAPPED_TYPE_NAMES.contains(&name))
+        // A struct named `Texture2D` is a Rust-side texture type, refused with GUST-E0736 (m11.tx).
+        && !(position == Position::Struct && name == "Texture2D")
 }
 
 #[test]
@@ -191,8 +193,12 @@ fn the_class_2_entries_are_the_names_the_emitted_text_uses() {
         "GroupMemoryBarrierWithGroupSync",
         "Optional",
         "RWStructuredBuffer",
+        "RWTexture2D",
+        "SamplerState",
         "StructuredBuffer",
+        "Texture2D",
         "Tuple",
+        "WTexture2D",
         "WaveActiveAllTrue",
         "WaveActiveAnyTrue",
         "WaveActiveBallot",
@@ -729,12 +735,13 @@ fn a_struct_named_like_the_trait_or_impl_keyword_is_renamed_and_the_keywords_sta
     }
 }
 
-/// Slice m11.zc, measured at the validator: which user declarations of the type names of the texture and sampler
-/// lowering are refused. `Texture2D` and `Sampler` are Rust-side texture types, so a user struct of either name is
-/// refused (GUST-E0736); `RWTexture2D`, `WTexture2D` and `SamplerState` are not Rust types of the dialect, so nothing
-/// refuses a struct, a helper function, a local, a field or a parameter of those names, and the table does not rename
-/// them. That is a measured fact, not a decision: the emitted text of a module with such a struct and a texture
-/// parameter spells both with the same name (second half of the test), which is for the owner to rule on.
+/// Slice m11.tx: which user declarations of the type names of the texture and sampler lowering are refused, and what is
+/// emitted for the others. `Texture2D` and `Sampler` are Rust-side texture types, so a user struct of either name is
+/// refused (GUST-E0736). `RWTexture2D`, `WTexture2D` and `SamplerState` are not Rust types of the dialect, so nothing
+/// refuses a declaration of those names in any of the six positions; they are Slang's own texture and sampler types,
+/// which the emitter writes for the texture and sampler parameters, so the collision table renames them (measured with
+/// slangc, `crates/gust/tests/diagnostics.rs`), and `Texture2D` joins them for the kernel-parameter position. The
+/// second half checks the lowered text of a module that has all of it.
 #[test]
 fn texture_and_sampler_names_are_refused_only_as_struct_names_of_the_rust_side_types() {
     for name in ["Texture2D", "Sampler"] {
@@ -756,7 +763,7 @@ fn texture_and_sampler_names_are_refused_only_as_struct_names_of_the_rust_side_t
             }
         }
     }
-    // The emitted type names are the user's names where a user struct has one.
+    // The three structs are renamed and the declarations GUST emits for the parameters are not.
     let text = emit(
         "mod m {
             pub struct RWTexture2D { pub v: float }
@@ -768,18 +775,63 @@ fn texture_and_sampler_names_are_refused_only_as_struct_names_of_the_rust_side_t
                 mut image: StorageTexture2D<R32Float>,
                 filter: Sampler,
                 mut out: WriteTexture2D<Rgba32Float>,
-            ) {}
+                mut a: RWStructuredBuffer<RWTexture2D>,
+                mut b: RWStructuredBuffer<WTexture2D>,
+                mut c: RWStructuredBuffer<SamplerState>,
+            ) {
+                let s = RWTexture2D { v: 1.0 };
+                a[id.x] = s;
+            }
         }",
     )
     .expect("the module is accepted");
-    for piece in [
-        "struct RWTexture2D",
-        "struct WTexture2D",
-        "struct SamplerState",
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    for line in [
+        "struct __gust_r_RWTexture2D",
+        "struct __gust_r_WTexture2D",
+        "struct __gust_r_SamplerState",
+        "__gust_r_RWTexture2D s = __gust_struct_0;",
         "RWTexture2D<float> image;",
         "WTexture2D<float4> out;",
         "SamplerState filter;",
+        "RWStructuredBuffer<__gust_r_RWTexture2D> a;",
+        "RWStructuredBuffer<__gust_r_WTexture2D> b;",
+        "RWStructuredBuffer<__gust_r_SamplerState> c;",
     ] {
-        assert!(text.contains(piece), "`{piece}` missing in\n{text}");
+        assert!(
+            lines.iter().any(|candidate| candidate.ends_with(line)),
+            "`{line}` missing in\n{text}"
+        );
+    }
+    for bare in [
+        "struct RWTexture2D",
+        "struct WTexture2D",
+        "struct SamplerState",
+    ] {
+        assert!(!lines.contains(&bare), "`{bare}` left in\n{text}");
+    }
+    // A kernel parameter named `Texture2D` (the global position) is renamed; the texture type stays.
+    let text = emit(
+        "mod m {
+            #[kernel]
+            pub fn run(
+                id: SV_DispatchThreadID,
+                mut r#Texture2D: RWStructuredBuffer<float>,
+                image: Texture2D<f32>,
+            ) {
+                r#Texture2D[id.x] = image.load(id.x, 0u32);
+            }
+        }",
+    )
+    .expect("the module is accepted");
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    for line in [
+        "RWStructuredBuffer<float> __gust_r_Texture2D;",
+        "Texture2D<float> image;",
+    ] {
+        assert!(
+            lines.iter().any(|candidate| candidate.ends_with(line)),
+            "`{line}` missing in\n{text}"
+        );
     }
 }

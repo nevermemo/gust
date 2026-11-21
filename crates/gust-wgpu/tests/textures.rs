@@ -2860,3 +2860,158 @@ fn the_fixture_kernels_that_sample_agree_with_the_twin_within_the_bound() {
         );
     }
 }
+
+// ==== slice m11.tx: user structs named like the Slang texture and sampler types ====
+
+#[gust::gpu]
+mod renamed_texture_names {
+    // These three names are Slang's own texture and sampler types, which the emitter writes for the parameters below.
+    // The collision table renames them in the emitted text, so the user's structs and the emitted declarations coexist.
+    pub struct RWTexture2D {
+        pub a: u32,
+    }
+
+    pub struct WTexture2D {
+        pub b: u32,
+    }
+
+    pub struct SamplerState {
+        pub c: u32,
+    }
+
+    // `WTexture2D` and `SamplerState` are fields of the element of the second buffer (the lint allows seven parameters).
+    pub struct Rows {
+        pub write: WTexture2D,
+        pub sampler: SamplerState,
+    }
+
+    #[kernel(workgroup_size(8, 8, 1))]
+    pub fn run(
+        id: SV_DispatchThreadID,
+        image: Texture2D<f32>,
+        filter: Sampler,
+        mut field: StorageTexture2D<R32Float>,
+        mut out: WriteTexture2D<Rgba32Float>,
+        mut a_rows: RWStructuredBuffer<RWTexture2D>,
+        mut rows: RWStructuredBuffer<Rows>,
+    ) {
+        let w = field.width();
+        let h = field.height();
+        if id.x < w && id.y < h {
+            let i = id.y * w + id.x;
+            // Nearest sampling at the texel centre reads the texel itself.
+            let u = (id.x as f32 + 0.5f32) / (w as f32);
+            let v = (id.y as f32 + 0.5f32) / (h as f32);
+            let seen = image.sample(filter, u, v);
+            let old = field.load(id.x, id.y);
+            field.store(id.x, id.y, old + seen);
+            out.store(id.x, id.y, Vec4::new(seen, old, 3.0f32, 4.0f32));
+            a_rows[i] = RWTexture2D {
+                a: id.x * 100u32 + id.y,
+            };
+            let write = WTexture2D {
+                b: id.y * 1000u32 + id.x + 7u32,
+            };
+            let sampler = SamplerState { c: i * 3u32 + 1u32 };
+            rows[i] = Rows { write, sampler };
+        }
+    }
+}
+
+/// A user struct named `RWTexture2D`, `WTexture2D` or `SamplerState` is a buffer element (the first directly, the other
+/// two as fields of an element) beside a sampled texture, a storage texture, a write texture and a sampler of one
+/// kernel. The emitted declarations of the texture parameters keep Slang's type names and the structs are renamed, so
+/// the kernel compiles and runs, and the results equal the host loops, on the GPU and on the twin.
+#[test]
+fn user_structs_named_like_slang_texture_types_coexist_with_texture_parameters_on_the_gpu() {
+    use renamed_texture_names as k;
+    const W: u32 = 5;
+    const H: u32 = 3;
+    let count = W * H;
+    let device = device();
+    let cpu = CpuDevice::new();
+    let extent = Extent::new(W, H, 1);
+    let nearest = SamplerOptions::new(Filter::Nearest, Address::ClampToEdge);
+
+    let image: Vec<f32> = (0..count)
+        .map(|i| ((i * 7) % 33) as f32 / 16.0 - 1.0)
+        .collect();
+    let before: Vec<f32> = (0..count).map(|i| 100.0 + i as f32).collect();
+    let after: Vec<f32> = image.iter().zip(&before).map(|(s, o)| o + s).collect();
+    let written: Vec<Vec4> = image
+        .iter()
+        .zip(&before)
+        .map(|(s, o)| Vec4::new(*s, *o, 3.0, 4.0))
+        .collect();
+    let a_expected: Vec<u32> = (0..count).map(|i| (i % W) * 100 + i / W).collect();
+    let b_expected: Vec<u32> = (0..count).map(|i| (i / W) * 1000 + i % W + 7).collect();
+    let c_expected: Vec<u32> = (0..count).map(|i| i * 3 + 1).collect();
+    let a_blank = vec![k::RWTexture2D { a: u32::MAX }; count as usize];
+    let rows_blank = vec![
+        k::Rows {
+            write: k::WTexture2D { b: u32::MAX },
+            sampler: k::SamplerState { c: u32::MAX },
+        };
+        count as usize
+    ];
+    let a_of = |rows: &[k::RWTexture2D]| rows.iter().map(|row| row.a).collect::<Vec<_>>();
+    let b_of = |rows: &[k::Rows]| rows.iter().map(|row| row.write.b).collect::<Vec<_>>();
+    let c_of = |rows: &[k::Rows]| rows.iter().map(|row| row.sampler.c).collect::<Vec<_>>();
+
+    // The GPU.
+    let gimage = gpu_texture::<R32Float>(&device, W, H, TextureUse::SAMPLED, &image);
+    let gfield = gpu_texture::<R32Float>(&device, W, H, TextureUse::STORAGE, &before);
+    let gout = gpu_texture::<Rgba32Float>(
+        &device,
+        W,
+        H,
+        TextureUse::STORAGE,
+        &zeros::<Rgba32Float>(count),
+    );
+    let sampler = device.create_sampler(nearest).unwrap();
+    let ga = device.create_typed_buffer("a rows", &a_blank, GpuBufferAccess::ReadWrite);
+    let grows = device.create_typed_buffer("rows", &rows_blank, GpuBufferAccess::ReadWrite);
+    k::run::dispatch_extent(
+        &device, extent, &gimage, &sampler, &gfield, &gout, &ga, &grows,
+    )
+    .expect("the GPU refused the kernel");
+    assert_eq!(device.read_texture(&gfield).unwrap(), after, "GPU field");
+    assert_eq!(
+        raw(&device.read_texture(&gout).unwrap()),
+        raw(&written),
+        "GPU out"
+    );
+    let gpu_a = device.read_typed_buffer(&ga).unwrap();
+    let gpu_rows = device.read_typed_buffer(&grows).unwrap();
+    assert_eq!(a_of(&gpu_a), a_expected, "GPU RWTexture2D rows");
+    assert_eq!(b_of(&gpu_rows), b_expected, "GPU WTexture2D fields");
+    assert_eq!(c_of(&gpu_rows), c_expected, "GPU SamplerState fields");
+
+    // The twin.
+    let timage = twin_texture::<R32Float>(&cpu, W, H, TextureUse::SAMPLED, &image);
+    let tfield = twin_texture::<R32Float>(&cpu, W, H, TextureUse::STORAGE, &before);
+    let tout = twin_texture::<Rgba32Float>(
+        &cpu,
+        W,
+        H,
+        TextureUse::STORAGE,
+        &zeros::<Rgba32Float>(count),
+    );
+    let (ta, trows) = (cpu.buffer(&a_blank), cpu.buffer(&rows_blank));
+    k::run::dispatch_extent(
+        &cpu,
+        extent,
+        &timage,
+        &cpu.sampler(nearest),
+        &tfield,
+        &tout,
+        &ta,
+        &trows,
+    )
+    .expect("the twin refused the kernel");
+    assert_eq!(tfield.read(), after, "twin field");
+    assert_eq!(raw(&tout.read()), raw(&written), "twin out");
+    assert_eq!(a_of(&ta.read()), a_expected, "twin RWTexture2D rows");
+    assert_eq!(b_of(&trows.read()), b_expected, "twin WTexture2D fields");
+    assert_eq!(c_of(&trows.read()), c_expected, "twin SamplerState fields");
+}

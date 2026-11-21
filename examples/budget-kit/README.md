@@ -8,9 +8,10 @@ written with GUST's public API only.
 | W1 | Copy (reference) | read one array, write another |
 | W2 | Field diffusion | 2D grid of four `f32` channels; each cell blends its four neighbours and decays |
 | W3 | Particle step | position and velocity in `f32`; sample the W2 field at the particle's cell, move, wrap |
-| W4 | Spatial binning | count particles per cell with atomics, then scan the counts (the scatter is a gap: an atomic's old value cannot be used) |
+| W4 | Spatial binning | count particles per cell with atomics, then scan the counts; a second row adds the scatter of the particle indices (each takes its slot from the old value of an atomic add; the order inside a cell is unspecified) |
 | W5 | Reduction | `f32` sum with `gust-algo`, checked against an `f64` reference within the documented bound |
 | W6 | Readback delay | submit a small kernel and wait until its result is on the CPU |
+| W7 | Composite step | one batch per step: diffuse a 1024 x 1024 field, step the particles, clear and count their cells; a sustained run reporting the GPU time's median, p95 and maximum and two host-side costs |
 
 ## Run it
 
@@ -33,7 +34,20 @@ so a row measures real work; a row that fails its check prints FAILED instead of
 W4 runs its own clear and count batch through `gust_algo::dispatch_batch_in_scope` inside the same `timed` scope as the
 `gust-algo` scan, so the scope's batch count and GPU time cover both. Its row is therefore the summed GPU timestamps of
 its own batch and of the scan's batches, or, on a device without timestamps, the wall clock around the whole step, as
-for W5.
+for W5. The second W4 row ("count + scan + scatter") adds a third batch, the scatter, to the same scope; its check
+compares, for every cell, the slots the scatter filled with the host's set of particle indices for that cell (each
+range sorted first, since the order inside a cell is unspecified) and requires every index to appear once.
+
+W7 is a sustained run, not a median of 30: 600 counted steps (120 with `--small`) after the warm-up, of one batch of
+four kernels (`w2_diffuse` on 1024 x 1024, `w3_step`, `w4_clear`, `w4_count` into 1024 x 1024 cells), at 2^18 and 2^20
+particles (2^18 only with `--small`). The time column is the median GPU time of the steps (the wall clock where the
+device has no timestamps); the row's note gives its p95 and maximum, and the host side two ways: (a) `host_elapsed` of
+the blocking `dispatch_batch_timed` (it includes the GPU work and the timestamp readback), and (b) the wall time for
+`submit_batch` to return (encode and submit, no wait; the job is waited for after the measured span, so the queue is idle
+at every call and (b) shows no back-pressure). The two come from two runs of the same length, because a step cannot be
+both blocking and not. It is checked after the first step (field against the host's `cpu_diffuse`, particles against
+`cpu_particle` over the GPU's own field, with W2's and W3's tolerances, counts exactly against the host's histogram of
+the GPU's own positions) and again after the runs.
 
 After the table the program runs a probe of the linear dispatch limit (gap G4), which is not a workload: a linear
 kernel launch of 65 536 workgroups on x, one above the portable limit of 65 535. It prints one line starting `G4:` with

@@ -7,7 +7,8 @@ include!("fixtures/driver_sentinel.rs");
 // built from bits on the host, so the values are exact whatever the compiler folds.
 #[gust::gpu]
 mod loop_break {
-    // limit[i] is 1.5 * 2^-125 for lt_form and 2^-125 for eq_form. It is a per-invocation buffer, every element alike, only because the typed buffers of one call share one length.
+    // limit[i] is 1.5 * 2^-125 for lt_form and 2^-125 for eq_form. It is a per-invocation buffer, every element
+    // alike, only because the typed buffers of one call share one length.
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn lt_form(
         id: SV_DispatchThreadID,
@@ -347,8 +348,9 @@ fn the_nvidia_float_break_loop_defect_is_still_there_or_absent_elsewhere() {
     assert_eq!(twin_lt.read(), LOOP_T, "CPU twin, lt form");
     assert_eq!(twin_eq.read(), LOOP_T, "CPU twin, eq form");
 
-    // The defect was measured on both routes (the WGSL route and, with the `spirv-route` feature and the route taken, the
-    // SPIR-V route), so the measured device is held to the defect's values on either, and a failure names the route.
+    // The defect was measured on both routes (the WGSL route and, with the `spirv-route` feature and the route
+    // taken, the SPIR-V route), so the measured device is held to the defect's values on either, and a failure
+    // names the route.
     let route = spirv_route_taken(&device);
     let route_name = if route { "SPIR-V route" } else { "WGSL route" };
     let held = kind;

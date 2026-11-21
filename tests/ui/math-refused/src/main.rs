@@ -1,6 +1,5 @@
-// `hypot`, `mul_add`, `round`, `asin`, `acos`, `signum`, `to_radians`, `to_degrees` and integer `pow` are not in the
-// dialect (slice m11.math): a call with arguments is GUST-E0325 and the message lists the accepted methods, among
-// them the float math ones. expected.txt pins the code.
+// `hypot`, `mul_add` and integer `pow` are not in the dialect (slices m11.math and m11.math2): a call with arguments
+// is GUST-E0325 and the message lists the accepted methods, among them the float math ones. expected.txt pins the code.
 
 #[gust::gpu]
 mod shaping {

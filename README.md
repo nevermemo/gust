@@ -1358,7 +1358,9 @@ The direct syntax translator currently supports:
   arguments that the dialect does not accept is E0325, whose message lists the accepted ones: `x.wrapping_div(y)`,
   `x.pow(2)`, `x.hypot(y)`, `x.checked_add(y)` and `x.saturating_sub(y)` are rejected. Float math for compute kernels
   (m11.math): `abs`, `min`, `max`, `clamp`, `floor`, `ceil`, `trunc`, `fract`, `sqrt`, `sin`, `cos`, `tan`, `atan`,
-  `atan2`, `exp`, `exp2`, `ln`, `log2` and `powf` on `f32` (the integer `min`, `max`, `clamp` and `abs` too), and
+  `atan2`, `exp`, `exp2`, `ln`, `log2` and `powf` on `f32` (the integer `min`, `max`, `clamp` and `abs` too), and, from
+  m11.math2, `round`, `signum`, `to_radians`, `to_degrees`, `asin`, `acos` and `rem_euclid` (`signum` and `rem_euclid`
+  on `i32` too, `rem_euclid` on `u32`), and
   `std::f32::consts::PI`, `TAU` and `E`; an unsuffixed integer literal operand of `min`, `max` or `clamp` is E0326.
   The transcendentals are within the WGSL accuracy table, not bit-equal to the CPU twin (SEMANTICS section 4).
   Related: an unannotated `let`

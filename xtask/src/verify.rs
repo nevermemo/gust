@@ -1061,8 +1061,12 @@ pub(crate) struct GpuSuitePin {
 ///
 /// Slice m11.math: 512 over 49 became 516 over 50. The new test file `tests/float_math.rs` holds four tests and adds
 /// one `test result:` line. Updated by count, not from a full Gpu suite run.
+///
+/// Slice m11.math2: 516 over 50 became 520 over 50. Four new tests in `tests/float_math.rs` (the exact group, `f32`
+/// `rem_euclid`, the integer methods, `asin` and `acos`; the file runs eight tests, the one `test result:` line is
+/// unchanged). Updated by count, not from a full Gpu suite run.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 516,
+    passed: 520,
     result_lines: 50,
 };
 

@@ -4,6 +4,6 @@
 # (docs/DIAGNOSTICS.md, E0325) and lists the accepted methods; the line is the call.
 code: none
 file: math-refused/src/main.rs
-line: 11
+line: 10
 message: [GUST-E0325] the method `.hypot(..)` is not in the dialect
 message: `.sqrt()`, `.sin()`

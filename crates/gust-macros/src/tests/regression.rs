@@ -1002,7 +1002,7 @@ fn expression_and_binding_rejections_carry_their_codes() {
     for (body, code) in [
         ("let y = foo(1u32);", Code::UnknownCall),
         ("let y = id.global_id::<u32>();", Code::BuiltinTypeArguments),
-        ("let y = x.round();", Code::UnsupportedMethod),
+        ("let y = x.count_zeros();", Code::UnsupportedMethod),
         ("let y = out.global_id();", Code::GlobalIdReceiver),
         ("let f = async |a: u32| -> u32 { a };", Code::Closure),
         ("let f = |a: u32| a;", Code::ClosureSignature),
@@ -5327,7 +5327,7 @@ fn wrapping_methods_are_checked_by_name_and_argument_count() {
         assert_rejected(&kernel_with_body(body), Code::MethodNotInDialect);
     }
     for body in [
-        "let y = x.round();",
+        "let y = x.count_zeros();",
         "let y = x.wrapping_abs();",
         "let y = x.count_ones();",
     ] {
@@ -5370,7 +5370,7 @@ fn the_not_in_the_dialect_text_lists_the_accepted_methods() {
     // The old text said built-ins "do not accept arguments"; that is no longer the message for a non-built-in.
     assert!(!text.contains("do not accept arguments"), "{text}");
     // E0305 lists the same methods.
-    let text = translate(&kernel_with_body("let y = x.round();"))
+    let text = translate(&kernel_with_body("let y = x.count_zeros();"))
         .unwrap_err()
         .to_string();
     assert!(
@@ -5401,7 +5401,7 @@ fn names_in_fn(source: &str, signature: &str) -> Vec<String> {
 fn every_method_table_name_has_an_emitter_arm_and_is_in_the_accepted_text() {
     let validate = include_str!("../validate/mod.rs");
     let math = include_str!("../math_types.rs");
-    let accepted = translate(&kernel_with_body("let y = x.round();"))
+    let accepted = translate(&kernel_with_body("let y = x.count_zeros();"))
         .unwrap_err()
         .to_string();
     let wrapping = names_in_fn(validate, "pub(crate) fn wrapping_arity");
@@ -5437,7 +5437,7 @@ fn a_type_argument_on_a_method_outside_the_dialect_reports_the_method() {
         Code::MethodNotInDialect,
     );
     assert_rejected(
-        &kernel_with_body("let y = x.round::<u32>();"),
+        &kernel_with_body("let y = x.count_zeros::<u32>();"),
         Code::UnsupportedMethod,
     );
     let text = translate(&kernel_with_body("let y = x.checked_add::<u32>(1u32);"))
@@ -10130,11 +10130,11 @@ fn the_constants_round_trip_as_f32() {
 #[test]
 fn every_scalar_math_name_has_an_emitter_arm_and_is_in_the_accepted_text() {
     let validate = include_str!("../validate/mod.rs");
-    let accepted = translate(&kernel_with_body("let y = x.round();"))
+    let accepted = translate(&kernel_with_body("let y = x.count_zeros();"))
         .unwrap_err()
         .to_string();
     let names = names_in_fn(validate, "pub(crate) fn scalar_math_arity");
-    assert_eq!(names.len(), 19, "{names:?}");
+    assert_eq!(names.len(), 26, "{names:?}");
     for name in &names {
         let arity = crate::validate::scalar_math_arity(name).expect("a table name has an arity");
         let arguments = ["", "1.0", "0.0, 1.0"][arity];
@@ -10330,4 +10330,163 @@ fn the_emitters_own_subgroup_calls_stay_bare_beside_user_helpers_of_the_same_nam
     assert!(text.contains("= WaveActiveSum(b);"), "{text}");
     assert_eq!(count_unprefixed(&text, "countbits("), 4, "{text}");
     assert!(text.contains("return countbits(ballot.x)"), "{text}");
+}
+
+/// Slice m11.math2 (more math methods for compute kernels): the lowered text of the new methods, written by hand from
+/// the rules of the brief. The helpers are defined exactly in a module that calls them.
+#[test]
+fn the_math2_methods_lower_to_helpers_and_intrinsics() {
+    let round = "float __gust_round(float x) { float t = trunc(x); return (abs(x - t) >= 0.5) ? (t + (((asuint(x) >> 31u) != 0u) ? -1.0 : 1.0)) : t; }";
+    let signum = "float __gust_signum(float x) { return ((asuint(x) >> 31u) != 0u) ? -1.0 : 1.0; }\nint __gust_signum(int x) { return (x > 0) ? 1 : ((x < 0) ? -1 : 0); }";
+    let rem_euclid = [
+        "float __gust_fmod(float a, float b) { float x = abs(a); float y = abs(b); float r = x; if (x >= y) { float s = y; for (int i = 0; i < 254 && (s * 2.0) <= r; i++) { s = s * 2.0; } for (int j = 0; j < 255; j++) { if (r >= s) { r = r - s; } if (s == y) { break; } s = s * 0.5; } } return ((asuint(a) >> 31u) != 0u) ? -r : r; }",
+        "float __gust_rem_euclid(float a, float b) { float r = __gust_fmod(a, b); return (r < 0.0) ? (r + abs(b)) : r; }",
+        "int __gust_rem_euclid(int a, int b) { int r = __gust_rem(a, b); return (r < 0) ? (r + abs(b)) : r; }",
+        "uint __gust_rem_euclid(uint a, uint b) { return __gust_rem(a, b); }",
+    ]
+    .join("\n");
+    for (body, expected, helper) in [
+        ("let y = f.round();", "var y = __gust_round(f);", round),
+        ("let y = f.signum();", "var y = __gust_signum(f);", signum),
+        ("let y = i.signum();", "var y = __gust_signum(i);", signum),
+        // `std` multiplies by the constant: `PI / 180.0` and `57.29577951308232_f32`, as `f32`.
+        (
+            "let y = f.to_radians();",
+            "var y = (f * float(0.017453292));",
+            "",
+        ),
+        (
+            "let y = f.to_degrees();",
+            "var y = (f * float(57.29578));",
+            "",
+        ),
+        ("let y = f.asin();", "var y = asin(f);", ""),
+        ("let y = f.acos();", "var y = acos(f);", ""),
+        (
+            "let y = f.rem_euclid(3.0);",
+            "var y = __gust_rem_euclid(f, 3.0);",
+            rem_euclid.as_str(),
+        ),
+        (
+            "let y = x.rem_euclid(3u32);",
+            "var y = __gust_rem_euclid(x, uint(3));",
+            rem_euclid.as_str(),
+        ),
+    ] {
+        let source = translate(&kernel_with_body(&format!(
+            "let f = 2.5f32; let i = -3i32; {body}"
+        )))
+        .unwrap_or_else(|error| panic!("{body}: {error}"));
+        assert!(source.contains(expected), "{body}: {source}");
+        for (name, text) in [
+            ("__gust_round", round),
+            ("__gust_signum", signum),
+            ("__gust_rem_euclid", rem_euclid.as_str()),
+        ] {
+            assert_eq!(
+                source.contains(text),
+                helper == text,
+                "{body}: the `{name}` helper is defined exactly when used: {source}"
+            );
+        }
+        // `rem_euclid` rests on the division helpers, which are defined before it.
+        if helper == rem_euclid {
+            let rem = source.find("__gust_rem(float a").expect("the rem helper");
+            assert!(
+                rem < source.find("__gust_rem_euclid(float a").unwrap(),
+                "{source}"
+            );
+        } else {
+            assert!(!source.contains("__gust_rem("), "{body}: {source}");
+        }
+        assert_eq!(
+            count_unprefixed(&source, "round("),
+            0,
+            "{body}: no bare round: {source}"
+        );
+    }
+}
+
+#[test]
+fn the_angle_factors_are_the_std_constants() {
+    // `core::f32::<impl f32>::to_radians` is `consts::PI / 180.0` and `to_degrees` is `57.2957795130823208767981548141051703_f32`
+    // (library/core/src/num/f32.rs of the installed toolchain).
+    assert_eq!(
+        "0.017453292".parse::<f32>().unwrap().to_bits(),
+        (std::f32::consts::PI / 180.0).to_bits()
+    );
+    assert_eq!(
+        "57.29578".parse::<f32>().unwrap().to_bits(),
+        "57.2957795130823208767981548141051703"
+            .parse::<f32>()
+            .unwrap()
+            .to_bits()
+    );
+}
+
+#[test]
+fn an_unsuffixed_integer_literal_operand_of_rem_euclid_is_refused() {
+    for body in ["let y = x.rem_euclid(3);", "let y = 7.rem_euclid(x);"] {
+        assert_rejected(&kernel_with_body(body), Code::UnsuffixedLiteralLet);
+    }
+    for body in [
+        "let y = x.rem_euclid(3u32);",
+        "let y = x.rem_euclid(x + 1u32);",
+    ] {
+        translate(&kernel_with_body(body)).unwrap_or_else(|error| panic!("{body}: {error}"));
+    }
+    // The argument counts, and the methods that stay refused.
+    assert_rejected(
+        &kernel_with_body("let y = x.rem_euclid();"),
+        Code::BuiltinArguments,
+    );
+    assert_rejected(
+        &kernel_with_body("let y = x.signum(1u32);"),
+        Code::BuiltinArguments,
+    );
+    for body in [
+        "let f = 2.5f32; let y = f.hypot(1.0);",
+        "let f = 2.5f32; let y = f.mul_add(1.0, 2.0);",
+        "let y = x.pow(2u32);",
+    ] {
+        assert_rejected(&kernel_with_body(body), Code::MethodNotInDialect);
+    }
+}
+
+#[test]
+fn the_names_of_the_math2_methods_are_reserved_for_module_methods() {
+    for name in [
+        "round",
+        "signum",
+        "to_radians",
+        "to_degrees",
+        "asin",
+        "acos",
+        "rem_euclid",
+    ] {
+        let source = format!(
+            "mod bad {{ pub struct S {{ pub a: f32 }} impl S {{ pub fn {name}(&self) -> f32 {{ self.a }} }} \
+             #[kernel] pub fn run(id: SV_DispatchThreadID) {{}} }}"
+        );
+        assert_rejected(&source, Code::MethodNameClash);
+    }
+}
+
+/// Slice m11.math2: a user helper named `asin` or `acos` is renamed, so the intrinsic calls of the emitter stay; `sign`
+/// is not emitted, so a user `sign` is untouched.
+#[test]
+fn a_user_helper_named_like_the_math2_intrinsics_is_renamed() {
+    let source = "mod m { \
+        fn sign(x: float) -> float { x } \
+        fn asin(x: float) -> float { x } \
+        fn acos(x: float) -> float { x } \
+        #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) { \
+            let a = 0.5f32; out[id.x] = sign(a) + asin(a) + a.asin() + a.acos() + a.signum(); } }";
+    let text = translate(source).unwrap_or_else(|error| panic!("{error}"));
+    assert!(text.contains("float sign(float x)"), "{text}");
+    assert!(text.contains("float __gust_r_asin(float x)"), "{text}");
+    assert!(text.contains("float __gust_r_acos(float x)"), "{text}");
+    // One bare `asin(` and one `acos(`: the method calls.
+    assert_eq!(count_unprefixed(&text, "asin("), 1, "{text}");
+    assert_eq!(count_unprefixed(&text, "acos("), 1, "{text}");
 }

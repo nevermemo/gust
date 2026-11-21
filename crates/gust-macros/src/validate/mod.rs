@@ -63,8 +63,9 @@ pub(crate) fn wrapping_arity(name: &str) -> Option<usize> {
 pub(crate) fn scalar_math_arity(name: &str) -> Option<usize> {
     match name {
         "abs" | "floor" | "ceil" | "trunc" | "fract" | "sqrt" | "sin" | "cos" | "tan" | "atan"
-        | "exp" | "exp2" | "log2" | "ln" => Some(0),
-        "min" | "max" | "atan2" | "powf" => Some(1),
+        | "exp" | "exp2" | "log2" | "ln" | "round" | "signum" | "to_radians" | "to_degrees"
+        | "asin" | "acos" => Some(0),
+        "min" | "max" | "atan2" | "powf" | "rem_euclid" => Some(1),
         "clamp" => Some(2),
         _ => None,
     }
@@ -160,7 +161,8 @@ const ACCEPTED_METHODS: &str = "the accepted methods are `.global_id()` and `.le
 `.is_some()`, `.is_none()`, `.is_ok()`, `.is_err()` and `.unwrap_or(default)`, the wrapping integer methods \
 `.wrapping_add(b)`, `.wrapping_sub(b)`, `.wrapping_mul(b)` and `.wrapping_neg()`, the scalar math methods \
 `.abs()`, `.min(b)`, `.max(b)`, `.clamp(lo, hi)`, `.floor()`, `.ceil()`, `.trunc()`, `.fract()`, `.sqrt()`, `.sin()`, \
-`.cos()`, `.tan()`, `.atan()`, `.atan2(x)`, `.exp()`, `.exp2()`, `.ln()`, `.log2()` and `.powf(b)`, and the vector and \
+`.cos()`, `.tan()`, `.atan()`, `.atan2(x)`, `.exp()`, `.exp2()`, `.ln()`, `.log2()`, `.powf(b)`, `.round()`, \
+`.signum()`, `.to_radians()`, `.to_degrees()`, `.asin()`, `.acos()` and `.rem_euclid(b)`, and the vector and \
 matrix methods (swizzles such as `.xy()`, `.dot(v)`, `.mul_vec4(v)`, `.mul_mat4(m)`, `.transpose()`)";
 
 /// Rust primitives outside the four-byte scalar subset (`usize` is not here: `visit_type_path` gives it GUST-E0334
@@ -5299,7 +5301,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             // `min`, `max` and `clamp` are the same Slang intrinsic on every scalar type, so the operand types decide
             // the result. A literal without a suffix is `int` in Slang and whatever rustc infers in the twin, so for a
             // `u32` receiver the two differ (the trap of GUST-E0326): ask for the suffix.
-            if matches!(method.as_str(), "min" | "max" | "clamp")
+            if matches!(method.as_str(), "min" | "max" | "clamp" | "rem_euclid")
                 && let Some(literal) = std::iter::once(call.receiver.as_ref())
                     .chain(call.args.iter())
                     .find_map(unsuffixed_literal_only)

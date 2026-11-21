@@ -55,6 +55,13 @@ proof.
 
 ### Added
 
+- More math methods for compute kernels (m11.math2): `round` (half-way cases away from zero), `signum` (`f32` and
+  `i32`), `to_radians`, `to_degrees`, `asin`, `acos` and `rem_euclid` (`f32`, `i32`, `u32`). `round`, `signum` and
+  `rem_euclid` lower to `__gust_`-prefixed helpers defined only in a module that calls them. The seven names are
+  reserved as method names (`GUST-E0328`), and an unsuffixed integer literal operand of `rem_euclid` is `GUST-E0326`.
+  A user helper, local or parameter named `asin` or `acos` is renamed in the emitted Slang (`__gust_r_asin`), so a
+  program that uses one of those names gets new emitted text and a new artifact content key. `hypot`, `mul_add` and
+  integer `pow` stay refused.
 - `#[gpu(crate = <path>)]` and the `crate(<path>);` clause of `par_for!` (audit S6, D48): for a crate that reaches
   `gust` through another crate's `pub use gust;`, the macro rewrites the `::gust::` paths of its output to the given
   path (`::inner::gust`). `::gust_wgpu` stays literal, so the function form and `par_for!` still need a direct

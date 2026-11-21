@@ -670,3 +670,463 @@ fn the_transcendentals_are_within_the_wgsl_bounds_on_the_gpu_and_the_twin() {
         );
     }
 }
+
+// Slice m11.math2 (more math methods for compute kernels).
+
+/// The inputs of the float group: the edges of `round`, `signum` and the angle methods, every half-way case in
+/// `[-1024, 1024)` at both signs, then random values; and for `rem_euclid` a divisor that is never zero, with the first
+/// rows exact multiples of the divisor (the quotient is whole there, where a division-based remainder is at risk).
+fn math2_float_inputs() -> (Vec<f32>, Vec<f32>) {
+    let edges = [
+        0.0,
+        -0.0,
+        0.5,
+        -0.5,
+        1.5,
+        -1.5,
+        2.5,
+        -2.5,
+        0.499_999_97,
+        -0.499_999_97,
+        0.500_000_06,
+        -0.500_000_06,
+        0.999_999_94,
+        -0.999_999_94,
+        1.0e-30,
+        -1.0e-30,
+        4_194_303.5,
+        -4_194_303.5,
+        8_388_607.5,
+        -8_388_607.5,
+        8_388_608.0,
+        -8_388_608.0,
+        16_777_216.0,
+        1.0e30,
+        -1.0e30,
+        123_456.79,
+        -0.3,
+        0.3,
+    ];
+    let mut xs = edges.to_vec();
+    for k in -1024..1024 {
+        xs.push(k as f32 + 0.5);
+    }
+    let mut stream = Stream(0x00c0_ffee);
+    while xs.len() < COUNT {
+        xs.push(stream.range(-100.0, 100.0));
+    }
+    let mut ds = Vec::with_capacity(COUNT);
+    for _ in 0..COUNT {
+        let magnitude = stream.range(0.01, 50.0);
+        ds.push(if stream.next() & 1 == 0 {
+            magnitude
+        } else {
+            -magnitude
+        });
+    }
+    // Exact multiples: `x = k * y` for simple divisors, at both signs.
+    let divisors = [0.5f32, 0.25, 1.0, 2.0, 3.0, 7.0, 0.1, 1.5, -3.0, -0.5];
+    let mut at = edges.len() + 2048;
+    for y in &divisors {
+        for k in -20..20 {
+            xs[at] = k as f32 * y;
+            ds[at] = *y;
+            at += 1;
+        }
+    }
+    // A huge quotient, a dividend below the divisor at both signs, and a whole multiple that is not a small one.
+    for (x, y) in [
+        (1.0e30f32, 0.7f32),
+        (-1.0e30, 7.0),
+        (16_777_216.0, 3.0),
+        (-16_777_216.0, 0.3),
+        (123_456.79, 0.01),
+        (1.0e-30, 1.0e-20),
+        (-1.0e-30, 1.0e-20),
+        (1.0e-30, -1.0e-20),
+        (3.0e38, 1.5e-30),
+    ] {
+        xs[at] = x;
+        ds[at] = y;
+        at += 1;
+    }
+    (xs, ds)
+}
+
+#[test]
+fn round_signum_and_the_angle_methods_are_bit_equal_to_rust_on_the_gpu_and_the_twin() {
+    let device = device();
+    let (xs, ds) = math2_float_inputs();
+    let blank = float_math::Math2Float {
+        m_round: 0.0,
+        m_signum: 0.0,
+        m_radians: 0.0,
+        m_degrees: 0.0,
+        m_rem_euclid: 0.0,
+    };
+    let (x_buf, d_buf) = (buffer(&device, "x", &xs), buffer(&device, "d", &ds));
+    let out = device.create_typed_buffer("out", &vec![blank; COUNT], GpuBufferAccess::ReadWrite);
+    device
+        .dispatch_buffers(
+            &float_math::math2_float::DESCRIPTOR,
+            COUNT as u32,
+            &[
+                BufferBinding::read_only(&x_buf),
+                BufferBinding::read_only(&d_buf),
+                BufferBinding::read_write(&out),
+            ],
+        )
+        .unwrap();
+    let gpu = device.read_typed_buffer(&out).unwrap();
+    let cpu = CpuDevice::new();
+    let (cx, cd) = (cpu.buffer(&xs), cpu.buffer(&ds));
+    let cout = cpu.buffer(&vec![blank; COUNT]);
+    float_math::math2_float::dispatch(&cpu, COUNT as u32, &cx, &cd, &cout).unwrap();
+    let twin = cout.read();
+
+    // The constants of `std` (`library/core/src/num/f32.rs`): `consts::PI / 180.0` and
+    // `57.2957795130823208767981548141051703_f32`. A product of two `f32` is exact in `f64`, and the cast to `f32`
+    // rounds it once, which is the correctly rounded `f32` product.
+    let radians = f64::from(std::f32::consts::PI / 180.0);
+    let degrees = f64::from(
+        "57.2957795130823208767981548141051703"
+            .parse::<f32>()
+            .unwrap(),
+    );
+    let mut signed_zero_rows = 0;
+    for i in 0..COUNT {
+        let x = f64::from(xs[i]);
+        // Half-way cases away from zero, from `f64` arithmetic (the nearest integer, ties away from zero).
+        let round = x.round();
+        let signum = if xs[i].is_sign_negative() { -1.0 } else { 1.0 };
+        let expected_radians = (x * radians) as f32;
+        let expected_degrees = (x * degrees) as f32;
+        for (label, rows) in [("gpu", &gpu), ("twin", &twin)] {
+            let row = &rows[i];
+            // Bit equality, so the sign of a zero is part of the claim for these methods.
+            assert_eq!(
+                row.m_round.to_bits(),
+                (round as f32).to_bits(),
+                "{label} round[{i}]: x = {x}: got {}, expected {}",
+                row.m_round,
+                round
+            );
+            assert_eq!(
+                row.m_signum.to_bits(),
+                (signum as f32).to_bits(),
+                "{label} signum[{i}]: x = {x}"
+            );
+            assert_eq!(
+                row.m_radians.to_bits(),
+                expected_radians.to_bits(),
+                "{label} to_radians[{i}]: x = {x}"
+            );
+            assert_eq!(
+                row.m_degrees.to_bits(),
+                expected_degrees.to_bits(),
+                "{label} to_degrees[{i}]: x = {x}"
+            );
+        }
+        signed_zero_rows += usize::from(xs[i] == 0.0 && xs[i].is_sign_negative());
+    }
+    assert!(signed_zero_rows >= 1, "the inputs include -0.0");
+}
+
+#[test]
+fn rem_euclid_on_f32_is_exact_on_the_gpu_and_the_twin() {
+    let device = device();
+    let (xs, ds) = math2_float_inputs();
+    let blank = float_math::Math2Float {
+        m_round: 0.0,
+        m_signum: 0.0,
+        m_radians: 0.0,
+        m_degrees: 0.0,
+        m_rem_euclid: 0.0,
+    };
+    let (x_buf, d_buf) = (buffer(&device, "x", &xs), buffer(&device, "d", &ds));
+    let out = device.create_typed_buffer("out", &vec![blank; COUNT], GpuBufferAccess::ReadWrite);
+    device
+        .dispatch_buffers(
+            &float_math::math2_float::DESCRIPTOR,
+            COUNT as u32,
+            &[
+                BufferBinding::read_only(&x_buf),
+                BufferBinding::read_only(&d_buf),
+                BufferBinding::read_write(&out),
+            ],
+        )
+        .unwrap();
+    let gpu = device.read_typed_buffer(&out).unwrap();
+    let cpu = CpuDevice::new();
+    let (cx, cd) = (cpu.buffer(&xs), cpu.buffer(&ds));
+    let cout = cpu.buffer(&vec![blank; COUNT]);
+    float_math::math2_float::dispatch(&cpu, COUNT as u32, &cx, &cd, &cout).unwrap();
+    let twin = cout.read();
+    let (mut worst, mut whole, mut negative_dividends) = (0.0f64, 0usize, 0usize);
+    for i in 0..COUNT {
+        let (x, y) = (f64::from(xs[i]), f64::from(ds[i]));
+        // `fmod` of two `f32` values is exact in `f64`. The sum with `abs(y)` is exact in `f64` when the ratio of the
+        // two magnitudes stays below about 2^29; for the rows `(-1e-30, 1e-20)` and `(1e-30, -1e-20)` it does not,
+        // so the `f64` sum rounds before the cast to `f32` (a double rounding, which differs from Rust's single
+        // rounding only if the exact sum lies within 2^-29 of a tie of `f32`; the observed rows do not).
+        let r = x % y;
+        let expected = if r < 0.0 { r + y.abs() } else { r } as f32;
+        negative_dividends += usize::from(x < 0.0);
+        whole += usize::from(x % y == 0.0);
+        for (label, rows) in [("gpu", &gpu), ("twin", &twin)] {
+            // Value equality: the sign of a zero is not part of the claim for this method.
+            assert!(
+                rows[i].m_rem_euclid == expected,
+                "{label} f32 rem_euclid[{i}]: x = {x}, y = {y}: got {}, expected {expected}",
+                rows[i].m_rem_euclid
+            );
+            if label == "gpu" {
+                let error = (f64::from(rows[i].m_rem_euclid) - f64::from(expected)).abs();
+                worst = worst.max(error);
+            }
+        }
+    }
+    assert!(
+        negative_dividends > 1000 && whole >= 100,
+        "the inputs cover both signs and whole multiples"
+    );
+    println!(
+        "rem_euclid f32: largest error observed {worst} over {COUNT} rows ({whole} whole multiples)"
+    );
+}
+
+#[test]
+fn integer_signum_and_rem_euclid_match_the_host_on_the_gpu_and_the_twin() {
+    let device = device();
+    let signed_edges = [
+        0,
+        1,
+        -1,
+        2,
+        -2,
+        3,
+        -3,
+        7,
+        -7,
+        i32::MAX,
+        i32::MIN + 1,
+        i32::MIN,
+        1 << 24,
+        -(1 << 24),
+    ];
+    let unsigned_edges = [0, 1, 2, 3, u32::MAX, u32::MAX - 1, 1 << 31, (1 << 31) - 1];
+    let mut stream = Stream(0x0bad_cafe);
+    let mut ia: Vec<i32> = signed_edges.to_vec();
+    let mut ib: Vec<i32> = signed_edges
+        .iter()
+        .map(|v| if *v == 0 { 5 } else { *v })
+        .collect();
+    // The product of every pair of edges (a divisor of zero and `i32::MIN / -1` are never fed to the twin).
+    for a in signed_edges {
+        for b in signed_edges {
+            if b != 0 && !(a == i32::MIN && b == -1) {
+                ia.push(a);
+                ib.push(b);
+            }
+        }
+    }
+    while ia.len() < COUNT {
+        let raw = stream.next() as i32;
+        let small = (stream.next() as i32) % 1000;
+        let (a, b) = if ia.len().is_multiple_of(2) {
+            (raw, small)
+        } else {
+            (small, (stream.next() as i32) % 100)
+        };
+        if b != 0 && !(a == i32::MIN && b == -1) {
+            ia.push(a);
+            ib.push(b);
+        }
+    }
+    let mut ua: Vec<u32> = unsigned_edges.to_vec();
+    let mut ub: Vec<u32> = unsigned_edges
+        .iter()
+        .map(|v| if *v == 0 { 5 } else { *v })
+        .collect();
+    for a in unsigned_edges {
+        for b in unsigned_edges {
+            if b != 0 {
+                ua.push(a);
+                ub.push(b);
+            }
+        }
+    }
+    while ua.len() < COUNT {
+        let raw = stream.next();
+        let b = if ua.len().is_multiple_of(2) {
+            stream.next() % 1000
+        } else {
+            stream.next()
+        };
+        if b != 0 {
+            ua.push(raw);
+            ub.push(b);
+        }
+    }
+    ia.truncate(COUNT);
+    ib.truncate(COUNT);
+    ua.truncate(COUNT);
+    ub.truncate(COUNT);
+    let blank = float_math::Math2Int {
+        i_signum: 0,
+        i_rem_euclid: 0,
+        u_rem_euclid: 0,
+    };
+    let bufs = (
+        buffer(&device, "ia", &ia),
+        buffer(&device, "ib", &ib),
+        buffer(&device, "ua", &ua),
+        buffer(&device, "ub", &ub),
+    );
+    let out = device.create_typed_buffer("out", &vec![blank; COUNT], GpuBufferAccess::ReadWrite);
+    device
+        .dispatch_buffers(
+            &float_math::math2_int::DESCRIPTOR,
+            COUNT as u32,
+            &[
+                BufferBinding::read_only(&bufs.0),
+                BufferBinding::read_only(&bufs.1),
+                BufferBinding::read_only(&bufs.2),
+                BufferBinding::read_only(&bufs.3),
+                BufferBinding::read_write(&out),
+            ],
+        )
+        .unwrap();
+    let gpu = device.read_typed_buffer(&out).unwrap();
+    let cpu = CpuDevice::new();
+    let twins = (
+        cpu.buffer(&ia),
+        cpu.buffer(&ib),
+        cpu.buffer(&ua),
+        cpu.buffer(&ub),
+    );
+    let cout = cpu.buffer(&vec![blank; COUNT]);
+    float_math::math2_int::dispatch(
+        &cpu,
+        COUNT as u32,
+        &twins.0,
+        &twins.1,
+        &twins.2,
+        &twins.3,
+        &cout,
+    )
+    .unwrap();
+    let twin = cout.read();
+    let mut negative_remainders = 0;
+    for i in 0..COUNT {
+        // `i64` and `u64` arithmetic: the Euclidean remainder is in `[0, abs(b))`.
+        let (a, b) = (i64::from(ia[i]), i64::from(ib[i]));
+        let expected_signum = a.signum() as i32;
+        let expected_rem = a.rem_euclid(b) as i32;
+        let expected_urem = (u64::from(ua[i]) % u64::from(ub[i])) as u32;
+        negative_remainders += usize::from(a < 0 && expected_rem != 0);
+        for (label, rows) in [("gpu", &gpu), ("twin", &twin)] {
+            let row = &rows[i];
+            assert_eq!(
+                row.i_signum, expected_signum,
+                "{label} i32 signum[{i}]: a = {a}"
+            );
+            assert_eq!(
+                row.i_rem_euclid, expected_rem,
+                "{label} i32 rem_euclid[{i}]: a = {a}, b = {b}"
+            );
+            assert_eq!(
+                row.u_rem_euclid, expected_urem,
+                "{label} u32 rem_euclid[{i}]: a = {}, b = {}",
+                ua[i], ub[i]
+            );
+        }
+    }
+    assert!(
+        negative_remainders > 100,
+        "the inputs cover negative dividends"
+    );
+}
+
+#[test]
+fn asin_and_acos_are_within_the_atan2_derived_bound_on_the_gpu_and_the_twin() {
+    let device = device();
+    let mut stream = Stream(0x5eed_1234);
+    let mut xs = vec![
+        0.0f32, 0.9, -0.9, 0.5, -0.5, 1.0e-3, -1.0e-3, 0.25, -0.25, 0.75, -0.75,
+    ];
+    while xs.len() < COUNT {
+        xs.push(stream.range(-0.9, 0.9));
+    }
+    let blank = float_math::Math2Trig {
+        t_asin: 0.0,
+        t_acos: 0.0,
+    };
+    let x_buf = buffer(&device, "x", &xs);
+    let out = device.create_typed_buffer("out", &vec![blank; COUNT], GpuBufferAccess::ReadWrite);
+    device
+        .dispatch_buffers(
+            &float_math::math2_trig::DESCRIPTOR,
+            COUNT as u32,
+            &[
+                BufferBinding::read_only(&x_buf),
+                BufferBinding::read_write(&out),
+            ],
+        )
+        .unwrap();
+    let gpu = device.read_typed_buffer(&out).unwrap();
+    let cpu = CpuDevice::new();
+    let cx = cpu.buffer(&xs);
+    let cout = cpu.buffer(&vec![blank; COUNT]);
+    float_math::math2_trig::dispatch(&cpu, COUNT as u32, &cx, &cout).unwrap();
+    let twin = cout.read();
+    // The worse (larger) of the absolute bound and the ULP bound, as WGSL 15.7.4.1 states it.
+    let (mut worst_asin, mut worst_acos) = (0.0f64, 0.0f64);
+    let worse = |actual: f32, exact: f64, absolute: f64| {
+        let (ulps_ok, measure) = within(actual, exact, &Bound::Ulps(ASIN_ACOS_BOUND_ULPS));
+        let (abs_ok, _) = within(actual, exact, &Bound::Absolute(absolute));
+        (ulps_ok || abs_ok, measure)
+    };
+    for i in 0..COUNT {
+        let x = f64::from(xs[i]);
+        let (asin, acos) = (x.asin(), x.acos());
+        for (label, rows) in [("gpu", &gpu), ("twin", &twin)] {
+            let (ok, measure) = worse(rows[i].t_asin, asin, ASIN_ABSOLUTE_BOUND);
+            assert!(
+                ok,
+                "{label} asin[{i}]: x = {x}: got {}, exact {asin}, {measure} ULP",
+                rows[i].t_asin
+            );
+            let (ok_cos, measure_cos) = worse(rows[i].t_acos, acos, ACOS_ABSOLUTE_BOUND);
+            // WGSL states no bound for `acos` at `x = 0` and for a subnormal `x` (the inherited `atan2` row needs
+            // `abs(x) >= 2^-126`): those inputs are run but not judged.
+            assert!(
+                ok_cos || xs[i].abs() < f32::MIN_POSITIVE,
+                "{label} acos[{i}]: x = {x}: got {}, exact {acos}, {measure_cos} ULP",
+                rows[i].t_acos
+            );
+            if label == "gpu" {
+                worst_asin = worst_asin.max(measure);
+                if xs[i] != 0.0 {
+                    worst_acos = worst_acos.max(measure_cos);
+                }
+            }
+        }
+    }
+    println!(
+        "asin worst gpu error {worst_asin} ULP, acos {worst_acos} ULP (bound {ASIN_ACOS_BOUND_ULPS})"
+    );
+}
+
+/// The bound of `asin` and `acos` on `abs(x) <= 0.9`. WGSL 15.7.4.1: `asin` is "the worse of: absolute error 6.81e-5;
+/// inherited from `atan2(x, sqrt(1.0 - x * x))`", `acos` is "the worse of: absolute error 6.77e-5; inherited from
+/// `atan2(sqrt(1.0 - x * x), x)`", and `atan2` is 4096 ULP for `abs(x)` in `[2^-126, 2^126]` with `y` finite and
+/// normal. The test accepts an error within the larger of the absolute bound and the ULP bound below. On
+/// `abs(x) <= 0.9` the argument `sqrt(1 - x * x)` is at least 0.43 and has a relative error of a few ULP (the product,
+/// the difference, the square root), which `atan2` carries into the result at a factor of at most
+/// `abs(x) / (1 - x^2)` (about 4.7 at 0.9, times a relative error of about `2^-22`, i.e. a handful of ULP), so the
+/// allowance of 32 on top of the 4096 is generous.
+const ASIN_ACOS_BOUND_ULPS: f64 = 4096.0 + 32.0;
+/// The absolute bounds of the `asin` and `acos` rows of WGSL 15.7.4.1.
+const ASIN_ABSOLUTE_BOUND: f64 = 6.81e-5;
+const ACOS_ABSOLUTE_BOUND: f64 = 6.77e-5;

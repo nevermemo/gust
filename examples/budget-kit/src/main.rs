@@ -27,8 +27,10 @@
 //!
 //! W4 puts its own clear and count batch and the `gust-algo` scan in one `timed` scope (the batch goes through
 //! `dispatch_batch_in_scope`), so one scope's GPU time covers both. After the table a probe (not a workload) launches a
-//! linear kernel with 65 536 workgroups on x and prints one `G4:` line with what the device did, then shows the remedy:
-//! the same element count as a two-dimensional launch with a tail guard, checked exactly against the host.
+//! linear kernel with 65 536 workgroups on x and prints one `G4:` line with what happened (a refusal is gust-wgpu's own
+//! host-side check against the device limits, made before anything is submitted; a success is compared with the host),
+//! then shows the remedy: a two-dimensional launch of a count that is not a multiple of the row width, with a tail
+//! guard, whose values and untouched sentinel slots are checked exactly against the host.
 
 use std::fmt::Write as _;
 use std::time::Instant;
@@ -711,7 +713,7 @@ fn w4(device: &DeviceHandle, count: u32) -> Row {
             })
             .map_err(dbg)?;
             let wall_ms = started.elapsed().as_secs_f64() * 1e3;
-            if scoped.time.batches < 2 {
+            if scoped.time.batches != 2 {
                 return Err(format!(
                     "the timing scope counted {} batch(es), expected the clear and count batch and the scan",
                     scoped.time.batches
@@ -885,16 +887,28 @@ fn g4_expected(i: u32) -> u32 {
     i.wrapping_mul(3).wrapping_add(1)
 }
 
+/// The limits policy of the device `main` opens: `HeadlessDevice::new` requests wgpu's default limits
+/// (`LimitsPolicy::Default`). Keep this text in step with the call in `main`.
+const KIT_LIMITS_POLICY: &str = "Default (HeadlessDevice::new)";
+
+/// The remedy's element count: not a multiple of the row width or the workgroup size, so the last row is partly past
+/// the end and the kernel's `i >= n` guard has work to do.
+const G4_REMEDY_N: u32 = G4_THREADS - 1000;
+/// What the remedy's buffer holds before the launch, and in the slots past `n` after it.
+const G4_SENTINEL: u32 = 0xDEAD_BEEF;
+
 /// The probe of gap G4 (a linear launch above the workgroup limit on x) and its remedy. It is not a workload: it
-/// reports what this device does. Returns the lines to print and whether the remedy failed.
+/// reports what happens on this device. The refusal, where there is one, is gust-wgpu's own host-side check of the
+/// launch against `limits()`, made before anything is submitted. Returns the lines to print and whether a check failed.
 fn g4(device: &DeviceHandle) -> (Vec<String>, bool) {
     let max = device.limits().max_compute_workgroups_per_dimension;
-    // `HeadlessDevice::new` requests wgpu's default limits (`LimitsPolicy::Default`).
     let context = format!(
-        "device max_compute_workgroups_per_dimension {max}, limits policy Default (HeadlessDevice::new)"
+        "device max_compute_workgroups_per_dimension {max}, limits policy {KIT_LIMITS_POLICY}"
     );
     let n = G4_THREADS;
-    let run = || -> Result<(), gust_wgpu::Error> {
+    let mut failed = false;
+    // `Ok(None)` is a launch whose result matched the host exactly; `Ok(Some(reason))` one that ran and differed.
+    let run = || -> Result<Option<String>, gust_wgpu::Error> {
         let out = GpuVec::<u32>::zeroed_on(device, n)?;
         let params = device.create_uniform(
             "g4",
@@ -906,12 +920,24 @@ fn g4(device: &DeviceHandle) -> (Vec<String>, bool) {
             },
         )?;
         let call = kit::g4_linear::call_extent(Extent::new(n, 1, 1), &params, Independent(&out));
-        device.dispatch_batch(&[BufferDispatch::from(&call)])
+        device.dispatch_batch(&[BufferDispatch::from(&call)])?;
+        let got = out.to_vec()?;
+        Ok(got
+            .iter()
+            .enumerate()
+            .find(|(i, v)| **v != g4_expected(*i as u32))
+            .map(|(i, v)| format!("element {i} is {v}")))
     };
     let line = match run() {
-        Ok(()) => format!(
-            "G4: probe, a linear launch of {G4_WORKGROUPS} workgroups on x ({n} invocations) succeeded; {context}"
+        Ok(None) => format!(
+            "G4: probe, a linear launch of {G4_WORKGROUPS} workgroups on x ({n} invocations) succeeded and matched the host exactly; {context}"
         ),
+        Ok(Some(reason)) => {
+            failed = true;
+            format!(
+                "G4: probe, a linear launch of {G4_WORKGROUPS} workgroups on x ({n} invocations) ran but FAILED the host check ({reason}); {context}"
+            )
+        }
         Err(gust_wgpu::Error::DeviceLimit {
             limit,
             requested,
@@ -924,38 +950,49 @@ fn g4(device: &DeviceHandle) -> (Vec<String>, bool) {
             "G4: probe, a linear launch of {G4_WORKGROUPS} workgroups on x ({n} invocations) failed with another error: {other:?}; {context}"
         ),
     };
+    let rows = G4_REMEDY_N.div_ceil(G4_WIDTH);
+    let slots = rows * G4_WIDTH;
     let remedy = || -> Result<(), String> {
-        let out = GpuVec::<u32>::zeroed_on(device, n).map_err(dbg)?;
+        let out = GpuVec::from_slice_on(device, &vec![G4_SENTINEL; slots as usize]).map_err(dbg)?;
         let params = device
             .create_uniform(
                 "g4 grid",
                 &kit::Params {
-                    n,
+                    n: G4_REMEDY_N,
                     side: G4_WIDTH,
                     pad0: 0,
                     pad1: 0,
                 },
             )
             .map_err(dbg)?;
-        let extent = Extent::new(G4_WIDTH, n.div_ceil(G4_WIDTH), 1);
-        let call = kit::g4_grid::call_extent(extent, &params, Independent(&out));
+        let call =
+            kit::g4_grid::call_extent(Extent::new(G4_WIDTH, rows, 1), &params, Independent(&out));
         device
             .dispatch_batch(&[BufferDispatch::from(&call)])
             .map_err(dbg)?;
         let got = out.to_vec().map_err(dbg)?;
-        let expected: Vec<u32> = (0..n).map(g4_expected).collect();
-        if got != expected {
-            let at = got.iter().zip(&expected).position(|(g, e)| g != e);
-            return Err(format!("the result differs from the host at {at:?}"));
+        let (values, tail) = got.split_at(G4_REMEDY_N as usize);
+        if let Some(at) = values
+            .iter()
+            .enumerate()
+            .position(|(i, v)| *v != g4_expected(i as u32))
+        {
+            return Err(format!("element {at} differs from the host"));
+        }
+        if let Some(at) = tail.iter().position(|v| *v != G4_SENTINEL) {
+            return Err(format!(
+                "slot {} past n was written (the guard did not hold)",
+                G4_REMEDY_N as usize + at
+            ));
         }
         Ok(())
     };
     let result = remedy();
-    let failed = result.is_err();
+    failed |= result.is_err();
     let remedy_line = match result {
         Ok(()) => format!(
-            "G4 remedy: ok, the same {n} elements as Extent::new({G4_WIDTH}, {}, 1) with `i = id.y * width + id.x; if i >= n {{ return; }}`, checked exactly against the host",
-            n.div_ceil(G4_WIDTH)
+            "G4 remedy: ok, {G4_REMEDY_N} elements (not a multiple of the width) as Extent::new({G4_WIDTH}, {rows}, 1) with `i = id.y * width + id.x; if i >= n {{ return; }}`: all values exact against the host and all {} slots past n still hold the sentinel",
+            slots - G4_REMEDY_N
         ),
         Err(reason) => format!("G4 remedy: FAILED, {reason}"),
     };
@@ -998,6 +1035,7 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // Opens the device with wgpu's default limits (`LimitsPolicy::Default`); `KIT_LIMITS_POLICY` names that in the G4 line.
     let device =
         DeviceHandle::new(HeadlessDevice::new().expect("no usable adapter on the Vulkan backend"));
     let info = device.adapter_info();

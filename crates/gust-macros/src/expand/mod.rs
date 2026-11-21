@@ -6,7 +6,7 @@ use syn::ext::IdentExt as _;
 
 use crate::{
     diagnostics::{self, Code},
-    profile::{GRID, PIXEL, ReflectionKind, Shape, StageProfile, TwinHarness},
+    profile::{GRID, GRID_SPLIT, PIXEL, ReflectionKind, Shape, StageProfile, TwinHarness},
     slang::{ParameterFlavor, parameter_flavor_in},
     validate::classify::{self, AttributeFacts, ShapePin},
 };
@@ -421,8 +421,19 @@ struct BuiltBody {
     artifacts: TokenStream,
     strict_artifact: TokenStream,
     export_error: TokenStream,
+    /// The split variant of the body (m11.g4a): `Some` for the selected body of a `grid` kernel built for the GPU.
+    split: Option<SplitBody>,
     /// The renamed function (`__gpu_typecheck_*`), for the proof that a variant has its kernel's signature.
     typecheck: syn::Ident,
+}
+
+/// The split variant of a body: the kernel's Slang with the hidden launch-base uniform (m11.g4a).
+struct SplitBody {
+    source: String,
+    /// The `SourceOrigin` of the variant's own text, whose lines are one or two further down than the base's.
+    origin: TokenStream,
+    /// The binding of the hidden uniform: the first one after the kernel's own.
+    binding: u32,
 }
 
 /// What a kernel's expansion keeps for the end of the walk, when every body of it has been built.
@@ -639,6 +650,36 @@ fn expand_validated_with(
         let reported = reported_file(original_kernel, environment);
         let source_origin = source_origin(reported.as_deref(), manifest_dir, &emitted.lines);
         let slang_source = emitted.source;
+        // The split variant of the selected body of a kernel built for the GPU (m11.g4a): the same Slang with one
+        // hidden uniform. Nothing else looks at it: no artifact, no export record, no site record.
+        let split = if is_selected && !cpu_target && shape == Shape::Grid {
+            let facts = parameter_facts(stage, &function.sig.inputs)?;
+            let binding = u32::try_from(facts.iter().filter(|fact| fact.binding.is_some()).count())
+                .expect("a kernel has fewer than 2^32 parameters");
+            let variant = crate::slang::emit_kernel_in(
+                &GRID_SPLIT,
+                &original_module,
+                original_kernel,
+                KernelOptions { workgroup_size },
+            )?;
+            // The binding the descriptor names is the one the emitter wrote: a mismatch would be a variant the
+            // runtime's reflection check refuses at run time, so it is a build error here (an internal one: no
+            // user input can make the two differ).
+            let declared = format!(
+                "[[vk::binding({binding}, 0)]] ConstantBuffer<__GustLaunchBase> __gust_launch_base;"
+            );
+            assert!(
+                variant.source.contains(&declared),
+                "internal error: the split variant's binding differs from the descriptor's"
+            );
+            Some(SplitBody {
+                origin: self::source_origin(reported.as_deref(), manifest_dir, &variant.lines),
+                source: variant.source,
+                binding,
+            })
+        } else {
+            None
+        };
         // The key hashes the clean text, so it is computed here: the Slang text is final, and the CPU twin (below)
         // never reaches it.
         let key = artifact::content_key(&entry_point, &slang_source);
@@ -736,6 +777,7 @@ fn expand_validated_with(
             artifacts,
             strict_artifact,
             export_error,
+            split,
             typecheck: typecheck_name.clone(),
         });
         if owner.is_some() {
@@ -855,7 +897,61 @@ fn expand_validated_with(
         } else {
             quote!(::gust::routed::OnGpu)
         };
+        // The split variant's descriptor (m11.g4a): an ordinary descriptor of its own, whose parameters are the
+        // kernel's and the hidden launch-base uniform. It is a constant of its own so that the kernel's descriptor can
+        // borrow it for `'static`; a kernel without a variant says `None`.
+        // The kernel's parameters are written once, as a constant of their own, and both descriptors take them from it:
+        // what a parameter's type has to satisfy (`GpuPod`) is then checked, and reported, once.
+        let split_ident = format_ident!("__GUST_SPLIT_{}", name);
+        let params_ident = format_ident!("__GUST_PARAMS_{}", name);
+        let parameter_count = parameter_descriptors.len();
+        let parameter_indices: Vec<syn::Index> =
+            (0..parameter_count).map(syn::Index::from).collect();
+        let params_item = quote! {
+            #[doc(hidden)]
+            #[allow(non_upper_case_globals)]
+            const #params_ident: [::gust::ParameterDescriptor; #parameter_count] =
+                [#(#parameter_descriptors),*];
+        };
+        let (split_item, split_field) = match &body.split {
+            Some(split) => {
+                let SplitBody {
+                    source,
+                    origin,
+                    binding,
+                } = split;
+                let item = quote! {
+                    #[doc(hidden)]
+                    #[allow(non_upper_case_globals)]
+                    const #split_ident: ::gust::KernelDescriptor = ::gust::__gust_descriptor! {
+                        module: #module_name,
+                        name: stringify!(#name),
+                        entry_point: #entry_point,
+                        shape: #shape_path,
+                        compatible_shapes: &[#(#compatible_shapes),*],
+                        workgroup_size: [#x, #y, #z],
+                        parameters: &[
+                            #(#params_ident[#parameter_indices],)*
+                            ::gust::KernelDescriptor::__gust_launch_base_parameter(#binding)
+                        ],
+                        slang_source: #source,
+                        source: #origin,
+                        artifacts: &[],
+                        variant: #variant,
+                        requires: &[#(#requires),*],
+                        target: #target_path,
+                        split: ::core::option::Option::None,
+                    };
+                };
+                (item, quote!(::core::option::Option::Some(&#split_ident)))
+            }
+            None => (TokenStream::new(), quote!(::core::option::Option::None)),
+        };
         generated.push(quote! {
+            #params_item
+
+            #split_item
+
             #[doc = #handle_doc]
             #[allow(non_camel_case_types)]
             #visibility struct #name;
@@ -876,7 +972,7 @@ fn expand_validated_with(
                     shape: #shape_path,
                     compatible_shapes: &[#(#compatible_shapes),*],
                     workgroup_size: [#x, #y, #z],
-                    parameters: &[#(#parameter_descriptors),*],
+                    parameters: &#params_ident,
                     slang_source: #slang_source,
                     source: #source_origin,
                     artifacts: #artifacts,
@@ -885,6 +981,7 @@ fn expand_validated_with(
                     variant: #variant,
                     requires: &[#(#requires),*],
                     target: #target_path,
+                    split: #split_field,
                 };
             }
 
@@ -4922,7 +5019,13 @@ mod tests {
         assert!(!json.contains("\"lines\": []"), "{json}");
         // The same table, entry for entry: every `[start, end, rust_line]` triple of the descriptor is in the record.
         let mut triples = 0;
-        for part in text.split("slang_start : ").skip(1) {
+        // The kernel's own descriptor: the split variant's (m11.g4a) has a table of its own, shifted by the lines the
+        // hidden uniform adds, and no export record.
+        let own = text
+            .split("impl :: gust :: Kernel for ")
+            .nth(1)
+            .expect("the kernel's impl");
+        for part in own.split("slang_start : ").skip(1) {
             let start = part.split(',').next().unwrap();
             let end = part
                 .split("slang_end : ")

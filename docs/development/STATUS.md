@@ -515,6 +515,20 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   - Merged-tree gate on `2d085b9`: fmt, workspace clippy, macros tests, `check-ui`, `docs-check`, `check-arch`, `lint`,
     the `float_math` GPU test, the three examples on the GPU (`budget-kit --small`), and the Unit suite all passed.
     One GPU test needed a second adapter request after a transient NoAdapter.
+  - End-of-run review fixes and one library addition, merged the same night:
+    - m11.zb (`70836f0`, fixes `c182524`, merge `69dd0e7`): `hash-rng` and `polar-transform` are registered in the
+      example, CPU-test and workspace-exclude lists, with twin tests in `check-cpu` and GPU tests under the
+      full-verification ignore convention; `budget-kit` stays unlisted (no tests, needs `--out`). budget-kit W4 starts
+      from poisoned counts, W2, W3 and W5 require finite values, and the hash `mix` is pinned to lowbias32 known answers.
+    - m11.scope (`bd4cace`, fixes `09854af`, merge `3c08fc6`): `gust_algo::dispatch_batch_in_scope` counts a caller's
+      own batch in the enclosing `timed` scope; `ALGO_GPU_TESTS` is 55.
+    - m11.za (`ab46b4e`, fixes `8917d08` and `275a616`, merge `abef534`): user names equal to an intrinsic the emitter
+      writes unqualified (the 18 math names, `asint`, `asuint`, `countbits`, `GroupMemoryBarrierWithGroupSync` and 18
+      `Wave*` names) are renamed, so they no longer capture the emitted call; the texture and sampler type names stay
+      out of the table because a user struct of such a name is already refused (E0736, measured for `Texture2D`).
+  - Merged-tree gate on `abef534`: fmt, workspace clippy, macros tests, the diagnostics tests (slangc tier), xtask
+    tests, `docs-check`, `check-ui`, `check-arch`, `lint`, on the GPU `float_math`, `polar-transform`, `hash-rng`,
+    `gust-algo` and `budget-kit --small`, and the Unit suite all passed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

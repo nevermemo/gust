@@ -1,6 +1,6 @@
 # Decisions and boundaries
 
-Append-only log. Next id: **D203**. Add a row for every owner decision or durable
+Append-only log. Next id: **D209**. Add a row for every owner decision or durable
 technical decision, with its date and source; supersede an old row with a new one
 instead of editing it. D01–D18 were recorded 2026-09-07 from the owner's GUST handoff,
 earlier reflection deferral, and independent inspection. Chat research is design
@@ -208,6 +208,7 @@ input, not proof of code state.
 | D205 | Kernel-language additions from the budget kit (owner, 2026-11-21, chat): a helper for a linear launch past the per-dimension workgroup limit (gap G4: "Build the helper."); a module-level `const` shared by the kernels of a module (gap G3: "Yes allow const."); the float methods `hypot` and `mul_add` and integer `pow` ("Add them."). | Each lands as its own slice with a GPU test in its first slice (D201). |
 | D206 | Phase naming (owner, 2026-11-21, chat): M11 "Realignment" and D199's design phase name the same work. "Both are true. Realignment covers 'redesign'. That design phase about syntax decisions. We did the heavy Gust work already, now we are shaping it into a better form like a pot from clay." The roadmap keeps the M11 name. | D199. |
 | D207 | All GPUs of the development machine are available again (owner, 2026-11-21, chat: "No quite window now, all hardware including 5090 is available."). GPU runs may use the RTX 5090 as well as the Radeon 890M; a run names its adapter. Work still lands on `dev`. | Amends D202. |
+| D208 | Gap G4 is closed by splitting the launch (owner, 2026-11-21, chat: "Option 3"), in place of D205's host helper: a `#[kernel]` launch past the per-dimension workgroup limit runs as several dispatches, each with a base offset that the generated entry point adds to the invocation id, so `id` stays the global index and kernels need no edit; the CPU twin is unchanged. Planned as two slices, `m11.g4a` (the split form of a kernel, tested by hand on the GPU) and `m11.g4b` (the host splits). | Amends D205. Precompiled-only and browser builds do not split until a later slice. |
 
 ## Notes
 

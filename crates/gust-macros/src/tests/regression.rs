@@ -176,6 +176,22 @@ fn numeric_golden() {
 }
 
 #[test]
+fn fetch_golden() {
+    let source =
+        translate_every_kernel(include_str!("../../../../tests/fixtures/fetch.rs")).unwrap();
+    assert_eq!(
+        source.matches("// ==== kernel ").count(),
+        4,
+        "the fetch fixture declares 4 kernels"
+    );
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "fetch.slang",
+        &include_str!("../../../../tests/fixtures/fetch.slang").replace("\r\n", "\n"),
+    );
+}
+
+#[test]
 fn float_math_golden() {
     let source =
         translate_every_kernel(include_str!("../../../../tests/fixtures/float_math.rs")).unwrap();

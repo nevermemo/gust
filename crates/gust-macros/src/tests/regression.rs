@@ -176,6 +176,22 @@ fn numeric_golden() {
 }
 
 #[test]
+fn float_math_golden() {
+    let source =
+        translate_every_kernel(include_str!("../../../../tests/fixtures/float_math.rs")).unwrap();
+    assert_eq!(
+        source.matches("// ==== kernel ").count(),
+        7,
+        "the float_math fixture declares 7 kernels"
+    );
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "float_math.slang",
+        &include_str!("../../../../tests/fixtures/float_math.slang").replace("\r\n", "\n"),
+    );
+}
+
+#[test]
 fn option_golden() {
     let source = translate(include_str!("../../../../tests/fixtures/option.rs")).unwrap();
     assert_golden(

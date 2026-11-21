@@ -9,21 +9,21 @@
 //!
 //! The WGSL set (the test names its size and fails on drift):
 //!
-//! - 23 of the 24 Slang goldens of `tests/fixtures/*.slang`; `par_for.slang` (slice m7.p) is filtered out, because the
-//!   module of a `par_for!` kernel stands inside the block of its call, so no descriptor can be named from here (its
-//!   ten kernels run in `tests/par_for.rs`). The test
+//! - 30 of the 33 Slang goldens of `tests/fixtures/*.slang`; `variant.slang` and `subgroup.slang` are macro-only, and
+//!   `par_for.slang` (slice m7.p) is filtered out, because the module of a `par_for!` kernel stands inside the block of
+//!   its call, so no descriptor can be named from here (its ten kernels run in `tests/par_for.rs`). The test
 //!   `the_goldens_are_the_fixtures_directory` pins the file list against the directory, and the fixture `.rs` list
 //!   with it. Each golden is split at its `// ==== kernel <name> ====` markers where it has them, and each
 //!   `[shader("compute")]` or `[shader("fragment")]` entry of each section is compiled to WGSL with the `slangc` command
 //!   line (the stage of its shape) through
-//!   `gust::slang::compile_source_as`: 99 entries. The descriptor of an entry comes from the fixture's Rust source,
+//!   `gust::slang::compile_source_as`: 116 entries. The descriptor of an entry comes from the fixture's Rust source,
 //!   included below the way the other test files include it;
-//! - every fixture kernel, 109 in all (the 99 above and the 10 that no golden holds: `atomics.slang` keeps only the
+//! - every fixture kernel, 126 in all (the 116 above and the 10 that no golden holds: `atomics.slang` keeps only the
 //!   first of the ten kernels of `atomics.rs`, and `numeric.slang` only the first of the two of `numeric.rs`),
 //!   compiled from its descriptor's own Slang through the native reflection helper, `gust::reflect::compile_reflected`.
 //!   That is the route `HeadlessDevice` takes at run time, so these are the bytes a device is handed when it compiles
 //!   at run time. `export` takes `compile_reflected_clean` (the same helper on input without `#line` directives), so
-//!   exported WGSL is gated only through the committed precompiled file below. The helper needs no adapter. 202 WGSL
+//!   exported WGSL is gated only through the committed precompiled file below. The helper needs no adapter. 242 WGSL
 //!   modules in all;
 //! - the committed precompiled WGSL (`tests/fixtures/precompiled/52e85c5f03f72272.wgsl`), which is the only WGSL file
 //!   the repository commits; its five other copies are required to be byte-identical to it.
@@ -102,6 +102,11 @@ fixture!(
     "../../../tests/fixtures/coretests.rs"
 );
 fixture!(f_enums, enums, "../../../tests/fixtures/enums.rs");
+fixture!(
+    f_float_math,
+    float_math,
+    "../../../tests/fixtures/float_math.rs"
+);
 fixture!(f_grid, grid, "../../../tests/fixtures/grid.rs");
 fixture!(f_loops, loops, "../../../tests/fixtures/loops.rs");
 fixture!(
@@ -154,7 +159,7 @@ struct Golden {
     kernels: &'static [KernelDescriptor],
 }
 
-fn goldens() -> [Golden; 29] {
+fn goldens() -> [Golden; 30] {
     [
         Golden {
             file: "arrays.slang",
@@ -203,6 +208,12 @@ fn goldens() -> [Golden; 29] {
             text: include_str!("../../../tests/fixtures/generics.slang"),
             entries: 1,
             kernels: f_generics::KERNELS,
+        },
+        Golden {
+            file: "float_math.slang",
+            text: include_str!("../../../tests/fixtures/float_math.slang"),
+            entries: 7,
+            kernels: f_float_math::KERNELS,
         },
         Golden {
             file: "grid.slang",
@@ -877,8 +888,8 @@ fn compare_kernel(kernel: &KernelDescriptor, module: &Module) -> Vec<String> {
     problems
 }
 
-/// The compute and fragment entries the twenty-eight goldens hold in all (pinned per golden in [`goldens`]).
-const GOLDEN_ENTRIES: usize = 109;
+/// The compute and fragment entries the thirty goldens hold in all (pinned per golden in [`goldens`]).
+const GOLDEN_ENTRIES: usize = 116;
 
 /// The fixture kernels that no golden holds: the macro's golden test keeps only the first kernel of `atomics.rs`
 /// (`atomics.slang` has one entry for the ten kernels of the module) and of `numeric.rs` (one of two).

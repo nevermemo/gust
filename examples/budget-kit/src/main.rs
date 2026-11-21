@@ -41,6 +41,34 @@ mod kit {
         pub pad1: u32,
     }
 
+    // The flat index of an invocation in a grid of rows of 8192 (`Extent::new(8192, rows, 1)`).
+    fn linear(x: u32, y: u32) -> u32 {
+        y * 8192u32 + x
+    }
+
+    // `a` wrapped once into [0, side) (a is below 2 * side).
+    fn wrap_index(a: u32, side: u32) -> u32 {
+        if a >= side { a - side } else { a }
+    }
+
+    // The cell of a position in [0, side], clamped to the last cell.
+    fn cell_of(v: f32, side: u32) -> u32 {
+        let c = v as u32;
+        if c >= side { side - 1u32 } else { c }
+    }
+
+    // `v` wrapped once into [0, side] (v is in [-side, 2 * side)).
+    fn wrap_pos(v: f32, side: f32) -> f32 {
+        let mut w = v;
+        if w >= side {
+            w -= side;
+        }
+        if w < 0.0f32 {
+            w += side;
+        }
+        w
+    }
+
     // W1: read one array, write another.
     #[kernel(workgroup_size(256, 1, 1))]
     pub fn w1_copy(
@@ -49,7 +77,7 @@ mod kit {
         input: StructuredBuffer<u32>,
         mut out: RWStructuredBuffer<u32>,
     ) {
-        let i = id.y * 8192u32 + id.x;
+        let i = linear(id.x, id.y);
         if i < p.n {
             out[i] = input[i];
         }
@@ -64,26 +92,14 @@ mod kit {
         input: StructuredBuffer<Vec4>,
         mut out: RWStructuredBuffer<Vec4>,
     ) {
-        let i = id.y * 8192u32 + id.x;
+        let i = linear(id.x, id.y);
         if i < p.n {
             let x = i % p.side;
             let y = i / p.side;
-            let mut xl = x + p.side - 1u32;
-            if xl >= p.side {
-                xl -= p.side;
-            }
-            let mut xr = x + 1u32;
-            if xr >= p.side {
-                xr -= p.side;
-            }
-            let mut yu = y + p.side - 1u32;
-            if yu >= p.side {
-                yu -= p.side;
-            }
-            let mut yd = y + 1u32;
-            if yd >= p.side {
-                yd -= p.side;
-            }
+            let xl = wrap_index(x + p.side - 1u32, p.side);
+            let xr = wrap_index(x + 1u32, p.side);
+            let yu = wrap_index(y + p.side - 1u32, p.side);
+            let yd = wrap_index(y + 1u32, p.side);
             let c = input[i];
             let l = input[y * p.side + xl];
             let r = input[y * p.side + xr];
@@ -102,35 +118,17 @@ mod kit {
         field: StructuredBuffer<Vec4>,
         mut parts: RWStructuredBuffer<Vec4>,
     ) {
-        let i = id.y * 8192u32 + id.x;
+        let i = linear(id.x, id.y);
         if i < p.n {
             let q = parts[i];
             let side = p.side as f32;
-            let mut cx = q.x as u32;
-            let mut cy = q.y as u32;
-            if cx >= p.side {
-                cx = p.side - 1u32;
-            }
-            if cy >= p.side {
-                cy = p.side - 1u32;
-            }
+            let cx = cell_of(q.x, p.side);
+            let cy = cell_of(q.y, p.side);
             let f = field[cy * p.side + cx];
             let vx = q.z + (f.x - 0.5f32) * 0.05f32;
             let vy = q.w + (f.y - 0.5f32) * 0.05f32;
-            let mut x = q.x + vx;
-            let mut y = q.y + vy;
-            if x >= side {
-                x -= side;
-            }
-            if x < 0.0f32 {
-                x += side;
-            }
-            if y >= side {
-                y -= side;
-            }
-            if y < 0.0f32 {
-                y += side;
-            }
+            let x = wrap_pos(q.x + vx, side);
+            let y = wrap_pos(q.y + vy, side);
             parts[i] = Vec4::new(x, y, vx, vy);
         }
     }
@@ -142,7 +140,7 @@ mod kit {
         p: Uniform<Params>,
         mut counts: RWStructuredBuffer<u32>,
     ) {
-        let i = id.y * 8192u32 + id.x;
+        let i = linear(id.x, id.y);
         if i < p.n {
             counts[i] = 0u32;
         }
@@ -156,17 +154,11 @@ mod kit {
         parts: StructuredBuffer<Vec4>,
         mut counts: RWStructuredBuffer<u32>,
     ) {
-        let i = id.y * 8192u32 + id.x;
+        let i = linear(id.x, id.y);
         if i < p.n {
             let q = parts[i];
-            let mut cx = q.x as u32;
-            let mut cy = q.y as u32;
-            if cx >= p.side {
-                cx = p.side - 1u32;
-            }
-            if cy >= p.side {
-                cy = p.side - 1u32;
-            }
+            let cx = cell_of(q.x, p.side);
+            let cy = cell_of(q.y, p.side);
             atomic_add(&mut counts[cy * p.side + cx], 1u32);
         }
     }
@@ -179,7 +171,7 @@ mod kit {
         input: StructuredBuffer<u32>,
         mut out: RWStructuredBuffer<u32>,
     ) {
-        let i = id.y * 8192u32 + id.x;
+        let i = linear(id.x, id.y);
         if i < p.n {
             out[i] = input[i].wrapping_add(1u32);
         }
@@ -593,7 +585,9 @@ fn w3(device: &DeviceHandle, count: u32) -> Row {
         let batch = [BufferDispatch::from(&call)];
         // One step from the initial state, so every particle samples the cell the host also computes. The tolerance is
         // 8 x 2^-23 of max(|expected|, 1): a step is at most four roundings of 2u on the GPU, with a magnitude of at
-        // most the field side. A wrap decided differently by the two sides differs by the side, so a difference is
+        // most the field side. The GPU positions must also lie in [0, side] (`side` itself is possible: -tiny + side
+        // rounds to side), so a missing wrap shows even though the modulo comparison below hides a difference of a whole
+        // side. A wrap decided differently by the two sides differs by the side, so a difference is
         // taken modulo the side.
         dispatch(device, &batch)?;
         let gpu = parts.to_vec().map_err(dbg)?;
@@ -601,6 +595,11 @@ fn w3(device: &DeviceHandle, count: u32) -> Row {
         for (at, (g, q)) in gpu.iter().zip(&parts_host).enumerate() {
             let c = cpu_particle(*q, &field_host, W3_FIELD_SIDE);
             for (lane, (gv, cv)) in lanes(*g).into_iter().zip(lanes(c)).enumerate() {
+                if lane < 2 && !(0.0..=side).contains(&gv) {
+                    return Err(format!(
+                        "particle {at} lane {lane}: GPU {gv} is outside [0, {side}] (the wrap)"
+                    ));
+                }
                 let mut diff = (gv - cv).abs();
                 if lane < 2 && diff > side / 2.0 {
                     diff = side - diff;
@@ -692,7 +691,7 @@ fn w4(device: &DeviceHandle, count: u32) -> Row {
         let bytes = 16.0 * f64::from(count) + 8.0 * f64::from(count) + 12.0 * f64::from(cells);
         Ok((measured, Some(bytes)))
     })();
-    row.note = "the scatter of the indices is not here: the atomic's old value cannot be used (gap G1); time is the clear and count batch plus the scan's GPU time; bytes: 16 + 8 per particle, 12 per cell".into();
+    row.note = "the scatter of the indices is not here: the atomic's old value cannot be used (gap G1); time is the clear and count batch plus the scan's GPU time; bytes: 16 + 8 per particle, 12 per cell, nominal (the atomic counted as 8), so the GB/s is not a memory bandwidth".into();
     row
 }
 
@@ -713,11 +712,24 @@ fn w5(device: &DeviceHandle, n: u32) -> Row {
         let reference = bound::sum_f64(&host);
         let allowed =
             bound::f32_sum_bound(n, bound::C_GPU, abs_sum) + bound::f64_reference_error(n, abs_sum);
+        // The exact companion: a `u32` sum of `n` values, compared bit for bit with the host's wrapping sum, so a lost block
+        // or a double-counted one cannot hide inside the float bound.
+        let ints: Vec<u32> = (0..n).map(|i| mix(i) >> 8).collect();
+        let int_input = GpuVec::from_slice_on(device, &ints).map_err(dbg)?;
+        let int_sum = reduce::sum_wrapping(&int_input).map_err(dbg)?;
+        let int_host = ints.iter().fold(0u32, |a, v| a.wrapping_add(*v));
+        if int_sum != int_host {
+            return Err(format!(
+                "u32 sum {int_sum} differs from the host's {int_host}"
+            ));
+        }
         let first = timed(|| reduce::sum(&input)).map_err(dbg)?;
         let error = (f64::from(first.value) - reference).abs();
         row.note = format!(
-            "observed error {:.3e} of an allowed {:.3e} (bound::f32_sum_bound plus bound::f64_reference_error); bytes: one read per element",
-            error, allowed
+            "observed error {:.3e} of an allowed {:.3e} (bound::f32_sum_bound plus bound::f64_reference_error); bytes: one read per element; the f32 bound is wide (about {:.0}x the observed error), so a structural check is the exact u32 sum, which matched",
+            error,
+            allowed,
+            allowed / error.max(f64::MIN_POSITIVE)
         );
         if error > allowed {
             return Err(format!(
@@ -773,8 +785,9 @@ fn w6(device: &DeviceHandle, n: u32) -> Row {
         let batch = [BufferDispatch::from(&call)];
         let mut submit_ms = Vec::new();
         let mut read_ms = Vec::new();
-        // Submit, wait for the submission, read the result back: the time until it is on the CPU. The result is checked
-        // after the clock stops, on every step.
+        // Submit, wait for the submission, read the result back: the time until it is on the CPU. The result is compared
+        // after the clock stops on every step, but only the first step proves the kernel wrote it (`out` starts zeroed;
+        // later steps find the previous step's identical result there)."
         let mut step = || -> Result<Sample, String> {
             let started = Instant::now();
             device.dispatch_batch(&batch).map_err(dbg)?;
@@ -795,7 +808,7 @@ fn w6(device: &DeviceHandle, n: u32) -> Row {
         // The split of the counted steps (the last STEPS entries).
         let from = submit_ms.len() - STEPS;
         row.note = format!(
-            "submit and wait {:.4} ms, readback {:.4} ms (medians of the same steps); wall clock around submit, wait and readback",
+            "submit and wait {:.4} ms, readback {:.4} ms (medians of the same steps); wall clock around submit, wait and readback; the result is proven written on the first step only",
             median(&submit_ms[from..]),
             median(&read_ms[from..])
         );
@@ -840,9 +853,8 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let device = DeviceHandle::new(
-        HeadlessDevice::new().expect("a Vulkan adapter is required (and none was found)"),
-    );
+    let device =
+        DeviceHandle::new(HeadlessDevice::new().expect("no usable adapter on the Vulkan backend"));
     let info = device.adapter_info();
     let limits = device.limits();
     let mut text = String::new();
@@ -880,7 +892,7 @@ fn main() {
     );
     let _ = writeln!(
         text,
-        "statistic: median of {STEPS} steps after {WARMUP} warm-up steps; a step is one dispatch (W4: a clear, a count and a scan; W5: a whole reduction; W6: submit, wait and readback); steps per frame is {FRAME_MS:.1} ms over the median; GB/s is the stated bytes over the median"
+        "statistic: median of {STEPS} steps after {WARMUP} warm-up steps; a step is one dispatch (W4: a clear, a count and a scan; W5: a whole reduction, the pooled-buffer clears outside the timed region; W6: submit, wait and readback); steps per frame is {FRAME_MS:.1} ms over the median; GB/s is the stated bytes over the median"
     );
     let _ = writeln!(
         text,

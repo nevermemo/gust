@@ -8,7 +8,7 @@ written with GUST's public API only.
 | W1 | Copy (reference) | read one array, write another |
 | W2 | Field diffusion | 2D grid of four `f32` channels; each cell blends its four neighbours and decays |
 | W3 | Particle step | position and velocity in `f32`; sample the W2 field at the particle's cell, move, wrap |
-| W4 | Spatial binning | count particles per cell with atomics, then scan the counts |
+| W4 | Spatial binning | count particles per cell with atomics, then scan the counts (the scatter is a gap: an atomic's old value cannot be used) |
 | W5 | Reduction | `f32` sum with `gust-algo`, checked against an `f64` reference within the documented bound |
 | W6 | Readback delay | submit a small kernel and wait until its result is on the CPU |
 

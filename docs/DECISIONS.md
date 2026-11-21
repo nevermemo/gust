@@ -1,6 +1,6 @@
 # Decisions and boundaries
 
-Append-only log. Next id: **D209**. Add a row for every owner decision or durable
+Append-only log. Next id: **D212**. Add a row for every owner decision or durable
 technical decision, with its date and source; supersede an old row with a new one
 instead of editing it. D01–D18 were recorded 2026-09-07 from the owner's GUST handoff,
 earlier reflection deferral, and independent inspection. Chat research is design
@@ -209,6 +209,9 @@ input, not proof of code state.
 | D206 | Phase naming (owner, 2026-11-21, chat): M11 "Realignment" and D199's design phase name the same work. "Both are true. Realignment covers 'redesign'. That design phase about syntax decisions. We did the heavy Gust work already, now we are shaping it into a better form like a pot from clay." The roadmap keeps the M11 name. | D199. |
 | D207 | All GPUs of the development machine are available again (owner, 2026-11-21, chat: "No quite window now, all hardware including 5090 is available."). GPU runs may use the RTX 5090 as well as the Radeon 890M; a run names its adapter. Work still lands on `dev`. | Amends D202. |
 | D208 | Gap G4 is closed by splitting the launch (owner, 2026-11-21, chat: "Option 3"), in place of D205's host helper: a `#[kernel]` launch past the per-dimension workgroup limit runs as several dispatches, each with a base offset that the generated entry point adds to the invocation id, so `id` stays the global index and kernels need no edit; the CPU twin is unchanged. Planned as two slices, `m11.g4a` (the split form of a kernel, tested by hand on the GPU) and `m11.g4b` (the host splits). | Amends D205. Precompiled-only and browser builds do not split until a later slice. |
+| D209 | Split launches reach precompiled-only and browser builds before the design phase is called done (owner, 2026-11-21, chat: "Before."): the split variant of a `grid` kernel becomes usable without run-time compilation, so the `DeviceLimit` refusal that D208 kept for those builds is lifted in a later slice. m11.vsize measured what the variant costs today where it cannot run: 9,056 bytes (0.50 %) of the `web-vector-add` wasm for one kernel. | Amends D208's note on precompiled-only and browser builds. |
+| D210 | Constant expressions in module-level `const` items come next (owner, 2026-11-21, chat: "Yes."): m11.g3 accepts a literal initializer only; the next slice widens it to expressions of literals and earlier consts. | Extends D205 (G3). |
+| D211 | `gust-algo` drops the workgroup half of its launch pre-check (owner, 2026-11-21, chat: "lift the workgroup half of the pre-check"): `reduce` and `scan` no longer refuse a first dispatch past `max_compute_workgroups_per_dimension`, because the host splits such a launch (D208); the storage-binding half stays (no chunking past one binding, plan section 8, C3), and the choice between the v1 and v0 schedules follows. Until D209 lands, builds without run-time compilation still refuse those sizes at launch. | Amends the M7 pre-check (C3) for workgroups only. |
 
 ## Notes
 

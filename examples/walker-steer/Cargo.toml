@@ -1,0 +1,15 @@
+[package]
+name = "walker-steer"
+description = "Walkers that sample a field ahead, turn toward the strongest sample, move and deposit, exact on host, CPU twin and GPU"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+gust.workspace = true
+gust-wgpu = { workspace = true, features = ["slang-runtime"] }
+
+[lints]
+workspace = true

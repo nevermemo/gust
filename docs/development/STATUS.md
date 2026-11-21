@@ -711,6 +711,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       a workgroup, six rebuilds into one `Bins`. Two mutations fail as intended. Wired into `check-cpu` (six twin
       tests by name). Whether binning becomes a `gust-algo` operation stays the owner's question. Radeon 890M
       only; RTX 5090 pending.
+    - m11.steer (`b07d53d`): the example `walker-steer`: a `walk` kernel per walker (sense `dist` ahead in headings
+      `h - 1`, `h`, `h + 1`; straight wins ties, then `h - 1`; a hash turn with probability `prob / 2^16`; move;
+      `atomic_add` deposit) and a `relax` kernel per cell (`f - (f >> s) + deposit`). Host, twin and GPU bit-equal
+      after every step on 16x16 and 128x128, including all walkers in one cell and `prob` 0 and `2^16`; each cell
+      stays at most `amount * walkers * 2^s` (proved in the module doc, asserted per step). Two mutations fail as
+      intended. Probes: `RangeInclusive::contains` in a kernel is GUST-E0325 and also yields a misleading E0277 on
+      the uniform struct; an untyped array literal is GUST-E0811 (typed local arrays work). Wired into `check-cpu`.
+      Radeon 890M only; RTX 5090 pending.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

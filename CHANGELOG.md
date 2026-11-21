@@ -101,6 +101,10 @@ proof.
   exclusive scan into a kept buffer with `gust_algo::scan::exclusive_into`, scatter by the old value of a cursor).
   The set of elements of each cell is exact; their order inside a cell is unspecified on the GPU. Checked per cell
   as sets against a host counting sort, on the twin and the GPU.
+- Example `walker-steer` (m11.steer): walkers sense a `u32` field ahead in three headings, turn toward the largest
+  (a stated tie rule, and a hash-chosen turn with a set probability), move one wrapping cell and deposit with
+  `atomic_add`; a cell kernel then relaxes the field by a shift. All integer: host reference, twin and GPU are
+  bit-equal after every step, with a proven `u32` bound.
 - `KernelDescriptor::split` (m11.g4a, D208): every GPU `grid` kernel carries a split variant, compiled only when used,
   with one hidden launch-base uniform that its entry point adds to the invocation id. It is the ground for launches
   past the per-dimension workgroup limit (used by the host since m11.g4b). The kernel's own Slang,

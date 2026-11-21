@@ -1200,6 +1200,23 @@ route taken (section 15), the defect did not reproduce on the RTX 5090: the sent
 and then expects Rust's values on every adapter, and a defect's values on the route are a new finding. The difftest
 guard stays, because the WGSL route is the default.
 
+**Known driver defect (m11.ld), not a ledger row.** On the RTX 5090 with NVIDIA driver 610.88 through Vulkan, a loop with a
+constant bound (`for j in 0..255`) whose exit is a `break` on a float comparison misbehaves when the break is due late.
+Measured with `s` halved each step: with `if s < thr { n = j + 1; break; }` a break due at iteration 129, 200 or 250 is
+taken at 128 instead (n = 128), while 100, 127 and 128 are right; with `if s == y { n = j + 1; break; }` a break due at
+iteration 128 or later never fires, the loop runs all 255 iterations and n keeps its start value, and the break due at 128
+already fails (100 and 127 are right). The generated Slang, WGSL and SPIR-V are correct, the AMD Radeon 890M computes
+Rust's values in both forms, and the CPU twin does too, so GUST does not refuse or rewrite the form (D39). Unlike
+D168 and D169, the `spirv-route` feature does not avoid it: the same wrong values were measured with the route taken.
+In slice m11.fm other forms of the loop were measured right on the 5090 with hand-written WGSL: an integer-compare
+exit, a done flag (`if !done { ..; if s == y { done = true; } }`) and a bound read per invocation; the sentinel does not
+run them. The workaround for users is a done flag or an integer exit. GUST's own helper `__gust_fmod` uses the flag form
+since m11.fm. The GPU test `the_nvidia_float_break_loop_defect_is_still_there_or_absent_elsewhere` in `driver_sentinel`
+(m11.ld) runs one `<` kernel and one `==` kernel with start values built from bits, and expects the wrong values
+above on the RTX 5090 on either route (a failure names the route) and Rust's values on every other adapter; if the
+5090's values change, it fails, the cue to re-measure. Observed on driver 610.88 only; the cause (a trip-count or unroll
+fault in the driver) is inferred, not seen.
+
 **Known validation-layer message (VUID 10684), not a ledger row.** Under the Khronos Vulkan validation layer, modules that
 naga compiled to SPIR-V report `VUID-StandaloneSpirv-None-10684` ("invalid explicit layout decorations"). It appears for
 `Workgroup` arrays at every SPIR-V version, and for `Function` and `Private` structs and arrays from SPIR-V 1.5 on;

@@ -1,7 +1,62 @@
 // Slice m9.sen (D168, D169): a sentinel for the NVIDIA array defect. See `fixtures/driver_sentinel.rs` for the kernels.
 include!("fixtures/driver_sentinel.rs");
 
+// Slice m11.ld: a sentinel for the NVIDIA float-break loop defect (SEMANTICS, "Known driver defect (m11.ld)"). The
+// loop has a constant bound, and its exit is a `break` on a float comparison; `s` starts at 2^(t - 126) and is halved
+// each step, so the exit is due at iteration t - 1 (n = t). The start values and the thresholds come from buffers,
+// built from bits on the host, so the values are exact whatever the compiler folds.
+#[gust::gpu]
+mod loop_break {
+    // limit[i] is 1.5 * 2^-125 for lt_form and 2^-125 for eq_form. It is a per-invocation buffer, every element alike, only because the typed buffers of one call share one length.
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn lt_form(
+        id: SV_DispatchThreadID,
+        starts: StructuredBuffer<f32>,
+        limit: StructuredBuffer<f32>,
+        mut out: RWStructuredBuffer<u32>,
+    ) {
+        let i = id.x;
+        if i < out.len() {
+            let mut s = starts[i];
+            let thr = limit[i];
+            let mut n = 0u32;
+            for j in 0u32..255u32 {
+                if s < thr {
+                    n = j + 1u32;
+                    break;
+                }
+                s *= 0.5f32;
+            }
+            out[i] = n;
+        }
+    }
+
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn eq_form(
+        id: SV_DispatchThreadID,
+        starts: StructuredBuffer<f32>,
+        limit: StructuredBuffer<f32>,
+        mut out: RWStructuredBuffer<u32>,
+    ) {
+        let i = id.x;
+        if i < out.len() {
+            let mut s = starts[i];
+            let y = limit[i];
+            let mut n = 0u32;
+            for j in 0u32..255u32 {
+                if s == y {
+                    n = j + 1u32;
+                    break;
+                }
+                s *= 0.5f32;
+            }
+            out[i] = n;
+        }
+    }
+}
+
 use gust::Run;
+use gust::cpu::CpuDevice;
 use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 
 const COUNT: usize = 129;
@@ -218,4 +273,122 @@ fn spirv_route_taken(device: &HeadlessDevice) -> bool {
 #[cfg(not(feature = "spirv-route"))]
 fn spirv_route_taken(_device: &HeadlessDevice) -> bool {
     false
+}
+
+// m11.ld: the iteration at which the break is due, per invocation (Rust's value is n == t).
+const LOOP_T: [u32; 6] = [100, 127, 128, 129, 200, 250];
+// The values measured on the RTX 5090 (NVIDIA 610.88, Vulkan) on both routes: a `<` break due after 128 iterations is
+// taken at 128; an `==` break due at iteration 128 or later never fires (n stays 0).
+const LOOP_LT_DEFECT: [u32; 6] = [100, 127, 128, 128, 128, 128];
+const LOOP_EQ_DEFECT: [u32; 6] = [100, 127, 0, 0, 0, 0];
+
+#[test]
+fn the_nvidia_float_break_loop_defect_is_still_there_or_absent_elsewhere() {
+    let device =
+        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let info = device.adapter_info();
+    let adapter = format!(
+        "{} (vendor {:#06x}, driver {:?} {:?}, {:?})",
+        info.name, info.vendor, info.driver, info.driver_info, info.backend
+    );
+    eprintln!("loop sentinel adapter: {adapter}");
+    let kind = classify(info);
+
+    // 2^(t - 126) from its bits: the exponent field is t - 126 + 127 = t + 1.
+    let starts: Vec<f32> = LOOP_T
+        .iter()
+        .map(|t| f32::from_bits((t + 1) << 23))
+        .collect();
+    let thr = f32::from_bits((2u32 << 23) | (1 << 22)); // 1.5 * 2^-125: exponent field 2, mantissa .5
+    let y = f32::from_bits(2u32 << 23); // 2^-125
+    assert_eq!(starts[0], 2.0f32.powi(100 - 126));
+    assert_eq!(y, 2.0f32.powi(-125));
+    assert_eq!(thr, 1.5 * 2.0f32.powi(-125));
+    let thr_all = vec![thr; LOOP_T.len()];
+    let y_all = vec![y; LOOP_T.len()];
+
+    let device_starts =
+        device.create_typed_buffer("loop starts", &starts, GpuBufferAccess::ReadOnly);
+    let device_thr = device.create_typed_buffer("loop thr", &thr_all, GpuBufferAccess::ReadOnly);
+    let device_y = device.create_typed_buffer("loop y", &y_all, GpuBufferAccess::ReadOnly);
+    let blank = vec![u32::MAX; LOOP_T.len()];
+    let count = LOOP_T.len() as u32;
+
+    let out_lt = device.create_typed_buffer("loop out lt", &blank, GpuBufferAccess::ReadWrite);
+    device
+        .dispatch_call(&loop_break::lt_form::call(
+            count,
+            &device_starts,
+            &device_thr,
+            &out_lt,
+        ))
+        .unwrap();
+    let gpu_lt = device.read_typed_buffer(&out_lt).unwrap();
+    let out_eq = device.create_typed_buffer("loop out eq", &blank, GpuBufferAccess::ReadWrite);
+    device
+        .dispatch_call(&loop_break::eq_form::call(
+            count,
+            &device_starts,
+            &device_y,
+            &out_eq,
+        ))
+        .unwrap();
+    let gpu_eq = device.read_typed_buffer(&out_eq).unwrap();
+
+    // The CPU twin gives Rust's values everywhere.
+    let cpu = CpuDevice::new();
+    let twin_starts = cpu.buffer(&starts);
+    let twin_thr = cpu.buffer(&thr_all);
+    let twin_y = cpu.buffer(&y_all);
+    let twin_lt = cpu.buffer(&blank);
+    loop_break::lt_form::dispatch(&cpu, count, &twin_starts, &twin_thr, &twin_lt).unwrap();
+    let twin_eq = cpu.buffer(&blank);
+    loop_break::eq_form::dispatch(&cpu, count, &twin_starts, &twin_y, &twin_eq).unwrap();
+    assert_eq!(twin_lt.read(), LOOP_T, "CPU twin, lt form");
+    assert_eq!(twin_eq.read(), LOOP_T, "CPU twin, eq form");
+
+    // The defect was measured on both routes (the WGSL route and, with the `spirv-route` feature and the route taken, the
+    // SPIR-V route), so the measured device is held to the defect's values on either, and a failure names the route.
+    let route = spirv_route_taken(&device);
+    let route_name = if route { "SPIR-V route" } else { "WGSL route" };
+    let held = kind;
+    let right = |i: usize| LOOP_T[i];
+    let results = [
+        judged_loop("lt_form", held, &gpu_lt, right, |i| LOOP_LT_DEFECT[i]),
+        judged_loop("eq_form", held, &gpu_eq, right, |i| LOOP_EQ_DEFECT[i]),
+    ];
+    let mut failed = Vec::new();
+    for (name, verdict, fail, got) in &results {
+        eprintln!(
+            "loop sentinel {name}: {verdict:?} on {adapter}; got {got:?}; spirv route taken: {route}"
+        );
+        if kind == Device::UnmeasuredNvidia {
+            eprintln!(
+                "NOTE: unmeasured NVIDIA adapter: record this result in m11.ld's envelope ({name}: {verdict:?})"
+            );
+        }
+        if let Some(text) = fail {
+            failed.push(format!("{name} ({route_name}): {text}"));
+        }
+    }
+    if !failed.is_empty() {
+        panic!(
+            "float-break loop sentinel failed on {adapter}:\n  {}\nA change of the RTX 5090's values is the cue to \
+             re-measure the m11.ld loop before touching the expectation.",
+            failed.join("\n  ")
+        );
+    }
+}
+
+fn judged_loop(
+    name: &'static str,
+    device: Device,
+    got: &[u32],
+    right: impl Fn(usize) -> u32,
+    defect: impl Fn(usize) -> u32,
+) -> (&'static str, Verdict, Option<String>, Vec<u32>) {
+    assert_eq!(got.len(), LOOP_T.len(), "{name}: result length");
+    let verdict = judge(got, &right, &defect);
+    let fail = failure(device, &verdict, got, &right);
+    (name, verdict, fail, got.to_vec())
 }

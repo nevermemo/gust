@@ -83,6 +83,9 @@ proof.
   launch, so `id` stays the global index and kernels need no edit. Graphs, the deprecated `dispatch_f32`/`_u32`,
   pixel kernels, hand-built descriptors without a macro-made variant and builds without run-time compilation
   (precompiled-only, the browser) keep `DeviceLimit`; the 2^32 invocation cap is unchanged.
+- budget-kit rows (m11.kit3): W4 binning with the scatter (count, scan, and placement by the old value of
+  `atomic_add`, checked per cell against a host counting sort) and W7, a sustained composite step with its GPU
+  median, p95 and maximum and two host-side costs (the blocking timed batch, the return of `submit_batch`).
 - Example `mc-histogram` (m11.mc): hash-sampled points deposited into a fixed-point histogram with `atomic_add`
   (bit-equal on the host reference, the twin and the GPU), a density through the map API, and diffusion steps with
   `rem_euclid` and `mul_add` checked within a bound derived from the GPU model of SEMANTICS; its large run is a

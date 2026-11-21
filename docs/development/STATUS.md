@@ -636,6 +636,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       both; 8 diffusion steps stay within the derived bound (about 64 single-precision roundings, from the GPU
       model of SEMANTICS), with the largest observed error about 21 times under it. Opus review: the first bound
       charged one rounding per GPU addition and was corrected. Examples sit outside `GPU_SUITE_PIN`.
+    - m11.kit3 (`9ebbae1`): budget-kit's W4 scatter row (the old value of `atomic_add` places each particle; every
+      cell's range checked as a set, `order` poisoned; a mutation that wrote every particle to its cell's first
+      slot failed the row) and W7, a sustained composite step (GPU median, p95, maximum; the host time of the
+      blocking timed batch and of `submit_batch` returning). 0 rows failed on the Radeon 890M and the RTX 5090;
+      figures stay in the private output files. Opus review: the W7 particle reference now uses the GPU's field.
+      Round end at this merge: the full Gpu suite passed on the Radeon 890M (576 s) and the RTX 5090 (556 s),
+      confirming `GPU_SUITE_PIN` at 564 passed over 55 result lines on both.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

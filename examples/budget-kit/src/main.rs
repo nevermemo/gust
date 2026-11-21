@@ -13,9 +13,10 @@
 //! | W1 | Copy (reference) | read one array, write another |
 //! | W2 | Field diffusion | 2D grid of four `f32` channels; each cell blends its four neighbours and decays |
 //! | W3 | Particle step | position and velocity in `f32`; sample the W2 field at the particle's cell, move, wrap |
-//! | W4 | Spatial binning | count particles per cell with atomics, then scan the counts (the scatter is a gap) |
+//! | W4 | Spatial binning | count particles per cell with atomics, then scan the counts; a second row adds the scatter of the particle indices (each takes its slot from the old value of an atomic add; the order inside a cell is unspecified) |
 //! | W5 | Reduction | `f32` sum with `gust-algo`, against `bound::sum_f64` within the documented bound |
 //! | W6 | Readback delay | submit a small kernel and wait until its result is on the CPU |
+//! | W7 | Composite step | one batch per step: diffuse a 1024 x 1024 field, step the particles, clear and count their cells; a sustained run reporting the GPU time's median, p95 and maximum and two host-side costs |
 //!
 //! Every row is checked against a CPU computation first; a row that fails its check prints FAILED instead of a time.
 //! The median of 30 steps after 5 warm-up steps is reported, from GPU timestamps where the device has them and from the
@@ -26,10 +27,12 @@
 //! resident vector. A workload whose largest buffer does not fit the device's storage binding limit is cut and the table says so.
 //!
 //! W4 puts its own clear and count batch and the `gust-algo` scan in one `timed` scope (the batch goes through
-//! `dispatch_batch_in_scope`), so one scope's GPU time covers both. After the table a probe (not a workload) launches a
-//! linear kernel with 65 536 workgroups on x and prints one `G4:` line with what happened (a refusal is gust-wgpu's own
-//! host-side check against the device limits, made before anything is submitted; since slice m11.g4b the host splits the
-//! launch and the success is compared with the host),
+//! `dispatch_batch_in_scope`), so one scope's GPU time covers both; the scatter row adds the scatter batch to the same
+//! scope. W7 runs 600 counted steps (120 with `--small`) twice, once through the blocking `dispatch_batch_timed` (GPU
+//! time and `host_elapsed`) and once through `submit_batch`, timing only the call and waiting for the job afterwards.
+//! After the table a probe (not a workload) launches a linear kernel with 65 536 workgroups on x and prints one `G4:`
+//! line with what happened (a refusal is gust-wgpu's own host-side check against the device limits, made before
+//! anything is submitted; since slice m11.g4b the host splits the launch and the success is compared with the host),
 //! then shows the remedy: a two-dimensional launch of a count that is not a multiple of the row width, with a tail
 //! guard, whose values and untouched sentinel slots are checked exactly against the host.
 
@@ -172,6 +175,29 @@ mod kit {
             let cx = cell_of(q.x, p.side);
             let cy = cell_of(q.y, p.side);
             atomic_add(&mut counts[cy * p.side + cx], 1u32);
+        }
+    }
+
+    // W4: the scatter. Each particle takes the next free slot of its cell (`old` is the cell's cursor before the add,
+    // which starts at zero) and writes its own index at `starts[cell] + old`. `starts` is the exclusive scan of the
+    // counts. Which particle gets which slot is schedule-dependent: the order inside a cell is unspecified.
+    #[kernel(workgroup_size(256, 1, 1))]
+    pub fn w4_scatter(
+        id: SV_DispatchThreadID,
+        p: Uniform<Params>,
+        parts: StructuredBuffer<Vec4>,
+        starts: StructuredBuffer<u32>,
+        mut cursor: RWStructuredBuffer<u32>,
+        mut order: RWStructuredBuffer<u32>,
+    ) {
+        let i = linear(id.x, id.y);
+        if i < p.n {
+            let q = parts[i];
+            let cx = cell_of(q.x, p.side);
+            let cy = cell_of(q.y, p.side);
+            let c = cy * p.side + cx;
+            let old = atomic_add(&mut cursor[c], 1u32);
+            order[starts[c] + old] = i;
         }
     }
 
@@ -746,7 +772,434 @@ fn w4(device: &DeviceHandle, count: u32) -> Row {
         let bytes = 16.0 * f64::from(count) + 8.0 * f64::from(count) + 12.0 * f64::from(cells);
         Ok((measured, Some(bytes)))
     })();
-    row.note = "the scatter of the indices is not here: the atomic's old value cannot be used (gap G1); one timing scope covers the clear and count batch and the scan, so the time is their summed GPU time (the wall clock around the whole step on a device without timestamps); bytes: 16 + 8 per particle, 12 per cell, nominal (the atomic counted as 8), so the GB/s is not a memory bandwidth".into();
+    row.note = "one timing scope covers the clear and count batch and the scan, so the time is their summed GPU time (the wall clock around the whole step on a device without timestamps); bytes: 16 + 8 per particle, 12 per cell, nominal (the atomic counted as 8), so the GB/s is not a memory bandwidth".into();
+    row
+}
+
+/// Up to the first 16 entries of a slice, for a failure message.
+fn head(values: &[u32]) -> String {
+    let shown: Vec<String> = values.iter().take(16).map(u32::to_string).collect();
+    let more = if values.len() > 16 { ", .." } else { "" };
+    format!("[{}{more}] ({} entries)", shown.join(", "), values.len())
+}
+
+/// The scatter against the host: for every cell the slots `starts[c] .. starts[c] + counts[c]` of `order` hold, as a
+/// set, the indices of the particles the host puts in that cell (each range is sorted first: the order inside a cell is
+/// unspecified), and every index appears once. The host's sets come from a counting sort of the host's own particles.
+fn check_scatter(
+    order: &[u32],
+    starts: &[u32],
+    counts: &[u32],
+    parts_host: &[Vec4],
+    side: u32,
+) -> Result<(), String> {
+    let cell_of_host = |q: &Vec4| {
+        let cx = (q.x as u32).min(side - 1);
+        let cy = (q.y as u32).min(side - 1);
+        (cy * side + cx) as usize
+    };
+    if order.len() != parts_host.len() {
+        return Err(format!(
+            "order holds {} slots, expected {}",
+            order.len(),
+            parts_host.len()
+        ));
+    }
+    let mut fill = vec![0u32; counts.len()];
+    let mut expected = vec![u32::MAX; parts_host.len()];
+    for (i, q) in parts_host.iter().enumerate() {
+        let c = cell_of_host(q);
+        expected[(starts[c] + fill[c]) as usize] = i as u32;
+        fill[c] += 1;
+    }
+    let mut seen = vec![false; parts_host.len()];
+    let mut got = Vec::new();
+    for (c, &count) in counts.iter().enumerate() {
+        let from = starts[c] as usize;
+        let to = from + count as usize;
+        got.clear();
+        got.extend_from_slice(&order[from..to]);
+        got.sort_unstable();
+        if got != expected[from..to] {
+            return Err(format!(
+                "cell {c}: GPU set {} against host set {}",
+                head(&got),
+                head(&expected[from..to])
+            ));
+        }
+        for &index in &got {
+            if std::mem::replace(&mut seen[index as usize], true) {
+                return Err(format!("cell {c}: index {index} appears twice"));
+            }
+        }
+    }
+    if let Some(missing) = seen.iter().position(|s| !s) {
+        return Err(format!("index {missing} appears in no cell"));
+    }
+    Ok(())
+}
+
+fn w4_scatter(device: &DeviceHandle, count: u32) -> Row {
+    let cells = W4_GRID_SIDE * W4_GRID_SIDE;
+    let mut row = Row {
+        workload: "W4 spatial binning (count + scan + scatter)",
+        size: format!("{count} particles, {W4_GRID_SIDE}x{W4_GRID_SIDE}"),
+        result: Err("not run".into()),
+        note: String::new(),
+    };
+    row.result = (|| {
+        if let Some(reason) = skip_reason(device, u64::from(count) * 16) {
+            return Err(reason);
+        }
+        let parts_host: Vec<Vec4> = (0..count).map(|i| particle_init(i, W4_GRID_SIDE)).collect();
+        let parts = GpuVec::from_slice_on(device, &parts_host).map_err(dbg)?;
+        // The counts and the cursors begin non-zero, and `order` begins at a value no index can equal, so a clear that
+        // does nothing or a slot never written shows in the check below.
+        let counts_init: Vec<u32> = (0..cells).map(|i| 0x8000_0000 | i).collect();
+        let cursor_init: Vec<u32> = (0..cells).map(|i| 0x4000_0000 | i).collect();
+        let counts = GpuVec::from_slice_on(device, &counts_init).map_err(dbg)?;
+        let cursor = GpuVec::from_slice_on(device, &cursor_init).map_err(dbg)?;
+        let order = GpuVec::from_slice_on(device, &vec![u32::MAX; count as usize]).map_err(dbg)?;
+        let clear_params = device
+            .create_uniform(
+                "w4 scatter clear",
+                &kit::Params {
+                    n: cells,
+                    side: W4_GRID_SIDE,
+                    pad0: 0,
+                    pad1: 0,
+                },
+            )
+            .map_err(dbg)?;
+        let count_params = device
+            .create_uniform(
+                "w4 scatter count",
+                &kit::Params {
+                    n: count,
+                    side: W4_GRID_SIDE,
+                    pad0: 0,
+                    pad1: 0,
+                },
+            )
+            .map_err(dbg)?;
+        let clear_counts =
+            kit::w4_clear::call_extent(extent(cells), &clear_params, Independent(&counts));
+        let clear_cursor =
+            kit::w4_clear::call_extent(extent(cells), &clear_params, Independent(&cursor));
+        let bin = kit::w4_count::call_extent(
+            extent(count),
+            &count_params,
+            Independent(&parts),
+            Independent(&counts),
+        );
+        let first = [
+            BufferDispatch::from(&clear_counts),
+            BufferDispatch::from(&clear_cursor),
+            BufferDispatch::from(&bin),
+        ];
+        // One step: the clears and the count (one batch), the scan, the scatter (one batch): three batches in the one
+        // `timed` scope, so its GPU time covers the whole binning.
+        let step = || -> Result<(Sample, GpuVec<u32>), String> {
+            let started = Instant::now();
+            let scoped = timed(|| {
+                dispatch_batch_in_scope(device, &first)?;
+                let starts = scan::exclusive(&counts)?;
+                let scatter = kit::w4_scatter::call_extent(
+                    extent(count),
+                    &count_params,
+                    Independent(&parts),
+                    Independent(&starts),
+                    Independent(&cursor),
+                    Independent(&order),
+                );
+                dispatch_batch_in_scope(device, &[BufferDispatch::from(&scatter)])?;
+                Ok(starts)
+            })
+            .map_err(dbg)?;
+            let wall_ms = started.elapsed().as_secs_f64() * 1e3;
+            if scoped.time.batches != 3 {
+                return Err(format!(
+                    "the timing scope counted {} batch(es), expected the clear and count batch, the scan and the scatter batch",
+                    scoped.time.batches
+                ));
+            }
+            let gpu_ms = scoped.time.gpu_elapsed.map(|d| d.as_secs_f64() * 1e3);
+            Ok((Sample { gpu_ms, wall_ms }, scoped.value))
+        };
+        let cpu = cpu_counts(&parts_host, W4_GRID_SIDE);
+        let cpu_starts = cpu_exclusive(&cpu);
+        let verify = |starts: &GpuVec<u32>, after: &str| -> Result<(), String> {
+            if counts.to_vec().map_err(dbg)? != cpu {
+                return Err(format!(
+                    "the atomic counts differ from the host histogram{after}"
+                ));
+            }
+            if starts.to_vec().map_err(dbg)? != cpu_starts {
+                return Err(format!(
+                    "the scan differs from the host exclusive prefix{after}"
+                ));
+            }
+            check_scatter(
+                &order.to_vec().map_err(dbg)?,
+                &cpu_starts,
+                &cpu,
+                &parts_host,
+                W4_GRID_SIDE,
+            )
+            .map_err(|reason| format!("scatter{after}: {reason}"))
+        };
+        let (_, starts) = step()?;
+        verify(&starts, "")?;
+        let mut last = starts;
+        let measured = measure(|| {
+            let (sample, starts) = step()?;
+            last = starts;
+            Ok(sample)
+        })?;
+        // A later step as well: counters or cursors that were not cleared between steps have grown by now.
+        verify(&last, " after the timed steps")?;
+        // Per particle: the particle read (16), the count atomic (8), the scatter's particle read (16), the start read
+        // (4), the cursor atomic (8) and the order write (4); per cell: the two clears (8) and the scan (12).
+        let bytes = 56.0 * f64::from(count) + 20.0 * f64::from(cells);
+        Ok((measured, Some(bytes)))
+    })();
+    row.note = "the order inside a cell is unspecified (checked as a set per cell, each range sorted first, and every index exactly once); one timing scope covers the clears and count batch, the scan and the scatter batch, so the time is their summed GPU time (the wall clock around the whole step on a device without timestamps); the particles never move and `order` is not re-poisoned between steps, so the check after the timed steps does not catch a write lost in a later step; bytes: nominal (each atomic counted as 8), so the GB/s is not a memory bandwidth".into();
+    row
+}
+
+// ---- W7: a sustained composite step ----
+
+/// W7 particle counts, and the counted steps of its sustained run (after the warm-up, for each of its two runs).
+const W7_SIZES: [u32; 2] = [1 << 18, 1 << 20];
+const W7_STEPS: usize = 600;
+const W7_STEPS_SMALL: usize = 120;
+
+/// The value at or below which at least `p` of the samples lie (nearest rank), for `p` in (0, 1]. `values` must not
+/// be empty.
+fn percentile(values: &[f64], p: f64) -> f64 {
+    debug_assert!(!values.is_empty(), "percentile of no samples");
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let rank = (p * sorted.len() as f64).ceil() as usize;
+    sorted[rank.clamp(1, sorted.len()) - 1]
+}
+
+/// W2's comparison of a field with the host's, with W2's tolerance.
+fn check_field(gpu: &[Vec4], cpu: &[Vec4]) -> Result<(), String> {
+    for (at, (g, c)) in gpu.iter().zip(cpu).enumerate() {
+        for (lane, (gv, cv)) in lanes(*g).into_iter().zip(lanes(*c)).enumerate() {
+            if !(gv.is_finite() && (gv - cv).abs() <= 5e-6 * cv.abs()) {
+                return Err(format!(
+                    "field cell {at} lane {lane}: GPU {gv} against CPU {cv} after 1 step"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// W3's comparison of particles with the host's one step from `start` over `field`, with W3's tolerance.
+fn check_particles(
+    gpu: &[Vec4],
+    start: &[Vec4],
+    field: &[Vec4],
+    side_u: u32,
+) -> Result<(), String> {
+    let side = side_u as f32;
+    for (at, (g, q)) in gpu.iter().zip(start).enumerate() {
+        let c = cpu_particle(*q, field, side_u);
+        for (lane, (gv, cv)) in lanes(*g).into_iter().zip(lanes(c)).enumerate() {
+            if lane < 2 && !(0.0..=side).contains(&gv) {
+                return Err(format!(
+                    "particle {at} lane {lane}: GPU {gv} is outside [0, {side}] (the wrap)"
+                ));
+            }
+            let mut diff = (gv - cv).abs();
+            if lane < 2 && diff > side / 2.0 {
+                diff = side - diff;
+            }
+            if !(gv.is_finite() && diff <= 8.0 * (1.0 / 8_388_608.0) * cv.abs().max(1.0)) {
+                return Err(format!(
+                    "particle {at} lane {lane}: GPU {gv} against CPU {cv}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn w7(device: &DeviceHandle, count: u32, steps: usize) -> Row {
+    let side = W3_FIELD_SIDE;
+    let cells = side * side;
+    let mut row = Row {
+        workload: "W7 composite step",
+        size: format!("{count} particles, {side}x{side} field"),
+        result: Err("not run".into()),
+        note: String::new(),
+    };
+    // What the row says whether or not it succeeds; a success puts the statistics before it.
+    let fixed = format!(
+        "{steps} counted steps after {WARMUP} warm-up steps, in two runs of that length (blocking, then submit); one batch per step: w2_diffuse on {side}x{side}, w3_step, w4_clear and w4_count into {side}x{side} cells; checked after step 1 (field 5e-6 relative as W2, particles as W3 over the GPU's own field, counts exact against the GPU's own positions) and again after the runs (particles in range, counts exact)"
+    );
+    row.note = fixed.clone();
+    row.result = (|| {
+        if let Some(reason) = skip_reason(device, u64::from(count) * 16) {
+            return Err(reason);
+        }
+        let field_host: Vec<Vec4> = (0..cells).map(field_init).collect();
+        let parts_host: Vec<Vec4> = (0..count).map(|i| particle_init(i, side)).collect();
+        let a = GpuVec::from_slice_on(device, &field_host).map_err(dbg)?;
+        let b = GpuVec::<Vec4>::zeroed_on(device, cells).map_err(dbg)?;
+        let parts = GpuVec::from_slice_on(device, &parts_host).map_err(dbg)?;
+        // Non-zero to begin with, so a clear that does nothing shows in the count check.
+        let poisoned: Vec<u32> = (0..cells).map(|i| 0x8000_0000 | i).collect();
+        let counts = GpuVec::from_slice_on(device, &poisoned).map_err(dbg)?;
+        let uniform = |label: &str, n: u32| {
+            device
+                .create_uniform(
+                    label,
+                    &kit::Params {
+                        n,
+                        side,
+                        pad0: 0,
+                        pad1: 0,
+                    },
+                )
+                .map_err(dbg)
+        };
+        let field_params = uniform("w7 field", cells)?;
+        let part_params = uniform("w7 particles", count)?;
+        let diffuse_ab = kit::w2_diffuse::call_extent(
+            extent(cells),
+            &field_params,
+            Independent(&a),
+            Independent(&b),
+        );
+        let diffuse_ba = kit::w2_diffuse::call_extent(
+            extent(cells),
+            &field_params,
+            Independent(&b),
+            Independent(&a),
+        );
+        let step_b = kit::w3_step::call_extent(
+            extent(count),
+            &part_params,
+            Independent(&b),
+            Independent(&parts),
+        );
+        let step_a = kit::w3_step::call_extent(
+            extent(count),
+            &part_params,
+            Independent(&a),
+            Independent(&parts),
+        );
+        let clear = kit::w4_clear::call_extent(extent(cells), &field_params, Independent(&counts));
+        let bin = kit::w4_count::call_extent(
+            extent(count),
+            &part_params,
+            Independent(&parts),
+            Independent(&counts),
+        );
+        // The field alternates between `a` and `b` as in W2; the particles sample the field the same batch diffused.
+        let batches = [
+            [
+                BufferDispatch::from(&diffuse_ab),
+                BufferDispatch::from(&step_b),
+                BufferDispatch::from(&clear),
+                BufferDispatch::from(&bin),
+            ],
+            [
+                BufferDispatch::from(&diffuse_ba),
+                BufferDispatch::from(&step_a),
+                BufferDispatch::from(&clear),
+                BufferDispatch::from(&bin),
+            ],
+        ];
+        // The first step, checked: the field (in `b`) against the host's diffusion, the particles against the host's
+        // step over the GPU's own diffused field (the one they sampled), and the counts exactly against the host's histogram of the GPU's own
+        // particle positions (a particle at a cell edge could bin differently from a host position that differs in the
+        // last bit).
+        dispatch(device, &batches[0])?;
+        let cpu_field = cpu_diffuse(&field_host, side);
+        let gpu_field = b.to_vec().map_err(dbg)?;
+        check_field(&gpu_field, &cpu_field)?;
+        let gpu_parts = parts.to_vec().map_err(dbg)?;
+        // The particles sampled the GPU's own field, so that is the field of the reference step.
+        check_particles(&gpu_parts, &parts_host, &gpu_field, side)?;
+        if counts.to_vec().map_err(dbg)? != cpu_counts(&gpu_parts, side) {
+            return Err("the counts differ from the host histogram after 1 step".into());
+        }
+        let mut next = 1usize;
+        // Run 1: blocking `dispatch_batch_timed`: the GPU time and `host_elapsed` of every counted step.
+        for _ in 0..WARMUP {
+            dispatch(device, &batches[next % 2])?;
+            next += 1;
+        }
+        let mut blocking = Vec::with_capacity(steps);
+        for _ in 0..steps {
+            blocking.push(dispatch(device, &batches[next % 2])?);
+            next += 1;
+        }
+        // Run 2: the wall time for `submit_batch` to return (encode and submit, no wait); the wait for the job is
+        // outside the measured span.
+        for _ in 0..WARMUP {
+            device.dispatch_batch(&batches[next % 2]).map_err(dbg)?;
+            next += 1;
+        }
+        let mut submit_ms = Vec::with_capacity(steps);
+        for _ in 0..steps {
+            let started = Instant::now();
+            let job = device.submit_batch(&batches[next % 2]).map_err(dbg)?;
+            submit_ms.push(started.elapsed().as_secs_f64() * 1e3);
+            job.wait().map_err(dbg)?;
+            next += 1;
+        }
+        // After the sustained runs: the particles are still inside the field, and the counts of the last step are the
+        // host's histogram of the particles as they now are.
+        let gpu_parts = parts.to_vec().map_err(dbg)?;
+        let side_f = side as f32;
+        if let Some(at) = gpu_parts.iter().position(|q| {
+            !(q.x.is_finite()
+                && q.y.is_finite()
+                && (0.0..=side_f).contains(&q.x)
+                && (0.0..=side_f).contains(&q.y))
+        }) {
+            return Err(format!(
+                "particle {at} is outside [0, {side_f}] after the sustained runs"
+            ));
+        }
+        if counts.to_vec().map_err(dbg)? != cpu_counts(&gpu_parts, side) {
+            return Err(
+                "the counts differ from the host histogram after the sustained runs".into(),
+            );
+        }
+        let host_a: Vec<f64> = blocking.iter().map(|s| s.wall_ms).collect();
+        let (gpu_series, method) = if blocking.iter().all(|s| s.gpu_ms.is_some()) {
+            (
+                blocking
+                    .iter()
+                    .filter_map(|s| s.gpu_ms)
+                    .collect::<Vec<f64>>(),
+                "gpu timestamps",
+            )
+        } else {
+            (host_a.clone(), "wall clock")
+        };
+        let measured = Measured {
+            ms: median(&gpu_series),
+            method,
+        };
+        row.note = format!(
+            "the time column is the median {method} time, p95 {:.4} ms, max {:.4} ms; host (a) host_elapsed of the blocking dispatch_batch_timed (it includes the GPU work and the timestamp readback): median {:.4} ms, p95 {:.4} ms; host (b) wall time for submit_batch to return (encode and submit, no wait; the job is waited for after the span; measured with an idle queue, so it shows no back-pressure): median {:.4} ms, p95 {:.4} ms; {fixed}",
+            percentile(&gpu_series, 0.95),
+            gpu_series.iter().copied().fold(f64::MIN, f64::max),
+            median(&host_a),
+            percentile(&host_a, 0.95),
+            median(&submit_ms),
+            percentile(&submit_ms, 0.95)
+        );
+        Ok((measured, None))
+    })();
     row
 }
 
@@ -1052,6 +1505,7 @@ fn variant_text_line() -> String {
         &kit::w3_step::DESCRIPTOR,
         &kit::w4_clear::DESCRIPTOR,
         &kit::w4_count::DESCRIPTOR,
+        &kit::w4_scatter::DESCRIPTOR,
         &kit::g4_linear::DESCRIPTOR,
         &kit::g4_grid::DESCRIPTOR,
         &kit::w6_plus_one::DESCRIPTOR,
@@ -1117,7 +1571,7 @@ fn main() {
     );
     let _ = writeln!(
         text,
-        "statistic: median of {STEPS} steps after {WARMUP} warm-up steps; a step is one dispatch (W4: a clear, a count and a scan; W5: a whole reduction; with GPU timestamps the pooled-buffer clears are outside the timed region, but the wall-clock fallback includes the clears, the allocation, the host overhead and the scalar readback; W6: submit, wait and readback); steps per frame is {FRAME_MS:.1} ms over the median; GB/s is the stated bytes over the median"
+        "statistic: median of {STEPS} steps after {WARMUP} warm-up steps; a step is one dispatch (W4: a clear, a count and a scan, and in its second row a scatter; W7: one batch of four kernels, a sustained run with its own statistics in the note; W5: a whole reduction; with GPU timestamps the pooled-buffer clears are outside the timed region, but the wall-clock fallback includes the clears, the allocation, the host overhead and the scalar readback; W6: submit, wait and readback); steps per frame is {FRAME_MS:.1} ms over the median; GB/s is the stated bytes over the median"
     );
     let _ = writeln!(
         text,
@@ -1139,23 +1593,31 @@ fn main() {
         }
     };
     type Workload = fn(&DeviceHandle, u32) -> Row;
-    let plan: [(Workload, Vec<u32>); 6] = [
+    let plan: [(Workload, Vec<u32>); 7] = [
         (w1, pick(&W1_SIZES)),
         (w2, pick(&W2_SIDES)),
         (w3, pick(&W3_SIZES)),
         (w5, pick(&W5_SIZES)),
         (w4, pick(&W4_SIZES)),
+        (w4_scatter, pick(&W4_SIZES)),
         (w6, pick(&W6_SIZES)),
     ];
     let mut failed = 0;
+    let mut emit = |row: Row| {
+        failed += usize::from(row.failed());
+        let line = row.text();
+        println!("{line}");
+        let _ = writeln!(text, "{line}");
+    };
     for (workload, sizes) in plan {
         for size in sizes {
-            let row = workload(&device, size);
-            failed += usize::from(row.failed());
-            let line = row.text();
-            println!("{line}");
-            let _ = writeln!(text, "{line}");
+            emit(workload(&device, size));
         }
+    }
+    // W7 runs a sustained number of steps, fewer with `--small`.
+    let w7_steps = if args.small { W7_STEPS_SMALL } else { W7_STEPS };
+    for size in pick(&W7_SIZES) {
+        emit(w7(&device, size, w7_steps));
     }
     let _ = writeln!(text);
     let (g4_lines, g4_failed) = g4(&device);

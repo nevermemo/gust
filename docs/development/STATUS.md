@@ -687,6 +687,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       back bit-equal there once (a scratch probe), documented under D39. Literal-only modules emit the same Slang
       as before. Radeon 890M only; RTX 5090 pending. Opus review: the integer-only overflow sentence, the
       non-finite measurement, five more folding forms.
+    - m11.fric1b (`a62a85a`): `gust_algo::scan::exclusive_into` / `inclusive_into` write into a caller's buffer (one
+      code path with the allocating forms; same v1/v0 choice, storage refusal and D211 split). A wrong length is
+      `Error::Length` with no dispatch (asserted by batch count); the input passed as the output is refused as an
+      aliased binding. budget-kit builds its per-step scan before the timed steps and its `Workload` is a boxed
+      closure (rows unchanged apart from timings; its wall-clock fallback no longer includes that setup). Five GPU
+      tests; `ALGO_GPU_TESTS` 58 to 63. Radeon 890M only; RTX 5090 pending. m11.fric1 (dispatch from a shared
+      device handle) stopped at its kill rule: generated `dispatch` takes the resource's `Device` type, so it needs a
+      generated-API change (a `Deref`/`Borrow` device parameter or a handle newtype); held as a design item.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

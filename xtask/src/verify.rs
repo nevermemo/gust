@@ -933,13 +933,18 @@ pub(crate) const ALGO_GPU_CALL: [&str; 4] = ["test", "--locked", "-p", "gust-alg
 /// The `gpu::` tests of `gust-algo`, by name: each must be reported `ok`, and no other `tests::gpu::` test may exist
 /// ([`check_algo_gpu_counts`]), so a deleted or an unpinned adapter test fails the gate. The twins would still satisfy
 /// a plain "at least one test ran". Adding or removing a `gpu::` test changes this list in the same commit.
-pub(crate) const ALGO_GPU_TESTS: [&str; 58] = [
+pub(crate) const ALGO_GPU_TESTS: [&str; 63] = [
     "tests::gpu::gpu_a_compaction_chain_runs_on_the_device_with_the_device_count",
     "tests::gpu::gpu_a_compaction_past_a_lowered_workgroup_limit_is_split_and_equals_the_host_reference",
     "tests::gpu::gpu_a_compaction_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch",
     "tests::gpu::gpu_a_first_pass_past_a_lowered_workgroup_limit_is_split_and_equals_the_host_reference",
     "tests::gpu::gpu_a_gather_guards_the_index_bound_and_the_count",
     "tests::gpu::gpu_a_gather_refuses_a_count_that_is_not_one_element_and_buffers_of_another_device",
+    "tests::gpu::gpu_a_reused_scan_output_holds_no_stale_data",
+    "tests::gpu::gpu_a_scan_into_a_buffer_of_the_wrong_length_is_refused",
+    "tests::gpu::gpu_a_scan_into_a_callers_buffer_equals_the_host_reference",
+    "tests::gpu::gpu_a_scan_into_past_a_lowered_workgroup_limit_is_split_and_equals_the_host_reference",
+    "tests::gpu::gpu_a_scan_into_the_input_buffer_itself_is_refused",
     "tests::gpu::gpu_a_scan_is_one_batch_of_three_five_or_seven_dispatches",
     "tests::gpu::gpu_a_scan_past_a_lowered_workgroup_limit_is_split_and_equals_the_host_reference",
     "tests::gpu::gpu_a_scan_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch",

@@ -736,6 +736,176 @@ fn gpu_a_scan_past_a_lowered_workgroup_limit_is_split_and_equals_the_host_refere
     check_scans_equal_the_host(&device, 3 * 256 * 256 + 1, 0x5CA2);
 }
 
+/// `inclusive_into` and `exclusive_into`, in both variants, into a buffer of the caller's that begins non-zero (so a
+/// slot the scan does not write shows), against the host reference (values 0 to 3, inside the domain).
+fn check_scans_into_equal_the_host(device: &Arc<HeadlessDevice>, n: usize, seed: u64) {
+    let mut rng = Rng::new(seed);
+    let values: Vec<u32> = (0..n).map(|_| (rng.next_u64() % 4) as u32).collect();
+    let input = GpuVec::from_slice_on(device, &values).unwrap();
+    for variant in [Variant::V0, Variant::V1] {
+        for exclusive in [false, true] {
+            let out = GpuVec::from_slice_on(device, &vec![0xDEAD_BEEF; n]).unwrap();
+            if exclusive {
+                scan::exclusive_into_with(variant, &input, &out)
+            } else {
+                scan::inclusive_into_with(variant, &input, &out)
+            }
+            .unwrap();
+            assert_equals_reference(
+                &format!("scan into {variant:?} exclusive={exclusive}"),
+                &out.to_vec().unwrap(),
+                &reference_scan(&values, exclusive),
+            );
+        }
+    }
+}
+
+/// The scans into a provided buffer equal the host reference at sizes around the tile and chunk boundaries, in both
+/// variants (m11.fric1b); the shipped forms (`inclusive_into`, `exclusive_into`) are checked at each size too.
+#[test]
+fn gpu_a_scan_into_a_callers_buffer_equals_the_host_reference() {
+    let device = device();
+    for (index, n) in [1usize, 255, 256, 257, 4096, 4097, 70_001, 300_000]
+        .into_iter()
+        .enumerate()
+    {
+        check_scans_into_equal_the_host(&device, n, 0x1A70 + index as u64);
+        let values: Vec<u32> = (0..n).map(|i| (i % 4) as u32).collect();
+        let input = GpuVec::from_slice_on(&device, &values).unwrap();
+        let out = GpuVec::<u32>::zeroed_on(&device, u32::try_from(n).unwrap()).unwrap();
+        scan::inclusive_into(&input, &out).unwrap();
+        assert_equals_reference(
+            "inclusive_into",
+            &out.to_vec().unwrap(),
+            &reference_scan(&values, false),
+        );
+        scan::exclusive_into(&input, &out).unwrap();
+        assert_equals_reference(
+            "exclusive_into",
+            &out.to_vec().unwrap(),
+            &reference_scan(&values, true),
+        );
+    }
+    // The empty input into an empty buffer is nothing to do.
+    let empty = GpuVec::<u32>::zeroed_on(&device, 0).unwrap();
+    let nothing = GpuVec::<u32>::zeroed_on(&device, 0).unwrap();
+    scan::inclusive_into(&empty, &nothing).unwrap();
+    scan::exclusive_into(&empty, &nothing).unwrap();
+}
+
+/// A level 0 past a lowered workgroup limit is split by the host (D211) for the `_into` forms too: one pass inside the
+/// limit of 3 workgroups of v0, and one element past it.
+#[test]
+fn gpu_a_scan_into_past_a_lowered_workgroup_limit_is_split_and_equals_the_host_reference() {
+    let device = lowered_workgroup_device();
+    check_scans_into_equal_the_host(&device, 3 * 256 * 256, 0x5CB1);
+    check_scans_into_equal_the_host(&device, 3 * 256 * 256 + 1, 0x5CB2);
+}
+
+/// An output of another length than the input is an `Error::Length`, before anything is dispatched (no batch in the
+/// timing scope), and the output is left as it was.
+#[test]
+fn gpu_a_scan_into_a_buffer_of_the_wrong_length_is_refused() {
+    let device = device();
+    let input = GpuVec::from_slice_on(&device, &[1u32, 2, 3, 4]).unwrap();
+    for (len, name) in [(3usize, "shorter"), (5, "longer")] {
+        let out = GpuVec::from_slice_on(&device, &vec![7u32; len]).unwrap();
+        for variant in [Variant::V0, Variant::V1] {
+            for exclusive in [false, true] {
+                let timed = crate::timed(|| {
+                    Ok(if exclusive {
+                        scan::exclusive_into_with(variant, &input, &out)
+                    } else {
+                        scan::inclusive_into_with(variant, &input, &out)
+                    })
+                })
+                .unwrap();
+                assert_eq!(
+                    timed.time.batches, 0,
+                    "{name} {variant:?} exclusive={exclusive}"
+                );
+                match timed.value {
+                    Err(Error::Length { expected, actual }) => {
+                        assert_eq!((expected, actual), (4, len as u32), "{name}");
+                    }
+                    other => panic!("{name} {variant:?} exclusive={exclusive}: {other:?}"),
+                }
+            }
+        }
+        assert_eq!(out.to_vec().unwrap(), vec![7u32; len], "{name}: untouched");
+    }
+    // An empty input into a non-empty buffer is refused the same way.
+    let empty = GpuVec::<u32>::zeroed_on(&device, 0).unwrap();
+    let one = GpuVec::<u32>::zeroed_on(&device, 1).unwrap();
+    assert!(matches!(
+        scan::inclusive_into(&empty, &one),
+        Err(Error::Length {
+            expected: 0,
+            actual: 1
+        })
+    ));
+}
+
+/// The same buffer as input and output is refused as `Error::Device(AliasedBinding)` (it would be bound to a read and a
+/// write parameter), in both variants and both scans, and the buffer is left as it was.
+#[test]
+fn gpu_a_scan_into_the_input_buffer_itself_is_refused() {
+    let device = device();
+    let values: Vec<u32> = (0..5000).map(|i| (i % 4) as u32 + 1).collect();
+    let buffer = GpuVec::from_slice_on(&device, &values).unwrap();
+    for variant in [Variant::V0, Variant::V1] {
+        for exclusive in [false, true] {
+            let result = if exclusive {
+                scan::exclusive_into_with(variant, &buffer, &buffer)
+            } else {
+                scan::inclusive_into_with(variant, &buffer, &buffer)
+            };
+            assert!(
+                matches!(
+                    result,
+                    Err(Error::Device(gust_wgpu::Error::AliasedBinding { .. }))
+                ),
+                "{variant:?} exclusive={exclusive}: {result:?}"
+            );
+            assert_eq!(buffer.to_vec().unwrap(), values, "{variant:?}: unchanged");
+        }
+    }
+}
+
+/// One output buffer reused for different inputs, sizes spanning one and several dispatches, and for both scans in turn:
+/// every call gives its own right answer, with nothing of the call before it left in the buffer.
+#[test]
+fn gpu_a_reused_scan_output_holds_no_stale_data() {
+    let device = device();
+    for n in [100usize, 70_001] {
+        let first: Vec<u32> = (0..n).map(|i| (i % 7) as u32 + 1).collect();
+        let second: Vec<u32> = (0..n).map(|i| u32::from(i % 5 == 1)).collect();
+        let out = GpuVec::<u32>::zeroed_on(&device, u32::try_from(n).unwrap()).unwrap();
+        for variant in [Variant::V0, Variant::V1] {
+            for (values, exclusive) in [
+                (&first, false),
+                (&second, false),
+                (&first, true),
+                (&second, true),
+                (&second, false),
+            ] {
+                let input = GpuVec::from_slice_on(&device, values).unwrap();
+                if exclusive {
+                    scan::exclusive_into_with(variant, &input, &out)
+                } else {
+                    scan::inclusive_into_with(variant, &input, &out)
+                }
+                .unwrap();
+                assert_equals_reference(
+                    &format!("reused output {variant:?} exclusive={exclusive}"),
+                    &out.to_vec().unwrap(),
+                    &reference_scan(values, exclusive),
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn gpu_compaction_is_exact_at_every_boundary() {
     compact_cases(&Gpu(device()), &COMPACT_LENGTHS);

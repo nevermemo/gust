@@ -732,15 +732,17 @@ fn w4(device: &DeviceHandle, count: u32) -> Row {
             Independent(&counts),
         );
         let batch = [BufferDispatch::from(&clear), BufferDispatch::from(&bin)];
+        // The scan's output, made once: every step writes all of it (`exclusive_into`), so no step allocates it.
+        let positions = GpuVec::<u32>::zeroed_on(device, cells).map_err(dbg)?;
         // One step: the counts the kernel made against the host's histogram, and the scan of them against the host's
         // exclusive prefix, both exactly (integers).
         // The clear and count batch goes through `dispatch_batch_in_scope` inside the same `timed` scope as the scan, so
         // the scope's GPU time covers both and its `batches` is the clear and count batch plus the scan's own.
-        let step = || -> Result<(Sample, GpuVec<u32>), String> {
+        let step = || -> Result<Sample, String> {
             let started = Instant::now();
             let scoped = timed(|| {
                 dispatch_batch_in_scope(device, &batch)?;
-                scan::exclusive(&counts)
+                scan::exclusive_into(&counts, &positions)
             })
             .map_err(dbg)?;
             let wall_ms = started.elapsed().as_secs_f64() * 1e3;
@@ -751,9 +753,9 @@ fn w4(device: &DeviceHandle, count: u32) -> Row {
                 ));
             }
             let gpu_ms = scoped.time.gpu_elapsed.map(|d| d.as_secs_f64() * 1e3);
-            Ok((Sample { gpu_ms, wall_ms }, scoped.value))
+            Ok(Sample { gpu_ms, wall_ms })
         };
-        let (_, positions) = step()?;
+        step()?;
         let cpu = cpu_counts(&parts_host, W4_GRID_SIDE);
         if counts.to_vec().map_err(dbg)? != cpu {
             return Err("the atomic counts differ from the host histogram".into());
@@ -761,7 +763,7 @@ fn w4(device: &DeviceHandle, count: u32) -> Row {
         if positions.to_vec().map_err(dbg)? != cpu_exclusive(&cpu) {
             return Err("the scan differs from the host exclusive prefix".into());
         }
-        let measured = measure(|| step().map(|(sample, _)| sample))?;
+        let measured = measure(step)?;
         // A later step as well: counts that were not cleared between steps have grown by now.
         if counts.to_vec().map_err(dbg)? != cpu {
             return Err(
@@ -772,7 +774,7 @@ fn w4(device: &DeviceHandle, count: u32) -> Row {
         let bytes = 16.0 * f64::from(count) + 8.0 * f64::from(count) + 12.0 * f64::from(cells);
         Ok((measured, Some(bytes)))
     })();
-    row.note = "one timing scope covers the clear and count batch and the scan, so the time is their summed GPU time (the wall clock around the whole step on a device without timestamps); bytes: 16 + 8 per particle, 12 per cell, nominal (the atomic counted as 8), so the GB/s is not a memory bandwidth".into();
+    row.note = "one timing scope covers the clear and count batch and the scan, so the time is their summed GPU time (the wall clock around the whole step on a device without timestamps, which no longer includes allocating the scan output: it is made once before the steps, so do not compare wall figures with earlier reports); bytes: 16 + 8 per particle, 12 per cell, nominal (the atomic counted as 8), so the GB/s is not a memory bandwidth".into();
     row
 }
 
@@ -897,23 +899,27 @@ fn w4_scatter(device: &DeviceHandle, count: u32) -> Row {
             BufferDispatch::from(&clear_cursor),
             BufferDispatch::from(&bin),
         ];
+        // The scan's output and the scatter call that reads it are made once (`exclusive_into` writes all of `starts`
+        // every step), so a step allocates and builds neither; the scan's own calls are still made inside it.
+        let starts = GpuVec::<u32>::zeroed_on(device, cells).map_err(dbg)?;
+        let scatter = kit::w4_scatter::call_extent(
+            extent(count),
+            &count_params,
+            Independent(&parts),
+            Independent(&starts),
+            Independent(&cursor),
+            Independent(&order),
+        );
+        let second = [BufferDispatch::from(&scatter)];
         // One step: the clears and the count (one batch), the scan, the scatter (one batch): three batches in the one
         // `timed` scope, so its GPU time covers the whole binning.
-        let step = || -> Result<(Sample, GpuVec<u32>), String> {
+        let step = || -> Result<Sample, String> {
             let started = Instant::now();
             let scoped = timed(|| {
                 dispatch_batch_in_scope(device, &first)?;
-                let starts = scan::exclusive(&counts)?;
-                let scatter = kit::w4_scatter::call_extent(
-                    extent(count),
-                    &count_params,
-                    Independent(&parts),
-                    Independent(&starts),
-                    Independent(&cursor),
-                    Independent(&order),
-                );
-                dispatch_batch_in_scope(device, &[BufferDispatch::from(&scatter)])?;
-                Ok(starts)
+                scan::exclusive_into(&counts, &starts)?;
+                dispatch_batch_in_scope(device, &second)?;
+                Ok(())
             })
             .map_err(dbg)?;
             let wall_ms = started.elapsed().as_secs_f64() * 1e3;
@@ -924,11 +930,11 @@ fn w4_scatter(device: &DeviceHandle, count: u32) -> Row {
                 ));
             }
             let gpu_ms = scoped.time.gpu_elapsed.map(|d| d.as_secs_f64() * 1e3);
-            Ok((Sample { gpu_ms, wall_ms }, scoped.value))
+            Ok(Sample { gpu_ms, wall_ms })
         };
         let cpu = cpu_counts(&parts_host, W4_GRID_SIDE);
         let cpu_starts = cpu_exclusive(&cpu);
-        let verify = |starts: &GpuVec<u32>, after: &str| -> Result<(), String> {
+        let verify = |after: &str| -> Result<(), String> {
             if counts.to_vec().map_err(dbg)? != cpu {
                 return Err(format!(
                     "the atomic counts differ from the host histogram{after}"
@@ -948,22 +954,17 @@ fn w4_scatter(device: &DeviceHandle, count: u32) -> Row {
             )
             .map_err(|reason| format!("scatter{after}: {reason}"))
         };
-        let (_, starts) = step()?;
-        verify(&starts, "")?;
-        let mut last = starts;
-        let measured = measure(|| {
-            let (sample, starts) = step()?;
-            last = starts;
-            Ok(sample)
-        })?;
+        step()?;
+        verify("")?;
+        let measured = measure(step)?;
         // A later step as well: counters or cursors that were not cleared between steps have grown by now.
-        verify(&last, " after the timed steps")?;
+        verify(" after the timed steps")?;
         // Per particle: the particle read (16), the count atomic (8), the scatter's particle read (16), the start read
         // (4), the cursor atomic (8) and the order write (4); per cell: the two clears (8) and the scan (12).
         let bytes = 56.0 * f64::from(count) + 20.0 * f64::from(cells);
         Ok((measured, Some(bytes)))
     })();
-    row.note = "the order inside a cell is unspecified (checked as a set per cell, each range sorted first, and every index exactly once); one timing scope covers the clears and count batch, the scan and the scatter batch, so the time is their summed GPU time (the wall clock around the whole step on a device without timestamps); the particles never move and `order` is not re-poisoned between steps, so the check after the timed steps does not catch a write lost in a later step; bytes: nominal (each atomic counted as 8), so the GB/s is not a memory bandwidth".into();
+    row.note = "the order inside a cell is unspecified (checked as a set per cell, each range sorted first, and every index exactly once); one timing scope covers the clears and count batch, the scan and the scatter batch, so the time is their summed GPU time (the wall clock around the whole step on a device without timestamps, which no longer includes allocating the scan output or building the scatter call: both are made once before the steps, so do not compare wall figures with earlier reports); the particles never move and `order` is not re-poisoned between steps, so the check after the timed steps does not catch a write lost in a later step; bytes: nominal (each atomic counted as 8), so the GB/s is not a memory bandwidth".into();
     row
 }
 
@@ -1585,7 +1586,7 @@ fn main() {
     );
     let _ = writeln!(
         text,
-        "statistic: median of {STEPS} steps after {WARMUP} warm-up steps; a step is one dispatch (W4: a clear, a count and a scan, and in its second row a scatter; W7: one batch of four kernels, a sustained run with its own statistics in the note; W5: a whole reduction; with GPU timestamps the pooled-buffer clears are outside the timed region, but the wall-clock fallback includes the clears, the allocation, the host overhead and the scalar readback; W6: submit, wait and readback); steps per frame is {FRAME_MS:.1} ms over the median; GB/s is the stated bytes over the median"
+        "statistic: median of {STEPS} steps after {WARMUP} warm-up steps; a step is one dispatch (W4: a clear, a count and a scan, and in its second row a scatter; W7: one batch of four kernels, a sustained run with its own statistics in the note; W5: a whole reduction; with GPU timestamps the pooled-buffer clears are outside the timed region, but the wall-clock fallback includes the clears, the allocation (not that of the W4 scan output or the scatter call, which are made once before the steps), the host overhead and the scalar readback; W6: submit, wait and readback); steps per frame is {FRAME_MS:.1} ms over the median; GB/s is the stated bytes over the median"
     );
     let _ = writeln!(
         text,
@@ -1606,15 +1607,16 @@ fn main() {
             sizes.to_vec()
         }
     };
-    type Workload = fn(&DeviceHandle, u32) -> Row;
+    // A boxed closure, so a workload can carry data (a flag, a variant) and a row variant needs no copy of its function.
+    type Workload = Box<dyn Fn(&DeviceHandle, u32) -> Row>;
     let plan: [(Workload, Vec<u32>); 7] = [
-        (w1, pick(&W1_SIZES)),
-        (w2, pick(&W2_SIDES)),
-        (w3, pick(&W3_SIZES)),
-        (w5, pick(&W5_SIZES)),
-        (w4, pick(&W4_SIZES)),
-        (w4_scatter, pick(&W4_SIZES)),
-        (w6, pick(&W6_SIZES)),
+        (Box::new(w1), pick(&W1_SIZES)),
+        (Box::new(w2), pick(&W2_SIDES)),
+        (Box::new(w3), pick(&W3_SIZES)),
+        (Box::new(w5), pick(&W5_SIZES)),
+        (Box::new(w4), pick(&W4_SIZES)),
+        (Box::new(w4_scatter), pick(&W4_SIZES)),
+        (Box::new(w6), pick(&W6_SIZES)),
     ];
     let mut failed = 0;
     let mut emit = |row: Row| {

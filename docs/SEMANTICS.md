@@ -1273,8 +1273,12 @@ WGSL, and the CPU twin does too, so GUST does not refuse or rewrite the form (D3
 test below, run with the `spirv-route` feature on the RTX 5090, with the route of its kernels read as taken). That points at the
 driver rather than at GUST's output (inferred; the emitted Slang, WGSL and SPIR-V of these kernels were not inspected).
 During m11.fm a probe run on the RTX 5090 (WGSL kernels) measured other forms of the loop right: an integer-compare exit, a
-done flag (`if !done { ..; if s == y { done = true; } }`) and a bound read per invocation; the sentinel does not run
-them. The workaround for users is a done flag or an integer exit. GUST's own helper `__gust_fmod` uses the flag form
+done flag (`if !done { ..; if s == y { done = true; } }`) and a bound read per invocation. The GPU tests in
+`loop_exits` (m11.loops) run these forms on the sentinel's inputs: the `<` exit and the `==` exit each behind a done
+flag, the `<` break with its bound read per invocation, and a constant-bound loop whose `break` compares an integer
+counter (no float in the loop). Each expects Rust's values on every adapter and on either route, and each gave them
+on the Radeon 890M and on the RTX 5090 with and without the `spirv-route` feature (m11.loops). The workaround for
+users is a done flag, or an integer exit where the exit iteration can be counted in integers. GUST's own helper `__gust_fmod` uses the flag form
 since m11.fm. The GPU test `the_nvidia_float_break_loop_defect_is_still_there_or_absent_elsewhere` in `driver_sentinel`
 (m11.ld) runs one `<` kernel and one `==` kernel with start values built from bits, and expects the wrong values
 above on an adapter whose name contains "RTX 5090" (case-sensitive) through Vulkan, on either route (a failure names

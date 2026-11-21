@@ -624,6 +624,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       sentinel's real expectation and the runs behind it. budget-kit's row width is a module const (its
       variant-text row now reads 33,385 bytes of split text beside 31,313 of base text). Opus review.
       `GPU_SUITE_PIN` 560 over 54 by count.
+    - m11.loops (`3805abf`): the workaround forms of the m11.ld loop defect as GPU tests (`tests/loop_exits.rs`):
+      a done flag behind the `<` and the `==` exit, the `<` break with a bound read per invocation, and a
+      constant-bound loop that breaks on an integer counter (`while` is GUST-E0402). On the sentinel's inputs all
+      four gave Rust's values on the Radeon 890M, the RTX 5090 and the RTX 5090 with the SPIR-V route; SEMANTICS
+      names them and narrows the integer-exit advice. Opus review. `GPU_SUITE_PIN` 564 over 55 by count.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

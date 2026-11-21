@@ -1096,9 +1096,12 @@ pub(crate) struct GpuSuitePin {
 /// Slice m11.r4fix: 556 over 54 became 560 over 54. One unit test in `gust_wgpu` (the run-time compiler decision)
 /// and three tests in `tests/split.rs` (the hidden uniform's binding size, a split kernel with a module constant,
 /// `mul_add` and `hypot`, a staged graph node), on existing `test result:` lines. Updated by count.
+///
+/// Slice m11.loops: 560 over 54 became 564 over 55. The new test file `tests/loop_exits.rs` holds four tests (the
+/// loop-exit workaround forms of the m11.ld defect) and adds one `test result:` line. Updated by count.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 560,
-    result_lines: 54,
+    passed: 564,
+    result_lines: 55,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

@@ -590,14 +590,15 @@ use atomic_scalar::AtomicScalar;
 /// executed only by CPU twins.
 ///
 /// A twin runs one invocation at a time (`gust::cpu`), so a plain read-modify-write is atomic. On the GPU the
-/// same call lowers to the matching `Atomic<T>` method on a buffer element. The operation returns the old value in Rust; the GPU
-/// form is statement-only, so the old value is not observable in a kernel. Only `u32` and `i32` elements are
+/// same call lowers to the matching `Atomic<T>` method on a buffer element. The operation returns the old value in Rust; in a
+/// kernel only the old value of `atomic_add` is observable (m11.fetch, as the initializer of a `let`; which invocation
+/// gets which value is schedule-dependent), the other forms are statement-only. Only `u32` and `i32` elements are
 /// accepted (a float receiver is a rustc error here, as the validator already makes it a macro error), and the
 /// validator also rejects `i32` for min and max. Add wraps modulo 2^32 on both targets.
 ///
 /// ```
 /// let mut counter = 5_u32;
-/// // The shadow returns the old value; on a GPU the old value is not observable.
+/// // The shadow returns the old value; a kernel may bind it for `atomic_add` only.
 /// let old = gust::atomic_add(&mut counter, 2);
 /// assert_eq!((old, counter), (5, 7));
 /// ```

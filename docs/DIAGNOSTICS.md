@@ -1322,10 +1322,10 @@ Decision: T10.
 
 ### GUST-E0606 atomic as a value
 
-Atomics are statements; the old value is not returned.
+Atomics are statements; the old value is not returned. The one exception is `atomic_add` as the whole initializer of a `let` (m11.fetch: the old value of `atomic_add`).
 Reached through `#[gpu]`.
-Rejected: `let old = atomic_add(&mut c[0], 1u32);`, `if atomic_compare_exchange(..) { .. }`.
-Write instead: call it as a statement on its own line.
+Rejected: `let old = atomic_exchange(&mut c[0], 1u32);`, `if atomic_compare_exchange(..) { .. }`, `out[atomic_add(&mut c[0], 1u32) as usize] = 1u32;`, `let old = atomic_add(&mut c[0], 1u32) + 1u32;`.
+Write instead: call it as a statement on its own line; for the old value of `atomic_add`, `let old = atomic_add(&mut c[0], 1u32);` and use `old` afterwards.
 Decision: T10.
 
 ### GUST-E0607 direct access to an atomic buffer

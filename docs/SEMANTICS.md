@@ -1039,7 +1039,8 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
 ## 6. Atomics
 
 - **GPU (exists).** `atomic_add`, `atomic_min`, `atomic_max`, `atomic_exchange` and `atomic_compare_exchange` are
-  statement-only calls on `RWStructuredBuffer<u32>` or `<i32>` elements (`i32` has no min or max). WGSL section 17.8:
+  statement-only calls on `RWStructuredBuffer<u32>` or `<i32>` elements (`i32` has no min or max), with one exception:
+  the old value of `atomic_add` may be bound by a `let` (`m11.fetch`, below). WGSL section 17.8:
   "All atomic built-in functions use a relaxed memory ordering." and "No synchronization or ordering guarantees apply
   between atomic and non-atomic memory accesses". Ordering holds only among atomic operations on the same location,
   and GUST offers no stronger ordering. Do not use an atomic to publish non-atomic data to another invocation in the
@@ -1057,9 +1058,22 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   `atomic_compare_exchange` in `crates/gust/src/runtime.rs` are real sequential operations on `u32` and `i32`
   through a sealed helper trait, so a float receiver stays a rustc error (the validator already rejects it). Because the
   twin runs one invocation at a time, a plain read-modify-write is atomic. The shadow functions return the old value
-  (the exchange and the arithmetic ones) or whether the swap happened (compare-exchange); in a kernel the GPU form is
-  statement-only, so the returned value is not observable there. The twin's compare-exchange never fails
-  spuriously.
+  (the exchange and the arithmetic ones) or whether the swap happened (compare-exchange); in a kernel only the old
+  value of `atomic_add` is observable (`m11.fetch`, below), the others are statement-only. The twin's
+  compare-exchange never fails spuriously.
+- **The old value of `atomic_add` (`m11.fetch`).** `let old = atomic_add(&mut c[i], 1u32);` (also `i32`, and with a
+  type annotation) binds the value the cell held before this invocation's add; the call must be the whole initializer
+  of the `let`. It lowers to the same Slang call as the statement form, `c[i].add(..)` (Slang's `Atomic<T>.add` returns
+  the old value), with the result bound to the local. With n adds to one cell in one dispatch, the old values returned
+  are a permutation of the prefix sums that the adds produce in some order (for adds of 1 to a cell that held 0: the
+  values 0 to n-1, each once); which invocation gets which value is schedule-dependent and unspecified on the GPU and
+  on the twin, and the per-cell total stays exact. The twin runs one invocation at a time in ascending order, so it
+  returns the prefix sums in invocation order (the invocation with id k gets k for adds of 1 to a cell that held 0):
+  one member of the set, its own order and nothing else. Tests of such kernels compare sets (the multiset of values or of the ids written by slot, with
+  every slot below the count filled and none above), never a per-invocation value, and never the twin's slot against
+  the GPU's. The value of `atomic_min`, `atomic_max`, `atomic_exchange` and `atomic_compare_exchange`, and the value of
+  `atomic_add` in any other position (an operand, an index, an argument, an assignment, a condition), stay
+  `GUST-E0606`.
 - **Compare-exchange may fail spuriously.** WGSL's only compare-exchange is `atomicCompareExchangeWeak` (17.8.5):
   "The equality comparison may spuriously fail on some implementations." So even an uncontended compare-exchange
   that should succeed is not guaranteed to, and in the contended case the unchanged value (999 in the ledger case)
@@ -1085,8 +1099,9 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   on the GPU and 11 on the twin. For the contended
   exchange the GPU must end in 0 to 256 and for the contended compare-exchange in 1 to 257 or at the unchanged 999
   (the weak compare-exchange may fail every attempt); the twin is asserted at 256 and at 1 respectively, and never
-  compared with the GPU there. The returned old value of an atomic is never observable in GPU code (statement-only);
-  the twin returns it and `runtime.rs` unit-tests it.
+  compared with the GPU there. The returned old value of an atomic is observable in GPU code for `atomic_add` only
+  (`m11.fetch`, `crates/gust-wgpu/tests/fetch.rs`: the scatter and the signed ticket, compared as sets); for the others
+  it is not (statement-only), and the twin returns it and `runtime.rs` unit-tests it.
 - **Weak compare-exchange on the GPU (D47).** The compare-exchange success cases (a single invocation, 7 to 11 and -5 to
   11) are asserted as the set `{7, 11}` and `{-5, 11}` on the GPU, because WGSL allows a spurious failure there too
   (17.8.5); on the twin they are asserted at 11, by definition. The RTX 5090 took the exchange branch in every measured
@@ -1209,7 +1224,9 @@ adapter in section 1.
 - **Atomics** (`atomics.rs`): the contended `atomic_add` sum, the contended `atomic_min` and `atomic_max`, the failing
   compare-exchange, and signed `atomic_add` and `atomic_exchange`. Not proven: the succeeding compare-exchange (single
   and signed), because a weak compare-exchange may fail spuriously on the GPU (section 6), and the contended
-  exchange and compare-exchange, where the targets are allowed to differ (KM-09).
+  exchange and compare-exchange, where the targets are allowed to differ (KM-09). The old value of `atomic_add`
+  (`fetch.rs`, `m11.fetch`): a scatter of items to cells by the slot that the old value gives, and a signed ticket cell,
+  compared as sets on the GPU and on the twin.
 - **The wrapping methods** (slice m7.w): `wrapping_add`, `wrapping_sub`, `wrapping_mul` and `wrapping_neg` on `u32` and
   `i32`, asserted equal on the GPU, on the twin, in plain Rust's own `wrapping_*` and against exact `i128` arithmetic
   reduced modulo 2^32, over every operation on every pair of seven edge values per type, including `u32::MAX`,
@@ -1522,9 +1539,10 @@ the index of those first, where 2026.20 called first, so the order of Slang for 
 versions and GUST refuses the form rather than rely on it. Before this round slice a2 accepted the storage forms, which
 gave another element than the CPU twin on the GPU with the pinned Slang.
 
-**Two atomics on one cell in an assignment are refused (m9.z).** The old value of an atomic cannot be used in a `#[gpu]`
-body (the CPU twin returns it; section 6), so `out[atomic_add(&mut c[i], 1u32) as usize] = atomic_add(&mut c[i], 10u32);`
-and `let i = atomic_add(&mut c[i], 1u32);` are refused with `GUST-E0606` (an atomic as a value). Any ordinary read or
+**Two atomics on one cell in an assignment are refused (m9.z).** The old value of an atomic is not an operand in a
+`#[gpu]` body (the CPU twin returns it; section 6; the one exception since `m11.fetch` is the old value of `atomic_add`
+as the whole initializer of a `let`), so `out[atomic_add(&mut c[i], 1u32) as usize] = atomic_add(&mut c[i], 10u32);`
+and `let i = atomic_add(&mut c[i], 1u32) + 1u32;` are refused with `GUST-E0606` (an atomic as a value). Any ordinary read or
 write of a buffer that the kernel also uses atomically, an index that reads the atomic cell among them, is refused with
 `GUST-E0607`; the regression test
 `an_atomic_operation_never_stands_in_an_order_sensitive_value` pins both. The form never reaches the order rules, which

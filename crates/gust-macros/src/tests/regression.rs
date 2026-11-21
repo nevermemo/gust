@@ -1564,12 +1564,83 @@ fn atomic_ops_reject_unsupported_element_types() {
 
 #[test]
 fn atomic_ops_are_rejected_in_expression_position() {
+    // Only the old value of `atomic_add`, as the whole initializer of a `let`, is a value (m11.fetch); every other
+    // atomic and every other position stays `GUST-E0606`.
     for source in [
-        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { let old = atomic_add(&mut counter[0], 1u32); } }",
         "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { if atomic_compare_exchange(&mut counter[0], 0u32, 1u32) { counter[0] = 2u32; } } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { let old = atomic_min(&mut counter[0], 1u32); } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { let old = atomic_max(&mut counter[0], 1u32); } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { let old = atomic_exchange(&mut counter[0], 1u32); } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { let old = atomic_compare_exchange(&mut counter[0], 0u32, 1u32); } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { let old = atomic_add(&mut counter[0], 1u32) + 1u32; } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { let old = (atomic_add(&mut counter[0], 1u32)); } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>, mut out: RWStructuredBuffer<uint>) { out[0] = atomic_add(&mut counter[0], 1u32); } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>, mut out: RWStructuredBuffer<uint>) { out[atomic_add(&mut counter[0], 1u32) as usize] = 1u32; } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { let old: u32; old = atomic_add(&mut counter[0], 1u32); } }",
     ] {
         assert_rejected(source, Code::AtomicAsValue);
     }
+}
+
+#[test]
+fn the_old_value_of_atomic_add_is_the_whole_initializer_of_a_let() {
+    // m11.fetch: `let old = atomic_add(&mut c[i], v);` lowers to the same Slang call as the statement form, with the
+    // old value bound (Slang's `Atomic<T>.add` returns it); the emitted text of the statement form does not change.
+    let unsigned = translate(
+        "mod m { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>, mut out: RWStructuredBuffer<uint>) {
+            let old = atomic_add(&mut counter[id.x], 1u32);
+            out[id.x] = old;
+        } }",
+    )
+    .unwrap();
+    assert!(
+        unsigned.contains("RWStructuredBuffer<Atomic<uint>> counter;"),
+        "the buffer is atomic: {unsigned}"
+    );
+    assert!(
+        unsigned.contains("= counter[id.x].add(uint(1));"),
+        "the old value is the result of `.add(..)`: {unsigned}"
+    );
+    assert!(
+        unsigned.contains("out[id.x] = old;"),
+        "the bound value is an ordinary local: {unsigned}"
+    );
+    let signed = translate(
+        "mod m { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<int>, mut out: RWStructuredBuffer<int>) {
+            let old: i32 = atomic_add(&mut counter[0], -3i32);
+            out[id.x] = old;
+        } }",
+    )
+    .unwrap();
+    assert!(
+        signed.contains("RWStructuredBuffer<Atomic<int>> counter;")
+            && signed.contains("int old = counter[0].add((-int(3)));"),
+        "the signed old value lowers to `.add(..)` on an `Atomic<int>`: {signed}"
+    );
+    // The statement form is untouched.
+    let statement = translate(
+        "mod m { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) {
+            atomic_add(&mut counter[id.x], 1u32);
+        } }",
+    )
+    .unwrap();
+    assert!(
+        statement.contains("    counter[id.x].add(uint(1));"),
+        "the statement form: {statement}"
+    );
+    // A float cell, a shared reference and a read of the atomic buffer keep their codes.
+    assert_rejected(
+        "mod m { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<float>) { let old = atomic_add(&mut counter[0], 1.0f32); } }",
+        Code::AtomicElementType,
+    );
+    assert_rejected(
+        "mod m { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { let old = atomic_add(&counter[0], 1u32); } }",
+        Code::AtomicReferenceNotMutable,
+    );
+    assert_rejected(
+        "mod m { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>, mut out: RWStructuredBuffer<uint>) { let old = atomic_add(&mut counter[0], 1u32); out[0] = counter[0]; } }",
+        Code::AtomicDirectAccess,
+    );
 }
 
 #[test]
@@ -7994,8 +8065,9 @@ fn a_field_of_an_indexed_element_is_a_place_with_an_index_too() {
 #[test]
 fn an_atomic_operation_never_stands_in_an_order_sensitive_value() {
     // Order audit: `out[atomic_add(..) as usize] = atomic_add(..)` would run its atomics in Slang's order (index first)
-    // and not in Rust's, but an atomic operation is refused as a value altogether (GUST-E0606), so the form never
-    // reaches the order rules. The statement form is the one that is accepted.
+    // and not in Rust's, but an atomic operation is refused as a value in every position but the whole initializer of
+    // a `let` (GUST-E0606; m11.fetch accepts that one), so the form never reaches the order rules. The statement form
+    // and the `let` form are the ones that are accepted.
     let kernel = |body: &str| {
         format!(
             "mod m {{ #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>, mut ctr: RWStructuredBuffer<uint>) {{ {body} }} }}"
@@ -8003,10 +8075,15 @@ fn an_atomic_operation_never_stands_in_an_order_sensitive_value() {
     };
     for body in [
         "out[atomic_add(&mut ctr[0], 1u32) as usize] = atomic_add(&mut ctr[0], 10u32);",
-        "let i = atomic_add(&mut ctr[0], 1u32); out[i as usize] = id.x;",
+        "let i = atomic_add(&mut ctr[0], 1u32) + 1u32; out[i as usize] = id.x;",
     ] {
         assert_rejected(&kernel(body), Code::AtomicAsValue);
     }
+    // The old value bound by a `let` and used afterwards has one order on both targets (m11.fetch).
+    translate(&kernel(
+        "let i = atomic_add(&mut ctr[0], 1u32); out[i as usize] = id.x;",
+    ))
+    .unwrap();
     // Reading the atomic cell in the index is refused too (GUST-E0607).
     for body in [
         "out[ctr[0] as usize] = atomic_add(&mut ctr[0], 1u32);",

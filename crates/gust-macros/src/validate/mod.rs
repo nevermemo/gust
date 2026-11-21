@@ -716,6 +716,14 @@ pub(crate) fn validate_module_in(
     // Before the items, so a `match` arm that names a constant is this code and not the `match` rules' (GUST-E0521).
     check_const_patterns(items)?;
     check_const_names(items)?;
+    let const_names: HashSet<String> = items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Const(item) => Some(item.ident.unraw().to_string()),
+            _ => None,
+        })
+        .collect();
+    let mut declared_consts: HashMap<String, ConstScalar> = HashMap::new();
     for item in items {
         match item {
             syn::Item::Fn(function) => {
@@ -754,7 +762,9 @@ pub(crate) fn validate_module_in(
             syn::Item::Impl(item) => validate_impl(stage, item, &context)?,
             syn::Item::Trait(item) => validate_trait(stage, item, &context)?,
             syn::Item::Enum(item) => validate_enum(item)?,
-            syn::Item::Const(item) => validate_const(item, &struct_fields)?,
+            syn::Item::Const(item) => {
+                validate_const(item, &struct_fields, &const_names, &mut declared_consts)?
+            }
             // `syn` keeps a generic `const K<T>: u32 = 1;` as verbatim tokens: a `const` after the visibility.
             syn::Item::Verbatim(tokens)
                 if tokens.clone().into_iter().take(4).any(
@@ -1684,13 +1694,18 @@ fn const_form(spanned: &impl quote::ToTokens, message: &str) -> syn::Error {
     diagnostics::error(Code::ConstForm, spanned, message)
 }
 
-/// Checks one module-level `const` (slice m11.g3, D205): `const NAME: T = <literal>;`, `pub` or private, with `T` one of
-/// `u32`, `i32`, `f32`, `bool` (or their dialect aliases `uint`, `int`, `float`) and the initializer one literal of that
-/// type (`-` and one literal for `i32` and `f32`). Nothing is evaluated: the Slang text and the Rust item hold the same
-/// literal. `struct_fields` is the field names of each struct of the module.
+/// Checks one module-level `const` (slice m11.g3, D205; slice m11.cexpr, D210): `const NAME: T = <expression>;`, `pub`
+/// or private, with `T` one of `u32`, `i32`, `f32`, `bool` (or their dialect aliases `uint`, `int`, `float`) and the
+/// initializer an expression of literals of that type and of constants of that type declared above (see
+/// `check_const_expr`). Nothing is evaluated: the Slang text holds the expression the Rust item holds, operator for
+/// operator. `struct_fields` is the field names of each struct of the module; `const_names` every module `const`
+/// name; `declared` the constants checked so far, in source order, with their types (this item joins it when it
+/// passes).
 fn validate_const(
     item: &syn::ItemConst,
     struct_fields: &HashMap<String, HashSet<String>>,
+    const_names: &HashSet<String>,
+    declared: &mut HashMap<String, ConstScalar>,
 ) -> syn::Result<()> {
     // Documentation and lint levels only, as on an `impl`: `#[cfg(..)] const` would let the Slang and the twin disagree
     // about which constants exist.
@@ -1736,45 +1751,72 @@ fn validate_const(
             ),
         ));
     }
-    let scalar = match item.ty.as_ref() {
-        syn::Type::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
-            let segment = &path.path.segments[0];
-            match (
-                segment.arguments.is_empty(),
-                segment.ident.unraw().to_string().as_str(),
-            ) {
-                (true, "u32" | "uint") => Some(ConstScalar::U32),
-                (true, "i32" | "int") => Some(ConstScalar::I32),
-                (true, "f32" | "float") => Some(ConstScalar::F32),
-                (true, "bool") => Some(ConstScalar::Bool),
-                _ => None,
-            }
-        }
-        _ => None,
-    };
-    let Some(scalar) = scalar else {
+    let Some(scalar) = const_scalar(&item.ty) else {
         return Err(const_form(
             &item.ty,
             "a module `const` has one of the types `u32`, `i32`, `f32` or `bool`: a vector, a struct, an array, a reference and `usize` have no constant lowering here; pass such a value as a uniform or a parameter",
         ));
     };
-    let initializer = || {
-        const_form(
-            &item.expr,
-            "a module `const` is initialized with one literal of its type (`4096u32`, `-1i32`, `0.5f32`, `true`; `-` is for `i32` and `f32`): a call, arithmetic, another constant and `u32::MAX` are not evaluated; write the literal",
-        )
+    let scope = ConstScope {
+        names: const_names,
+        declared,
+        own: &name,
     };
-    let (negated, literal) = match item.expr.as_ref() {
-        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
-            match unary.expr.as_ref() {
-                syn::Expr::Lit(literal) => (true, literal),
-                _ => return Err(initializer()),
-            }
-        }
-        syn::Expr::Lit(literal) => (false, literal),
-        _ => return Err(initializer()),
+    check_const_expr(&item.expr, scalar, &scope, false)?;
+    declared.insert(name, scalar);
+    Ok(())
+}
+
+/// The type of a module `const` (slice m11.g3): one of the four scalars, by name or dialect alias.
+pub(crate) fn const_scalar(ty: &syn::Type) -> Option<ConstScalar> {
+    let syn::Type::Path(path) = ty else {
+        return None;
     };
-    let fits = match (scalar, &literal.lit) {
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+    let segment = &path.path.segments[0];
+    match (
+        segment.arguments.is_empty(),
+        segment.ident.unraw().to_string().as_str(),
+    ) {
+        (true, "u32" | "uint") => Some(ConstScalar::U32),
+        (true, "i32" | "int") => Some(ConstScalar::I32),
+        (true, "f32" | "float") => Some(ConstScalar::F32),
+        (true, "bool") => Some(ConstScalar::Bool),
+        _ => None,
+    }
+}
+
+/// What a `const` initializer may name (slice m11.cexpr): every constant of the module, the ones declared above the
+/// item (with their types), and the item's own name.
+struct ConstScope<'a> {
+    names: &'a HashSet<String>,
+    declared: &'a HashMap<String, ConstScalar>,
+    own: &'a str,
+}
+
+/// The Rust spelling of a constant type, for messages.
+fn const_type_name(scalar: ConstScalar) -> &'static str {
+    match scalar {
+        ConstScalar::U32 => "u32",
+        ConstScalar::I32 => "i32",
+        ConstScalar::F32 => "f32",
+        ConstScalar::Bool => "bool",
+    }
+}
+
+/// "a" or "an" before the spelling of a constant type (`an i32`, `an f32`, `a u32`, `a bool`), for messages.
+fn const_article(scalar: ConstScalar) -> &'static str {
+    match scalar {
+        ConstScalar::I32 | ConstScalar::F32 => "an",
+        ConstScalar::U32 | ConstScalar::Bool => "a",
+    }
+}
+
+/// Whether the literal is a value of `scalar` (`negated`: a unary minus applies to it directly, as in `-2147483648`).
+fn const_literal_fits(scalar: ConstScalar, literal: &syn::Lit, negated: bool) -> bool {
+    match (scalar, literal) {
         (ConstScalar::U32, syn::Lit::Int(value)) => {
             !negated
                 && matches!(value.suffix(), "" | "u32")
@@ -1792,13 +1834,187 @@ fn validate_const(
         (ConstScalar::F32, syn::Lit::Int(value)) => value.suffix() == "f32",
         (ConstScalar::Bool, syn::Lit::Bool(_)) => !negated,
         _ => false,
-    };
-    if fits { Ok(()) } else { Err(initializer()) }
+    }
+}
+
+/// The operators each constant type accepts, as the Slang operator that spells them (`None`: refused).
+pub(crate) fn const_binary_operator(
+    scalar: ConstScalar,
+    operator: &syn::BinOp,
+) -> Option<&'static str> {
+    use syn::BinOp as B;
+    let integer = matches!(scalar, ConstScalar::U32 | ConstScalar::I32);
+    match operator {
+        B::Add(_) if scalar != ConstScalar::Bool => Some("+"),
+        B::Sub(_) if scalar != ConstScalar::Bool => Some("-"),
+        B::Mul(_) if scalar != ConstScalar::Bool => Some("*"),
+        B::Div(_) if scalar != ConstScalar::Bool => Some("/"),
+        B::Rem(_) if integer => Some("%"),
+        B::BitAnd(_) if integer => Some("&"),
+        B::BitOr(_) if integer => Some("|"),
+        B::BitXor(_) if integer => Some("^"),
+        B::Shl(_) if integer => Some("<<"),
+        B::Shr(_) if integer => Some(">>"),
+        B::And(_) if scalar == ConstScalar::Bool => Some("&&"),
+        B::Or(_) if scalar == ConstScalar::Bool => Some("||"),
+        _ => None,
+    }
+}
+
+/// The accepted initializer of a module `const` of type `scalar` (slice m11.cexpr, D210): literals of that type,
+/// constants of that type declared above, parentheses, and the operators `const_binary_operator` lists plus unary `-`
+/// (`i32`, `f32`) and `!` (`u32`, `i32`, `bool`); the shift amount of `<<` and `>>` is a `u32` literal or a `u32`
+/// constant declared above. `negated`: a unary minus applies to this expression directly.
+fn check_const_expr(
+    expr: &syn::Expr,
+    scalar: ConstScalar,
+    scope: &ConstScope,
+    negated: bool,
+) -> syn::Result<()> {
+    let type_name = const_type_name(scalar);
+    match expr {
+        syn::Expr::Paren(inner) => check_const_expr(&inner.expr, scalar, scope, false),
+        syn::Expr::Group(inner) => check_const_expr(&inner.expr, scalar, scope, negated),
+        syn::Expr::Lit(literal) => {
+            if const_literal_fits(scalar, &literal.lit, negated) {
+                Ok(())
+            } else {
+                Err(const_form(
+                    expr,
+                    &format!(
+                        "a literal in {} `{type_name}` module `const` is a literal of that type (`4096u32`, `-1i32`, `0.5f32`, `true`; `-` is for `i32` and `f32`; every operand of the expression has the type of the item): write the literal with the type of the item",
+                        const_article(scalar)
+                    ),
+                ))
+            }
+        }
+        syn::Expr::Path(path) => {
+            let single = path
+                .qself
+                .is_none()
+                .then(|| path.path.get_ident())
+                .flatten();
+            let Some(ident) = single else {
+                return Err(const_form(
+                    expr,
+                    "a path such as `u32::MAX` or `std::f32::consts::PI` is not evaluated in a module `const`: write the literal, or name a `const` of this module declared above",
+                ));
+            };
+            let name = ident.unraw().to_string();
+            if name == scope.own {
+                return Err(const_form(
+                    expr,
+                    &format!(
+                        "`{name}` refers to itself, which is a forward reference: a module `const` reads only constants declared above it"
+                    ),
+                ));
+            }
+            match scope.declared.get(&name) {
+                Some(&declared) if declared == scalar => Ok(()),
+                Some(&declared) => Err(const_form(
+                    expr,
+                    &format!(
+                        "`{name}` is {} `{}` constant and this item is `{type_name}`: every operand of a module `const` expression has the type of the item, and there is no `as`; declare a constant of the right type",
+                        const_article(declared),
+                        const_type_name(declared)
+                    ),
+                )),
+                None if scope.names.contains(&name) => Err(const_form(
+                    expr,
+                    &format!(
+                        "`{name}` is declared below this item: a module `const` reads only constants declared above it; declare it above"
+                    ),
+                )),
+                None => Err(const_form(
+                    expr,
+                    &format!(
+                        "`{name}` is not a `const` of this module: a module `const` expression names only constants of this module declared above it; write the literal"
+                    ),
+                )),
+            }
+        }
+        syn::Expr::Unary(unary) => match (&unary.op, scalar) {
+            (syn::UnOp::Neg(_), ConstScalar::I32 | ConstScalar::F32) => {
+                check_const_expr(&unary.expr, scalar, scope, true)
+            }
+            (syn::UnOp::Not(_), ConstScalar::U32 | ConstScalar::I32 | ConstScalar::Bool) => {
+                check_const_expr(&unary.expr, scalar, scope, false)
+            }
+            _ => Err(const_form(
+                expr,
+                &format!(
+                    "this unary operator is not accepted in a `{type_name}` module `const`: `-` is for `i32` and `f32` and `!` for `u32`, `i32` and `bool`"
+                ),
+            )),
+        },
+        syn::Expr::Binary(binary) => {
+            use syn::BinOp as B;
+            if matches!(
+                binary.op,
+                B::Eq(_) | B::Ne(_) | B::Lt(_) | B::Le(_) | B::Gt(_) | B::Ge(_)
+            ) {
+                return Err(const_form(
+                    expr,
+                    "a comparison is not accepted in a module `const`: write the `bool` literal, or compute the comparison where it is used",
+                ));
+            }
+            if const_binary_operator(scalar, &binary.op).is_none() {
+                return Err(const_form(
+                    expr,
+                    &format!(
+                        "this operator is not accepted in a `{type_name}` module `const`: `u32` and `i32` take `+ - * / % & | ^ << >>`, `f32` takes `+ - * /`, `bool` takes `&&` and `||`"
+                    ),
+                ));
+            }
+            check_const_expr(&binary.left, scalar, scope, false)?;
+            if matches!(binary.op, B::Shl(_) | B::Shr(_)) {
+                check_const_shift_amount(&binary.right, scope)
+            } else {
+                check_const_expr(&binary.right, scalar, scope, false)
+            }
+        }
+        syn::Expr::Cast(_) => Err(const_form(
+            expr,
+            "an `as` cast is not accepted in a module `const`: write the literal or constant with the type of the item (`4096u32`, `2.0f32`)",
+        )),
+        syn::Expr::Call(_) | syn::Expr::MethodCall(_) | syn::Expr::Macro(_) => Err(const_form(
+            expr,
+            "a call (a function, a method such as `x.pow(2)`, a macro) is not accepted in a module `const`: write the literal, or an expression of literals and constants declared above",
+        )),
+        syn::Expr::Block(_)
+        | syn::Expr::If(_)
+        | syn::Expr::Match(_)
+        | syn::Expr::Tuple(_)
+        | syn::Expr::Array(_) => Err(const_form(
+            expr,
+            "a block, `if`, `match`, tuple or array is not accepted in a module `const`: write an expression of literals and constants declared above",
+        )),
+        _ => Err(const_form(
+            expr,
+            "a module `const` is initialized with an expression of literals of its type and constants of its type declared above, with parentheses and the operators `+ - * / % & | ^ << >> ! && ||` (`-` for `i32` and `f32`): write the literal",
+        )),
+    }
+}
+
+/// The shift amount of a constant `<<` or `>>`: a `u32` literal or a `u32` constant declared above.
+fn check_const_shift_amount(expr: &syn::Expr, scope: &ConstScope) -> syn::Result<()> {
+    match expr {
+        syn::Expr::Paren(inner) => check_const_shift_amount(&inner.expr, scope),
+        syn::Expr::Group(inner) => check_const_shift_amount(&inner.expr, scope),
+        syn::Expr::Lit(literal) if const_literal_fits(ConstScalar::U32, &literal.lit, false) => {
+            Ok(())
+        }
+        syn::Expr::Path(_) => check_const_expr(expr, ConstScalar::U32, scope, false),
+        _ => Err(const_form(
+            expr,
+            "the shift amount in a module `const` is a `u32` literal or a `u32` constant declared above",
+        )),
+    }
 }
 
 /// The scalar types a module `const` may have.
-#[derive(Clone, Copy)]
-enum ConstScalar {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConstScalar {
     U32,
     I32,
     F32,

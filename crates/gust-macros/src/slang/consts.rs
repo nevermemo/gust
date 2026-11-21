@@ -1,38 +1,30 @@
-//! The module-level `const` items of a `#[gpu]` module (slice m11.g3, D205).
+//! The module-level `const` items of a `#[gpu]` module (slice m11.g3, D205; expressions: slice m11.cexpr, D210).
 //!
-//! The validator (`validate_const`) has already checked the form: `const NAME: T = <literal>;` with `T` one of the four
-//! scalars and one literal (`-` and one literal for `i32` and `f32`). Nothing is evaluated here: a constant is one
-//! `static const` line with the same literal the Rust item holds, so the host, the twin and the shader read one value.
+//! The validator (`validate_const`) has already checked the form: `const NAME: T = <expression>;` with `T` one of the
+//! four scalars and the expression made of literals of `T`, earlier constants of `T`, parentheses and the operators
+//! `check_const_expr` lists. Nothing is evaluated here: a constant is one `static const` line that holds the same
+//! expression the Rust item holds, operator for operator, so the host, the twin and the shader each compute it with
+//! their own compiler and read one value. An item that is one literal (or `-` and one literal) is written exactly as
+//! in slice m11.g3; a larger expression is fully parenthesised, so no precedence rule of Slang is relied on.
 
 use std::fmt::Write as _;
 
 use super::{emit_ident, emit_literal, emit_type, integer_literal};
 use crate::diagnostics::{self, Code};
+use crate::validate::{ConstScalar, const_binary_operator, const_scalar};
 
-/// Writes one `static const <type> <name> = <literal>;` line per constant of `items`, in source order, followed by a
-/// blank line when there was at least one. A module without a constant gets no byte.
+/// Writes one `static const <type> <name> = <expression>;` line per constant of `items`, in source order, followed by
+/// a blank line when there was at least one. A module without a constant gets no byte.
 pub(crate) fn emit_consts(output: &mut String, items: &[syn::Item]) -> syn::Result<()> {
     let mut any = false;
     for item in items {
         let syn::Item::Const(item) = item else {
             continue;
         };
-        let (negated, literal) = match item.expr.as_ref() {
-            syn::Expr::Unary(unary) => match unary.expr.as_ref() {
-                syn::Expr::Lit(literal) => (true, literal),
-                _ => return Err(not_a_literal(item)),
-            },
-            syn::Expr::Lit(literal) => (false, literal),
-            _ => return Err(not_a_literal(item)),
+        let Some(scalar) = const_scalar(&item.ty) else {
+            return Err(not_a_constant(item));
         };
-        let value = match (&literal.lit, negated) {
-            // The sign is written outside the literal, so `-2147483648` keeps its width (`integer_literal` is told).
-            (syn::Lit::Int(value), true) if value.suffix() != "f32" => {
-                format!("-{}", integer_literal(value, true)?)
-            }
-            (lit, true) => format!("-{}", emit_literal(lit)?),
-            (lit, false) => emit_literal(lit)?,
-        };
+        let value = emit_const_expr(&item.expr, scalar, true, item)?;
         writeln!(
             output,
             "static const {} {} = {value};",
@@ -48,11 +40,100 @@ pub(crate) fn emit_consts(output: &mut String, items: &[syn::Item]) -> syn::Resu
     Ok(())
 }
 
+/// The Slang text of the expression. `top`: the whole initializer, where one literal and `-` with one literal are
+/// written bare (as in slice m11.g3); every other operator application is wrapped in parentheses.
+fn emit_const_expr(
+    expr: &syn::Expr,
+    scalar: ConstScalar,
+    top: bool,
+    item: &syn::ItemConst,
+) -> syn::Result<String> {
+    match expr {
+        syn::Expr::Paren(inner) => emit_const_expr(&inner.expr, scalar, top, item),
+        syn::Expr::Group(inner) => emit_const_expr(&inner.expr, scalar, top, item),
+        syn::Expr::Lit(literal) => emit_operand_literal(&literal.lit, scalar, false, top),
+        syn::Expr::Path(path) => match path.path.get_ident() {
+            Some(ident) if path.qself.is_none() => Ok(emit_ident(ident)),
+            _ => Err(not_a_constant(item)),
+        },
+        syn::Expr::Unary(unary) => match unary.op {
+            syn::UnOp::Neg(_) => {
+                if let syn::Expr::Lit(literal) = peel(&unary.expr) {
+                    // The bare `-literal` of slice m11.g3 stays bare; inside an expression it is one parenthesised term.
+                    let text = format!(
+                        "-{}",
+                        emit_operand_literal(&literal.lit, scalar, true, true)?
+                    );
+                    return Ok(if top { text } else { format!("({text})") });
+                }
+                let operand = emit_const_expr(&unary.expr, scalar, false, item)?;
+                Ok(format!("(-{operand})"))
+            }
+            syn::UnOp::Not(_) => {
+                let operand = emit_const_expr(&unary.expr, scalar, false, item)?;
+                let sigil = if scalar == ConstScalar::Bool {
+                    "!"
+                } else {
+                    "~"
+                };
+                Ok(format!("({sigil}{operand})"))
+            }
+            _ => Err(not_a_constant(item)),
+        },
+        syn::Expr::Binary(binary) => {
+            let Some(operator) = const_binary_operator(scalar, &binary.op) else {
+                return Err(not_a_constant(item));
+            };
+            let left = emit_const_expr(&binary.left, scalar, false, item)?;
+            // The amount of a shift is a `u32` whatever the type of the item.
+            let right_scalar = if matches!(operator, "<<" | ">>") {
+                ConstScalar::U32
+            } else {
+                scalar
+            };
+            let right = emit_const_expr(&binary.right, right_scalar, false, item)?;
+            Ok(format!("({left} {operator} {right})"))
+        }
+        _ => Err(not_a_constant(item)),
+    }
+}
+
+/// The expression under any parentheses.
+fn peel(expr: &syn::Expr) -> &syn::Expr {
+    match expr {
+        syn::Expr::Paren(inner) => peel(&inner.expr),
+        syn::Expr::Group(inner) => peel(&inner.expr),
+        other => other,
+    }
+}
+
+/// One literal operand. As the whole initializer (`top`) it has the spelling of slice m11.g3 (`emit_literal`; below a
+/// minus, `integer_literal` is told of the sign so `-2147483648` keeps its width). Inside an expression a `u32` literal
+/// is always `uint(..)`: a bare literal is an `int` in Slang, and `(1 << 31) / 2` computed in `int` is not the `u32`
+/// Rust computes.
+fn emit_operand_literal(
+    literal: &syn::Lit,
+    scalar: ConstScalar,
+    negated: bool,
+    top: bool,
+) -> syn::Result<String> {
+    if !top
+        && scalar == ConstScalar::U32
+        && let syn::Lit::Int(value) = literal
+    {
+        return Ok(format!("uint({})", value.base10_digits()));
+    }
+    match (literal, negated) {
+        (syn::Lit::Int(value), true) if value.suffix() != "f32" => integer_literal(value, true),
+        (literal, _) => emit_literal(literal),
+    }
+}
+
 /// The validator never lets this through; an emitter reached without it says so as a diagnostic, not a panic.
-fn not_a_literal(item: &syn::ItemConst) -> syn::Error {
+fn not_a_constant(item: &syn::ItemConst) -> syn::Error {
     diagnostics::error(
         Code::ConstForm,
         &item.expr,
-        "a module `const` is initialized with one literal",
+        "a module `const` is initialized with an expression of literals and earlier constants of its type",
     )
 }

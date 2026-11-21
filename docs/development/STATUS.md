@@ -545,13 +545,17 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       Radeon 890M (79 of 5000 rows, which WGSL permits). `asin` and `acos` are held to the WGSL bound (the worse
       of an absolute error and the inherited `atan2` bound). `GPU_SUITE_PIN` is 520 by count.
     - m11.zc (end-sanity fixes): the `__gust_fmod` doubling test is `s <= (r - s)` (no overflow near `f32::MAX`) with
-      four new `f32::MAX` rows; the float table separates WGSL's "correctly rounded" (either neighbour) from what the
+      six new `f32::MAX` rows (two with a nonzero remainder; commits `937a1f0`, `6db0997`, merge `47427c5`); the float table separates WGSL's "correctly rounded" (either neighbour) from what the
       890M was observed to do; the `asin`/`acos` ULP measure uses the larger magnitude and `asin` at zero is judged
       by the absolute bound; the `to_degrees` overflow row is not judged; budget-kit's G4 probe accepts only the
       intended `DeviceLimit` or a verified success; README example lists, CHANGELOG line, comment fixes.
   - Merged-tree gate on `316be62`: fmt, workspace clippy, macros tests, the diagnostics tests, xtask tests,
     `docs-check`, `check-ui`, `check-arch`, `lint`, on the GPU `float_math`, `polar-transform`, `hash-rng`,
     `gust-algo` and `budget-kit --small` (with the probe and remedy rows), and the Unit suite all passed.
+  - Gate on `47427c5` (tree equal to the m11.zc lane, whose gates ran fmt, clippy, macros, diagnostics,
+    `docs-check`, `lint`, `float_math` and `budget-kit` on the GPU, and the Unit suite): xtask tests, `check-arch`,
+    `check-ui`, `docs-check`, `lint`, and on the GPU `float_math`, `polar-transform`, `hash-rng`, `gust-algo` and
+    `budget-kit --small` all passed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

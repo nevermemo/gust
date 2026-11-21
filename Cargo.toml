@@ -6,6 +6,7 @@ members = [
     "crates/cargo-gust",
     "crates/gust-algo",
     "examples/atomic-counter",
+    "examples/budget-kit",
     "examples/component-pool",
     "examples/hash-rng",
     "examples/map-chain",

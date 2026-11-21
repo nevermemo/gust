@@ -1,0 +1,18 @@
+[package]
+name = "budget-kit"
+description = "A GPU budget kit: how much compute work of a few common shapes fits in one frame"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+gust.workspace = true
+gust-wgpu = { workspace = true, features = ["slang-runtime"] }
+# The reduction and the scan of the kit (W4, W5): a path dependency, because the library is not a workspace dependency;
+# the run-time compile feature is the one `gust-wgpu` already has here.
+gust-algo = { path = "../../crates/gust-algo", features = ["slang-runtime"] }
+
+[lints]
+workspace = true

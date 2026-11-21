@@ -1102,9 +1102,13 @@ pub(crate) struct GpuSuitePin {
 ///
 /// Slice m11.loops: 560 over 54 became 564 over 55. The new test file `tests/loop_exits.rs` holds four tests (the
 /// loop-exit workaround forms of the m11.ld defect) and adds one `test result:` line. Updated by count.
+///
+/// Slice m11.xsplice: 564 over 55 became 566 over 56. The new test file `tests/shared_splice.rs` holds two tests
+/// (two modules sharing items through a user-side `macro_rules!` splice, on the GPU and in each module's Slang text)
+/// and adds one `test result:` line. Updated by count.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 564,
-    result_lines: 55,
+    passed: 566,
+    result_lines: 56,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

@@ -671,6 +671,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       its second step against the host reference, and a mutation that swapped the second batch's buffers failed
       it. mc-histogram prints what it computes about the split, and its README names `GUST_PROFILE=dev`. Radeon
       890M only; RTX 5090 pending. Opus review: the indirect wording, the SEMANTICS map-chain row, seven roundings.
+    - m11.xsplice (`2b9278d`, spike): sharing a helper, a const and a struct between two `#[gpu]` modules with a
+      plain user-side `macro_rules!` that splices them into each module before `#[gpu]` sees it works with no GUST
+      change (`tests/shared_splice.rs`: both kernels and twins equal a host reference at four counts on the Radeon
+      890M; each module's Slang carries its own copy). Ten injected errors all pointed at a usable line, with three
+      weaknesses: an error in a shared item is reported once per module, a validation error can be buried under
+      trait-bound errors on host lines, and rustc points at the macro definition. A struct shared this way is two
+      Rust types (inferred from Rust typing). Whether GUST should offer its own sharing form is the owner's call.
+      `GPU_SUITE_PIN` 566 over 56 by count. Radeon 890M only; RTX 5090 pending.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

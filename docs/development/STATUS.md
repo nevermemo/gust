@@ -704,6 +704,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       `mc-histogram` (twin tests and the domain guard required by name); outside `GPU_SUITE_PIN`. Opus review
       fixes: gate wiring, `twin_*` names, constant expressions (`MASK`, `CELLS`), the carry wording. Radeon 890M
       only; RTX 5090 pending.
+    - m11.bins (`d280de2`): the example `cell-bins` with a reusable `Bins` (made once; `rebuild` reuses its buffers,
+      and the scan's temporaries come from the device pool from the second rebuild on). Per-cell sets exact, order
+      inside a cell unspecified (stated in rustdoc and README); the checks sort each cell. Cases: empty, all in one
+      cell, the last row and column, positions far past the grid and `+inf` (clamped in `f32`), a hash spread past
+      a workgroup, six rebuilds into one `Bins`. Two mutations fail as intended. Wired into `check-cpu` (six twin
+      tests by name). Whether binning becomes a `gust-algo` operation stays the owner's question. Radeon 890M
+      only; RTX 5090 pending.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

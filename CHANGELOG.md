@@ -97,6 +97,10 @@ proof.
   keep factor from one `Uniform` struct, checked within a per-step bound derived from the GPU model of SEMANTICS
   (one step and sixteen steps), plus an exact `u32` channel that conserves its sum (bit-equal on the host
   reference, the twin and the GPU). Its grid constants are constant expressions of the side.
+- Example `cell-bins` (m11.bins): a reusable binning of elements by grid cell (count with `atomic_add`, an
+  exclusive scan into a kept buffer with `gust_algo::scan::exclusive_into`, scatter by the old value of a cursor).
+  The set of elements of each cell is exact; their order inside a cell is unspecified on the GPU. Checked per cell
+  as sets against a host counting sort, on the twin and the GPU.
 - `KernelDescriptor::split` (m11.g4a, D208): every GPU `grid` kernel carries a split variant, compiled only when used,
   with one hidden launch-base uniform that its entry point adds to the invocation id. It is the ground for launches
   past the per-dimension workgroup limit (used by the host since m11.g4b). The kernel's own Slang,

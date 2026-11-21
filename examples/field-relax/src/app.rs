@@ -25,39 +25,39 @@
 //! Integer arithmetic has no rounding, so the channel must be equal bit for bit on the host reference, the CPU twin and
 //! the GPU after every step, and its sum (a `u64` on the host) must equal the starting sum after every step. The
 //! inputs are below `2^16` plus one spike of `2^24`; a step raises the largest cell by at most 3 (a cell keeps at most
-//! `c / 2 + 3` and receives at most half of the largest cell), so no `u32` overflows in 16 steps.
+//! `c / 2 + 7 / 2` and receives at most half of the largest cell), so no `u32` overflows in 16 steps.
 //!
 //! # The float bound
 //!
 //! Domain: finite, non-negative inputs, no overflow, no subnormal. SEMANTICS keeps subnormals on the twin and allows
 //! the GPU to flush them (KM-08; flushing was observed), so the derivation does not cover them and the inputs keep
 //! away: every input is at least `2^-8` and below 4, and each step keeps at least `k (1 - d) >= 0.49` of the smallest
-//! cell, so after 16 steps every value is above `2^-8 * 0.49^16`, about `5e-8`, far above the smallest normal `f32`
-//! (a test asserts it on the reference). The parameters `d_f` and `k_f` are exact in `f32` (dyadic), so `1 - d_f` is
+//! cell, so after 16 steps every value is above `2^-8 * k^16` (the real factor per step is `k`; `0.49^16`, about
+//! `5e-8`, is a loose floor), far above the smallest normal `f32` (a test asserts it on the reference). The parameters `d_f` and `k_f` are exact in `f32` (dyadic), so `1 - d_f` is
 //! exact and `d_f * 0.25` is exact (a power of two).
 //!
 //! The model is that of `docs/SEMANTICS.md` ("Deriving a tolerance"): `u = 2^-24`; on the GPU `+` and `*` land on
 //! either neighbour of the exact result, an error of at most `2u` of the value (one ULP is at most `2^-23` of a
 //! normal value). All operands are non-negative, so there is no cancellation, and the relative error of a sum of
-//! non-negative terms is at most the largest relative error among its terms. Let `1 + e` be the factor the cell and
-//! its four neighbours carry from the previous step (each within `1 +- e` of the exact value). One step is:
+//! non-negative terms is at most the largest relative error among its terms. Let `1 + r` be the factor the cell and
+//! its four neighbours carry from the previous step (each within `1 +- r` of the exact value). One step is:
 //!
 //! - `n + s + e + w`: three additions in any grouping (all terms are non-negative, so any grouping is at most three
-//!   additions deep): `(1 + e)(1 + 2u)^3`.
-//! - `d * 0.25` is exact; the product with the sum is one more rounding: `(1 + e)(1 + 2u)^4`.
-//! - `(1 - d) * c` is one rounding of a product by an exact constant: `(1 + e)(1 + 2u)`. The larger of the two addends
+//!   additions deep): `(1 + r)(1 + 2u)^3`.
+//! - `d * 0.25` is exact; the product with the sum is one more rounding: `(1 + r)(1 + 2u)^4`.
+//! - `(1 - d) * c` is one rounding of a product by an exact constant: `(1 + r)(1 + 2u)`. The larger of the two addends
 //!   is the first.
 //! - `mul_add` is held to the unfused form SEMANTICS states for it (a fused one rounds once and does less): the
 //!   product, then the sum. The sum adds one ULP "at the larger of the exact and the actual result", which is at most
-//!   `2u (1 + e_out)` of the exact result; `e_out` stays far below `2^-12`, so `2u (1 + 2^-12)` is charged.
+//!   `2u (1 + r_out)` of the exact result; `r_out` stays far below `2^-12`, so `2u (1 + 2^-12)` is charged.
 //! - the multiplication by `k`: one more rounding, `(1 + 2u)`.
 //!
-//! So `1 + e' = (1 + e) * f` with `f = (1 + 2u)^5 * (1 + 2u (1 + 2^-12))`, about `12u = 7.2e-7` per step. The
-//! relative error is carried, not amplified: the stencil is a non-negative combination of the inputs whose weights
-//! sum to `k_f ((1 - d_f) + 4 * d_f / 4) = k_f <= 1`, so an error of relative size `e` in every input is an absolute
-//! error of at most `k_f * e` times a value that is itself scaled by `k_f` in the exact evolution: the relative error
-//! stays `e`. After `S` steps from exact inputs `e_S = f^S - 1`; [`float_bound`] is `f^S - 1 + 2^-40`, the last term
-//! for the `f64` reference (its own error over about 100 roundings is below `2^-47`) and the arithmetic of the bound.
+//! So `1 + r' = (1 + r) * f` with `f = (1 + 2u)^5 * (1 + 2u (1 + 2^-12))`, about `12u = 7.2e-7` per step. The
+//! relative error is carried, not amplified, whatever the weight sum: the stencil is a non-negative combination of
+//! the inputs, so a relative error `r` in every input is a relative error `r` in the exact result of the combination
+//! (the weights sum to `k_f ((1 - d_f) + 4 * d_f / 4) = k_f`, and `k_f <= 1` matters only for an absolute bound, which
+//! this derivation does not use). After `S` steps from exact inputs `r_S = f^S - 1`; [`float_bound`] is
+//! `f^S - 1 + 2^-40`, the last term for the `f64` reference (its own error over about 100 roundings is below `2^-47`) and the arithmetic of the bound.
 //! A correctly rounded twin has half the error charged on the GPU, a fused `mul_add` less; one bound covers every
 //! device. Two checks use it:
 //!
@@ -70,7 +70,8 @@
 //!
 //! # Why two modules
 //!
-//! `SIDE` is a module constant, so one `#[gpu]` module has one grid size. The macro below writes the module and the
+//! `SIDE` is a module constant, so one `#[gpu]` module has one grid size (`MASK = SIDE - 1` and `CELLS = SIDE * SIDE`
+//! are constant expressions of it, D210). The macro below takes the side and writes the module and the
 //! host code that drives it once per size: `big` (512, the run of `main` and the GPU tests) and, under `cfg(test)`,
 //! `small` (32, the unit tests on the twin).
 
@@ -284,7 +285,7 @@ pub fn verify(name: &str, inputs: &Inputs, trace: &Trace) -> Result<Report, Stri
 
 /// Writes, per size, the `#[gpu]` module and the host code that drives it.
 macro_rules! field_program {
-    ($name:ident, $side:tt, $mask:tt, $cells:tt) => {
+    ($name:ident, $side:tt) => {
         pub mod $name {
             use super::*;
 
@@ -293,9 +294,9 @@ macro_rules! field_program {
                 /// Cells per side: a power of two.
                 pub const SIDE: u32 = $side;
                 /// Mask of a coordinate: `SIDE - 1`.
-                pub const MASK: u32 = $mask;
+                pub const MASK: u32 = SIDE - 1;
                 /// Cells of one field.
-                pub const CELLS: u32 = $cells;
+                pub const CELLS: u32 = SIDE * SIDE;
 
                 /// Per field a spread rate `d` and a keep factor `k`, then two pad fields: six `f32` are 24
                 /// bytes and a uniform struct is rounded up to 16 bytes with no gap.
@@ -397,6 +398,8 @@ macro_rules! field_program {
                     fields: vec![inputs.fields.clone()],
                     counts: vec![inputs.counts.clone()],
                 };
+                // Only the field buffers are `Independent`: their length is `FIELDS * CELLS`, not the dispatch count
+                // `CELLS`, so the default one-element-per-invocation access does not describe them.
                 for step in 1..=STEPS {
                     if step % 2 == 1 {
                         k::relax::dispatch(
@@ -473,9 +476,9 @@ macro_rules! field_program {
     };
 }
 
-field_program!(big, 512u32, 511u32, 262144u32);
+field_program!(big, 512u32);
 #[cfg(test)]
-field_program!(small, 32u32, 31u32, 1024u32);
+field_program!(small, 32u32);
 
 fn describe(name: &str, report: &Report) {
     println!(
@@ -594,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn the_twin_matches_the_references_on_every_step() {
+    fn twin_matches_the_references_on_every_step() {
         let inputs = make_inputs(small::SIDE);
         let trace = small::run_twin(&inputs).unwrap();
         let report = verify("twin", &inputs, &trace).unwrap();
@@ -608,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn the_twin_matches_the_references_at_the_large_size() {
+    fn twin_matches_the_references_at_the_large_size() {
         let inputs = make_inputs(big::SIDE);
         let trace = big::run_twin(&inputs).unwrap();
         let report = verify("twin", &inputs, &trace).unwrap();

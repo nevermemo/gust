@@ -11,7 +11,8 @@ Three scalar fields and an exact integer channel relaxing on one periodic `SIDE 
 - The six parameters (`d` and `k` of three fields) reach the kernel through one `Uniform<Params>` struct, with two
   explicit pad fields for the `Std140V1` layout (no parameter buffer, no launch per field).
 - `SIDE` and the other sizes are module-level `const` items of the `#[gpu]` module (m11.g3). Because a constant has one
-  value per module, a macro writes the module twice: `big` (512, `main` and the GPU test) and `small` (32, unit tests).
+  value per module (`MASK` and `CELLS` are constant expressions of `SIDE`, m11.cexpr), a macro writes the module twice:
+  `big` (512, `main`, the GPU test and a twin test) and `small` (32, the unit tests, the twin and a GPU test).
 - The float bound is derived in the module documentation of `src/app.rs` ("The float bound"): a per-step bound and a
   bound after `S` steps, both asserted for every cell of every field; the worst observed error is printed.
 

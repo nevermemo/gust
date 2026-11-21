@@ -24,6 +24,7 @@ members = [
     "examples/texture-threshold",
     "examples/typed-pipeline",
     "examples/vector-add",
+    "examples/walker-steer",
     "examples/web-vector-add",
     "xtask",
 ]

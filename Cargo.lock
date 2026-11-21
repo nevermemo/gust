@@ -902,6 +902,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "walker-steer"
+version = "0.2.0"
+dependencies = [
+ "gust-compute",
+ "gust-compute-wgpu",
+]
+
+[[package]]
 name = "wasm-bindgen"
 version = "0.2.127"
 source = "registry+https://github.com/rust-lang/crates.io-index"

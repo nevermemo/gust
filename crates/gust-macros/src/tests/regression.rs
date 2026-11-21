@@ -10268,3 +10268,31 @@ fn a_user_name_like_a_math_intrinsic_is_renamed_and_the_call_stays_the_intrinsic
         assert_eq!(count_unprefixed(&text, call), 1, "{call}:\n{text}");
     }
 }
+
+/// Slice m11.za: the intrinsics the emitter writes outside the math methods (bit casts, `countbits`, the subgroup
+/// operations, the barrier) are in the rename table too, so a user helper of that name is renamed.
+#[test]
+fn a_user_helper_named_like_a_bit_or_subgroup_intrinsic_is_renamed() {
+    let source = "mod m { \
+        fn countbits(x: u32) -> u32 { x } \
+        fn asuint(x: u32) -> u32 { x } \
+        fn WaveActiveSum(x: u32) -> u32 { x } \
+        #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { \
+            out[id.x] = countbits(asuint(WaveActiveSum(id.x))); } }";
+    let text = translate(source).unwrap_or_else(|error| panic!("{error}"));
+    for name in ["countbits", "asuint", "WaveActiveSum"] {
+        assert!(
+            text.contains(&format!("uint __gust_r_{name}(uint x)")),
+            "{name} declaration:\n{text}"
+        );
+        assert_eq!(
+            count_unprefixed(&text, &format!("{name}(")),
+            0,
+            "{name}:\n{text}"
+        );
+    }
+    assert!(
+        text.contains("__gust_r_countbits(__gust_r_asuint(__gust_r_WaveActiveSum("),
+        "{text}"
+    );
+}

@@ -1106,8 +1106,11 @@ pub(crate) struct GpuSuitePin {
 /// Slice m11.xsplice: 564 over 55 became 566 over 56. The new test file `tests/shared_splice.rs` holds two tests
 /// (two modules sharing items through a user-side `macro_rules!` splice, on the GPU and in each module's Slang text)
 /// and adds one `test result:` line. Updated by count.
+///
+/// Slice m11.cexpr: 566 over 56 became 568 over 56. Two more tests in `tests/consts.rs` (the Rust values of the
+/// constant expressions, and the expressions on the GPU against them), on an existing `test result:` line.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 566,
+    passed: 568,
     result_lines: 56,
 };
 

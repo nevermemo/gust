@@ -77,6 +77,9 @@ proof.
   `i32`, `f32` and `bool` is shared by every kernel, helper, method and closure of the module and by the host; it
   lowers to a `static const` line and nothing is evaluated. Other forms, and a const whose name is also a type,
   method, field or prelude name of the module or is used as a binding pattern, are the new `GUST-E0127`.
+- Constant expressions in module-level `const` items (m11.cexpr, D210): an initializer may combine literals and
+  earlier consts of the module (`u32` and `i32` arithmetic, bit operators and shifts; `f32` `+ - * /` and negation;
+  `bool` `! && ||`). rustc and slangc compile the same expression; nothing is evaluated by the macro.
 - Launches past the per-dimension workgroup limit run (m11.g4b, D208): a `grid` launch whose workgroup count on an
   axis exceeds `max_compute_workgroups_per_dimension` is split by the host into pieces (at most
   `MAX_SPLIT_DISPATCHES`, 4096) in one compute pass, and every invocation runs once with the ids of an unsplit

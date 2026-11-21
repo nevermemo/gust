@@ -679,6 +679,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       trait-bound errors on host lines, and rustc points at the macro definition. A struct shared this way is two
       Rust types (inferred from Rust typing). Whether GUST should offer its own sharing form is the owner's call.
       `GPU_SUITE_PIN` 566 over 56 by count. Radeon 890M only; RTX 5090 pending.
+    - m11.cexpr (`ff4d13a`, D210): module `const` initializers may be expressions of literals and earlier consts
+      (forward and self references, casts, calls and mixed types are GUST-E0127). The same expression goes to rustc
+      and slangc; a GPU test compares 16 `u32`, 13 `i32`, 8 `f32` and 4 `bool` consts with the Rust items, bit-equal
+      on the Radeon 890M, including divisions by negatives and shifts across the sign bit. slangc folds the `f32`
+      values itself (so they depend on its version too); non-finite and subnormal `f32` results compiled and read
+      back bit-equal there once (a scratch probe), documented under D39. Literal-only modules emit the same Slang
+      as before. Radeon 890M only; RTX 5090 pending. Opus review: the integer-only overflow sentence, the
+      non-finite measurement, five more folding forms.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

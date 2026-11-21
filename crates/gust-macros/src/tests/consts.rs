@@ -1,5 +1,6 @@
-//! Module-level `const` items in the macro (slice m11.g3, D205): the accepted form and its lowering to `static const`
-//! lines, and the refusals (GUST-E0127, and the codes the unchanged items keep).
+//! Module-level `const` items in the macro (slice m11.g3, D205; expressions: slice m11.cexpr, D210): the accepted
+//! forms and their lowering to `static const` lines, and the refusals (GUST-E0127, and the codes the unchanged items
+//! keep).
 
 use crate::{
     diagnostics::{
@@ -191,12 +192,9 @@ fn another_type_is_e0127() {
 }
 
 #[test]
-fn an_initializer_that_is_not_one_literal_of_the_type_is_e0127() {
+fn an_initializer_outside_the_accepted_forms_is_e0127() {
     for (ty, init) in [
         ("u32", "f(1)"),
-        ("u32", "1 + 2"),
-        ("u32", "(4)"),
-        ("u32", "OTHER"),
         ("u32", "u32::MAX"),
         ("u32", "-1"),
         ("u32", "1.5"),
@@ -204,8 +202,6 @@ fn an_initializer_that_is_not_one_literal_of_the_type_is_e0127() {
         ("u32", "5i32"),
         ("u32", "4294967296"),
         ("u32", "{ 1 }"),
-        ("i32", "- -1"),
-        ("i32", "-(1)"),
         ("i32", "1u32"),
         ("i32", "2147483648"),
         ("i32", "-2147483649"),
@@ -215,8 +211,6 @@ fn an_initializer_that_is_not_one_literal_of_the_type_is_e0127() {
         ("f32", "f32::INFINITY"),
         ("f32", "std::f32::consts::PI"),
         ("f32", "1.0f64"),
-        ("f32", "1.0 * 2.0"),
-        ("bool", "!false"),
         ("bool", "-true"),
         ("bool", "1"),
         ("bool", "A == A"),
@@ -232,6 +226,222 @@ fn an_initializer_that_is_not_one_literal_of_the_type_is_e0127() {
     }
 }
 
+#[test]
+fn an_expression_of_literals_and_earlier_constants_is_accepted() {
+    // `2 + 2` and a name declared above, which slice m11.g3 refused.
+    for (ty, init) in [
+        ("u32", "2 + 2"),
+        ("u32", "OTHER"),
+        ("u32", "(4)"),
+        ("u32", "(OTHER + 1) * 3 % 7"),
+        ("u32", "OTHER << 3"),
+        ("u32", "!OTHER"),
+        ("i32", "- -1"),
+        ("i32", "-(1)"),
+        ("i32", "-2147483647 - 1"),
+        ("f32", "1.0 * 2.0"),
+        ("f32", "-1.0 / 3.0"),
+        ("bool", "!false"),
+        ("bool", "true && !false || false"),
+    ] {
+        accepted(&module(
+            &format!("const OTHER: u32 = 2; const K: {ty} = {init};"),
+            "out[id.x] = id.x;",
+            "out[id.x] = id.x;",
+        ));
+    }
+}
+
+/// One module of literal-only items and one item per operator: the emitted lines, exactly.
+#[test]
+fn each_operator_is_written_as_the_same_operator_in_parentheses() {
+    let source = module(
+        "const UA: u32 = 6;
+    const US: u32 = UA + 1;
+    const UD: u32 = UA - 1;
+    const UM: u32 = UA * 2;
+    const UQ: u32 = UA / 4;
+    const UR: u32 = UA % 4;
+    const UAND: u32 = UA & 3;
+    const UOR: u32 = UA | 8;
+    const UXOR: u32 = UA ^ 1;
+    const USHL: u32 = UA << 2;
+    const USHR: u32 = UA >> UA;
+    const UNOT: u32 = !UA;
+    const UNEST: u32 = (UA + 1) * 2;
+    const UBIG: u32 = 3000000000 + 1u32;
+    const UTOP: u32 = (4);
+    const IA: i32 = -7;
+    const INEG: i32 = -IA;
+    const ISUM: i32 = IA + 1;
+    const IDIV: i32 = IA / 2;
+    const IREM: i32 = IA % 2;
+    const ISHL: i32 = IA << UA;
+    const INOT: i32 = !IA;
+    const IMIN: i32 = -2147483647 - 1;
+    const ILOW: i32 = -2147483648 + 0;
+    const ISUF: i32 = 3i32 * IA;
+    const FA: f32 = 0.5;
+    const FS: f32 = FA + 1.0;
+    const FSUB: f32 = FA - 0.25;
+    const FD: f32 = 1.0 / 3.0;
+    const FM: f32 = FA * 2f32;
+    const FN: f32 = -FA;
+    const FNL: f32 = -(1.0 + 2.0);
+    const BT: bool = true;
+    const BN: bool = !BT;
+    const BA: bool = BT && false;
+    const BO: bool = BT || !BT;
+    const BP: bool = !(BT && false);",
+        "out[id.x] = id.x;",
+        "out[id.x] = id.x;",
+    );
+    let lines = "static const uint UA = 6;\n\
+                 static const uint US = (UA + uint(1));\n\
+                 static const uint UD = (UA - uint(1));\n\
+                 static const uint UM = (UA * uint(2));\n\
+                 static const uint UQ = (UA / uint(4));\n\
+                 static const uint UR = (UA % uint(4));\n\
+                 static const uint UAND = (UA & uint(3));\n\
+                 static const uint UOR = (UA | uint(8));\n\
+                 static const uint UXOR = (UA ^ uint(1));\n\
+                 static const uint USHL = (UA << uint(2));\n\
+                 static const uint USHR = (UA >> UA);\n\
+                 static const uint UNOT = (~UA);\n\
+                 static const uint UNEST = ((UA + uint(1)) * uint(2));\n\
+                 static const uint UBIG = (uint(3000000000) + uint(1));\n\
+                 static const uint UTOP = 4;\n\
+                 static const int IA = -7;\n\
+                 static const int INEG = (-IA);\n\
+                 static const int ISUM = (IA + 1);\n\
+                 static const int IDIV = (IA / 2);\n\
+                 static const int IREM = (IA % 2);\n\
+                 static const int ISHL = (IA << UA);\n\
+                 static const int INOT = (~IA);\n\
+                 static const int IMIN = ((-2147483647) - 1);\n\
+                 static const int ILOW = ((-2147483648) + 0);\n\
+                 static const int ISUF = (int(3) * IA);\n\
+                 static const float FA = 0.5;\n\
+                 static const float FS = (FA + 1.0);\n\
+                 static const float FSUB = (FA - 0.25);\n\
+                 static const float FD = (1.0 / 3.0);\n\
+                 static const float FM = (FA * float(2.0));\n\
+                 static const float FN = (-FA);\n\
+                 static const float FNL = (-(1.0 + 2.0));\n\
+                 static const bool BT = true;\n\
+                 static const bool BN = (!BT);\n\
+                 static const bool BA = (BT && false);\n\
+                 static const bool BO = (BT || (!BT));\n\
+                 static const bool BP = (!(BT && false));\n\n";
+    for (name, text) in accepted(&source) {
+        // The `!` and `^` helpers of the prelude come first when an expression uses them; the lines follow.
+        assert!(text.starts_with(HEADER), "kernel {name}:\n{text}");
+        assert!(
+            text.contains(&format!("\n{lines}")),
+            "kernel {name}:\n{text}\ncontains\n{lines}"
+        );
+    }
+}
+
+#[test]
+fn a_const_name_read_by_an_expression_is_renamed_like_its_declaration() {
+    let source = module(
+        "#[allow(non_upper_case_globals)]
+    const min: u32 = 3;
+    const NEXT: u32 = min + 1;",
+        "out[id.x] = NEXT;",
+        "out[id.x] = min;",
+    );
+    for (_, text) in accepted(&source) {
+        assert!(
+            text.contains(
+                "\nstatic const uint __gust_r_min = 3;\nstatic const uint NEXT = (__gust_r_min + uint(1));\n"
+            ),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn an_expression_outside_the_accepted_set_is_e0127_and_says_what_to_write() {
+    for (items, fragment) in [
+        // Casts, calls, paths.
+        ("const A: u32 = 1; const K: u32 = A as u32;", "an `as` cast"),
+        (
+            "const K: i32 = 1 as i32;",
+            "write the literal or constant with the type of the item",
+        ),
+        ("const K: u32 = f(1);", "a call"),
+        ("const A: u32 = 1; const K: u32 = A.pow(2);", "a call"),
+        ("const K: u32 = u32::MAX;", "a path such as"),
+        ("const K: f32 = std::f32::consts::PI;", "write the literal"),
+        // Names.
+        (
+            "const A: i32 = 1; const K: u32 = A;",
+            "is an `i32` constant and this item is `u32`",
+        ),
+        (
+            "const A: u32 = 1; const K: f32 = A * 2.0;",
+            "is a `u32` constant and this item is `f32`",
+        ),
+        (
+            "const K: u32 = LATER; const LATER: u32 = 1;",
+            "declare it above",
+        ),
+        (
+            "const K: u32 = LATER + 1; const LATER: u32 = 1;",
+            "declared below this item",
+        ),
+        ("const K: u32 = K + 1;", "forward reference"),
+        ("const K: u32 = NOPE;", "is not a `const` of this module"),
+        // Shapes.
+        ("const K: u32 = { 1 };", "a block, `if`"),
+        ("const K: u32 = match 1 { _ => 1 };", "a block, `if`"),
+        ("const K: u32 = f!(1);", "a call"),
+        ("const K: u32 = if true { 1 } else { 2 };", "a block, `if`"),
+        ("const K: u32 = (1, 2);", "tuple or array"),
+        ("const K: u32 = [1, 2];", "tuple or array"),
+        ("const K: bool = 1 < 2;", "a comparison"),
+        ("const A: u32 = 1; const K: bool = A == 1;", "a comparison"),
+        // Operators of another type.
+        ("const K: f32 = 1.0 % 2.0;", "this operator is not accepted"),
+        ("const K: f32 = 1.0 & 2.0;", "this operator is not accepted"),
+        ("const K: u32 = 1 && 2;", "this operator is not accepted"),
+        (
+            "const K: bool = true + false;",
+            "this operator is not accepted",
+        ),
+        (
+            "const K: bool = true & false;",
+            "this operator is not accepted",
+        ),
+        ("const K: u32 = -1;", "this unary operator"),
+        (
+            "const A: u32 = 1; const K: u32 = -A;",
+            "this unary operator",
+        ),
+        ("const K: f32 = !1.0;", "this unary operator"),
+        ("const K: bool = -true;", "this unary operator"),
+        // Operands of another type.
+        ("const K: u32 = 1 + 1.5;", "a literal in a `u32`"),
+        ("const K: i32 = 1 + 1u32;", "a literal in an `i32`"),
+        ("const K: f32 = 1.0 + 1;", "a literal in an `f32`"),
+        ("const K: bool = true && 1;", "a literal in a `bool`"),
+        // The shift amount.
+        ("const K: u32 = 1 << (2 + 3);", "the shift amount"),
+        ("const K: u32 = 1 << 1.5;", "the shift amount"),
+        (
+            "const S: i32 = 2; const K: u32 = 1 << S;",
+            "is an `i32` constant",
+        ),
+    ] {
+        let source = module(items, "out[id.x] = id.x;", "out[id.x] = id.x;");
+        let error = lower(&source).expect_err(&source);
+        assert_code_for(&error, Code::ConstForm, &source);
+        let message = error.to_string();
+        assert!(message.contains(fragment), "{items}: {message}");
+    }
+}
 #[test]
 fn a_generic_unnamed_or_field_named_const_is_e0127() {
     for items in [

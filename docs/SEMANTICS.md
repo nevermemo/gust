@@ -1978,7 +1978,7 @@ under `tests/fixtures` (each with a Rust source twin that the `m9_*` GPU tests a
 and the UI fixtures named in DIAGNOSTICS under E0116, E0328, E0333 and E0421. GPU runs of those fixtures are recorded in
 the status log, not here.
 
-## 17. Module-level constants (m11.g3, D205)
+## 17. Module-level constants (m11.g3, D205; expressions m11.cexpr, D210)
 
 A `const NAME: T = <literal>;` at the top of a `#[gpu]` module (`T` one of `u32`, `i32`, `f32`, `bool`; GUST-E0127 for
 any other form) is one value read by the host, the CPU twin and every kernel of the module. The macro evaluates
@@ -1992,3 +1992,37 @@ Evidence: `crates/gust-wgpu/tests/consts.rs` compares a `u32`, a negative `i32`,
 read by two kernels and a helper, and, in a third kernel, `i32::MIN` written without and with the `i32` suffix, a
 negative `f32` and `2f32`, a struct method that reads a constant and a closure that reads one, on the GPU and on the
 twin, exactly against values the host computes from the same items.
+
+**Expressions (m11.cexpr, D210).** The initializer may also be an expression of literals and constants of the same
+module declared above it, every operand having the type of the item (an unsuffixed literal takes it). `u32` and `i32`:
+`+ - * / %`, `& | ^`, `<< >>` (the amount is a `u32` literal or an earlier `u32` constant), `!` (bitwise not) and, for
+`i32`, unary `-`. `f32`: `+ - * /` and unary `-`. `bool`: `!`, `&&`, `||`. Parentheses everywhere. An `as` cast, a call
+or a path such as `u32::MAX`, a constant of another type, a name declared below the item or outside the module, a block,
+an `if`, a tuple, an array and a comparison are GUST-E0127. The macro still evaluates nothing: the Rust item stays as
+written, so rustc computes the value the host and the twin read (for integers rustc also refuses an overflow and a
+zero divisor in a constant, so a program that compiles has neither; for `f32` it does not: `1.0 / 0.0`, `0.0 / 0.0`,
+an overflow to infinity and a subnormal result all compile), and the Slang line holds the same expression, operator for operator
+and fully parenthesised, so slangc computes the value the shader reads. Integer `/` and `%` are the plain Slang
+operators (a constant initializer cannot call `__gust_div` or `__gust_rem`). A `u32` literal inside an expression is
+written `uint(..)`, because a bare literal is an `int` in Slang and `(1 << 31) / 2` would otherwise be computed in
+`int`. An item that is one literal, or `-` and one literal, is written as before, byte for byte.
+
+Evidence: the `cexpr` module of `crates/gust-wgpu/tests/consts.rs` reads 16 `u32`, 13 `i32`, 8 `f32` and 4 `bool`
+constants built from every accepted operator (a product of a constant by itself, a chain through three constants,
+`u32` results above `i32::MAX`, `i32::MIN` reached as `-2147483647 - 1`, truncating `/` and `%` with a negative
+operand, shifts by a constant, `!`, `!` followed by `/`, `%` and `>>` on a `u32`, and `(1 << 31) / 2` and
+`(3 << 30) >> 1` on an `i32`) and compares each, on the GPU and, as a second assertion, on the twin, with the
+value the host reads from the same Rust item. Measured on the Radeon 890M (Vulkan, slangc as installed on 2026-11-21)
+and on no other adapter: every integer and `bool` value is equal, and every `f32` value is bit-equal, including `1.0 /
+3.0`, `0.1 * 0.3`, `0.1 + 0.2`, a chain of two of these, `-(0.1 + 0.2)`, `16777216.0 + 1.0` and `1.0 - 0.9`, where a
+rounding happens. In the WGSL slangc produced for one such kernel each constant was already a folded literal, so the
+`f32` values are slangc's constant folding and depend on the slangc version (2026.22 here) as well as the adapter. This
+promises nothing beyond what was measured: float results on other adapters and slangc versions are unmeasured.
+
+Documented difference (D39), non-finite and subnormal `f32` constants: rustc compiles `1.0 / 0.0`, `-1.0 / 0.0`,
+`0.0 / 0.0`, `3.0e38 * 10.0` (infinity) and `1.0e-38 / 1000.0` (subnormal) and the macro accepts them, and nothing
+proves the shader reads them as Rust does. Measured once on the Radeon 890M with slangc 2026.22 (a scratch probe, not a
+committed test): slangc accepted the shader (it wrote `_slang_getInfinity` and `_slang_getNan` calls and a subnormal
+literal), wgpu ran it, and the values read back were bit-equal to the host's (`0x7f800000`, `0xff800000`, `0x7fc00000`,
+`0x7f800000`, `0x00001be0`). The subnormal survived on that adapter; another adapter may flush it, and a NaN payload is
+not promised. Prefer finite normal constants.

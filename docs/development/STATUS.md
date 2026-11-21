@@ -643,6 +643,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       figures stay in the private output files. Opus review: the W7 particle reference now uses the GPU's field.
       Round end at this merge: the full Gpu suite passed on the Radeon 890M (576 s) and the RTX 5090 (556 s),
       confirming `GPU_SUITE_PIN` at 564 passed over 55 result lines on both.
+    - m11.vsize (measurement only, nothing merged; tree `450f654`): what the split variant of D208 costs, measured by
+      building with and without it (a throwaway one-line patch that gave every kernel `split: None`, reverted).
+      Release builds, `GUST_PROFILE=dev` native and `GUST_PROFILE=web` wasm32: budget-kit (8 kernels) 100,352 bytes
+      (1.61 %), vector-add (1 kernel) 4,608 bytes (0.08 %), the `web-vector-add` wasm (1 kernel) 9,056 bytes (0.50 %);
+      budget-kit compile time within noise (3 runs each). Not measured: stripped or LTO sizes, the wasm after
+      `wasm-bindgen`, `wasm-opt` or compression. D209 cites the wasm figure.
+    - m11.xmod (read-only scout, nothing merged; tree `d8e739c`): ways to share a helper, a const or a struct between
+      `#[gpu]` modules. `#[gpu]` sees only its own module's tokens, so sharing needs a design; the leading option's
+      premise (macro expansion order) is not measured yet and comes before any build.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -73,6 +73,18 @@ that had run nowhere ran on the RTX 5090 and lavapipe. M8 is closed (D153).
 (decisions, misalignments with the owner's vision, drift between docs and code) is refreshed for the M10 close, the
 owner holds the session, and the rulings are recorded as decision rows and folded into this roadmap. The release hold
 (D189) stays until the owner lifts it. The milestones after M11 follow its rulings.
+Rulings so far (2026-11-20 and 2026-11-21): no release until GUST is mature, and the current phase is design (D199;
+M11 and the design phase name the same work, D206). A game that uses GPU resources and ECS well drives the design
+(D200), under drift guards: the plain `#[gpu] fn` and `map` path stays the front door, every new concept reaches a GPU
+run in its first slice, and gate examples carry no game wording (D201). Work lands on the `dev` branch (D202); the GPU
+for a run is the owner's call per night (D202, D207, D212). Kernel-language additions so far: float math, a
+deterministic hash generator shared by CPU and GPU, the old value of `atomic_add` (D203), module-level `const` items
+(D205; constant expressions next, D210), `rem_euclid` and `mul_add`, and launches past the per-dimension workgroup
+limit split by the host (D208; precompiled-only and browser builds get them before the design phase is called done,
+D209). `gust-algo` drops the workgroup half of its launch pre-check (D211). The budget-kit example measures
+game-shaped workloads on both development GPUs. Next: the round-5 sanity fixes, D210, D211 and D209, then sharing
+code between `#[gpu]` modules, then the engine pieces a large agent simulation needs (grid fields with diffusion and
+decay, binning by cell, per-agent update steps), each as a neutral example first.
 
 **Done: M10, publication** (closed 2026-11-17, D185, under the release hold: nothing published; plan adopted 2026-11-14,
 D177 to D183; the owner chose the release sequence of D177: 0.2.0 first, 0.1.0 never published). Three lanes: releases

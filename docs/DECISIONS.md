@@ -1,6 +1,6 @@
 # Decisions and boundaries
 
-Append-only log. Next id: **D212**. Add a row for every owner decision or durable
+Append-only log. Next id: **D213**. Add a row for every owner decision or durable
 technical decision, with its date and source; supersede an old row with a new one
 instead of editing it. D01–D18 were recorded 2026-09-07 from the owner's GUST handoff,
 earlier reflection deferral, and independent inspection. Chat research is design
@@ -212,6 +212,7 @@ input, not proof of code state.
 | D209 | Split launches reach precompiled-only and browser builds before the design phase is called done (owner, 2026-11-21, chat: "Before."): the split variant of a `grid` kernel becomes usable without run-time compilation, so the `DeviceLimit` refusal that D208 kept for those builds is lifted in a later slice. m11.vsize measured what the variant costs today where it cannot run: 9,056 bytes (0.50 %) of the `web-vector-add` wasm for one kernel. | Amends D208's note on precompiled-only and browser builds. |
 | D210 | Constant expressions in module-level `const` items come next (owner, 2026-11-21, chat: "Yes."): m11.g3 accepts a literal initializer only; the next slice widens it to expressions of literals and earlier consts. | Extends D205 (G3). |
 | D211 | `gust-algo` drops the workgroup half of its launch pre-check (owner, 2026-11-21, chat: "lift the workgroup half of the pre-check"): `reduce` and `scan` no longer refuse a first dispatch past `max_compute_workgroups_per_dimension`, because the host splits such a launch (D208); the storage-binding half stays (no chunking past one binding, plan section 8, C3), and the choice between the v1 and v0 schedules follows. Until D209 lands, builds without run-time compilation still refuse those sizes at launch. | Amends the M7 pre-check (C3) for workgroups only. |
+| D212 | Working mode for the night of 2026-11-21 (owner, chat: "You have freedom to steer the ship. Don't stop. [...] don't use 5090."): the coordinator steers the design phase alone overnight, with decisions in the owner's stead taken as before, and GPU runs use only the Radeon 890M; RTX 5090 confirmations wait until the owner lifts this. | Amends D207 until the owner lifts it. |
 
 ## Notes
 

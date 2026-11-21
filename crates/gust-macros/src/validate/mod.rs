@@ -55,6 +55,49 @@ pub(crate) fn wrapping_arity(name: &str) -> Option<usize> {
     }
 }
 
+/// The scalar math methods (slice m11.math) with their argument counts. The macro sees no types, so one emitter arm per
+/// name serves every receiver type rustc allows: the float names lower to the Slang intrinsic (or to a helper for
+/// `fract`), and `abs`, `min`, `max` and `clamp` are the same intrinsic on `i32` and `u32`. The twin calls the `std`
+/// method unchanged. Edge inputs (a NaN in `min`, `clamp` with `min > max`, `i32::MIN.abs()`) differ between the twin
+/// and the GPU and are documented, not chased (D39).
+pub(crate) fn scalar_math_arity(name: &str) -> Option<usize> {
+    match name {
+        "abs" | "floor" | "ceil" | "trunc" | "fract" | "sqrt" | "sin" | "cos" | "tan" | "atan"
+        | "exp" | "exp2" | "log2" | "ln" => Some(0),
+        "min" | "max" | "atan2" | "powf" => Some(1),
+        "clamp" => Some(2),
+        _ => None,
+    }
+}
+
+/// The value of `std::f32::consts::{PI, TAU, E}` (or the `core::` path), the three constants of slice m11.math.
+pub(crate) fn math_constant(path: &syn::Path) -> Option<f32> {
+    if path.leading_colon.is_some() || path.segments.len() != 4 {
+        return None;
+    }
+    if path
+        .segments
+        .iter()
+        .any(|segment| !segment.arguments.is_empty())
+    {
+        return None;
+    }
+    let names: Vec<String> = path
+        .segments
+        .iter()
+        .map(|segment| crate::names::name_of(&segment.ident))
+        .collect();
+    if !matches!(names[0].as_str(), "std" | "core") || names[1] != "f32" || names[2] != "consts" {
+        return None;
+    }
+    match names[3].as_str() {
+        "PI" => Some(std::f32::consts::PI),
+        "TAU" => Some(std::f32::consts::TAU),
+        "E" => Some(std::f32::consts::E),
+        _ => None,
+    }
+}
+
 /// Why `expression` is visibly not a `u32` texel address (GUST-E0732), or `None` when it may be one: the macro sees no
 /// types, so it refuses what is plainly another type and leaves the rest to rustc, which checks the shadow body.
 fn address_problem(expression: &syn::Expr) -> Option<&'static str> {
@@ -115,8 +158,10 @@ fn coordinate_problem(expression: &syn::Expr) -> Option<&'static str> {
 /// The accepted methods, spelled out in the text of E0305 and E0325.
 const ACCEPTED_METHODS: &str = "the accepted methods are `.global_id()` and `.len()`, the Option/Result methods \
 `.is_some()`, `.is_none()`, `.is_ok()`, `.is_err()` and `.unwrap_or(default)`, the wrapping integer methods \
-`.wrapping_add(b)`, `.wrapping_sub(b)`, `.wrapping_mul(b)` and `.wrapping_neg()`, and the vector and matrix methods \
-(swizzles such as `.xy()`, `.dot(v)`, `.mul_vec4(v)`, `.mul_mat4(m)`, `.transpose()`)";
+`.wrapping_add(b)`, `.wrapping_sub(b)`, `.wrapping_mul(b)` and `.wrapping_neg()`, the scalar math methods \
+`.abs()`, `.min(b)`, `.max(b)`, `.clamp(lo, hi)`, `.floor()`, `.ceil()`, `.trunc()`, `.fract()`, `.sqrt()`, `.sin()`, \
+`.cos()`, `.tan()`, `.atan()`, `.atan2(x)`, `.exp()`, `.exp2()`, `.ln()`, `.log2()` and `.powf(b)`, and the vector and \
+matrix methods (swizzles such as `.xy()`, `.dot(v)`, `.mul_vec4(v)`, `.mul_mat4(m)`, `.transpose()`)";
 
 /// Rust primitives outside the four-byte scalar subset (`usize` is not here: `visit_type_path` gives it GUST-E0334
 /// first). They are not shadowed by
@@ -1035,6 +1080,7 @@ pub(crate) fn method_name_clash(name: &str, fields: &HashSet<String>) -> Option<
             | "unwrap"
             | "expect"
     ) || wrapping_arity(name).is_some()
+        || scalar_math_arity(name).is_some()
         || math_types::is_swizzle(name)
         || math_types::method_arity(name).is_some()
         || texture::Method::from_name(name).is_some();
@@ -5171,6 +5217,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 | "unwrap"
                 | "expect"
         ) || wrapping_arity(&method).is_some()
+            || scalar_math_arity(&method).is_some()
             || math_types::is_swizzle(&method)
             || math_types::method_arity(&method).is_some();
         if !in_dialect
@@ -5234,6 +5281,37 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                     Code::BuiltinArguments,
                     call,
                     &format!("`.{method}()` takes exactly {arity} argument(s)"),
+                );
+                return;
+            }
+            visit::visit_expr_method_call(self, call);
+            return;
+        }
+        if let Some(arity) = scalar_math_arity(&method) {
+            if call.args.len() != arity {
+                self.reject(
+                    Code::BuiltinArguments,
+                    call,
+                    &format!("`.{method}()` takes exactly {arity} argument(s)"),
+                );
+                return;
+            }
+            // `min`, `max` and `clamp` are the same Slang intrinsic on every scalar type, so the operand types decide
+            // the result. A literal without a suffix is `int` in Slang and whatever rustc infers in the twin, so for a
+            // `u32` receiver the two differ (the trap of GUST-E0326): ask for the suffix.
+            if matches!(method.as_str(), "min" | "max" | "clamp")
+                && let Some(literal) = std::iter::once(call.receiver.as_ref())
+                    .chain(call.args.iter())
+                    .find_map(unsuffixed_literal_only)
+            {
+                self.reject(
+                    Code::UnsuffixedLiteralLet,
+                    literal,
+                    &format!(
+                        "an integer literal without a suffix as an operand of `.{method}(..)` has no type of its own: \
+                         Slang types it `int` while rustc infers the type from the other operand, so the two can \
+                         differ; add a suffix (`x.{method}(3u32)`)"
+                    ),
                 );
                 return;
             }
@@ -5546,6 +5624,9 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         if path.qself.is_none()
             && let Some((_, "IDENTITY")) = math_types::associated_item(&path.path)
         {
+            return;
+        }
+        if path.qself.is_none() && math_constant(&path.path).is_some() {
             return;
         }
         if path.qself.is_none() && crate::names::path_is(&path.path, "workgroup_barrier") {

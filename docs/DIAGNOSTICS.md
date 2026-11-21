@@ -563,10 +563,13 @@ Decision: D02.
 `.global_id()` and `.len()` take no arguments. A swizzle (`.xy()`) and `.transpose()` take none, `.dot(v)`, `.mul_vecN(v)` and
 `.mul_matN(m)` take one, `Vec4::new(..)` and `Mat4::from_cols(..)` take as many as the type has components or columns, and `splat` takes one.
 `.wrapping_add(b)`, `.wrapping_sub(b)` and `.wrapping_mul(b)` take one argument and `.wrapping_neg()` takes none
-(slice m7.w). A method that is not a built-in at all is not this code: with arguments it is E0325, without
+(slice m7.w). The float math methods take the counts of their `std` namesakes (slice m11.math): `.abs()`, `.floor()`,
+`.sqrt()` and the other unary ones none, `.min(b)`, `.max(b)`, `.atan2(x)` and `.powf(b)` one, `.clamp(lo, hi)` two.
+A method that is not a built-in at all is not this code: with arguments it is E0325, without
 arguments E0305.
 Reached through `#[gpu]`.
-Rejected: `out.len(1)`, `v.xy(1)`, `m.transpose(m)`, `Vec4::new(1.0, 2.0)`, `x.wrapping_add()`, `x.wrapping_neg(1)`.
+Rejected: `out.len(1)`, `v.xy(1)`, `m.transpose(m)`, `Vec4::new(1.0, 2.0)`, `x.wrapping_add()`, `x.wrapping_neg(1)`,
+`x.sqrt(1.0)`, `x.clamp(0.0)`.
 Write instead: `out.len()`, `v.xy()`, `m.transpose()`, `Vec4::new(1.0, 2.0, 3.0, 4.0)`, `x.wrapping_add(y)`,
 `x.wrapping_neg()`.
 Decision: D02.
@@ -575,7 +578,10 @@ Decision: D02.
 
 Methods other than `.global_id()`, `.len()`, `.is_some()`, `.is_none()`, `.is_ok()`,
 `.is_err()`, `.unwrap_or(default)`, the wrapping integer methods (`.wrapping_add(b)`, `.wrapping_sub(b)`,
-`.wrapping_mul(b)`, `.wrapping_neg()`; slice m7.w) and the vector and matrix methods (swizzles `.xy()`..`.wzyx()`,
+`.wrapping_mul(b)`, `.wrapping_neg()`; slice m7.w), the float math methods (`.abs()`, `.min(b)`, `.max(b)`,
+`.clamp(lo, hi)`, `.floor()`, `.ceil()`, `.trunc()`, `.fract()`, `.sqrt()`, `.sin()`, `.cos()`, `.tan()`, `.atan()`,
+`.atan2(x)`, `.exp()`, `.exp2()`, `.ln()`, `.log2()`, `.powf(b)`; slice m11.math) and the vector and matrix methods
+(swizzles `.xy()`..`.wzyx()`,
 `.dot(v)`, `.mul_vec2/3/4(v)`, `.mul_mat2/3/4(m)`, `.transpose()`) have no lowering. This code is the one for a method called without arguments;
 the same unknown method called with arguments is E0325. The message lists the accepted methods.
 Integer `.dot` (slice m6.m2): Slang's `dot` on an integer vector is `OpSDot` or `OpUDot` in SPIR-V, which needs
@@ -614,7 +620,9 @@ Decision: D02.
 
 A path used as a value must be one local, parameter or helper name, or `Mat2::IDENTITY`, `Mat3::IDENTITY` or `Mat4::IDENTITY`.
 Reached through `#[gpu]`.
-Rejected: `f32::INFINITY`, `u32::MAX`, `core::f32::consts::PI`, `Vec4::ZERO`.
+Accepted (slice m11.math): `std::f32::consts::PI`, `TAU` and `E`, also under `core::`, spelled as the full path (a `use` is
+GUST-E0102). They lower to `f32` literals that round-trip (`float(3.1415927)`); no other constant is accepted.
+Rejected: `f32::INFINITY`, `u32::MAX`, `core::f32::consts::LN_2`, `f32::consts::PI`, `Vec4::ZERO`.
 Write instead: write the literal, for example `4294967295u32`.
 Decision: D06.
 
@@ -752,14 +760,19 @@ Decision: D17, D31 (M6 plan R1.1-2).
 A method call with arguments whose name is not one the dialect accepts. The message names the method and lists the
 accepted ones: `.global_id()` and `.len()`, the Option and Result methods (`.is_some()`, `.is_none()`, `.is_ok()`,
 `.is_err()`, `.unwrap_or(default)`), the wrapping integer methods `.wrapping_add(b)`, `.wrapping_sub(b)`,
-`.wrapping_mul(b)` and `.wrapping_neg()`, and the vector and matrix methods. Before slice m7.w this case was E0304 with
+`.wrapping_mul(b)` and `.wrapping_neg()`, the float math methods of slice m11.math (`.abs()`, `.min(b)`, `.max(b)`,
+`.clamp(lo, hi)`, `.floor()`, `.ceil()`, `.trunc()`, `.fract()`, `.sqrt()`, `.sin()`, `.cos()`, `.tan()`, `.atan()`,
+`.atan2(x)`, `.exp()`, `.exp2()`, `.ln()`, `.log2()`, `.powf(b)`), and the vector and matrix methods. The float math
+methods not in the list (`asin`, `acos`, `round`, `signum`, `to_radians`, `to_degrees`, `hypot`, `mul_add`, integer
+`pow`) stay refused. Before slice m7.w this case was E0304 with
 the text "GPU built-ins do not accept arguments or type arguments", which blamed a built-in that was never called.
 `wrapping_div` and `wrapping_rem` are deliberately absent: a divisor of zero (and `MIN / -1`) has no wrapped result, so
 a "wrapping" division would still leave the domain (KM-01 to KM-03 in [SEMANTICS](SEMANTICS.md)). The same unknown
 method called without arguments is E0305; a built-in called with arguments it does not take is E0304. A type
 argument on such a name (`x.checked_add::<u32>(y)`) is this code as well, not E0303.
 Reached through `#[gpu]`.
-Rejected: `x.wrapping_div(y)`, `x.wrapping_rem(y)`, `x.pow(2)`, `x.min(y)`, `x.checked_add(y)`, `x.saturating_sub(y)`.
+Rejected: `x.wrapping_div(y)`, `x.wrapping_rem(y)`, `x.pow(2)`, `x.hypot(y)`, `x.mul_add(a, b)`, `x.checked_add(y)`,
+`x.saturating_sub(y)`.
 Write instead: the operator or an `if` (`if y != 0 { x / y } else { 0 }`), or one of the accepted methods.
 Decision: D22 (the dialect boundary), D87 (the wrapping methods and this code).
 
@@ -781,6 +794,10 @@ the float paragraph in [SEMANTICS](SEMANTICS.md). An `if` or a `match` is not a 
 (`let x = if c { 1 } else { 2 };` is E0811 and a `match` as a value is E0513), so there are no literal arms to cover.
 `while let` and `let .. else` are E0402 and E0320. Slice m6.z2 chose the error alone over inferring the type from the
 uses (D86).
+The same code covers an operand of `.min(..)`, `.max(..)` or `.clamp(..)` (slice m11.math), receiver included, that is
+made only of unsuffixed integer literals (`x.min(3)`, `x.clamp(1, 9u32)`, `3.min(x)`): the macro sees no types, Slang
+types the literal `int` while rustc types it from the other operand, and for a `u32` operand the two differ. The message
+asks for a suffix (`x.min(3u32)`). A float literal (`f.min(1.0)`) is not covered.
 Reached through `#[gpu]`.
 Rejected: `let mut acc = 0;`, `let x = -1;`, `let x = 1 + 2;`, `let x = 1 << 3;`, `let o = Some(7);`,
 `let d = Some(7).unwrap_or(0);`, `if let Some(v) = Some(7) { .. }`.
@@ -797,7 +814,7 @@ Decision: D42 (M7 plan 4.1, slice m7.g1).
 
 ### GUST-E0328 method name clashes with a built-in
 
-A method of a module struct becomes a member function of the generated Slang struct and is called as `recv.name(args)`, so its name must not be one that a call already means something else for: a method of the dialect (`len`, `global_id`, `is_some`, `unwrap`, `wrapping_add`, `dot`, `mul_vec4`, `transpose`, the texture methods `load`, `store`, `sample`, `width`, `height` and every other built-in method, GUST-E0325), a vector swizzle (`xy`, `xyz`, `wzyx` and every other two to four letters of `x`, `y`, `z`, `w`), a word GUST reserves as a method name because it begins a member declaration of a Slang struct or names the struct (`This`, `init`, `property`, `subscript`, `this`), or the name of a field of its own struct (the getter pattern `fn radius(&self)` next to a field `radius`, where `s.radius` and `s.radius()` would collide as Slang members). Reserved Slang names that every identifier shares are renamed by the emitter and are no clash.
+A method of a module struct becomes a member function of the generated Slang struct and is called as `recv.name(args)`, so its name must not be one that a call already means something else for: a method of the dialect (`len`, `global_id`, `is_some`, `unwrap`, `wrapping_add`, the float math methods `abs`, `min`, `max`, `clamp`, `floor`, `ceil`, `trunc`, `fract`, `sqrt`, `sin`, `cos`, `tan`, `atan`, `atan2`, `exp`, `exp2`, `ln`, `log2` and `powf` (slice m11.math), `dot`, `mul_vec4`, `transpose`, the texture methods `load`, `store`, `sample`, `width`, `height` and every other built-in method, GUST-E0325), a vector swizzle (`xy`, `xyz`, `wzyx` and every other two to four letters of `x`, `y`, `z`, `w`), a word GUST reserves as a method name because it begins a member declaration of a Slang struct or names the struct (`This`, `init`, `property`, `subscript`, `this`), or the name of a field of its own struct (the getter pattern `fn radius(&self)` next to a field `radius`, where `s.radius` and `s.radius()` would collide as Slang members). Reserved Slang names that every identifier shares are renamed by the emitter and are no clash.
 A helper function and a method must not share a name, and a helper must not be named like a field of the struct whose method calls it: inside the Slang struct an unqualified call finds a member before a free function (measured on slangc 2026.21), so the call would reach the member or fail. The rule is a check of the module, the same for a name in the call of a method and in the call of a helper.
 Reached through `#[gpu]`.
 Rejected: `impl S { fn len(&self) -> u32 { .. } }`, `fn xy(&self) -> f32`, `fn init(&self) -> u32`, `fn v(&self) -> u32` in `struct S { v: u32 }`.

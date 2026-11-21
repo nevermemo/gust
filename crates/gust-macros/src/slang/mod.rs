@@ -645,7 +645,10 @@ pub(crate) fn is_pure_place(place: &syn::Expr) -> bool {
             // The wrapping methods are arithmetic on their operands, like `+` and `-` above.
             let wrapping = crate::validate::wrapping_arity(&name) == Some(call.args.len())
                 && call.args.iter().all(is_pure_place);
-            (builtin || wrapping) && is_pure_place(&call.receiver)
+            // The scalar math methods (slice m11.math) are pure functions of their operands as well.
+            let scalar_math = crate::validate::scalar_math_arity(&name) == Some(call.args.len())
+                && call.args.iter().all(is_pure_place);
+            (builtin || wrapping || scalar_math) && is_pure_place(&call.receiver)
         }
         _ => false,
     }
@@ -997,6 +1000,16 @@ pub(crate) fn emit_kernel_in(
             "%",
             div_table::REM_ROWS,
         ));
+    }
+
+    let mut fract = FractUsage(false);
+    fract.visit_item_mod(module);
+    if fract.0 {
+        writeln!(
+            output,
+            "float {FRACT_HELPER}(float x) {{ return x - trunc(x); }}\n"
+        )
+        .unwrap();
     }
 
     // The integer `dot` as a sum of products (see `dot_overload_text`); `.dot` is `__gust_dot` in such a module.
@@ -2696,6 +2709,13 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         }
         syn::Expr::Lit(literal) => emit_literal(&literal.lit)?,
         syn::Expr::MethodCall(call) if is_math_method(call) => emit_math_method(call)?,
+        // The scalar math methods (slice m11.math); the validator has checked the argument count.
+        syn::Expr::MethodCall(call)
+            if crate::validate::scalar_math_arity(&crate::names::name_of(&call.method))
+                .is_some_and(|arity| arity == call.args.len()) =>
+        {
+            emit_scalar_math(call)?
+        }
         // The wrapping methods are the plain operators, even in a module that names a matrix (where `*` is
         // `__gust_mul`): WGSL integer arithmetic wraps modulo 2^32 (section 6.2.3). The macro sees no types, so a
         // negation is `0 - a`, which slangc types as the operand's own type and lowers without a unary minus
@@ -2773,6 +2793,14 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         ),
         syn::Expr::Paren(paren) => format!("({})", emit_expression(&paren.expr)?),
         syn::Expr::Path(path) if crate::names::path_is(&path.path, "None") => "none".to_owned(),
+        // `std::f32::consts::{PI, TAU, E}` (slice m11.math): the shortest decimal that parses back to the same `f32`.
+        syn::Expr::Path(path)
+            if path.qself.is_none() && crate::validate::math_constant(&path.path).is_some() =>
+        {
+            let value =
+                crate::validate::math_constant(&path.path).expect("guarded by the match arm");
+            format!("float({value:?})")
+        }
         // The receiver of a method is `this` in Slang (slice m9.a1).
         syn::Expr::Path(path)
             if path.qself.is_none() && crate::names::path_is(&path.path, "self") =>
@@ -2914,6 +2942,57 @@ fn is_math_method(call: &syn::ExprMethodCall) -> bool {
     let name = crate::names::name_of(&call.method);
     math_types::is_swizzle(&name)
         || math_types::method_arity(&name).is_some_and(|arity| arity == call.args.len())
+}
+
+/// The Slang spelling of a scalar math method (slice m11.math). `fract` is a helper (`FRACT_HELPER`), not an intrinsic.
+fn scalar_math_function(name: &str) -> &'static str {
+    match name {
+        "abs" => "abs",
+        "min" => "min",
+        "max" => "max",
+        "clamp" => "clamp",
+        "floor" => "floor",
+        "ceil" => "ceil",
+        "trunc" => "trunc",
+        "sqrt" => "sqrt",
+        "sin" => "sin",
+        "cos" => "cos",
+        "tan" => "tan",
+        "atan" => "atan",
+        "exp" => "exp",
+        "exp2" => "exp2",
+        "log2" => "log2",
+        "atan2" => "atan2",
+        "ln" => "log",
+        "powf" => "pow",
+        "fract" => FRACT_HELPER,
+        other => {
+            unreachable!("`{other}` is accepted by `scalar_math_arity` but has no emitter arm")
+        }
+    }
+}
+
+/// Rust's `fract` is `x - x.trunc()`; Slang's `frac` is `x - floor(x)`, which differs for a negative `x`. The helper
+/// evaluates the receiver once.
+const FRACT_HELPER: &str = "__gust_fract";
+
+/// `x.sqrt()` is `sqrt(x)`, `y.atan2(x)` is `atan2(y, x)` (the receiver is y), `a.clamp(lo, hi)` is
+/// `clamp(a, lo, hi)`, `x.ln()` is `log(x)`, `x.powf(e)` is `pow(x, e)` and `x.fract()` is `__gust_fract(x)`.
+fn emit_scalar_math(call: &syn::ExprMethodCall) -> syn::Result<String> {
+    let function = scalar_math_function(&crate::names::name_of(&call.method));
+    let mut operands = vec![emit_expression(&call.receiver)?];
+    operands.extend(emit_list(call.args.iter())?);
+    Ok(format!("{function}({})", operands.join(", ")))
+}
+
+/// Whether the module calls `.fract()`, so the helper is defined only when used.
+struct FractUsage(bool);
+
+impl<'ast> Visit<'ast> for FractUsage {
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        self.0 |= crate::names::ident_is(&call.method, "fract") && call.args.is_empty();
+        syn::visit::visit_expr_method_call(self, call);
+    }
 }
 
 /// `v.xy()` is `v.xy`, `a.dot(b)` is `dot(a, b)`, `m.mul_vec4(v)` and `a.mul_mat4(b)` are `mul(m, v)` and `mul(a, b)`,

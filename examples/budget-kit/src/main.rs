@@ -21,9 +21,9 @@
 //! The median of 30 steps after 5 warm-up steps is reported, from GPU timestamps where the device has them and from the
 //! wall clock around a blocking submit otherwise; the table says which, per row.
 //!
-//! The kernels index a flat array through a grid of rows of 8192 invocations (`id.y * 8192 + id.x`), so a dispatch
-//! never needs more than 65 535 workgroups in one dimension, and every buffer is bound as an `Independent` resident
-//! vector. A workload whose largest buffer does not fit the device's storage binding limit is cut and the table says so.
+//! The kernels index a flat array through a grid of rows of `ROW` (8192) invocations (`id.y * ROW + id.x`), so a
+//! dispatch never needs more than 65 535 workgroups in one dimension, and every buffer is bound as an `Independent`
+//! resident vector. A workload whose largest buffer does not fit the device's storage binding limit is cut and the table says so.
 //!
 //! W4 puts its own clear and count batch and the `gust-algo` scan in one `timed` scope (the batch goes through
 //! `dispatch_batch_in_scope`), so one scope's GPU time covers both. After the table a probe (not a workload) launches a
@@ -49,9 +49,13 @@ mod kit {
         pub pad1: u32,
     }
 
-    // The flat index of an invocation in a grid of rows of 8192 (`Extent::new(8192, rows, 1)`).
+    // The width of the invocation grid the kernels index through (`id.y * ROW + id.x`); the host reads the same
+    // constant (m11.g3) to build `Extent::new(ROW, rows, 1)`.
+    pub const ROW: u32 = 8192;
+
+    // The flat index of an invocation in a grid of rows of `ROW`.
     fn linear(x: u32, y: u32) -> u32 {
-        y * 8192u32 + x
+        y * ROW + x
     }
 
     // `a` wrapped once into [0, side) (a is below 2 * side).
@@ -217,8 +221,8 @@ const STEPS: usize = 30;
 const WARMUP: usize = 5;
 /// One frame at 60 Hz, in milliseconds.
 const FRAME_MS: f64 = 1000.0 / 60.0;
-/// The width of the invocation grid the kernels index through (`id.y * ROW + id.x`).
-const ROW: u32 = 8192;
+// The width of the invocation grid the kernels index through: the module-level constant of the `#[gpu]` module.
+use kit::ROW;
 
 /// Particle and field sizes (the counts are exact; "1M" is 2^20 and "4M" is 2^22).
 const W1_SIZES: [u32; 3] = [1 << 20, 1 << 22, 1 << 24];

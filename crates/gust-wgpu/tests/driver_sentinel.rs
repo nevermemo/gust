@@ -126,6 +126,9 @@ enum Device {
     Other,
 }
 
+// The measured device is matched by the adapter name: a case-sensitive substring "RTX 5090", on the Vulkan backend
+// only (m11.r4fix). Any other NVIDIA adapter, and this one on another backend, is `UnmeasuredNvidia`: Rust's values
+// and the defect's values both pass there, and the verdict is only noted. A non-NVIDIA adapter must give Rust's values.
 fn classify(info: &wgpu::AdapterInfo) -> Device {
     if info.vendor != NVIDIA {
         Device::Other

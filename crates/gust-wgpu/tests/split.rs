@@ -170,6 +170,42 @@ mod split_kernels {
             tags[i] = group.x * 256u32 + local.x;
         }
     }
+
+    // m11.r4fix: module-level constants (m11.g3) read by the kernel below and by the host.
+    pub const MULT: u32 = 3;
+    pub const BIAS: u32 = 5;
+    pub const FACTOR: f32 = 1.5;
+    pub const SHIFT: f32 = -2.0;
+    pub const LEG: f32 = 4.0;
+
+    /// No user uniform at all: the variant's hidden launch base is its only uniform.
+    #[kernel(workgroup_size(8, 1, 1))]
+    pub fn bare(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<u32>) {
+        let i = id.x;
+        if i < out.len() {
+            out[i] = i + 1u32;
+        }
+    }
+
+    /// A module constant (m11.g3), `mul_add` and `hypot` (m11.math3), all on the invocation's own id. `a = i + 1` is
+    /// exact and normal for `i < 2^24`. `a * FACTOR + SHIFT` is exact in `f32` for these ids, so the `mul_add` check
+    /// catches a wrong operation, not a rounding difference; rounding is measured in `tests/math3.rs`.
+    #[kernel(workgroup_size(8, 1, 1))]
+    pub fn mixed(
+        id: SV_DispatchThreadID,
+        p: Uniform<Count>,
+        mut ints: RWStructuredBuffer<u32>,
+        mut fused: RWStructuredBuffer<f32>,
+        mut norms: RWStructuredBuffer<f32>,
+    ) {
+        let i = id.x;
+        if i < p.n {
+            ints[i] = i * MULT + BIAS;
+            let a = (i as f32) + 1.0f32;
+            fused[i] = a.mul_add(FACTOR, SHIFT);
+            norms[i] = a.hypot(LEG);
+        }
+    }
 }
 
 use split_kernels::{Count, Size2, Size3};
@@ -1242,4 +1278,263 @@ fn the_host_split_at_real_size_runs_every_element_once() {
         eprintln!("split (m) {name} n={n}: {:?}", started.elapsed());
         assert_eq!((wrong_hits, wrong_tags), (0, 0), "{name}, n = {n}");
     }
+}
+
+/// (n) m11.r4fix: the variant's hidden launch-base uniform counts against `max_uniform_buffer_binding_size` too. `bare`
+/// has no user uniform, so only that binding is at stake: with the limit at 8 bytes (the base is 16) the launch keeps
+/// the plain workgroup-limit refusal and nothing is compiled; with the limit at 16 the same launch splits and runs.
+#[test]
+fn a_hidden_uniform_over_the_uniform_binding_limit_keeps_the_plain_refusal() {
+    let launch = |device: &HeadlessDevice| {
+        let out = device.create_typed_buffer("out", &vec![0u32; 100], GpuBufferAccess::ReadWrite);
+        let result =
+            split_kernels::bare::dispatch_extent(device, Extent::linear(100), Independent(&out));
+        (result, out)
+    };
+    let with_uniform_limit = |bytes: u64| {
+        let device = device();
+        let mut limits = device.limits().clone();
+        limits.max_compute_workgroups_per_dimension = 4;
+        limits.max_uniform_buffer_binding_size = bytes;
+        device.with_limits(limits).unwrap()
+    };
+
+    let refusing = with_uniform_limit(8);
+    let (result, _) = launch(&refusing);
+    let refused = result.expect_err("the 16 byte hidden uniform does not fit 8");
+    assert_eq!(
+        limit_of(&refused),
+        ("max_compute_workgroups_per_dimension", 13, 4)
+    );
+    assert_cold(&refusing);
+
+    // The control: 16 bytes is exactly enough, so the same launch is split and every element runs.
+    let accepting = with_uniform_limit(16);
+    let (result, out) = launch(&accepting);
+    result.unwrap();
+    let expected: Vec<u32> = (1..=100).collect();
+    assert_eq!(accepting.read_typed_buffer(&out).unwrap(), expected);
+    assert_eq!(
+        accepting.pipeline_cache_stats().entries,
+        1,
+        "only the variant is compiled"
+    );
+}
+
+/// The unit in the last place of a normal `f32` (the same as `tests/math3.rs`).
+fn ulp(x: f32) -> f64 {
+    let magnitude = x.abs().max(f32::MIN_POSITIVE);
+    let exponent = ((magnitude.to_bits() >> 23) & 0xff) as i32 - 127;
+    2f64.powi(exponent - 23)
+}
+
+/// The spacing of the float bounds: at the larger of the exact and the actual result (the same as `tests/math3.rs`).
+fn spacing(exact: f64, actual: f32) -> f64 {
+    ulp((exact.abs() as f32).max(actual.abs()))
+}
+
+/// What `mixed` wrote: an integer part, a `mul_add` part and a `hypot` part, element by element.
+#[derive(Debug, PartialEq)]
+struct Mixed {
+    ints: Vec<u32>,
+    fused: Vec<f32>,
+    norms: Vec<f32>,
+}
+
+impl Mixed {
+    /// The bits of the float parts, so that two results compare bit for bit (and NaN equals NaN).
+    fn bits(&self) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+        let bits = |values: &[f32]| values.iter().map(|v| v.to_bits()).collect();
+        (self.ints.clone(), bits(&self.fused), bits(&self.norms))
+    }
+}
+
+/// `mixed` over `n` elements on `device`.
+fn mixed_on_gpu(device: &HeadlessDevice, n: u32) -> Mixed {
+    let count = device
+        .create_uniform(
+            "count",
+            &Count {
+                n,
+                pad0: 0,
+                pad1: 0,
+                pad2: 0,
+            },
+        )
+        .unwrap();
+    let len = n as usize;
+    let ints = device.create_typed_buffer("ints", &vec![0u32; len], GpuBufferAccess::ReadWrite);
+    let fused = device.create_typed_buffer("fused", &vec![0f32; len], GpuBufferAccess::ReadWrite);
+    let norms = device.create_typed_buffer("norms", &vec![0f32; len], GpuBufferAccess::ReadWrite);
+    split_kernels::mixed::dispatch_extent(
+        device,
+        Extent::linear(n),
+        &count,
+        Independent(&ints),
+        Independent(&fused),
+        Independent(&norms),
+    )
+    .unwrap();
+    Mixed {
+        ints: device.read_typed_buffer(&ints).unwrap(),
+        fused: device.read_typed_buffer(&fused).unwrap(),
+        norms: device.read_typed_buffer(&norms).unwrap(),
+    }
+}
+
+/// `mixed` over `n` elements on the CPU twin.
+fn mixed_on_twin(n: u32) -> Mixed {
+    let cpu = CpuDevice::new();
+    let count = cpu
+        .uniform(Count {
+            n,
+            pad0: 0,
+            pad1: 0,
+            pad2: 0,
+        })
+        .unwrap();
+    let len = n as usize;
+    let ints = cpu.buffer(&vec![0u32; len]);
+    let fused = cpu.buffer(&vec![0f32; len]);
+    let norms = cpu.buffer(&vec![0f32; len]);
+    split_kernels::mixed::dispatch_extent(
+        &cpu,
+        Extent::linear(n),
+        &count,
+        Independent(&ints),
+        Independent(&fused),
+        Independent(&norms),
+    )
+    .unwrap();
+    Mixed {
+        ints: ints.read(),
+        fused: fused.read(),
+        norms: norms.read(),
+    }
+}
+
+/// Every element of `got` against an independent host reference computed from the module's own constants: the integer
+/// part exactly; `mul_add` within one ULP of the product plus one ULP at the larger of the exact and the actual result
+/// (SEMANTICS, the `mul_add` row); `hypot` within 22 ULP at that spacing (the `hypot` row). Returns the largest errors
+/// in ULPs at the result, for the log.
+fn check_mixed(label: &str, got: &Mixed, n: u32) -> (f64, f64) {
+    use split_kernels::{BIAS, FACTOR, LEG, MULT, SHIFT};
+    assert_eq!(got.ints.len(), n as usize);
+    let (mut worst_fused, mut worst_norm) = (0.0f64, 0.0f64);
+    for i in 0..n as usize {
+        assert_eq!(got.ints[i], i as u32 * MULT + BIAS, "{label} ints[{i}]");
+        let a = (i as f32) + 1.0;
+        let product_exact = f64::from(a) * f64::from(FACTOR);
+        let exact_fused = product_exact + f64::from(SHIFT);
+        assert!(exact_fused != 0.0, "{label}: row {i} leaves the domain");
+        let allowed = ulp(product_exact as f32) + spacing(exact_fused, got.fused[i]);
+        let error = (f64::from(got.fused[i]) - exact_fused).abs();
+        assert!(
+            error <= allowed,
+            "{label} fused[{i}]: {a} * {FACTOR} + {SHIFT} = {}, exact {exact_fused}: error {error}, allowed {allowed}",
+            got.fused[i]
+        );
+        worst_fused = worst_fused.max(error / spacing(exact_fused, got.fused[i]));
+        let exact_norm = (f64::from(a) * f64::from(a) + f64::from(LEG) * f64::from(LEG)).sqrt();
+        let error =
+            (f64::from(got.norms[i]) - exact_norm).abs() / spacing(exact_norm, got.norms[i]);
+        assert!(
+            got.norms[i].is_finite() && error <= 22.0,
+            "{label} norms[{i}]: hypot({a}, {LEG}) = {}, exact {exact_norm}: {error} ULP",
+            got.norms[i]
+        );
+        worst_norm = worst_norm.max(error);
+    }
+    (worst_fused, worst_norm)
+}
+
+/// (o) One kernel that reads a module constant (m11.g3) and calls `mul_add` and `hypot` (m11.math3) on its own
+/// invocation id, launched (a) split by the host past a lowered workgroup limit, (b) unsplit, (c) on the CPU twin. (a)
+/// equals (b) bit for bit; every element of each is within its documented bound of an independent host reference.
+#[test]
+fn a_split_launch_of_a_kernel_with_a_constant_mul_add_and_hypot_equals_the_unsplit_launch() {
+    // 200 elements are 25 workgroups of 8: with a limit of 4, 7 pieces, the last one partial.
+    let n = 200u32;
+    let split_device = lowered(device(), 4);
+    eprintln!("split (o) adapter: {:?}", split_device.adapter_info());
+    let split = mixed_on_gpu(&split_device, n);
+    assert_eq!(
+        split_device.pipeline_cache_stats().entries,
+        1,
+        "the host split compiled the variant and nothing else"
+    );
+    let unsplit_device = device();
+    let unsplit = mixed_on_gpu(&unsplit_device, n);
+    assert_eq!(
+        unsplit_device.pipeline_cache_stats().entries,
+        1,
+        "the unsplit launch compiled the base kernel"
+    );
+    assert_eq!(
+        split.bits(),
+        unsplit.bits(),
+        "split equals unsplit bit for bit"
+    );
+    let (split_fused, split_norm) = check_mixed("gpu split", &split, n);
+    let (unsplit_fused, unsplit_norm) = check_mixed("gpu unsplit", &unsplit, n);
+    let twin = mixed_on_twin(n);
+    let (twin_fused, twin_norm) = check_mixed("twin", &twin, n);
+    eprintln!(
+        "split (o) worst ULPs at the result: fused split {split_fused:.3} unsplit {unsplit_fused:.3} twin {twin_fused:.3}; hypot split {split_norm:.3} unsplit {unsplit_norm:.3} twin {twin_norm:.3}"
+    );
+}
+
+/// m11.r4fix follow-up: a staged graph with one dispatch node of `line` over 100 elements (13 workgroups) on a device
+/// limited to 4 workgroups per dimension is refused by `execute_graph` with the plain workgroup-limit `DeviceLimit`,
+/// before anything is compiled, and no element is touched: a graph node is not split, though `line` has a variant.
+#[test]
+fn a_staged_graph_node_past_the_workgroup_limit_is_refused_not_split() {
+    let lowered = lowered(device(), 4);
+    eprintln!("split (graph) adapter: {:?}", lowered.adapter_info());
+    let n = 100u32;
+    let count = lowered
+        .create_uniform(
+            "count",
+            &Count {
+                n,
+                pad0: 0,
+                pad1: 0,
+                pad2: 0,
+            },
+        )
+        .unwrap();
+    let (hits, groups, locals) = fresh(&lowered, n as usize, n as usize);
+    let bindings = [
+        count.bind(Access::ReadOnly, LengthRule::Independent),
+        hits.bind(Access::ReadWrite, LengthRule::Independent),
+        groups.bind(Access::ReadWrite, LengthRule::Independent),
+        locals.bind(Access::ReadWrite, LengthRule::Independent),
+    ];
+    let mut graph = gust_wgpu::StagedGraph::new();
+    graph.dispatch(
+        BufferDispatch::new_extent(
+            &split_kernels::line::DESCRIPTOR,
+            Extent::linear(n),
+            &bindings,
+        ),
+        &[],
+    );
+    let refused = lowered
+        .execute_graph(&graph)
+        .err()
+        .expect("a graph node is not split");
+    assert_eq!(
+        limit_of(&refused),
+        ("max_compute_workgroups_per_dimension", 13, 4)
+    );
+    assert_cold(&lowered);
+    assert_eq!(
+        outputs(&lowered, &hits, &groups, &locals),
+        Outputs {
+            hits: vec![0; n as usize],
+            groups: vec![UNWRITTEN; n as usize],
+            locals: vec![UNWRITTEN; n as usize],
+        },
+        "a refused graph runs nothing"
+    );
 }

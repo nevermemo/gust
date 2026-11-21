@@ -1783,3 +1783,94 @@ fn gpu_untimed_calls_are_unaffected_by_earlier_timed_scopes() {
     let t = crate::timed(|| reduce::sum(&ints)).unwrap();
     assert_time_rule(&device, t.time, 1);
 }
+
+// ---- m11.scope: a caller's own batch in a `timed` scope ----
+
+#[gust::gpu]
+pub mod doubling {
+    /// `out[i] = values[i] * 2` for `i < out.len()`.
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn run(
+        id: SV_DispatchThreadID,
+        values: StructuredBuffer<uint>,
+        mut out: RWStructuredBuffer<uint>,
+    ) {
+        let i = id.x;
+        if i < out.len() {
+            out[i] = values[i] * 2u32;
+        }
+    }
+}
+
+#[test]
+fn gpu_timed_own_batch_and_reduce_share_one_scope() {
+    let device = device();
+    let info = device.adapter_info();
+    eprintln!("adapter: {} backend: {:?}", info.name, info.backend);
+
+    let words: Vec<u32> = (0..5_000u32).map(|i| i % 97).collect();
+    let length = u32::try_from(words.len()).unwrap();
+    let values = GpuVec::from_slice_on(&device, &words).unwrap();
+    let doubled = GpuVec::<u32>::zeroed_on(&device, length).unwrap();
+    let expected: u32 = words.iter().map(|word| word * 2).sum();
+
+    let own = |device: &gust_wgpu::HeadlessDevice| {
+        let call = doubling::run::call(
+            length,
+            gust::Independent(&values),
+            gust::Independent(&doubled),
+        );
+        crate::dispatch_batch(device, &[gust_wgpu::BufferDispatch::from(&call)])
+    };
+
+    // Outside a scope the batch runs and counts nowhere.
+    own(&device).unwrap();
+    assert_eq!(
+        crate::timed(|| Ok(())).unwrap().time,
+        crate::GpuTime::default()
+    );
+
+    // The parts, each in a scope of its own, then both in one.
+    let part_own = crate::timed(|| own(&device).map_err(Error::from))
+        .unwrap()
+        .time;
+    let part_sum = crate::timed(|| reduce::sum(&doubled)).unwrap();
+    assert_eq!(part_sum.value, expected);
+    assert_eq!(part_own.batches, 1);
+    assert_eq!(part_sum.time.batches, 1);
+
+    let both = crate::timed(|| {
+        own(&device)?;
+        reduce::sum(&doubled)
+    })
+    .unwrap();
+    assert_eq!(both.value, expected, "the doubled values were summed");
+    assert_eq!(both.time.batches, 2, "one own batch and one algo batch");
+    assert_eq!(
+        both.time.gpu_elapsed.is_some(),
+        device.supports_gpu_timestamps()
+    );
+    if let (Some(_), Some(_), Some(_)) = (
+        both.time.gpu_elapsed,
+        part_own.gpu_elapsed,
+        part_sum.time.gpu_elapsed,
+    ) {
+        eprintln!("timestamps supported; the scope total was read");
+        // Each run measures its own time; a scope is never below what one part took on its own beyond noise, so the
+        // exact rule is pinned with nested scopes: the outer total is the sum of the inner ones.
+        let nested = crate::timed(|| {
+            let inner_own = crate::timed(|| own(&device).map_err(Error::from))?;
+            let inner_sum = crate::timed(|| reduce::sum(&doubled))?;
+            Ok((inner_own.time, inner_sum.time))
+        })
+        .unwrap();
+        let (inner_own, inner_sum) = nested.value;
+        assert_eq!(nested.time.batches, 2);
+        assert_eq!(
+            nested.time.gpu_elapsed,
+            Some(inner_own.gpu_elapsed.unwrap() + inner_sum.gpu_elapsed.unwrap())
+        );
+        assert!(nested.time.gpu_elapsed.unwrap() >= inner_own.gpu_elapsed.unwrap());
+        assert!(nested.time.gpu_elapsed.unwrap() >= inner_sum.gpu_elapsed.unwrap());
+    }
+}

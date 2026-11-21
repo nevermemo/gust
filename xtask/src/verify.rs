@@ -933,7 +933,7 @@ pub(crate) const ALGO_GPU_CALL: [&str; 4] = ["test", "--locked", "-p", "gust-alg
 /// The `gpu::` tests of `gust-algo`, by name: each must be reported `ok`, and no other `tests::gpu::` test may exist
 /// ([`check_algo_gpu_counts`]), so a deleted or an unpinned adapter test fails the gate. The twins would still satisfy
 /// a plain "at least one test ran". Adding or removing a `gpu::` test changes this list in the same commit.
-pub(crate) const ALGO_GPU_TESTS: [&str; 54] = [
+pub(crate) const ALGO_GPU_TESTS: [&str; 55] = [
     "tests::gpu::gpu_a_compaction_chain_runs_on_the_device_with_the_device_count",
     "tests::gpu::gpu_a_compaction_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch",
     "tests::gpu::gpu_a_compaction_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch",
@@ -969,6 +969,7 @@ pub(crate) const ALGO_GPU_TESTS: [&str; 54] = [
     "tests::gpu::gpu_timed_calls_return_the_untimed_values_and_report_one_batch",
     "tests::gpu::gpu_timed_empty_error_and_other_threads",
     "tests::gpu::gpu_timed_multi_batch_operations_sum_their_batches",
+    "tests::gpu::gpu_timed_own_batch_and_reduce_share_one_scope",
     "tests::gpu::gpu_untimed_calls_are_unaffected_by_earlier_timed_scopes",
     "tests::gpu::gpu_v0_float_min_and_max_are_exact",
     "tests::gpu::gpu_v0_float_sums_are_within_the_per_level_bound",

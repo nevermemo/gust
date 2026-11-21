@@ -212,8 +212,63 @@ pub fn timed<R>(run: impl FnOnce() -> Result<R, Error>) -> Result<Timed<R>, Erro
 
 // NOTE: `dispatch_batch_timed` is native-only; if gust-algo ever targets wasm32 this wrapper needs the same
 // `#[cfg(not(target_arch = "wasm32"))]` gate as `HeadlessDevice::dispatch_batch` and `dispatch_batch_timed`.
-/// `device.dispatch_batch(batch)`, timed when a [`timed`] scope of this thread is open.
-pub(crate) fn dispatch_batch(
+/// Dispatch one batch of your own kernels, counted in the enclosing [`timed`] scope (slice m11.scope): a caller's own
+/// kernels can be timed in the same scope as gust-algo calls.
+///
+/// This is `device.dispatch_batch(batch)` with one difference. Outside a [`timed`] scope of this thread it is exactly
+/// that call. Inside one it runs the batch through `HeadlessDevice::dispatch_batch_timed` and adds its GPU time to the
+/// scope and one to `batches`, as it does for the batches of this crate's own operations; the rules of [`timed`] for
+/// timestamp support, an empty batch and errors apply unchanged.
+///
+/// # Counted once
+///
+/// The function dispatches the batch itself and counts the time it measured in that same call, so a batch is counted
+/// exactly once when it goes through here instead of `HeadlessDevice::dispatch_batch`. There is no way to report a time
+/// without dispatching, so a batch cannot be counted twice by this function. Two things stay with the caller: a batch
+/// sent straight to `HeadlessDevice::dispatch_batch` or `dispatch_batch_timed` is not counted at all, and the same
+/// batch passed here twice is dispatched twice and counted twice, as it ran twice. Do not send the batches of
+/// gust-algo calls through here: those operations already count their own.
+///
+/// # Errors
+///
+/// The error of the dispatch, unchanged. A batch whose dispatch returned an error is not counted.
+///
+/// ```
+/// use gust::Independent;
+/// use gust_algo::{dispatch_batch, reduce, timed};
+/// use gust_wgpu::{BufferDispatch, GpuVec, default_device};
+///
+/// #[gust::gpu]
+/// mod double {
+///     #[kernel(workgroup_size(64, 1, 1))]
+///     pub fn run(
+///         id: SV_DispatchThreadID,
+///         values: StructuredBuffer<uint>,
+///         mut out: RWStructuredBuffer<uint>,
+///     ) {
+///         let i = id.x;
+///         if i < out.len() {
+///             out[i] = values[i] * 2u32;
+///         }
+///     }
+/// }
+///
+/// let device = default_device()?;
+/// let values = GpuVec::from_slice_on(&device, &[1u32, 2, 3, 4])?;
+/// let doubled = GpuVec::<u32>::zeroed_on(&device, 4)?;
+///
+/// // One scope: an own batch and a gust-algo call, two batches.
+/// let result = timed(|| {
+///     let call = double::run::call(4, Independent(&values), Independent(&doubled));
+///     dispatch_batch(&device, &[BufferDispatch::from(&call)])?;
+///     reduce::sum(&doubled)
+/// })?;
+/// assert_eq!(result.value, 20);
+/// assert_eq!(result.time.batches, 2);
+/// assert_eq!(result.time.gpu_elapsed.is_some(), device.supports_gpu_timestamps());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn dispatch_batch(
     device: &HeadlessDevice,
     batch: &[BufferDispatch<'_>],
 ) -> Result<(), gust_wgpu::Error> {

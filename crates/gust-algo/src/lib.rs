@@ -29,6 +29,8 @@
 //!
 //! Opt-in GPU timestamps: [`timed`] runs any calls of this crate in a scope and reports the GPU time of the batches
 //! they dispatched ([`Timed`], [`GpuTime`]); calls outside a scope pay one thread-local read per batch (D194).
+//! A caller's own batch counts in the same scope when it goes through [`dispatch_batch`] instead of the
+//! device's own `dispatch_batch` (slice m11.scope).
 //!
 //! [`evidence`] is the subgroup form of the reduction's block step, kept as measured evidence: not for users, and not part
 //! of what this crate promises (see `docs/development/VALIDATION.md`, "Subgroup evidence").
@@ -53,7 +55,7 @@ mod timing;
 pub mod variant;
 
 pub use error::Error;
-pub use timing::{GpuTime, Timed, timed};
+pub use timing::{GpuTime, Timed, dispatch_batch, timed};
 pub use variant::Variant;
 
 #[cfg(test)]

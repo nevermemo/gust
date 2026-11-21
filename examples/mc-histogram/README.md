@@ -14,7 +14,15 @@ A sampled histogram smoothed by diffusion, in four stages, checked against host 
 
 `SIDE`, `UNIT`, `KEEP` and `SHARE` are module-level `const` items of the `#[gpu]` module (m11.g3); the host reads the
 same items. `main` runs 2^24 + 1000 samples, which at workgroup 256 is more workgroups than the per-dimension limit of
-most devices, so the host splits the launch (m11.g4b); it prints the limit and the workgroup count.
+most devices, so the host splits such a launch (m11.g4b); `main` prints the device's limit, the workgroup count and
+whether the count is past the limit (it computes that from the two numbers; it does not observe the split).
 
-Run with `cargo run --release -p mc-histogram`; the CPU tests run with `cargo test -p mc-histogram`, and the GPU test
-with `cargo test -p mc-histogram -- --include-ignored --nocapture`.
+Run with
+
+```text
+GUST_PROFILE=dev cargo run --release -p mc-histogram
+```
+
+(`GUST_PROFILE=dev` is needed because a plain release build is strict and refuses run-time Slang, which this crate
+turns on; see "Build profiles" in the top-level README). The CPU tests run with `cargo test -p mc-histogram`, and the
+GPU test with `cargo test -p mc-histogram -- --include-ignored --nocapture`.

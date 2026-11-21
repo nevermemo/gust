@@ -381,9 +381,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "samples {MAIN_SAMPLES}: max_compute_workgroups_per_dimension {limit}, workgroups {workgroups}, launch {}",
         if workgroups > limit {
-            "split by the host"
+            "workgroup count past the limit (the host splits such a launch)"
         } else {
-            "whole"
+            "workgroup count within the limit (not split)"
         }
     );
 

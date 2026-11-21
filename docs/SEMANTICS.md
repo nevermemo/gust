@@ -696,12 +696,13 @@ ignored tests (`--nocapture`) and kept in the m3.e1 and m3.e2 slice logs; it is 
 | `integrate` (component-pool) | `vy` | 18u | 19u = 1.13e-6 | 2.98e-8 |
 | `integrate` (component-pool) | `x` | 52.5u | 54u = 3.22e-6 | 3.73e-9 |
 | `integrate` (component-pool) | `y` | 72u | 73u = 4.35e-6 | 1.86e-9 |
-| three-step map chain (map-chain, slice m7.a2) | result | 9u | 9u * (1 + 2^-20) = 5.36e-7, relative | not recorded; `main` prints the worst error |
+| three-step map chain (map-chain, slice m7.a2) | result | 18u | 18u * (1 + 2^-20) = 1.07e-6, relative | not recorded; `main` prints the worst error |
 
 The map-chain row differs from the others: its bound is relative to an independent `f64` reference of the whole chain,
 not to a twin-versus-GPU comparison, and it holds for the twin, the resident GPU chain and the materialised GPU chain
-alike. It is derived in the doc comment at the top of `examples/map-chain/src/app.rs` (lines 12 to 34): nine roundings
-for `x * gain + offset`, `x * x * k + x` and `(x + shift) * scale` in turn, with the slack `2^-20` covering the `f64`
+alike. It is derived in the doc comment at the top of `examples/map-chain/src/app.rs` (the module documentation, section "The float bound"): nine
+rounding terms at up to 2u each (the GPU model: either neighbour; seven roundings, rescale's two counted twice through
+`x * x`) for `x * gain + offset`, `x * x * k + x` and `(x + shift) * scale` in turn, with the slack `2^-20` covering the `f64`
 reference's own error and the second-order terms the first-order argument drops.
 
 Two properties of these kernels are worth stating. A chain of products has the same relative error in any grouping, and
@@ -945,9 +946,13 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   variant is compiled at run time; and a variant that exceeds another limit of the device (its one extra uniform, its
   binding index, the 16 bytes of the hidden uniform against `max_uniform_buffer_binding_size`), which keeps the plain
   refusal of the workgroup limit. So graphs (staged graph nodes, whose launches are checked when the graph is
-  validated), the deprecated `dispatch_f32`/`dispatch_u32`, `pixel` kernels, indirect launches and builds without
+  validated), the deprecated `dispatch_f32`/`dispatch_u32`, `pixel` kernels and builds without
   run-time compilation all keep the plain refusal. An indirect
-  dispatch is never checked against the workgroup count (the host does not see it), and a kernel built for the CPU is
+  dispatch is neither split nor refused by the host for its workgroup count: the host never sees that count (the GPU
+  reads it from the arguments buffer), so the count is unchecked by the host (the other limit checks of the launch
+  still apply). With wgpu's default instance flags, wgpu itself may silently zero a count past the real device's
+  per-dimension limit on Vulkan, and a limit lowered with `with_limits` never applies to it (the note on
+  `run_indirect` in `gust-wgpu`'s graph module); the kernel that writes the arguments must clamp. A kernel built for the CPU is
   `KernelTarget` on a GPU device. The error of an axis over the limit still names
   the axis (the limit string ends in `(y)` or `(z)` for those two). The macro-emitted twin uses the CPU backend (m3.c)
   and visits the invocations in ascending z, then y, then x.
@@ -972,9 +977,11 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   and a build without the run-time compiler plans no split
   (`a_split_variant_is_planned_only_in_a_build_with_the_run_time_compiler` in `crates/gust-wgpu/src/lib.rs`). *Not claimed:* the order of the pieces and any visibility between them (one piece reading what another
   wrote, atomics across pieces). *Inferred, not tested:* the plain refusal of a split-capable `#[gpu]` kernel through
-  the deprecated `dispatch_f32`/`dispatch_u32` and an indirect launch, which no test exercises with a kernel that
+  the deprecated `dispatch_f32`/`dispatch_u32`, which no test exercises with a kernel that
   carries a variant (`crates/gust-wgpu/tests/limits.rs` tests the refusal of hand-built descriptors, which have none,
-  on those paths).
+  on that path). An indirect launch is not in that list: it is neither split nor refused by the host for its workgroup
+  count (read in `check_indirect_launch` and `prepare_indirect` in `crates/gust-wgpu/src/lib.rs`; m11.r5fix), and
+  no test here launches a split-capable kernel indirectly.
 - **The portable floor (opt-in, m8.f, D143).** A crate that sets `limits = "portable"` in `[package.metadata.gust]` has every
   `#[kernel]` body checked when it compiles against `gust::limits::PORTABLE`, the WebGPU defaults: a workgroup of at most
   256 x 256 x 64 and 256 invocations, 8 storage buffers, 12 uniform buffers, 16 sampled textures, 4 storage textures,
@@ -1277,7 +1284,9 @@ done flag (`if !done { ..; if s == y { done = true; } }`) and a bound read per i
 `loop_exits` (m11.loops) run these forms on the sentinel's inputs: the `<` exit and the `==` exit each behind a done
 flag, the `<` break with its bound read per invocation, and a constant-bound loop whose `break` compares an integer
 counter (no float in the loop). Each expects Rust's values on every adapter and on either route, and each gave them
-on the Radeon 890M and on the RTX 5090 with and without the `spirv-route` feature (m11.loops). The workaround for
+in the pairs that ran: the WGSL route on the Radeon 890M and on the RTX 5090, and the SPIR-V route (`spirv-route`
+feature) on the RTX 5090 (m11.loops), and, added by m11.r5fix, the SPIR-V route on the Radeon 890M (the test now fails
+under the feature when the route is not taken, and it gave Rust's values there). The workaround for
 users is a done flag, or an integer exit where the exit iteration can be counted in integers. GUST's own helper `__gust_fmod` uses the flag form
 since m11.fm. The GPU test `the_nvidia_float_break_loop_defect_is_still_there_or_absent_elsewhere` in `driver_sentinel`
 (m11.ld) runs one `<` kernel and one `==` kernel with start values built from bits, and expects the wrong values

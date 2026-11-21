@@ -661,6 +661,16 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       is about 4,097 workgroups, so nothing splits at a limit of 65,535 or more). `gust-algo` adapter tests 55 to 58
       (`ALGO_GPU_TESTS`). Radeon 890M only; RTX 5090 pending. Opus review: dispatch counts restored, size-test
       wording, v0 in the large scan.
+    - m11.r5fix (`43d77e3`): the round-5 sanity fixes (Fable and Codex, both "proceed with fixes"). SEMANTICS
+      "Launch size": an indirect dispatch is neither split nor refused by the host (wgpu may zero an over-limit
+      count). `loop_exits` asserts the SPIR-V route under `spirv-route`, and that route ran on the Radeon 890M: the
+      four workaround forms gave Rust's values there (new; m11.loops had it on the RTX 5090 only). map-chain's float
+      bound is re-derived under the GPU model: nine rounding terms at up to 2u each, 18u (the 9u of the m11.mc-era
+      entries above was too tight for a GPU that may round to either neighbour); the worst error on the 890M over
+      the large input was 8.2e-8, about 0.08 of the bound (a temporary probe, not kept). budget-kit W7 now checks
+      its second step against the host reference, and a mutation that swapped the second batch's buffers failed
+      it. mc-histogram prints what it computes about the split, and its README names `GUST_PROFILE=dev`. Radeon
+      890M only; RTX 5090 pending. Opus review: the indirect wording, the SEMANTICS map-chain row, seven roundings.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

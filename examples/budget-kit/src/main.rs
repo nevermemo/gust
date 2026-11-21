@@ -1039,7 +1039,7 @@ fn w7(device: &DeviceHandle, count: u32, steps: usize) -> Row {
     };
     // What the row says whether or not it succeeds; a success puts the statistics before it.
     let fixed = format!(
-        "{steps} counted steps after {WARMUP} warm-up steps, in two runs of that length (blocking, then submit); one batch per step: w2_diffuse on {side}x{side}, w3_step, w4_clear and w4_count into {side}x{side} cells; checked after step 1 (field 5e-6 relative as W2, particles as W3 over the GPU's own field, counts exact against the GPU's own positions) and again after the runs (particles in range, counts exact)"
+        "{steps} counted steps after {WARMUP} warm-up steps, in two runs of that length (blocking, then submit); one batch per step: w2_diffuse on {side}x{side}, w3_step, w4_clear and w4_count into {side}x{side} cells; checked after step 1 and again after step 2, the same three ways (field 5e-6 relative as W2, particles as W3 over the GPU's own field, counts exact against the GPU's own positions), and once more after the runs (particles in range, counts exact)"
     );
     row.note = fixed.clone();
     row.result = (|| {
@@ -1129,7 +1129,21 @@ fn w7(device: &DeviceHandle, count: u32, steps: usize) -> Row {
         if counts.to_vec().map_err(dbg)? != cpu_counts(&gpu_parts, side) {
             return Err("the counts differ from the host histogram after 1 step".into());
         }
-        let mut next = 1usize;
+        // The second step, checked the same way (the field is back in `a`): the host diffuses the GPU's own
+        // first-step field, the particles are checked against the host's step from the GPU's first-step particles
+        // over the GPU's own second-step field, and the counts against the host histogram of the GPU's own particles.
+        dispatch(device, &batches[1])?;
+        let cpu_field_2 = cpu_diffuse(&gpu_field, side);
+        let gpu_field_2 = a.to_vec().map_err(dbg)?;
+        check_field(&gpu_field_2, &cpu_field_2).map_err(|e| format!("second step: {e}"))?;
+        let gpu_parts_2 = parts.to_vec().map_err(dbg)?;
+        check_particles(&gpu_parts_2, &gpu_parts, &gpu_field_2, side)
+            .map_err(|e| format!("second step: {e}"))?;
+        if counts.to_vec().map_err(dbg)? != cpu_counts(&gpu_parts_2, side) {
+            return Err("the counts differ from the host histogram after 2 steps".into());
+        }
+        // Two steps ran, so the alternation continues with `batches[0]` (field in `a`).
+        let mut next = 2usize;
         // Run 1: blocking `dispatch_batch_timed`: the GPU time and `host_elapsed` of every counted step.
         for _ in 0..WARMUP {
             dispatch(device, &batches[next % 2])?;

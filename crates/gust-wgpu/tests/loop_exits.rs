@@ -184,6 +184,14 @@ fn check(form: &str, device: &HeadlessDevice, adapter: &str, gpu: &[u32], cpu: &
         "WGSL route"
     };
     eprintln!("loop exits {form}: {route} on {adapter}; gpu {gpu:?}; cpu {cpu:?}");
+    // With the feature on, the run must take the SPIR-V route, else it would pass on WGSL and say nothing about it.
+    #[cfg(feature = "spirv-route")]
+    assert!(
+        spirv_route_taken(device),
+        "{form}: built with the spirv-route feature, but the kernel did not take the SPIR-V route on {adapter}; \
+         recorded route events (with the fallback reason): {:?}",
+        device.route_events()
+    );
     assert_eq!(
         cpu, LOOP_T,
         "{form}: CPU twin must give Rust's values (n == t)"

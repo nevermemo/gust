@@ -1065,9 +1065,13 @@ pub(crate) struct GpuSuitePin {
 /// Slice m11.math2: 516 over 50 became 520 over 50. Four new tests in `tests/float_math.rs` (the exact group, `f32`
 /// `rem_euclid`, the integer methods, `asin` and `acos`; the file runs eight tests, the one `test result:` line is
 /// unchanged). Updated by count, not from a full Gpu suite run.
+///
+/// Slice m11.fetch: 520 over 50 became 524 over 51 (522 in the first round, four tests after the fix round). The new test file `tests/fetch.rs` holds four tests (the scatter by
+/// the old value of `atomic_add` in 1-wide and 64-wide workgroups, the signed ticket cell, the wrapping `u32` ticket cell) and adds one `test result:` line. Updated by count, not from
+/// a full Gpu suite run.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 520,
-    result_lines: 50,
+    passed: 524,
+    result_lines: 51,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

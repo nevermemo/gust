@@ -1347,9 +1347,10 @@ The direct syntax translator currently supports:
 - a user name that collides with a Slang or WGSL keyword, a prelude name or a spelling GUST emits is renamed to
   `__gust_r_<name>` in the Slang text and in the descriptors (`ParameterDescriptor.name`, `StructFieldLayout.name`),
   which carry the emitted names; `rust_type` and your Rust source keep the spelling you wrote (m6.k, D17);
-- statement-only atomics on `RWStructuredBuffer<u32/i32>` elements: `atomic_add`,
+- atomics on `RWStructuredBuffer<u32/i32>` elements: `atomic_add`,
   `atomic_exchange`, and `atomic_compare_exchange`, plus unsigned-only
-  `atomic_min`/`atomic_max` (T10);
+  `atomic_min`/`atomic_max` (T10); statements, except that the old value of `atomic_add` may be the
+  initializer of a `let` (m11.fetch);
 - bounded `for i in start..end` loops whose bounds type-check as 32-bit integers,
   with `break`/`continue` (the end bound is evaluated once; see D18);
 - `wrapping_add`, `wrapping_sub`, `wrapping_mul` and `wrapping_neg` on `u32` and `i32` (m7.w, D87): the plain Slang

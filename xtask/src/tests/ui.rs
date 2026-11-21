@@ -1820,7 +1820,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 251] = [
+const PINNED_FIXTURES: [&str; 253] = [
     "array-barrier",
     "array-buffer-len",
     "array-const-len",
@@ -1843,6 +1843,8 @@ const PINNED_FIXTURES: [&str; 251] = [
     "array-usize-param",
     "array-vec3-field",
     "array-zero-len",
+    "atomic-fetch-ok",
+    "atomic-value-refused",
     "barrier-in-helper",
     "barrier-in-if",
     "barrier-in-nested-for",

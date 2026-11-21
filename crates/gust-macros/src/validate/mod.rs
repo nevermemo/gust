@@ -382,6 +382,18 @@ fn atomic_operation_name(path: &syn::ExprPath) -> Option<&'static str> {
     }
 }
 
+/// The call, when `expression` is exactly an `atomic_add(..)` call: the one atomic whose old value a `let` may bind
+/// (slice m11.fetch). Parentheses and groups around it are not looked through, so the form stays one spelling.
+fn fetch_add_call(expression: &syn::Expr) -> Option<&syn::ExprCall> {
+    let syn::Expr::Call(call) = expression else {
+        return None;
+    };
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return None;
+    };
+    (atomic_operation_name(path) == Some("atomic_add")).then_some(call)
+}
+
 /// Whether an expression is an integer literal with value zero, including a
 /// unary negation, parentheses and a macro-expanded group around one (the spellings the emitter keeps as a plain
 /// operator, so a zero divisor never reaches slangc). Float zeros are excluded: floating-point division by
@@ -4825,7 +4837,13 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 self.reject(
                     Code::AtomicAsValue,
                     call,
-                    &format!("`{op}` is supported only as a statement, not as a value"),
+                    &if op == "atomic_add" {
+                        "`atomic_add` gives its old value only as the whole initializer of a `let` (`let old = \
+                         atomic_add(&mut c[i], 1u32);`); anywhere else it is supported only as a statement"
+                            .to_owned()
+                    } else {
+                        format!("`{op}` is supported only as a statement, not as a value")
+                    },
                 );
                 return;
             }
@@ -6167,6 +6185,15 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             }
             self.visit_pat(&local.pat);
             self.check_switch_match(value_match, MatchForm::Value);
+        } else if let Some(call) = local
+            .init
+            .as_ref()
+            .and_then(|initial| fetch_add_call(&initial.expr))
+        {
+            // The old value of `atomic_add` (slice m11.fetch): the whole initializer of a `let`, and nothing else. In
+            // any other position the value stays refused (`GUST-E0606`), so no order-sensitive form is reachable.
+            self.visit_pat(&local.pat);
+            self.validate_atomic("atomic_add", call);
         } else {
             visit::visit_local(self, local);
         }

@@ -1,7 +1,7 @@
 ```
 
 `atomic_add`, `atomic_exchange` and `atomic_compare_exchange`, and the unsigned-only `atomic_min` and `atomic_max`, are
-statement-only calls on an element of an `RWStructuredBuffer<u32>` (or `<i32>`, which has no min or max); the receiver
+statement calls on an element of an `RWStructuredBuffer<u32>` (or `<i32>`, which has no min or max); only the old value of `atomic_add` may be bound, as the whole initializer of a `let` (`let slot = atomic_add(&mut counts[cell], 1u32);`), and which invocation gets which old value is not specified, so compare sets, never per-invocation values; the receiver
 is written `&mut buffer[index]`, the one reference the dialect admits. The sum of `atomic_add` does not depend on the
 order in which invocations arrive, so the GPU result equals the host's count exactly, and the gallery program asserts
 that. An atomic whose result does depend on the order (a contended `atomic_exchange` or `atomic_compare_exchange`) has a

@@ -590,10 +590,13 @@ bound, not an observation.
 | `a.mul_add(b, c)` (`f32`; m11.math3) | `a`, `b`, `c` normal with a normal product and a normal or zero result | A fused multiply-add: one rounding of `a * b + c`. | `fma(a, b, c)` (slangc 2026.22 lowers it to WGSL `fma`). WGSL: accuracy "Inherited from `x * y + z`", and the builtin's note allows "an ordinary multiply to the target type followed by an ordinary addition", so the portable claim is unfused: within one ULP of the product `a * b` plus one ULP at the larger of the exact and the actual result (`x * y` is "correctly rounded", either neighbour; then the sum). A result is not promised bit-equal to Rust's. | The twin equals the `f64` reference rounded once on every row (no tie row needed skipping). Over 5000 rows, 1696 of them cancelling (`c` within three ULP of `-a * b`): the GPU was bit-equal to the fused result on all 5000 rows on both the Radeon 890M and the RTX 5090, with a largest error of 0.5 ULP at the result (0.497 of the allowed error). Observed, not promised. |
 | NaN, infinity, subnormal operands or results, out-of-range casts | outside the domain | IEEE 754, kept subnormals, saturating casts. | Indeterminate, flushable, clamped (15.7.2, 15.7.6). | Ledger rows KM-05 to KM-08. |
 
-Nothing in this table has been measured on a GPU except through the ledger rows, and the table is not a claim about
-the RTX 5090. Several existing tests compare float results exactly with a host value (for example
-`translated_semantics_execute_on_gpu` and two tests in `typed.rs`), but on exactly representable inputs, so no
-existing test exercises float rounding. The first such test is the polynomial example's twin-versus-GPU assertion
+Nothing in this table has been measured on a GPU except through the ledger rows and the exceptions named in this
+paragraph, and no row is a promise for any one device. The measured exceptions are the `hypot`,
+`mul_add` and integer `pow` rows of slice m11.math3 (`crates/gust-wgpu/tests/math3.rs`, observed on the Radeon 890M
+and the RTX 5090, as each row's last column says: observed, not promised) and the float math rows described below.
+Several existing tests compare float results exactly with a host value (for example
+`translated_semantics_execute_on_gpu` and two tests in `typed.rs`), but on exactly representable inputs, so those
+tests do not exercise float rounding. The first test that did is the polynomial example's twin-versus-GPU assertion
 (m3.c, below). None of this makes a row above proven. The rows of the float math methods (slices m11.math and m11.math2) are the
 exception to "nothing measured": `crates/gust-wgpu/tests/float_math.rs` ran on the Radeon 890M only, and its bounds are the f32
 rows of the WGSL accuracy table (15.7.4.1, read from the gpuweb editor's draft source), the inherited ones derived from
@@ -930,8 +933,9 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   workgroups on an axis, the host cuts it into pieces of at most that many per axis. The promise: every invocation of
   the rounded extent runs exactly once, with the `SV_DispatchThreadID`, `LocalId` and `GroupId` of an unsplit launch
   (`id.x` stays the global index; a piece's base is a whole number of workgroups, so the local and group ids are
-  unchanged); the pieces run in order (x innermost, then y, then z) in one submission, and a split launch is one of the
-  schedules an unsplit launch may already have (the order of invocations is not part of the contract). For example
+  unchanged); the host encodes the pieces in one submission (x innermost, then y, then z), and a split launch is one of
+  the schedules an unsplit launch may already have (neither that encoding order nor the order of invocations is part of
+  the contract). For example
   5,000,000 elements at workgroup width 64 need 78125 workgroups and run as 65535 + 12590, and a 2^28 x 1 extent at a
   16 x 16 workgroup is exactly the cap and runs as 257 pieces. What remains a `DeviceLimit` (checked before anything is
   compiled): the 2^32 invocation cap above, on both backends; more than `gust_wgpu::MAX_SPLIT_DISPATCHES` (4096)
@@ -939,10 +943,38 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   deprecated `dispatch_f32`/`dispatch_u32` (they are not cut); a kernel with no split variant (a hand-built descriptor,
   a `pixel` kernel); a build without the run-time compiler (`slang-runtime`), because the
   variant is compiled at run time; and a variant that exceeds another limit of the device (its one extra uniform, its
-  binding index), which keeps the plain refusal of the workgroup limit. An indirect dispatch is never checked against the
-  workgroup count (the host does not see it), and a kernel built for the CPU is `KernelTarget` on a GPU device. The error of an axis over the limit still names
+  binding index, the 16 bytes of the hidden uniform against `max_uniform_buffer_binding_size`), which keeps the plain
+  refusal of the workgroup limit. So graphs (staged graph nodes, whose launches are checked when the graph is
+  validated), the deprecated `dispatch_f32`/`dispatch_u32`, `pixel` kernels, indirect launches and builds without
+  run-time compilation all keep the plain refusal. An indirect
+  dispatch is never checked against the workgroup count (the host does not see it), and a kernel built for the CPU is
+  `KernelTarget` on a GPU device. The error of an axis over the limit still names
   the axis (the limit string ends in `(y)` or `(z)` for those two). The macro-emitted twin uses the CPU backend (m3.c)
   and visits the invocations in ascending z, then y, then x.
+
+  Status of the claims above (m11.r4fix). *Contract:* every invocation of the rounded extent runs exactly once with
+  the ids of an unsplit launch, and the refusals listed. *Tested* (`crates/gust-wgpu/tests/split.rs`): the ids and
+  the single run of every element on x, y and z (`the_host_split_equals_the_hand_split_on_x_y_z_and_all_three`,
+  `a_split_launch_runs_exactly_the_rounded_extent_and_no_invocation_more`,
+  `the_host_split_of_a_two_dimensional_launch_equals_the_twin`), at the real limit
+  (`the_host_split_at_real_size_runs_every_element_once`), through the typed submit and a batch
+  (`a_typed_submit_of_a_split_launch_runs_every_element_once`, `a_batch_of_two_split_calls_runs_in_order`), a kernel
+  with a module constant, `mul_add` and `hypot`
+  (`a_split_launch_of_a_kernel_with_a_constant_mul_add_and_hypot_equals_the_unsplit_launch`); and the refusals before
+  compilation: the piece cap (`a_launch_of_more_than_the_most_pieces_is_refused_before_compiling`), the invocation
+  cap (`an_extent_over_the_invocation_cap_is_refused_as_global_invocation_id_on_both`), a variant over the uniform
+  count (`a_variant_over_the_uniform_limit_keeps_the_plain_refusal`) and over the uniform binding size
+  (`a_hidden_uniform_over_the_uniform_binding_limit_keeps_the_plain_refusal`), and a staged graph node of a kernel that
+  carries a variant (`a_staged_graph_node_past_the_workgroup_limit_is_refused_not_split`: the graph checks every
+  dispatch node's launch when it is validated, before anything is prepared or compiled). Two refusals have unit tests
+  only, not a GPU launch: a `pixel` kernel has no variant
+  (`a_gpu_grid_kernel_has_a_variant_and_a_cpu_or_pixel_kernel_has_none` in `crates/gust-macros/src/tests/profile.rs`),
+  and a build without the run-time compiler plans no split
+  (`a_split_variant_is_planned_only_in_a_build_with_the_run_time_compiler` in `crates/gust-wgpu/src/lib.rs`). *Not claimed:* the order of the pieces and any visibility between them (one piece reading what another
+  wrote, atomics across pieces). *Inferred, not tested:* the plain refusal of a split-capable `#[gpu]` kernel through
+  the deprecated `dispatch_f32`/`dispatch_u32` and an indirect launch, which no test exercises with a kernel that
+  carries a variant (`crates/gust-wgpu/tests/limits.rs` tests the refusal of hand-built descriptors, which have none,
+  on those paths).
 - **The portable floor (opt-in, m8.f, D143).** A crate that sets `limits = "portable"` in `[package.metadata.gust]` has every
   `#[kernel]` body checked when it compiles against `gust::limits::PORTABLE`, the WebGPU defaults: a workgroup of at most
   256 x 256 x 64 and 256 invocations, 8 storage buffers, 12 uniform buffers, 16 sampled textures, 4 storage textures,
@@ -1237,15 +1269,19 @@ late. Measured with `s` halved each step: with `if s < thr { n = j + 1; break; }
 due at iteration 128 or later never ran (n keeps its start value; that the loop then ran all 255 iterations is inferred
 from that), while 100 and 127 are right. The AMD Radeon 890M computes Rust's values in both forms from the same emitted
 WGSL, and the CPU twin does too, so GUST does not refuse or rewrite the form (D39). Unlike D168 and D169, the
-`spirv-route` feature does not avoid it: the same wrong values were measured with the route taken. That points at the
+`spirv-route` feature does not avoid it: the same wrong values were measured with the route taken (the m11.ld sentinel
+test below, run with the `spirv-route` feature on the RTX 5090, with the route of its kernels read as taken). That points at the
 driver rather than at GUST's output (inferred; the emitted Slang, WGSL and SPIR-V of these kernels were not inspected).
-During m11.fm a probe with WGSL kernels measured other forms of the loop right on the 5090: an integer-compare exit, a
+During m11.fm a probe run on the RTX 5090 (WGSL kernels) measured other forms of the loop right: an integer-compare exit, a
 done flag (`if !done { ..; if s == y { done = true; } }`) and a bound read per invocation; the sentinel does not run
 them. The workaround for users is a done flag or an integer exit. GUST's own helper `__gust_fmod` uses the flag form
 since m11.fm. The GPU test `the_nvidia_float_break_loop_defect_is_still_there_or_absent_elsewhere` in `driver_sentinel`
 (m11.ld) runs one `<` kernel and one `==` kernel with start values built from bits, and expects the wrong values
-above on the RTX 5090 on either route (a failure names the route) and Rust's values on every other adapter; if the
-5090's values change, it fails, the cue to re-measure. Observed on driver 610.88 only; the cause (a trip-count or
+above on an adapter whose name contains "RTX 5090" (case-sensitive) through Vulkan, on either route (a failure names
+the route). On any other NVIDIA adapter, or that card through another backend, it accepts Rust's values or the
+defect's values and prints a note to record the result; on a non-NVIDIA adapter it expects Rust's values (the defect's
+values there are a new finding), and a result that is neither fails everywhere. If the 5090's values change, it fails,
+the cue to re-measure. Observed on driver 610.88 only; the cause (a trip-count or
 unroll fault in the driver) is inferred, not seen.
 
 **Known validation-layer message (VUID 10684), not a ledger row.** Under the Khronos Vulkan validation layer, modules that

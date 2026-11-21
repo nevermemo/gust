@@ -3122,7 +3122,8 @@ impl HeadlessDevice {
     /// variant (m11.g4b), and plan them. Only a `grid` launch refused for a workgroup limit (`refused` is that
     /// [`Error::DeviceLimit`]) qualifies, and only when the kernel's `split` is the one the `#[gpu]` macro makes
     /// ([`split_variant_matches`]), this build can compile it, and the variant passes every limit the base passed (one
-    /// more uniform, its binding index, the capabilities). Anything else returns `refused` unchanged, before anything
+    /// more uniform, its binding index, the hidden uniform's 16 bytes against the uniform binding size, the
+    /// capabilities). Anything else returns `refused` unchanged, before anything
     /// is compiled. A launch the planner itself refuses (the invocation cap, too many pieces) returns that error.
     fn plan_split(
         &self,
@@ -3144,10 +3145,7 @@ impl HeadlessDevice {
             || self.limits.max_compute_workgroups_per_dimension == 0
             || kernel.shape != Shape::Grid
             || !split_variant_matches(kernel, variant)
-            || !matches!(
-                select_shader_source(variant, cfg!(feature = "slang-runtime")),
-                Ok(ShaderSource::RunTime)
-            )
+            || !split_variant_compiles_at_run_time(variant, cfg!(feature = "slang-runtime"))
         {
             return Err(refused);
         }
@@ -3176,6 +3174,15 @@ impl HeadlessDevice {
             )
             .is_err()
             || check_binding_indices(&self.limits, variant, &resources).is_err()
+            // The hidden launch-base uniform is a binding of its own against the uniform binding size limit, whatever
+            // the caller's bindings are.
+            || check_binding_size(
+                &self.limits,
+                variant,
+                LAUNCH_BASE_BYTES,
+                BindingKind::Uniform,
+            )
+            .is_err()
         {
             return Err(refused);
         }
@@ -4599,6 +4606,16 @@ fn select_shader_source(
     Err(no_artifact(kernel))
 }
 
+/// Whether a split variant is compiled at run time: it carries no precompiled artifact (the macro makes none), so it
+/// needs the run-time compiler. `run_time_compiler` is `cfg!(feature = "slang-runtime")` in production and an argument
+/// so that a test can reach both builds from the one it runs in.
+fn split_variant_compiles_at_run_time(variant: &KernelDescriptor, run_time_compiler: bool) -> bool {
+    matches!(
+        select_shader_source(variant, run_time_compiler),
+        Ok(ShaderSource::RunTime)
+    )
+}
+
 /// The error of a kernel that has no WGSL artifact in a build without the run-time compiler.
 fn no_artifact(kernel: &KernelDescriptor) -> Error {
     Error::NoArtifact {
@@ -4885,6 +4902,22 @@ mod tests {
             select_shader_source(&DESCRIPTOR, true),
             Ok(ShaderSource::RunTime)
         ));
+    }
+
+    #[test]
+    fn a_split_variant_is_planned_only_in_a_build_with_the_run_time_compiler() {
+        // m11.r4fix: the planner's own decision, for both builds. The variant has no artifact, so it needs the compiler;
+        // one that carried a WGSL artifact would be `Precompiled`, which the planner does not take either.
+        assert!(DESCRIPTOR.artifacts.is_empty());
+        assert!(split_variant_compiles_at_run_time(&DESCRIPTOR, true));
+        assert!(!split_variant_compiles_at_run_time(&DESCRIPTOR, false));
+        let precompiled = DESCRIPTOR.with_artifacts(&[WGSL_ARTIFACT]);
+        for run_time_compiler in [false, true] {
+            assert!(!split_variant_compiles_at_run_time(
+                &precompiled,
+                run_time_compiler
+            ));
+        }
     }
 
     #[test]

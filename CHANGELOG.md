@@ -69,7 +69,8 @@ proof.
   `HeadlessDevice`, an advanced escape hatch like `GpuBuffer::as_wgpu_buffer`, so a caller's own wgpu pass can read a
   GUST buffer on the same queue without a readback (example `examples/buffer-handoff`).
 - User names spelled like Slang's texture and sampler types (m11.tx, D204): a struct, global or kernel parameter
-  named `RWTexture2D`, `WTexture2D`, `SamplerState` or `Texture2D` is renamed in the emitted Slang
+  named `RWTexture2D`, `WTexture2D` or `SamplerState`, and a global or kernel parameter named `Texture2D`, is
+  renamed in the emitted Slang
   (`__gust_r_SamplerState`); before, slangc refused the module. A program that uses one of those names gets new
   emitted text and a new artifact content key. A struct named `Texture2D` or `Sampler` stays `GUST-E0736`.
 - Module-level `const` items in a `#[gpu]` module (m11.g3, D205): `const NAME: T = <literal>;` with `T` one of `u32`,

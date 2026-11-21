@@ -572,7 +572,7 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       leaves at 128), while integer-compare breaks, the flag form and loop-invariant bounds are right; the 890M is
       right in every form. The cause (a trip-count or unroll fault in the driver) is inferred. `__gust_fmod`'s
       halving loop now ends by a flag; new rows need 127 and 128 halvings (`2.0e38` and `f32::MAX` by `1.3`). The
-      same exposure in user loops is not yet documented in SEMANTICS; a repro for NVIDIA waits on the owner.
+      same exposure in user loops is documented in SEMANTICS since m11.ld; a repro for NVIDIA waits on the owner.
     - m11.zf (`bb7d27f`, merge `e0297f1`): `float_math.slang` re-blessed after m11.fm (only the halving loop
       changed) and the `fetch` fixture's golden; `naga_layout` holds 31 goldens and 120 entries.
   - Full Gpu suite on the m11.zf tree (equal to `e0297f1`): Radeon 890M 812 s and RTX 5090 538 s, 524 passed over
@@ -594,7 +594,7 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       breaks due at 100, 127, 128, 129, 200 and 250; the SPIR-V route the same; the Radeon 890M and the twin give
       Rust's values) and a SEMANTICS paragraph. Opus review: merge after fixes. `GPU_SUITE_PIN` 529 over 52 by count.
     - m11.math3 (`1fe0df4`, fixes `60d9d05`; D205): `mul_add` (`fma`), `hypot` (scaled helper) and integer `pow`
-      (square and multiply, integer loop exit, safe from the m11.ld defect). Measured over 5000 rows per method:
+      (square and multiply, an integer loop exit, unlike the m11.ld form). Measured over 5000 rows per method:
       `pow` exact on the Radeon 890M and the RTX 5090; `hypot` at most 1.72 ULP (890M) and 2.45 ULP (5090) against
       the 22 ULP bound; `mul_add` within 0.5 ULP, and all 5000 rows bit-equal to Rust's fused result on both (printed,
       not asserted). Opus review: merge after fixes. `GPU_SUITE_PIN` 532 over 53 by count.
@@ -615,6 +615,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       probe now succeeds and matches the host; its variant-text row reads 33,193 bytes of split text beside 31,121
       of base text over 8 kernels. Two Opus reviews. `GPU_SUITE_PIN` 556 over 54, confirmed by full Gpu suites on the
       merged tree (Radeon 890M 563 s, RTX 5090 522 s).
+    - m11.r4fix (`e5d1035`): the round-4 sanity fixes. A split launch is refused when the variant's hidden 16-byte
+      uniform exceeds `max_uniform_buffer_binding_size` (a mutation that skipped the check failed the new test);
+      the run-time compiler decision is a function with a unit test for both builds; GPU tests of a split kernel
+      with a module constant, `mul_add` and `hypot` (split equals unsplit bit for bit, within the SEMANTICS bounds
+      on the Radeon 890M and the RTX 5090) and of a staged graph node past the limit (refused at validation, cold
+      cache). SEMANTICS: the measured math rows named, the status of each "Launch size" claim, the m11.ld
+      sentinel's real expectation and the runs behind it. budget-kit's row width is a module const (its
+      variant-text row now reads 33,385 bytes of split text beside 31,313 of base text). Opus review.
+      `GPU_SUITE_PIN` 560 over 54 by count.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

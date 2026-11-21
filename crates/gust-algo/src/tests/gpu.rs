@@ -422,32 +422,121 @@ fn gpu_an_input_past_the_binding_limit_is_a_device_limit_error_before_any_dispat
     assert_eq!(reduce::sum(&inside).unwrap(), 0);
 }
 
-/// The first pass of an input launches `ceil(n / 65 536)` workgroups; a device that allows fewer refuses before any
-/// dispatch.
-#[test]
-fn gpu_a_first_pass_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch() {
-    // A device of its own: the limits belong to the device. One device, not one to read the limits and one to set them.
+/// A device of its own with the workgroup limit lowered to 3 (the limits belong to the device), for the tests of a
+/// launch the host has to split (m11.algolift, D211, D208): every dispatch of more than 3 workgroups runs as pieces.
+fn lowered_workgroup_device() -> Arc<HeadlessDevice> {
     let adapter = HeadlessDevice::new().expect("a Vulkan adapter is required");
     let mut limits = adapter.limits().clone();
     limits.max_compute_workgroups_per_dimension = 3;
-    let device = Arc::new(adapter.with_limits(limits).unwrap());
-    let inside = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 65_536]).unwrap();
-    assert_eq!(reduce::sum(&inside).unwrap(), 3 * 65_536);
-    let outside = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 65_536 + 1]).unwrap();
-    let cache = device.pipeline_cache_stats();
-    match reduce::sum(&outside) {
-        Err(Error::Device(gust_wgpu::Error::DeviceLimit {
-            limit,
-            requested,
-            maximum,
-            ..
-        })) => assert_eq!(
-            (limit, requested, maximum),
-            ("max_compute_workgroups_per_dimension", 4, 3)
-        ),
-        other => panic!("expected a DeviceLimit error, got {other:?}"),
+    Arc::new(adapter.with_limits(limits).unwrap())
+}
+
+/// Equal to the host reference, or a panic naming the operation, the size and the first differing index.
+fn assert_equals_reference(what: &str, got: &[u32], expected: &[u32]) {
+    assert_eq!(got.len(), expected.len(), "{what}: length");
+    if let Some(index) = got.iter().zip(expected).position(|(a, b)| a != b) {
+        panic!(
+            "{what}, size {}: first difference at index {index}: got {}, expected {}",
+            expected.len(),
+            got[index],
+            expected[index]
+        );
     }
-    assert_eq!(device.pipeline_cache_stats(), cache);
+}
+
+/// Wrapping sum, minimum and maximum of `values` on `device`, in both variants, against the host.
+fn check_reductions_equal_the_host(device: &Arc<HeadlessDevice>, n: usize, seed: u64) {
+    let mut rng = Rng::new(seed);
+    let values: Vec<u32> = (0..n).map(|_| rng.next_u64() as u32).collect();
+    let input = GpuVec::from_slice_on(device, &values).unwrap();
+    let sum = values
+        .iter()
+        .fold(0u32, |sum, value| sum.wrapping_add(*value));
+    let (min, max) = (*values.iter().min().unwrap(), *values.iter().max().unwrap());
+    for variant in [Variant::V0, Variant::V1] {
+        assert_eq!(
+            reduce::sum_wrapping_with(variant, &input).unwrap(),
+            sum,
+            "sum_wrapping {variant:?}, size {n}"
+        );
+        assert_eq!(
+            reduce::min_with(variant, &input).unwrap(),
+            min,
+            "min {variant:?}, size {n}"
+        );
+        assert_eq!(
+            reduce::max_with(variant, &input).unwrap(),
+            max,
+            "max {variant:?}, size {n}"
+        );
+    }
+}
+
+/// Inclusive and exclusive scans, in both variants, against the host reference (values 0 to 3, inside the domain).
+fn check_scans_equal_the_host(device: &Arc<HeadlessDevice>, n: usize, seed: u64) {
+    let mut rng = Rng::new(seed);
+    let values: Vec<u32> = (0..n).map(|_| (rng.next_u64() % 4) as u32).collect();
+    let input = GpuVec::from_slice_on(device, &values).unwrap();
+    for variant in [Variant::V0, Variant::V1] {
+        for exclusive in [false, true] {
+            let out = if exclusive {
+                scan::exclusive_with(variant, &input)
+            } else {
+                scan::inclusive_with(variant, &input)
+            }
+            .unwrap();
+            assert_equals_reference(
+                &format!("scan {variant:?} exclusive={exclusive}"),
+                &out.to_vec().unwrap(),
+                &reference_scan(&values, exclusive),
+            );
+        }
+    }
+}
+
+/// `count`, `indices` and `gather_u32` on `device` against the host reference, for random flags of length `n`.
+fn check_compaction_equals_the_host(device: &Arc<HeadlessDevice>, n: usize, seed: u64) {
+    let mut rng = Rng::new(seed);
+    let flags: Vec<u32> = (0..n).map(|_| (rng.next_u64() & 1) as u32).collect();
+    let values: Vec<u32> = (0..n)
+        .map(|i| (i as u32).wrapping_mul(7).wrapping_add(1))
+        .collect();
+    let expected = reference_indices(&flags);
+    let live = u32::try_from(expected.len()).unwrap();
+    let gpu_flags = GpuVec::from_slice_on(device, &flags).unwrap();
+    assert_eq!(
+        compact::count(&gpu_flags).unwrap().to_vec().unwrap(),
+        vec![live],
+        "count, size {n}"
+    );
+    let (indices, count) = compact::indices(&gpu_flags).unwrap();
+    assert_eq!(
+        count.to_vec().unwrap(),
+        vec![live],
+        "indices count, size {n}"
+    );
+    let mut padded = expected.clone();
+    padded.resize(n, 0);
+    assert_equals_reference("indices", &indices.to_vec().unwrap(), &padded);
+    let gpu_values = GpuVec::from_slice_on(device, &values).unwrap();
+    let gathered = compact::gather_u32(&gpu_values, &indices, &count).unwrap();
+    let mut gathered_expected: Vec<u32> = expected.iter().map(|i| values[*i as usize]).collect();
+    gathered_expected.resize(n, 0);
+    assert_equals_reference(
+        "gather_u32",
+        &gathered.to_vec().unwrap(),
+        &gathered_expected,
+    );
+}
+
+/// The first pass of an input launches `ceil(n / 65 536)` workgroups (v0) or `ceil(n / 8192)` (v1); a device that
+/// allows fewer no longer refuses (D211): the host splits the launch, and the result equals the host reference. The
+/// sizes are one pass inside the limit of 3 workgroups of v0, and one element past it.
+#[test]
+fn gpu_a_first_pass_past_a_lowered_workgroup_limit_is_split_and_equals_the_host_reference() {
+    let device = lowered_workgroup_device();
+    check_reductions_equal_the_host(&device, 3 * 65_536, 0x5A11);
+    check_reductions_equal_the_host(&device, 3 * 65_536 + 1, 0x5A12);
 }
 
 /// `sum_wrapping` is defined past `u32::MAX` on the adapter, where the plain `sum` is outside its domain: full range
@@ -638,36 +727,13 @@ fn gpu_a_scan_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch
     );
 }
 
-/// Level 0 of a scan launches `ceil(ceil(n / 256) / 256)` workgroups; a device that allows fewer refuses before any
-/// dispatch.
+/// Level 0 of a v0 scan launches `ceil(ceil(n / 256) / 256)` workgroups (v1: one per span of 4096 elements); a device
+/// that allows fewer no longer refuses (D211): the host splits the launch, and both variants equal the host reference.
 #[test]
-fn gpu_a_scan_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch() {
-    // A device of its own: the limits belong to the device. One device, not one to read the limits and one to set them.
-    let adapter = HeadlessDevice::new().expect("a Vulkan adapter is required");
-    let mut limits = adapter.limits().clone();
-    limits.max_compute_workgroups_per_dimension = 3;
-    let device = Arc::new(adapter.with_limits(limits).unwrap());
-    // 3 workgroups of 256 invocations, one invocation per chunk of 256: 196 608 elements.
-    let inside = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 256 * 256]).unwrap();
-    assert_eq!(
-        scan::inclusive(&inside).unwrap().to_vec().unwrap()[3 * 256 * 256 - 1],
-        3 * 256 * 256
-    );
-    let outside = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 256 * 256 + 1]).unwrap();
-    let cache = device.pipeline_cache_stats();
-    match scan::exclusive(&outside) {
-        Err(Error::Device(gust_wgpu::Error::DeviceLimit {
-            limit,
-            requested,
-            maximum,
-            ..
-        })) => assert_eq!(
-            (limit, requested, maximum),
-            ("max_compute_workgroups_per_dimension", 4, 3)
-        ),
-        other => panic!("expected a DeviceLimit error, got {other:?}"),
-    }
-    assert_eq!(device.pipeline_cache_stats(), cache);
+fn gpu_a_scan_past_a_lowered_workgroup_limit_is_split_and_equals_the_host_reference() {
+    let device = lowered_workgroup_device();
+    check_scans_equal_the_host(&device, 3 * 256 * 256, 0x5CA1);
+    check_scans_equal_the_host(&device, 3 * 256 * 256 + 1, 0x5CA2);
 }
 
 #[test]
@@ -937,54 +1003,14 @@ fn gpu_a_compaction_past_the_binding_limit_is_a_device_limit_error_before_any_di
     assert_eq!(slot.to_vec().unwrap(), vec![len - 2]);
 }
 
-/// The element-wise launches are `ceil(n / 65 536)` workgroups; a device that allows fewer refuses before any dispatch,
-/// for the flags of `count` and `indices` and for the indices of a gather.
+/// The element-wise launches are `ceil(n / 65 536)` workgroups; a device that allows fewer no longer refuses (D211):
+/// the host splits the launches of the flags of `count` and `indices` and of the indices of a gather, and the results
+/// equal the host reference.
 #[test]
-fn gpu_a_compaction_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch() {
-    // A device of its own: the limits belong to the device. One device, not one to read the limits and one to set them.
-    let adapter = HeadlessDevice::new().expect("a Vulkan adapter is required");
-    let mut limits = adapter.limits().clone();
-    limits.max_compute_workgroups_per_dimension = 3;
-    let device = Arc::new(adapter.with_limits(limits).unwrap());
-    let inside = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 65_536]).unwrap();
-    assert_eq!(
-        compact::count(&inside).unwrap().to_vec().unwrap(),
-        vec![3 * 65_536]
-    );
-    let (indices, count) = compact::indices(&inside).unwrap();
-    assert_eq!(indices.to_vec().unwrap()[3 * 65_536 - 1], 3 * 65_536 - 1);
-    assert_eq!(
-        compact::gather_u32(&inside, &indices, &count)
-            .unwrap()
-            .len(),
-        3 * 65_536
-    );
-    let outside = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 65_536 + 1]).unwrap();
-    let one = GpuVec::from_slice_on(&device, &[1u32]).unwrap();
-    let cache = device.pipeline_cache_stats();
-    for (which, result) in [
-        compact::count(&outside).map(drop),
-        compact::indices(&outside).map(drop),
-        compact::gather_u32(&one, &outside, &one).map(drop),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        match result {
-            Err(Error::Device(gust_wgpu::Error::DeviceLimit {
-                limit,
-                requested,
-                maximum,
-                ..
-            })) => assert_eq!(
-                (limit, requested, maximum),
-                ("max_compute_workgroups_per_dimension", 4, 3),
-                "call {which}"
-            ),
-            other => panic!("call {which}: expected a DeviceLimit error, got {other:?}"),
-        }
-    }
-    assert_eq!(device.pipeline_cache_stats(), cache);
+fn gpu_a_compaction_past_a_lowered_workgroup_limit_is_split_and_equals_the_host_reference() {
+    let device = lowered_workgroup_device();
+    check_compaction_equals_the_host(&device, 3 * 65_536, 0xC0A1);
+    check_compaction_equals_the_host(&device, 3 * 65_536 + 1, 0xC0A2);
 }
 
 /// The count buffer of a gather holds exactly one element, and every buffer is on one device.
@@ -1412,32 +1438,30 @@ fn gpu_variants_leave_the_input_alone_and_return_their_buffers() {
     }
 }
 
-/// A v1 request whose launch does not fit the device runs v0 instead, and v0 answers (or refuses) as it always did:
-/// with 3 workgroups allowed, a reduction of 100 000 elements would take 13 v1 workgroups but v0 takes 2, and a scan
-/// of the same would take 25 v1 spans but v0 launches 2 workgroups; beyond v0's own limit the call is a `DeviceLimit`
-/// error before any dispatch. A device with less workgroup memory than the v1 kernels declare runs v0 as well.
+/// A v1 request runs v1 whatever the workgroup limit (D211: the host splits a launch past it), and runs v0 instead only
+/// where the device has less workgroup memory than the v1 kernels declare (3072 bytes). With 3 workgroups allowed, a
+/// reduction of 100 000 elements takes 13 v1 workgroups and a scan of the same 25 v1 spans; both run, split, and equal
+/// the host reference. The storage half of the pre-check still refuses (the binding-limit tests above).
 #[test]
-fn gpu_v1_falls_back_to_v0_where_its_launch_does_not_fit() {
-    let adapter = HeadlessDevice::new().expect("a Vulkan adapter is required");
-    let mut limits = adapter.limits().clone();
-    limits.max_compute_workgroups_per_dimension = 3;
-    let device = Arc::new(adapter.with_limits(limits).unwrap());
+fn gpu_v1_runs_past_a_lowered_workgroup_limit_and_falls_back_to_v0_only_for_workgroup_memory() {
+    let device = lowered_workgroup_device();
     let touched = |device: &HeadlessDevice| {
         let stats = device.pipeline_cache_stats();
         stats.hits + stats.misses
     };
+    // The pipeline cache is asked once per dispatch (a split dispatch asks once for its variant), so hits + misses
+    // count dispatches, which tells v1 from v0: with 3 workgroups allowed, 100 000 elements are 13 v1 workgroups (reduce: the
+    // block pass and the final block, 2 dispatches; v0 takes 3) and 25 v1 spans (scan: 3 dispatches; v0 takes 5).
     let n = 100_000usize;
     let input = GpuVec::from_slice_on(&device, &vec![1u32; n]).unwrap();
     let before = touched(&device);
     assert_eq!(reduce::sum_with(Variant::V1, &input).unwrap() as usize, n);
-    // v0: two passes and the terminal kernel (v1 would be two dispatches, and does not fit).
-    assert_eq!(touched(&device) - before, 3);
+    assert_eq!(touched(&device) - before, 2, "v1 reduce of {n}");
     let before = touched(&device);
     let inclusive = scan::inclusive_with(Variant::V1, &input).unwrap();
     assert_eq!(inclusive.to_vec().unwrap()[n - 1] as usize, n);
-    // v0: 391 chunks, two totals, so five dispatches (a v1 scan of 100 000 elements is three).
-    assert_eq!(touched(&device) - before, 5);
-    // Inside the v1 limit (3 workgroups of 4096 elements) the v1 kernels run.
+    assert_eq!(touched(&device) - before, 3, "v1 scan of {n}");
+    // Inside the limit (3 workgroups of 4096 elements) the v1 kernels run whole, in the dispatches of their schedule.
     let fits = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 4_096]).unwrap();
     let before = touched(&device);
     assert_eq!(reduce::sum_with(Variant::V1, &fits).unwrap(), 3 * 4_096);
@@ -1445,25 +1469,22 @@ fn gpu_v1_falls_back_to_v0_where_its_launch_does_not_fit() {
     let before = touched(&device);
     let _ = scan::inclusive_with(Variant::V1, &fits).unwrap();
     assert_eq!(touched(&device) - before, 3);
-    // Past v0's limit as well: the v0 error, before any dispatch.
-    let outside = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 65_536 + 1]).unwrap();
-    let cache = device.pipeline_cache_stats();
-    for result in [
-        reduce::sum_with(Variant::V1, &outside).map(drop),
-        scan::exclusive_with(Variant::V1, &outside).map(drop),
-    ] {
-        assert!(
-            matches!(
-                result,
-                Err(Error::Device(gust_wgpu::Error::DeviceLimit {
-                    limit: "max_compute_workgroups_per_dimension",
-                    ..
-                }))
-            ),
-            "{result:?}"
-        );
-    }
-    assert_eq!(device.pipeline_cache_stats(), cache);
+    // Past what v0 can launch whole as well: split, not refused, and still the v1 dispatches (49 spans, 25 blocks).
+    let outside = vec![1u32; 3 * 65_536 + 1];
+    let outside = GpuVec::from_slice_on(&device, &outside).unwrap();
+    let before = touched(&device);
+    assert_eq!(
+        reduce::sum_with(Variant::V1, &outside).unwrap() as usize,
+        3 * 65_536 + 1
+    );
+    assert_eq!(touched(&device) - before, 2);
+    let before = touched(&device);
+    let exclusive = scan::exclusive_with(Variant::V1, &outside).unwrap();
+    assert_eq!(
+        exclusive.to_vec().unwrap()[3 * 65_536],
+        u32::try_from(3 * 65_536).unwrap()
+    );
+    assert_eq!(touched(&device) - before, 3);
     // A device with less workgroup memory than the v1 kernels declare (3072 bytes) runs v0 for any size, however small.
     let adapter = HeadlessDevice::new().expect("a Vulkan adapter is required");
     let mut limits = adapter.limits().clone();
@@ -1479,6 +1500,67 @@ fn gpu_v1_falls_back_to_v0_where_its_launch_does_not_fit() {
     assert_eq!(inclusive.to_vec().unwrap()[4_999], 5_000);
     // v0: 20 chunks and the top scan, so three dispatches (v1 would be one).
     assert_eq!(touched(&small) - before, 3);
+}
+
+// ---- m11.algolift: past 2^24 elements, on the adapter's own limits (nothing lowered). Each is equal to the host
+// reference. These are size tests, not split tests: at 2^24 + 1000 elements the widest launch is about 4097
+// workgroups (v1 scan level 0, spans of 4096; v1 reduce 2049 blocks of 8192; v0 and compaction 257 blocks of 65 536),
+// so nothing is split at any workgroup limit of 65 535 or more. The lowered-limit tests above are the split tests. ----
+
+/// `2^24 + 1000` elements.
+const BIG: usize = (1 << 24) + 1_000;
+
+#[test]
+fn gpu_big_2_pow_24_plus_1000_sum_wrapping_equals_the_host_reference() {
+    let turn = heavy();
+    let device = turn.adapter_device();
+    let mut rng = Rng::new(0x0B16_5A5A);
+    let values: Vec<u32> = (0..BIG).map(|_| rng.next_u64() as u32).collect();
+    let expected = values
+        .iter()
+        .fold(0u32, |sum, value| sum.wrapping_add(*value));
+    let input = GpuVec::from_slice_on(&device, &values).unwrap();
+    assert_eq!(
+        reduce::sum_wrapping(&input).unwrap(),
+        expected,
+        "sum_wrapping, size {BIG}"
+    );
+    assert_eq!(
+        reduce::sum_wrapping_with(Variant::V0, &input).unwrap(),
+        expected,
+        "sum_wrapping v0, size {BIG}"
+    );
+}
+
+#[test]
+fn gpu_big_2_pow_24_plus_1000_scans_equal_the_host_reference() {
+    let turn = heavy();
+    let device = turn.adapter_device();
+    let mut rng = Rng::new(0x0B16_5C5C);
+    let values: Vec<u32> = (0..BIG).map(|_| (rng.next_u64() % 4) as u32).collect();
+    let input = GpuVec::from_slice_on(&device, &values).unwrap();
+    for variant in [Variant::V1, Variant::V0] {
+        for exclusive in [false, true] {
+            let out = if exclusive {
+                scan::exclusive_with(variant, &input)
+            } else {
+                scan::inclusive_with(variant, &input)
+            }
+            .unwrap();
+            assert_equals_reference(
+                &format!("scan {variant:?} exclusive={exclusive}"),
+                &out.to_vec().unwrap(),
+                &reference_scan(&values, exclusive),
+            );
+        }
+    }
+}
+
+#[test]
+fn gpu_big_2_pow_24_plus_1000_compaction_equals_the_host_reference() {
+    let turn = heavy();
+    let device = turn.adapter_device();
+    check_compaction_equals_the_host(&device, BIG, 0x0B16_C0C0);
 }
 
 // ---- m7.r4: v0 stays pinned. The public functions ship v1 (`variant::shipped`), and v0 is the fallback for an input

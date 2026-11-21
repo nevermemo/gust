@@ -8,7 +8,8 @@
 //!   adding up to 32 terms and a tree in workgroup memory (barriers) leaving one value per workgroup, until one
 //!   workgroup is left and writes the result: one dispatch up to 8192 elements, two up to 67 million, three above.
 //! - v0, the fallback and the CPU form: the block-strided passes of [`Schedule`], then the terminal kernel, at most
-//!   four dispatches. A v1 call whose first dispatch would pass the device's workgroup limit runs v0.
+//!   four dispatches. A v1 call on a device with too little workgroup memory runs v0 (a binding past the storage limit
+//!   is refused by v0 as well; a first dispatch past the workgroup limit is split by the host, D211).
 //!
 //! Every input binding is `Independent` (its length differs from the invocation count), and in v0 every output binding
 //! shares the invocation count (in v1 the outputs hold one value per workgroup, so they are `Independent` too).
@@ -348,19 +349,19 @@ fn reduce_on_device<T: Element>(
     })
 }
 
-/// The v1 schedule of `input` when `variant` asks for v1 and the launch fits the device, else `None` (v0 runs and
-/// reports whatever limit it hits).
+/// The v1 schedule of `input` when `variant` asks for v1 and the device admits it (storage binding, workgroup
+/// memory; a first dispatch past the workgroup limit is split by the host, D211), else `None` (v0 runs and reports
+/// whatever limit it hits).
 fn block_schedule_for<T: Element>(variant: Variant, input: &GpuVec<T>) -> Option<BlockSchedule> {
     if variant != Variant::V1 {
         return None;
     }
     let schedule = BlockSchedule::new(input.len())?;
-    let workgroups = schedule.passes().first().map_or(1, |pass| pass.workgroups);
-    limits::admits(input.device(), workgroups, input.len(), size_of::<T>()).then_some(schedule)
+    limits::admits(input.device(), input.len(), size_of::<T>()).then_some(schedule)
 }
 
-/// The shared frame of a v1 reduction (the launch is already known to fit): one pooled `GpuVec` per pass but the last,
-/// and one for the result, which `run` fills with its batch.
+/// The shared frame of a v1 reduction (the device is already known to admit it): one pooled `GpuVec` per pass but the
+/// last, and one for the result, which `run` fills with its batch.
 fn reduce_blocks<T: Element>(
     input: &GpuVec<T>,
     schedule: &BlockSchedule,
@@ -395,15 +396,8 @@ fn reduce_with<T: Element>(
 ) -> Result<GpuVec<T>, Error> {
     let schedule = Schedule::new(input.len()).expect("the input is not empty");
     let device = input.device();
-    // A first pass past the workgroup limit is refused here too: it is the largest dispatch of the batch.
-    let workgroups = schedule.passes().first().map_or(1, |pass| pass.workgroups);
-    limits::check(
-        device,
-        "gust_algo::reduce",
-        workgroups,
-        input.len(),
-        size_of::<T>(),
-    )?;
+    // Only the storage binding is checked: a first pass past the workgroup limit is split by the host (D211, D208).
+    limits::check(device, "gust_algo::reduce", input.len(), size_of::<T>())?;
     // Every lane writes its slot, so the zero fill is not needed for correctness; `GpuVec` has no public constructor
     // without it (a recycled buffer costs one clearing submission), and `gust-wgpu` is not this slice's to change.
     let partials = schedule

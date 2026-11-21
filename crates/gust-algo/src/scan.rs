@@ -13,8 +13,9 @@
 //! - v0, the fallback ([`ScanSchedule`]): the input is cut into chunks of 256 elements, one invocation per chunk, and
 //!   the chunk totals are scanned the same way until at most 256 are left; the prefixes then go back down, one add-back
 //!   per level: `2k + 1` dispatches, 3 up to 65 536 elements, 5 up to 2^24 and 7 above that. `exclusive` is `inclusive`
-//!   shifted inside the final add-back, which also reads the input: no extra pass. A v1 call whose level 0 would pass
-//!   the device's workgroup limit (more than 65 535 spans, 268 million elements) runs v0.
+//!   shifted inside the final add-back, which also reads the input: no extra pass. A v1 call on a device
+//!   with too little workgroup memory runs v0 (a binding past the storage limit is refused by v0 as well); a level 0
+//!   past the workgroup limit is split by the host (D211, D208).
 //!
 //! The contract (section 5.1): the sum is plain `+`, so a scan is exact and in the domain only while no inclusive
 //! prefix, the total included, passes `u32::MAX` (the kernels wrap on the GPU, the debug twin panics, as every `+` of
@@ -73,12 +74,7 @@ pub fn exclusive_with(variant: Variant, input: &GpuVec<u32>) -> Result<GpuVec<u3
 fn scan(variant: Variant, input: &GpuVec<u32>, exclusive: bool) -> Result<GpuVec<u32>, Error> {
     if variant == Variant::V1
         && let Some(schedule) = TileSchedule::new(input.len())
-        && limits::admits(
-            input.device(),
-            schedule.workgroups(),
-            input.len(),
-            size_of::<u32>(),
-        )
+        && limits::admits(input.device(), input.len(), size_of::<u32>())
     {
         return scan_tiles(input, &schedule, exclusive);
     }
@@ -86,13 +82,7 @@ fn scan(variant: Variant, input: &GpuVec<u32>, exclusive: bool) -> Result<GpuVec
     let Some(schedule) = ScanSchedule::new(input.len()) else {
         return Ok(GpuVec::zeroed_on(device, 0)?);
     };
-    limits::check(
-        device,
-        "gust_algo::scan",
-        schedule.workgroups(),
-        input.len(),
-        size_of::<u32>(),
-    )?;
+    limits::check(device, "gust_algo::scan", input.len(), size_of::<u32>())?;
     // Every element and every total is written before it is read, so the zero fill is not needed for correctness;
     // `GpuVec` has no public constructor without it (see `reduce`).
     let out = GpuVec::<u32>::zeroed_on(device, input.len())?;

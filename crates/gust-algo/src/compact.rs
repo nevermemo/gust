@@ -22,8 +22,9 @@
 //!   `0`. To use only the dense prefix, hand `count` (still on the device) to the next kernel.
 //!
 //! An empty input is not an error: the count is `[0]`, `indices` is empty, and a gather of empty indices is empty.
-//! Inputs past the device's limits (the storage binding limit for any buffer, the workgroup limit for the first
-//! dispatch) are `Error::Device(DeviceLimit)` before any buffer is taken or dispatch is made.
+//! Inputs past the device's limits (the storage binding limit for any buffer) are `Error::Device(DeviceLimit)` before
+//! any buffer is taken or dispatch is made. A launch past the workgroup limit is split by the host (D211, D208) and is
+//! no error.
 //!
 //! # A gather of structs
 //!
@@ -86,13 +87,7 @@ pub fn indices(flags: &GpuVec<u32>) -> Result<(GpuVec<u32>, GpuVec<u32>), Error>
 fn mask_of(flags: &GpuVec<u32>) -> Result<GpuVec<u32>, Error> {
     let device = flags.device();
     let pass = Pass::over(flags.len());
-    limits::check(
-        device,
-        KERNEL,
-        pass.workgroups,
-        flags.len(),
-        size_of::<u32>(),
-    )?;
+    limits::check(device, KERNEL, flags.len(), size_of::<u32>())?;
     // Every element is written, so the zero fill is not needed for correctness; `GpuVec` has no public constructor
     // without it (see `reduce`).
     let mask = GpuVec::<u32>::zeroed_on(device, flags.len())?;
@@ -120,14 +115,8 @@ fn gather_with<T: GpuPod>(
     values.check_device(device)?;
     count.check_device(device)?;
     let pass = Pass::over(indices.len());
-    limits::check(
-        device,
-        KERNEL,
-        pass.workgroups,
-        indices.len(),
-        size_of::<u32>(),
-    )?;
-    limits::check(device, KERNEL, 0, values.len(), size_of::<T>())?;
+    limits::check(device, KERNEL, indices.len(), size_of::<u32>())?;
+    limits::check(device, KERNEL, values.len(), size_of::<T>())?;
     let out = GpuVec::<T>::zeroed_on(device, indices.len())?;
     // With nothing to read from or to write, the zeroed output is the result, and no empty binding is made.
     if !indices.is_empty() && !values.is_empty() {

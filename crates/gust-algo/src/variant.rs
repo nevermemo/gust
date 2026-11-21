@@ -20,10 +20,9 @@
 //! overhead (one dispatch fewer and one pooled zeroing fewer); re-measure if the pool's zeroing changes. The logs and
 //! notes are in `plans/m7/probe/r4` of the work area.
 //!
-//! A v1 request falls back to v0 for an input or a device its launch cannot take: a device with less workgroup
-//! memory than the v1 kernels declare (3072 bytes), a first dispatch past the device's workgroup
-//! limit (more than 65 535 spans of 4096 scan elements, or of 8192 reduce elements, on the usual device) or a
-//! binding past the storage limit. v0 then answers, with its own `DeviceLimit` error where it also cannot run.
+//! A v1 request falls back to v0 only for a device with less workgroup memory than the v1 kernels declare (3072
+//! bytes). A binding past the storage limit is refused by v0 as well, with its own `DeviceLimit` error, and a first
+//! dispatch past the device's workgroup limit does not send a call to v0: the host splits it (D211, D208).
 
 /// The kernels a call runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

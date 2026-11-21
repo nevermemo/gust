@@ -151,8 +151,8 @@ impl ScanSchedule {
         2 * self.sums.len() + 1
     }
 
-    /// The workgroups of the widest dispatch (level 0 and the final add-back, one invocation per chunk): the number a
-    /// device's per-dimension workgroup limit has to admit.
+    /// The workgroups of the widest dispatch (level 0 and the final add-back, one invocation per chunk): the workgroup
+    /// count of the launch, which the host splits into pieces where it passes the device's per-dimension limit (D211).
     pub fn workgroups(&self) -> u32 {
         self.sums[0].div_ceil(LANES)
     }
@@ -284,8 +284,8 @@ impl TileSchedule {
         }
     }
 
-    /// The workgroups of the widest dispatch (level 0 and the final add-back): the number a device's per-dimension
-    /// workgroup limit has to admit.
+    /// The workgroups of the widest dispatch (level 0 and the final add-back): the workgroup count of
+    /// the launch, which the host splits into pieces where it passes the device's per-dimension limit (D211).
     pub fn workgroups(&self) -> u32 {
         self.sums[0]
     }

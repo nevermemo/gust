@@ -146,11 +146,11 @@ pub(crate) fn check_subgroup_sizes(
 ///
 /// # Errors
 ///
-/// `Error::Device` for a device failure, an input past the storage binding limit or a first dispatch past the
-/// workgroup limit (before any buffer is taken), or the capability error of a build whose body needs `subgroups` on a
-/// device opened without it. A build that selects the subgroup body also gets `Error::Device(gust_wgpu::Error::DeviceLimit)` (limit
-/// `subgroup_min_size`, before any buffer is taken) on a device whose reported minimum subgroup size is below
-/// [`MIN_SUBGROUP_SIZE`], where the body would add a wrong sum (see the limitations in the module doc).
+/// `Error::Device` for a device failure, an input past the storage binding limit (before any buffer is taken; a first
+/// dispatch past the workgroup limit is split by the host, D211), or the capability error of a build whose body needs
+/// `subgroups` on a device opened without it. A build that selects the subgroup body also gets
+/// `Error::Device(gust_wgpu::Error::DeviceLimit)` (limit `subgroup_min_size`, before any buffer is taken) on a
+/// device whose reported minimum subgroup size is below [`MIN_SUBGROUP_SIZE`], where the body would add a wrong sum (see the limitations in the module doc).
 pub fn sum_u32(input: &GpuVec<u32>) -> Result<u32, Error> {
     if input.is_empty() {
         return Ok(0);
@@ -162,14 +162,7 @@ pub fn sum_u32(input: &GpuVec<u32>) -> Result<u32, Error> {
         device.subgroup_sizes(),
     )?;
     let passes = schedule.passes();
-    let workgroups = passes.first().map_or(1, |pass| pass.workgroups);
-    limits::check(
-        device,
-        "gust_algo::evidence",
-        workgroups,
-        input.len(),
-        size_of::<u32>(),
-    )?;
+    limits::check(device, "gust_algo::evidence", input.len(), size_of::<u32>())?;
     let partials = passes[..passes.len() - 1]
         .iter()
         .map(|pass| GpuVec::<u32>::zeroed_on(device, pass.workgroups))

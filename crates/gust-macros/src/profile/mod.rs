@@ -18,7 +18,7 @@ use crate::slang::ParameterFlavor;
 mod grid;
 mod pixel;
 
-pub(crate) use grid::GRID;
+pub(crate) use grid::{GRID, GRID_SPLIT};
 pub(crate) use pixel::PIXEL;
 
 /// The execution shapes; the type exists so that a profile can name itself.
@@ -139,11 +139,15 @@ pub(crate) struct DerivedId {
     pub(crate) group: bool,
 }
 
-/// A resource the shape declares beside the kernel's own, taking the next binding slot. The emitter numbers it. No
-/// profile returns one: `pixel` bakes its row width into the shader instead of reading it from a uniform (mx.p1a,
-/// option S), because a runtime-owned binding has no place in the descriptor and the typed call.
+/// A resource the shape declares beside the kernel's own, taking the next binding slot. The emitter numbers it. Only
+/// the split variant of a `grid` kernel returns one (m11.g4a, [`GRID_SPLIT`]): `pixel` bakes its row width into the
+/// shader instead of reading it from a uniform (mx.p1a, option S), because a runtime-owned binding has no place in the
+/// descriptor of the kernel's own text and the typed call. The variant's descriptor lists it as a parameter of its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExtraBinding {
+    /// Text written before the binding line (a type declaration the binding needs), or empty. Each line of it ends in
+    /// a line feed.
+    pub(crate) declaration: String,
     pub(crate) name: String,
     /// The element type of the `ConstantBuffer` it is declared as.
     pub(crate) slang_type: String,

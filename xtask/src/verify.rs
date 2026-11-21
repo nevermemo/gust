@@ -1084,9 +1084,13 @@ pub(crate) struct GpuSuitePin {
 ///
 /// Slice m11.math3: 529 over 52 became 532 over 53. The new test file `tests/math3.rs` holds three tests (`mul_add`,
 /// `hypot` and integer `pow`) and adds one `test result:` line. Updated by count, not from a full Gpu suite run.
+///
+/// Slice m11.g4a: 532 over 53 became 539 over 54. The new test file `tests/split.rs` holds seven tests (launches
+/// split by hand through the split variant of a kernel) and adds one `test result:` line. Updated by count, not
+/// from a full Gpu suite run.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 532,
-    result_lines: 53,
+    passed: 539,
+    result_lines: 54,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

@@ -598,6 +598,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       `pow` exact on the Radeon 890M and the RTX 5090; `hypot` at most 1.72 ULP (890M) and 2.45 ULP (5090) against
       the 22 ULP bound; `mul_add` within 0.5 ULP, and all 5000 rows bit-equal to Rust's fused result on both (printed,
       not asserted). Opus review: merge after fixes. `GPU_SUITE_PIN` 532 over 53 by count.
+    - m11.g4a (`87a99b5`; D208): the split variant of every GPU `grid` kernel (`GRID_SPLIT`, a hidden
+      `__gust_launch_base` uniform at the next free binding, added to the id before the derived ids and the
+      workgroup zeroing) and `KernelDescriptor::split`. `tests/split.rs` launches it split by hand: 4+4+4+1 pieces,
+      2x2 pieces with x and y bases, and 65,535+1 workgroups of 256 (16,777,216 elements), each invocation once with
+      the ids of an unsplit run and of the twin; with the base forced to 0, three of the seven tests fail. Opus
+      review: merge; the `with_split` doc, a pixel descriptor that inherits a grid split (artifact.rs), a z-base GPU
+      test and the binary-size cost go to m11.g4b. `GPU_SUITE_PIN` 539 over 54, confirmed by full Gpu suites on the merged
+      tree (Radeon 890M 585 s, RTX 5090 512 s), which also confirms m11.ld and m11.math3.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

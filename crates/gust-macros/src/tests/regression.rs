@@ -2942,9 +2942,62 @@ fn kernels_without_a_twin_have_none_under_cpu_either() {
     assert_eq!(squeezed(&cpu), squeezed(&cpu_target_of(&other)));
 }
 
+/// `text`, an expansion for a GPU build, without the split variants (m11.g4a): the `const __GUST_SPLIT_<kernel>`
+/// descriptor items are removed and the kernels' `split` field says `None`, which is what a build for the CPU has.
+fn without_split_variants(text: &str) -> String {
+    const ITEM: &str = "# [doc (hidden)] # [allow (non_upper_case_globals)] const __GUST_SPLIT_";
+    let mut text = text.to_owned();
+    while let Some(start) = text.find(ITEM) {
+        // The item ends at the `;` after the braces of its `__gust_descriptor ! { .. }`, which hold Slang text in a
+        // string literal: braces inside a literal do not count.
+        let open = start + text[start..].find('{').expect("the descriptor's braces");
+        let (mut depth, mut in_string, mut escaped) = (0usize, false, false);
+        let mut close = None;
+        for (offset, c) in text[open..].char_indices() {
+            if in_string {
+                match (escaped, c) {
+                    (true, _) => escaped = false,
+                    (false, '\\') => escaped = true,
+                    (false, '"') => in_string = false,
+                    _ => {}
+                }
+            } else {
+                match c {
+                    '"' => in_string = true,
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(open + offset + 1);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let close = close.expect("the descriptor's closing brace");
+        let end = close + text[close..].find(';').expect("the item's semicolon") + 1;
+        text.replace_range(start..end, "");
+    }
+    // The kernel's own descriptor names the variant by its constant.
+    let mut result = String::new();
+    let mut rest = text.as_str();
+    let field = "split : :: core :: option :: Option :: Some (& __GUST_SPLIT_";
+    while let Some(at) = rest.find(field) {
+        result.push_str(&rest[..at]);
+        let after = &rest[at + field.len()..];
+        result.push_str("split : :: core :: option :: Option :: None");
+        rest = &after[after.find(')').expect("the borrow's closing parenthesis") + 1..];
+    }
+    result.push_str(rest);
+    result
+}
+
 /// `text`, an expansion for a GPU build, as the `cpu` profile has it besides the gate: `Target::Cpu` in the descriptor
 /// and no `GpuKernel` impl (the marker is the one empty impl of the expansion).
 fn cpu_target_of(text: &str) -> String {
+    let text = without_split_variants(text);
     let text = text.replace("Target :: Gpu", "Target :: Cpu");
     let text = text.replace(":: routed :: OnGpu", ":: routed :: OnCpu");
     let marker = "impl :: gust :: target :: GpuKernel for ";
@@ -4679,7 +4732,8 @@ fn a_struct_with_vector_fields_gets_storage_v2_asserts_and_its_descriptor_picks_
         text.contains("< Particle as :: gust :: GpuPod > :: LAYOUT . is_storage_v2 ()"),
         "{text}"
     );
-    // Each element is named once in its descriptor entry, which picks V1 or V2 from the layout itself.
+    // Each element is named once in its descriptor entry, which picks V1 or V2 from the layout itself. The entries are
+    // written once, in the constant both the kernel's descriptor and its split variant's (m11.g4a) take them from.
     for element in ["Particle", "Vec4", "float"] {
         let shape = format!(
             "const __GUST_ELEMENT : :: gust :: TypeLayout = < {element} as :: gust :: GpuPod > :: LAYOUT ;"

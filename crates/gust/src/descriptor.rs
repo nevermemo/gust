@@ -137,7 +137,53 @@ pub struct KernelDescriptor {
     /// routed to the CPU and for every kernel under `GUST_PROFILE=cpu`, else [`Target::Gpu`]. A GPU device refuses a
     /// kernel whose target is [`Target::Cpu`] (m8.w1).
     pub target: Target,
+    /// The split variant of this kernel (m11.g4a), or `None`. A variant is an ordinary descriptor of the same kernel
+    /// whose Slang has one more uniform, the launch base, at the first binding after the kernel's own: the shader adds
+    /// its `x`, `y` and `z` to the dispatch-thread id before anything reads it. A host that has to cut one launch into
+    /// several dispatches (a launch past the device's per-dimension workgroup limit) runs the variant, once per piece,
+    /// with the id of the piece's first invocation in that uniform; a launch that needs no cut runs this descriptor
+    /// as it always did. The variant's `parameters` are this descriptor's and then the hidden uniform
+    /// (`__gust_launch_base`, 16 bytes, four `u32`: `x`, `y`, `z` and padding), its `artifacts` are empty (a backend
+    /// compiles it at run time) and its own `split` is `None`.
+    ///
+    /// `Some` for the selected body of a `grid` kernel built for the GPU, `None` for a `pixel` kernel, for a kernel
+    /// built for the CPU, and for every descriptor built by hand ([`KernelDescriptor::new`]). It is not part of the
+    /// content key of this descriptor: the variant has a key of its own, from its own text. The derived
+    /// `PartialEq`/`Eq` compare it.
+    pub split: Option<&'static KernelDescriptor>,
 }
+
+/// The name of the hidden uniform of a split variant ([`KernelDescriptor::split`]), as its parameter descriptor and its
+/// Slang declaration spell it.
+const LAUNCH_BASE_NAME: &str = "__gust_launch_base";
+
+/// The layout of the hidden uniform of a split variant: a struct of four `u32` (`x`, `y`, `z`, padding), 16 bytes.
+const LAUNCH_BASE_LAYOUT: crate::TypeLayout = {
+    const U32: crate::TypeLayout = crate::TypeLayout::scalar("u32", crate::ScalarKind::U32);
+    const FIELDS: &[crate::StructFieldLayout] = &[
+        crate::StructFieldLayout {
+            name: "x",
+            offset: 0,
+            ty: U32,
+        },
+        crate::StructFieldLayout {
+            name: "y",
+            offset: 4,
+            ty: U32,
+        },
+        crate::StructFieldLayout {
+            name: "z",
+            offset: 8,
+            ty: U32,
+        },
+        crate::StructFieldLayout {
+            name: "pad",
+            offset: 12,
+            ty: U32,
+        },
+    ];
+    crate::TypeLayout::structure("__GustLaunchBase", 16, 16, FIELDS)
+};
 
 /// The `#[gpu]` macro's way to build a [`KernelDescriptor`] with named fields (support surface, hidden): it calls
 /// [`KernelDescriptor::__gust_descriptor`], so a field added to the struct is a compile error in the expansion until
@@ -162,7 +208,8 @@ macro_rules! __gust_descriptor {
         artifacts: $artifacts:expr,
         variant: $variant:expr,
         requires: $requires:expr,
-        target: $target:expr $(,)?
+        target: $target:expr,
+        split: $split:expr $(,)?
     ) => {{
         // These `__GUST_*` items are not hygienic (a user item of the same name is shadowed here); the reservation of
         // the `__gust_*` names (crate docs, "Support surface") covers them.
@@ -185,6 +232,7 @@ macro_rules! __gust_descriptor {
             $variant,
             __GUST_REQUIRES,
             $target,
+            $split,
         )
     }};
 }
@@ -381,6 +429,7 @@ impl KernelDescriptor {
             variant: "",
             requires: &[],
             target: Target::Gpu,
+            split: None,
         }
     }
 
@@ -462,6 +511,26 @@ impl KernelDescriptor {
         self
     }
 
+    /// The descriptor with `split` as its [`split`](Self::split).
+    pub const fn with_split(mut self, split: Option<&'static KernelDescriptor>) -> Self {
+        self.split = split;
+        self
+    }
+
+    /// The parameter descriptor of the hidden uniform of a split variant, at `binding` of group 0. The `#[gpu]` macro
+    /// calls this; support surface, not covered by the stability promise.
+    #[doc(hidden)]
+    pub const fn __gust_launch_base_parameter(binding: u32) -> ParameterDescriptor {
+        ParameterDescriptor {
+            name: LAUNCH_BASE_NAME,
+            rust_type: "__GustLaunchBase",
+            kind: ParameterKind::Uniform,
+            access: Access::ReadOnly,
+            resource_layout: Some(crate::ResourceLayout::std140_v1(LAUNCH_BASE_LAYOUT)),
+            binding: Some(ResourceBinding { group: 0, binding }),
+        }
+    }
+
     /// The constructor the `#[gpu]` macro calls: every field at once, so that a field added later is a compile error
     /// in the macro's output until the macro sets it. Support surface: not covered by the stability promise.
     #[doc(hidden)]
@@ -480,6 +549,7 @@ impl KernelDescriptor {
         variant: &'static str,
         requires: &'static [Capability],
         target: Target,
+        split: Option<&'static KernelDescriptor>,
     ) -> Self {
         Self {
             module,
@@ -495,6 +565,7 @@ impl KernelDescriptor {
             variant,
             requires,
             target,
+            split,
         }
     }
 
@@ -746,11 +817,12 @@ mod tests {
         row!(with_variant, variant, "subgroups");
         row!(with_requires, requires, &[Capability::Subgroups]);
         row!(with_target, target, Target::Cpu);
+        row!(with_split, split, Some(&BASE));
     }
 
     #[test]
     fn the_macro_constructor_and_the_builder_agree() {
-        // Thirteen distinct values, so a name mapped to the wrong position (the five strings above all) differs.
+        // Fourteen distinct values, so a name mapped to the wrong position (the five strings above all) differs.
         let chained = KernelDescriptor::new("m", "n", "e", [2, 3, 4], PARAMETERS, "s")
             .with_shape(Shape::Pixel)
             .with_compatible_shapes(&[Shape::Pixel, Shape::Grid])
@@ -758,7 +830,8 @@ mod tests {
             .with_artifacts(ARTIFACTS)
             .with_variant("v")
             .with_requires(&[Capability::Subgroups])
-            .with_target(Target::Cpu);
+            .with_target(Target::Cpu)
+            .with_split(Some(&BASE));
         let built = KernelDescriptor::__gust_descriptor(
             "m",
             "n",
@@ -773,6 +846,7 @@ mod tests {
             "v",
             &[Capability::Subgroups],
             Target::Cpu,
+            Some(&BASE),
         );
         assert_eq!(built, chained);
         let from_macro = crate::__gust_descriptor! {
@@ -789,6 +863,7 @@ mod tests {
             variant: "v",
             requires: &[Capability::Subgroups],
             target: Target::Cpu,
+            split: Some(&BASE),
         };
         assert_eq!(from_macro, chained);
         assert_ne!(chained, BASE);

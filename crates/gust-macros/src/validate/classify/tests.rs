@@ -701,9 +701,10 @@ fn a_pixel_pin_is_per_kernel_and_a_module_may_mix_shapes() {
         1,
         "{text}"
     );
+    // The grid kernel's descriptor and its split variant's (m11.g4a); the pixel kernel has no variant.
     assert_eq!(
         text.matches("shape:::gust::Shape::Grid,").count(),
-        1,
+        2,
         "{text}"
     );
     assert_eq!(text.matches("call_extent<").count(), 1, "{text}");

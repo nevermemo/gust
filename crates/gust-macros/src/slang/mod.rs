@@ -1223,6 +1223,7 @@ pub(crate) fn emit_kernel_in(
     };
     // The resources the shape declares beside the kernel's own take the next binding slots, in order.
     for extra in stage.extra_bindings(&facts) {
+        output.push_str(&extra.declaration);
         writeln!(
             output,
             "[[vk::binding({}, 0)]] ConstantBuffer<{}> {};",

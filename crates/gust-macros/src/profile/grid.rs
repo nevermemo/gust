@@ -117,3 +117,92 @@ impl StageProfile for GridProfile {
         ContractTier::Exact
     }
 }
+
+/// The name of the hidden uniform of a split variant, and of its entry point's dispatch-thread parameter. Both start
+/// with `__gust_`, which E0901 denies to users, so neither can clash with a name of the kernel.
+pub(crate) const LAUNCH_BASE: &str = "__gust_launch_base";
+pub(crate) const LAUNCH_ID: &str = "__gust_launch_id";
+
+/// The profile of the split variant of a `grid` kernel (m11.g4a): the kernel's own text with one hidden uniform at the
+/// next free binding, whose `x`, `y` and `z` are added to the dispatch-thread id before anything reads it. The host
+/// launches a dispatch past the per-dimension workgroup limit as several smaller ones, each with the id of its first
+/// invocation in that uniform. Everything but the entry signature, the prologue and the extra binding is `GRID`'s.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GridSplitProfile;
+
+/// The one split profile.
+pub(crate) static GRID_SPLIT: GridSplitProfile = GridSplitProfile;
+
+impl StageProfile for GridSplitProfile {
+    fn shape(&self) -> Shape {
+        GRID.shape()
+    }
+
+    fn slang_stage(&self) -> &'static str {
+        GRID.slang_stage()
+    }
+
+    fn invocation(&self, ty: &syn::Type) -> Option<Builtin> {
+        GRID.invocation(ty)
+    }
+
+    fn binding_rules(&self) -> BindingRules {
+        GRID.binding_rules()
+    }
+
+    fn options(&self) -> OptionRules {
+        GRID.options()
+    }
+
+    fn validate_body(&self, cx: &mut super::BodyChecks) {
+        GRID.validate_body(cx);
+    }
+
+    fn entry_signature(&self, k: &KernelFacts<'_>) -> String {
+        let [x, y, z] = k.workgroup_size;
+        format!(
+            "[numthreads({x}, {y}, {z})]\nvoid {}(uint3 {LAUNCH_ID} : SV_DispatchThreadID)",
+            k.entry_point
+        )
+    }
+
+    fn prologue(&self, k: &KernelFacts<'_>) -> String {
+        // The base is a whole number of workgroups on every axis, so `id % size` and `id / size` of the sum are the
+        // local and group ids of an unsplit launch. The line comes first: the length reads and the derived ids, and
+        // the workgroup zeroing, read the id.
+        format!(
+            "    uint3 {} = {LAUNCH_ID} + uint3({LAUNCH_BASE}.x, {LAUNCH_BASE}.y, {LAUNCH_BASE}.z);\n{}",
+            k.invocation,
+            GRID.prologue(k)
+        )
+    }
+
+    fn epilogue(&self, k: &KernelFacts<'_>) -> String {
+        GRID.epilogue(k)
+    }
+
+    fn lower_output_write(&self, write: &OwnIndexWrite<'_>) -> Option<String> {
+        GRID.lower_output_write(write)
+    }
+
+    fn extra_bindings(&self, _k: &KernelFacts<'_>) -> Vec<ExtraBinding> {
+        vec![ExtraBinding {
+            declaration: "struct __GustLaunchBase { uint x; uint y; uint z; uint pad; };\n"
+                .to_owned(),
+            name: LAUNCH_BASE.to_owned(),
+            slang_type: "__GustLaunchBase".to_owned(),
+        }]
+    }
+
+    fn twin(&self) -> TwinHarness {
+        GRID.twin()
+    }
+
+    fn reflection(&self) -> ReflectionKind {
+        GRID.reflection()
+    }
+
+    fn contract_tier(&self) -> ContractTier {
+        GRID.contract_tier()
+    }
+}

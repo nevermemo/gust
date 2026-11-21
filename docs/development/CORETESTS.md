@@ -300,7 +300,8 @@ Each exclusion has its reason. "Dialect" means `docs/SEMANTICS.md` section 1, "L
   `is_*`, `classify`, `next_up`, `next_down`, `sqrt_domain`, `clamp*`, `total_cmp*`, `recip`, `powi`, `powf`, `exp*`,
   `ln*`, `log*`, `asinh`, `acosh`, `atanh`, `gamma`, `ln_gamma`, `to_degrees`, `to_radians`, `to_algebraic`,
   `to_bits_conv`, `mul_add`: method calls. Since slice m11.math the dialect accepts `min`, `max`, `abs`, `floor`, `ceil`,
-  `trunc`, `fract`, `clamp` and the `f32` methods of its float math list, so a transcription of those cases is possible
+  `trunc`, `fract`, `clamp` and the `f32` methods of its float math list (since m11.math2 also `round`, `signum`,
+  `to_radians`, `to_degrees` and `rem_euclid`), so a transcription of those cases is possible
   (not done: most also use associated constants, NaN or `f64`); the others stay outside. The validator accepts no
   further method than `.len()`, `.global_id()` and
   the `Option` and `Result` helpers. Several also use associated constants (`Float::MAX`) or `f64`.

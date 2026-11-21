@@ -213,6 +213,8 @@ fn the_class_2_entries_are_the_names_the_emitted_text_uses() {
         "WaveShuffle",
         "__GustResult",
         "abs",
+        "acos",
+        "asin",
         "asint",
         "asuint",
         "atan",

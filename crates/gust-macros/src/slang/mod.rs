@@ -1012,6 +1012,20 @@ pub(crate) fn emit_kernel_in(
         .unwrap();
     }
 
+    // The helpers of `round`, `signum` and `rem_euclid` (slice m11.math2), each defined only in a module that calls it.
+    // `__gust_rem_euclid` calls `__gust_rem`, which `DivisionUsage` has made the module define above.
+    let mut helpers = MathHelperUsage::default();
+    helpers.visit_item_mod(module);
+    if helpers.round {
+        output.push_str(ROUND_HELPER_TEXT);
+    }
+    if helpers.signum {
+        output.push_str(SIGNUM_HELPER_TEXT);
+    }
+    if helpers.rem_euclid {
+        output.push_str(REM_EUCLID_HELPER_TEXT);
+    }
+
     // The integer `dot` as a sum of products (see `dot_overload_text`); `.dot` is `__gust_dot` in such a module.
     if lowering.dot {
         output.push_str(&dot_overload_text());
@@ -2965,6 +2979,11 @@ fn scalar_math_function(name: &str) -> &'static str {
         "atan2" => "atan2",
         "ln" => "log",
         "powf" => "pow",
+        "asin" => "asin",
+        "acos" => "acos",
+        "round" => "__gust_round",
+        "signum" => "__gust_signum",
+        "rem_euclid" => "__gust_rem_euclid",
         "fract" => FRACT_HELPER,
         other => {
             unreachable!("`{other}` is accepted by `scalar_math_arity` but has no emitter arm")
@@ -2979,10 +2998,70 @@ const FRACT_HELPER: &str = "__gust_fract";
 /// `x.sqrt()` is `sqrt(x)`, `y.atan2(x)` is `atan2(y, x)` (the receiver is y), `a.clamp(lo, hi)` is
 /// `clamp(a, lo, hi)`, `x.ln()` is `log(x)`, `x.powf(e)` is `pow(x, e)` and `x.fract()` is `__gust_fract(x)`.
 fn emit_scalar_math(call: &syn::ExprMethodCall) -> syn::Result<String> {
-    let function = scalar_math_function(&crate::names::name_of(&call.method));
+    let name = crate::names::name_of(&call.method);
+    // `to_radians` and `to_degrees` (slice m11.math2) are `std`'s own multiplication by an `f32` constant.
+    if let Some(factor) = angle_factor(&name) {
+        return Ok(format!(
+            "({} * float({factor:?}))",
+            emit_expression(&call.receiver)?
+        ));
+    }
+    let function = scalar_math_function(&name);
     let mut operands = vec![emit_expression(&call.receiver)?];
     operands.extend(emit_list(call.args.iter())?);
     Ok(format!("{function}({})", operands.join(", ")))
+}
+
+/// The `f32` factor of `to_radians` and `to_degrees`, the constants of `core::f32::<impl f32>` (read from the
+/// toolchain's `rust-src`, `library/core/src/num/f32.rs`): `consts::PI / 180.0` and
+/// `57.2957795130823208767981548141051703_f32`. `std` multiplies the receiver by the constant, and so do we.
+fn angle_factor(name: &str) -> Option<f32> {
+    match name {
+        "to_radians" => Some(std::f32::consts::PI / 180.0),
+        "to_degrees" => Some(
+            "57.2957795130823208767981548141051703"
+                .parse::<f32>()
+                .expect("a decimal"),
+        ),
+        _ => None,
+    }
+}
+
+/// `x.round()`: half-way cases away from zero, which WGSL and Slang `round` (half to even) does not do. `x - trunc(x)`
+/// is exact, so the test `>= 0.5` is exact (`0.49999997` stays down), and `t +- 1` is exact below `2^23`, where the
+/// test can hold. The sign comes from the sign bit, so `-0.5` rounds to `-1.0`. Overloads are not needed (`f32` only).
+const ROUND_HELPER_TEXT: &str = "float __gust_round(float x) { float t = trunc(x); return (abs(x - t) >= 0.5) ? (t + (((asuint(x) >> 31u) != 0u) ? -1.0 : 1.0)) : t; }\n\n";
+
+/// `x.signum()`: `f32` is `1.0` for `+0.0` and positives and `-1.0` for `-0.0` and negatives (the sign bit; Slang's
+/// `sign` returns 0 for a zero), `i32` is `sign`. The macro sees no types, so the two are overloads.
+const SIGNUM_HELPER_TEXT: &str = "float __gust_signum(float x) { return ((asuint(x) >> 31u) != 0u) ? -1.0 : 1.0; }\nint __gust_signum(int x) { return (x > 0) ? 1 : ((x < 0) ? -1 : 0); }\n\n";
+
+/// `a.rem_euclid(b)`: Rust's `r = a % b; if r < 0 { r + b.abs() } else { r }`. The integer overloads sit on `__gust_rem`,
+/// the helper that stands for `%` (zero divisors and the SPIR-V guards included); for `u32` it is `%` itself. The
+/// float overload cannot use the float `%` of WGSL (inherited from `x - y * trunc(x / y)`): on the Radeon 890M it
+/// returned a wrong whole divisor at exact multiples (slice m11.math2 measured 79 of 5000 rows, `7.0 % 7.0` among
+/// them). `__gust_fmod` is `fmod` by binary long division instead: `x - s` for `s = y * 2^k <= x` is exact (the
+/// result is below `s`), doubling and halving are exact, so the remainder is exact for normal operands, as Rust's.
+/// The loops run at most 254 and 255 times, so a zero divisor or an infinity ends with some value, not a hang.
+const REM_EUCLID_HELPER_TEXT: &str = "float __gust_fmod(float a, float b) { float x = abs(a); float y = abs(b); float r = x; if (x >= y) { float s = y; for (int i = 0; i < 254 && (s * 2.0) <= r; i++) { s = s * 2.0; } for (int j = 0; j < 255; j++) { if (r >= s) { r = r - s; } if (s == y) { break; } s = s * 0.5; } } return ((asuint(a) >> 31u) != 0u) ? -r : r; }\nfloat __gust_rem_euclid(float a, float b) { float r = __gust_fmod(a, b); return (r < 0.0) ? (r + abs(b)) : r; }\nint __gust_rem_euclid(int a, int b) { int r = __gust_rem(a, b); return (r < 0) ? (r + abs(b)) : r; }\nuint __gust_rem_euclid(uint a, uint b) { return __gust_rem(a, b); }\n\n";
+
+/// Which of the helpers of slice m11.math2 the module needs.
+#[derive(Default)]
+struct MathHelperUsage {
+    round: bool,
+    signum: bool,
+    rem_euclid: bool,
+}
+
+impl<'ast> Visit<'ast> for MathHelperUsage {
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        let name = crate::names::name_of(&call.method);
+        let arity = call.args.len();
+        self.round |= name == "round" && arity == 0;
+        self.signum |= name == "signum" && arity == 0;
+        self.rem_euclid |= name == "rem_euclid" && arity == 1;
+        syn::visit::visit_expr_method_call(self, call);
+    }
 }
 
 /// Whether the module calls `.fract()`, so the helper is defined only when used.
@@ -3295,6 +3374,12 @@ struct DivisionUsage {
 }
 
 impl<'ast> Visit<'ast> for DivisionUsage {
+    // `a.rem_euclid(b)` (slice m11.math2) is built on `__gust_rem`, so a module that calls it defines that helper.
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        self.rem |= crate::names::ident_is(&call.method, "rem_euclid") && call.args.len() == 1;
+        syn::visit::visit_expr_method_call(self, call);
+    }
+
     fn visit_expr_binary(&mut self, expression: &'ast syn::ExprBinary) {
         match division_helper(expression) {
             Some(("div", _)) => self.div = true,

@@ -132,6 +132,81 @@ mod float_math {
         }
     }
 
+    // Slice m11.math2: more math methods for compute kernels. `round`, `signum`, `to_radians`, `to_degrees` and the
+    // float `rem_euclid` read one `f32`, and the divisor of `rem_euclid` is its own buffer.
+    pub struct Math2Float {
+        pub m_round: float,
+        pub m_signum: float,
+        pub m_radians: float,
+        pub m_degrees: float,
+        pub m_rem_euclid: float,
+    }
+
+    pub struct Math2Int {
+        pub i_signum: int,
+        pub i_rem_euclid: int,
+        pub u_rem_euclid: uint,
+    }
+
+    pub struct Math2Trig {
+        pub t_asin: float,
+        pub t_acos: float,
+    }
+
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn math2_float(
+        id: SV_DispatchThreadID,
+        xs: StructuredBuffer<float>,
+        ds: StructuredBuffer<float>,
+        mut out: RWStructuredBuffer<Math2Float>,
+    ) {
+        let i: uint = id.x;
+        if i < out.len() {
+            let x = xs[i];
+            out[i] = Math2Float {
+                m_round: x.round(),
+                m_signum: x.signum(),
+                m_radians: x.to_radians(),
+                m_degrees: x.to_degrees(),
+                m_rem_euclid: x.rem_euclid(ds[i]),
+            };
+        }
+    }
+
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn math2_int(
+        id: SV_DispatchThreadID,
+        ia: StructuredBuffer<int>,
+        ib: StructuredBuffer<int>,
+        ua: StructuredBuffer<uint>,
+        ub: StructuredBuffer<uint>,
+        mut out: RWStructuredBuffer<Math2Int>,
+    ) {
+        let i: uint = id.x;
+        if i < out.len() {
+            out[i] = Math2Int {
+                i_signum: ia[i].signum(),
+                i_rem_euclid: ia[i].rem_euclid(ib[i]),
+                u_rem_euclid: ua[i].rem_euclid(ub[i]),
+            };
+        }
+    }
+
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn math2_trig(
+        id: SV_DispatchThreadID,
+        xs: StructuredBuffer<float>,
+        mut out: RWStructuredBuffer<Math2Trig>,
+    ) {
+        let i: uint = id.x;
+        if i < out.len() {
+            out[i] = Math2Trig {
+                t_asin: xs[i].asin(),
+                t_acos: xs[i].acos(),
+            };
+        }
+    }
+
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn transcendental(
         id: SV_DispatchThreadID,

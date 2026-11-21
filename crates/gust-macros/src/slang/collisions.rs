@@ -167,6 +167,9 @@ pub const COLLISIONS: &[Collision] = &[
     // `ceil`, `clamp`, `cos`, `exp`, `exp2`, `floor`, `log` (for `ln`), `log2`, `max`, `min`, `pow` (for `powf`), `sin`,
     // `sqrt`, `tan` and `trunc`. A user local, parameter or helper of the same name would capture the call.
     emitted("abs"),
+    // `asin` and `acos`, the methods of slice m11.math2 (`sign` is not emitted: the integer `signum` is a comparison chain, so the name stays free).
+    emitted("acos"),
+    emitted("asin"),
     emitted("asint"),
     emitted("asuint"),
     emitted("atan"),
@@ -517,6 +520,8 @@ pub fn capture_source(entry: &str, spelled: &str) -> Option<String> {
         "countbits" => local("ob[gid.x] = countbits(7u);"),
         // The scalar math intrinsics of slice m11.za: a user local of that name makes the emitted call a call of a float.
         "abs" => local("ob[gid.x] = uint(abs(-2.0));"),
+        "acos" => local("ob[gid.x] = uint(acos(0.5));"),
+        "asin" => local("ob[gid.x] = uint(asin(0.5));"),
         "atan" => local("ob[gid.x] = uint(atan(1.0));"),
         "atan2" => local("ob[gid.x] = uint(atan2(1.0, 2.0));"),
         "ceil" => local("ob[gid.x] = uint(ceil(1.5));"),

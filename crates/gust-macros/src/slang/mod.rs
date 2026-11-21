@@ -1026,6 +1026,13 @@ pub(crate) fn emit_kernel_in(
     if helpers.rem_euclid {
         output.push_str(REM_EUCLID_HELPER_TEXT);
     }
+    // The helpers of `hypot` and the integer `pow` (slice m11.math3), defined only in a module that calls them.
+    if helpers.hypot {
+        output.push_str(HYPOT_HELPER_TEXT);
+    }
+    if helpers.pow {
+        output.push_str(POW_HELPER_TEXT);
+    }
 
     // The integer `dot` as a sum of products (see `dot_overload_text`); `.dot` is `__gust_dot` in such a module.
     if lowering.dot {
@@ -2988,6 +2995,9 @@ fn scalar_math_function(name: &str) -> &'static str {
         "round" => "__gust_round",
         "signum" => "__gust_signum",
         "rem_euclid" => "__gust_rem_euclid",
+        "mul_add" => "fma",
+        "hypot" => "__gust_hypot",
+        "pow" => "__gust_pow",
         "fract" => FRACT_HELPER,
         other => {
             unreachable!("`{other}` is accepted by `scalar_math_arity` but has no emitter arm")
@@ -3013,6 +3023,11 @@ fn emit_scalar_math(call: &syn::ExprMethodCall) -> syn::Result<String> {
     let function = scalar_math_function(&name);
     let mut operands = vec![emit_expression(&call.receiver)?];
     operands.extend(emit_list(call.args.iter())?);
+    // The integer `pow` (slice m11.math3): the exponent is a `u32` in Rust, and the cast fixes it so the base alone
+    // picks the `uint` or `int` overload of the helper (the macro sees no types).
+    if name == "pow" {
+        operands[1] = format!("uint({})", operands[1]);
+    }
     Ok(format!("{function}({})", operands.join(", ")))
 }
 
@@ -3061,12 +3076,38 @@ const SIGNUM_HELPER_TEXT: &str = "float __gust_signum(float x) { return ((asuint
 /// was wrong. Do not simplify it back.
 const REM_EUCLID_HELPER_TEXT: &str = "float __gust_fmod(float a, float b) { float x = abs(a); float y = abs(b); float r = x; if (x >= y) { float s = y; for (int i = 0; i < 254 && s <= (r - s); i++) { s = s * 2.0; } bool done = false; for (int j = 0; j < 255; j++) { if (!done) { if (r >= s) { r = r - s; } if (s == y) { done = true; } else { s = s * 0.5; } } } } return ((asuint(a) >> 31u) != 0u) ? -r : r; }\nfloat __gust_rem_euclid(float a, float b) { float r = __gust_fmod(a, b); return (r < 0.0) ? (r + abs(b)) : r; }\nint __gust_rem_euclid(int a, int b) { int r = __gust_rem(a, b); return (r < 0) ? (r + abs(b)) : r; }\nuint __gust_rem_euclid(uint a, uint b) { return __gust_rem(a, b); }\n\n";
 
-/// Which of the helpers of slice m11.math2 the module needs.
+/// `x.hypot(y)` (slice m11.math3): Rust's `hypot` has no intermediate overflow, so the helper scales by the larger
+/// magnitude: `m * sqrt(1 + (n / m)^2)` for `m = max(|x|, |y|)` and `n = min(|x|, |y|)`, and `0.0` when `m` is zero (the
+/// quotient would be `0 / 0`). `length(float2(x, y))` is not used: WGSL inherits its accuracy from `sqrt(dot(v, v))`,
+/// whose square overflows near `1e30`. The accuracy is the sum of the WGSL rules of the five operations, for operands
+/// with `max(|x|, |y|)` in `[2^-126, 2^126]` and a finite result: the division is 2.5 ULP, the product `q * q` and the
+/// sum `1 + q * q` are "correctly rounded" (either neighbour), `sqrt` is the 6.5 ULP the float table of SEMANTICS.md
+/// states, and the final product is either neighbour again. That bounds the relative error by `11 * 2^-23`, so the
+/// result is within 22 ULP of the exact value (spacing taken at the larger of the exact and the actual result); the
+/// observed error is far smaller and is printed per adapter by `crates/gust-wgpu/tests/math3.rs`. It is not
+/// bit-equal to Rust's `hypot` in general (D39: documented, never chased). Outside that domain the helper's own text
+/// decides, even on an IEEE-exact GPU: `hypot(inf, inf)` has `q = inf / inf = NaN`, so it returns NaN where Rust gives
+/// infinity. Inferred, not measured: with a `max` and `min` that ignore a NaN, `hypot(NaN, 1.0)` may be about 1.414; and
+/// with flush-to-zero, two subnormal operands may reach `0 / 0`. No loop, so none of the loop-exit trouble of `__gust_fmod`.
+const HYPOT_HELPER_TEXT: &str = "float __gust_hypot(float x, float y) { float m = max(abs(x), abs(y)); float n = min(abs(x), abs(y)); if (m == 0.0) { return 0.0; } float q = n / m; return m * sqrt(1.0 + q * q); }\n\n";
+
+/// `b.pow(e)` on `u32` and `i32` (slice m11.math3): square and multiply over the bits of the exponent, at most 32
+/// trips, and the base is not squared after the last bit, so for a result that fits the type no intermediate overflows
+/// either. The loop exit is an integer compare in the loop condition (`e != 0u`), not a float compare and not a
+/// `break`: NVIDIA driver 610.88 miscompiled a float-compare `break` (see `REM_EUCLID_HELPER_TEXT`). Every result is
+/// exact when it fits the type. A result that does not fit wraps modulo 2^32 on the GPU (WGSL section 6.2.3, as `*`
+/// does) and panics in a debug build of the twin; `pow(0)` is `1` for every base, `0.pow(0)` included, as in Rust. The
+/// overloads are selected by the base (the exponent is always `uint(e)`).
+const POW_HELPER_TEXT: &str = "uint __gust_pow(uint b, uint e) { uint r = 1u; for (int i = 0; i < 32 && e != 0u; i++) { if ((e & 1u) != 0u) { r = r * b; } e = e >> 1u; if (e != 0u) { b = b * b; } } return r; }\nint __gust_pow(int b, uint e) { int r = 1; for (int i = 0; i < 32 && e != 0u; i++) { if ((e & 1u) != 0u) { r = r * b; } e = e >> 1u; if (e != 0u) { b = b * b; } } return r; }\n\n";
+
+/// Which of the helpers of slices m11.math2 and m11.math3 the module needs.
 #[derive(Default)]
 struct MathHelperUsage {
     round: bool,
     signum: bool,
     rem_euclid: bool,
+    hypot: bool,
+    pow: bool,
 }
 
 impl<'ast> Visit<'ast> for MathHelperUsage {
@@ -3076,6 +3117,8 @@ impl<'ast> Visit<'ast> for MathHelperUsage {
         self.round |= name == "round" && arity == 0;
         self.signum |= name == "signum" && arity == 0;
         self.rem_euclid |= name == "rem_euclid" && arity == 1;
+        self.hypot |= name == "hypot" && arity == 1;
+        self.pow |= name == "pow" && arity == 1;
         syn::visit::visit_expr_method_call(self, call);
     }
 }

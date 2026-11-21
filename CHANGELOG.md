@@ -76,13 +76,18 @@ proof.
   `i32`, `f32` and `bool` is shared by every kernel, helper, method and closure of the module and by the host; it
   lowers to a `static const` line and nothing is evaluated. Other forms, and a const whose name is also a type,
   method, field or prelude name of the module or is used as a binding pattern, are the new `GUST-E0127`.
+- `mul_add`, `hypot` and integer `pow` in compute kernels (m11.math3, D205): `a.mul_add(b, c)` lowers to `fma` (a
+  driver may fuse it or not; judged by the bound of the unfused evaluation, D39), `x.hypot(y)` to a scaled helper
+  (bound 22 ULP; infinite, NaN and subnormal operands are outside the domain) and `b.pow(e)` on `u32` and `i32` to a
+  square-and-multiply helper (exact inside the no-overflow domain). The three names are now reserved as method names
+  (`GUST-E0328`), so a struct method named `pow`, `hypot` or `mul_add` in a `#[gpu]` module is refused, and a user
+  name `fma` is renamed in the emitted Slang (`__gust_r_fma`, a new artifact content key for a program that has one).
 - More math methods for compute kernels (m11.math2): `round` (half-way cases away from zero), `signum` (`f32` and
   `i32`), `to_radians`, `to_degrees`, `asin`, `acos` and `rem_euclid` (`f32`, `i32`, `u32`). `round`, `signum` and
   `rem_euclid` lower to `__gust_`-prefixed helpers defined only in a module that calls them. The seven names are
   reserved as method names (`GUST-E0328`), and an unsuffixed integer literal operand of `rem_euclid` is `GUST-E0326`.
   A user helper, local or parameter named `asin` or `acos` is renamed in the emitted Slang (`__gust_r_asin`), so a
-  program that uses one of those names gets new emitted text and a new artifact content key. `hypot`, `mul_add` and
-  integer `pow` stay refused. The `f32` `rem_euclid` helper ends its halving loop by a
+  program that uses one of those names gets new emitted text and a new artifact content key. `hypot`, `mul_add` and integer `pow` came in m11.math3. The `f32` `rem_euclid` helper ends its halving loop by a
   flag, not by a float-compare `break` (m11.fm): on the RTX 5090 with NVIDIA driver 610.88 that form ran a loop of
   more than 128 steps the wrong number of times, so remainders of large quotients were wrong.
 - `gust_algo::dispatch_batch_in_scope` (m11.scope; in the unpublished `gust-algo`): dispatches a caller's own batch

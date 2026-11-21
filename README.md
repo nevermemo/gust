@@ -1357,7 +1357,7 @@ The direct syntax translator currently supports:
   operator on the GPU and Rust's own `wrapping_*` on the CPU twin, so both wrap the same way for every input, and they
   are how a kernel asks for wrapping (a plain `+` that overflows is outside the defined domain). A method call with
   arguments that the dialect does not accept is E0325, whose message lists the accepted ones: `x.wrapping_div(y)`,
-  `x.pow(2)`, `x.hypot(y)`, `x.checked_add(y)` and `x.saturating_sub(y)` are rejected. Float math for compute kernels
+  `x.wrapping_pow(2)`, `x.checked_add(y)` and `x.saturating_sub(y)` are rejected. From m11.math3 `mul_add`, `hypot` and the integer `pow` are accepted (`powi`, `wrapping_pow` and `checked_pow` stay refused). Float math for compute kernels
   (m11.math): `abs`, `min`, `max`, `clamp`, `floor`, `ceil`, `trunc`, `fract`, `sqrt`, `sin`, `cos`, `tan`, `atan`,
   `atan2`, `exp`, `exp2`, `ln`, `log2` and `powf` on `f32` (the integer `min`, `max`, `clamp` and `abs` too), and, from
   m11.math2, `round`, `signum`, `to_radians`, `to_degrees`, `asin`, `acos` and `rem_euclid` (`signum` and `rem_euclid`

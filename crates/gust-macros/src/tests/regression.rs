@@ -5440,8 +5440,8 @@ fn wrapping_methods_are_checked_by_name_and_argument_count() {
     for body in [
         "let y = x.wrapping_div(1u32);",
         "let y = x.wrapping_rem(1u32);",
-        "let y = x.pow(2u32);",
-        "let y = x.hypot(3u32);",
+        "let y = x.wrapping_pow(2u32);",
+        "let y = x.powi(3);",
         "let y = x.checked_add(1u32);",
         "let y = x.saturating_sub(1u32);",
     ] {
@@ -10260,7 +10260,7 @@ fn every_scalar_math_name_has_an_emitter_arm_and_is_in_the_accepted_text() {
         .unwrap_err()
         .to_string();
     let names = names_in_fn(validate, "pub(crate) fn scalar_math_arity");
-    assert_eq!(names.len(), 26, "{names:?}");
+    assert_eq!(names.len(), 29, "{names:?}");
     for name in &names {
         let arity = crate::validate::scalar_math_arity(name).expect("a table name has an arity");
         let arguments = ["", "1.0", "0.0, 1.0"][arity];
@@ -10571,9 +10571,9 @@ fn an_unsuffixed_integer_literal_operand_of_rem_euclid_is_refused() {
         Code::BuiltinArguments,
     );
     for body in [
-        "let f = 2.5f32; let y = f.hypot(1.0);",
-        "let f = 2.5f32; let y = f.mul_add(1.0, 2.0);",
-        "let y = x.pow(2u32);",
+        "let f = 2.5f32; let y = f.powi(2);",
+        "let y = x.wrapping_pow(2u32);",
+        "let y = x.checked_pow(2u32);",
     ] {
         assert_rejected(&kernel_with_body(body), Code::MethodNotInDialect);
     }
@@ -10615,4 +10615,155 @@ fn a_user_helper_named_like_the_math2_intrinsics_is_renamed() {
     // One bare `asin(` and one `acos(`: the method calls.
     assert_eq!(count_unprefixed(&text, "asin("), 1, "{text}");
     assert_eq!(count_unprefixed(&text, "acos("), 1, "{text}");
+}
+
+/// Slice m11.math3: the lowered text of `hypot`, `mul_add` and the integer `pow`, written by hand from the rules of the
+/// brief. A helper is defined exactly in a module that calls it, and `mul_add` is the unqualified `fma` intrinsic.
+#[test]
+fn the_math3_methods_lower_to_fma_and_helpers() {
+    let hypot = "float __gust_hypot(float x, float y) { float m = max(abs(x), abs(y)); float n = min(abs(x), abs(y)); if (m == 0.0) { return 0.0; } float q = n / m; return m * sqrt(1.0 + q * q); }";
+    let pow = [
+        "uint __gust_pow(uint b, uint e) { uint r = 1u; for (int i = 0; i < 32 && e != 0u; i++) { if ((e & 1u) != 0u) { r = r * b; } e = e >> 1u; if (e != 0u) { b = b * b; } } return r; }",
+        "int __gust_pow(int b, uint e) { int r = 1; for (int i = 0; i < 32 && e != 0u; i++) { if ((e & 1u) != 0u) { r = r * b; } e = e >> 1u; if (e != 0u) { b = b * b; } } return r; }",
+    ]
+    .join("\n");
+    for (body, expected, helper) in [
+        (
+            "let y = f.mul_add(1.5, 2.0);",
+            "var y = fma(f, 1.5, 2.0);",
+            "",
+        ),
+        (
+            "let y = f.hypot(3.0);",
+            "var y = __gust_hypot(f, 3.0);",
+            hypot,
+        ),
+        (
+            "let y = x.pow(3u32);",
+            "var y = __gust_pow(x, uint(uint(3)));",
+            pow.as_str(),
+        ),
+        (
+            "let y = x.pow(2);",
+            "var y = __gust_pow(x, uint(2));",
+            pow.as_str(),
+        ),
+        (
+            "let y = i.pow(x);",
+            "var y = __gust_pow(i, uint(x));",
+            pow.as_str(),
+        ),
+        (
+            "let y = (x + 1u32).pow(x);",
+            "var y = __gust_pow(((x + uint(1))), uint(x));",
+            pow.as_str(),
+        ),
+    ] {
+        let source = translate(&kernel_with_body(&format!(
+            "let f = 2.5f32; let i = -3i32; {body}"
+        )))
+        .unwrap_or_else(|error| panic!("{body}: {error}"));
+        assert!(source.contains(expected), "{body}: {source}");
+        for (name, text) in [("__gust_hypot", hypot), ("__gust_pow", pow.as_str())] {
+            assert_eq!(
+                source.contains(text),
+                helper == text,
+                "{body}: the `{name}` helper is defined exactly when used: {source}"
+            );
+        }
+        // `fma` is the intrinsic, never a helper or a `mad`.
+        assert_eq!(
+            count_unprefixed(&source, "fma("),
+            usize::from(body.contains("mul_add")),
+            "{body}: {source}"
+        );
+    }
+}
+
+#[test]
+fn the_math3_methods_check_their_argument_counts() {
+    for body in [
+        "let y = f.hypot();",
+        "let y = f.hypot(1.0, 2.0);",
+        "let y = f.mul_add(1.0);",
+        "let y = f.mul_add();",
+        "let y = f.mul_add(1.0, 2.0, 3.0);",
+        "let y = x.pow();",
+        "let y = x.pow(1u32, 2u32);",
+    ] {
+        assert_rejected(
+            &kernel_with_body(&format!("let f = 2.5f32; {body}")),
+            Code::BuiltinArguments,
+        );
+    }
+}
+
+#[test]
+fn an_unsuffixed_integer_literal_base_of_pow_is_refused() {
+    for body in [
+        "let y = 3.pow(x);",
+        "let y = (3).pow(x);",
+        "let y = (-3).pow(x);",
+        "let y = (1 + 2).pow(x);",
+    ] {
+        assert_rejected(&kernel_with_body(body), Code::UnsuffixedLiteralLet);
+    }
+    let text = translate(&kernel_with_body("let y = 3.pow(x);"))
+        .unwrap_err()
+        .to_string();
+    assert!(text.contains("add a suffix"), "{text}");
+    // A suffix, a typed operand and an unsuffixed literal exponent are accepted.
+    for body in [
+        "let y = 3u32.pow(x);",
+        "let y = (-3i32).pow(x);",
+        "let y = x.pow(2);",
+        "let y = x.pow(x + 1u32);",
+    ] {
+        translate(&kernel_with_body(body)).unwrap_or_else(|error| panic!("{body}: {error}"));
+    }
+}
+
+#[test]
+fn the_names_of_the_math3_methods_are_reserved_for_module_methods() {
+    for name in ["hypot", "mul_add", "pow"] {
+        let source = format!(
+            "mod bad {{ pub struct S {{ pub a: f32 }} impl S {{ pub fn {name}(&self) -> f32 {{ self.a }} }} \
+             #[kernel] pub fn run(id: SV_DispatchThreadID) {{}} }}"
+        );
+        assert_rejected(&source, Code::MethodNameClash);
+    }
+}
+
+/// Slice m11.math3: a user helper, local or parameter named `fma` is renamed, and the call `mul_add` lowers to stays the
+/// intrinsic.
+#[test]
+fn a_user_name_like_fma_is_renamed_and_the_mul_add_call_stays_the_intrinsic() {
+    let source = "mod m { \
+        fn fma(x: float) -> float { x } \
+        #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) { \
+            let a = 1.5f32; let b = fma(a); \
+            out[id.x] = a.mul_add(b, 2.0) + fma(b); } }";
+    let text = translate(source).unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        text.contains("float __gust_r_fma(float x)"),
+        "helper declaration:\n{text}"
+    );
+    assert!(
+        text.contains("var b = __gust_r_fma(a);"),
+        "helper call:\n{text}"
+    );
+    assert!(text.contains("fma(a, b, 2.0)"), "intrinsic call:\n{text}");
+    // Exactly one bare `fma(`: the intrinsic written by the lowering.
+    assert_eq!(count_unprefixed(&text, "fma("), 1, "{text}");
+    // A user local named `fma` is renamed too.
+    let local = "mod m { \
+        #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) { \
+            let fma = 1.5f32; out[id.x] = fma.mul_add(fma, 2.0); } }";
+    let text = translate(local).unwrap_or_else(|error| panic!("{error}"));
+    assert!(text.contains("var __gust_r_fma = "), "{text}");
+    assert!(
+        text.contains("fma(__gust_r_fma, __gust_r_fma, 2.0)"),
+        "{text}"
+    );
+    assert_eq!(count_unprefixed(&text, "fma("), 1, "{text}");
 }

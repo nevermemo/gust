@@ -1081,9 +1081,12 @@ pub(crate) struct GpuSuitePin {
 ///
 /// Slice m11.ld: 528 over 52 became 529 over 52. One new test in `tests/driver_sentinel.rs` (the float-compare
 /// loop exit on the RTX 5090). Updated by count, not from a full Gpu suite run.
+///
+/// Slice m11.math3: 529 over 52 became 532 over 53. The new test file `tests/math3.rs` holds three tests (`mul_add`,
+/// `hypot` and integer `pow`) and adds one `test result:` line. Updated by count, not from a full Gpu suite run.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 529,
-    result_lines: 52,
+    passed: 532,
+    result_lines: 53,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

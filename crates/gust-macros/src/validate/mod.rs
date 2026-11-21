@@ -65,8 +65,8 @@ pub(crate) fn scalar_math_arity(name: &str) -> Option<usize> {
         "abs" | "floor" | "ceil" | "trunc" | "fract" | "sqrt" | "sin" | "cos" | "tan" | "atan"
         | "exp" | "exp2" | "log2" | "ln" | "round" | "signum" | "to_radians" | "to_degrees"
         | "asin" | "acos" => Some(0),
-        "min" | "max" | "atan2" | "powf" | "rem_euclid" => Some(1),
-        "clamp" => Some(2),
+        "min" | "max" | "atan2" | "powf" | "rem_euclid" | "hypot" | "pow" => Some(1),
+        "clamp" | "mul_add" => Some(2),
         _ => None,
     }
 }
@@ -162,7 +162,8 @@ const ACCEPTED_METHODS: &str = "the accepted methods are `.global_id()` and `.le
 `.wrapping_add(b)`, `.wrapping_sub(b)`, `.wrapping_mul(b)` and `.wrapping_neg()`, the scalar math methods \
 `.abs()`, `.min(b)`, `.max(b)`, `.clamp(lo, hi)`, `.floor()`, `.ceil()`, `.trunc()`, `.fract()`, `.sqrt()`, `.sin()`, \
 `.cos()`, `.tan()`, `.atan()`, `.atan2(x)`, `.exp()`, `.exp2()`, `.ln()`, `.log2()`, `.powf(b)`, `.round()`, \
-`.signum()`, `.to_radians()`, `.to_degrees()`, `.asin()`, `.acos()` and `.rem_euclid(b)`, and the vector and \
+`.signum()`, `.to_radians()`, `.to_degrees()`, `.asin()`, `.acos()`, `.rem_euclid(b)`, `.hypot(y)`, \
+`.mul_add(b, c)` and the integer `.pow(e)`, and the vector and \
 matrix methods (swizzles such as `.xy()`, `.dot(v)`, `.mul_vec4(v)`, `.mul_mat4(m)`, `.transpose()`)";
 
 /// Rust primitives outside the four-byte scalar subset (`usize` is not here: `visit_type_path` gives it GUST-E0334
@@ -5605,6 +5606,21 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                          Slang types it `int` while rustc infers the type from the other operand, so the two can \
                          differ; add a suffix (`x.{method}(3u32)`)"
                     ),
+                );
+                return;
+            }
+            // Slice m11.math3: `b.pow(e)` is `__gust_pow(b, uint(e))` and the base alone picks the `u32` or `i32`
+            // overload, so a base literal without a suffix would be `int` in Slang and whatever rustc infers in the
+            // twin: the same trap, asked for the same suffix. The exponent is always a `u32` in Rust.
+            if method == "pow"
+                && let Some(literal) = unsuffixed_literal_only(&call.receiver)
+            {
+                self.reject(
+                    Code::UnsuffixedLiteralLet,
+                    literal,
+                    "an integer literal without a suffix as the base of `.pow(..)` has no type of its own: Slang \
+                     types it `int` while rustc infers the type from the later uses, so the two can differ; add a \
+                     suffix (`2u32.pow(e)`)",
                 );
                 return;
             }

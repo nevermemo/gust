@@ -593,6 +593,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       `driver_sentinel` (RTX 5090, 610.88: `<` form `[100,127,128,128,128,128]`, `==` form `[100,127,0,0,0,0]` for
       breaks due at 100, 127, 128, 129, 200 and 250; the SPIR-V route the same; the Radeon 890M and the twin give
       Rust's values) and a SEMANTICS paragraph. Opus review: merge after fixes. `GPU_SUITE_PIN` 529 over 52 by count.
+    - m11.math3 (`1fe0df4`, fixes `60d9d05`; D205): `mul_add` (`fma`), `hypot` (scaled helper) and integer `pow`
+      (square and multiply, integer loop exit, safe from the m11.ld defect). Measured over 5000 rows per method:
+      `pow` exact on the Radeon 890M and the RTX 5090; `hypot` at most 1.72 ULP (890M) and 2.45 ULP (5090) against
+      the 22 ULP bound; `mul_add` within 0.5 ULP, and all 5000 rows bit-equal to Rust's fused result on both (printed,
+      not asserted). Opus review: merge after fixes. `GPU_SUITE_PIN` 532 over 53 by count.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

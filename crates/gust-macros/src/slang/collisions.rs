@@ -221,6 +221,8 @@ pub const COLLISIONS: &[Collision] = &[
     both("float4", &[Helper]),
     both("float4x4", &[Helper]),
     emitted("floor"),
+    // `fma`, the lowering of `mul_add` (slice m11.math3); a user local of the name would make the call a call of a float.
+    emitted("fma"),
     hard("for", &[Struct, Global]),
     hard("if", &[Struct, Global]),
     emitted("int"),
@@ -549,6 +551,8 @@ pub fn capture_source(entry: &str, spelled: &str) -> Option<String> {
         "asint" => local("ob[gid.x] = uint(asint(2u));"),
         "asuint" => local("ob[gid.x] = asuint(2);"),
         "countbits" => local("ob[gid.x] = countbits(7u);"),
+        // Slice m11.math3: `fma`, the lowering of `mul_add`; a user local of that name makes the call a call of a float.
+        "fma" => local("ob[gid.x] = uint(fma(1.0, 2.0, 3.0));"),
         // The scalar math intrinsics of slice m11.za: a user local of that name makes the emitted call a call of a float.
         "abs" => local("ob[gid.x] = uint(abs(-2.0));"),
         "acos" => local("ob[gid.x] = uint(acos(0.5));"),

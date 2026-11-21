@@ -1,8 +1,8 @@
 //! `inclusive` and `exclusive` prefix sums of a [`GpuVec`] of `u32` (plan section 5.3).
 //!
 //! Which kernels a scan runs is [`crate::variant::shipped`] (v1 for both, plan section 5.5). A scan is one
-//! `dispatch_batch`, with one pooled `GpuVec` per level of totals and one for the result, all taken from the device's
-//! buffer pool (the totals are returned to it on drop). Every write goes to the invocation's own element or chunk, or
+//! `dispatch_batch`, with one pooled `GpuVec` per level of totals (returned to the device's buffer pool on drop); the
+//! result is a new `GpuVec` for `inclusive` and `exclusive`, the caller's own for the `_into` forms. Every write goes to the invocation's own element or chunk, or
 //! to a cell of workgroup memory behind barriers: no atomics, no race.
 //!
 //! - v1, the shipped form ([`TileSchedule`]): a workgroup of 256 lanes owns a span of 4096 elements and scans it in 16
@@ -20,8 +20,11 @@
 //! The contract (section 5.1): the sum is plain `+`, so a scan is exact and in the domain only while no inclusive
 //! prefix, the total included, passes `u32::MAX` (the kernels wrap on the GPU, the debug twin panics, as every `+` of
 //! the dialect). The scan of an empty input is an empty vector. An input larger than the device's storage binding
-//! limit, or one whose level 0 needs more workgroups than the device allows, is `Error::Device(DeviceLimit)` before
-//! any buffer is taken or dispatch is made (no chunking in M7, section 8 C3).
+//! limit is `Error::Device(DeviceLimit)` before any buffer is taken or dispatch is made (no chunking in M7, section 8
+//! C3); a level 0 that needs more workgroups than the device allows is split by the host (D211).
+//!
+//! `inclusive_into` and `exclusive_into` (m11.fric1b) write into a buffer of the caller's, of the input's length; the
+//! allocating forms are wrappers around the same code.
 
 use gust::Independent;
 use gust_wgpu::{BufferDispatch, GpuVec};
@@ -47,7 +50,40 @@ pub fn inclusive(input: &GpuVec<u32>) -> Result<GpuVec<u32>, Error> {
 ///
 /// As for [`inclusive`].
 pub fn inclusive_with(variant: Variant, input: &GpuVec<u32>) -> Result<GpuVec<u32>, Error> {
-    scan(variant, input, false)
+    scan_new(variant, input, false)
+}
+
+/// The inclusive prefix sums of `input`, written into the caller's `out` (m11.fric1b): `out[i] = input[0] + ... +
+/// input[i]`. `out` must hold exactly as many elements as `input` and belong to the same device; every element of it is
+/// written, so the buffer can be reused for scan after scan without clearing it, and a caller that scans every step
+/// allocates nothing for the result. The kernels, the v1/v0 choice, the storage-limit refusal and the host split of a
+/// level 0 past the workgroup limit (D211) are those of [`inclusive`]; this is the one code path of both.
+///
+/// `out` must not be `input` (the same buffer bound to a read and a write parameter is refused by the dispatch).
+///
+/// # Errors
+///
+/// - `Error::Length { expected, actual }` when `out` holds another number of elements than `input` (nothing is
+///   dispatched).
+/// - `Error::Device(gust_wgpu::Error::AliasedBinding { .. })` when `out` is `input` (nothing is dispatched).
+/// - An `out` of another device is not checked up front: the dispatch refuses it, as `Error::Device` (a buffer of
+///   another device is reported by `gust_wgpu` as foreign, `Error::ForeignPersistentBuffer`), before anything runs.
+/// - Otherwise as for [`inclusive`].
+pub fn inclusive_into(input: &GpuVec<u32>, out: &GpuVec<u32>) -> Result<(), Error> {
+    inclusive_into_with(shipped(Operation::Inclusive), input, out)
+}
+
+/// [`inclusive_into`] with the kernels of `variant` (v1 falls back to v0 for an input its launch cannot take).
+///
+/// # Errors
+///
+/// As for [`inclusive_into`].
+pub fn inclusive_into_with(
+    variant: Variant,
+    input: &GpuVec<u32>,
+    out: &GpuVec<u32>,
+) -> Result<(), Error> {
+    scan(variant, input, out, false)
 }
 
 /// The exclusive prefix sums: `out[0] = 0` and `out[i] = input[0] + ... + input[i - 1]`, a new vector on the device of
@@ -66,26 +102,68 @@ pub fn exclusive(input: &GpuVec<u32>) -> Result<GpuVec<u32>, Error> {
 ///
 /// As for [`inclusive`].
 pub fn exclusive_with(variant: Variant, input: &GpuVec<u32>) -> Result<GpuVec<u32>, Error> {
-    scan(variant, input, true)
+    scan_new(variant, input, true)
 }
 
-/// One scan: the limit checks, the pooled buffers, one `dispatch_batch` in the order level-0 scan, scans of totals, top
-/// scan, add-backs into totals from the top down, final add-back.
-fn scan(variant: Variant, input: &GpuVec<u32>, exclusive: bool) -> Result<GpuVec<u32>, Error> {
+/// The exclusive prefix sums of `input`, written into the caller's `out` (m11.fric1b): `out[0] = 0` and `out[i] =
+/// input[0] + ... + input[i - 1]`. The length rule, the reuse of `out`, the variants, the limits and the split of D211
+/// are those of [`inclusive_into`].
+///
+/// # Errors
+///
+/// As for [`inclusive_into`].
+pub fn exclusive_into(input: &GpuVec<u32>, out: &GpuVec<u32>) -> Result<(), Error> {
+    exclusive_into_with(shipped(Operation::Exclusive), input, out)
+}
+
+/// [`exclusive_into`] with the kernels of `variant`.
+///
+/// # Errors
+///
+/// As for [`inclusive_into`].
+pub fn exclusive_into_with(
+    variant: Variant,
+    input: &GpuVec<u32>,
+    out: &GpuVec<u32>,
+) -> Result<(), Error> {
+    scan(variant, input, out, true)
+}
+
+/// A scan into a new vector: the storage limit is checked before the result is allocated (as it always was), then
+/// [`scan`] writes into it.
+fn scan_new(variant: Variant, input: &GpuVec<u32>, exclusive: bool) -> Result<GpuVec<u32>, Error> {
+    let device = input.device();
+    limits::check(device, "gust_algo::scan", input.len(), size_of::<u32>())?;
+    let out = GpuVec::<u32>::zeroed_on(device, input.len())?;
+    scan(variant, input, &out, exclusive)?;
+    Ok(out)
+}
+
+/// One scan: the length rule, the limit checks, the pooled buffers, one `dispatch_batch` in the order level-0 scan,
+/// scans of totals, top scan, add-backs into totals from the top down, final add-back.
+fn scan(
+    variant: Variant,
+    input: &GpuVec<u32>,
+    out: &GpuVec<u32>,
+    exclusive: bool,
+) -> Result<(), Error> {
+    if out.len() != input.len() {
+        return Err(Error::Length {
+            expected: input.len(),
+            actual: out.len(),
+        });
+    }
     if variant == Variant::V1
         && let Some(schedule) = TileSchedule::new(input.len())
         && limits::admits(input.device(), input.len(), size_of::<u32>())
     {
-        return scan_tiles(input, &schedule, exclusive);
+        return scan_tiles(input, out, &schedule, exclusive);
     }
     let device = input.device();
     let Some(schedule) = ScanSchedule::new(input.len()) else {
-        return Ok(GpuVec::zeroed_on(device, 0)?);
+        return Ok(());
     };
     limits::check(device, "gust_algo::scan", input.len(), size_of::<u32>())?;
-    // Every element and every total is written before it is read, so the zero fill is not needed for correctness;
-    // `GpuVec` has no public constructor without it (see `reduce`).
-    let out = GpuVec::<u32>::zeroed_on(device, input.len())?;
     let lengths = schedule.sums();
     let sums = lengths
         .iter()
@@ -96,7 +174,7 @@ fn scan(variant: Variant, input: &GpuVec<u32>, exclusive: bool) -> Result<GpuVec
     let first = scan_kernels::scan_chunks_u32::call(
         lengths[0],
         Independent(input),
-        Independent(&out),
+        Independent(out),
         &sums[0],
     );
     let upward: Vec<_> = (1..levels)
@@ -129,27 +207,27 @@ fn scan(variant: Variant, input: &GpuVec<u32>, exclusive: bool) -> Result<GpuVec
             lengths[0],
             &sums[0],
             Independent(input),
-            Independent(&out),
+            Independent(out),
         );
         batch.push(BufferDispatch::from(&shifted));
     } else {
-        plain = scan_kernels::add_back_inclusive_u32::call(lengths[0], &sums[0], Independent(&out));
+        plain = scan_kernels::add_back_inclusive_u32::call(lengths[0], &sums[0], Independent(out));
         batch.push(BufferDispatch::from(&plain));
     }
     debug_assert_eq!(batch.len(), schedule.dispatches());
     crate::timing::dispatch_batch_in_scope(device, &batch)?;
-    Ok(out)
+    Ok(())
 }
 
 /// One v1 scan of a non-empty input whose launch fits the device: the level-0 tile scan, tile scans of the totals, the
 /// top scan, add-backs into the totals from the top down, the final add-back. A single span is one dispatch.
 fn scan_tiles(
     input: &GpuVec<u32>,
+    out: &GpuVec<u32>,
     schedule: &TileSchedule,
     exclusive: bool,
-) -> Result<GpuVec<u32>, Error> {
+) -> Result<(), Error> {
     let device = input.device();
-    let out = GpuVec::<u32>::zeroed_on(device, input.len())?;
     let lengths = schedule.sums();
     let sums = lengths
         .iter()
@@ -165,7 +243,7 @@ fn scan_tiles(
         first_exclusive = scan_kernels::scan_tiles_exclusive_u32::call(
             invocations(lengths[0]),
             Independent(input),
-            Independent(&out),
+            Independent(out),
             Independent(&sums[0]),
         );
         BufferDispatch::from(&first_exclusive)
@@ -173,7 +251,7 @@ fn scan_tiles(
         first_inclusive = scan_kernels::scan_tiles_inclusive_u32::call(
             invocations(lengths[0]),
             Independent(input),
-            Independent(&out),
+            Independent(out),
             Independent(&sums[0]),
         );
         BufferDispatch::from(&first_inclusive)
@@ -204,7 +282,7 @@ fn scan_tiles(
         let last = scan_kernels::add_carry_u32::call(
             invocations(lengths[0]),
             Independent(&sums[0]),
-            Independent(&out),
+            Independent(out),
         );
         batch.extend(upward.iter().map(BufferDispatch::from));
         batch.push(BufferDispatch::from(&top));
@@ -216,5 +294,5 @@ fn scan_tiles(
         debug_assert_eq!(batch.len(), schedule.dispatches());
         crate::timing::dispatch_batch_in_scope(device, &batch)?;
     }
-    Ok(out)
+    Ok(())
 }

@@ -3,8 +3,9 @@
 //!
 //! The functions take a [`GpuVec`](gust_wgpu::GpuVec) and run on the device that holds it: no host round trip except
 //! the one-element result of [`reduce::sum`], [`reduce::sum_wrapping`], [`reduce::min`] and [`reduce::max`]; a
-//! [`scan`] returns a new vector on the same device, and so does everything in [`compact`] (a count that stays on the
-//! device, the indices of the set flags, gathers by those indices). Every kernel is a GUST kernel
+//! [`scan`] returns a new vector on the same device (`scan::inclusive_into` and `scan::exclusive_into` write into the
+//! caller's own buffer instead), and so does everything in [`compact`] (a count that stays on the device, the indices
+//! of the set flags, gathers by those indices). Every kernel is a GUST kernel
 //! (`tests/fixtures/reduce.rs`, included as [`kernels`], `tests/fixtures/scan.rs`, included as [`scan_kernels`], and
 //! `tests/fixtures/compact.rs`, included as [`compact_kernels`]); the host code only chooses the schedule
 //! ([`schedule::Schedule`] for a reduction, [`schedule::ScanSchedule`] for a scan), takes one pooled `GpuVec` per level

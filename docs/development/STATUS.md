@@ -497,6 +497,24 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   m10.api2a.2). (iv) Nothing is published; no benchmark table is publishable. Rustdoc coverage: gust-compute 712
   documented (100 %), 181 with examples; gust-compute-wgpu 342 (100 %), 44 with examples. (v) What carries is in
   NEXT_TASKS, "M10 follow-ups"; M11 is next.
+- M11 design phase, merged into `dev` 2026-11-21 (D199 to D202; not pushed, release hold unchanged). Each slice had an
+  Opus review and one fix round. GPU evidence is from the AMD Radeon 890M (Vulkan) only, per D202; other adapters are
+  unmeasured.
+  - m11.rng (`962a6d7`, fixes `204d915`, merge `bba576a`): `examples/hash-rng`, a counter-based hash and a `[0, 1)`
+    map, bit-equal between a host reference, the CPU twin and the GPU over 4096 indices and three seeds.
+  - m11.kit (`8891c16`, fixes `de4c442`, merge `a5a7a63`): `examples/budget-kit`, a one-machine design aid that times
+    six workload shapes and checks each against the CPU; its output stays outside the repository (no figures here).
+    API gaps it found: `atomic_add`'s old value (E0606), `floor`, `fract` and `rem_euclid` at the time, shared `const`
+    across kernels, linear dispatch past 65,535 workgroups in a `#[kernel]`, one timing scope across own kernels and
+    `gust-algo`.
+  - m11.math (`6f13b7a`, fixes `630afa8`, merge `2d085b9`): 19 `f32` methods, `u32`/`i32` `min`/`max`/`clamp`,
+    `i32::abs`, `PI`/`TAU`/`E`; an unsuffixed integer literal operand of `min`/`max`/`clamp` is refused (E0326).
+    Bounds in SEMANTICS cite the WGSL accuracy table; observed errors are within them. `GPU_SUITE_PIN` is 516 over 50,
+    updated by count; the full Gpu suite was not run.
+  - `docs/DECISIONS.md` header fixed to the next id (`4168cc8`).
+  - Merged-tree gate on `2d085b9`: fmt, workspace clippy, macros tests, `check-ui`, `docs-check`, `check-arch`, `lint`,
+    the `float_math` GPU test, the three examples on the GPU (`budget-kit --small`), and the Unit suite all passed.
+    One GPU test needed a second adapter request after a transient NoAdapter.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

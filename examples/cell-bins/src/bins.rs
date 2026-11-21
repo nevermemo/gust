@@ -8,9 +8,10 @@
 //! 4. `scatter`: every element takes the old value of an `atomic_add` on its cell's cursor as its place inside the cell
 //!    and writes its own index to `order[starts[cell] + place]`.
 //!
-//! A cell is `floor(x) + side * floor(y)` for a position `(x, y)` in `[0, side)` on each axis. A position past the last
-//! cell on either axis is put in the last cell of that axis; a negative or NaN position is the caller's error (a float
-//! to unsigned conversion of it is not defined the same way on every device).
+//! A cell is `floor(x) + side * floor(y)` for a position `(x, y)` in `[0, side)` on each axis. A position at or past
+//! `side - 1` on either axis (any finite value, or `+inf`) is put in the last cell of that axis: the value is clamped
+//! in `f32` before the conversion to an integer. A negative or NaN position is the caller's error (a float to
+//! unsigned conversion of it is not defined the same way on every device).
 //!
 //! # Contract
 //!
@@ -25,9 +26,10 @@
 //! cell as sets (sort the cell's slice first), never the raw order. The CPU twin runs the elements in index order, so
 //! its order inside a cell is ascending; do not rely on that either.
 //!
-//! A rebuild allocates no device buffer: the counts, the cursors, the starts and the order are made once, by
-//! [`Bins::new`], and every rebuild overwrites all of the counts, the cursors and the starts (and the first `n` slots
-//! of the order). The bins are not safe to rebuild from two threads at once.
+//! The bins' own buffers (the counts, the cursors, the starts and the order) are made once, by [`Bins::new`], and every
+//! rebuild overwrites all of the counts, the cursors and the starts (and the first `n` slots of the order). The scan
+//! takes its temporaries (one per level of totals) from the device pool: the first rebuild may miss the pool and
+//! allocate them, and from the second rebuild on they are reused.
 
 #[cfg(any(test, gust_dual))]
 use gust::cpu::{CpuBuffer, CpuDevice};
@@ -37,17 +39,19 @@ use gust_wgpu::{DeviceHandle, GpuVec, HeadlessDevice};
 #[gpu]
 mod binning {
     /// The cell index of the position `(x, y)` on a grid of `side` cells per side: `floor(x) + side * floor(y)`, each
-    /// axis clamped to the last cell.
+    /// axis clamped to the last cell in `f32`, before the conversion (which is not defined for 2^32 or more, or
+    /// infinity). `side` is at least 1 and at most 65535 (its square fits in `u32`, and it is exact in `f32`).
     pub fn cell(x: f32, y: f32, side: u32) -> u32 {
-        let mut cx = x as u32;
-        if cx >= side {
-            cx = side - 1u32;
+        let last = (side - 1u32) as f32;
+        let mut fx = x;
+        if fx > last {
+            fx = last;
         }
-        let mut cy = y as u32;
-        if cy >= side {
-            cy = side - 1u32;
+        let mut fy = y;
+        if fy > last {
+            fy = last;
         }
-        cy * side + cx
+        (fy as u32) * side + (fx as u32)
     }
 
     /// Zeroes the counts and the cursors (both have one slot per cell).
@@ -100,6 +104,28 @@ mod binning {
     }
 }
 
+type Error = Box<dyn std::error::Error>;
+
+/// The number of cells of a `side x side` grid; `side` must be at least 1 and its square must fit in `u32`.
+fn grid_cells(side: u32) -> Result<u32, Error> {
+    if side == 0 {
+        return Err("the grid has no cells (side 0)".into());
+    }
+    side.checked_mul(side)
+        .ok_or_else(|| "the grid has more than u32::MAX cells".into())
+}
+
+/// The checks of one rebuild, shared by the device bins and the twin: equal lengths, at most `capacity`.
+fn check_elements(xs: usize, ys: usize, capacity: usize) -> Result<(), Error> {
+    if xs != ys {
+        return Err(format!("{xs} x positions for {ys} y positions").into());
+    }
+    if xs > capacity {
+        return Err(format!("{xs} elements for bins of capacity {capacity}").into());
+    }
+    Ok(())
+}
+
 /// The bins on a device: the buffers are made once and rebuilt in place. See the module documentation for the contract.
 pub struct Bins {
     handle: DeviceHandle,
@@ -112,14 +138,8 @@ pub struct Bins {
 
 impl Bins {
     /// Bins for a `side x side` grid and up to `capacity` elements, with every buffer allocated.
-    pub fn new(
-        handle: &DeviceHandle,
-        side: u32,
-        capacity: u32,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let cells = side
-            .checked_mul(side)
-            .ok_or("the grid has more than u32::MAX cells")?;
+    pub fn new(handle: &DeviceHandle, side: u32, capacity: u32) -> Result<Self, Error> {
+        let cells = grid_cells(side)?;
         Ok(Self {
             handle: DeviceHandle::clone(handle),
             params: GpuVec::from_slice_on(handle, &[side])?,
@@ -136,23 +156,14 @@ impl Bins {
     }
 
     /// Rebuilds the bins from the positions `(xs[i], ys[i])`, which must have the same length, at most
-    /// [`capacity`](Self::capacity). Four device steps (clear, count, scan, scatter), no allocation of a device buffer.
-    pub fn rebuild(
-        &self,
-        xs: &GpuVec<f32>,
-        ys: &GpuVec<f32>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        if xs.len() != ys.len() {
-            return Err(format!("{} x positions for {} y positions", xs.len(), ys.len()).into());
-        }
-        if xs.len() > self.capacity() {
-            return Err(format!(
-                "{} elements for bins of capacity {}",
-                xs.len(),
-                self.capacity()
-            )
-            .into());
-        }
+    /// [`capacity`](Self::capacity). Four device steps (clear, count, scan, scatter); the bins' own buffers are reused
+    /// (see the module documentation for the scan's temporaries).
+    pub fn rebuild(&mut self, xs: &GpuVec<f32>, ys: &GpuVec<f32>) -> Result<(), Error> {
+        check_elements(
+            xs.len() as usize,
+            ys.len() as usize,
+            self.capacity() as usize,
+        )?;
         let device: &HeadlessDevice = &self.handle;
         binning::clear::dispatch(device, self.counts.len(), &self.counts, &self.cursor)?;
         binning::count::dispatch(
@@ -177,9 +188,8 @@ impl Bins {
         Ok(())
     }
 
-    /// The bins on the host: one readback of each buffer. (A program that reads the bins in a kernel of its own
-    /// binds `counts`, `starts` and `order` instead; they are the fields of this struct.)
-    pub fn read(&self) -> Result<Snapshot, Box<dyn std::error::Error>> {
+    /// The bins on the host: one readback of each buffer. A program reads the bins through this and [`Snapshot`].
+    pub fn read(&self) -> Result<Snapshot, Error> {
         Ok(Snapshot {
             counts: self.counts.to_vec()?,
             starts: self.starts.to_vec()?,
@@ -191,8 +201,11 @@ impl Bins {
 /// The bins read back to the host.
 #[derive(Clone)]
 pub struct Snapshot {
+    /// The number of elements in each cell.
     pub counts: Vec<u32>,
+    /// The first slot of each cell in `order`: the exclusive sum of `counts`.
     pub starts: Vec<u32>,
+    /// The element indices grouped by cell; slots from the element count on are stale (see the module documentation).
     pub order: Vec<u32>,
 }
 
@@ -219,11 +232,11 @@ pub struct TwinBins {
 
 #[cfg(any(test, gust_dual))]
 impl TwinBins {
-    /// Bins for a `side x side` grid and up to `capacity` elements.
-    pub fn new(side: u32, capacity: u32) -> Self {
+    /// Bins for a `side x side` grid and up to `capacity` elements; the same checks as [`Bins::new`].
+    pub fn new(side: u32, capacity: u32) -> Result<Self, Error> {
         let device = CpuDevice::new();
-        let cells = vec![0u32; (side * side) as usize];
-        Self {
+        let cells = vec![0u32; grid_cells(side)? as usize];
+        Ok(Self {
             params: device.buffer(&[side]),
             counts: device.buffer(&cells),
             starts: device.buffer(&cells),
@@ -231,15 +244,12 @@ impl TwinBins {
             order: device.buffer(&vec![0u32; capacity as usize]),
             device,
             side,
-        }
+        })
     }
 
-    /// The twin of [`Bins::rebuild`]; the element buffers belong to [`device`](Self::device).
-    pub fn rebuild(
-        &self,
-        xs: &CpuBuffer<f32>,
-        ys: &CpuBuffer<f32>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    /// The twin of [`Bins::rebuild`], with the same checks; the element buffers belong to [`device`](Self::device).
+    pub fn rebuild(&mut self, xs: &CpuBuffer<f32>, ys: &CpuBuffer<f32>) -> Result<(), Error> {
+        check_elements(xs.len(), ys.len(), self.order.len())?;
         let n = xs.len() as u32;
         let cells = self.side * self.side;
         binning::clear::dispatch(&self.device, cells, &self.counts, &self.cursor)?;

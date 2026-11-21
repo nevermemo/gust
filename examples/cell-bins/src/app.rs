@@ -85,6 +85,35 @@ pub fn last_edge_case(side: u32) -> Case {
     }
 }
 
+/// Positions far past the grid, up to `f32::MAX` and infinity, mixed with ordinary ones: each goes to the last cell of
+/// its axis.
+pub fn far_case(side: u32) -> Case {
+    let far = [
+        side as f32,
+        1.0e10,
+        4_294_967_296.0,
+        f32::MAX,
+        f32::INFINITY,
+    ];
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    for (k, &value) in far.iter().enumerate() {
+        let near = (k as u32 % side) as f32 + 0.5;
+        xs.push(value);
+        ys.push(near);
+        xs.push(near);
+        ys.push(value);
+        xs.push(value);
+        ys.push(value);
+    }
+    Case {
+        name: format!("far and infinite positions, side {side}"),
+        side,
+        xs,
+        ys,
+    }
+}
+
 /// `n` hash-spread elements; `side` must be a power of two.
 pub fn spread_case(side: u32, n: u32, seed: u32) -> Case {
     assert!(side.is_power_of_two());
@@ -97,13 +126,14 @@ pub fn spread_case(side: u32, n: u32, seed: u32) -> Case {
     }
 }
 
-/// Cases rebuilt one after the other into the same bins: a spread of `n`, one cell, the last row and column, a
-/// smaller spread (another seed), nothing, and a spread of 700.
+/// Cases rebuilt one after the other into the same bins: a spread of `n`, one cell, the last row and column, far
+/// positions, a smaller spread (another seed), nothing, and a spread of 700.
 pub fn sequence(side: u32, n: u32) -> Vec<Case> {
     vec![
         spread_case(side, n, 1),
         one_cell_case(side, 1000),
         last_edge_case(side),
+        far_case(side),
         spread_case(side, n / 2 + 11, 2),
         empty_case(side),
         spread_case(side, 700, 3),
@@ -201,7 +231,7 @@ fn shape(cases: &[Case]) -> Result<(u32, u32), String> {
 /// Rebuilds the same bins for each case in turn on the device and checks each against the host.
 pub fn run_gpu(handle: &DeviceHandle, cases: &[Case]) -> Result<(), Box<dyn std::error::Error>> {
     let (side, capacity) = shape(cases)?;
-    let bins = Bins::new(handle, side, capacity)?;
+    let mut bins = Bins::new(handle, side, capacity)?;
     for case in cases {
         let xs = GpuVec::from_slice_on(handle, &case.xs)?;
         let ys = GpuVec::from_slice_on(handle, &case.ys)?;
@@ -215,7 +245,7 @@ pub fn run_gpu(handle: &DeviceHandle, cases: &[Case]) -> Result<(), Box<dyn std:
 #[cfg(any(test, gust_dual))]
 pub fn run_twin(cases: &[Case]) -> Result<(), Box<dyn std::error::Error>> {
     let (side, capacity) = shape(cases)?;
-    let bins = TwinBins::new(side, capacity);
+    let mut bins = TwinBins::new(side, capacity)?;
     for case in cases {
         let xs = bins.device().buffer(&case.xs);
         let ys = bins.device().buffer(&case.ys);
@@ -269,6 +299,15 @@ mod tests {
     }
 
     #[test]
+    fn twin_far_and_infinite_positions_go_to_the_last_cell() {
+        let case = far_case(SIDE);
+        run_twin(std::slice::from_ref(&case)).unwrap();
+        // Five elements are far on both axes (the last cell); the others are far on one axis only.
+        let bins = run_snapshot(&case);
+        assert_eq!(bins.counts[(SIDE * SIDE - 1) as usize], 5);
+    }
+
+    #[test]
     fn twin_hash_spread_past_a_workgroup() {
         run_twin(&[spread_case(SIDE, SPREAD, 1)]).unwrap();
     }
@@ -276,6 +315,24 @@ mod tests {
     #[test]
     fn twin_rebuilds_into_the_same_bins() {
         run_twin(&sequence(SIDE, SPREAD)).unwrap();
+    }
+
+    #[test]
+    fn the_twin_rejects_a_bad_grid_or_bad_elements() {
+        assert!(TwinBins::new(0, 4).is_err(), "side 0");
+        assert!(
+            TwinBins::new(65_536, 4).is_err(),
+            "side * side overflows u32"
+        );
+        let mut bins = TwinBins::new(4, 3).unwrap();
+        let two = bins.device().buffer(&[0.5f32, 1.5]);
+        let three = bins.device().buffer(&[0.5f32, 1.5, 2.5]);
+        let four = bins.device().buffer(&[0.5f32, 1.5, 2.5, 3.5]);
+        let message =
+            |result: Result<(), Box<dyn std::error::Error>>| result.unwrap_err().to_string();
+        assert!(message(bins.rebuild(&two, &three)).contains("2 x positions for 3 y"));
+        assert!(message(bins.rebuild(&four, &four)).contains("capacity 3"));
+        bins.rebuild(&three, &three).unwrap();
     }
 
     #[test]
@@ -339,7 +396,7 @@ mod tests {
 
     /// The twin's bins of one case.
     fn run_snapshot(case: &Case) -> Snapshot {
-        let bins = TwinBins::new(case.side, case.xs.len() as u32);
+        let mut bins = TwinBins::new(case.side, case.xs.len() as u32).unwrap();
         let xs = bins.device().buffer(&case.xs);
         let ys = bins.device().buffer(&case.ys);
         bins.rebuild(&xs, &ys).unwrap();
@@ -354,10 +411,21 @@ mod tests {
         });
         let info = handle.adapter_info();
         println!("adapter: {} backend: {:?}", info.name, info.backend);
+        assert!(Bins::new(&handle, 0, 4).is_err(), "side 0");
+        assert!(
+            Bins::new(&handle, 65_536, 4).is_err(),
+            "side * side overflows u32"
+        );
+        let mut bins = Bins::new(&handle, 4, 3).unwrap();
+        let three = GpuVec::from_slice_on(&handle, &[0.5f32, 1.5, 2.5]).unwrap();
+        let four = GpuVec::from_slice_on(&handle, &[0.5f32, 1.5, 2.5, 3.5]).unwrap();
+        assert!(bins.rebuild(&three, &four).is_err(), "mismatched lengths");
+        assert!(bins.rebuild(&four, &four).is_err(), "over capacity");
         for case in [
             empty_case(SIDE),
             one_cell_case(SIDE, 1000),
             last_edge_case(SIDE),
+            far_case(SIDE),
             spread_case(SIDE, SPREAD, 1),
         ] {
             run_gpu(&handle, std::slice::from_ref(&case)).unwrap();

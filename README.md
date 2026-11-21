@@ -857,9 +857,11 @@ binding size exceeds them is `Error::DeviceLimit`.
 Dispatch can be one-, two- or three-dimensional (exists, m7.d, D102): the typed
 `call_extent`, `submit_extent` and `dispatch_extent` take an `Extent { x, y, z }`,
 and the one-dimensional forms mean `Extent { x: n, y: 1, z: 1 }`. A one-dimensional
-launch covers at most `workgroup_size[0]` times
-`gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION` (65 535) elements on
-default limits. On both backends the invocation total, with each axis rounded up to
+launch of a `grid` kernel is not capped by the device's workgroups per dimension
+(`gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION`, 65 535 on default limits): since m11.g4b the host
+cuts a launch that needs more into pieces, each invocation still running once with the ids of an unsplit
+launch (up to `gust_wgpu::MAX_SPLIT_DISPATCHES` pieces; an indirect dispatch, a staged graph node and a build
+without `slang-runtime` keep the `DeviceLimit`). On both backends the invocation total, with each axis rounded up to
 whole workgroups, is at most 2^32 (past it is `DeviceLimit` for
 `global_invocation_id`); a zero axis dispatches nothing and returns `Ok(())`.
 Staged graphs stay one-dimensional. Evidence (exists, m7.d): on the RTX 5090 a

@@ -923,14 +923,25 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   the requested count saturated to a `u64`, on both backends and for exactly the same extents. The cap is on the
   rounded product, not the raw one: 65537 x 65535 is 4294967295 elements, below 2^32, but 4296015872 invocations at a
   16 x 16 workgroup, so it is rejected, while 65536 x 65535 and 65536 x 65536 (exactly 2^32) are accepted.
-- **Launch size (GPU only).** The GPU backend also enforces the device's workgroup size limits on all three axes
-  (`max_compute_workgroup_size_x`, `_y`, `_z`) and `max_compute_invocations_per_workgroup` for their checked product,
-  and `max_compute_workgroups_per_dimension` on each axis (the error names the axis: the limit string ends in `(y)`
-  or `(z)` for those two; any lower `with_limits` value applies). For example 5,000,000 elements at workgroup width 64
-  need 78125 workgroups: they run on the CPU backend and are `DeviceLimit` under wgpu's default limits (65535
-  workgroups), and a 2^28 x 1 extent at a 16 x 16 workgroup is exactly the cap but needs 2^24 workgroups along x. This
-  is a documented difference (D39), not something to match; split the work into several dispatches for the GPU. The
-  macro-emitted twin uses the CPU backend (m3.c) and visits the invocations in ascending z, then y, then x.
+- **Launch size (GPU only, m11.g4b).** The GPU backend enforces the device's workgroup size limits on all three axes
+  (`max_compute_workgroup_size_x`, `_y`, `_z`) and `max_compute_invocations_per_workgroup` for their checked product.
+  The workgroups per dimension (`max_compute_workgroups_per_dimension`, 65535 under wgpu's default limits; any lower
+  `with_limits` value applies) are no limit on the size of a launch of a `grid` kernel: when a launch needs more
+  workgroups on an axis, the host cuts it into pieces of at most that many per axis. The promise: every invocation of
+  the rounded extent runs exactly once, with the `SV_DispatchThreadID`, `LocalId` and `GroupId` of an unsplit launch
+  (`id.x` stays the global index; a piece's base is a whole number of workgroups, so the local and group ids are
+  unchanged); the pieces run in order (x innermost, then y, then z) in one submission, and a split launch is one of the
+  schedules an unsplit launch may already have (the order of invocations is not part of the contract). For example
+  5,000,000 elements at workgroup width 64 need 78125 workgroups and run as 65535 + 12590, and a 2^28 x 1 extent at a
+  16 x 16 workgroup is exactly the cap and runs as 257 pieces. What remains a `DeviceLimit` (checked before anything is
+  compiled): the 2^32 invocation cap above, on both backends; more than `gust_wgpu::MAX_SPLIT_DISPATCHES` (4096)
+  pieces (limit `split dispatches`); an indirect dispatch (the host never sees its count); a staged graph node and the
+  deprecated `dispatch_f32`/`dispatch_u32` (they are not cut); a kernel with no split variant (a hand-built descriptor,
+  a `pixel` kernel, a kernel built for the CPU); a build without the run-time compiler (`slang-runtime`), because the
+  variant is compiled at run time; and a variant that exceeds another limit of the device (its one extra uniform, its
+  binding index), which keeps the plain refusal of the workgroup limit. The error of an axis over the limit still names
+  the axis (the limit string ends in `(y)` or `(z)` for those two). The macro-emitted twin uses the CPU backend (m3.c)
+  and visits the invocations in ascending z, then y, then x.
 - **The portable floor (opt-in, m8.f, D143).** A crate that sets `limits = "portable"` in `[package.metadata.gust]` has every
   `#[kernel]` body checked when it compiles against `gust::limits::PORTABLE`, the WebGPU defaults: a workgroup of at most
   256 x 256 x 64 and 256 invocations, 8 storage buffers, 12 uniform buffers, 16 sampled textures, 4 storage textures,
@@ -1332,8 +1343,12 @@ coretests entry above has the same shape.
     invocation ran). On a software adapter (`device_type: Cpu`) the 2^32 dispatch is not run and the test says so; the
     accept decision is still asserted. The public CI job `gpu-software` (Mesa lavapipe) is that adapter, so the
     accepted 2^32 launches ran only on the RTX 5090.
-  - The 2^28 x 1 extent is accepted by the twin and refused by the GPU for workgroups per dimension
-    (`the_per_dimension_workgroup_limit_is_the_gpus_alone_and_the_cap_is_both`), a documented difference (D39).
+  - The 2^28 x 1 extent is accepted by the twin and, since m11.g4b, by the GPU, which splits it (257 pieces) and
+    reaches the last cell (`the_per_dimension_workgroup_limit_is_no_longer_the_gpus_alone_and_the_cap_is_both`;
+    measured, not run on a software adapter). The split launches of `crates/gust-wgpu/tests/split.rs` (20 x 20 x 20 at a
+    limit of 4 on every axis and all three at once, a real size past 65535 workgroups at workgroups of 64 and 256) are
+    **measured** on the adapters named in the slice report: every invocation counted once, with the ids of an unsplit
+    launch, equal to the host and to the twin.
 - **`par_for!`** (m7.p, D103; `crates/gust-wgpu/tests/par_for.rs`; Gpu). Label: **proven** on the inputs used. One set
   of scenarios, written once and instantiated for the GPU (`gpu::`) and the twin (`twin::`), asserts each against a
   host reference: one-, two- and three-dimensional loops with extents off the workgroup, `workgroup_size` overrides, a

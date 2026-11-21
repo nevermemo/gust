@@ -503,16 +503,21 @@ fn the_invocation_cap_counts_all_three_axes() {
 }
 
 #[test]
-fn the_per_dimension_workgroup_limit_is_the_gpus_alone_and_the_cap_is_both() {
+fn the_per_dimension_workgroup_limit_is_no_longer_the_gpus_alone_and_the_cap_is_both() {
     let device = device();
     // 2^28 x 1 is exactly 2^32 invocations once the second axis is rounded up to 16, so the twin accepts it. The GPU
-    // would need 2^24 workgroups along x, and a device allows 65535 along an axis.
+    // needs 2^24 workgroups along x and a device allows 65535 along an axis: since slice m11.g4b the host splits the
+    // launch (257 pieces) and the GPU accepts it too, reaching the last cell of the extent.
     let extent = Extent::new(1 << 28, 1, 1);
     assert_eq!(twin_decision(extent), Ok(()));
-    let maximum = u64::from(device.limits().max_compute_workgroups_per_dimension);
+    if is_cpu_adapter(&device) {
+        not_run_on_a_cpu_adapter(&device, "2^28 x 1");
+        return;
+    }
     assert_eq!(
         gpu_decision(&device, 1 << 28, 1),
-        Err(("max_compute_workgroups_per_dimension", 1 << 24, maximum))
+        Ok([(1 << 28) - 1, 0]),
+        "the split launch reaches the last cell"
     );
 }
 

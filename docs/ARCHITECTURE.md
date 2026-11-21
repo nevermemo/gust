@@ -313,13 +313,27 @@ persistent dispatch and graph dispatch node) is checked against the stored limit
 before the pipeline cache is consulted, so an over-limit launch compiles nothing
 and encodes nothing (an indirect dispatch node is checked for everything except
 its workgroup count): workgroup width (`max_compute_workgroup_size_x`), invocations
-per workgroup, workgroup count per dimension, storage buffers per shader stage,
+per workgroup, storage buffers per shader stage,
 binding index (`max_bindings_per_bind_group`) and storage binding size are
-`Error::DeviceLimit`. The limits are those the device was opened with; `with_limits`
+`Error::DeviceLimit`, and so is a workgroup count per dimension that the host cannot cut (below). The limits are those the device was opened with; `with_limits`
 can only lower them, to emulate a weaker target. "Default" has two meanings since m7.a0:
 `HeadlessDevice::new()` requests wgpu's portable defaults, while `DeviceOptions::default()`
 (what `default_device()` opens) asks a native adapter for its own buffer, binding and dispatch
 limits (`LimitsPolicy::Adapter`), so a kernel validated on one can exceed the other's limits.
+
+The split variant (m11.g4a, m11.g4b, owner ruling "Option 3": the host splits, `id.x` stays the global index). The
+`#[gpu]` macro gives every `grid` kernel built for the GPU a second descriptor, `KernelDescriptor::split`: the same
+Slang plus one hidden uniform (`__gust_launch_base`, 16 bytes) at the next free binding, whose `x`, `y` and `z` the
+prologue adds to the dispatch-thread id before anything reads it. When a launch needs more workgroups on an axis than
+`max_compute_workgroups_per_dimension`, `prepare_dispatches` plans pieces (`split_pieces`: the 2^32 cap first, then at most
+`MAX_SPLIT_DISPATCHES` pieces of at most that many workgroups per axis, x innermost, then y, then z), writes the base of
+each piece (its first workgroup times the workgroup size, so local and group ids are unchanged) into one uniform
+buffer at a stride of `max(16, min_uniform_buffer_offset_alignment)`, and encodes one bind group and one
+`dispatch_workgroups` per piece in the one compute pass of the call. Only the variant is compiled for a split launch
+(lazily, at run time, with its own cache key) and only the base for an unsplit one. The host runs a `split` only when it
+has the macro's shape (`split_variant_matches`: the kernel's parameters and then the hidden uniform, the same entry
+point and workgroup size, no variant of its own, no artifact); the graph, the indirect path and the deprecated
+one-shot functions do not use it.
 `max_buffer_size` is checked only by the fallible buffer functions (`try_create_typed_buffer`,
 `create_zeroed_buffer`, `GpuVec`); `create_typed_buffer` is infallible and never checks it. Indirect
 workgroup counts are written by the GPU and cannot

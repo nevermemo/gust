@@ -1561,6 +1561,16 @@ struct PreparedDispatch {
     cached_kernel: Arc<CachedKernel>,
     bind_group: wgpu::BindGroup,
     launch: Launch,
+    /// The pieces of a split `grid` launch (m11.g4b), in dispatch order: empty for a launch that runs whole. A split
+    /// launch's `bind_group` is its first piece's and `launch` holds the workgroups of that piece.
+    pieces: Vec<SplitPiece>,
+}
+
+/// One piece of a split launch: a bind group whose hidden launch-base uniform holds the piece's base, and the
+/// workgroups of the piece along x, y and z.
+struct SplitPiece {
+    bind_group: wgpu::BindGroup,
+    workgroups: [u32; 3],
 }
 
 /// The query slots a timed pass writes: the first pass of a batch writes `begin`, the last writes `end`.
@@ -1602,8 +1612,20 @@ impl PreparedDispatch {
                     }),
                 });
                 pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                pass.dispatch_workgroups(workgroups[0], workgroups[1], workgroups[2]);
+                if self.pieces.is_empty() {
+                    pass.set_bind_group(0, &self.bind_group, &[]);
+                    pass.dispatch_workgroups(workgroups[0], workgroups[1], workgroups[2]);
+                } else {
+                    // The pieces of a split launch run in order inside this one pass: x innermost, then y, then z.
+                    for piece in &self.pieces {
+                        pass.set_bind_group(0, &piece.bind_group, &[]);
+                        pass.dispatch_workgroups(
+                            piece.workgroups[0],
+                            piece.workgroups[1],
+                            piece.workgroups[2],
+                        );
+                    }
+                }
                 Ok(())
             }
             (Pipeline::Render(pipeline), Launch::Pixel { elements }) => render::encode_pixel_pass(
@@ -2998,17 +3020,32 @@ impl HeadlessDevice {
                     dispatch.bindings,
                     dispatch.samplers,
                 )?;
-                let binding_bytes = dispatch.bindings.iter().map(BufferBinding::limit_bytes);
-                let workgroups = if indirect {
-                    self.check_indirect_launch(dispatch.kernel, &resources, binding_bytes)?;
-                    [0; 3]
+                let binding_bytes = dispatch
+                    .bindings
+                    .iter()
+                    .map(BufferBinding::limit_bytes)
+                    .collect::<Vec<_>>();
+                let plan = if indirect {
+                    self.check_indirect_launch(
+                        dispatch.kernel,
+                        &resources,
+                        binding_bytes.iter().copied(),
+                    )?;
+                    LaunchPlan::Whole([0; 3])
                 } else {
-                    self.check_launch_extent(
+                    match self.check_launch_extent(
                         dispatch.kernel,
                         dispatch.extent(),
                         &resources,
-                        binding_bytes,
-                    )?
+                        binding_bytes.iter().copied(),
+                    ) {
+                        Ok(workgroups) => LaunchPlan::Whole(workgroups),
+                        // A launch past a workgroup limit may still run, as pieces (m11.g4b); every other
+                        // refusal, and a launch that cannot be split, keeps this very error.
+                        Err(refused) => {
+                            LaunchPlan::Split(self.plan_split(dispatch, &binding_bytes, refused)?)
+                        }
+                    }
                 };
                 if indirect || !dispatch.extent().is_empty() {
                     texture::check_texture_dimensions(
@@ -3017,15 +3054,22 @@ impl HeadlessDevice {
                         dispatch.bindings,
                     )?;
                 }
-                Ok((resources, workgroups))
+                Ok((resources, plan))
             })
             .collect::<Result<Vec<_>, Error>>()?;
 
         let mut prepared = Vec::with_capacity(dispatches.len());
-        for (dispatch, (resources, workgroups)) in dispatches.iter().zip(validated) {
+        for (dispatch, (resources, plan)) in dispatches.iter().zip(validated) {
             if dispatch.extent().is_empty() {
                 continue;
             }
+            let workgroups = match plan {
+                LaunchPlan::Whole(workgroups) => workgroups,
+                LaunchPlan::Split(split) => {
+                    prepared.push(self.prepare_split(dispatch, split)?);
+                    continue;
+                }
+            };
             let cached_kernel = self.cached_kernel(dispatch.kernel, &resources)?;
             let label = dispatch.kernel.qualified_name().to_string();
             // The bound parameters in declaration order; a sampler parameter takes the next sampler binding and every
@@ -3068,9 +3112,165 @@ impl HeadlessDevice {
                 cached_kernel,
                 bind_group,
                 launch,
+                pieces: Vec::new(),
             });
         }
         Ok(prepared)
+    }
+
+    /// Decide whether a launch that the plain checks refused (`refused`) can run as pieces of the kernel's split
+    /// variant (m11.g4b), and plan them. Only a `grid` launch refused for a workgroup limit (`refused` is that
+    /// [`Error::DeviceLimit`]) qualifies, and only when the kernel's `split` is the one the `#[gpu]` macro makes
+    /// ([`split_variant_matches`]), this build can compile it, and the variant passes every limit the base passed (one
+    /// more uniform, its binding index, the capabilities). Anything else returns `refused` unchanged, before anything
+    /// is compiled. A launch the planner itself refuses (the invocation cap, too many pieces) returns that error.
+    fn plan_split(
+        &self,
+        dispatch: &BufferDispatch<'_>,
+        binding_bytes: &[(u64, BindingKind)],
+        refused: Error,
+    ) -> Result<SplitLaunch, Error> {
+        let kernel = dispatch.kernel;
+        let workgroup_limit = matches!(
+            &refused,
+            Error::DeviceLimit { limit, .. }
+                if limit.starts_with("max_compute_workgroups_per_dimension")
+                    || *limit == INVOCATION_CAP_LIMIT
+        );
+        let Some(variant) = kernel.split else {
+            return Err(refused);
+        };
+        if !workgroup_limit
+            || kernel.shape != Shape::Grid
+            || !split_variant_matches(kernel, variant)
+            || !matches!(
+                select_shader_source(variant, cfg!(feature = "slang-runtime")),
+                Ok(ShaderSource::RunTime)
+            )
+        {
+            return Err(refused);
+        }
+        let Ok(resources) = validate_kernel(variant) else {
+            return Err(refused);
+        };
+        let count = |kind: ParameterKind| {
+            resources
+                .iter()
+                .filter(|parameter| parameter.kind == kind)
+                .count()
+        };
+        if check_kernel_limits(
+            &self.limits,
+            variant,
+            count(ParameterKind::Storage),
+            count(ParameterKind::Uniform),
+            TextureCounts::of(&resources),
+        )
+        .is_err()
+            || check_kernel_capabilities(
+                self.capabilities,
+                self.subgroup_sizes,
+                &self.adapter_info.name,
+                variant,
+            )
+            .is_err()
+            || check_binding_indices(&self.limits, variant, &resources).is_err()
+        {
+            return Err(refused);
+        }
+        let pieces = split_pieces(&self.limits, kernel, dispatch.extent())?;
+        for &(bytes, kind) in binding_bytes {
+            check_binding_size(&self.limits, kernel, bytes, kind)?;
+        }
+        Ok(SplitLaunch {
+            variant,
+            resources,
+            pieces,
+        })
+    }
+
+    /// Build the prepared dispatch of a split launch: the variant's pipeline (the only one compiled), one uniform
+    /// buffer holding every piece's base at a stride of `max(16, min_uniform_buffer_offset_alignment)`, and one bind
+    /// group per piece that binds its own 16 bytes of it.
+    fn prepare_split(
+        &self,
+        dispatch: &BufferDispatch<'_>,
+        split: SplitLaunch,
+    ) -> Result<PreparedDispatch, Error> {
+        let SplitLaunch {
+            variant,
+            resources,
+            pieces,
+        } = split;
+        let cached_kernel = self.cached_kernel(variant, &resources)?;
+        let label = dispatch.kernel.qualified_name().to_string();
+        let stride =
+            u64::from(self.limits.min_uniform_buffer_offset_alignment).max(LAUNCH_BASE_BYTES);
+        let mut contents = vec![0_u8; pieces.len() * stride as usize];
+        for (index, piece) in pieces.iter().enumerate() {
+            let at = index * stride as usize;
+            for (axis, base) in piece.base.iter().enumerate() {
+                contents[at + 4 * axis..at + 4 * axis + 4].copy_from_slice(&base.to_le_bytes());
+            }
+        }
+        let bases = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some(&format!("{label} launch bases")),
+            contents: &contents,
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        // The variant's resources are the kernel's and then the hidden uniform, which has no caller binding.
+        let own = resources.len() - 1;
+        let mut resource_resources = dispatch.bindings.iter().map(BufferBinding::resource);
+        let mut samplers = dispatch.samplers.iter().map(|sampler| sampler.resource());
+        let mut entries = Vec::with_capacity(resources.len());
+        for parameter in &resources[..own] {
+            entries.push(wgpu::BindGroupEntry {
+                binding: parameter
+                    .binding
+                    .expect("validated resource binding")
+                    .binding,
+                resource: if parameter.kind == ParameterKind::Sampler {
+                    samplers.next().expect("validated sampler binding")
+                } else {
+                    resource_resources
+                        .next()
+                        .expect("validated resource binding")
+                },
+            });
+        }
+        let hidden = resources[own]
+            .binding
+            .expect("validated resource binding")
+            .binding;
+        let mut groups = Vec::with_capacity(pieces.len());
+        for (index, piece) in pieces.iter().enumerate() {
+            let mut piece_entries = entries.clone();
+            piece_entries.push(wgpu::BindGroupEntry {
+                binding: hidden,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &bases,
+                    offset: index as u64 * stride,
+                    size: std::num::NonZeroU64::new(LAUNCH_BASE_BYTES),
+                }),
+            });
+            groups.push(SplitPiece {
+                bind_group: self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(&format!("{label} split bind group")),
+                    layout: &cached_kernel.bind_group_layout,
+                    entries: &piece_entries,
+                }),
+                workgroups: piece.workgroups,
+            });
+        }
+        let first = groups.first().expect("a split launch has a piece");
+        Ok(PreparedDispatch {
+            bind_group: first.bind_group.clone(),
+            launch: Launch::Compute {
+                workgroups: first.workgroups,
+            },
+            cached_kernel,
+            pieces: groups,
+        })
     }
 
     /// Check one non-empty launch against the stored limits and return its workgroup
@@ -3809,6 +4009,129 @@ fn workgroup_counts(
         ));
     }
     Ok(counts)
+}
+
+/// The most pieces one launch may be cut into (m11.g4b): each piece is one `dispatch_workgroups` with a bind group of
+/// its own, so a launch that would need more (a tiny `max_compute_workgroups_per_dimension` against a large extent) is
+/// refused as [`Error::DeviceLimit`] with the limit named `split dispatches`.
+pub const MAX_SPLIT_DISPATCHES: usize = 4096;
+
+/// The size of the launch-base uniform of a split variant: four `u32` (`x`, `y`, `z`, padding).
+const LAUNCH_BASE_BYTES: u64 = 16;
+
+/// What the plain checks left for a launch: run whole with these workgroups, or as pieces.
+enum LaunchPlan {
+    Whole([u32; 3]),
+    Split(SplitLaunch),
+}
+
+/// A launch cut into pieces: the kernel's split variant, its validated resources (the kernel's, then the hidden
+/// uniform) and the pieces in dispatch order.
+struct SplitLaunch {
+    variant: &'static KernelDescriptor,
+    resources: Vec<&'static ParameterDescriptor>,
+    pieces: Vec<PiecePlan>,
+}
+
+/// One piece of a split launch: `base` is the id of its first invocation (a whole number of workgroups per axis, so
+/// local and group ids are the unsplit launch's), `workgroups` how many workgroups it runs along each axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PiecePlan {
+    base: [u32; 3],
+    workgroups: [u32; 3],
+}
+
+/// Cut a launch over `extent` into pieces of at most `max_compute_workgroups_per_dimension` workgroups per axis, in
+/// dispatch order (x innermost, then y, then z). The invocation cap comes first, the rule of [`workgroup_counts`]
+/// and the CPU twin ([`INVOCATION_CAP_LIMIT`]); then more than [`MAX_SPLIT_DISPATCHES`] pieces is refused. A kernel
+/// without a zero workgroup axis and a non-empty extent are assumed.
+fn split_pieces(
+    limits: &wgpu::Limits,
+    kernel: &KernelDescriptor,
+    extent: Extent,
+) -> Result<Vec<PiecePlan>, Error> {
+    let size = kernel.workgroup_size;
+    let invocations = extent
+        .rounded_total(size)
+        .expect("a workgroup size without a zero axis");
+    if invocations > u128::from(Extent::MAX_INVOCATIONS) {
+        return Err(device_limit(
+            kernel,
+            INVOCATION_CAP_LIMIT,
+            u64::try_from(invocations).unwrap_or(u64::MAX),
+            Extent::MAX_INVOCATIONS,
+        ));
+    }
+    let maximum = limits.max_compute_workgroups_per_dimension.max(1);
+    let counts = [
+        extent.x.div_ceil(size[0]),
+        extent.y.div_ceil(size[1]),
+        extent.z.div_ceil(size[2]),
+    ];
+    let per_axis = counts.map(|count| u64::from(count.div_ceil(maximum)));
+    let total = per_axis[0] * per_axis[1] * per_axis[2];
+    if total > MAX_SPLIT_DISPATCHES as u64 {
+        return Err(device_limit(
+            kernel,
+            "split dispatches",
+            total,
+            MAX_SPLIT_DISPATCHES as u64,
+        ));
+    }
+    let mut pieces = Vec::with_capacity(total as usize);
+    for z in 0..counts[2].div_ceil(maximum) {
+        for y in 0..counts[1].div_ceil(maximum) {
+            for x in 0..counts[0].div_ceil(maximum) {
+                let first = [x * maximum, y * maximum, z * maximum];
+                pieces.push(PiecePlan {
+                    // The base is below the rounded axis, which the cap keeps within `u32`.
+                    base: [first[0] * size[0], first[1] * size[1], first[2] * size[2]],
+                    workgroups: [
+                        maximum.min(counts[0] - first[0]),
+                        maximum.min(counts[1] - first[1]),
+                        maximum.min(counts[2] - first[2]),
+                    ],
+                });
+            }
+        }
+    }
+    Ok(pieces)
+}
+
+/// Whether `variant` is the split variant the `#[gpu]` macro makes for `kernel`: the same kernel (module, name, entry
+/// point, shape, workgroup size, `requires`, target), the kernel's parameters and then one more, the hidden launch-base
+/// uniform at a binding past every binding of the kernel, and no split of its own. `KernelDescriptor::with_split` is
+/// public for the macro only; this check keeps a hand-set `split` that is not shaped like the macro's from being run.
+/// It cannot read the Slang: the run-time compiler's reflection is cross-checked against the variant's parameters when
+/// it compiles (`compile_at_run_time`), so a text that lacks the uniform fails there.
+fn split_variant_matches(kernel: &KernelDescriptor, variant: &KernelDescriptor) -> bool {
+    let Some((hidden, own)) = variant.parameters.split_last() else {
+        return false;
+    };
+    let past_every_binding = kernel
+        .parameters
+        .iter()
+        .filter_map(|parameter| parameter.binding)
+        .all(|binding| {
+            hidden.binding.is_some_and(|hidden| {
+                hidden.group == binding.group && hidden.binding > binding.binding
+            })
+        });
+    kernel.shape == Shape::Grid
+        && variant.shape == Shape::Grid
+        && variant.module == kernel.module
+        && variant.name == kernel.name
+        && variant.entry_point == kernel.entry_point
+        && variant.workgroup_size == kernel.workgroup_size
+        && variant.requires == kernel.requires
+        && variant.target == kernel.target
+        && variant.split.is_none()
+        && variant.artifacts.is_empty()
+        && own == kernel.parameters
+        && past_every_binding
+        && hidden.binding.is_some_and(|binding| {
+            *hidden == KernelDescriptor::__gust_launch_base_parameter(binding.binding)
+        })
 }
 
 /// One binding of `bytes` bytes against `max_storage_buffer_binding_size`, or `max_uniform_buffer_binding_size` for a

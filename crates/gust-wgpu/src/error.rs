@@ -261,6 +261,13 @@ pub enum Error {
     /// checked against `max_compute_workgroups_per_dimension`, because the host does
     /// not see its workgroup count; every other limit GUST checks applies to it.
     ///
+    /// A `grid` launch past `max_compute_workgroups_per_dimension` is not refused when the host can cut it (slice
+    /// m11.g4b): the kernel has a split variant, this build can compile it, the variant fits the device's other limits,
+    /// and the launch is no indirect dispatch, graph node or deprecated one-shot call. It runs as pieces, every
+    /// invocation once with the ids of an unsplit launch. What is still this error: the invocation cap
+    /// (`global_invocation_id`, 2^32), more than `MAX_SPLIT_DISPATCHES` pieces (`split dispatches`), and any launch that
+    /// cannot be cut, with the unchanged text of the workgroup limit.
+    ///
     /// `kernel` is the qualified name of the kernel; for a limit met outside a launch it names the operation
     /// (`create_texture_2d 5x1`, a buffer label).
     DeviceLimit {

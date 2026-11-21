@@ -529,6 +529,19 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   - Merged-tree gate on `abef534`: fmt, workspace clippy, macros tests, the diagnostics tests (slangc tier), xtask
     tests, `docs-check`, `check-ui`, `check-arch`, `lint`, on the GPU `float_math`, `polar-transform`, `hash-rng`,
     `gust-algo` and `budget-kit --small`, and the Unit suite all passed.
+  - Two more slices the same night:
+    - m11.kit2 (`b62fb0e`, fixes `5aea4a8`, merge `e1937fe`): budget-kit W4 times its own kernels and the
+      `gust-algo` scan in one `timed` scope through `dispatch_batch_in_scope`. A probe row shows that a linear
+      launch of 65536 workgroups fails with `DeviceLimit` (maximum 65535 per dimension, limits policy Default) and
+      that the same elements as a 4096 by 4096 `Extent` with a bounds check are exact, sentinels past the end kept.
+    - m11.math2 (`2dae994`, fixes `ab6b5ae`, merge `316be62`): `round` (half away from zero), `signum` on `f32`
+      and `i32`, `to_radians`, `to_degrees`, `asin`, `acos`, and `rem_euclid` on `f32`, `i32` and `u32`. `f32`
+      `rem_euclid` uses an exact long-division helper because plain float `%` was off at exact multiples on the
+      Radeon 890M (79 of 5000 rows, which WGSL permits). `asin` and `acos` are held to the WGSL bound (the worse
+      of an absolute error and the inherited `atan2` bound). `GPU_SUITE_PIN` is 520 by count.
+  - Merged-tree gate on `316be62`: fmt, workspace clippy, macros tests, the diagnostics tests, xtask tests,
+    `docs-check`, `check-ui`, `check-arch`, `lint`, on the GPU `float_math`, `polar-transform`, `hash-rng`,
+    `gust-algo` and `budget-kit --small` (with the probe and remedy rows), and the Unit suite all passed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

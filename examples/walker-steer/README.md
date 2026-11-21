@@ -5,7 +5,7 @@ cell and deposit into the field, 24 steps, all in integers, so the host referenc
 bit for bit after every step (field and walkers).
 
 - `walk` (one invocation per walker): read the field `dist` cells ahead at headings `h - 1`, `h` and `h + 1` (mod 8),
-  take the largest (ties: straight, then left), with probability `prob / 2^16` replace the choice by a hash-chosen one
+  take the largest (ties: straight, then `h - 1`, clockwise, then `h + 1`), with probability `prob / 2^16` replace the choice by a hash-chosen one
   (`hash(hash(seed, step), walker)`, the hash of `examples/hash-rng`), move, and `atomic_add` the amount into a deposit
   buffer at the new cell.
 - `relax` (one invocation per cell): `field = field - (field >> shift) + deposit`, then the deposit is cleared.

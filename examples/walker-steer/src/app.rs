@@ -6,11 +6,13 @@
 //! 1. `walk`, one invocation per walker. A walker is a cell index and a heading 0..7 (E, NE, N, NW, W, SW, S, SE, the
 //!    eight neighbours counterclockwise). It
 //!    - senses the field `dist` cells ahead in the headings `heading - 1`, `heading` and `heading + 1` (mod 8);
-//!    - turns toward the largest sample. **Tie rule:** straight wins a tie with either side, and left (`heading - 1`)
-//!      wins a tie with right (`heading + 1`); a side is chosen only when it is strictly larger than the best before it;
+//!    - turns toward the largest sample. **Tie rule:** straight wins a tie with either side, and the side `heading - 1`
+//!      (clockwise, since the headings count counterclockwise) wins a tie with the side `heading + 1`
+//!      (counterclockwise); a side is chosen only when it is strictly larger than the best before it;
 //!    - with probability `prob / 2^16` replaces that choice by one of the three headings, picked by the hash
 //!      `hash(hash(seed, step), walker)` (the low 16 bits are compared with `prob`, the high 16 bits modulo 3 pick
-//!      left, straight or right), so the choice is a pure function of `(seed, step, walker)`;
+//!      `heading - 1`, `heading` or `heading + 1`, as turn 0, 1 or 2; the modulo is slightly biased: turn 0 has
+//!      probability 21846/65536, the others 21845/65536), so the choice is a pure function of `(seed, step, walker)`;
 //!    - moves one cell in its new heading, wrapping at the edges, and adds `amount` to the deposit buffer at the new
 //!      cell with `atomic_add`.
 //! 2. `relax`, one invocation per cell: `field = field - (field >> shift) + deposit`, then the deposit is cleared.
@@ -92,7 +94,7 @@ pub struct Case {
     pub name: &'static str,
     pub walkers: usize,
     pub start: Start,
-    /// How many cells ahead the walkers sense.
+    /// How many cells ahead the walkers sense: `1 <= dist <= SIDE` (checked by `make_start`).
     pub dist: u32,
     /// The probability of a random turn, over `2^16`.
     pub prob: u32,
@@ -119,7 +121,17 @@ pub fn field_bound(case: &Case) -> u64 {
 
 /// The starting state of a `side x side` grid: a field below 32 (small, so equal samples are common and the tie rule
 /// matters) and the walkers.
+///
+/// # Panics
+///
+/// When `dist` is outside `1 <= dist <= side`: every run starts here, on the host and on the device.
 pub fn make_start(side: usize, case: &Case) -> State {
+    assert!(
+        (1..=side).contains(&(case.dist as usize)),
+        "{}: dist {} is outside 1..={side}",
+        case.name,
+        case.dist
+    );
     let cells = side * side;
     let field = (0..cells).map(|i| hash(SEEDS[0], i as u32) >> 27).collect();
     let pos = (0..case.walkers)
@@ -135,18 +147,6 @@ pub fn make_start(side: usize, case: &Case) -> State {
         })
         .collect();
     State { field, pos, head }
-}
-
-/// The parameter values of step `step` (1-based): `(seed, step, dist, prob, amount, shift)`.
-fn step_params(case: &Case, step: usize) -> [u32; 6] {
-    [
-        case.seed,
-        step as u32,
-        case.dist,
-        case.prob,
-        case.amount,
-        case.shift,
-    ]
 }
 
 /// One step on the host, written from the description with a table of headings and `rem_euclid` for the wrap.
@@ -165,7 +165,8 @@ pub fn reference_step(side: usize, case: &Case, step: usize, now: &State) -> Sta
         let (cell, heading) = (now.pos[w], now.head[w]);
         let headings = [(heading + 7) % 8, heading, (heading + 1) % 8];
         let samples = headings.map(|h| now.field[at(cell, h, i64::from(case.dist)) as usize]);
-        // Straight first; a side wins only when strictly larger than the best so far (left before right).
+        // Straight first; a side wins only when strictly larger than the best so far (`heading - 1` before
+        // `heading + 1`).
         let mut best = 1;
         for side_index in [0, 2] {
             if samples[side_index] > samples[best] {
@@ -334,26 +335,14 @@ macro_rules! walker_program {
 
                 /// The x step of heading `d`: 1 for the headings with an east part, -1 for a west part.
                 pub fn dir_x(d: u32) -> i32 {
-                    let mut r = 0i32;
-                    if d == 0u32 || d == 1u32 || d == 7u32 {
-                        r = 1i32;
-                    }
-                    if d == 3u32 || d == 4u32 || d == 5u32 {
-                        r = -1i32;
-                    }
-                    r
+                    let t: [i32; 8] = [1i32, 1i32, 0i32, -1i32, -1i32, -1i32, 0i32, 1i32];
+                    t[d as usize]
                 }
 
                 /// The y step of heading `d`: 1 for the headings with a north part, -1 for a south part.
                 pub fn dir_y(d: u32) -> i32 {
-                    let mut r = 0i32;
-                    if d == 1u32 || d == 2u32 || d == 3u32 {
-                        r = 1i32;
-                    }
-                    if d == 5u32 || d == 6u32 || d == 7u32 {
-                        r = -1i32;
-                    }
-                    r
+                    let t: [i32; 8] = [0i32, 1i32, 1i32, 1i32, 0i32, -1i32, -1i32, -1i32];
+                    t[d as usize]
                 }
 
                 /// The cell `k` steps from `(x, y)` in heading `d`, wrapping.
@@ -381,19 +370,20 @@ macro_rules! walker_program {
                         let h = head[i];
                         let x = c & MASK;
                         let y = c / SIDE;
-                        let left = (h + 7u32) & 7u32;
-                        let right = (h + 1u32) & 7u32;
-                        let vl = field[ahead(x, y, left, p.dist)];
+                        let minus = (h + 7u32) & 7u32;
+                        let plus = (h + 1u32) & 7u32;
+                        let vm = field[ahead(x, y, minus, p.dist)];
                         let vs = field[ahead(x, y, h, p.dist)];
-                        let vr = field[ahead(x, y, right, p.dist)];
-                        // 0 is left, 1 straight, 2 right. Straight wins ties; left wins a tie with right.
+                        let vp = field[ahead(x, y, plus, p.dist)];
+                        // 0 is heading - 1 (clockwise), 1 straight, 2 is heading + 1. Straight wins ties;
+                        // heading - 1 wins a tie with heading + 1.
                         let mut turn = 1u32;
                         let mut best = vs;
-                        if vl > best {
+                        if vm > best {
                             turn = 0u32;
-                            best = vl;
+                            best = vm;
                         }
-                        if vr > best {
+                        if vp > best {
                             turn = 2u32;
                         }
                         let r = hash(hash(p.seed, p.step), i);
@@ -428,15 +418,15 @@ macro_rules! walker_program {
             pub const SIDE: usize = k::SIDE as usize;
 
             /// The parameter struct of step `step`.
+            /// `step` is 1-based.
             pub fn params(case: &Case, step: usize) -> k::Params {
-                let [seed, step, dist, prob, amount, shift] = step_params(case, step);
                 k::Params {
-                    seed,
-                    step,
-                    dist,
-                    prob,
-                    amount,
-                    shift,
+                    seed: case.seed,
+                    step: step as u32,
+                    dist: case.dist,
+                    prob: case.prob,
+                    amount: case.amount,
+                    shift: case.shift,
                     pad0: 0,
                     pad1: 0,
                 }
@@ -454,11 +444,11 @@ macro_rules! walker_program {
                 let pos = GpuVec::from_slice_on(handle, &start.pos)?;
                 let head = GpuVec::from_slice_on(handle, &start.head)?;
                 let mut trace = vec![start];
+                let uniform = device.create_uniform("walker-steer params", &params(case, 1))?;
                 // `field` and `deposit` are `Independent` in `walk`: their length is the cell count, not the
                 // number of walkers it is dispatched for.
                 for step in 1..=STEPS {
-                    let uniform =
-                        device.create_uniform("walker-steer params", &params(case, step))?;
+                    device.write_uniform(&uniform, &params(case, step))?;
                     k::walk::dispatch(
                         device,
                         case.walkers as u32,
@@ -488,8 +478,9 @@ macro_rules! walker_program {
                 let pos = device.buffer(&start.pos);
                 let head = device.buffer(&start.head);
                 let mut trace = vec![start];
+                let uniform = device.uniform(params(case, 1))?;
                 for step in 1..=STEPS {
-                    let uniform = device.uniform(params(case, step))?;
+                    uniform.write(params(case, step))?;
                     k::walk::dispatch(
                         &device,
                         case.walkers as u32,
@@ -586,6 +577,20 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn dist_outside_one_to_side_is_refused() {
+        let side = small::SIDE;
+        for dist in [0, side as u32 + 1] {
+            let mut case = small_cases().remove(0);
+            case.dist = dist;
+            let result = std::panic::catch_unwind(|| make_start(side, &case));
+            assert!(result.is_err(), "dist {dist}");
+        }
+        let mut case = small_cases().remove(0);
+        case.dist = side as u32;
+        assert_eq!(make_start(side, &case).pos.len(), case.walkers);
     }
 
     #[test]

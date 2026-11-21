@@ -3085,8 +3085,10 @@ const REM_EUCLID_HELPER_TEXT: &str = "float __gust_fmod(float a, float b) { floa
 /// states, and the final product is either neighbour again. That bounds the relative error by `11 * 2^-23`, so the
 /// result is within 22 ULP of the exact value (spacing taken at the larger of the exact and the actual result); the
 /// observed error is far smaller and is printed per adapter by `crates/gust-wgpu/tests/math3.rs`. It is not
-/// bit-equal to Rust's `hypot` in general (D39: documented, never chased). A NaN, an
-/// infinity or a subnormal operand is unspecified. No loop, so none of the loop-exit trouble of `__gust_fmod`.
+/// bit-equal to Rust's `hypot` in general (D39: documented, never chased). Outside that domain the helper's own text
+/// decides, even on an IEEE-exact GPU: `hypot(inf, inf)` has `q = inf / inf = NaN`, so it returns NaN where Rust gives
+/// infinity. Inferred, not measured: with a `max` and `min` that ignore a NaN, `hypot(NaN, 1.0)` may be about 1.414; and
+/// with flush-to-zero, two subnormal operands may reach `0 / 0`. No loop, so none of the loop-exit trouble of `__gust_fmod`.
 const HYPOT_HELPER_TEXT: &str = "float __gust_hypot(float x, float y) { float m = max(abs(x), abs(y)); float n = min(abs(x), abs(y)); if (m == 0.0) { return 0.0; } float q = n / m; return m * sqrt(1.0 + q * q); }\n\n";
 
 /// `b.pow(e)` on `u32` and `i32` (slice m11.math3): square and multiply over the bits of the exponent, at most 32

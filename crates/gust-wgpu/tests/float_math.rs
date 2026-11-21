@@ -4,8 +4,9 @@
 //! the shader's shadow body) and asserts the CPU twin against the same reference. The twin is never GPU evidence.
 //! Each test prints the adapter it ran on; the test code does not assert a name.
 //!
-//! The bounds of the transcendental methods are the WGSL accuracy table's (15.7.4.1, quoted from the editor's draft as
-//! recalled when the slice was written, "bound UNVERIFIED" in docs/SEMANTICS.md), never a value fitted to an adapter.
+//! The bounds of the transcendental methods are the WGSL accuracy table's (15.7.4.1, the f32 rows of the editor's
+//! draft), and the inherited ones (`sqrt`, `tan`, `powf`) are derived from the rows the spec names, never a value
+//! fitted to an adapter.
 //! The inputs stay inside the domain each bound states; NaN, infinity and subnormal inputs are not fed.
 include!("../../../tests/fixtures/float_math.rs");
 
@@ -418,11 +419,28 @@ fn within(actual: f32, exact: f64, bound: &Bound) -> (bool, f64) {
     }
 }
 
+/// The bound of `x.powf(y)` in ULP, from the rule the table gives: `pow(x, y)` is inherited from `exp2(y * log2(x))`.
+/// With `L = abs(y * log2(x))`: `log2` has an absolute error of `2^-21` on `[0.5, 2]` and 3 ULP elsewhere (at most
+/// `3 * 2^-23 * abs(log2(x))`); the product is correctly rounded (at most `2^-23 * L` more); so the exponent has an
+/// absolute error `d` of `abs(y) * 2^-21 + 2^-23 * L` inside `[0.5, 2]` and `4 * 2^-23 * L` outside. That is a relative
+/// error `ln(2) * d` of the result, at most `2^24` times as many ULPs (a ULP is at least `2^-24` of the value), and
+/// `exp2` adds `3 + 2 * L` ULP.
+fn powf_bound_ulps(x: f64, y: f64) -> f64 {
+    let l = (y * x.log2()).abs();
+    let d = if (0.5..=2.0).contains(&x) {
+        y.abs() * 2f64.powi(-21) + 2f64.powi(-23) * l
+    } else {
+        4.0 * 2f64.powi(-23) * l
+    };
+    3.0 + 2.0 * l + std::f64::consts::LN_2 * d * 2f64.powi(24)
+}
+
 #[test]
 fn the_transcendentals_are_within_the_wgsl_bounds_on_the_gpu_and_the_twin() {
     let device = device();
     let mut stream = Stream(0x9e37_79b9);
-    let pi = std::f32::consts::PI;
+    // The `f32` constant `PI` is above the real pi, and the table states `sin` and `cos` on `[-pi, pi]`: stay inside.
+    let pi = f32::from_bits(std::f32::consts::PI.to_bits() - 1);
     let mut rows = Vec::with_capacity(COUNT);
     for i in 0..COUNT {
         let mut row = float_math::TransIn {
@@ -437,9 +455,17 @@ fn the_transcendentals_are_within_the_wgsl_bounds_on_the_gpu_and_the_twin() {
             y: stream.range(-10.0, 10.0),
             x: stream.range(-10.0, 10.0),
         };
-        // `atan2` is discontinuous across the negative x axis, so the sign of y is never near zero there.
+        // `atan2` is discontinuous across the negative x axis, so the sign of y is never near zero there; the table
+        // states its 4096 ULP for abs(x) in [2^-126, 2^126], so x is never zero either.
         if row.y.abs() < 0.01 {
             row.y = if row.y < 0.0 { -0.01 } else { 0.01 };
+        }
+        if row.x.abs() < 0.01 {
+            row.x = if row.x < 0.0 { -0.01 } else { 0.01 };
+        }
+        // A sweep through `[0.5, 2]`, where `ln` and `log2` have the absolute bound, in 300 even steps.
+        if (5..305).contains(&i) {
+            row.pos = 0.5 + 1.5 * ((i - 5) as f32 / 299.0);
         }
         // Edges inside every domain: the ends of the ranges, zero where it is allowed, and the log bound's corners.
         match i {
@@ -450,7 +476,7 @@ fn the_transcendentals_are_within_the_wgsl_bounds_on_the_gpu_and_the_twin() {
                 row.exp_arg = 0.0;
                 row.exp2_arg = 0.0;
                 row.pos = 1.0;
-                row.x = 0.0;
+                row.x = 0.01;
             }
             1 => {
                 row.angle = pi;
@@ -539,7 +565,6 @@ fn the_transcendentals_are_within_the_wgsl_bounds_on_the_gpu_and_the_twin() {
         } else {
             Bound::Ulps(3.0)
         };
-        let power = (f(v.expo) * f(v.base).log2()).abs();
         let tan_cos = f(v.tan_arg).cos().abs();
         let tan_value = exact[2].abs();
         let bounds = [
@@ -562,10 +587,12 @@ fn the_transcendentals_are_within_the_wgsl_bounds_on_the_gpu_and_the_twin() {
             } else {
                 Bound::Ulps(3.0)
             },
-            // sqrt: inherited from 1 / inverseSqrt(x), inverseSqrt 2 ULP and the reciprocal 2.5 ULP: 5 ULP.
-            Bound::Ulps(5.0),
-            // powf: inherited from exp2(y * log2(x)); derived: 4 + 5 * abs(y log2 x) + 3 * abs(y) ULP.
-            Bound::Ulps(4.0 + 5.0 * power + 3.0 * f(v.expo).abs()),
+            // sqrt: inherited from 1.0 / inverseSqrt(x). inverseSqrt is 2 ULP of its result y = 1/sqrt(x), a relative
+            // error of at most 2 * 2^-23; as ULPs of the result that is at most twice as many (a ULP is between 2^-24
+            // and 2^-23 of the value), so 4; the division adds 2.5 ULP: 6.5 ULP.
+            Bound::Ulps(6.5),
+            // powf: inherited from exp2(y * log2(x)); see `powf_bound_ulps`.
+            Bound::Ulps(powf_bound_ulps(f(v.base), f(v.expo))),
             // atan2: 4096 ULP.
             Bound::Ulps(4096.0),
         ];

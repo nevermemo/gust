@@ -59,7 +59,7 @@ mod polar {
 fn points() -> Vec<polar::Point> {
     (0..POINTS)
         .map(|i| polar::Point {
-            x: ((i * 37) % 201) as f32 * 0.05 - 5.0,
+            x: ((i * 37) % 201) as f32 * 0.05 - 5.0 + 0.013,
             y: ((i * 91) % 199) as f32 * 0.05 - 5.0 + 0.013,
         })
         .collect()
@@ -108,9 +108,10 @@ mod tests {
         device
     }
 
-    /// The bound of each output, from the WGSL accuracy table (bound UNVERIFIED, see docs/SEMANTICS.md): `radius` is
-    /// `sqrt` (5 ULP) of a sum of two squares (2 ULP of the radicand, 1 ULP after the root): 8 ULP of the result.
-    /// `angle` is `atan2`: 4096 ULP. A rotated coordinate has `sin` and `cos` absolute errors of `2^-11` each times
+    /// The bound of each output, from the WGSL accuracy table (WGSL 15.7.4.1, see docs/SEMANTICS.md): `radius` is
+    /// `sqrt` (inherited, 6.5 ULP) of a sum of two squares (two correctly rounded products and a sum: a relative error of at
+    /// most `3 * 2^-23`, half of it after the root, at most 3 ULP of the result): 9.5 ULP, rounded up to 10. `angle` is `atan2`, with `abs(x) >= 0.013`.
+    /// `atan2` has 4096 ULP. A rotated coordinate has `sin` and `cos` absolute errors of `2^-11` each times
     /// the point's coordinates, plus 4 `f32` roundings of its largest term.
     #[test]
     fn polar_and_rotation_match_the_host_on_the_gpu_and_the_twin() {
@@ -190,7 +191,7 @@ mod tests {
                 ("twin", &twin_polar[i], &twin_rotated[i]),
             ] {
                 assert!(
-                    (f64::from(polar.radius) - radius).abs() <= 8.0 * ulp(radius),
+                    (f64::from(polar.radius) - radius).abs() <= 10.0 * ulp(radius),
                     "{label} radius[{i}]"
                 );
                 assert!(

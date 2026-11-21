@@ -1076,9 +1076,13 @@ pub(crate) struct GpuSuitePin {
 ///
 /// Slice m11.g3: 525 over 51 became 528 over 52. The new test file `tests/consts.rs` holds three tests (module-level
 /// `const` items read by kernels, the literal forms including `i32::MIN`, and a struct method and a closure that read
-/// a const) and adds one `test result:` line. Updated by count, not from a full Gpu suite run.
+/// a const) and adds one `test result:` line. Updated by count, not from a full Gpu suite run. A full Gpu suite on the merged tree then counted
+/// 528 over 52 on the Radeon 890M and the RTX 5090.
+///
+/// Slice m11.ld: 528 over 52 became 529 over 52. One new test in `tests/driver_sentinel.rs` (the float-compare
+/// loop exit on the RTX 5090). Updated by count, not from a full Gpu suite run.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 528,
+    passed: 529,
     result_lines: 52,
 };
 

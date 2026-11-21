@@ -52,6 +52,13 @@ proof.
     shipped build: a precompiled artifact keeps its WGSL, and a build with the `native` or `web` profile (which has no
     run-time compiler) stays on the WGSL route and meets the defect where the pattern occurs. The route has its own
     documented result differences (SEMANTICS section 15).
+- **An NVIDIA driver defect ends some float-compare loops at the wrong iteration** (m11.ld; observed on one device
+  only: an NVIDIA GeForce RTX 5090 through Vulkan, driver 610.88). In a loop with a constant bound whose exit is a
+  `break` on a float comparison, a `<` break due after iteration 128 is taken at 128, and an `==` break due at
+  iteration 128 or later never runs. The SPIR-V route (`spirv-route`) shows the same values; the AMD Radeon 890M
+  computes Rust's values. GUST does not refuse or rewrite the form (D39); a done flag or an integer exit avoids it,
+  and GUST's own `rem_euclid` helper uses a flag since m11.fm. The GPU test `driver_sentinel` expects these values
+  on that device, so a driver change fails it. Details: [SEMANTICS](docs/SEMANTICS.md), section 7.
 
 ### Added
 

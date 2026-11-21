@@ -589,6 +589,10 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       bind). GPU tests in `tests/consts.rs` (literal forms with `i32::MIN`, a struct method and a closure reading a
       const) on the Radeon 890M and the RTX 5090. Two Opus reviews (merge after fixes); Unit suite on the lane
       green; `GPU_SUITE_PIN` 528 over 52, confirmed by full Gpu suites on the merged tree (890M 695 s, RTX 5090 527 s).
+    - m11.ld (`7f64c80`, fixes `34a84cf`): the NVIDIA float-compare loop-exit defect pinned by a second test in
+      `driver_sentinel` (RTX 5090, 610.88: `<` form `[100,127,128,128,128,128]`, `==` form `[100,127,0,0,0,0]` for
+      breaks due at 100, 127, 128, 129, 200 and 250; the SPIR-V route the same; the Radeon 890M and the twin give
+      Rust's values) and a SEMANTICS paragraph. Opus review: merge after fixes. `GPU_SUITE_PIN` 529 over 52 by count.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -30,6 +30,21 @@ the device has them and from the wall clock around a blocking submit otherwise; 
 Every row is first checked against a CPU computation (a full comparison or a derived tolerance, stated in the source),
 so a row measures real work; a row that fails its check prints FAILED instead of a time, and the exit code is 1.
 
+W4 runs its own clear and count batch through `gust_algo::dispatch_batch_in_scope` inside the same `timed` scope as the
+`gust-algo` scan, so the scope's batch count and GPU time cover both. Its row is therefore the summed GPU timestamps of
+its own batch and of the scan's batches, or, on a device without timestamps, the wall clock around the whole step, as
+for W5.
+
+After the table the program runs a probe of the linear dispatch limit (gap G4), which is not a workload: a linear
+kernel launch of 65 536 workgroups on x, one above the portable limit of 65 535. It prints one line starting `G4:` with
+the outcome (a `DeviceLimit` error with the requested and maximum counts, which is gust-wgpu's own host-side check of the
+launch against the device limits, made before anything is submitted; or success, with the results compared exactly with
+the host), the device's `max_compute_workgroups_per_dimension` and the limits policy the kit's device uses. A
+`G4 remedy:` line then shows a two-dimensional launch (`Extent::new(x, y, 1)`, `i = id.y * width + id.x`, and an
+`if i >= n { return; }` guard in the kernel) over a count that is not a multiple of the row width, so the guard has
+work to do: the values are checked exactly against the host and the buffer slots past the count must still hold their
+sentinel. A probe or remedy that fails its check counts as a FAILED row.
+
 ## What this is not
 
 The output is a one-machine design aid, not a benchmark. It asserts no time, it says nothing about another adapter, and

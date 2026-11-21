@@ -11,27 +11,33 @@
 //!
 //! # The float bound
 //!
-//! The steps use only `+` and `*` on positive operands, with no cancellation and no branch whose outcome depends on a
-//! rounded value. Model each GPU or CPU primitive, fused or not, as correct to a relative error `u = 2^-24`
-//! (round to nearest, no flush, no overflow; a fused multiply-add rounds once, so it only has less error than its two
-//! parts). For positive operands the relative error of a product is at most the sum of its operands' errors plus `u`,
-//! and that of a sum at most the larger of its operands' errors plus `u`. The inputs and constants are exact in `f32`.
+//! Domain: every operand is positive and finite (the input `x = 0` only makes a product exactly zero, which is exact),
+//! every intermediate is zero or a normal number, nothing overflows, and no subtraction occurs, so there is no cancellation;
+//! no branch depends on a rounded value. Model the primitives with the GPU model of `docs/SEMANTICS.md` (the section
+//! "Deriving a tolerance"): `+` and `*` land on either neighbour of the exact result, within one ULP, which is at most
+//! `2^-23 = 2u` of the exact result for `u = 2^-24`. No argument here relies on a product being exact for the test
+//! inputs. A fused multiply-add rounds once, so it has less error than its two parts, and a backend may fuse or
+//! reassociate (15.7.5) without leaving the bound. For positive operands the relative error of a product is at most the
+//! sum of its operands' errors plus `2u`, and that of a sum at most the larger of its operands' errors plus `2u`. The
+//! inputs and constants are exact in `f32`.
 //!
-//! - `rescale = x * gain + offset`: product `u`, sum `u + u = 2u`.
-//! - `curve = x * x * k + x` (`x` has error `2u`): `x * x` is `4u + u = 5u`, `* k` is `6u`, `+ x` is `max(6u, 2u) + u
-//!   = 7u`.
-//! - `damp = (x + shift) * scale` (`x` has error `7u`): the sum is `7u + u = 8u`, the product `9u`.
+//! - `rescale = x * gain + offset`: product `2u`, sum `2u + 2u = 4u`.
+//! - `curve = x * x * k + x` (`x` has error `4u`): `x * x` is `8u + 2u = 10u`, `* k` is `12u`, `+ x` is `max(12u, 4u)
+//!   + 2u = 14u`.
+//! - `damp = (x + shift) * scale` (`x` has error `14u`): the sum is `14u + 2u = 16u`, the product `18u`.
 //!
-//! So whatever order or fusion a backend picks, each result is within `9u` of the exact value, relative. The exact
-//! value is computed in `f64`, whose own error is below `2^-49` relative here (nine roundings of `2^-53`), so
-//! [`FLOAT_BOUND`] is `9 * 2^-24 * (1 + 2^-20)`. The slack `9u * 2^-20` (about 5.1e-13) also covers the second-order
-//! terms the first-order argument drops: `(1 + u)^9 - 1 = 9u + 36u^2 + ..`, and `36u^2` is about 1.3e-13.
-//! `inputs_stay_inside_the_derivation_domain` pins the domain the argument needs (all operands positive and finite,
-//! every intermediate normal, nothing near overflow).
+//! So whatever order or fusion a backend picks, each result is within `18u` of the exact value, relative: nine
+//! rounding terms at `2u` each (seven roundings; rescale's two are counted twice, through `x * x`). The exact value is computed in `f64`, whose own error is below `2^-49` relative here (nine
+//! roundings of `2^-53`), so [`FLOAT_BOUND`] is `18 * 2^-24 * (1 + 2^-20)`. The slack `18u * 2^-20` (about 1.0e-12)
+//! also covers the second-order terms the first-order argument drops: the exact accumulation is `(1 + 2u)^9 - 1 =
+//! 18u + 144u^2 + ..`, and `144u^2` is about 5.1e-13, with the higher terms below 1e-18; the `f64` error (below 2e-15)
+//! fits in the rest. `inputs_stay_inside_the_derivation_domain` pins the domain the argument needs (all operands
+//! positive and finite, every intermediate normal, nothing near overflow).
 //!
-//! The same bound holds against the exact value for the CPU twin, the GPU resident chain and the GPU materialised
-//! chain, one by one. The two GPU chains also agree bit for bit with each other: they run the same kernels over the
-//! same bits, and a buffer that stays on the device is not rounded again.
+//! The one bound holds against the exact value for the CPU twin (which rounds to nearest, so it has half the error
+//! charged), the GPU resident chain and the GPU materialised chain, one by one. The two GPU chains also agree bit for
+//! bit with each other: they run the same kernels over the same bits, and a buffer that stays on the device is not
+//! rounded again.
 
 use std::time::Instant;
 
@@ -74,9 +80,9 @@ pub const CURVE: f32 = 0.25;
 pub const SHIFT: f32 = 0.5;
 pub const SCALE: f32 = 0.125;
 
-/// The relative error bound of the derivation in the module documentation: `9u` for `u = 2^-24`, with `2^-20`
-/// relative slack for the `f64` reference.
-pub const FLOAT_BOUND: f64 = 9.0 / 16_777_216.0 * (1.0 + 1.0 / 1_048_576.0);
+/// The relative error bound of the derivation in the module documentation: `18u` for `u = 2^-24` (nine rounding terms
+/// at `2u` each; seven roundings, rescale's two counted twice), with `2^-20` relative slack for the `f64` reference and the second-order terms.
+pub const FLOAT_BOUND: f64 = 18.0 / 16_777_216.0 * (1.0 + 1.0 / 1_048_576.0);
 
 /// The pool hand-outs of one resident chain: the input upload (1), the two broadcasts and the result of `rescale`
 /// (3), the broadcast and the result of `curve` (2), the two broadcasts and the result of `damp` (3), and the one
@@ -342,15 +348,25 @@ mod tests {
     }
 
     #[test]
-    fn the_bound_is_nine_roundings_of_a_single_precision_float() {
-        assert_eq!(FLOAT_BOUND, 9.0 * 2f64.powi(-24) * (1.0 + 2f64.powi(-20)));
-        // A one-ulp error on a result is within it, a ten-ulp error is not.
+    fn the_bound_is_nine_gpu_rounding_terms_of_a_single_precision_float() {
+        // Nine rounding terms (seven roundings, rescale's two counted twice), each up to 2u = 2^-23 on the GPU model
+        // (either neighbour).
+        assert_eq!(
+            FLOAT_BOUND,
+            9.0 * 2.0 * 2f64.powi(-24) * (1.0 + 2f64.powi(-20))
+        );
         let x = [1.0f32];
         let right = plain_f32(1.0);
         assert!(first_outside_bound(&x, &[right]).is_none());
-        let ulp = f32::EPSILON * right;
-        assert!(first_outside_bound(&x, &[right + ulp]).is_none());
-        assert!(first_outside_bound(&x, &[right + 10.0 * ulp]).is_some());
+        // Relative errors of 0.9 and of 1.1 times the bound, rounded to `f32` (half an ulp, about 6% of the bound
+        // here): the first is inside, the second clearly outside, on either side.
+        let want = reference(1.0);
+        for sign in [1.0, -1.0] {
+            let inside = (want * (1.0 + sign * 0.9 * FLOAT_BOUND)) as f32;
+            let outside = (want * (1.0 + sign * 1.1 * FLOAT_BOUND)) as f32;
+            assert!(first_outside_bound(&x, &[inside]).is_none(), "{inside}");
+            assert!(first_outside_bound(&x, &[outside]).is_some(), "{outside}");
+        }
         assert!(first_outside_bound(&x, &[f32::NAN]).is_some());
         assert!(first_outside_bound(&x, &[]).is_some());
     }

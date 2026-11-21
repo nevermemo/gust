@@ -15,9 +15,9 @@
 //! v1** (`variant::shipped` is `V1` for every operation). The plan's rule (section 5.5) is faster than v0 on both
 //! adapters at 1e6, 1e7 and 1e8 elements, and it holds on the RTX 5090 and on the Radeon 890M; the reductions are only
 //! 1.01 to 1.03 ahead at 1e8 on the 890M, where both forms are bound by shared system memory, and D121 keeps v1.
-//! v0 stays the fallback, for an input whose v1 launch exceeds the
-//! device's workgroup limit, and the only form with CPU twins (the `cpu` module, `GUST_PROFILE=cpu`). The `*_with`
-//! functions run either on request.
+//! v0 stays the fallback for a device with too little workgroup memory for v1 (a binding past the storage limit is
+//! refused by v0 as well, and a launch past the workgroup limit is split by the host, D211), and the only form with CPU
+//! twins (the `cpu` module, `GUST_PROFILE=cpu`). The `*_with` functions run either on request.
 //!
 //! What is promised (plan section 5.1): integer sums and scans are exact and inside the domain only when no partial sum
 //! (or prefix) overflows, and [`reduce::sum_wrapping`] is defined modulo 2^32 for every input; `min` and `max` are

@@ -652,6 +652,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
     - m11.xmod (read-only scout, nothing merged; tree `d8e739c`): ways to share a helper, a const or a struct between
       `#[gpu]` modules. `#[gpu]` sees only its own module's tokens, so sharing needs a design; the leading option's
       premise (macro expansion order) is not measured yet and comes before any build.
+    - m11.algolift (`294649e`, D211, D213): `gust-algo`'s `limits::check` keeps only the storage-binding half; `admits`
+      decides v1 against v0 on workgroup memory and the storage binding, so v0 is now the fallback for too little
+      workgroup memory only. Reduce, scan and compaction launch through the host path that splits (read, then run).
+      Tests at a workgroup limit lowered to 3 now check that the split result equals the host reference (reduce
+      v0 and v1, both scans, count, indices and gather), and the v1 test keeps its dispatch counts so a regressed
+      `admits` fails; the storage-limit refusals stay. Three size tests at 2^24 + 1000 elements (the widest launch
+      is about 4,097 workgroups, so nothing splits at a limit of 65,535 or more). `gust-algo` adapter tests 55 to 58
+      (`ALGO_GPU_TESTS`). Radeon 890M only; RTX 5090 pending. Opus review: dispatch counts restored, size-test
+      wording, v0 in the large scan.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

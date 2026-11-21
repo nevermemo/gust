@@ -2019,6 +2019,35 @@ impl HeadlessDevice {
         &self.limits
     }
 
+    /// The wgpu device behind this one: an advanced escape hatch, like [`GpuBuffer::as_wgpu_buffer`], for code that
+    /// records its own passes over GUST's buffers (a buffer is only valid on the device that created it).
+    ///
+    /// Work you create here is not tracked by GUST: validation, limits and pooling stay your concern.
+    /// Ordering is the queue's ([`Self::wgpu_queue`]).
+    ///
+    /// Hazards: calling `destroy` on this device destroys GUST's device too, and every call of this `HeadlessDevice`
+    /// fails or panics after it. An `on_uncaptured_error` handler you install replaces wgpu's default, so the panic of
+    /// [`create_typed_buffer`](Self::create_typed_buffer) on an oversized allocation (and any other uncaptured error)
+    /// is then yours to handle. Under [`with_limits`](Self::with_limits) emulation the raw device keeps the limits it was
+    /// opened with, so a pipeline or buffer you create here is not held to the lowered ones.
+    pub fn wgpu_device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    /// The wgpu queue behind this device: an advanced escape hatch, like [`GpuBuffer::as_wgpu_buffer`].
+    ///
+    /// GUST submits every dispatch to this one queue. The submissions of one queue behave as if they ran in
+    /// submission order, and wgpu inserts the barriers between them, so your own submission sees the storage-buffer
+    /// writes of a kernel submitted before it, with no barrier of yours. That is an ordering, not a promise that the
+    /// earlier work has finished before the later work starts. On native targets the typed `dispatch` and `dispatch_*`
+    /// wrappers also wait for their submission, so the work is done when they return; on `wasm32` they submit and
+    /// return [`Error::WouldBlock`], so that holds on native targets only. `submit_*` returns a job without waiting,
+    /// and your submission is still ordered after it.
+    /// Submit commands that use a pooled buffer before its owner drops (see [`GpuBuffer::as_wgpu_buffer`]).
+    pub fn wgpu_queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
     /// Check launches against `limits` instead of the opened device's, for emulating a
     /// weaker target and for tests. The limits may only be lowered: a value that is
     /// better than the one the device was opened with is rejected with

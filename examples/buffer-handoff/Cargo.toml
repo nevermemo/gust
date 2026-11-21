@@ -1,0 +1,16 @@
+[package]
+name = "buffer-handoff"
+description = "A GUST output buffer consumed by another wgpu compute pass on the same device, with no CPU round trip"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+gust.workspace = true
+gust-wgpu = { workspace = true, features = ["slang-runtime"] }
+wgpu.workspace = true
+
+[lints]
+workspace = true

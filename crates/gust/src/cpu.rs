@@ -963,8 +963,8 @@ where
     }
     // The launch limit, after validation and not for an empty launch, as `check_launch` does on the GPU. The GPU
     // limits are the same invocation cap as here ([`Extent::MAX_INVOCATIONS`], at most and rounded up to whole
-    // workgroups) and, for a launch the GPU host cannot cut into pieces (m11.g4b), `max_compute_workgroups_per_dimension`
-    // (65535 by default) per axis; the twin's only limit is that cap.
+    // workgroups) and, for a launch the GPU host cannot cut into pieces (m11.g4b),
+    // `max_compute_workgroups_per_dimension` (65535 by default) per axis; the twin's only limit is that cap.
     if !extent.is_empty() {
         // A `pixel` call covers at most `PIXEL_MAX_ELEMENTS` elements on every backend (Option S): the limit of
         // `gust_wgpu`'s `check_launch_limits`, named the same. Its workgroup size is `[1, 1, 1]` and means nothing.

@@ -42,8 +42,8 @@ wrapped as `Independent(&buffer)` at the call site. That wrapper says "this buff
 buffer, a histogram's bins or a reduction's output does; the kernel must then guard it with its own `.len()`.
 Dispatches may also be two- or three-dimensional: `call_extent`, `submit_extent` and `dispatch_extent` take an `Extent`,
 and a launch past the device's 65 535 workgroups per dimension is cut by the host into pieces that run in one
-submission, each invocation running once with the ids of an unsplit launch (an indirect dispatch, a staged graph node
-and a build without `slang-runtime` keep the `DeviceLimit`).
+submission, each invocation running once with the ids of an unsplit launch (a staged graph node and a build without
+`slang-runtime` keep the `DeviceLimit`; the host never checks an indirect dispatch's count).
 
 The program below is gallery entry G2, `saxpy-uniform`. It dispatches once with the typed `dispatch`, then builds the
 same launch as a value with `call`, changes the uniform with `write_uniform` and submits the call with `dispatch_call`:

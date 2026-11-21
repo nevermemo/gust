@@ -935,11 +935,12 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   5,000,000 elements at workgroup width 64 need 78125 workgroups and run as 65535 + 12590, and a 2^28 x 1 extent at a
   16 x 16 workgroup is exactly the cap and runs as 257 pieces. What remains a `DeviceLimit` (checked before anything is
   compiled): the 2^32 invocation cap above, on both backends; more than `gust_wgpu::MAX_SPLIT_DISPATCHES` (4096)
-  pieces (limit `split dispatches`); an indirect dispatch (the host never sees its count); a staged graph node and the
+  pieces (limit `split dispatches`); a staged graph node and the
   deprecated `dispatch_f32`/`dispatch_u32` (they are not cut); a kernel with no split variant (a hand-built descriptor,
-  a `pixel` kernel, a kernel built for the CPU); a build without the run-time compiler (`slang-runtime`), because the
+  a `pixel` kernel); a build without the run-time compiler (`slang-runtime`), because the
   variant is compiled at run time; and a variant that exceeds another limit of the device (its one extra uniform, its
-  binding index), which keeps the plain refusal of the workgroup limit. The error of an axis over the limit still names
+  binding index), which keeps the plain refusal of the workgroup limit. An indirect dispatch is never checked against the
+  workgroup count (the host does not see it), and a kernel built for the CPU is `KernelTarget` on a GPU device. The error of an axis over the limit still names
   the axis (the limit string ends in `(y)` or `(z)` for those two). The macro-emitted twin uses the CPU backend (m3.c)
   and visits the invocations in ascending z, then y, then x.
 - **The portable floor (opt-in, m8.f, D143).** A crate that sets `limits = "portable"` in `[package.metadata.gust]` has every
@@ -1347,7 +1348,7 @@ coretests entry above has the same shape.
     reaches the last cell (`the_per_dimension_workgroup_limit_is_no_longer_the_gpus_alone_and_the_cap_is_both`;
     measured, not run on a software adapter). The split launches of `crates/gust-wgpu/tests/split.rs` (20 x 20 x 20 at a
     limit of 4 on every axis and all three at once, a real size past 65535 workgroups at workgroups of 64 and 256) are
-    **measured** on the adapters named in the slice report: every invocation counted once, with the ids of an unsplit
+    **measured** on the AMD Radeon 890M and the NVIDIA RTX 5090: every invocation counted once, with the ids of an unsplit
     launch, equal to the host and to the twin.
 - **`par_for!`** (m7.p, D103; `crates/gust-wgpu/tests/par_for.rs`; Gpu). Label: **proven** on the inputs used. One set
   of scenarios, written once and instantiated for the GPU (`gpu::`) and the twin (`twin::`), asserts each against a

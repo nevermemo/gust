@@ -101,6 +101,19 @@ mod split_kernels {
         }
     }
 
+    /// Unguarded on purpose: `p` holds the rounded extent, every invocation bumps `total[0]` and its own cell.
+    #[kernel(workgroup_size(4, 4, 4))]
+    pub fn tally(
+        id: SV_DispatchThreadID,
+        p: Uniform<Size3>,
+        mut hits: RWStructuredBuffer<u32>,
+        mut total: RWStructuredBuffer<u32>,
+    ) {
+        atomic_add(&mut total[0], 1u32);
+        let i = (id.z * p.h + id.y) * p.w + id.x;
+        atomic_add(&mut hits[i], 1u32);
+    }
+
     /// `out[i] = i + 1`: the first call of a chain.
     #[kernel(workgroup_size(8, 1, 1))]
     pub fn stamp(id: SV_DispatchThreadID, p: Uniform<Count>, mut out: RWStructuredBuffer<u32>) {
@@ -898,7 +911,14 @@ fn assert_cold(device: &HeadlessDevice) {
 /// The z axis of a launch has never run on a GPU before this test.
 #[test]
 fn the_host_split_equals_the_hand_split_on_x_y_z_and_all_three() {
-    for (w, h, d) in [(20, 4, 4), (4, 20, 4), (4, 4, 20), (20, 20, 20)] {
+    // The last case is not a multiple of the workgroup on any axis, z included: 6 x 5 x 5 workgroups.
+    for (w, h, d) in [
+        (20, 4, 4),
+        (4, 20, 4),
+        (4, 4, 20),
+        (20, 20, 20),
+        (21, 18, 19),
+    ] {
         let lowered_device = lowered(device(), 4);
         eprintln!(
             "split (f) {w}x{h}x{d} adapter: {:?}",
@@ -919,10 +939,51 @@ fn the_host_split_equals_the_hand_split_on_x_y_z_and_all_three() {
             "the host split against the hand split"
         );
         assert_eq!(cube_twin(w, h, d), expected, "the CPU twin");
+        let plain = device();
         assert_eq!(
-            cube_auto(&device(), w, h, d),
+            cube_auto(&plain, w, h, d),
             expected,
             "unsplit, normal limits"
+        );
+        let stats = plain.pipeline_cache_stats();
+        assert_eq!(
+            (stats.entries, stats.misses),
+            (1, 1),
+            "an unsplit launch compiles only the base"
+        );
+    }
+}
+
+/// (n) No bounds check anywhere: every invocation of the rounded extent bumps a global counter and its own cell, and
+/// the cells are exactly the rounded volume. A host that dispatches one workgroup too many (a piece of the full limit
+/// where fewer are left) raises the counter above the rounded volume, which no guarded kernel could show.
+#[test]
+fn a_split_launch_runs_exactly_the_rounded_extent_and_no_invocation_more() {
+    for (w, h, d) in [(21u32, 18u32, 19u32), (30, 3, 3), (3, 30, 3), (3, 3, 30)] {
+        let lowered = lowered(device(), 4);
+        let (rw, rh, rd) = (w.div_ceil(4) * 4, h.div_ceil(4) * 4, d.div_ceil(4) * 4);
+        let cells = (rw * rh * rd) as usize;
+        let size = lowered.create_uniform("size", &size3(rw, rh, rd)).unwrap();
+        let hits =
+            lowered.create_typed_buffer("hits", &vec![0u32; cells], GpuBufferAccess::ReadWrite);
+        let total = lowered.create_typed_buffer("total", &[0u32], GpuBufferAccess::ReadWrite);
+        split_kernels::tally::dispatch_extent(
+            &lowered,
+            Extent::new(w, h, d),
+            &size,
+            Independent(&hits),
+            Independent(&total),
+        )
+        .unwrap();
+        assert_eq!(
+            lowered.read_typed_buffer(&total).unwrap(),
+            [cells as u32],
+            "{w}x{h}x{d}: invocations run"
+        );
+        let hits = lowered.read_typed_buffer(&hits).unwrap();
+        assert!(
+            hits.iter().all(|hit| *hit == 1),
+            "{w}x{h}x{d}: every cell once"
         );
     }
 }

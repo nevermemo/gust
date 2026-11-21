@@ -315,7 +315,8 @@ and encodes nothing (an indirect dispatch node is checked for everything except
 its workgroup count): workgroup width (`max_compute_workgroup_size_x`), invocations
 per workgroup, storage buffers per shader stage,
 binding index (`max_bindings_per_bind_group`) and storage binding size are
-`Error::DeviceLimit`, and so is a workgroup count per dimension that the host cannot cut (below). The limits are those the device was opened with; `with_limits`
+`Error::DeviceLimit`, and so is a workgroup count per dimension that the host cannot cut (below). The limits are
+those the device was opened with; `with_limits`
 can only lower them, to emulate a weaker target. "Default" has two meanings since m7.a0:
 `HeadlessDevice::new()` requests wgpu's portable defaults, while `DeviceOptions::default()`
 (what `default_device()` opens) asks a native adapter for its own buffer, binding and dispatch
@@ -325,7 +326,8 @@ The split variant (m11.g4a, m11.g4b, owner ruling "Option 3": the host splits, `
 `#[gpu]` macro gives every `grid` kernel built for the GPU a second descriptor, `KernelDescriptor::split`: the same
 Slang plus one hidden uniform (`__gust_launch_base`, 16 bytes) at the next free binding, whose `x`, `y` and `z` the
 prologue adds to the dispatch-thread id before anything reads it. When a launch needs more workgroups on an axis than
-`max_compute_workgroups_per_dimension`, `prepare_dispatches` plans pieces (`split_pieces`: the 2^32 cap first, then at most
+`max_compute_workgroups_per_dimension`, `prepare_dispatches` plans pieces (`split_pieces`: the 2^32 cap first,
+then at most
 `MAX_SPLIT_DISPATCHES` pieces of at most that many workgroups per axis, x innermost, then y, then z), writes the base of
 each piece (its first workgroup times the workgroup size, so local and group ids are unchanged) into one uniform
 buffer at a stride of `max(16, min_uniform_buffer_offset_alignment)`, and encodes one bind group and one

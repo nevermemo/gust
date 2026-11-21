@@ -147,9 +147,9 @@ pub struct KernelDescriptor {
     /// compiles it at run time) and its own `split` is `None`.
     ///
     /// `Some` for the selected body of a `grid` kernel built for the GPU, `None` for a `pixel` kernel, for a kernel
-    /// built for the CPU, and for every descriptor built by hand ([`KernelDescriptor::new`]). A host runs a `split` only when it has the
-    /// macro's shape (the kernel's parameters and the one hidden uniform, `gust-wgpu` checks this before it trusts
-    /// it), so a hand-set one is ignored, not run. It is not part of the
+    /// built for the CPU, and for every descriptor built by hand ([`KernelDescriptor::new`]). A host runs a `split`
+    /// only when it has the macro's shape (the kernel's parameters and the one hidden uniform; `gust-wgpu` checks this
+    /// before it trusts it), so a hand-set one is ignored, not run. It is not part of the
     /// content key of this descriptor: the variant has a key of its own, from its own text. The derived
     /// `PartialEq`/`Eq` compare it.
     pub split: Option<&'static KernelDescriptor>,
@@ -513,9 +513,9 @@ impl KernelDescriptor {
         self
     }
 
-    /// The descriptor with `split` as its [`split`](Self::split). For the `#[gpu]` macro and tests: a host never trusts a
-    /// variant that is not shaped like the macro's (a `gust-wgpu` host checks the parameters, the entry point and the
-    /// workgroup size before it runs one), but a hand-made one has no meaning beyond that.
+    /// The descriptor with `split` as its [`split`](Self::split). For the `#[gpu]` macro and tests: a host never
+    /// trusts a variant that is not shaped like the macro's (a `gust-wgpu` host checks the parameters, the entry
+    /// point and the workgroup size before it runs one), but a hand-made one has no meaning beyond that.
     #[doc(hidden)]
     pub const fn with_split(mut self, split: Option<&'static KernelDescriptor>) -> Self {
         self.split = split;

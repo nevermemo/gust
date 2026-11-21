@@ -40,7 +40,9 @@ kernel launch of 65 536 workgroups on x, one above the portable limit of 65 535.
 the outcome (since slice m11.g4b the host splits the launch into pieces and it succeeds, with the results compared
 exactly with the host; a `DeviceLimit` error with the requested and maximum counts, gust-wgpu's own host-side check of
 the launch against the device limits made before anything is submitted, is still reported if a device or build cannot
-split it), the device's `max_compute_workgroups_per_dimension` and the requested limits policy of the kit's device (a constant, not read back). Any error other than that `DeviceLimit` (the workgroup limit of x, 65 536 requested, the maximum the device reports) counts as FAILED. A
+split it), the device's `max_compute_workgroups_per_dimension` and the requested limits policy of the kit's
+device (a constant, not read back). Any error other than that `DeviceLimit` (the workgroup limit of x, 65 536
+requested, the maximum the device reports) counts as FAILED. A
 `G4 remedy:` line then shows a two-dimensional launch (`Extent::new(x, y, 1)`, `i = id.y * width + id.x`, and an
 `if i >= n { return; }` guard in the kernel) over a count that is not a multiple of the row width, so the guard has
 work to do: the values are checked exactly against the host and the buffer slots past the count must still hold their

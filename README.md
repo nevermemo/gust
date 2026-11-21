@@ -860,8 +860,8 @@ and the one-dimensional forms mean `Extent { x: n, y: 1, z: 1 }`. A one-dimensio
 launch of a `grid` kernel is not capped by the device's workgroups per dimension
 (`gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION`, 65 535 on default limits): since m11.g4b the host
 cuts a launch that needs more into pieces, each invocation still running once with the ids of an unsplit
-launch (up to `gust_wgpu::MAX_SPLIT_DISPATCHES` pieces; an indirect dispatch, a staged graph node and a build
-without `slang-runtime` keep the `DeviceLimit`). On both backends the invocation total, with each axis rounded up to
+launch (up to `gust_wgpu::MAX_SPLIT_DISPATCHES` pieces; a staged graph node and a build
+without `slang-runtime` keep the `DeviceLimit`; the host never checks an indirect dispatch's count). On both backends the invocation total, with each axis rounded up to
 whole workgroups, is at most 2^32 (past it is `DeviceLimit` for
 `global_invocation_id`); a zero axis dispatches nothing and returns `Ok(())`.
 Staged graphs stay one-dimensional. Evidence (exists, m7.d): on the RTX 5090 a

@@ -397,29 +397,38 @@ fn a_closure_may_read_a_const_without_capturing_it() {
 
 #[test]
 fn a_const_named_like_another_name_of_the_module_is_e0127() {
-    for items in [
-        "pub struct K { pub a: u32 }",
-        "#[derive(PartialEq, Eq)] pub enum K { A, B }",
-        "pub trait K { fn get(&self) -> u32; }",
-        "fn g<K>(x: K) -> K { x }",
-        "pub struct S { pub a: u32 } impl S { pub fn K(&self) -> u32 { self.a } }",
-        "pub trait T { fn K(&self) -> u32; }",
-        "const None: u32 = 1;",
-        "const Vec2: u32 = 1;",
-        "const uint: u32 = 1;",
+    const CLASH: &str = "is also the name of";
+    const PRELUDE: &str = "name of the Rust prelude or of GUST's math and scalar prelude";
+    for (items, fragment) in [
+        ("const K: u32 = 1; pub struct K { pub a: u32 }", CLASH),
+        (
+            "const K: u32 = 1; #[derive(PartialEq, Eq)] pub enum K { A, B }",
+            CLASH,
+        ),
+        (
+            "const K: u32 = 1; pub trait K { fn get(&self) -> u32; }",
+            CLASH,
+        ),
+        ("const K: u32 = 1; fn g<K>(x: K) -> K { x }", CLASH),
+        (
+            "const K: u32 = 1; pub struct S { pub a: u32 } impl S { pub fn K(&self) -> u32 { self.a } }",
+            CLASH,
+        ),
+        (
+            "const K: u32 = 1; pub trait T { fn K(&self) -> u32; }",
+            CLASH,
+        ),
+        ("const None: u32 = 1;", PRELUDE),
+        ("const Vec2: u32 = 1;", PRELUDE),
+        ("const uint: u32 = 1;", PRELUDE),
     ] {
-        let source = module(
-            &format!("const K: u32 = 1; {items}"),
-            "out[id.x] = id.x;",
-            "out[id.x] = id.x;",
-        );
-        // The prelude names are consts of their own name in these rows.
-        let source = if items.starts_with("const ") {
-            module(items, "out[id.x] = id.x;", "out[id.x] = id.x;")
-        } else {
-            source
-        };
+        let source = module(items, "out[id.x] = id.x;", "out[id.x] = id.x;");
         refused(&source, Code::ConstForm);
+        let message = lower(&source).expect_err(&source).to_string();
+        assert!(message.contains(fragment), "{message}");
+        if fragment == CLASH {
+            assert!(!message.contains(PRELUDE), "{message}");
+        }
     }
 }
 
@@ -447,8 +456,25 @@ fn every_collision_entry_is_renamed_as_a_const_name() {
                 assert!(texts[0].1.contains(&line), "{}: {}", entry.name, texts[0].1);
                 renamed += 1;
             }
-            // A prelude name is refused for its own reason.
-            Err(error) => assert_code_for(&error, Code::ConstForm, entry.name),
+            // Only a prelude name is refused, and for that reason: a wider refusal fails here.
+            Err(error) => {
+                assert_code_for(&error, Code::ConstForm, entry.name);
+                assert!(
+                    [
+                        "None", "Some", "Ok", "Err", "u32", "i32", "f32", "bool", "float", "int",
+                        "uint"
+                    ]
+                    .contains(&entry.name)
+                        || crate::math_types::is_reserved_type_name(entry.name),
+                    "{}: refused but not a prelude name: {error}",
+                    entry.name
+                );
+                assert!(
+                    error.to_string().contains("prelude"),
+                    "{}: {error}",
+                    entry.name
+                );
+            }
         }
     }
     assert!(renamed > 20, "only {renamed} entries were tried");

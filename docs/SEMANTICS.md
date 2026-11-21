@@ -1880,10 +1880,14 @@ the status log, not here.
 ## 17. Module-level constants (m11.g3, D205)
 
 A `const NAME: T = <literal>;` at the top of a `#[gpu]` module (`T` one of `u32`, `i32`, `f32`, `bool`; GUST-E0127 for
-any other form) is one value read by the host, the CPU twin and every kernel of the module. Nothing is evaluated: the
-macro leaves the Rust item as written, so the host and the twin read the literal rustc compiles, and writes the same
-literal as one `static const` line in the Slang text of each kernel, so the shader reads the value that literal has in
-Slang (`uint(4294967295)` for a `u32` above `i32::MAX`). The macro evaluates nothing; each side takes the literal as its
-own compiler reads it (rustc, slangc), so a difference would be a compiler's, and the GPU test compares the two. A `pub const` is usable by the host as it is (`shared::WIDTH`). Evidence: `crates/gust-wgpu/tests/consts.rs`
-compares a `u32`, a negative `i32`, an `f32`, a `bool` and a `u32` mask read by two kernels and a helper, on the GPU and
-on the twin, exactly against values the host computes from the same items.
+any other form) is one value read by the host, the CPU twin and every kernel of the module. The macro evaluates
+nothing: it leaves the Rust item as written, so the host and the twin read the literal rustc compiles, and writes the
+same literal as one `static const` line in the Slang text of each kernel, so the shader reads the value that literal has
+in Slang (`uint(4294967295)` for a `u32` above `i32::MAX`). Each side takes the literal as its own compiler reads it
+(rustc, slangc), so a difference would be a compiler's, and the GPU test compares the two. A `pub const` is usable by
+the host as it is (`shared::WIDTH`).
+
+Evidence: `crates/gust-wgpu/tests/consts.rs` compares a `u32`, a negative `i32`, an `f32`, a `bool` and a `u32` mask
+read by two kernels and a helper, and, in a third kernel, `i32::MIN` written without and with the `i32` suffix, a
+negative `f32` and `2f32`, a struct method that reads a constant and a closure that reads one, on the GPU and on the
+twin, exactly against values the host computes from the same items.

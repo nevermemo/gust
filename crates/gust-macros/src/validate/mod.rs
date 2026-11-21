@@ -1908,7 +1908,7 @@ fn check_const_names(items: &[syn::Item]) -> syn::Result<()> {
             return Err(const_form(
                 &item.ident,
                 &format!(
-                    "`{name}` is a name the shader prelude gives: name the constant otherwise"
+                    "`{name}` is a name of the Rust prelude or of GUST's math and scalar prelude: name the constant otherwise"
                 ),
             ));
         }

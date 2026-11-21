@@ -865,8 +865,10 @@ fn rem_euclid_on_f32_is_exact_on_the_gpu_and_the_twin() {
     let (mut worst, mut whole, mut negative_dividends) = (0.0f64, 0usize, 0usize);
     for i in 0..COUNT {
         let (x, y) = (f64::from(xs[i]), f64::from(ds[i]));
-        // `fmod` of two `f32` values is exact in `f64`; the sum with `abs(y)` is exact in `f64` for the ratios used
-        // here, and the cast to `f32` rounds it once, as Rust's `f32` addition does.
+        // `fmod` of two `f32` values is exact in `f64`. The sum with `abs(y)` is exact in `f64` when the ratio of the
+        // two magnitudes stays below about 2^29; for the rows `(-1e-30, 1e-20)` and `(1e-30, -1e-20)` it does not,
+        // so the `f64` sum rounds before the cast to `f32` (a double rounding, which differs from Rust's single
+        // rounding only if the exact sum lies within 2^-29 of a tie of `f32`; the observed rows do not).
         let r = x % y;
         let expected = if r < 0.0 { r + y.abs() } else { r } as f32;
         negative_dividends += usize::from(x < 0.0);
@@ -1078,27 +1080,36 @@ fn asin_and_acos_are_within_the_atan2_derived_bound_on_the_gpu_and_the_twin() {
     let cout = cpu.buffer(&vec![blank; COUNT]);
     float_math::math2_trig::dispatch(&cpu, COUNT as u32, &cx, &cout).unwrap();
     let twin = cout.read();
-    let bound = Bound::Ulps(ASIN_ACOS_BOUND_ULPS);
+    // The worse (larger) of the absolute bound and the ULP bound, as WGSL 15.7.4.1 states it.
     let (mut worst_asin, mut worst_acos) = (0.0f64, 0.0f64);
+    let worse = |actual: f32, exact: f64, absolute: f64| {
+        let (ulps_ok, measure) = within(actual, exact, &Bound::Ulps(ASIN_ACOS_BOUND_ULPS));
+        let (abs_ok, _) = within(actual, exact, &Bound::Absolute(absolute));
+        (ulps_ok || abs_ok, measure)
+    };
     for i in 0..COUNT {
         let x = f64::from(xs[i]);
         let (asin, acos) = (x.asin(), x.acos());
         for (label, rows) in [("gpu", &gpu), ("twin", &twin)] {
-            let (ok, measure) = within(rows[i].t_asin, asin, &bound);
+            let (ok, measure) = worse(rows[i].t_asin, asin, ASIN_ABSOLUTE_BOUND);
             assert!(
                 ok,
                 "{label} asin[{i}]: x = {x}: got {}, exact {asin}, {measure} ULP",
                 rows[i].t_asin
             );
-            let (ok_cos, measure_cos) = within(rows[i].t_acos, acos, &bound);
+            let (ok_cos, measure_cos) = worse(rows[i].t_acos, acos, ACOS_ABSOLUTE_BOUND);
+            // WGSL states no bound for `acos` at `x = 0` and for a subnormal `x` (the inherited `atan2` row needs
+            // `abs(x) >= 2^-126`): those inputs are run but not judged.
             assert!(
-                ok_cos,
+                ok_cos || xs[i].abs() < f32::MIN_POSITIVE,
                 "{label} acos[{i}]: x = {x}: got {}, exact {acos}, {measure_cos} ULP",
                 rows[i].t_acos
             );
             if label == "gpu" {
                 worst_asin = worst_asin.max(measure);
-                worst_acos = worst_acos.max(measure_cos);
+                if xs[i] != 0.0 {
+                    worst_acos = worst_acos.max(measure_cos);
+                }
             }
         }
     }
@@ -1107,10 +1118,15 @@ fn asin_and_acos_are_within_the_atan2_derived_bound_on_the_gpu_and_the_twin() {
     );
 }
 
-/// The bound of `asin` and `acos` on `abs(x) <= 0.9`, in ULP of the exact result. WGSL 15.7.4.1 gives `asin` and `acos`
-/// as inherited from `atan2(x, sqrt(1.0 - x * x))` and `atan2(sqrt(1.0 - x * x), x)` (quoted from memory of the spec,
-/// UNVERIFIED: the table could not be read in this session). `atan2` is 4096 ULP; on `abs(x) <= 0.9` the argument
-/// `sqrt(1 - x * x)` is at least 0.43 and has a relative error of a few ULP (the product, the difference, the square
-/// root), which `atan2` carries into the result at a factor below 1 (at most `abs(x) / (1 - x^2)`, about 4.7 at 0.9
-/// times a relative error of about `2^-22`, i.e. a handful of ULP), so the allowance of 32 on top is generous.
+/// The bound of `asin` and `acos` on `abs(x) <= 0.9`. WGSL 15.7.4.1: `asin` is "the worse of: absolute error 6.81e-5;
+/// inherited from `atan2(x, sqrt(1.0 - x * x))`", `acos` is "the worse of: absolute error 6.77e-5; inherited from
+/// `atan2(sqrt(1.0 - x * x), x)`", and `atan2` is 4096 ULP for `abs(x)` in `[2^-126, 2^126]` with `y` finite and
+/// normal. The test accepts an error within the larger of the absolute bound and the ULP bound below. On
+/// `abs(x) <= 0.9` the argument `sqrt(1 - x * x)` is at least 0.43 and has a relative error of a few ULP (the product,
+/// the difference, the square root), which `atan2` carries into the result at a factor of at most
+/// `abs(x) / (1 - x^2)` (about 4.7 at 0.9, times a relative error of about `2^-22`, i.e. a handful of ULP), so the
+/// allowance of 32 on top of the 4096 is generous.
 const ASIN_ACOS_BOUND_ULPS: f64 = 4096.0 + 32.0;
+/// The absolute bounds of the `asin` and `acos` rows of WGSL 15.7.4.1.
+const ASIN_ABSOLUTE_BOUND: f64 = 6.81e-5;
+const ACOS_ABSOLUTE_BOUND: f64 = 6.77e-5;

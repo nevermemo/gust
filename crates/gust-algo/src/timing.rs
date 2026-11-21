@@ -1,9 +1,10 @@
-//! Opt-in GPU timestamps (D194): [`timed`] runs a closure of gust-algo calls and reports the GPU time of the batches
-//! they dispatched.
+//! Opt-in GPU timestamps (D194): [`timed`] runs a closure of gust-algo calls and of [`dispatch_batch_in_scope`] calls
+//! and reports the GPU time of the batches they dispatched.
 //!
 //! Every public GPU operation of this crate submits its dispatches as one or more batches through
-//! [`dispatch_batch`] below. Outside a [`timed`] scope that is exactly `HeadlessDevice::dispatch_batch`; inside one it
-//! is `HeadlessDevice::dispatch_batch_timed`, and the result is added to the scope's accumulator.
+//! [`dispatch_batch_in_scope`] below, which a caller's own batches can use too. Outside a [`timed`] scope that is
+//! exactly `HeadlessDevice::dispatch_batch`; inside one it is `HeadlessDevice::dispatch_batch_timed`, and the result
+//! is added to the scope's accumulator.
 
 use std::cell::RefCell;
 use std::time::Duration;
@@ -145,15 +146,17 @@ impl Drop for Scope {
     }
 }
 
-/// Run `run` and report the GPU time of the gust-algo batches it dispatched: opt-in GPU timestamps (D194).
+/// Run `run` and report the GPU time of the batches it dispatched (gust-algo's own and those sent through
+/// [`dispatch_batch_in_scope`]): opt-in GPU timestamps (D194).
 ///
 /// Wrap any calls of this crate: a single operation (`timed(|| reduce::sum(&input))`), or several in one closure. The
 /// operations behave exactly as outside the scope and return the same values; the scope only measures.
 ///
 /// # What is counted
 ///
-/// Only gust-algo operations dispatched on the calling thread inside the closure are counted: the scope is per thread,
-/// so work the closure moves to another thread is not. Batches on more than one device are summed.
+/// Only gust-algo operations and [`dispatch_batch_in_scope`] calls on the calling thread inside the closure are
+/// counted: the scope is per thread, so work the closure moves to another thread is not, and a batch sent straight to
+/// `HeadlessDevice::dispatch_batch` is not. Batches on more than one device are summed.
 ///
 /// An operation dispatches one or more batches (`reduce::sum` and the other reductions, `scan::inclusive`, the
 /// gathers: one; `compact::count`: two; `compact::indices`: four; an empty input: none). `gpu_elapsed` is the sum, over
@@ -212,13 +215,14 @@ pub fn timed<R>(run: impl FnOnce() -> Result<R, Error>) -> Result<Timed<R>, Erro
 
 // NOTE: `dispatch_batch_timed` is native-only; if gust-algo ever targets wasm32 this wrapper needs the same
 // `#[cfg(not(target_arch = "wasm32"))]` gate as `HeadlessDevice::dispatch_batch` and `dispatch_batch_timed`.
-/// Dispatch one batch of your own kernels, counted in the enclosing [`timed`] scope (slice m11.scope): a caller's own
-/// kernels can be timed in the same scope as gust-algo calls.
+/// Dispatch one batch of your own kernels, counted in the enclosing [`timed`] scope: a caller's own kernels can be
+/// timed in the same scope as gust-algo calls.
 ///
 /// This is `device.dispatch_batch(batch)` with one difference. Outside a [`timed`] scope of this thread it is exactly
 /// that call. Inside one it runs the batch through `HeadlessDevice::dispatch_batch_timed` and adds its GPU time to the
 /// scope and one to `batches`, as it does for the batches of this crate's own operations; the rules of [`timed`] for
-/// timestamp support, an empty batch and errors apply unchanged.
+/// timestamp support, a batch of only empty dispatches and errors apply unchanged. An empty slice (no dispatch at all)
+/// is not a batch: it counts nothing, in a scope or outside.
 ///
 /// # Counted once
 ///
@@ -235,7 +239,7 @@ pub fn timed<R>(run: impl FnOnce() -> Result<R, Error>) -> Result<Timed<R>, Erro
 ///
 /// ```
 /// use gust::Independent;
-/// use gust_algo::{dispatch_batch, reduce, timed};
+/// use gust_algo::{dispatch_batch_in_scope, reduce, timed};
 /// use gust_wgpu::{BufferDispatch, GpuVec, default_device};
 ///
 /// #[gust::gpu]
@@ -260,7 +264,7 @@ pub fn timed<R>(run: impl FnOnce() -> Result<R, Error>) -> Result<Timed<R>, Erro
 /// // One scope: an own batch and a gust-algo call, two batches.
 /// let result = timed(|| {
 ///     let call = double::run::call(4, Independent(&values), Independent(&doubled));
-///     dispatch_batch(&device, &[BufferDispatch::from(&call)])?;
+///     dispatch_batch_in_scope(&device, &[BufferDispatch::from(&call)])?;
 ///     reduce::sum(&doubled)
 /// })?;
 /// assert_eq!(result.value, 20);
@@ -268,11 +272,11 @@ pub fn timed<R>(run: impl FnOnce() -> Result<R, Error>) -> Result<Timed<R>, Erro
 /// assert_eq!(result.time.gpu_elapsed.is_some(), device.supports_gpu_timestamps());
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub fn dispatch_batch(
+pub fn dispatch_batch_in_scope(
     device: &HeadlessDevice,
     batch: &[BufferDispatch<'_>],
 ) -> Result<(), gust_wgpu::Error> {
-    if !SCOPE.with(|scope| scope.borrow().is_some()) {
+    if batch.is_empty() || !SCOPE.with(|scope| scope.borrow().is_some()) {
         return device.dispatch_batch(batch);
     }
     let timing = device.dispatch_batch_timed(batch)?;

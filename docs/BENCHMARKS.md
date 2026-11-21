@@ -254,7 +254,8 @@ differences: GUST's per-call pooling and zeroing, a different chain length and w
 read-back inside the library call. They are different algorithms, so no GUST/hand ratio is a GUST overhead.
 
 *What the timings of W7 are.* GUST's GPU time goes through `gust_algo::timed` (D194): `gpu_single` is one public sum in one
-`timed` scope, `gpu_batch_per_dispatch` is `batch` sums in one scope divided by `batch`. A caller's own batches count in the same scope when dispatched through `gust_algo::dispatch_batch`. `GpuTime.batches` counts the
+`timed` scope, `gpu_batch_per_dispatch` is `batch` sums in one scope divided by `batch`. A caller's own batches count in
+the same scope when dispatched through `gust_algo::dispatch_batch_in_scope`. `GpuTime.batches` counts the
 `dispatch_batch` submissions of the scope; one sum of a non-empty input is one, so it must read `batch` (the harness
 refuses a cell where it does not, and a test pins it), which makes the division per sum. The span is, per sum, the time from
 the beginning of the first compute pass to the end of the last (the v1 block kernels, each dispatch a pass), summed over

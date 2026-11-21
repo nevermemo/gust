@@ -147,7 +147,7 @@ fn scan(variant: Variant, input: &GpuVec<u32>, exclusive: bool) -> Result<GpuVec
         batch.push(BufferDispatch::from(&plain));
     }
     debug_assert_eq!(batch.len(), schedule.dispatches());
-    crate::timing::dispatch_batch(device, &batch)?;
+    crate::timing::dispatch_batch_in_scope(device, &batch)?;
     Ok(out)
 }
 
@@ -221,10 +221,10 @@ fn scan_tiles(
         batch.extend(downward.iter().map(BufferDispatch::from));
         batch.push(BufferDispatch::from(&last));
         debug_assert_eq!(batch.len(), schedule.dispatches());
-        crate::timing::dispatch_batch(device, &batch)?;
+        crate::timing::dispatch_batch_in_scope(device, &batch)?;
     } else {
         debug_assert_eq!(batch.len(), schedule.dispatches());
-        crate::timing::dispatch_batch(device, &batch)?;
+        crate::timing::dispatch_batch_in_scope(device, &batch)?;
     }
     Ok(out)
 }

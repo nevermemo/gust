@@ -125,7 +125,7 @@ fn an_enclosing_scope_counts_the_batches_of_an_inner_scope_that_failed() {
 }
 
 /// The promise of the module doc, kept by a scan: every dispatch of a public operation goes through
-/// `timing::dispatch_batch`, so none of the other production modules may call the device's batch functions itself.
+/// `timing::dispatch_batch_in_scope`, so none of the other production modules may call the device's batch functions itself.
 #[test]
 fn no_module_but_timing_dispatches_a_batch_itself() {
     let modules: [(&str, &str); 14] = [
@@ -178,7 +178,7 @@ fn no_module_but_timing_dispatches_a_batch_itself() {
         ] {
             assert!(
                 !production.contains(needle),
-                "{name} calls `{needle}` itself; use crate::timing::dispatch_batch so that `timed` sees the batch"
+                "{name} calls `{needle}` itself; use crate::timing::dispatch_batch_in_scope so that `timed` sees the batch"
             );
         }
     }

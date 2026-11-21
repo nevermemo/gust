@@ -9,6 +9,7 @@ members = [
     "examples/buffer-handoff",
     "examples/budget-kit",
     "examples/component-pool",
+    "examples/field-relax",
     "examples/hash-rng",
     "examples/map-chain",
     "examples/mc-histogram",

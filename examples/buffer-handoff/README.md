@@ -11,7 +11,9 @@ A GUST output buffer used by another wgpu compute pass on the same device, witho
 - No render pass, no texture, nothing drawn.
 
 The example reaches the device and queue through `HeadlessDevice::wgpu_device()` and `HeadlessDevice::wgpu_queue()`, and
-the buffer through `GpuBuffer::as_wgpu_buffer()`. Both submissions go to one queue, which runs them in order, so the
-compare pass sees the finished histogram without a barrier or a readback in between.
+the buffer through `GpuBuffer::as_wgpu_buffer()`. Both submissions go to one queue, so the
+compare pass sees the histogram without a barrier of its own or a readback in between: the queue behaves as if its
+submissions ran in order and wgpu inserts the barriers (an ordering, not a promise that the earlier work has finished
+before the later work starts). The tests cover a waited typed `dispatch` and an unwaited typed `submit`.
 
 Run with `cargo run -p buffer-handoff`; the tests are `cargo test -p buffer-handoff -- --include-ignored --nocapture`.

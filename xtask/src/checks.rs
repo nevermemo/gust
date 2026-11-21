@@ -1137,7 +1137,7 @@ pub(crate) fn export_artifacts_with(args: &[String]) -> Result<(), String> {
     if options.hashes() {
         clear_exports(&directory)?;
     }
-    // The examples of `NO_EXPORT_EXAMPLES` (the shape bench, hash-rng, polar-transform) export nothing, so a GPU smoke of them
+    // The examples of `NO_EXPORT_EXAMPLES` (the shape bench, hash-rng, polar-transform, buffer-handoff) export nothing, so a GPU smoke of them
     // here would only slow the export down (`verify` still runs them).
     for example in EXAMPLES
         .iter()

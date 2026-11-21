@@ -97,6 +97,8 @@ fn count_mismatches(
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
+                // `as_entire_binding()` is right only because these three buffers are unpooled (`create_typed_buffer`): a
+                // pooled `GpuVec` buffer is a whole size class and would need a sized binding.
                 resource: actual.as_wgpu_buffer().as_entire_binding(),
             },
             wgpu::BindGroupEntry {
@@ -126,11 +128,27 @@ fn count_mismatches(
     Ok(device.read_typed_buffer(&mismatches)?[0])
 }
 
+/// How the GUST kernel is started before the example records its own pass.
+#[derive(Clone, Copy)]
+enum Handoff {
+    /// The typed `dispatch`, which waits for its submission.
+    Waited,
+    /// The typed `submit`, whose job is dropped unwaited: only the queue order links the two submissions.
+    Unwaited,
+}
+
 /// Runs the GUST kernel, then hands its histogram buffer to the compare pass with `expected`.
-fn run(device: &HeadlessDevice, expected: &[u32]) -> Result<u32, Box<dyn std::error::Error>> {
+fn run(
+    device: &HeadlessDevice,
+    expected: &[u32],
+    handoff: Handoff,
+) -> Result<u32, Box<dyn std::error::Error>> {
     let bins = device.create_typed_buffer("histogram", &[0u32; BINS], GpuBufferAccess::ReadWrite);
     // The histogram has `BINS` elements, not `COUNT`: `Independent` is the call-site opt-in for that.
-    histogram::count::dispatch(device, COUNT, Independent(&bins))?;
+    match handoff {
+        Handoff::Waited => histogram::count::dispatch(device, COUNT, Independent(&bins))?,
+        Handoff::Unwaited => drop(histogram::count::submit(device, COUNT, Independent(&bins))?),
+    }
     count_mismatches(device, &bins, expected)
 }
 
@@ -141,11 +159,18 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let expected = reference_histogram();
     println!(
         "matching expected buffer: {} mismatches",
-        run(&device, &expected)?
+        run(&device, &expected, Handoff::Waited)?
     );
     let mut wrong = expected;
     wrong[0] += 1;
-    println!("one bin changed: {} mismatches", run(&device, &wrong)?);
+    println!(
+        "one bin changed: {} mismatches",
+        run(&device, &wrong, Handoff::Waited)?
+    );
+    println!(
+        "one bin changed, kernel submitted without waiting: {} mismatches",
+        run(&device, &wrong, Handoff::Unwaited)?
+    );
     Ok(())
 }
 
@@ -181,7 +206,10 @@ mod tests {
     #[ignore = "example validation runs only in full verification"]
     fn gpu_histogram_consumed_in_place_has_zero_mismatches() {
         let device = device();
-        assert_eq!(run(&device, &reference_histogram()).unwrap(), 0);
+        assert_eq!(
+            run(&device, &reference_histogram(), Handoff::Waited).unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -190,6 +218,23 @@ mod tests {
         let device = device();
         let mut wrong = reference_histogram();
         wrong[17] += 1;
-        assert_eq!(run(&device, &wrong).unwrap(), 1);
+        assert_eq!(run(&device, &wrong, Handoff::Waited).unwrap(), 1);
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn unwaited_submit_then_the_compare_pass_has_zero_mismatches() {
+        let device = device();
+        let result = run(&device, &reference_histogram(), Handoff::Unwaited).unwrap();
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn unwaited_submit_with_one_changed_bin_gives_exactly_one_mismatch() {
+        let device = device();
+        let mut wrong = reference_histogram();
+        wrong[17] += 1;
+        assert_eq!(run(&device, &wrong, Handoff::Unwaited).unwrap(), 1);
     }
 }

@@ -700,6 +700,8 @@ pub(crate) fn validate_module_in(
         traits: &trait_table,
         items,
     };
+    // Before the items, so a `match` arm that names a constant is this code and not the `match` rules' (GUST-E0521).
+    check_const_patterns(items)?;
     for item in items {
         match item {
             syn::Item::Fn(function) => {
@@ -738,11 +740,23 @@ pub(crate) fn validate_module_in(
             syn::Item::Impl(item) => validate_impl(stage, item, &context)?,
             syn::Item::Trait(item) => validate_trait(stage, item, &context)?,
             syn::Item::Enum(item) => validate_enum(item)?,
+            syn::Item::Const(item) => validate_const(item, &struct_fields)?,
+            // `syn` keeps a generic `const K<T>: u32 = 1;` as verbatim tokens: a `const` after the visibility.
+            syn::Item::Verbatim(tokens)
+                if tokens.clone().into_iter().take(4).any(
+                    |tree| matches!(tree, proc_macro2::TokenTree::Ident(ident) if ident == "const"),
+                ) =>
+            {
+                return Err(const_form(
+                    item,
+                    "a module `const` is not generic and has no other unusual form: write `const NAME: u32 = 4096;`",
+                ));
+            }
             _ => {
                 return Err(diagnostics::error(
                     Code::UnsupportedModuleItem,
                     item,
-                    "GPU modules may currently contain only functions, plain structs, field-less enums, traits with methods only and `impl` blocks of those structs and enums; constants, `use` items and type aliases are not accepted",
+                    "GPU modules may currently contain only functions, plain structs, field-less enums, traits with methods only, `impl` blocks of those structs and enums, and `const` items of one scalar literal; `static` and `use` items and type aliases are not accepted",
                 ));
             }
         }
@@ -1649,6 +1663,177 @@ fn impl_attribute_refusal(attribute: &syn::Attribute) -> Option<&'static str> {
         .iter()
         .any(|name| attribute.path().is_ident(name)))
     .then_some("only documentation and lint attributes (`doc`, `allow`, `warn`, `deny`, `forbid`) are accepted on an `impl` block: any other has no proven Rust-to-Slang meaning and cannot be dropped")
+}
+
+/// The refusal of a module-level `const` that is outside the accepted form (slice m11.g3, D205).
+fn const_form(spanned: &impl quote::ToTokens, message: &str) -> syn::Error {
+    diagnostics::error(Code::ConstForm, spanned, message)
+}
+
+/// Checks one module-level `const` (slice m11.g3, D205): `const NAME: T = <literal>;`, `pub` or private, with `T` one of
+/// `u32`, `i32`, `f32`, `bool` (or their dialect aliases `uint`, `int`, `float`) and the initializer one literal of that
+/// type (`-` and one literal for `i32` and `f32`). Nothing is evaluated: the Slang text and the Rust item hold the same
+/// literal. `struct_fields` is the field names of each struct of the module.
+fn validate_const(
+    item: &syn::ItemConst,
+    struct_fields: &HashMap<String, HashSet<String>>,
+) -> syn::Result<()> {
+    // Documentation and lint levels only, as on an `impl`: `#[cfg(..)] const` would let the Slang and the twin disagree
+    // about which constants exist.
+    for attribute in &item.attrs {
+        if !["doc", "allow", "warn", "deny", "forbid"]
+            .iter()
+            .any(|name| attribute.path().is_ident(name))
+        {
+            return Err(diagnostics::error(
+                Code::UnsupportedAttribute,
+                attribute,
+                "only documentation and lint attributes (`doc`, `allow`, `warn`, `deny`, `forbid`) are accepted on a module `const`: any other has no proven Rust-to-Slang meaning and cannot be dropped",
+            ));
+        }
+    }
+    if !item.generics.params.is_empty() || item.generics.where_clause.is_some() {
+        return Err(const_form(
+            &item.generics,
+            "a module `const` is not generic: write `const NAME: u32 = 4096;`",
+        ));
+    }
+    let name = item.ident.unraw().to_string();
+    if name == "_" {
+        return Err(const_form(
+            &item.ident,
+            "an unnamed `const _` has no name to read: give the constant a name",
+        ));
+    }
+    if name.starts_with("__gust_") || name.starts_with("__gpu_") || name.starts_with("__Gust") {
+        return Err(diagnostics::error(
+            Code::ReservedPrefix,
+            &item.ident,
+            "the __gust_, __gpu_ and __Gust prefixes are reserved for generated shader symbols",
+        ));
+    }
+    // Inside a Slang struct an unqualified name is a field before it is a global: a method reading the constant would
+    // read the field of the same name instead.
+    if struct_fields.values().any(|fields| fields.contains(&name)) {
+        return Err(const_form(
+            &item.ident,
+            &format!(
+                "`{name}` is also the name of a struct field of this module: in a method the Slang struct would read the field where Rust reads the constant; rename one of them"
+            ),
+        ));
+    }
+    let scalar = match item.ty.as_ref() {
+        syn::Type::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
+            let segment = &path.path.segments[0];
+            match (
+                segment.arguments.is_empty(),
+                segment.ident.unraw().to_string().as_str(),
+            ) {
+                (true, "u32" | "uint") => Some(ConstScalar::U32),
+                (true, "i32" | "int") => Some(ConstScalar::I32),
+                (true, "f32" | "float") => Some(ConstScalar::F32),
+                (true, "bool") => Some(ConstScalar::Bool),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let Some(scalar) = scalar else {
+        return Err(const_form(
+            &item.ty,
+            "a module `const` has one of the types `u32`, `i32`, `f32` or `bool`: a vector, a struct, an array, a reference and `usize` have no constant lowering here; pass such a value as a uniform or a parameter",
+        ));
+    };
+    let initializer = || {
+        const_form(
+            &item.expr,
+            "a module `const` is initialized with one literal of its type (`4096u32`, `-1i32`, `0.5f32`, `true`; `-` is for `i32` and `f32`): a call, arithmetic, another constant and `u32::MAX` are not evaluated; write the literal",
+        )
+    };
+    let (negated, literal) = match item.expr.as_ref() {
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
+            match unary.expr.as_ref() {
+                syn::Expr::Lit(literal) => (true, literal),
+                _ => return Err(initializer()),
+            }
+        }
+        syn::Expr::Lit(literal) => (false, literal),
+        _ => return Err(initializer()),
+    };
+    let fits = match (scalar, &literal.lit) {
+        (ConstScalar::U32, syn::Lit::Int(value)) => {
+            !negated
+                && matches!(value.suffix(), "" | "u32")
+                && value
+                    .base10_parse::<u64>()
+                    .is_ok_and(|v| v <= u64::from(u32::MAX))
+        }
+        (ConstScalar::I32, syn::Lit::Int(value)) => {
+            matches!(value.suffix(), "" | "i32")
+                && value
+                    .base10_parse::<u64>()
+                    .is_ok_and(|v| v <= i32::MAX as u64 + u64::from(negated))
+        }
+        (ConstScalar::F32, syn::Lit::Float(value)) => matches!(value.suffix(), "" | "f32"),
+        (ConstScalar::F32, syn::Lit::Int(value)) => value.suffix() == "f32",
+        (ConstScalar::Bool, syn::Lit::Bool(_)) => !negated,
+        _ => false,
+    };
+    if fits { Ok(()) } else { Err(initializer()) }
+}
+
+/// The scalar types a module `const` may have.
+#[derive(Clone, Copy)]
+enum ConstScalar {
+    U32,
+    I32,
+    F32,
+    Bool,
+}
+
+/// A pattern that is the bare name of a module `const` (slice m11.g3): rustc compares the scrutinee with the constant,
+/// where the Slang lowering of an identifier pattern binds a new name, so the two would differ silently. Every pattern
+/// of every function, method and closure is looked at (a `let`, a parameter and a closure parameter of that name are
+/// errors of rustc as well).
+fn check_const_patterns(items: &[syn::Item]) -> syn::Result<()> {
+    let names: HashSet<String> = items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Const(item) => Some(item.ident.unraw().to_string()),
+            _ => None,
+        })
+        .collect();
+    if names.is_empty() {
+        return Ok(());
+    }
+    struct Scan<'a> {
+        names: &'a HashSet<String>,
+        found: Option<syn::Error>,
+    }
+    impl<'ast> Visit<'ast> for Scan<'_> {
+        fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+            let name = pattern.ident.unraw().to_string();
+            if self.found.is_none() && self.names.contains(&name) {
+                self.found = Some(const_form(
+                    pattern,
+                    &format!(
+                        "`{name}` is a module `const`: as a pattern rustc compares with it, but the Slang lowering of a name pattern binds a new name; match a literal, or compare with `==` in an `if`"
+                    ),
+                ));
+            }
+            visit::visit_pat_ident(self, pattern);
+        }
+    }
+    let mut scan = Scan {
+        names: &names,
+        found: None,
+    };
+    for item in items {
+        if !matches!(item, syn::Item::Const(_)) {
+            scan.visit_item(item);
+        }
+    }
+    scan.found.map_or(Ok(()), Err)
 }
 
 /// Whether `place` holds an index expression anywhere (`a[i]`, `a[i].f`, `a.f[i]`).
@@ -6335,9 +6520,9 @@ mod tests {
             &validate_module(&outline).expect_err("outline module"),
             Code::InlineModuleRequired,
         );
-        let stray: syn::ItemMod = syn::parse_quote! { mod bad { const LIMIT: u32 = 1; } };
+        let stray: syn::ItemMod = syn::parse_quote! { mod bad { static LIMIT: u32 = 1; } };
         assert_code(
-            &validate_module(&stray).expect_err("const item"),
+            &validate_module(&stray).expect_err("static item"),
             Code::UnsupportedModuleItem,
         );
     }

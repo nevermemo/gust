@@ -728,3 +728,58 @@ fn a_struct_named_like_the_trait_or_impl_keyword_is_renamed_and_the_keywords_sta
         }
     }
 }
+
+/// Slice m11.zc, measured at the validator: which user declarations of the type names of the texture and sampler
+/// lowering are refused. `Texture2D` and `Sampler` are Rust-side texture types, so a user struct of either name is
+/// refused (GUST-E0736); `RWTexture2D`, `WTexture2D` and `SamplerState` are not Rust types of the dialect, so nothing
+/// refuses a struct, a helper function, a local, a field or a parameter of those names, and the table does not rename
+/// them. That is a measured fact, not a decision: the emitted text of a module with such a struct and a texture
+/// parameter spells both with the same name (second half of the test), which is for the owner to rule on.
+#[test]
+fn texture_and_sampler_names_are_refused_only_as_struct_names_of_the_rust_side_types() {
+    for name in ["Texture2D", "Sampler"] {
+        let error = emit(&rust_source(Position::Struct, name))
+            .expect_err("a struct named like a texture type is refused");
+        assert_code(&error, Code::TextureUse);
+    }
+    for name in ["RWTexture2D", "WTexture2D", "SamplerState"] {
+        for position in Position::ALL {
+            emit(&rust_source(position, name))
+                .unwrap_or_else(|error| panic!("{name} / {}: {error}", position.label()));
+        }
+    }
+    for name in ["Texture2D", "Sampler"] {
+        for position in Position::ALL {
+            if position != Position::Struct {
+                emit(&rust_source(position, name))
+                    .unwrap_or_else(|error| panic!("{name} / {}: {error}", position.label()));
+            }
+        }
+    }
+    // The emitted type names are the user's names where a user struct has one.
+    let text = emit(
+        "mod m {
+            pub struct RWTexture2D { pub v: float }
+            pub struct WTexture2D { pub v: float }
+            pub struct SamplerState { pub v: float }
+            #[kernel]
+            pub fn run(
+                id: SV_DispatchThreadID,
+                mut image: StorageTexture2D<R32Float>,
+                filter: Sampler,
+                mut out: WriteTexture2D<Rgba32Float>,
+            ) {}
+        }",
+    )
+    .expect("the module is accepted");
+    for piece in [
+        "struct RWTexture2D",
+        "struct WTexture2D",
+        "struct SamplerState",
+        "RWTexture2D<float> image;",
+        "WTexture2D<float4> out;",
+        "SamplerState filter;",
+    ] {
+        assert!(text.contains(piece), "`{piece}` missing in\n{text}");
+    }
+}

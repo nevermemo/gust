@@ -426,7 +426,7 @@ fn within(actual: f32, exact: f64, bound: &Bound) -> (bool, f64) {
 
 /// The bound of `x.powf(y)` in ULP, from the rule the table gives: `pow(x, y)` is inherited from `exp2(y * log2(x))`.
 /// With `L = abs(y * log2(x))`: `log2` has an absolute error of `2^-21` on `[0.5, 2]` and 3 ULP elsewhere (at most
-/// `3 * 2^-23 * abs(log2(x))`); the product is correctly rounded (at most `2^-23 * L` more); so the exponent has an
+/// `3 * 2^-23 * abs(log2(x))`); the product is "correctly rounded" in WGSL's sense, either neighbour (at most `2^-23 * L` more); so the exponent has an
 /// absolute error `d` of `abs(y) * 2^-21 + 2^-23 * L` inside `[0.5, 2]` and `4 * 2^-23 * L` outside. That is a relative
 /// error `ln(2) * d` of the result, at most `2^24` times as many ULPs (a ULP is at least `2^-24` of the value), and
 /// `exp2` adds `3 + 2 * L` ULP.
@@ -745,6 +745,12 @@ fn math2_float_inputs() -> (Vec<f32>, Vec<f32>) {
         (-1.0e-30, 1.0e-20),
         (1.0e-30, -1.0e-20),
         (3.0e38, 1.5e-30),
+        // Slice m11.zc: operands near `f32::MAX`, where the doubling test of `__gust_fmod` must not overflow (the
+        // quotients stay below 2^254, the documented domain).
+        (f32::MAX, f32::MAX),
+        (-f32::MAX, f32::MAX),
+        (f32::MAX, 1.5),
+        (f32::MAX, 2f32.powi(-100)),
     ] {
         xs[at] = x;
         ds[at] = y;
@@ -786,7 +792,8 @@ fn round_signum_and_the_angle_methods_are_bit_equal_to_rust_on_the_gpu_and_the_t
 
     // The constants of `std` (`library/core/src/num/f32.rs`): `consts::PI / 180.0` and
     // `57.2957795130823208767981548141051703_f32`. A product of two `f32` is exact in `f64`, and the cast to `f32`
-    // rounds it once, which is the correctly rounded `f32` product.
+    // rounds it once, which is Rust's `f32` product (round to nearest). WGSL's "correctly rounded" allows either
+    // neighbour (15.7.4), so bit equality is what this adapter was observed to do, not what WGSL promises.
     let radians = f64::from(std::f32::consts::PI / 180.0);
     let degrees = f64::from(
         "57.2957795130823208767981548141051703"
@@ -821,11 +828,14 @@ fn round_signum_and_the_angle_methods_are_bit_equal_to_rust_on_the_gpu_and_the_t
                 expected_radians.to_bits(),
                 "{label} to_radians[{i}]: x = {x}"
             );
-            assert_eq!(
-                row.m_degrees.to_bits(),
-                expected_degrees.to_bits(),
-                "{label} to_degrees[{i}]: x = {x}"
-            );
+            // Only a finite expected result is judged: `3e38.to_degrees()` overflows, outside the domain.
+            if expected_degrees.is_finite() {
+                assert_eq!(
+                    row.m_degrees.to_bits(),
+                    expected_degrees.to_bits(),
+                    "{label} to_degrees[{i}]: x = {x}"
+                );
+            }
         }
         signed_zero_rows += usize::from(xs[i] == 0.0 && xs[i].is_sign_negative());
     }
@@ -1082,22 +1092,32 @@ fn asin_and_acos_are_within_the_atan2_derived_bound_on_the_gpu_and_the_twin() {
     let twin = cout.read();
     // The worse (larger) of the absolute bound and the ULP bound, as WGSL 15.7.4.1 states it.
     let (mut worst_asin, mut worst_acos) = (0.0f64, 0.0f64);
-    let worse = |actual: f32, exact: f64, absolute: f64| {
-        let (ulps_ok, measure) = within(actual, exact, &Bound::Ulps(ASIN_ACOS_BOUND_ULPS));
-        let (abs_ok, _) = within(actual, exact, &Bound::Absolute(absolute));
-        (ulps_ok || abs_ok, measure)
+    // The ULP measure is conservative: the spacing at the larger of the exact and the actual magnitude, so a
+    // permitted result where the spacing doubles (near a power of two, `asin(x) = 0.5`) is not judged by the smaller
+    // spacing below it. With `ulps` false only the absolute bound judges (see the callers).
+    let worse = |actual: f32, exact: f64, absolute: f64, ulps: bool| {
+        let error = (f64::from(actual) - exact).abs();
+        let upper = f64::from(actual).abs().max(exact.abs()) as f32;
+        let measure = error / ulp(upper);
+        (
+            (ulps && measure <= ASIN_ACOS_BOUND_ULPS) || error <= absolute,
+            measure,
+        )
     };
     for i in 0..COUNT {
         let x = f64::from(xs[i]);
         let (asin, acos) = (x.asin(), x.acos());
         for (label, rows) in [("gpu", &gpu), ("twin", &twin)] {
-            let (ok, measure) = worse(rows[i].t_asin, asin, ASIN_ABSOLUTE_BOUND);
+            // WGSL states no bound for `asin` at `x = 0` and for a subnormal `x` through the inherited row (`atan2`
+            // needs `y` finite and normal, and `y = x`): those inputs are judged by the absolute bound alone.
+            let asin_ulps = xs[i].abs() >= f32::MIN_POSITIVE;
+            let (ok, measure) = worse(rows[i].t_asin, asin, ASIN_ABSOLUTE_BOUND, asin_ulps);
             assert!(
                 ok,
                 "{label} asin[{i}]: x = {x}: got {}, exact {asin}, {measure} ULP",
                 rows[i].t_asin
             );
-            let (ok_cos, measure_cos) = worse(rows[i].t_acos, acos, ACOS_ABSOLUTE_BOUND);
+            let (ok_cos, measure_cos) = worse(rows[i].t_acos, acos, ACOS_ABSOLUTE_BOUND, true);
             // WGSL states no bound for `acos` at `x = 0` and for a subnormal `x` (the inherited `atan2` row needs
             // `abs(x) >= 2^-126`): those inputs are run but not judged.
             assert!(
@@ -1121,7 +1141,8 @@ fn asin_and_acos_are_within_the_atan2_derived_bound_on_the_gpu_and_the_twin() {
 /// The bound of `asin` and `acos` on `abs(x) <= 0.9`. WGSL 15.7.4.1: `asin` is "the worse of: absolute error 6.81e-5;
 /// inherited from `atan2(x, sqrt(1.0 - x * x))`", `acos` is "the worse of: absolute error 6.77e-5; inherited from
 /// `atan2(sqrt(1.0 - x * x), x)`", and `atan2` is 4096 ULP for `abs(x)` in `[2^-126, 2^126]` with `y` finite and
-/// normal. The test accepts an error within the larger of the absolute bound and the ULP bound below. On
+/// normal. The test accepts an error within the larger of the absolute bound and the ULP bound below, measured in the
+/// spacing at the larger of the exact and the actual magnitude. On
 /// `abs(x) <= 0.9` the argument `sqrt(1 - x * x)` is at least 0.43 and has a relative error of a few ULP (the product,
 /// the difference, the square root), which `atan2` carries into the result at a factor of at most
 /// `abs(x) / (1 - x^2)` (about 4.7 at 0.9, times a relative error of about `2^-22`, i.e. a handful of ULP), so the

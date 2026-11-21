@@ -10339,7 +10339,7 @@ fn the_math2_methods_lower_to_helpers_and_intrinsics() {
     let round = "float __gust_round(float x) { float t = trunc(x); return (abs(x - t) >= 0.5) ? (t + (((asuint(x) >> 31u) != 0u) ? -1.0 : 1.0)) : t; }";
     let signum = "float __gust_signum(float x) { return ((asuint(x) >> 31u) != 0u) ? -1.0 : 1.0; }\nint __gust_signum(int x) { return (x > 0) ? 1 : ((x < 0) ? -1 : 0); }";
     let rem_euclid = [
-        "float __gust_fmod(float a, float b) { float x = abs(a); float y = abs(b); float r = x; if (x >= y) { float s = y; for (int i = 0; i < 254 && (s * 2.0) <= r; i++) { s = s * 2.0; } for (int j = 0; j < 255; j++) { if (r >= s) { r = r - s; } if (s == y) { break; } s = s * 0.5; } } return ((asuint(a) >> 31u) != 0u) ? -r : r; }",
+        "float __gust_fmod(float a, float b) { float x = abs(a); float y = abs(b); float r = x; if (x >= y) { float s = y; for (int i = 0; i < 254 && s <= (r - s); i++) { s = s * 2.0; } for (int j = 0; j < 255; j++) { if (r >= s) { r = r - s; } if (s == y) { break; } s = s * 0.5; } } return ((asuint(a) >> 31u) != 0u) ? -r : r; }",
         "float __gust_rem_euclid(float a, float b) { float r = __gust_fmod(a, b); return (r < 0.0) ? (r + abs(b)) : r; }",
         "int __gust_rem_euclid(int a, int b) { int r = __gust_rem(a, b); return (r < 0) ? (r + abs(b)) : r; }",
         "uint __gust_rem_euclid(uint a, uint b) { return __gust_rem(a, b); }",

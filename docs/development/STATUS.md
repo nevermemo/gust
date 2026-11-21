@@ -556,6 +556,27 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
     `docs-check`, `lint`, `float_math` and `budget-kit` on the GPU, and the Unit suite): xtask tests, `check-arch`,
     `check-ui`, `docs-check`, `lint`, and on the GPU `float_math`, `polar-transform`, `hash-rng`, `gust-algo` and
     `budget-kit --small` all passed.
+  - Merged on 2026-11-21, on `dev` (owner rulings D203 to D208):
+    - m11.handoff (`278292f`, fixes `1f4a182`, merge `4d0cd34`): `HeadlessDevice::wgpu_device` and `wgpu_queue`,
+      and `examples/buffer-handoff`, where a compute pass the example owns reads GUST's histogram buffer on the same
+      queue and only one `u32` is read back.
+    - m11.fetch (`ccdeace`, fixes `88bd3a5`, merge `3c97774`; D203): `let old = atomic_add(..);` binds the old value
+      (`u32`, `i32`); `tests/fetch.rs` scatters by it in 1-wide and 64-wide workgroups and checks a signed and a
+      wrapping `u32` ticket cell. `GPU_SUITE_PIN` 524 over 51 by count.
+    - The first full Gpu suite on `dev` (`da247e2`) failed on both adapters: on the Radeon 890M the
+      `float_math` fixture had no Slang golden (`the_goldens_are_the_fixtures_directory`), and on the RTX 5090 `f32`
+      `rem_euclid` was grossly wrong for large quotients. The merge gates had run `--test float_math`, not the suite.
+    - m11.zd (`35228e2`, merge `4bf98e4`): the `float_math` golden, its golden test and its `naga_layout` row.
+    - m11.fm (`08a7356`, merge `e1c9b2b`): measured on the RTX 5090 (NVIDIA 610.88, Vulkan) that a loop whose exit
+      is a float-compare `break` misbehaves past 128 iterations (with `==` the break never fires, with `<` the loop
+      leaves at 128), while integer-compare breaks, the flag form and loop-invariant bounds are right; the 890M is
+      right in every form. The cause (a trip-count or unroll fault in the driver) is inferred. `__gust_fmod`'s
+      halving loop now ends by a flag; new rows need 127 and 128 halvings (`2.0e38` and `f32::MAX` by `1.3`). The
+      same exposure in user loops is not yet documented in SEMANTICS; a repro for NVIDIA waits on the owner.
+    - m11.zf (`bb7d27f`, merge `e0297f1`): `float_math.slang` re-blessed after m11.fm (only the halving loop
+      changed) and the `fetch` fixture's golden; `naga_layout` holds 31 goldens and 120 entries.
+  - Full Gpu suite on the m11.zf tree (equal to `e0297f1`): Radeon 890M 812 s and RTX 5090 538 s, 524 passed over
+    51 result lines on each, so `GPU_SUITE_PIN` held as a measured count, not only by count.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

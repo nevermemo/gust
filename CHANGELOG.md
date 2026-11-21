@@ -55,13 +55,21 @@ proof.
 
 ### Added
 
+- The old value of `atomic_add` in kernels (m11.fetch, D203): `let old = atomic_add(&mut c[i], v);` binds the value
+  the cell held before this invocation's add (`u32`, `i32`; only as the whole initializer of a `let`). The other
+  atomics, and `atomic_add` in any other position, stay `GUST-E0606`.
+- `HeadlessDevice::wgpu_device` and `HeadlessDevice::wgpu_queue` (m11.handoff): the device and queue behind a
+  `HeadlessDevice`, an advanced escape hatch like `GpuBuffer::as_wgpu_buffer`, so a caller's own wgpu pass can read a
+  GUST buffer on the same queue without a readback (example `examples/buffer-handoff`).
 - More math methods for compute kernels (m11.math2): `round` (half-way cases away from zero), `signum` (`f32` and
   `i32`), `to_radians`, `to_degrees`, `asin`, `acos` and `rem_euclid` (`f32`, `i32`, `u32`). `round`, `signum` and
   `rem_euclid` lower to `__gust_`-prefixed helpers defined only in a module that calls them. The seven names are
   reserved as method names (`GUST-E0328`), and an unsuffixed integer literal operand of `rem_euclid` is `GUST-E0326`.
   A user helper, local or parameter named `asin` or `acos` is renamed in the emitted Slang (`__gust_r_asin`), so a
   program that uses one of those names gets new emitted text and a new artifact content key. `hypot`, `mul_add` and
-  integer `pow` stay refused.
+  integer `pow` stay refused. The `f32` `rem_euclid` helper ends its halving loop by a
+  flag, not by a float-compare `break` (m11.fm): on the RTX 5090 with NVIDIA driver 610.88 that form ran a loop of
+  more than 128 steps the wrong number of times, so remainders of large quotients were wrong.
 - `gust_algo::dispatch_batch_in_scope` (m11.scope; in the unpublished `gust-algo`): dispatches a caller's own batch
   and counts it in the enclosing `timed` scope.
 - `#[gpu(crate = <path>)]` and the `crate(<path>);` clause of `par_for!` (audit S6, D48): for a crate that reaches

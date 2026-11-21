@@ -56,8 +56,8 @@ fn the_expected_list_is_twenty_one_sorted_unique_spirv_names() {
     assert!(EXPECTED_SPIRV.iter().all(|name| name.contains("__")));
 }
 
-/// The shape bench runs in `verify`'s example steps but exports nothing: `export-artifacts` must not spend a GPU smoke on
-/// it, and no kernel of it may be expected among the exported SPIR-V.
+/// The shape bench, hash-rng and polar-transform run in `verify`'s example steps but export nothing: `export-artifacts`
+/// must not spend a GPU smoke on them, and no kernel of them may be expected among the exported SPIR-V.
 #[test]
 fn export_artifacts_skips_the_examples_that_export_nothing() {
     use crate::workspace::{EXAMPLES, NO_EXPORT_EXAMPLES};

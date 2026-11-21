@@ -736,12 +736,19 @@ fn w5(device: &DeviceHandle, n: u32) -> Row {
         }
         let first = timed(|| reduce::sum(&input)).map_err(dbg)?;
         let error = (f64::from(first.value) - reference).abs();
-        row.note = format!(
-            "observed error {:.3e} of an allowed {:.3e} (bound::f32_sum_bound plus bound::f64_reference_error); bytes: one read per element; the f32 bound is wide (about {:.0}x the observed error), so a structural check is the exact u32 sum, which matched",
-            error,
-            allowed,
-            allowed / error.max(f64::MIN_POSITIVE)
-        );
+        row.note = if first.value.is_finite() {
+            format!(
+                "observed error {:.3e} of an allowed {:.3e} (bound::f32_sum_bound plus bound::f64_reference_error); bytes: one read per element; the f32 bound is wide (about {:.0}x the observed error), so a structural check is the exact u32 sum, which matched",
+                error,
+                allowed,
+                allowed / error.max(f64::MIN_POSITIVE)
+            )
+        } else {
+            format!(
+                "the f32 sum was not finite ({}), so there is no observed error to compare with the allowed {:.3e}; the exact u32 sum matched",
+                first.value, allowed
+            )
+        };
         // Finite and affirmatively within the bound, so a NaN cannot pass.
         if !(first.value.is_finite() && error <= allowed) {
             return Err(format!(

@@ -120,6 +120,20 @@ mod tests {
         }
     }
 
+    /// Known answers of lowbias32, computed in a separate Python script from the published constants and shifts
+    /// (not from this file's code).
+    #[test]
+    fn mix_matches_known_answers() {
+        for (x, want) in [
+            (0u32, 0u32),
+            (1, 0x6889_90c0),
+            (0xdead_beef, 0xe628_c683),
+            (u32::MAX, 0x6768_824a),
+        ] {
+            assert_eq!(rng::mix(x), want, "mix({x:#x})");
+        }
+    }
+
     #[test]
     fn the_literal_is_two_to_the_minus_24() {
         assert_eq!(0.000000059604644775390625f32, f32::from_bits(0x3380_0000));

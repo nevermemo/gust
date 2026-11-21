@@ -635,6 +635,18 @@ pub(crate) fn helper_names(module: &syn::ItemMod) -> HashSet<String> {
             _ => None,
         })
         .chain(methods)
+        // One marker per module `const`, `const:NAME` (not an identifier, so it never clashes): a closure reads a constant
+        // without capturing it (slice m11.g3).
+        .chain(
+            module
+                .content
+                .iter()
+                .flat_map(|(_, items)| items)
+                .filter_map(|item| match item {
+                    syn::Item::Const(item) => Some(format!("const:{}", item.ident.unraw())),
+                    _ => None,
+                }),
+        )
         .collect()
 }
 
@@ -702,6 +714,7 @@ pub(crate) fn validate_module_in(
     };
     // Before the items, so a `match` arm that names a constant is this code and not the `match` rules' (GUST-E0521).
     check_const_patterns(items)?;
+    check_const_names(items)?;
     for item in items {
         match item {
             syn::Item::Fn(function) => {
@@ -1251,7 +1264,7 @@ fn validate_impl(
                     Code::UnsupportedModuleItem
                 },
                 inner,
-                "an `impl` of a GPU module holds methods only: associated constants, types and macros are not accepted",
+                "an `impl` of a GPU module holds methods only: associated constants, types and macros are not accepted (a constant is a `const` item of the module, outside the `impl`)",
             ));
         };
         validate_method(stage, method, &owner, context, implemented.is_some())?;
@@ -1834,6 +1847,81 @@ fn check_const_patterns(items: &[syn::Item]) -> syn::Result<()> {
         }
     }
     scan.found.map_or(Ok(()), Err)
+}
+
+/// A module `const` whose name is also a name of another namespace or a name the prelude gives (slice m11.g3, review): a
+/// struct, enum, trait or type parameter of that name reaches slangc as a clash, a method of that name may be read in
+/// place of the constant inside its Slang struct, and a prelude name (`None`, `Some`, `Vec2`, `uint`) means the prelude.
+fn check_const_names(items: &[syn::Item]) -> syn::Result<()> {
+    let consts: Vec<&syn::ItemConst> = items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Const(item) => Some(item),
+            _ => None,
+        })
+        .collect();
+    if consts.is_empty() {
+        return Ok(());
+    }
+    // The type-namespace and method names of the module, with what each is.
+    struct Names(Vec<(String, &'static str)>);
+    impl<'ast> Visit<'ast> for Names {
+        fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+            self.0.push((item.ident.unraw().to_string(), "a struct"));
+            visit::visit_item_struct(self, item);
+        }
+        fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
+            self.0.push((item.ident.unraw().to_string(), "an enum"));
+            visit::visit_item_enum(self, item);
+        }
+        fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
+            self.0.push((item.ident.unraw().to_string(), "a trait"));
+            visit::visit_item_trait(self, item);
+        }
+        fn visit_type_param(&mut self, item: &'ast syn::TypeParam) {
+            self.0
+                .push((item.ident.unraw().to_string(), "a type parameter"));
+            visit::visit_type_param(self, item);
+        }
+        fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+            self.0
+                .push((item.sig.ident.unraw().to_string(), "a method"));
+            visit::visit_impl_item_fn(self, item);
+        }
+        fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
+            self.0
+                .push((item.sig.ident.unraw().to_string(), "a trait method"));
+            visit::visit_trait_item_fn(self, item);
+        }
+    }
+    let mut names = Names(Vec::new());
+    for item in items {
+        names.visit_item(item);
+    }
+    for item in consts {
+        let name = item.ident.unraw().to_string();
+        if matches!(
+            name.as_str(),
+            "None" | "Some" | "Ok" | "Err" | "u32" | "i32" | "f32"
+        ) || math_types::is_reserved_type_name(&name)
+        {
+            return Err(const_form(
+                &item.ident,
+                &format!(
+                    "`{name}` is a name the shader prelude gives: name the constant otherwise"
+                ),
+            ));
+        }
+        if let Some((_, what)) = names.0.iter().find(|(other, _)| *other == name) {
+            return Err(const_form(
+                &item.ident,
+                &format!(
+                    "`{name}` is also the name of {what} of this module: one name must not mean two things (in Slang the two would clash); rename one of them"
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Whether `place` holds an index expression anywhere (`a[i]`, `a[i].f`, `a.f[i]`).
@@ -2822,7 +2910,7 @@ impl CaptureScan<'_> {
                 || self.helpers.contains(&format!("r#{name}"))
         } else {
             name == "None"
-        };
+        } || self.helpers.contains(&format!("const:{name}")); // a module `const` is global, not a capture (m11.g3)
         if exempt
             || self.scopes.iter().any(|scope| scope.contains(&name))
             || self.free.contains(&name)

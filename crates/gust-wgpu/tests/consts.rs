@@ -20,6 +20,45 @@ mod shared {
     pub const ON: bool = true;
     pub const OFF: bool = false;
     pub const MASK: u32 = 4294967295;
+    pub const LOW: i32 = -2147483648;
+    pub const LOW_SUFFIXED: i32 = -2147483648i32;
+    pub const NEG_REAL: f32 = -1.5;
+    pub const TWO: f32 = 2f32;
+
+    pub struct Acc {
+        pub n: u32,
+    }
+
+    impl Acc {
+        // A method of a struct reads a module const.
+        pub fn bumped(&self) -> u32 {
+            self.n + WIDTH
+        }
+    }
+
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn extras(
+        id: SV_DispatchThreadID,
+        src: StructuredBuffer<u32>,
+        mut lows: RWStructuredBuffer<i32>,
+        mut lows_suffixed: RWStructuredBuffer<i32>,
+        mut negs: RWStructuredBuffer<f32>,
+        mut methods: RWStructuredBuffer<u32>,
+        mut closures: RWStructuredBuffer<u32>,
+    ) {
+        let i = id.x;
+        if i < src.len() {
+            lows[i] = LOW + (src[i] as i32);
+            lows_suffixed[i] = LOW_SUFFIXED + (src[i] as i32);
+            negs[i] = NEG_REAL * TWO * (src[i] as f32);
+            let acc = Acc { n: src[i] };
+            methods[i] = acc.bumped();
+            // A closure reads a module const without capturing it.
+            let add = |x: u32| -> u32 { x + WIDTH };
+            let once = add(src[i]);
+            closures[i] = add(once - WIDTH);
+        }
+    }
 
     fn lift(x: u32) -> u32 {
         if ON { x + WIDTH } else { x }
@@ -205,5 +244,113 @@ fn two_kernels_and_a_helper_read_the_same_module_constants_on_the_gpu_and_the_tw
         twin_flags.read(),
         want.flags,
         "twin: reals, bool and mask constants"
+    );
+}
+
+#[test]
+fn extreme_literals_a_struct_method_and_a_closure_read_constants_on_the_gpu_and_the_twin() {
+    let src = sources();
+    let lows: Vec<i32> = src.iter().map(|&x| shared::LOW + x as i32).collect();
+    let lows_suffixed: Vec<i32> = src
+        .iter()
+        .map(|&x| shared::LOW_SUFFIXED + x as i32)
+        .collect();
+    let reals: Vec<f32> = src
+        .iter()
+        .map(|&x| shared::NEG_REAL * shared::TWO * x as f32)
+        .collect();
+    let methods: Vec<u32> = src.iter().map(|&x| x + shared::WIDTH).collect();
+    let closures = methods.clone();
+    assert_eq!(shared::LOW, i32::MIN);
+    assert_eq!(shared::LOW_SUFFIXED, i32::MIN);
+
+    let device =
+        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let info = device.adapter_info();
+    eprintln!("adapter: {} backend: {:?}", info.name, info.backend);
+    let source = device.create_typed_buffer("extras src", &src, GpuBufferAccess::ReadOnly);
+    let g_lows = device.create_typed_buffer("extras lows", &[0i32; N], GpuBufferAccess::ReadWrite);
+    let g_lows2 =
+        device.create_typed_buffer("extras lows2", &[0i32; N], GpuBufferAccess::ReadWrite);
+    let g_reals =
+        device.create_typed_buffer("extras reals", &[0f32; N], GpuBufferAccess::ReadWrite);
+    let g_methods =
+        device.create_typed_buffer("extras methods", &[0u32; N], GpuBufferAccess::ReadWrite);
+    let g_closures =
+        device.create_typed_buffer("extras closures", &[0u32; N], GpuBufferAccess::ReadWrite);
+    device
+        .dispatch_buffers(
+            &shared::extras::DESCRIPTOR,
+            N as u32,
+            &[
+                BufferBinding::read_only(&source).independent_length(),
+                BufferBinding::read_write(&g_lows).independent_length(),
+                BufferBinding::read_write(&g_lows2).independent_length(),
+                BufferBinding::read_write(&g_reals).independent_length(),
+                BufferBinding::read_write(&g_methods).independent_length(),
+                BufferBinding::read_write(&g_closures).independent_length(),
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        device.read_typed_buffer(&g_lows).unwrap(),
+        lows,
+        "gpu: i32::MIN, unsuffixed"
+    );
+    assert_eq!(
+        device.read_typed_buffer(&g_lows2).unwrap(),
+        lows_suffixed,
+        "gpu: i32::MIN, suffixed"
+    );
+    assert_eq!(
+        device.read_typed_buffer(&g_reals).unwrap(),
+        reals,
+        "gpu: negative and `2f32` f32 constants"
+    );
+    assert_eq!(
+        device.read_typed_buffer(&g_methods).unwrap(),
+        methods,
+        "gpu: a struct method reads a constant"
+    );
+    assert_eq!(
+        device.read_typed_buffer(&g_closures).unwrap(),
+        closures,
+        "gpu: a closure reads a constant"
+    );
+
+    let cpu = CpuDevice::new();
+    let twin_src = cpu.buffer(&src);
+    let t_lows = cpu.buffer(&[0i32; N]);
+    let t_lows2 = cpu.buffer(&[0i32; N]);
+    let t_reals = cpu.buffer(&[0f32; N]);
+    let t_methods = cpu.buffer(&[0u32; N]);
+    let t_closures = cpu.buffer(&[0u32; N]);
+    shared::extras::dispatch(
+        &cpu,
+        N as u32,
+        Independent(&twin_src),
+        Independent(&t_lows),
+        Independent(&t_lows2),
+        Independent(&t_reals),
+        Independent(&t_methods),
+        Independent(&t_closures),
+    )
+    .unwrap();
+    assert_eq!(t_lows.read(), lows, "twin: i32::MIN, unsuffixed");
+    assert_eq!(t_lows2.read(), lows_suffixed, "twin: i32::MIN, suffixed");
+    assert_eq!(
+        t_reals.read(),
+        reals,
+        "twin: negative and `2f32` f32 constants"
+    );
+    assert_eq!(
+        t_methods.read(),
+        methods,
+        "twin: a struct method reads a constant"
+    );
+    assert_eq!(
+        t_closures.read(),
+        closures,
+        "twin: a closure reads a constant"
     );
 }

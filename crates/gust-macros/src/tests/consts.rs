@@ -223,7 +223,7 @@ fn an_initializer_that_is_not_one_literal_of_the_type_is_e0127() {
     ] {
         refused(
             &module(
-                &format!("const OTHER: u32 = 2; const fn_unused: u32 = 0; const K: {ty} = {init};"),
+                &format!("const OTHER: u32 = 2; const K: {ty} = {init};"),
                 "out[id.x] = id.x;",
                 "out[id.x] = id.x;",
             ),
@@ -372,4 +372,84 @@ fn a_const_as_an_array_length_or_workgroup_size_is_not_evaluated() {
     pub fn first(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<u32>) { out[id.x] = 1; }
 }";
     refused(source, Code::MalformedKernelAttribute);
+}
+
+#[test]
+fn a_closure_may_read_a_const_without_capturing_it() {
+    let source = module(
+        "const K: u32 = 3;",
+        "let f = |x: u32| -> u32 { x + K }; out[id.x] = f(id.x);",
+        "let g = |x: u32| -> u32 { x + K + K }; out[id.x] = g(1u32);",
+    );
+    for (_, text) in accepted(&source) {
+        assert!(text.contains("static const uint K = 3;"), "{text}");
+    }
+    // A local is still a capture (E0329); the constant of the same module does not change that.
+    refused(
+        &module(
+            "const K: u32 = 3;",
+            "let a: u32 = 1; let f = |x: u32| -> u32 { x + a + K }; out[id.x] = f(id.x);",
+            "out[id.x] = id.x;",
+        ),
+        Code::ClosureCapture,
+    );
+}
+
+#[test]
+fn a_const_named_like_another_name_of_the_module_is_e0127() {
+    for items in [
+        "pub struct K { pub a: u32 }",
+        "#[derive(PartialEq, Eq)] pub enum K { A, B }",
+        "pub trait K { fn get(&self) -> u32; }",
+        "fn g<K>(x: K) -> K { x }",
+        "pub struct S { pub a: u32 } impl S { pub fn K(&self) -> u32 { self.a } }",
+        "pub trait T { fn K(&self) -> u32; }",
+        "const None: u32 = 1;",
+        "const Vec2: u32 = 1;",
+        "const uint: u32 = 1;",
+    ] {
+        let source = module(
+            &format!("const K: u32 = 1; {items}"),
+            "out[id.x] = id.x;",
+            "out[id.x] = id.x;",
+        );
+        // The prelude names are consts of their own name in these rows.
+        let source = if items.starts_with("const ") {
+            module(items, "out[id.x] = id.x;", "out[id.x] = id.x;")
+        } else {
+            source
+        };
+        refused(&source, Code::ConstForm);
+    }
+}
+
+/// `emit_ident` renames by name at every position, so the table's `Global` entries (a name slangc refuses as a global)
+/// already cover a `static const` at module scope; a name outside the table is not measured as a `static const`.
+#[test]
+fn every_collision_entry_is_renamed_as_a_const_name() {
+    use crate::slang::collisions::{COLLISIONS, PREFIX};
+    let mut renamed = 0;
+    for entry in COLLISIONS {
+        if parse_str::<syn::Ident>(entry.name).is_err() || entry.name.starts_with("__") {
+            continue; // `true`, `false` and other keywords are no Rust names
+        }
+        let source = module(
+            &format!(
+                "#[allow(non_upper_case_globals)] const {}: u32 = 1;",
+                entry.name
+            ),
+            "out[id.x] = id.x;",
+            "out[id.x] = id.x;",
+        );
+        match lower(&source) {
+            Ok(texts) => {
+                let line = format!("static const uint {PREFIX}{} = 1;\n", entry.name);
+                assert!(texts[0].1.contains(&line), "{}: {}", entry.name, texts[0].1);
+                renamed += 1;
+            }
+            // A prelude name is refused for its own reason.
+            Err(error) => assert_code_for(&error, Code::ConstForm, entry.name),
+        }
+    }
+    assert!(renamed > 20, "only {renamed} entries were tried");
 }

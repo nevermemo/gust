@@ -10208,3 +10208,63 @@ fn the_names_of_the_scalar_math_methods_are_reserved_for_module_methods() {
         assert_rejected(&source, Code::MethodNameClash);
     }
 }
+
+/// How many times `needle` occurs in `text` not preceded by a letter, digit or underscore (so `sqrt(` does not match
+/// inside `__gust_r_sqrt(`).
+fn count_unprefixed(text: &str, needle: &str) -> usize {
+    text.match_indices(needle)
+        .filter(|&(at, _)| {
+            !text[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        })
+        .count()
+}
+
+/// Slice m11.za: a user helper, local or parameter named like an intrinsic that the math lowering emits is renamed, and
+/// the emitted call still reaches Slang's intrinsic.
+#[test]
+fn a_user_name_like_a_math_intrinsic_is_renamed_and_the_call_stays_the_intrinsic() {
+    let source = "mod m { \
+        fn sqrt(x: float) -> float { x } \
+        fn f(pow: float) -> float { pow.powf(2.0f32) } \
+        #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) { \
+            let log = 4.0f32; let a = log.sqrt(); let b = sqrt(a); \
+            out[id.x] = b + log.ln() + f(a); } }";
+    let text = translate(source).unwrap_or_else(|error| panic!("{error}"));
+    // The user helper is declared and called under the renamed spelling.
+    assert!(
+        text.contains("float __gust_r_sqrt(float x)"),
+        "helper declaration:\n{text}"
+    );
+    assert!(
+        text.contains("var b = __gust_r_sqrt(a);"),
+        "helper call:\n{text}"
+    );
+    // The user local and the parameter are renamed.
+    assert!(text.contains("var __gust_r_log = "), "local:\n{text}");
+    assert!(text.contains("float __gust_r_pow"), "parameter:\n{text}");
+    // The method calls are the unqualified intrinsics, with the renamed names as operands.
+    assert!(
+        text.contains("var a = sqrt(__gust_r_log);"),
+        "sqrt call:\n{text}"
+    );
+    assert!(
+        text.contains("log(__gust_r_log)"),
+        "ln lowers to log:\n{text}"
+    );
+    assert!(
+        text.contains("pow(__gust_r_pow, "),
+        "powf lowers to pow:\n{text}"
+    );
+    // No unrenamed user spelling is left: every `sqrt(`, `log(` and `pow(` that is not an intrinsic call written by
+    // the lowering sits behind the prefix, and no declaration or binding uses the bare name.
+    for bare in ["float sqrt(", "var log ", "float pow)", "float pow,"] {
+        assert!(!text.contains(bare), "{bare} survived:\n{text}");
+    }
+    // Exactly one bare call of each: the intrinsic written by the lowering.
+    for call in ["sqrt(", "log(", "pow("] {
+        assert_eq!(count_unprefixed(&text, call), 1, "{call}:\n{text}");
+    }
+}

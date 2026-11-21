@@ -371,6 +371,8 @@ fn the_constants_are_the_f32_constants_on_the_gpu_and_the_twin() {
         pi: 0.0,
         tau: 0.0,
         e: 0.0,
+        user_sqrt: 0.0,
+        intrinsic_sqrt: 0.0,
     };
     let out = device.create_typed_buffer("out", &vec![blank; 64], GpuBufferAccess::ReadWrite);
     device
@@ -396,6 +398,9 @@ fn the_constants_are_the_f32_constants_on_the_gpu_and_the_twin() {
         for row in rows {
             let bits = [row.pi.to_bits(), row.tau.to_bits(), row.e.to_bits()];
             assert_eq!(bits, expected, "{label} constants");
+            // The helper named `sqrt` is the user's (9 + 100); the method call is the intrinsic (sqrt of 16).
+            assert_eq!(row.user_sqrt, 109.0, "{label} user helper `sqrt`");
+            assert_eq!(row.intrinsic_sqrt, 4.0, "{label} intrinsic sqrt");
         }
     }
 }

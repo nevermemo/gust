@@ -10,6 +10,10 @@ const COUNT: usize = 4096;
 #[gpu]
 mod rng {
     /// A multiply-xorshift finaliser. Every shift amount is a literal below 32 (D39).
+    ///
+    /// The constants and shifts are those of "lowbias32" from Chris Wellons' hash-prospector
+    /// (https://github.com/skeeto/hash-prospector; public domain, Unlicense): multipliers 0x7feb352d and
+    /// 0x846ca68b, shifts 16, 15, 16.
     pub fn mix(x: u32) -> u32 {
         let mut h = x ^ (x >> 16u32);
         h = h.wrapping_mul(2146121005u32);
@@ -116,6 +120,20 @@ mod tests {
         }
     }
 
+    /// Known answers of lowbias32, computed in a separate Python script from the published constants and shifts
+    /// (not from this file's code).
+    #[test]
+    fn mix_matches_known_answers() {
+        for (x, want) in [
+            (0u32, 0u32),
+            (1, 0x6889_90c0),
+            (0xdead_beef, 0xe628_c683),
+            (u32::MAX, 0x6768_824a),
+        ] {
+            assert_eq!(rng::mix(x), want, "mix({x:#x})");
+        }
+    }
+
     #[test]
     fn the_literal_is_two_to_the_minus_24() {
         assert_eq!(0.000000059604644775390625f32, f32::from_bits(0x3380_0000));
@@ -155,6 +173,35 @@ mod tests {
     }
 
     #[test]
+    fn twin_matches_reference() {
+        let zeros_u = vec![0u32; COUNT];
+        let zeros_f = vec![0.0f32; COUNT];
+        for seed in [0u32, 1, u32::MAX] {
+            let (want_words, want_floats) = reference(seed);
+            let twin = CpuDevice::new();
+            let seed_cpu = twin.buffer(&[seed]);
+            let words_cpu = twin.buffer(&zeros_u);
+            let floats_cpu = twin.buffer(&zeros_f);
+            rng::fill::dispatch(
+                &twin,
+                COUNT as u32,
+                Independent(&seed_cpu),
+                &words_cpu,
+                &floats_cpu,
+            )
+            .unwrap();
+            first_difference("twin words", seed, &words_cpu.read(), &want_words);
+            first_difference(
+                "twin floats",
+                seed,
+                &bits(&floats_cpu.read()),
+                &bits(&want_floats),
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
     fn reference_twin_and_gpu_are_bit_equal() {
         let device = HeadlessDevice::new().unwrap_or_else(|error| {
             panic!("Vulkan adapter required; this test must not silently skip: {error}")

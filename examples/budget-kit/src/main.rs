@@ -529,7 +529,8 @@ fn w2(device: &DeviceHandle, side: u32) -> Row {
         // tolerance is 5e-6.
         for (at, (g, c)) in gpu.iter().zip(&cpu).enumerate() {
             for (lane, (gv, cv)) in lanes(*g).into_iter().zip(lanes(*c)).enumerate() {
-                if (gv - cv).abs() > 5e-6 * cv.abs() {
+                // Finite and affirmatively within the tolerance, so a NaN cannot pass.
+                if !(gv.is_finite() && (gv - cv).abs() <= 5e-6 * cv.abs()) {
                     return Err(format!(
                         "cell {at} lane {lane}: GPU {gv} against CPU {cv} after {W2_CHECKED_STEPS} steps"
                     ));
@@ -604,7 +605,8 @@ fn w3(device: &DeviceHandle, count: u32) -> Row {
                 if lane < 2 && diff > side / 2.0 {
                     diff = side - diff;
                 }
-                if diff > 8.0 * (1.0 / 8_388_608.0) * cv.abs().max(1.0) {
+                // Finite and affirmatively within the tolerance, so a NaN cannot pass.
+                if !(gv.is_finite() && diff <= 8.0 * (1.0 / 8_388_608.0) * cv.abs().max(1.0)) {
                     return Err(format!(
                         "particle {at} lane {lane}: GPU {gv} against CPU {cv}"
                     ));
@@ -634,7 +636,10 @@ fn w4(device: &DeviceHandle, count: u32) -> Row {
         }
         let parts_host: Vec<Vec4> = (0..count).map(|i| particle_init(i, W4_GRID_SIDE)).collect();
         let parts = GpuVec::from_slice_on(device, &parts_host).map_err(dbg)?;
-        let counts = GpuVec::<u32>::zeroed_on(device, cells).map_err(dbg)?;
+        // Non-zero to begin with (every cell holds a value the histogram cannot produce), so a clear that does
+        // nothing leaves a difference the check below sees; zeroed counts would let it pass.
+        let poisoned: Vec<u32> = (0..cells).map(|i| 0x8000_0000 | i).collect();
+        let counts = GpuVec::from_slice_on(device, &poisoned).map_err(dbg)?;
         let clear_params = device
             .create_uniform(
                 "w4 clear",
@@ -687,6 +692,12 @@ fn w4(device: &DeviceHandle, count: u32) -> Row {
             return Err("the scan differs from the host exclusive prefix".into());
         }
         let measured = measure(|| step().map(|(sample, _)| sample))?;
+        // A later step as well: counts that were not cleared between steps have grown by now.
+        if counts.to_vec().map_err(dbg)? != cpu {
+            return Err(
+                "the atomic counts differ from the host histogram after the timed steps".into(),
+            );
+        }
         // The particle read, the atomic update of one counter (a read and a write), the clear and the scan of the counts.
         let bytes = 16.0 * f64::from(count) + 8.0 * f64::from(count) + 12.0 * f64::from(cells);
         Ok((measured, Some(bytes)))
@@ -725,13 +736,21 @@ fn w5(device: &DeviceHandle, n: u32) -> Row {
         }
         let first = timed(|| reduce::sum(&input)).map_err(dbg)?;
         let error = (f64::from(first.value) - reference).abs();
-        row.note = format!(
-            "observed error {:.3e} of an allowed {:.3e} (bound::f32_sum_bound plus bound::f64_reference_error); bytes: one read per element; the f32 bound is wide (about {:.0}x the observed error), so a structural check is the exact u32 sum, which matched",
-            error,
-            allowed,
-            allowed / error.max(f64::MIN_POSITIVE)
-        );
-        if error > allowed {
+        row.note = if first.value.is_finite() {
+            format!(
+                "observed error {:.3e} of an allowed {:.3e} (bound::f32_sum_bound plus bound::f64_reference_error); bytes: one read per element; the f32 bound is wide (about {:.0}x the observed error), so a structural check is the exact u32 sum, which matched",
+                error,
+                allowed,
+                allowed / error.max(f64::MIN_POSITIVE)
+            )
+        } else {
+            format!(
+                "the f32 sum was not finite ({}), so there is no observed error to compare with the allowed {:.3e}; the exact u32 sum matched",
+                first.value, allowed
+            )
+        };
+        // Finite and affirmatively within the bound, so a NaN cannot pass.
+        if !(first.value.is_finite() && error <= allowed) {
             return Err(format!(
                 "sum {} differs from the f64 reference {reference} by {error:.3e}, over {allowed:.3e}",
                 first.value
@@ -892,7 +911,7 @@ fn main() {
     );
     let _ = writeln!(
         text,
-        "statistic: median of {STEPS} steps after {WARMUP} warm-up steps; a step is one dispatch (W4: a clear, a count and a scan; W5: a whole reduction, the pooled-buffer clears outside the timed region; W6: submit, wait and readback); steps per frame is {FRAME_MS:.1} ms over the median; GB/s is the stated bytes over the median"
+        "statistic: median of {STEPS} steps after {WARMUP} warm-up steps; a step is one dispatch (W4: a clear, a count and a scan; W5: a whole reduction; with GPU timestamps the pooled-buffer clears are outside the timed region, but the wall-clock fallback includes the clears, the allocation, the host overhead and the scalar readback; W6: submit, wait and readback); steps per frame is {FRAME_MS:.1} ms over the median; GB/s is the stated bytes over the median"
     );
     let _ = writeln!(
         text,

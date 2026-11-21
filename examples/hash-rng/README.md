@@ -5,7 +5,8 @@ it is designed to give the same numbers on every device (exact integer operation
 power-of-two scale). It is measured on the Radeon 890M only.
 
 - `mix(x) -> u32`: a multiply-xorshift finaliser built from `wrapping_mul`, `^` and `>>` with literal shift amounts
-  below 32.
+  below 32. The constants and shifts are "lowbias32" from Chris Wellons' hash-prospector
+  (https://github.com/skeeto/hash-prospector, public domain / Unlicense).
 - `hash(seed, index) -> u32`: `mix(mix(seed) ^ index)`. The seed is mixed first, so different seeds give unrelated
   streams, not index-shifted copies of one.
   `mix(0)` is 0, so `hash(0, 0)` is 0; a seed of 0 is valid but starts at zero.
@@ -23,4 +24,5 @@ Notes:
 - A `#[gpu]` module refuses `use`, `const`, `static` and nested `mod`, so the helpers must live in the module that
   uses them and the constants are written as literals in place.
 
-Run with `cargo run -p hash-rng`; the test is `cargo test -p hash-rng -- --nocapture`.
+Run with `cargo run -p hash-rng`; the CPU tests run with `cargo test -p hash-rng`, and the GPU test with
+`cargo test -p hash-rng -- --include-ignored --nocapture`.

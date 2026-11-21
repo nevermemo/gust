@@ -27,6 +27,14 @@ mod float_math {
         pub pi: float,
         pub tau: float,
         pub e: float,
+        pub user_sqrt: float,
+        pub intrinsic_sqrt: float,
+    }
+
+    // A user helper named like the intrinsic `sqrt` (slice m11.za): the macro renames it, so `x.sqrt()` still reaches
+    // the intrinsic.
+    pub fn sqrt(x: float) -> float {
+        x + 100.0
     }
 
     /// One row of inputs per element, each field inside the domain of the methods that read it.
@@ -118,6 +126,8 @@ mod float_math {
                 pi: std::f32::consts::PI,
                 tau: core::f32::consts::TAU,
                 e: std::f32::consts::E,
+                user_sqrt: sqrt(9.0f32),
+                intrinsic_sqrt: 16.0f32.sqrt(),
             };
         }
     }

@@ -330,7 +330,16 @@ code built from that branch and to this repository's fixtures; code written for 
   Rust spelling again. Measured on slangc 2026.22 for `interface` and `extension`: as a local, field, helper,
   parameter or struct on its own the word compiles, and a user struct, helper or global of that name placed before an
   emitted `interface` or `extension` fails (E20001); the rename removes that. Not measured: how many 0.1.0 modules use
-  such a name (no example of this repository does; the tests that use one are the renaming's own).
+  such a name (no example of this repository does; the tests that use one are the renaming's own). The same table now
+  also holds the 18 scalar math intrinsics the float math methods emit (`abs`, `atan`, `atan2`, `ceil`, `clamp`, `cos`,
+  `exp`, `exp2`, `floor`, `log`, `log2`, `max`, `min`, `pow`, `sin`, `sqrt`, `tan`, `trunc`) and the other Slang
+  intrinsics the emitter writes unqualified (`asint`, `asuint`, `countbits`, `GroupMemoryBarrierWithGroupSync` and
+  `WaveActiveAllTrue`, `WaveActiveAnyTrue`, `WaveActiveBallot`, `WaveActiveBitAnd`, `WaveActiveBitOr`,
+  `WaveActiveBitXor`, `WaveActiveMax`, `WaveActiveMin`, `WaveActiveProduct`, `WaveActiveSum`, `WaveBroadcastLaneAt`,
+  `WaveGetLaneCount`, `WaveGetLaneIndex`, `WavePrefixProduct`, `WavePrefixSum`, `WaveReadLaneAt`,
+  `WaveReadLaneFirst`, `WaveShuffle`), so a user local, parameter or helper of one of these names no longer captures
+  the emitted call. A program with such a name now gets different emitted text and a different artifact content key
+  (a program without one is unchanged); run `cargo gust build` again and commit `gust-artifacts/`.
 - **B5: the record structs and `Route` of `gust-compute-wgpu` are `#[non_exhaustive]`** (m10.api2a.1, W8 and W13).
   `PipelineCacheStats`, `PoolStats`, `DispatchTiming`, `TransferTiming`, `GrowthRecord`, `TransferRecord`, `RouteEvent`
   and the enum `Route`. A struct literal or a struct update of one of the structs no longer compiles outside the crate,

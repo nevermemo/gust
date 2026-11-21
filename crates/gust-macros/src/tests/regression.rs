@@ -10208,3 +10208,126 @@ fn the_names_of_the_scalar_math_methods_are_reserved_for_module_methods() {
         assert_rejected(&source, Code::MethodNameClash);
     }
 }
+
+/// How many times `needle` occurs in `text` not preceded by a letter, digit or underscore (so `sqrt(` does not match
+/// inside `__gust_r_sqrt(`).
+fn count_unprefixed(text: &str, needle: &str) -> usize {
+    text.match_indices(needle)
+        .filter(|&(at, _)| {
+            !text[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        })
+        .count()
+}
+
+/// Slice m11.za: a user helper, local or parameter named like an intrinsic that the math lowering emits is renamed, and
+/// the emitted call still reaches Slang's intrinsic.
+#[test]
+fn a_user_name_like_a_math_intrinsic_is_renamed_and_the_call_stays_the_intrinsic() {
+    let source = "mod m { \
+        fn sqrt(x: float) -> float { x } \
+        fn f(pow: float) -> float { pow.powf(2.0f32) } \
+        #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) { \
+            let log = 4.0f32; let a = log.sqrt(); let b = sqrt(a); \
+            out[id.x] = b + log.ln() + f(a); } }";
+    let text = translate(source).unwrap_or_else(|error| panic!("{error}"));
+    // The user helper is declared and called under the renamed spelling.
+    assert!(
+        text.contains("float __gust_r_sqrt(float x)"),
+        "helper declaration:\n{text}"
+    );
+    assert!(
+        text.contains("var b = __gust_r_sqrt(a);"),
+        "helper call:\n{text}"
+    );
+    // The user local and the parameter are renamed.
+    assert!(text.contains("var __gust_r_log = "), "local:\n{text}");
+    assert!(text.contains("float __gust_r_pow"), "parameter:\n{text}");
+    // The method calls are the unqualified intrinsics, with the renamed names as operands.
+    assert!(
+        text.contains("var a = sqrt(__gust_r_log);"),
+        "sqrt call:\n{text}"
+    );
+    assert!(
+        text.contains("log(__gust_r_log)"),
+        "ln lowers to log:\n{text}"
+    );
+    assert!(
+        text.contains("pow(__gust_r_pow, "),
+        "powf lowers to pow:\n{text}"
+    );
+    // No unrenamed user spelling is left: every `sqrt(`, `log(` and `pow(` that is not an intrinsic call written by
+    // the lowering sits behind the prefix, and no declaration or binding uses the bare name.
+    for bare in ["float sqrt(", "var log ", "float pow)", "float pow,"] {
+        assert!(!text.contains(bare), "{bare} survived:\n{text}");
+    }
+    // Exactly one bare call of each: the intrinsic written by the lowering.
+    for call in ["sqrt(", "log(", "pow("] {
+        assert_eq!(count_unprefixed(&text, call), 1, "{call}:\n{text}");
+    }
+}
+
+/// Slice m11.za: the intrinsics the emitter writes outside the math methods (bit casts, `countbits`, the subgroup
+/// operations, the barrier) are in the rename table too, so a user helper of that name is renamed.
+#[test]
+fn a_user_helper_named_like_a_bit_or_subgroup_intrinsic_is_renamed() {
+    let source = "mod m { \
+        fn countbits(x: u32) -> u32 { x } \
+        fn asuint(x: u32) -> u32 { x } \
+        fn WaveActiveSum(x: u32) -> u32 { x } \
+        #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { \
+            out[id.x] = countbits(asuint(WaveActiveSum(id.x))); } }";
+    let text = translate(source).unwrap_or_else(|error| panic!("{error}"));
+    for name in ["countbits", "asuint", "WaveActiveSum"] {
+        assert!(
+            text.contains(&format!("uint __gust_r_{name}(uint x)")),
+            "{name} declaration:\n{text}"
+        );
+        assert_eq!(
+            count_unprefixed(&text, &format!("{name}(")),
+            0,
+            "{name}:\n{text}"
+        );
+    }
+    assert!(
+        text.contains("__gust_r_countbits(__gust_r_asuint(__gust_r_WaveActiveSum("),
+        "{text}"
+    );
+}
+
+/// Slice m11.za: the capture case. A user helper `WaveActiveSum` and a user helper `countbits` sit beside the
+/// subgroup operations whose lowering writes those names; the user names are renamed and the emitter's own calls stay
+/// the bare intrinsics.
+#[test]
+fn the_emitters_own_subgroup_calls_stay_bare_beside_user_helpers_of_the_same_names() {
+    let source = "mod m { \
+        fn countbits(x: u32) -> u32 { x } \
+        fn WaveActiveSum(x: u32) -> u32 { x } \
+        #[kernel(workgroup_size(64, 1, 1), requires(subgroups))] \
+        fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { \
+            let a = WaveActiveSum(id.x); \
+            let b = countbits(a); \
+            let c = subgroup_add(b); \
+            let d = subgroup_count(c > 0u32); \
+            out[id.x] = d; } }";
+    let text = translate(source).unwrap_or_else(|error| panic!("{error}"));
+    for name in ["countbits", "WaveActiveSum"] {
+        assert!(
+            text.contains(&format!("uint __gust_r_{name}(uint x)")),
+            "{name} declaration:\n{text}"
+        );
+    }
+    assert!(
+        text.contains("var a = __gust_r_WaveActiveSum(id.x);"),
+        "{text}"
+    );
+    assert!(text.contains("var b = __gust_r_countbits(a);"), "{text}");
+    // The emitter's own `WaveActiveSum(` (the lowering of `subgroup_add`) is not renamed, and neither is the
+    // `countbits(` in the body of `__gust_subgroup_count`.
+    assert_eq!(count_unprefixed(&text, "WaveActiveSum("), 1, "{text}");
+    assert!(text.contains("= WaveActiveSum(b);"), "{text}");
+    assert_eq!(count_unprefixed(&text, "countbits("), 4, "{text}");
+    assert!(text.contains("return countbits(ballot.x)"), "{text}");
+}

@@ -127,6 +127,10 @@ pub const COLLISIONS: &[Collision] = &[
     // Struct position: `ConstantBuffer<T>` is emitted for a uniform. Measured 2026-11-01 (the S6.3b follow-up left
     // it untested): a struct of that name breaks a `ConstantBuffer<uint>` global after it.
     emitted("ConstantBuffer"),
+    // Slang intrinsics the emitter writes unqualified outside the math methods (slice m11.za): the barrier, the
+    // subgroup operations and their helpers, `asint`, `asuint` and `countbits`. A user helper or local of one of
+    // these names would capture or obstruct the call.
+    emitted("GroupMemoryBarrierWithGroupSync"),
     // The generic type behind `Option<T>`.
     emitted("Optional"),
     // Struct position (S6.3b: a struct of that name breaks every `RWStructuredBuffer<T>` global after it; the position
@@ -137,16 +141,46 @@ pub const COLLISIONS: &[Collision] = &[
     hard("This", &[Field]),
     // The generic type behind a tuple `(A, B)` (slice m9.t).
     emitted("Tuple"),
+    emitted("WaveActiveAllTrue"),
+    emitted("WaveActiveAnyTrue"),
+    emitted("WaveActiveBallot"),
+    emitted("WaveActiveBitAnd"),
+    emitted("WaveActiveBitOr"),
+    emitted("WaveActiveBitXor"),
+    emitted("WaveActiveMax"),
+    emitted("WaveActiveMin"),
+    emitted("WaveActiveProduct"),
+    emitted("WaveActiveSum"),
+    emitted("WaveBroadcastLaneAt"),
+    emitted("WaveGetLaneCount"),
+    emitted("WaveGetLaneIndex"),
+    emitted("WavePrefixProduct"),
+    emitted("WavePrefixSum"),
+    emitted("WaveReadLaneAt"),
+    emitted("WaveReadLaneFirst"),
+    emitted("WaveShuffle"),
     // Also denied to users by E0901 (`__Gust`), so it is unreachable and has no capture template; listed because the
     // plan names it.
     emitted("__GustResult"),
     hard("__target_switch", &[Struct, Global]),
+    // The scalar math intrinsics the float math lowering writes unqualified (slice m11.za): `abs`, `atan`, `atan2`,
+    // `ceil`, `clamp`, `cos`, `exp`, `exp2`, `floor`, `log` (for `ln`), `log2`, `max`, `min`, `pow` (for `powf`), `sin`,
+    // `sqrt`, `tan` and `trunc`. A user local, parameter or helper of the same name would capture the call.
+    emitted("abs"),
+    emitted("asint"),
+    emitted("asuint"),
+    emitted("atan"),
+    emitted("atan2"),
     // `bool(x)`, `int(x)`, `uint(x)` and `float(x)` are the emitted casts and literal spellings.
     emitted("bool"),
     hard("break", &[Struct, Global]),
     hard("case", &[Struct, Global]),
+    emitted("ceil"),
+    emitted("clamp"),
     hard("class", &[Struct, Global]),
     hard("continue", &[Struct, Global]),
+    emitted("cos"),
+    emitted("countbits"),
     hard("default", &[Struct, Global]),
     hard("defer", &[Struct, Global]),
     hard("discard", &[Struct, Global]),
@@ -154,6 +188,8 @@ pub const COLLISIONS: &[Collision] = &[
     // M6 (`Vec4::dot`).
     emitted("dot"),
     hard("enum", &[Struct, Global]),
+    emitted("exp"),
+    emitted("exp2"),
     // `extension S : Trait { .. }` is emitted for every trait impl (slice m9.g1). Measured 2026-11-14 on slangc 2026.22
     // (WGSL and SPIR-V, slice m9.z): the word is an ordinary identifier as a local, a field, a helper, a parameter or a
     // struct name (none of the six positions fails, so it is not class 1), but a user struct, helper or global of that
@@ -171,6 +207,7 @@ pub const COLLISIONS: &[Collision] = &[
     both("float3x3", &[Helper]),
     both("float4", &[Helper]),
     both("float4x4", &[Helper]),
+    emitted("floor"),
     hard("for", &[Struct, Global]),
     hard("if", &[Struct, Global]),
     emitted("int"),
@@ -181,10 +218,14 @@ pub const COLLISIONS: &[Collision] = &[
     // struct, helper or global of that name before an `interface` declaration: E20001 at the declaration; a local, a
     // field, a parameter and a struct used on their own compile).
     emitted("interface"),
+    emitted("log"),
+    emitted("log2"),
     // The constructor of a tuple value `(a, b)` (slice m9.t).
     emitted("makeTuple"),
     // Slang's generic `matrix<T, R, C>`, in case the M6 lowering needs it.
     emitted("matrix"),
+    emitted("max"),
+    emitted("min"),
     // M6 (`Mat4 * Vec4` helpers).
     emitted("mul"),
     hard("new", &[Local, Helper, Global, HelperParameter]),
@@ -192,10 +233,14 @@ pub const COLLISIONS: &[Collision] = &[
     // `None` is emitted as `none`; a local `none` of another type breaks it (measured 2026-11-01).
     emitted("none"),
     hard("operator", &[Local, Field, Helper, Global, HelperParameter]),
+    emitted("pow"),
     hard("return", &[Struct, Global]),
+    emitted("sin"),
     hard("spirv_asm", &[Local, Helper, Global, HelperParameter]),
+    emitted("sqrt"),
     hard("struct", &[Struct, Global]),
     hard("switch", &[Struct, Global]),
+    emitted("tan"),
     // The receiver of a method is written `this`. A parameter or local of that name inside a method would take its
     // place and compile (`this.a - this.a`), so the bare name is a silent capture, not a failure at a declaration
     // (measured 2026-11-09 on slangc 2026.21: every position takes it; the member probe `capture_source` fails).
@@ -204,6 +249,7 @@ pub const COLLISIONS: &[Collision] = &[
     emitted("transpose"),
     // See `false`.
     emitted("true"),
+    emitted("trunc"),
     hard("try", &[Struct]),
     hard("typealias", &[Struct, Global]),
     hard("typedef", &[Struct, Global]),
@@ -444,6 +490,50 @@ pub fn capture_source(entry: &str, spelled: &str) -> Option<String> {
         "true" => bool_local("false", "true ? 7u : 9u"),
         "false" => bool_local("true", "false ? 7u : 9u"),
         "var" => local("var y = 2.0; ob[gid.x] = uint(y);"),
+        // Slice m11.za: the barrier, the subgroup operations and the bit casts the emitter writes unqualified.
+        "GroupMemoryBarrierWithGroupSync" => {
+            local("GroupMemoryBarrierWithGroupSync(); ob[gid.x] = 1u;")
+        }
+        "WaveActiveAllTrue" => local("ob[gid.x] = WaveActiveAllTrue(true) ? 1u : 0u;"),
+        "WaveActiveAnyTrue" => local("ob[gid.x] = WaveActiveAnyTrue(true) ? 1u : 0u;"),
+        "WaveActiveBallot" => local("ob[gid.x] = WaveActiveBallot(true).x;"),
+        "WaveActiveBitAnd" => local("ob[gid.x] = WaveActiveBitAnd(3u);"),
+        "WaveActiveBitOr" => local("ob[gid.x] = WaveActiveBitOr(3u);"),
+        "WaveActiveBitXor" => local("ob[gid.x] = WaveActiveBitXor(3u);"),
+        "WaveActiveMax" => local("ob[gid.x] = WaveActiveMax(3u);"),
+        "WaveActiveMin" => local("ob[gid.x] = WaveActiveMin(3u);"),
+        "WaveActiveProduct" => local("ob[gid.x] = WaveActiveProduct(3u);"),
+        "WaveActiveSum" => local("ob[gid.x] = WaveActiveSum(3u);"),
+        "WaveBroadcastLaneAt" => local("ob[gid.x] = WaveBroadcastLaneAt(3u, 0u);"),
+        "WaveGetLaneCount" => local("ob[gid.x] = WaveGetLaneCount();"),
+        "WaveGetLaneIndex" => local("ob[gid.x] = WaveGetLaneIndex();"),
+        "WavePrefixProduct" => local("ob[gid.x] = WavePrefixProduct(3u);"),
+        "WavePrefixSum" => local("ob[gid.x] = WavePrefixSum(3u);"),
+        "WaveReadLaneAt" => local("ob[gid.x] = WaveReadLaneAt(3u, gid.x);"),
+        "WaveReadLaneFirst" => local("ob[gid.x] = WaveReadLaneFirst(3u);"),
+        "WaveShuffle" => local("ob[gid.x] = WaveShuffle(3u, gid.x);"),
+        "asint" => local("ob[gid.x] = uint(asint(2u));"),
+        "asuint" => local("ob[gid.x] = asuint(2);"),
+        "countbits" => local("ob[gid.x] = countbits(7u);"),
+        // The scalar math intrinsics of slice m11.za: a user local of that name makes the emitted call a call of a float.
+        "abs" => local("ob[gid.x] = uint(abs(-2.0));"),
+        "atan" => local("ob[gid.x] = uint(atan(1.0));"),
+        "atan2" => local("ob[gid.x] = uint(atan2(1.0, 2.0));"),
+        "ceil" => local("ob[gid.x] = uint(ceil(1.5));"),
+        "clamp" => local("ob[gid.x] = uint(clamp(1.5, 1.0, 2.0));"),
+        "cos" => local("ob[gid.x] = uint(cos(1.0));"),
+        "exp" => local("ob[gid.x] = uint(exp(1.0));"),
+        "exp2" => local("ob[gid.x] = uint(exp2(1.0));"),
+        "floor" => local("ob[gid.x] = uint(floor(1.5));"),
+        "log" => local("ob[gid.x] = uint(log(2.0));"),
+        "log2" => local("ob[gid.x] = uint(log2(2.0));"),
+        "max" => local("ob[gid.x] = uint(max(1.0, 2.0));"),
+        "min" => local("ob[gid.x] = uint(min(1.0, 2.0));"),
+        "pow" => local("ob[gid.x] = uint(pow(2.0, 3.0));"),
+        "sin" => local("ob[gid.x] = uint(sin(1.0));"),
+        "sqrt" => local("ob[gid.x] = uint(sqrt(4.0));"),
+        "tan" => local("ob[gid.x] = uint(tan(1.0));"),
+        "trunc" => local("ob[gid.x] = uint(trunc(1.5));"),
         // The receiver of a member function, captured by a parameter of that name: `this.a` is then a member of a float.
         "this" => format!(
             "struct S {{ float a; float f(float {n}) {{ return this.a - {n}; }} }};

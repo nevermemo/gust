@@ -2019,6 +2019,27 @@ impl HeadlessDevice {
         &self.limits
     }
 
+    /// The wgpu device behind this one: an advanced escape hatch, like [`GpuBuffer::as_wgpu_buffer`], for code that
+    /// records its own passes over GUST's buffers (a buffer is only valid on the device that created it).
+    ///
+    /// Work you create here is not tracked by GUST: validation, limits and pooling stay your concern.
+    /// Ordering is the queue's ([`Self::wgpu_queue`]).
+    pub fn wgpu_device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    /// The wgpu queue behind this device: an advanced escape hatch, like [`GpuBuffer::as_wgpu_buffer`].
+    ///
+    /// GUST submits every dispatch to this one queue, and wgpu runs the submissions of one queue in submission
+    /// order, with the storage-buffer writes of an earlier submission visible to a later one. A kernel that has been
+    /// submitted therefore finishes before your own submission starts, with no extra barrier. The typed `dispatch`
+    /// and `dispatch_*` wrappers also wait for their submission, so the work is done when they return;
+    /// `submit_*` returns a job without waiting, and your submission is still ordered after it.
+    /// Submit commands that use a pooled buffer before its owner drops (see [`GpuBuffer::as_wgpu_buffer`]).
+    pub fn wgpu_queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
     /// Check launches against `limits` instead of the opened device's, for emulating a
     /// weaker target and for tests. The limits may only be lowered: a value that is
     /// better than the one the device was opened with is rejected with

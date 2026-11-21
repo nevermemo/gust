@@ -61,7 +61,10 @@ fn the_expected_list_is_twenty_one_sorted_unique_spirv_names() {
 #[test]
 fn export_artifacts_skips_the_examples_that_export_nothing() {
     use crate::workspace::{EXAMPLES, NO_EXPORT_EXAMPLES};
-    assert_eq!(NO_EXPORT_EXAMPLES, ["shape-bench"]);
+    assert_eq!(
+        NO_EXPORT_EXAMPLES,
+        ["shape-bench", "hash-rng", "polar-transform"]
+    );
     for example in NO_EXPORT_EXAMPLES {
         assert!(EXAMPLES.contains(example), "{example}");
         let stem = example.replace('-', "_");

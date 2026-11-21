@@ -108,28 +108,108 @@ mod tests {
         device
     }
 
+    fn turns() -> Vec<f32> {
+        (0..POINTS).map(|i| (i % 97) as f32 * 0.31 + 0.1).collect()
+    }
+
+    fn blank() -> polar::Polar {
+        polar::Polar {
+            radius: 0.0,
+            angle: 0.0,
+        }
+    }
+
+    const ORIGIN: polar::Point = polar::Point { x: 0.0, y: 0.0 };
+
+    /// The results of the CPU twin for `input` and `turns`.
+    fn twin_results(
+        input: &[polar::Point],
+        turns: &[f32],
+    ) -> (Vec<polar::Polar>, Vec<polar::Point>) {
+        let cpu = CpuDevice::new();
+        let (cpu_points, cpu_turns) = (cpu.buffer(input), cpu.buffer(turns));
+        let (cpu_polar, cpu_rotated) = (
+            cpu.buffer(&vec![blank(); POINTS]),
+            cpu.buffer(&vec![ORIGIN; POINTS]),
+        );
+        polar::to_polar::dispatch(&cpu, POINTS as u32, &cpu_points, &cpu_polar).unwrap();
+        polar::rotate::dispatch(&cpu, POINTS as u32, &cpu_points, &cpu_turns, &cpu_rotated)
+            .unwrap();
+        (cpu_polar.read(), cpu_rotated.read())
+    }
+
     /// The bound of each output, from the WGSL accuracy table (WGSL 15.7.4.1, see docs/SEMANTICS.md): `radius` is
     /// `sqrt` (inherited, 6.5 ULP) of a sum of two squares (two correctly rounded products and a sum: a relative error of at
     /// most `3 * 2^-23`, half of it after the root, at most 3 ULP of the result): 9.5 ULP, rounded up to 10. `angle` is `atan2`, with `abs(x) >= 0.013`.
     /// `atan2` has 4096 ULP. A rotated coordinate has `sin` and `cos` absolute errors of `2^-11` each times
     /// the point's coordinates, plus 4 `f32` roundings of its largest term.
+    fn check_against_host(
+        label: &str,
+        input: &[polar::Point],
+        turns: &[f32],
+        results: &[polar::Polar],
+        rotations: &[polar::Point],
+    ) {
+        assert_eq!(results.len(), POINTS, "{label} polar length");
+        assert_eq!(rotations.len(), POINTS, "{label} rotated length");
+        let ulp = |x: f64| {
+            2f64.powi(((x.abs() as f32).max(f32::MIN_POSITIVE).to_bits() >> 23) as i32 - 127 - 23)
+        };
+        for i in 0..POINTS {
+            let (x, y) = (f64::from(input[i].x), f64::from(input[i].y));
+            let radius = x.hypot(y);
+            let angle = y.atan2(x);
+            // The host wraps the turn as the kernel does, in `f64`, from the same `f32` input.
+            let t = f64::from(turns[i]) / std::f64::consts::TAU + 0.5;
+            let turn = (((t - t.trunc()) - 0.5) * std::f64::consts::TAU)
+                .clamp(-std::f64::consts::PI, std::f64::consts::PI);
+            let (rx, ry) = (
+                x * turn.cos() - y * turn.sin(),
+                x * turn.sin() + y * turn.cos(),
+            );
+            // The wrap itself is a few `f32` operations on a value up to 2^3: allow 8 ULP of the turn on the angle.
+            let turn_error = 8.0 * ulp(turn).max(ulp(6.3));
+            let rotation_bound =
+                (x.abs() + y.abs()) * (2f64.powi(-11) + 4.0 * 2f64.powi(-24) + turn_error);
+            let (polar, rotated) = (&results[i], &rotations[i]);
+            assert!(
+                (f64::from(polar.radius) - radius).abs() <= 10.0 * ulp(radius),
+                "{label} radius[{i}]"
+            );
+            assert!(
+                (f64::from(polar.angle) - angle).abs() <= 4096.0 * ulp(angle),
+                "{label} angle[{i}]"
+            );
+            assert!(
+                (f64::from(rotated.x) - rx).abs() <= rotation_bound,
+                "{label} x[{i}]"
+            );
+            assert!(
+                (f64::from(rotated.y) - ry).abs() <= rotation_bound,
+                "{label} y[{i}]"
+            );
+        }
+    }
+
     #[test]
+    fn twin_matches_host_reference() {
+        let (input, turns) = (points(), turns());
+        let (twin_polar, twin_rotated) = twin_results(&input, &turns);
+        check_against_host("twin", &input, &turns, &twin_polar, &twin_rotated);
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
     fn polar_and_rotation_match_the_host_on_the_gpu_and_the_twin() {
         let device = device();
-        let input = points();
+        let (input, turns) = (points(), turns());
         let gpu_points = device.create_typed_buffer("points", &input, GpuBufferAccess::ReadOnly);
-        let turns: Vec<f32> = (0..POINTS).map(|i| (i % 97) as f32 * 0.31 + 0.1).collect();
         let gpu_turns = device.create_typed_buffer("turns", &turns, GpuBufferAccess::ReadOnly);
-        let blank = polar::Polar {
-            radius: 0.0,
-            angle: 0.0,
-        };
         let gpu_polar =
-            device.create_typed_buffer("polar", &vec![blank; POINTS], GpuBufferAccess::ReadWrite);
-        let origin = polar::Point { x: 0.0, y: 0.0 };
+            device.create_typed_buffer("polar", &vec![blank(); POINTS], GpuBufferAccess::ReadWrite);
         let gpu_rotated = device.create_typed_buffer(
             "rotated",
-            &vec![origin; POINTS],
+            &vec![ORIGIN; POINTS],
             GpuBufferAccess::ReadWrite,
         );
         device
@@ -155,58 +235,9 @@ mod tests {
             .unwrap();
         let gpu_polar = device.read_typed_buffer(&gpu_polar).unwrap();
         let gpu_rotated = device.read_typed_buffer(&gpu_rotated).unwrap();
+        check_against_host("gpu", &input, &turns, &gpu_polar, &gpu_rotated);
 
-        let cpu = CpuDevice::new();
-        let (cpu_points, cpu_turns) = (cpu.buffer(&input), cpu.buffer(&turns));
-        let (cpu_polar, cpu_rotated) = (
-            cpu.buffer(&vec![blank; POINTS]),
-            cpu.buffer(&vec![origin; POINTS]),
-        );
-        polar::to_polar::dispatch(&cpu, POINTS as u32, &cpu_points, &cpu_polar).unwrap();
-        polar::rotate::dispatch(&cpu, POINTS as u32, &cpu_points, &cpu_turns, &cpu_rotated)
-            .unwrap();
-        let (twin_polar, twin_rotated) = (cpu_polar.read(), cpu_rotated.read());
-
-        let ulp = |x: f64| {
-            2f64.powi(((x.abs() as f32).max(f32::MIN_POSITIVE).to_bits() >> 23) as i32 - 127 - 23)
-        };
-        for i in 0..POINTS {
-            let (x, y) = (f64::from(input[i].x), f64::from(input[i].y));
-            let radius = x.hypot(y);
-            let angle = y.atan2(x);
-            // The host wraps the turn as the kernel does, in `f64`, from the same `f32` input.
-            let t = f64::from(turns[i]) / std::f64::consts::TAU + 0.5;
-            let turn = (((t - t.trunc()) - 0.5) * std::f64::consts::TAU)
-                .clamp(-std::f64::consts::PI, std::f64::consts::PI);
-            let (rx, ry) = (
-                x * turn.cos() - y * turn.sin(),
-                x * turn.sin() + y * turn.cos(),
-            );
-            // The wrap itself is a few `f32` operations on a value up to 2^3: allow 8 ULP of the turn on the angle.
-            let turn_error = 8.0 * ulp(turn).max(ulp(6.3));
-            let rotation_bound =
-                (x.abs() + y.abs()) * (2f64.powi(-11) + 4.0 * 2f64.powi(-24) + turn_error);
-            for (label, polar, rotated) in [
-                ("gpu", &gpu_polar[i], &gpu_rotated[i]),
-                ("twin", &twin_polar[i], &twin_rotated[i]),
-            ] {
-                assert!(
-                    (f64::from(polar.radius) - radius).abs() <= 10.0 * ulp(radius),
-                    "{label} radius[{i}]"
-                );
-                assert!(
-                    (f64::from(polar.angle) - angle).abs() <= 4096.0 * ulp(angle),
-                    "{label} angle[{i}]"
-                );
-                assert!(
-                    (f64::from(rotated.x) - rx).abs() <= rotation_bound,
-                    "{label} x[{i}]"
-                );
-                assert!(
-                    (f64::from(rotated.y) - ry).abs() <= rotation_bound,
-                    "{label} y[{i}]"
-                );
-            }
-        }
+        let (twin_polar, twin_rotated) = twin_results(&input, &turns);
+        check_against_host("twin", &input, &turns, &twin_polar, &twin_rotated);
     }
 }

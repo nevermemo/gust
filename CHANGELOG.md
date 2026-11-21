@@ -93,6 +93,10 @@ proof.
   (bit-equal on the host reference, the twin and the GPU), a density through the map API, and diffusion steps with
   `rem_euclid` and `mul_add` checked within a bound derived from the GPU model of SEMANTICS; its large run is a
   launch the host splits.
+- Example `field-relax` (m11.field): three scalar fields relax on one wrapping grid, each with its own spread and
+  keep factor from one `Uniform` struct, checked within a per-step bound derived from the GPU model of SEMANTICS
+  (one step and sixteen steps), plus an exact `u32` channel that conserves its sum (bit-equal on the host
+  reference, the twin and the GPU). Its grid constants are constant expressions of the side.
 - `KernelDescriptor::split` (m11.g4a, D208): every GPU `grid` kernel carries a split variant, compiled only when used,
   with one hidden launch-base uniform that its entry point adds to the invocation id. It is the ground for launches
   past the per-dimension workgroup limit (used by the host since m11.g4b). The kernel's own Slang,

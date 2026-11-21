@@ -695,6 +695,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       tests; `ALGO_GPU_TESTS` 58 to 63. Radeon 890M only; RTX 5090 pending. m11.fric1 (dispatch from a shared
       device handle) stopped at its kill rule: generated `dispatch` takes the resource's `Device` type, so it needs a
       generated-API change (a `Deref`/`Borrow` device parameter or a handle newtype); held as a design item.
+    - m11.field (`2f434c8`): the example `field-relax`: three scalar fields with their own rates from one
+      `Uniform<Params>` (eight `f32`, two pads) on a wrapping grid at sides 512 and 32, and an exact `u32` channel.
+      Per-step bound about 12u (six roundings, the `mul_add` sum charged as SEMANTICS states), checked for one
+      step from the device's own state and for sixteen steps against an `f64` trajectory; the worst observed
+      one-step error on the Radeon 890M is under a third of the bound. The `u32` channel is bit-equal on host,
+      twin and GPU and conserves its sum. Two mutations fail as intended. Wired into `check-cpu` like
+      `mc-histogram` (twin tests and the domain guard required by name); outside `GPU_SUITE_PIN`. Opus review
+      fixes: gate wiring, `twin_*` names, constant expressions (`MASK`, `CELLS`), the carry wording. Radeon 890M
+      only; RTX 5090 pending.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

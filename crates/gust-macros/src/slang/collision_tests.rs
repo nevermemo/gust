@@ -246,6 +246,7 @@ fn the_class_2_entries_are_the_names_the_emitted_text_uses() {
         "float4",
         "float4x4",
         "floor",
+        "fma",
         "int",
         "int2",
         "int4",

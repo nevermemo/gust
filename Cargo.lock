@@ -119,6 +119,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cell-bins"
+version = "0.2.0"
+dependencies = [
+ "gust-algo",
+ "gust-compute",
+ "gust-compute-wgpu",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

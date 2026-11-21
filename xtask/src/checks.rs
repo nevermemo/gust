@@ -374,6 +374,7 @@ pub(crate) const CPU_TESTS: &[&[&str]] = &[
     &["test", "--locked", "-p", "buffer-handoff"],
     &["test", "--locked", "-p", "mc-histogram"],
     &["test", "--locked", "-p", "field-relax"],
+    &["test", "--locked", "-p", "cell-bins"],
 ];
 
 /// The tests that `cargo xtask check-cpu` requires to be reported `ok` by name, per package of [`CPU_TESTS`] (same
@@ -459,6 +460,16 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "app::tests::the_inputs_stay_inside_the_derivation_domain",
             "app::tests::twin_matches_the_references_at_the_large_size",
             "app::tests::twin_matches_the_references_on_every_step",
+        ],
+    ),
+    (
+        "cell-bins",
+        &[
+            "app::tests::twin_all_elements_in_one_cell",
+            "app::tests::twin_empty_grid",
+            "app::tests::twin_hash_spread_past_a_workgroup",
+            "app::tests::twin_last_row_and_column",
+            "app::tests::twin_rebuilds_into_the_same_bins",
         ],
     ),
 ];
@@ -1154,7 +1165,7 @@ pub(crate) fn export_artifacts_with(args: &[String]) -> Result<(), String> {
     if options.hashes() {
         clear_exports(&directory)?;
     }
-    // The examples of `NO_EXPORT_EXAMPLES` (the shape bench, hash-rng, polar-transform, buffer-handoff, mc-histogram, field-relax) export nothing, so a GPU smoke of them
+    // The examples of `NO_EXPORT_EXAMPLES` (the shape bench, hash-rng, polar-transform, buffer-handoff, mc-histogram, field-relax, cell-bins) export nothing, so a GPU smoke of them
     // here would only slow the export down (`verify` still runs them).
     for example in EXAMPLES
         .iter()

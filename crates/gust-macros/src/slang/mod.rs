@@ -3034,7 +3034,8 @@ fn angle_factor(name: &str) -> Option<f32> {
 const ROUND_HELPER_TEXT: &str = "float __gust_round(float x) { float t = trunc(x); return (abs(x - t) >= 0.5) ? (t + (((asuint(x) >> 31u) != 0u) ? -1.0 : 1.0)) : t; }\n\n";
 
 /// `x.signum()`: `f32` is `1.0` for `+0.0` and positives and `-1.0` for `-0.0` and negatives (the sign bit; Slang's
-/// `sign` returns 0 for a zero), `i32` is a comparison chain (not `sign`). The macro sees no types, so the two are overloads.
+/// `sign` returns 0 for a zero), `i32` is a comparison chain (not `sign`). The macro sees no types, so the two are
+/// overloads.
 const SIGNUM_HELPER_TEXT: &str = "float __gust_signum(float x) { return ((asuint(x) >> 31u) != 0u) ? -1.0 : 1.0; }\nint __gust_signum(int x) { return (x > 0) ? 1 : ((x < 0) ? -1 : 0); }\n\n";
 
 /// `a.rem_euclid(b)`: Rust's `r = a % b; if r < 0 { r + b.abs() } else { r }`. The integer overloads sit on `__gust_rem`,

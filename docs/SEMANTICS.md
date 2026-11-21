@@ -339,8 +339,8 @@ describes the intended behaviour and is not evidence.
     observation, never a mismatch (D39: documented, not chased). This is the contract. Two gates compare the bits all
     the same: the `f32`, `Vec2` and `Vec4` identity tests of `tests/pixel.rs` and `check-web`. Their bodies leave the
     driver no freedom to differ: no multiply (so nothing to fuse) and no division, only moves and one `f32` addition (`x
-    + i as f32`, the `Vec2` and `Vec4` forms of it, and `a + b` in `web-vector-add`), which has one correctly rounded
-    result. The `u32` to `f32` conversion of the index is exact below 2^24 elements; the last squares of the tests
+    + i as f32`, the `Vec2` and `Vec4` forms of it, and `a + b` in `web-vector-add`), which is exact when the sum is representable and otherwise may land on
+    either neighbour (WGSL "correctly rounded", 15.7.4), so two shapes are guaranteed alike only for a representable sum; the tests observed equal bits. The `u32` to `f32` conversion of the index is exact below 2^24 elements; the last squares of the tests
     (4097^2 is above 2^24) rely on both stages converting alike, which they did. A body with a division or a
     contractible multiply-add is not held to the bits. The record: up to 4 ulp between the shapes on the RTX 5090
     (driver 610.88) for an unfused multiply-add chain after a division, with identical emitted Slang, WGSL and SPIR-V

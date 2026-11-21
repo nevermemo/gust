@@ -526,7 +526,8 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       writes unqualified (the 18 math names, `asint`, `asuint`, `countbits`, `GroupMemoryBarrierWithGroupSync` and 18
       `Wave*` names) are renamed, so they no longer capture the emitted call; the texture and sampler type names are not
       in the table. m11.zc measured at the validator (test in `collision_tests.rs`): a user struct named `Texture2D`
-      or `Sampler` is refused (E0736), but nothing refuses a struct, helper function, local, field or parameter
+      or `Sampler` is refused (E0736), but `Texture2D` and `Sampler` are accepted as function, local, field and
+      parameter names, and nothing refuses a struct, helper function, local, field or parameter
       named `RWTexture2D`, `WTexture2D` or `SamplerState`, and the emitted text then spells the user's struct and the
       texture declaration alike. Not measured with slangc, and left for the owner to decide.
   - Merged-tree gate on `abef534`: fmt, workspace clippy, macros tests, the diagnostics tests (slangc tier), xtask

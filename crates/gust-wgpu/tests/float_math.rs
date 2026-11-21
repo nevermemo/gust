@@ -426,7 +426,8 @@ fn within(actual: f32, exact: f64, bound: &Bound) -> (bool, f64) {
 
 /// The bound of `x.powf(y)` in ULP, from the rule the table gives: `pow(x, y)` is inherited from `exp2(y * log2(x))`.
 /// With `L = abs(y * log2(x))`: `log2` has an absolute error of `2^-21` on `[0.5, 2]` and 3 ULP elsewhere (at most
-/// `3 * 2^-23 * abs(log2(x))`); the product is "correctly rounded" in WGSL's sense, either neighbour (at most `2^-23 * L` more); so the exponent has an
+/// `3 * 2^-23 * abs(log2(x))`); the product is "correctly rounded" in WGSL's sense, either neighbour (at most
+/// `2^-23 * L` more); so the exponent has an
 /// absolute error `d` of `abs(y) * 2^-21 + 2^-23 * L` inside `[0.5, 2]` and `4 * 2^-23 * L` outside. That is a relative
 /// error `ln(2) * d` of the result, at most `2^24` times as many ULPs (a ULP is at least `2^-24` of the value), and
 /// `exp2` adds `3 + 2 * L` ULP.
@@ -751,6 +752,9 @@ fn math2_float_inputs() -> (Vec<f32>, Vec<f32>) {
         (-f32::MAX, f32::MAX),
         (f32::MAX, 1.5),
         (f32::MAX, 2f32.powi(-100)),
+        // Nonzero remainders near `f32::MAX`.
+        (f32::MAX, 0.7),
+        (-f32::MAX, 1.0e-30),
     ] {
         xs[at] = x;
         ds[at] = y;
@@ -760,6 +764,8 @@ fn math2_float_inputs() -> (Vec<f32>, Vec<f32>) {
 }
 
 #[test]
+// Observed on the Radeon 890M, not promised: the sign of a zero from `round` may be lost under WGSL (15.7.2), and
+// bit equality is what this adapter did.
 fn round_signum_and_the_angle_methods_are_bit_equal_to_rust_on_the_gpu_and_the_twin() {
     let device = device();
     let (xs, ds) = math2_float_inputs();
@@ -843,6 +849,8 @@ fn round_signum_and_the_angle_methods_are_bit_equal_to_rust_on_the_gpu_and_the_t
 }
 
 #[test]
+// Observed on the Radeon 890M, not promised: WGSL "correctly rounded" lets the final `r + abs(b)` land on either
+// neighbour, so exactness here is what this adapter did (see SEMANTICS).
 fn rem_euclid_on_f32_is_exact_on_the_gpu_and_the_twin() {
     let device = device();
     let (xs, ds) = math2_float_inputs();

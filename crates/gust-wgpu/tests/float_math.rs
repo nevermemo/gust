@@ -755,6 +755,11 @@ fn math2_float_inputs() -> (Vec<f32>, Vec<f32>) {
         // Nonzero remainders near `f32::MAX`.
         (f32::MAX, 0.7),
         (-f32::MAX, 1.0e-30),
+        // Slice m11.fm: the halving loop of `__gust_fmod` needs one halving more than the doubling count. By the CPU
+        // model of the loop: `2.0e38 / 1.3` needs exactly 127 halvings and `f32::MAX / 1.3` exactly 128 (a
+        // `break` form of the loop was miscompiled on one adapter from 128 iterations on).
+        (2.0e38, 1.3),
+        (f32::MAX, 1.3),
     ] {
         xs[at] = x;
         ds[at] = y;

@@ -3051,7 +3051,11 @@ const SIGNUM_HELPER_TEXT: &str = "float __gust_signum(float x) { return ((asuint
 /// "correctly rounded" allows either neighbour, so the portable result is within 1 ULP of Rust's (observed exact on
 /// the Radeon 890M).
 /// The loops run at most 254 and 255 times, so a zero divisor or an infinity ends with some value, not a hang.
-const REM_EUCLID_HELPER_TEXT: &str = "float __gust_fmod(float a, float b) { float x = abs(a); float y = abs(b); float r = x; if (x >= y) { float s = y; for (int i = 0; i < 254 && s <= (r - s); i++) { s = s * 2.0; } for (int j = 0; j < 255; j++) { if (r >= s) { r = r - s; } if (s == y) { break; } s = s * 0.5; } } return ((asuint(a) >> 31u) != 0u) ? -r : r; }\nfloat __gust_rem_euclid(float a, float b) { float r = __gust_fmod(a, b); return (r < 0.0) ? (r + abs(b)) : r; }\nint __gust_rem_euclid(int a, int b) { int r = __gust_rem(a, b); return (r < 0) ? (r + abs(b)) : r; }\nuint __gust_rem_euclid(uint a, uint b) { return __gust_rem(a, b); }\n\n";
+/// The halving loop is deliberately the flag form (`done`, no `break`): the same loop with `if (s == y) { break; }` was
+/// miscompiled by NVIDIA driver 610.88 (Vulkan, RTX 5090) once it needed 128 or more iterations (observed on `f32::MAX %
+/// 0.7` and five more rows of slice m11.fm; the cause is inferred, not measured): the `break` never fired and the result
+/// was wrong. Do not simplify it back.
+const REM_EUCLID_HELPER_TEXT: &str = "float __gust_fmod(float a, float b) { float x = abs(a); float y = abs(b); float r = x; if (x >= y) { float s = y; for (int i = 0; i < 254 && s <= (r - s); i++) { s = s * 2.0; } bool done = false; for (int j = 0; j < 255; j++) { if (!done) { if (r >= s) { r = r - s; } if (s == y) { done = true; } else { s = s * 0.5; } } } } return ((asuint(a) >> 31u) != 0u) ? -r : r; }\nfloat __gust_rem_euclid(float a, float b) { float r = __gust_fmod(a, b); return (r < 0.0) ? (r + abs(b)) : r; }\nint __gust_rem_euclid(int a, int b) { int r = __gust_rem(a, b); return (r < 0) ? (r + abs(b)) : r; }\nuint __gust_rem_euclid(uint a, uint b) { return __gust_rem(a, b); }\n\n";
 
 /// Which of the helpers of slice m11.math2 the module needs.
 #[derive(Default)]

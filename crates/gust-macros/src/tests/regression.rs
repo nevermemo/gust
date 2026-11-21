@@ -10296,3 +10296,38 @@ fn a_user_helper_named_like_a_bit_or_subgroup_intrinsic_is_renamed() {
         "{text}"
     );
 }
+
+/// Slice m11.za: the capture case. A user helper `WaveActiveSum` and a user helper `countbits` sit beside the
+/// subgroup operations whose lowering writes those names; the user names are renamed and the emitter's own calls stay
+/// the bare intrinsics.
+#[test]
+fn the_emitters_own_subgroup_calls_stay_bare_beside_user_helpers_of_the_same_names() {
+    let source = "mod m { \
+        fn countbits(x: u32) -> u32 { x } \
+        fn WaveActiveSum(x: u32) -> u32 { x } \
+        #[kernel(workgroup_size(64, 1, 1), requires(subgroups))] \
+        fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { \
+            let a = WaveActiveSum(id.x); \
+            let b = countbits(a); \
+            let c = subgroup_add(b); \
+            let d = subgroup_count(c > 0u32); \
+            out[id.x] = d; } }";
+    let text = translate(source).unwrap_or_else(|error| panic!("{error}"));
+    for name in ["countbits", "WaveActiveSum"] {
+        assert!(
+            text.contains(&format!("uint __gust_r_{name}(uint x)")),
+            "{name} declaration:\n{text}"
+        );
+    }
+    assert!(
+        text.contains("var a = __gust_r_WaveActiveSum(id.x);"),
+        "{text}"
+    );
+    assert!(text.contains("var b = __gust_r_countbits(a);"), "{text}");
+    // The emitter's own `WaveActiveSum(` (the lowering of `subgroup_add`) is not renamed, and neither is the
+    // `countbits(` in the body of `__gust_subgroup_count`.
+    assert_eq!(count_unprefixed(&text, "WaveActiveSum("), 1, "{text}");
+    assert!(text.contains("= WaveActiveSum(b);"), "{text}");
+    assert_eq!(count_unprefixed(&text, "countbits("), 4, "{text}");
+    assert!(text.contains("return countbits(ballot.x)"), "{text}");
+}

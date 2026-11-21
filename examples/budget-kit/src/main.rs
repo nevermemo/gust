@@ -903,7 +903,7 @@ const G4_SENTINEL: u32 = 0xDEAD_BEEF;
 fn g4(device: &DeviceHandle) -> (Vec<String>, bool) {
     let max = device.limits().max_compute_workgroups_per_dimension;
     let context = format!(
-        "device max_compute_workgroups_per_dimension {max}, limits policy {KIT_LIMITS_POLICY}"
+        "device max_compute_workgroups_per_dimension {max}, requested limits policy {KIT_LIMITS_POLICY}"
     );
     let n = G4_THREADS;
     let mut failed = false;
@@ -938,17 +938,27 @@ fn g4(device: &DeviceHandle) -> (Vec<String>, bool) {
                 "G4: probe, a linear launch of {G4_WORKGROUPS} workgroups on x ({n} invocations) ran but FAILED the host check ({reason}); {context}"
             )
         }
+        // The intended rejection and nothing else: the workgroup limit of x, the requested count and the maximum the
+        // device reports.
         Err(gust_wgpu::Error::DeviceLimit {
             limit,
             requested,
             maximum,
             ..
-        }) => format!(
-            "G4: probe, a linear launch of {G4_WORKGROUPS} workgroups on x ({n} invocations) failed with DeviceLimit: limit {limit}, requested {requested}, maximum {maximum}; {context}"
-        ),
-        Err(other) => format!(
-            "G4: probe, a linear launch of {G4_WORKGROUPS} workgroups on x ({n} invocations) failed with another error: {other:?}; {context}"
-        ),
+        }) if limit == "max_compute_workgroups_per_dimension"
+            && requested == u64::from(G4_WORKGROUPS)
+            && maximum == u64::from(max) =>
+        {
+            format!(
+                "G4: probe, a linear launch of {G4_WORKGROUPS} workgroups on x ({n} invocations) was refused with DeviceLimit: limit {limit}, requested {requested}, maximum {maximum}; {context}"
+            )
+        }
+        Err(other) => {
+            failed = true;
+            format!(
+                "G4: probe, a linear launch of {G4_WORKGROUPS} workgroups on x ({n} invocations) FAILED with an error other than the intended DeviceLimit: {other:?}; {context}"
+            )
+        }
     };
     let rows = G4_REMEDY_N.div_ceil(G4_WIDTH);
     let slots = rows * G4_WIDTH;

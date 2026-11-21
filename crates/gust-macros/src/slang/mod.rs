@@ -3029,11 +3029,13 @@ fn angle_factor(name: &str) -> Option<f32> {
 
 /// `x.round()`: half-way cases away from zero, which WGSL and Slang `round` (half to even) does not do. `x - trunc(x)`
 /// is exact, so the test `>= 0.5` is exact (`0.49999997` stays down), and `t +- 1` is exact below `2^23`, where the
-/// test can hold. The sign comes from the sign bit, so `-0.5` rounds to `-1.0`. Overloads are not needed (`f32` only).
+/// test can hold. The sign comes from the sign bit, so `-0.5` rounds to `-1.0`. Every result is exact except the sign
+/// of a zero result: it comes from `trunc`, and WGSL may not keep zero signs. Overloads are not needed (`f32` only).
 const ROUND_HELPER_TEXT: &str = "float __gust_round(float x) { float t = trunc(x); return (abs(x - t) >= 0.5) ? (t + (((asuint(x) >> 31u) != 0u) ? -1.0 : 1.0)) : t; }\n\n";
 
 /// `x.signum()`: `f32` is `1.0` for `+0.0` and positives and `-1.0` for `-0.0` and negatives (the sign bit; Slang's
-/// `sign` returns 0 for a zero), `i32` is `sign`. The macro sees no types, so the two are overloads.
+/// `sign` returns 0 for a zero), `i32` is a comparison chain (not `sign`). The macro sees no types, so the two are
+/// overloads.
 const SIGNUM_HELPER_TEXT: &str = "float __gust_signum(float x) { return ((asuint(x) >> 31u) != 0u) ? -1.0 : 1.0; }\nint __gust_signum(int x) { return (x > 0) ? 1 : ((x < 0) ? -1 : 0); }\n\n";
 
 /// `a.rem_euclid(b)`: Rust's `r = a % b; if r < 0 { r + b.abs() } else { r }`. The integer overloads sit on `__gust_rem`,
@@ -3041,9 +3043,15 @@ const SIGNUM_HELPER_TEXT: &str = "float __gust_signum(float x) { return ((asuint
 /// float overload cannot use the float `%` of WGSL (inherited from `x - y * trunc(x / y)`): on the Radeon 890M it
 /// returned a wrong whole divisor at exact multiples (slice m11.math2 measured 79 of 5000 rows, `7.0 % 7.0` among
 /// them). `__gust_fmod` is `fmod` by binary long division instead: `x - s` for `s = y * 2^k <= x` is exact (the
-/// result is below `s`), doubling and halving are exact, so the remainder is exact for normal operands, as Rust's.
+/// result is below `s`), doubling and halving are exact, so `__gust_fmod` is exact for normal operands, as Rust's.
+/// The doubling test is `s <= (r - s)`, not `(s * 2.0) <= r`, which overflows for `abs(a)` near `f32::MAX` (WGSL: an
+/// overflowing intermediate is indeterminate). Equivalent and overflow-free: if `s <= r/2` the real `r - s >= s`, and
+/// rounding to a neighbour cannot go below the representable `s`; if `r/2 < s <= r`, `r - s` is exact (Sterbenz) and
+/// below `s`; if `s > r` it is negative. The final `r + abs(b)` of `__gust_rem_euclid` is a rounded addition: WGSL's
+/// "correctly rounded" allows either neighbour, so the portable result is within 1 ULP of Rust's (observed exact on
+/// the Radeon 890M).
 /// The loops run at most 254 and 255 times, so a zero divisor or an infinity ends with some value, not a hang.
-const REM_EUCLID_HELPER_TEXT: &str = "float __gust_fmod(float a, float b) { float x = abs(a); float y = abs(b); float r = x; if (x >= y) { float s = y; for (int i = 0; i < 254 && (s * 2.0) <= r; i++) { s = s * 2.0; } for (int j = 0; j < 255; j++) { if (r >= s) { r = r - s; } if (s == y) { break; } s = s * 0.5; } } return ((asuint(a) >> 31u) != 0u) ? -r : r; }\nfloat __gust_rem_euclid(float a, float b) { float r = __gust_fmod(a, b); return (r < 0.0) ? (r + abs(b)) : r; }\nint __gust_rem_euclid(int a, int b) { int r = __gust_rem(a, b); return (r < 0) ? (r + abs(b)) : r; }\nuint __gust_rem_euclid(uint a, uint b) { return __gust_rem(a, b); }\n\n";
+const REM_EUCLID_HELPER_TEXT: &str = "float __gust_fmod(float a, float b) { float x = abs(a); float y = abs(b); float r = x; if (x >= y) { float s = y; for (int i = 0; i < 254 && s <= (r - s); i++) { s = s * 2.0; } for (int j = 0; j < 255; j++) { if (r >= s) { r = r - s; } if (s == y) { break; } s = s * 0.5; } } return ((asuint(a) >> 31u) != 0u) ? -r : r; }\nfloat __gust_rem_euclid(float a, float b) { float r = __gust_fmod(a, b); return (r < 0.0) ? (r + abs(b)) : r; }\nint __gust_rem_euclid(int a, int b) { int r = __gust_rem(a, b); return (r < 0) ? (r + abs(b)) : r; }\nuint __gust_rem_euclid(uint a, uint b) { return __gust_rem(a, b); }\n\n";
 
 /// Which of the helpers of slice m11.math2 the module needs.
 #[derive(Default)]

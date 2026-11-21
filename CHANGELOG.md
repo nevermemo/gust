@@ -62,6 +62,8 @@ proof.
   A user helper, local or parameter named `asin` or `acos` is renamed in the emitted Slang (`__gust_r_asin`), so a
   program that uses one of those names gets new emitted text and a new artifact content key. `hypot`, `mul_add` and
   integer `pow` stay refused.
+- `gust_algo::dispatch_batch_in_scope` (m11.scope; in the unpublished `gust-algo`): dispatches a caller's own batch
+  and counts it in the enclosing `timed` scope.
 - `#[gpu(crate = <path>)]` and the `crate(<path>);` clause of `par_for!` (audit S6, D48): for a crate that reaches
   `gust` through another crate's `pub use gust;`, the macro rewrites the `::gust::` paths of its output to the given
   path (`::inner::gust`). `::gust_wgpu` stays literal, so the function form and `par_for!` still need a direct

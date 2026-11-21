@@ -524,8 +524,12 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       own batch in the enclosing `timed` scope; `ALGO_GPU_TESTS` is 55.
     - m11.za (`ab46b4e`, fixes `8917d08` and `275a616`, merge `abef534`): user names equal to an intrinsic the emitter
       writes unqualified (the 18 math names, `asint`, `asuint`, `countbits`, `GroupMemoryBarrierWithGroupSync` and 18
-      `Wave*` names) are renamed, so they no longer capture the emitted call; the texture and sampler type names stay
-      out of the table because a user struct of such a name is already refused (E0736, measured for `Texture2D`).
+      `Wave*` names) are renamed, so they no longer capture the emitted call; the texture and sampler type names are not
+      in the table. m11.zc measured at the validator (test in `collision_tests.rs`): a user struct named `Texture2D`
+      or `Sampler` is refused (E0736), but `Texture2D` and `Sampler` are accepted as function, local, field and
+      parameter names, and nothing refuses a struct, helper function, local, field or parameter
+      named `RWTexture2D`, `WTexture2D` or `SamplerState`, and the emitted text then spells the user's struct and the
+      texture declaration alike. Not measured with slangc, and left for the owner to decide.
   - Merged-tree gate on `abef534`: fmt, workspace clippy, macros tests, the diagnostics tests (slangc tier), xtask
     tests, `docs-check`, `check-ui`, `check-arch`, `lint`, on the GPU `float_math`, `polar-transform`, `hash-rng`,
     `gust-algo` and `budget-kit --small`, and the Unit suite all passed.
@@ -533,12 +537,18 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
     - m11.kit2 (`b62fb0e`, fixes `5aea4a8`, merge `e1937fe`): budget-kit W4 times its own kernels and the
       `gust-algo` scan in one `timed` scope through `dispatch_batch_in_scope`. A probe row shows that a linear
       launch of 65536 workgroups fails with `DeviceLimit` (maximum 65535 per dimension, limits policy Default) and
-      that the same elements as a 4096 by 4096 `Extent` with a bounds check are exact, sentinels past the end kept.
+      that the remedy, a 4096-wide `Extent` over `2^24 - 1000` elements (not a multiple of the width) with a bounds
+      check, is exact, sentinels past the end kept.
     - m11.math2 (`2dae994`, fixes `ab6b5ae`, merge `316be62`): `round` (half away from zero), `signum` on `f32`
       and `i32`, `to_radians`, `to_degrees`, `asin`, `acos`, and `rem_euclid` on `f32`, `i32` and `u32`. `f32`
       `rem_euclid` uses an exact long-division helper because plain float `%` was off at exact multiples on the
       Radeon 890M (79 of 5000 rows, which WGSL permits). `asin` and `acos` are held to the WGSL bound (the worse
       of an absolute error and the inherited `atan2` bound). `GPU_SUITE_PIN` is 520 by count.
+    - m11.zc (end-sanity fixes): the `__gust_fmod` doubling test is `s <= (r - s)` (no overflow near `f32::MAX`) with
+      four new `f32::MAX` rows; the float table separates WGSL's "correctly rounded" (either neighbour) from what the
+      890M was observed to do; the `asin`/`acos` ULP measure uses the larger magnitude and `asin` at zero is judged
+      by the absolute bound; the `to_degrees` overflow row is not judged; budget-kit's G4 probe accepts only the
+      intended `DeviceLimit` or a verified success; README example lists, CHANGELOG line, comment fixes.
   - Merged-tree gate on `316be62`: fmt, workspace clippy, macros tests, the diagnostics tests, xtask tests,
     `docs-check`, `check-ui`, `check-arch`, `lint`, on the GPU `float_math`, `polar-transform`, `hash-rng`,
     `gust-algo` and `budget-kit --small` (with the probe and remedy rows), and the Unit suite all passed.

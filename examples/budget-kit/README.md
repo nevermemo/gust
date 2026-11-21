@@ -39,7 +39,7 @@ After the table the program runs a probe of the linear dispatch limit (gap G4), 
 kernel launch of 65 536 workgroups on x, one above the portable limit of 65 535. It prints one line starting `G4:` with
 the outcome (a `DeviceLimit` error with the requested and maximum counts, which is gust-wgpu's own host-side check of the
 launch against the device limits, made before anything is submitted; or success, with the results compared exactly with
-the host), the device's `max_compute_workgroups_per_dimension` and the limits policy the kit's device uses. A
+the host), the device's `max_compute_workgroups_per_dimension` and the requested limits policy of the kit's device (a constant, not read back). Any error other than that `DeviceLimit` (the workgroup limit of x, 65 536 requested, the maximum the device reports) counts as FAILED. A
 `G4 remedy:` line then shows a two-dimensional launch (`Extent::new(x, y, 1)`, `i = id.y * width + id.x`, and an
 `if i >= n { return; }` guard in the kernel) over a count that is not a multiple of the row width, so the guard has
 work to do: the values are checked exactly against the host and the buffer slots past the count must still hold their

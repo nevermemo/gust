@@ -136,11 +136,21 @@ pub const COLLISIONS: &[Collision] = &[
     // Struct position (S6.3b: a struct of that name breaks every `RWStructuredBuffer<T>` global after it; the position
     // templates declare one, so the bare name also fails there, but the record is the capture template's).
     emitted("RWStructuredBuffer"),
+    // Slice m11.tx: the texture and sampler type names `texture.rs` declares unqualified, measured 2026-11-21 on
+    // slangc 2026.22 (WGSL and SPIR-V agreeing). A user struct or global of the name breaks the declaration GUST writes
+    // after it: struct position E39999 "expected a generic" for `RWTexture2D`, `Texture2D` and `WTexture2D` and E30019
+    // for `SamplerState`; global position E39999 for the three texture names and E30060 "expected a type" for
+    // `SamplerState`. A local, a helper, a helper parameter and a field of these names compile, and a `SamplerState`
+    // struct beside a sampler the kernel never uses compiles to the same WGSL (no silent capture).
+    emitted("RWTexture2D"),
+    emitted("SamplerState"),
     // Struct position (S6.3b).
     emitted("StructuredBuffer"),
+    emitted("Texture2D"),
     hard("This", &[Field]),
     // The generic type behind a tuple `(A, B)` (slice m9.t).
     emitted("Tuple"),
+    emitted("WTexture2D"),
     emitted("WaveActiveAllTrue"),
     emitted("WaveActiveAnyTrue"),
     emitted("WaveActiveBallot"),
@@ -444,6 +454,27 @@ pub fn capture_source(entry: &str, spelled: &str) -> Option<String> {
             "ob[gid.x] = uint(rb[gid.x]);",
         ),
         // A user struct named `Tuple` hides Slang's generic one; a user local named `makeTuple` hides its constructor.
+        // Slice m11.tx: the texture and sampler declarations of `texture.rs`, in the order GUST writes them (the user
+        // struct first, the resource globals after it), each with one use as the emitted method calls spell it.
+        "RWTexture2D" => in_struct(
+            "[[vk::binding(5, 0)]] [format(\"r32f\")] RWTexture2D<float> img;\n",
+            "img.Store(uint2(gid.x, 0u), 1.0); ob[gid.x] = uint(img[uint2(gid.x, 0u)]);",
+        ),
+        "SamplerState" => in_struct(
+            concat!(
+                "[[vk::binding(5, 0)]] Texture2D<float4> tex;\n",
+                "[[vk::binding(6, 0)]] SamplerState smp;\n"
+            ),
+            "ob[gid.x] = uint(tex.SampleLevel(smp, float2(0.5, 0.5), 0.0).x);",
+        ),
+        "Texture2D" => in_struct(
+            "[[vk::binding(5, 0)]] Texture2D<float4> tex;\n",
+            "ob[gid.x] = uint(tex[uint2(gid.x, 0u)].x);",
+        ),
+        "WTexture2D" => in_struct(
+            "[[vk::binding(5, 0)]] [format(\"rgba32f\")] WTexture2D<float4> wt;\n",
+            "wt.Store(uint2(gid.x, 0u), float4(1.0, 2.0, 3.0, 4.0)); ob[gid.x] = 1u;",
+        ),
         "Tuple" => in_struct(
             "",
             "Tuple<uint, float> t = makeTuple(1u, 2.0); ob[gid.x] = t._0;",

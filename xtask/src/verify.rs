@@ -1068,9 +1068,13 @@ pub(crate) struct GpuSuitePin {
 ///
 /// Slice m11.fetch: 520 over 50 became 524 over 51 (522 in the first round, four tests after the fix round). The new test file `tests/fetch.rs` holds four tests (the scatter by
 /// the old value of `atomic_add` in 1-wide and 64-wide workgroups, the signed ticket cell, the wrapping `u32` ticket cell) and adds one `test result:` line. Updated by count, not from
-/// a full Gpu suite run.
+/// a full Gpu suite run. A full Gpu suite on the m11.zf tree then counted 524 over 51 on the Radeon 890M and the RTX 5090.
+///
+/// Slice m11.tx: 524 over 51 became 525 over 51. One new test in `tests/textures.rs` (user structs named like the
+/// Slang texture and sampler types, and a kernel parameter named `Texture2D`). Updated by count, not from a full Gpu
+/// suite run.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 524,
+    passed: 525,
     result_lines: 51,
 };
 

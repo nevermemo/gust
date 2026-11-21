@@ -577,6 +577,12 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       changed) and the `fetch` fixture's golden; `naga_layout` holds 31 goldens and 120 entries.
   - Full Gpu suite on the m11.zf tree (equal to `e0297f1`): Radeon 890M 812 s and RTX 5090 538 s, 524 passed over
     51 result lines on each, so `GPU_SUITE_PIN` held as a measured count, not only by count.
+    - m11.tx (`eeba3bd`, fixes `5710ec4`; D204): measured with slangc 2026.22 (WGSL and SPIR-V),
+      a user struct or global named `Texture2D`, `RWTexture2D` or `WTexture2D` breaks the emitted declaration and
+      `SamplerState` too; renamed, all compile. The four names join the rename table, which replaces the inferred
+      clash recorded for m11.zc. Tests: a Slangc-tier diagnostics test, exact-line collision tests, and a GPU test
+      (Radeon 890M) whose kernel has a parameter named `Texture2D`. Unit suite on the lane green; `GPU_SUITE_PIN`
+      525 over 51 by count.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

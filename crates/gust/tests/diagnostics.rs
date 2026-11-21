@@ -1767,6 +1767,76 @@ fn true_and_false_captured_by_a_local_silently_change_the_generated_code() {
     }
 }
 
+/// Slice m11.tx: the four texture and sampler type names (`Texture2D`, `RWTexture2D`, `WTexture2D`, `SamplerState`) are
+/// in the table as class-2 entries; the struct position is judged by the class-2 test above. This test measures the two
+/// other things the table needs to say, on slangc 2026.22 (WGSL and SPIR-V agreeing):
+///
+/// - the global position (a kernel parameter of the name, next to the declaration GUST writes) fails bare, with
+///   E39999 "expected a generic" for the three texture names and E30060 "expected a type" for `SamplerState`;
+/// - a `SamplerState` struct beside a sampler that the kernel never uses compiles bare and renamed to the same WGSL:
+///   the unused sampler is dropped either way, so that case is not a silent capture (this is the text of the program;
+///   the reflection of the unused global was not compared).
+#[test]
+fn texture_and_sampler_type_names_fail_bare_as_globals_and_never_capture_an_unused_sampler() {
+    const KERNEL: &str = "[shader(\"compute\")]\n[numthreads(64, 1, 1)]\nvoid gpu_table_run(uint3 gid : SV_DispatchThreadID)\n";
+    let declarations = [
+        (
+            "RWTexture2D",
+            "[[vk::binding(5, 0)]] [format(\"r32f\")] RWTexture2D<float> img;\n",
+            "E39999",
+        ),
+        (
+            "SamplerState",
+            "[[vk::binding(5, 0)]] Texture2D<float4> tex;\n[[vk::binding(6, 0)]] SamplerState smp;\n",
+            "E30060",
+        ),
+        (
+            "Texture2D",
+            "[[vk::binding(5, 0)]] Texture2D<float4> tex;\n",
+            "E39999",
+        ),
+        (
+            "WTexture2D",
+            "[[vk::binding(5, 0)]] [format(\"rgba32f\")] WTexture2D<float4> wt;\n",
+            "E39999",
+        ),
+    ];
+    for (name, declaration, code) in declarations {
+        for spelled in [name.to_owned(), collisions::emit_name(name).into_owned()] {
+            let source = format!(
+                "[[vk::binding(1, 0)]] RWStructuredBuffer<uint> {spelled};\n{declaration}{KERNEL}{{ {spelled}[gid.x] = 1u; }}\n"
+            );
+            for target in BOTH_TARGETS {
+                let result = slangc_takes(&source, target);
+                if spelled == name {
+                    let message = result.expect_err(&format!("bare {name} global on {target:?}"));
+                    assert!(message.contains(code), "{name} on {target:?}: {message}");
+                } else {
+                    result.unwrap_or_else(|message| {
+                        panic!("renamed {name} global on {target:?}: {message}")
+                    });
+                }
+            }
+        }
+    }
+    let wgsl = |spelled: &str, target: Target| -> Vec<u8> {
+        let source = format!(
+            "struct {spelled} {{ float v; }};\n[[vk::binding(6, 0)]] SamplerState smp;\n[[vk::binding(1, 0)]] RWStructuredBuffer<uint> ob;\n{KERNEL}{{ ob[gid.x] = 1u; }}\n"
+        );
+        slang::compile_source(&source, "gpu_table_run", target).unwrap_or_else(|error| {
+            panic!("`{spelled}` beside an unused sampler on {target:?}: {error:?}")
+        })
+    };
+    assert_eq!(
+        wgsl("SamplerState", Target::Wgsl),
+        wgsl(&collisions::emit_name("SamplerState"), Target::Wgsl),
+        "the unused sampler changes the program"
+    );
+    // SPIR-V is only required to compile with either spelling.
+    wgsl("SamplerState", Target::Spirv);
+    wgsl(&collisions::emit_name("SamplerState"), Target::Spirv);
+}
+
 /// The statement keywords and `inout` that GUST writes into every program are not looked up in scope: a Rust name
 /// of that spelling declared as a local, a helper, a struct or a global leaves the generated code byte for byte what
 /// it is without it. (`var`, `true`, `false` and the types are different, and are in the table.) A struct or global

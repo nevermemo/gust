@@ -122,7 +122,8 @@ graph runs after the per-item checks, the trait desugaring before validation, th
 - Name collisions (`slang/collisions.rs`, D81). The table of reserved Slang names, now with `Tuple`, `makeTuple`,
   `this`, `interface`, `extension`, the 18 scalar math intrinsics the float math methods lower to (`sqrt`, `sin`,
   `log`, `pow`, `min` and the rest), the other intrinsics the emitter writes unqualified (`asint`, `asuint`,
-  `countbits`, the barrier and the `Wave*` names; slice m11.za) and the 46 interface names of Slang's standard
+  `countbits`, the barrier and the `Wave*` names; slice m11.za), the texture and sampler type names `Texture2D`,
+  `RWTexture2D`, `WTexture2D` and `SamplerState` (slice m11.tx) and the 46 interface names of Slang's standard
   module, renames a colliding user name to `__gust_r_<name>`.
 
 The SPIR-V route has a macro half and a runtime half (D172, D174). `slang/guards.rs` makes the emitter write the guards

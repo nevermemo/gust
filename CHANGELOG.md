@@ -76,9 +76,15 @@ proof.
   `i32`, `f32` and `bool` is shared by every kernel, helper, method and closure of the module and by the host; it
   lowers to a `static const` line and nothing is evaluated. Other forms, and a const whose name is also a type,
   method, field or prelude name of the module or is used as a binding pattern, are the new `GUST-E0127`.
+- Launches past the per-dimension workgroup limit run (m11.g4b, D208): a `grid` launch whose workgroup count on an
+  axis exceeds `max_compute_workgroups_per_dimension` is split by the host into pieces (at most
+  `MAX_SPLIT_DISPATCHES`, 4096) in one compute pass, and every invocation runs once with the ids of an unsplit
+  launch, so `id` stays the global index and kernels need no edit. Graphs, the deprecated `dispatch_f32`/`_u32`,
+  pixel kernels, hand-built descriptors without a macro-made variant and builds without run-time compilation
+  (precompiled-only, the browser) keep `DeviceLimit`; the 2^32 invocation cap is unchanged.
 - `KernelDescriptor::split` (m11.g4a, D208): every GPU `grid` kernel carries a split variant, compiled only when used,
   with one hidden launch-base uniform that its entry point adds to the invocation id. It is the ground for launches
-  past the per-dimension workgroup limit; the host does not split launches yet (m11.g4b). The kernel's own Slang,
+  past the per-dimension workgroup limit (used by the host since m11.g4b). The kernel's own Slang,
   bindings, content key and artifacts do not change.
 - `mul_add`, `hypot` and integer `pow` in compute kernels (m11.math3, D205): `a.mul_add(b, c)` lowers to `fma` (a
   driver may fuse it or not; judged by the bound of the unfused evaluation, D39), `x.hypot(y)` to a scaled helper

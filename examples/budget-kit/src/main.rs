@@ -28,7 +28,8 @@
 //! W4 puts its own clear and count batch and the `gust-algo` scan in one `timed` scope (the batch goes through
 //! `dispatch_batch_in_scope`), so one scope's GPU time covers both. After the table a probe (not a workload) launches a
 //! linear kernel with 65 536 workgroups on x and prints one `G4:` line with what happened (a refusal is gust-wgpu's own
-//! host-side check against the device limits, made before anything is submitted; a success is compared with the host),
+//! host-side check against the device limits, made before anything is submitted; since slice m11.g4b the host splits the
+//! launch and the success is compared with the host),
 //! then shows the remedy: a two-dimensional launch of a count that is not a multiple of the row width, with a tail
 //! guard, whose values and untouched sentinel slots are checked exactly against the host.
 
@@ -898,8 +899,9 @@ const G4_REMEDY_N: u32 = G4_THREADS - 1000;
 const G4_SENTINEL: u32 = 0xDEAD_BEEF;
 
 /// The probe of gap G4 (a linear launch above the workgroup limit on x) and its remedy. It is not a workload: it
-/// reports what happens on this device. The refusal, where there is one, is gust-wgpu's own host-side check of the
-/// launch against `limits()`, made before anything is submitted. Returns the lines to print and whether a check failed.
+/// reports what happens on this device. Since slice m11.g4b gust-wgpu splits such a launch into pieces and the probe
+/// succeeds; a refusal, where there is one, is its own host-side check of the launch against `limits()`, made before
+/// anything is submitted. Returns the lines to print and whether a check failed.
 fn g4(device: &DeviceHandle) -> (Vec<String>, bool) {
     let max = device.limits().max_compute_workgroups_per_dimension;
     let context = format!(
@@ -1037,6 +1039,32 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
+/// The total bytes of Slang text of this kit's kernels and of their split variants (slice m11.g4b): what the variants
+/// add to the binary. A measurement, with no target.
+fn variant_text_line() -> String {
+    let kernels = [
+        &kit::w1_copy::DESCRIPTOR,
+        &kit::w2_diffuse::DESCRIPTOR,
+        &kit::w3_step::DESCRIPTOR,
+        &kit::w4_clear::DESCRIPTOR,
+        &kit::w4_count::DESCRIPTOR,
+        &kit::g4_linear::DESCRIPTOR,
+        &kit::g4_grid::DESCRIPTOR,
+        &kit::w6_plus_one::DESCRIPTOR,
+    ];
+    let base: usize = kernels.iter().map(|kernel| kernel.slang_source.len()).sum();
+    let split: usize = kernels
+        .iter()
+        .filter_map(|kernel| kernel.split)
+        .map(|variant| variant.slang_source.len())
+        .sum();
+    format!(
+        "Variant text: {} kernels, {base} bytes of base Slang text and {split} bytes of split-variant Slang text ({:.2}x)",
+        kernels.len(),
+        split as f64 / base as f64
+    )
+}
+
 fn main() {
     let args = match parse_args() {
         Ok(args) => args,
@@ -1132,6 +1160,10 @@ fn main() {
         println!("{line}");
         let _ = writeln!(text, "{line}");
     }
+    // The cost of the split variants (m11.g4b): the Slang text every kernel of this kit carries beside its own.
+    let line = variant_text_line();
+    println!("{line}");
+    let _ = writeln!(text, "{line}");
     let _ = writeln!(text);
     let _ = writeln!(text, "{failed} row(s) FAILED");
     println!("\n{failed} row(s) FAILED");

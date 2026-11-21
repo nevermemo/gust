@@ -1087,9 +1087,12 @@ pub(crate) struct GpuSuitePin {
 ///
 /// Slice m11.g4a: 532 over 53 became 539 over 54. The new test file `tests/split.rs` holds seven tests (launches
 /// split by hand through the split variant of a kernel) and adds one `test result:` line. Updated by count, not
-/// from a full Gpu suite run.
+/// from a full Gpu suite run. A full Gpu suite on the merged tree then counted 539 over 54 on both adapters.
+///
+/// Slice m11.g4b: 539 over 54 became 556 over 54. Nine more tests in `tests/split.rs` (the host splits) and eight
+/// unit tests in `gust_wgpu` (the piece planner and the variant check), on existing `test result:` lines.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 539,
+    passed: 556,
     result_lines: 54,
 };
 

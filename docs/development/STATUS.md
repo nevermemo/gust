@@ -606,6 +606,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       review: merge; the `with_split` doc, a pixel descriptor that inherits a grid split (artifact.rs), a z-base GPU
       test and the binary-size cost go to m11.g4b. `GPU_SUITE_PIN` 539 over 54, confirmed by full Gpu suites on the merged
       tree (Radeon 890M 585 s, RTX 5090 512 s), which also confirms m11.ld and m11.math3.
+    - m11.g4b (`57c8867`, fixes `cb0b28f`; D208): the host splits a `grid` launch past the per-dimension limit
+      (`split_pieces`, `split_variant_matches`, `MAX_SPLIT_DISPATCHES` 4096, bases in one uniform buffer at the
+      device's offset alignment). Tests: planner unit tests (near 2^32, 4096 and 4097 pieces, a 21x18x19 extent),
+      the automatic split equal to the hand split on x, y, z and all three, an unguarded invocation counter (an
+      over-dispatch mutation failed it), batches, typed `submit`, refusals with a cold cache, and real sizes
+      (5,000,000 at workgroup 64 and 2^24 + 1000 at 256, exact) on the Radeon 890M and the RTX 5090. budget-kit's G4
+      probe now succeeds and matches the host; its variant-text row reads 33,193 bytes of split text beside 31,121
+      of base text over 8 kernels. Two Opus reviews. `GPU_SUITE_PIN` 556 over 54, confirmed by full Gpu suites on the
+      merged tree (Radeon 890M 563 s, RTX 5090 522 s).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

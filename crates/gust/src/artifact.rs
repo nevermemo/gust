@@ -409,6 +409,7 @@ mod tests {
         verify_artifact(&grid, &ARTIFACT).expect("the control verifies");
         let pixel = KernelDescriptor {
             shape: crate::Shape::Pixel,
+            split: None,
             ..grid
         };
         match verify_artifact(&pixel, &ARTIFACT) {

@@ -3,8 +3,9 @@
 //! Every `grid` kernel the `#[gpu]` macro builds for the GPU also carries a second descriptor,
 //! `K::DESCRIPTOR.split`: the same Slang with one hidden uniform at the next free binding, whose `x`, `y` and `z` are
 //! added to the dispatch-thread id before anything reads it. This slice proves that variant by running it on a GPU
-//! with a split the TEST does by hand: one `BufferDispatch` per piece, each with its own base uniform, in one batch. The
-//! host does not split yet (slice m11.g4b). Each result is compared with an unsplit launch of the kernel's own
+//! with a split the TEST does by hand: one `BufferDispatch` per piece, each with its own base uniform, in one batch.
+//! Slice m11.g4b adds the host's own split (the tests from `the_host_split_` on): a launch past a workgroup limit is cut
+//! by the host and must equal the hand split. Each result is compared with an unsplit launch of the kernel's own
 //! descriptor on a device with the normal limits, with an independent host reference, and with the CPU twin (a second
 //! assertion, never in place of the GPU's).
 //!
@@ -74,6 +75,85 @@ mod split_kernels {
         }
     }
 
+    pub struct Size3 {
+        pub w: u32,
+        pub h: u32,
+        pub d: u32,
+        pub pad0: u32,
+    }
+
+    /// Three dimensions, workgroup 4 x 4 x 4: the z axis of a launch has never run on a GPU before slice m11.g4b.
+    #[kernel(workgroup_size(4, 4, 4))]
+    pub fn cube(
+        id: SV_DispatchThreadID,
+        group: GroupId,
+        local: LocalId,
+        p: Uniform<Size3>,
+        mut hits: RWStructuredBuffer<u32>,
+        mut groups: RWStructuredBuffer<u32>,
+        mut locals: RWStructuredBuffer<u32>,
+    ) {
+        if id.x < p.w && id.y < p.h && id.z < p.d {
+            let i = (id.z * p.h + id.y) * p.w + id.x;
+            atomic_add(&mut hits[i], 1u32);
+            groups[i] = group.z * 10000u32 + group.y * 100u32 + group.x;
+            locals[i] = local.z * 16u32 + local.y * 4u32 + local.x;
+        }
+    }
+
+    /// Unguarded on purpose: `p` holds the rounded extent, every invocation bumps `total[0]` and its own cell.
+    #[kernel(workgroup_size(4, 4, 4))]
+    pub fn tally(
+        id: SV_DispatchThreadID,
+        p: Uniform<Size3>,
+        mut hits: RWStructuredBuffer<u32>,
+        mut total: RWStructuredBuffer<u32>,
+    ) {
+        atomic_add(&mut total[0], 1u32);
+        let i = (id.z * p.h + id.y) * p.w + id.x;
+        atomic_add(&mut hits[i], 1u32);
+    }
+
+    /// `out[i] = i + 1`: the first call of a chain.
+    #[kernel(workgroup_size(8, 1, 1))]
+    pub fn stamp(id: SV_DispatchThreadID, p: Uniform<Count>, mut out: RWStructuredBuffer<u32>) {
+        let i = id.x;
+        if i < p.n {
+            out[i] = i + 1u32;
+        }
+    }
+
+    /// `out[i] = src[i] * 2`: the second call of a chain, which reads what `stamp` wrote.
+    #[kernel(workgroup_size(8, 1, 1))]
+    pub fn double(
+        id: SV_DispatchThreadID,
+        p: Uniform<Count>,
+        src: StructuredBuffer<u32>,
+        mut out: RWStructuredBuffer<u32>,
+    ) {
+        let i = id.x;
+        if i < p.n {
+            out[i] = src[i] * 2u32;
+        }
+    }
+
+    /// Workgroup 64: 5,000,000 elements are 78,125 workgroups, past the portable limit of 65,535.
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn narrow(
+        id: SV_DispatchThreadID,
+        group: GroupId,
+        local: LocalId,
+        p: Uniform<Count>,
+        mut hits: RWStructuredBuffer<u32>,
+        mut tags: RWStructuredBuffer<u32>,
+    ) {
+        let i = id.x;
+        if i < p.n {
+            atomic_add(&mut hits[i], 1u32);
+            tags[i] = group.x * 64u32 + local.x;
+        }
+    }
+
     /// The real workgroup size of the budget kit: 256. `tags[i]` is `group * 256 + local`, which is `i` itself.
     #[kernel(workgroup_size(256, 1, 1))]
     pub fn wide(
@@ -92,7 +172,7 @@ mod split_kernels {
     }
 }
 
-use split_kernels::{Count, Size2};
+use split_kernels::{Count, Size2, Size3};
 
 /// What a kernel wrote: the three outputs, element by element.
 #[derive(Debug, PartialEq, Eq)]
@@ -415,32 +495,8 @@ fn a_hand_split_launch_past_the_limit_runs_every_element_once_with_its_own_ids()
     // An unsplit launch of the kernel's own descriptor on a device with the normal limits, and the CPU twin.
     assert_eq!(line_unsplit(&device(), n, len), expected, "unsplit");
     assert_eq!(line_twin(n, len), expected, "the CPU twin");
-    // On the lowered device the plain launch is refused today, which is why the test had to split by hand.
-    let count = lowered
-        .create_uniform(
-            "count",
-            &Count {
-                n,
-                pad0: 0,
-                pad1: 0,
-                pad2: 0,
-            },
-        )
-        .unwrap();
-    let (hits, groups, locals) = fresh(&lowered, n as usize, len);
-    let refused = split_kernels::line::dispatch_extent(
-        &lowered,
-        Extent::linear(n),
-        &count,
-        Independent(&hits),
-        Independent(&groups),
-        Independent(&locals),
-    )
-    .expect_err("13 workgroups are past a limit of 4");
-    assert!(
-        format!("{refused:?}").contains("DeviceLimit"),
-        "{refused:?}"
-    );
+    // Since slice m11.g4b the plain launch on the lowered device is cut by the host and gives the same answer.
+    assert_eq!(line_unsplit(&lowered, n, len), expected, "the host's split");
 }
 
 /// (b) Base 0, one piece: the variant equals the kernel itself.
@@ -721,4 +777,469 @@ fn only_the_variant_that_runs_is_compiled() {
 fn a_descriptor_built_by_hand_has_no_variant() {
     let by_hand = KernelDescriptor::new("m", "k", "gpu_m_k", [8, 1, 1], &[], "// slang");
     assert!(by_hand.split.is_none());
+}
+
+// ---- Slice m11.g4b: the host splits. ----
+
+/// The same expected outputs for a `w x h x d` launch of `cube`: every cell counted once, the group id packed as
+/// `gz * 10000 + gy * 100 + gx` and the local id as `lz * 16 + ly * 4 + lx`.
+fn cube_expected(w: u32, h: u32, d: u32) -> Outputs {
+    let len = (w * h * d) as usize;
+    let mut expected = Outputs {
+        hits: vec![1; len],
+        groups: vec![UNWRITTEN; len],
+        locals: vec![UNWRITTEN; len],
+    };
+    for z in 0..d {
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((z * h + y) * w + x) as usize;
+                expected.groups[i] = (z / 4) * 10_000 + (y / 4) * 100 + x / 4;
+                expected.locals[i] = (z % 4) * 16 + (y % 4) * 4 + x % 4;
+            }
+        }
+    }
+    expected
+}
+
+fn size3(w: u32, h: u32, d: u32) -> Size3 {
+    Size3 { w, h, d, pad0: 0 }
+}
+
+/// `cube` over `w x h x d` through its own descriptor on `device`: on a lowered device the host splits it.
+fn cube_auto(device: &HeadlessDevice, w: u32, h: u32, d: u32) -> Outputs {
+    let size = device.create_uniform("size", &size3(w, h, d)).unwrap();
+    let len = (w * h * d) as usize;
+    let (hits, groups, locals) = fresh(device, len, len);
+    split_kernels::cube::dispatch_extent(
+        device,
+        Extent::new(w, h, d),
+        &size,
+        Independent(&hits),
+        Independent(&groups),
+        Independent(&locals),
+    )
+    .unwrap();
+    outputs(device, &hits, &groups, &locals)
+}
+
+/// `cube` on the CPU twin.
+fn cube_twin(w: u32, h: u32, d: u32) -> Outputs {
+    let cpu = CpuDevice::new();
+    let size = cpu.uniform(size3(w, h, d)).unwrap();
+    let len = (w * h * d) as usize;
+    let (hits, groups, locals) = twin_fresh(&cpu, len, len);
+    split_kernels::cube::dispatch_extent(
+        &cpu,
+        Extent::new(w, h, d),
+        &size,
+        Independent(&hits),
+        Independent(&groups),
+        Independent(&locals),
+    )
+    .unwrap();
+    Outputs {
+        hits: hits.read(),
+        groups: groups.read(),
+        locals: locals.read(),
+    }
+}
+
+/// The pieces of one axis: `(first workgroup, workgroups)` for `count` workgroups at most `limit` at a time.
+fn axis_pieces(count: u32, limit: u32) -> Vec<(u32, u32)> {
+    (0..count.div_ceil(limit))
+        .map(|k| (k * limit, limit.min(count - k * limit)))
+        .collect()
+}
+
+/// `cube` split by the TEST, as g4a did: one dispatch of the variant per piece (x innermost, then y, then z), each with
+/// its own base uniform, in one batch.
+fn cube_by_hand(device: &HeadlessDevice, w: u32, h: u32, d: u32, limit: u32) -> Outputs {
+    let variant = split_kernels::cube::DESCRIPTOR.split.unwrap();
+    let size = device.create_uniform("size", &size3(w, h, d)).unwrap();
+    let len = (w * h * d) as usize;
+    let (hits, groups, locals) = fresh(device, len, len);
+    let mut pieces = Vec::new();
+    for (fz, nz) in axis_pieces(d.div_ceil(4), limit) {
+        for (fy, ny) in axis_pieces(h.div_ceil(4), limit) {
+            for (fx, nx) in axis_pieces(w.div_ceil(4), limit) {
+                let base = LaunchBase {
+                    x: fx * 4,
+                    y: fy * 4,
+                    z: fz * 4,
+                    pad: 0,
+                };
+                pieces.push((
+                    device.create_uniform("base", &base).unwrap(),
+                    Extent::new(nx * 4, ny * 4, nz * 4),
+                ));
+            }
+        }
+    }
+    let all: Vec<[BufferBinding<'_>; 5]> = pieces
+        .iter()
+        .map(|(base, _)| {
+            [
+                size.bind(Access::ReadOnly, LengthRule::Independent),
+                hits.bind(Access::ReadWrite, LengthRule::Independent),
+                groups.bind(Access::ReadWrite, LengthRule::Independent),
+                locals.bind(Access::ReadWrite, LengthRule::Independent),
+                base.bind(Access::ReadOnly, LengthRule::Independent),
+            ]
+        })
+        .collect();
+    let dispatches: Vec<BufferDispatch<'_>> = pieces
+        .iter()
+        .zip(&all)
+        .map(|((_, extent), bindings)| BufferDispatch::new_extent(variant, *extent, bindings))
+        .collect();
+    device.dispatch_batch(&dispatches).unwrap();
+    outputs(device, &hits, &groups, &locals)
+}
+
+fn assert_cold(device: &HeadlessDevice) {
+    let stats = device.pipeline_cache_stats();
+    assert_eq!(
+        (stats.entries, stats.misses, stats.hits),
+        (0, 0, 0),
+        "a refusal must come before compilation and the cache lookup"
+    );
+}
+
+/// (f) The host's split equals the hand split, the host reference and the CPU twin on x alone, y alone, z alone and all
+/// three at once. Limit 4, workgroup 4 x 4 x 4, extent 20 x 20 x 20: 5 workgroups per axis, 2 pieces per axis, 8 pieces.
+/// The z axis of a launch has never run on a GPU before this test.
+#[test]
+fn the_host_split_equals_the_hand_split_on_x_y_z_and_all_three() {
+    // The last case is not a multiple of the workgroup on any axis, z included: 6 x 5 x 5 workgroups.
+    for (w, h, d) in [
+        (20, 4, 4),
+        (4, 20, 4),
+        (4, 4, 20),
+        (20, 20, 20),
+        (21, 18, 19),
+    ] {
+        let lowered_device = lowered(device(), 4);
+        eprintln!(
+            "split (f) {w}x{h}x{d} adapter: {:?}",
+            lowered_device.adapter_info()
+        );
+        let expected = cube_expected(w, h, d);
+        let auto = cube_auto(&lowered_device, w, h, d);
+        let stats = lowered_device.pipeline_cache_stats();
+        assert_eq!(
+            (stats.entries, stats.misses),
+            (1, 1),
+            "a split launch compiles only the variant"
+        );
+        assert_eq!(auto, expected, "the host split against the host reference");
+        assert_eq!(
+            cube_by_hand(&lowered_device, w, h, d, 4),
+            auto,
+            "the host split against the hand split"
+        );
+        assert_eq!(cube_twin(w, h, d), expected, "the CPU twin");
+        let plain = device();
+        assert_eq!(
+            cube_auto(&plain, w, h, d),
+            expected,
+            "unsplit, normal limits"
+        );
+        let stats = plain.pipeline_cache_stats();
+        assert_eq!(
+            (stats.entries, stats.misses),
+            (1, 1),
+            "an unsplit launch compiles only the base"
+        );
+    }
+}
+
+/// (n) No bounds check anywhere: every invocation of the rounded extent bumps a global counter and its own cell, and
+/// the cells are exactly the rounded volume. A host that dispatches one workgroup too many (a piece of the full limit
+/// where fewer are left) raises the counter above the rounded volume, which no guarded kernel could show.
+#[test]
+fn a_split_launch_runs_exactly_the_rounded_extent_and_no_invocation_more() {
+    for (w, h, d) in [(21u32, 18u32, 19u32), (30, 3, 3), (3, 30, 3), (3, 3, 30)] {
+        let lowered = lowered(device(), 4);
+        let (rw, rh, rd) = (w.div_ceil(4) * 4, h.div_ceil(4) * 4, d.div_ceil(4) * 4);
+        let cells = (rw * rh * rd) as usize;
+        let size = lowered.create_uniform("size", &size3(rw, rh, rd)).unwrap();
+        let hits =
+            lowered.create_typed_buffer("hits", &vec![0u32; cells], GpuBufferAccess::ReadWrite);
+        let total = lowered.create_typed_buffer("total", &[0u32], GpuBufferAccess::ReadWrite);
+        split_kernels::tally::dispatch_extent(
+            &lowered,
+            Extent::new(w, h, d),
+            &size,
+            Independent(&hits),
+            Independent(&total),
+        )
+        .unwrap();
+        assert_eq!(
+            lowered.read_typed_buffer(&total).unwrap(),
+            [cells as u32],
+            "{w}x{h}x{d}: invocations run"
+        );
+        let hits = lowered.read_typed_buffer(&hits).unwrap();
+        assert!(
+            hits.iter().all(|hit| *hit == 1),
+            "{w}x{h}x{d}: every cell once"
+        );
+    }
+}
+
+/// (g) The two-dimensional kernel through the host split on a lowered device equals the twin (the by-hand version of
+/// the same launch is test (c)).
+#[test]
+fn the_host_split_of_a_two_dimensional_launch_equals_the_twin() {
+    let (w, h, len) = (21, 9, 256);
+    let split = plane_unsplit(&lowered(device(), 4), w, h, len);
+    assert_eq!(split, plane_twin(w, h, len));
+}
+
+/// (h) Two split calls in one batch: the second reads what the first wrote, so the pieces of the first must have
+/// finished (batch order is unchanged).
+#[test]
+fn a_batch_of_two_split_calls_runs_in_order() {
+    let lowered = lowered(device(), 4);
+    let (n, len) = (100u32, 104usize);
+    let count = lowered
+        .create_uniform(
+            "count",
+            &Count {
+                n,
+                pad0: 0,
+                pad1: 0,
+                pad2: 0,
+            },
+        )
+        .unwrap();
+    let mid = lowered.create_typed_buffer("mid", &vec![0u32; len], GpuBufferAccess::ReadWrite);
+    let out = lowered.create_typed_buffer("out", &vec![0u32; len], GpuBufferAccess::ReadWrite);
+    let first = split_kernels::stamp::call_extent(Extent::linear(n), &count, Independent(&mid));
+    let second = split_kernels::double::call_extent(
+        Extent::linear(n),
+        &count,
+        Independent(&mid),
+        Independent(&out),
+    );
+    lowered
+        .dispatch_batch(&[(&first).into(), (&second).into()])
+        .unwrap();
+    let expected: Vec<u32> = (0..len as u32)
+        .map(|i| if i < n { (i + 1) * 2 } else { 0 })
+        .collect();
+    assert_eq!(lowered.read_typed_buffer(&out).unwrap(), expected);
+    let stamped: Vec<u32> = (0..len as u32)
+        .map(|i| if i < n { i + 1 } else { 0 })
+        .collect();
+    assert_eq!(lowered.read_typed_buffer(&mid).unwrap(), stamped);
+}
+
+/// (i) The typed `submit_extent` path: one job, waited for.
+#[test]
+fn a_typed_submit_of_a_split_launch_runs_every_element_once() {
+    let lowered = lowered(device(), 4);
+    let (n, len) = (100u32, 128usize);
+    let count = lowered
+        .create_uniform(
+            "count",
+            &Count {
+                n,
+                pad0: 0,
+                pad1: 0,
+                pad2: 0,
+            },
+        )
+        .unwrap();
+    let (hits, groups, locals) = fresh(&lowered, n as usize, len);
+    let job = split_kernels::line::submit_extent(
+        &lowered,
+        Extent::linear(n),
+        &count,
+        Independent(&hits),
+        Independent(&groups),
+        Independent(&locals),
+    )
+    .unwrap();
+    job.wait().unwrap();
+    assert_eq!(
+        outputs(&lowered, &hits, &groups, &locals),
+        line_expected(n, len)
+    );
+}
+
+/// The `line` buffers of a launch that is refused, and the error it answers with.
+fn refused_line(device: &HeadlessDevice, extent: Extent) -> gust_wgpu::Error {
+    let count = device
+        .create_uniform(
+            "count",
+            &Count {
+                n: 8,
+                pad0: 0,
+                pad1: 0,
+                pad2: 0,
+            },
+        )
+        .unwrap();
+    let (hits, groups, locals) = fresh(device, 8, 8);
+    split_kernels::line::dispatch_extent(
+        device,
+        extent,
+        &count,
+        Independent(&hits),
+        Independent(&groups),
+        Independent(&locals),
+    )
+    .expect_err("the launch is refused")
+}
+
+fn limit_of(error: &gust_wgpu::Error) -> (&'static str, u64, u64) {
+    match error {
+        gust_wgpu::Error::DeviceLimit {
+            limit,
+            requested,
+            maximum,
+            ..
+        } => (limit, *requested, *maximum),
+        other => panic!("expected a DeviceLimit, got {other:?}"),
+    }
+}
+
+/// (j) More pieces than `MAX_SPLIT_DISPATCHES`: a limit of one workgroup per dimension and 4097 workgroups.
+#[test]
+fn a_launch_of_more_than_the_most_pieces_is_refused_before_compiling() {
+    let lowered = lowered(device(), 1);
+    let refused = refused_line(&lowered, Extent::linear(8 * 4097));
+    assert_eq!(
+        limit_of(&refused),
+        (
+            "split dispatches",
+            4097,
+            gust_wgpu::MAX_SPLIT_DISPATCHES as u64
+        )
+    );
+    assert_cold(&lowered);
+    // 4096 pieces is the most that runs.
+    let ok = lowered_ok_edge();
+    assert_eq!(ok, line_expected(8 * 4096, 8 * 4096));
+}
+
+/// `line` over 4096 workgroups on a device limited to one: 4096 pieces.
+fn lowered_ok_edge() -> Outputs {
+    let lowered = lowered(device(), 1);
+    line_unsplit(&lowered, 8 * 4096, 8 * 4096)
+}
+
+/// (k) A device whose uniform count is lowered to the kernel's own cannot take the variant's extra one: the launch
+/// keeps the plain refusal, before anything is compiled.
+#[test]
+fn a_variant_over_the_uniform_limit_keeps_the_plain_refusal() {
+    let device = device();
+    let mut limits = device.limits().clone();
+    limits.max_compute_workgroups_per_dimension = 4;
+    limits.max_uniform_buffers_per_shader_stage = 1;
+    let lowered = device.with_limits(limits).unwrap();
+    let refused = refused_line(&lowered, Extent::linear(100));
+    assert_eq!(
+        limit_of(&refused),
+        ("max_compute_workgroups_per_dimension", 13, 4)
+    );
+    assert_cold(&lowered);
+}
+
+/// (l) The invocation cap comes before the pieces: past 2^32 the launch is refused as `global_invocation_id`, on the
+/// GPU and on the twin, before anything is compiled.
+#[test]
+fn an_extent_over_the_invocation_cap_is_refused_as_global_invocation_id_on_both() {
+    let lowered = lowered(device(), 4);
+    let extent = Extent::new(u32::MAX, 2, 1);
+    let wanted = ("global_invocation_id", 1u64 << 33, 1u64 << 32);
+    assert_eq!(limit_of(&refused_line(&lowered, extent)), wanted);
+    assert_cold(&lowered);
+    let cpu = CpuDevice::new();
+    let count = cpu
+        .uniform(Count {
+            n: 8,
+            pad0: 0,
+            pad1: 0,
+            pad2: 0,
+        })
+        .unwrap();
+    let (hits, groups, locals) = twin_fresh(&cpu, 8, 8);
+    let call = split_kernels::line::call_extent(
+        extent,
+        &count,
+        Independent(&hits),
+        Independent(&groups),
+        Independent(&locals),
+    );
+    match gust::cpu::validate(&cpu, &call) {
+        Err(gust::cpu::Error::DeviceLimit {
+            limit,
+            requested,
+            maximum,
+            ..
+        }) => assert_eq!((limit, requested, maximum), wanted),
+        other => panic!("expected the cap on the twin, got {other:?}"),
+    }
+}
+
+/// (m) The real size on the device's own limits: every element of a launch past 65,535 workgroups runs exactly once,
+/// with the group and local id of an unsplit launch (`tags[i] == i`).
+#[test]
+fn the_host_split_at_real_size_runs_every_element_once() {
+    let device = device();
+    assert_eq!(device.limits().max_compute_workgroups_per_dimension, 65_535);
+    eprintln!("split (m) adapter: {:?}", device.adapter_info());
+    for (name, n) in [("narrow", 5_000_000u32), ("wide", (1 << 24) + 1000)] {
+        let count = device
+            .create_uniform(
+                "count",
+                &Count {
+                    n,
+                    pad0: 0,
+                    pad1: 0,
+                    pad2: 0,
+                },
+            )
+            .unwrap();
+        let hits =
+            device.create_typed_buffer("hits", &vec![0u32; n as usize], GpuBufferAccess::ReadWrite);
+        let tags = device.create_typed_buffer(
+            "tags",
+            &vec![UNWRITTEN; n as usize],
+            GpuBufferAccess::ReadWrite,
+        );
+        let started = std::time::Instant::now();
+        if name == "narrow" {
+            split_kernels::narrow::dispatch_extent(
+                &device,
+                Extent::linear(n),
+                &count,
+                Independent(&hits),
+                Independent(&tags),
+            )
+            .unwrap();
+        } else {
+            split_kernels::wide::dispatch_extent(
+                &device,
+                Extent::linear(n),
+                &count,
+                Independent(&hits),
+                Independent(&tags),
+            )
+            .unwrap();
+        }
+        let hits = device.read_typed_buffer(&hits).unwrap();
+        let tags = device.read_typed_buffer(&tags).unwrap();
+        let wrong_hits = hits.iter().filter(|hit| **hit != 1).count();
+        let wrong_tags = tags
+            .iter()
+            .enumerate()
+            .filter(|(i, tag)| **tag != *i as u32)
+            .count();
+        eprintln!("split (m) {name} n={n}: {:?}", started.elapsed());
+        assert_eq!((wrong_hits, wrong_tags), (0, 0), "{name}, n = {n}");
+    }
 }

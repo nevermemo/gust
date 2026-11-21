@@ -195,7 +195,8 @@ of call sites, so its record is schema 2 and has no `source`: equal bodies write
 record bytes (`write_once` makes the second write a no-op). Each call site writes a
 sidecar `<key>.<site16>.site.json` (`schema` 2, `key`, `file`, `lines`), where `site16`
 is FNV-1a 64 over the relative file, a zero byte and the decimal line of the call.
-`cargo gust` reads schemas 1, 2, 3 and 4 (schema 3 adds a pixel shape, schema 4 a capability variant: below); the
+`cargo gust` reads schemas 1 to 5 (schema 3 adds a pixel shape, schema 4 a capability variant, schema 5 the split of a
+grid body: below); the
 record keeps every call site, sorted by file and first line, and the
 `SourceOrigin` of a schema 2 kernel is the first one's. A `.site.json` next to a schema 1 record, a schema 2
 record without one, and a sidecar of another key are errors.
@@ -332,9 +333,23 @@ then at most
 each piece (its first workgroup times the workgroup size, so local and group ids are unchanged) into one uniform
 buffer at a stride of `max(16, min_uniform_buffer_offset_alignment)`, and encodes one bind group and one
 `dispatch_workgroups` per piece in the one compute pass of the call. Only the variant is compiled for a split launch
-(lazily, at run time, with its own cache key) and only the base for an unsplit one. The host runs a `split` only when it
-has the macro's shape (`split_variant_matches`: the kernel's parameters and then the hidden uniform, the same entry
-point and workgroup size, no variant of its own, no artifact); the graph, the indirect path and the deprecated
+(lazily, with its own cache key) and only the base for an unsplit one. The variant's shader is its own precompiled
+WGSL artifact when the crate holds one (m11.psplit-a, D209), else the run-time compiler's (D208), the same policy as
+any kernel (D45: an artifact wins). The artifact is a second artifact of the same kernel body: its key is
+`content_key(entry_point, split Slang text)` (the entry point is the body's; the text differs), its files are
+`<key>.wgsl` and `<key>.wgsl.reflection.json` beside the body's, and the link between the two is explicit. The macro
+exports a record for the split of every grid body that gets a record and is not routed to the CPU, selected or not,
+looks the pair up like a body's and puts it in the split descriptor's `artifacts` (`&[]` when the pair is absent;
+there is no strict-profile requirement for it, and half a pair is the same error as for a body, and counts as absent
+in export mode). Record schema 5 is schema 4's grammar plus a required `split_of` (the 16-hex key of the body; its
+record always has `requires` and `variant`, empty for a plain body); manifest schema 4 is schema 3's grammar plus an
+optional `split_of` on the split's entry, written exactly when some entry has one, so a crate with no grid GPU kernel
+keeps the bytes it had. The split's entry has the body's module, name and entry point and no `variants` list, a body
+has at most one split, and the variant checks and lists ignore split entries. `cargo gust` reads record schemas 1 to 5
+and manifest schemas 1 to 4; `split_of` under an older schema is refused (an unknown key in a manifest). The host runs a
+`split` only when it has the macro's shape (`split_variant_matches`: the kernel's parameters and then the hidden
+uniform, the same entry point and workgroup size, no variant of its own, no artifact or WGSL artifacts only) and the
+build has a shader source for it (`split_variant_has_a_shader_source`); the graph, the indirect path and the deprecated
 one-shot functions do not use it.
 `max_buffer_size` is checked only by the fallible buffer functions (`try_create_typed_buffer`,
 `create_zeroed_buffer`, `GpuVec`); `create_typed_buffer` is infallible and never checks it. Indirect
@@ -471,7 +486,8 @@ byte for byte. A reader of schemas 1 and 2 refuses a schema 3 record, and a `sha
 (M8, D139) is schema 2's grammar plus a `variants` list on the entry of a kernel that has a variant or needs a
 capability (one `{key, requires, variant}` item per body, sorted by key); it is written exactly when some entry has
 `variants`, so a crate without variants keeps the bytes it had, and a reader of schemas 1 and 2 refuses it. The record
-of a body is schema 4 (below), and `cargo gust` reads record schemas 1 to 4 and manifest schemas 1 to 3.
+of a body is schema 4 (below), the record of a split is schema 5 and its manifest entry makes the manifest schema 4
+(`split_of`: see the split variant above), and `cargo gust` reads record schemas 1 to 5 and manifest schemas 1 to 4.
 
 Textures (slices mx.t1 to mx.t3, D64, D90, D92). `gust::texture` names no wgpu type (D02). It holds the formats
 (`Format`, nine variants, tied to the Rust type of one texel by the sealed marker types `R32Uint` to `Rgba32Float`),

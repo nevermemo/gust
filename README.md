@@ -543,7 +543,7 @@ The promise covers:
   write-only access, say);
 - the `#[gpu]` language: the set of accepted constructs with their lowering contract ([SEMANTICS](docs/SEMANTICS.md));
 - the commands of `cargo-gust` and the lines they print, which scripts and CI read;
-- the file formats: `gust-artifacts/manifest.json` (schema 3), the record files (schema 4) and the reflection records
+- the file formats: `gust-artifacts/manifest.json` (schema 4, with `split_of` linking a grid kernel's split artifact to its body), the record files (schema 5) and the reflection records
   (schemas 1 to 4); a newer release reads every older schema (D82, D89, D91, D139);
 - `gust.toml`, the `[package.metadata.gust]` table and `GUST_PROFILE`'s grammar including the `+capability` suffix;
 - the modules `gust::capability`, `gust::limits`, `gust::target`, `gust::routes` and `gust::routed` (`RoutedDevice`
@@ -1139,8 +1139,8 @@ pub fn double_subgroups(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mu
 - A build uses one body: the one with the largest `requires` set that the capabilities of `GUST_PROFILE` contain, else
   the portable body. The names `vulkan` (the set `subgroups`) and `webgpu` (the empty set) are aliases. Every body is
   validated and lowered in every build, and `cargo gust build` exports the artifact of every body (record schema 4 and
-  manifest schema 3, written only for a kernel with a variant or a required capability, so other crates keep their
-  bytes). The CPU twin and the `cpu` target always use the portable body. The codes are GUST-E0740 to E0744 and E0750
+  manifest schema 3, written only for a kernel with a variant or a required capability; a grid kernel's split artifact
+  is record schema 5 and manifest schema 4, with `split_of`; a crate with neither keeps its bytes). The CPU twin and the `cpu` target always use the portable body. The codes are GUST-E0740 to E0744 and E0750
   ([DIAGNOSTICS](docs/DIAGNOSTICS.md)).
 - A crate's `profiles` list is checked for exhaustiveness: every declared GPU profile needs a body for every kernel
   (GUST-E0744). A kernel that says `cpu = "unsupported"` meets the `cpu` entry of the default list, so a 0.1.0 crate

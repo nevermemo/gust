@@ -869,12 +869,20 @@ fn exported(source: &str, profile: Profile) -> Vec<(String, String)> {
     exported_declaring(source, None, profile)
 }
 
-/// [`exported`] for a crate whose manifest declares `profiles` (TOML text of the array), or none when `None`.
+/// [`exported`] for a crate whose manifest declares `profiles` (TOML text of the array), or none when `None`: the
+/// records of the bodies only. The split of a grid body (D209) is a record of its own, see [`exported_every`].
 fn exported_declaring(
     source: &str,
     profiles: Option<&str>,
     profile: Profile,
 ) -> Vec<(String, String)> {
+    let mut records = exported_every(source, profiles, profile);
+    records.retain(|(_, text)| !text.contains("\"split_of\""));
+    records
+}
+
+/// Every record export mode wrote, the splits included.
+fn exported_every(source: &str, profiles: Option<&str>, profile: Profile) -> Vec<(String, String)> {
     let scratch = Crate::declaring("export", profiles);
     let export = scratch.path().join("exports");
     expand_in(
@@ -1002,7 +1010,50 @@ fn the_content_key_of_a_body_is_its_entry_point_and_its_clean_slang() {
         assert_eq!(content_key(entry_point, &slang), key);
         seen += 1;
     }
-    assert_eq!(seen, 2);
+    // Two bodies and the split of each (D209): the split keeps its body's entry point and has a text of its own.
+    assert_eq!(seen, 4);
+}
+
+/// D209: every grid body writes a split record, the unselected one too; it is schema 5, names its body, and keeps the
+/// body's `requires` and `variant`.
+#[test]
+fn every_grid_body_writes_a_split_record_that_names_it_whatever_the_profile_selects() {
+    for value in ["native", "native+subgroups"] {
+        let every = exported_every(&pair(), None, profile(value));
+        assert_eq!(every.len(), 4, "{value}");
+        let bodies: Vec<&(String, String)> = every
+            .iter()
+            .filter(|(_, text)| !text.contains("\"split_of\""))
+            .collect();
+        let splits: Vec<&(String, String)> = every
+            .iter()
+            .filter(|(_, text)| text.contains("\"split_of\""))
+            .collect();
+        assert_eq!((bodies.len(), splits.len()), (2, 2), "{value}");
+        for (entry_point, split) in splits {
+            assert!(split.contains("\"schema\": 5,\n"), "{split}");
+            assert!(split.contains("\"name\": \"sum\",\n"), "{split}");
+            assert!(split.contains("__gust_launch_base"), "{split}");
+            let body = bodies
+                .iter()
+                .find(|(body_entry, _)| body_entry == entry_point)
+                .expect("the split's body");
+            let key_of = |text: &str| {
+                text.lines()
+                    .find_map(|line| line.trim().strip_prefix("\"key\": \""))
+                    .map(|rest| rest.trim_end_matches(['"', ',']).to_owned())
+                    .unwrap()
+            };
+            assert!(
+                split.contains(&format!("\"split_of\": \"{}\"", key_of(&body.1))),
+                "{split}"
+            );
+            assert_ne!(key_of(split), key_of(&body.1));
+            for field in ["\"requires\"", "\"variant\""] {
+                assert!(split.contains(field), "{field} in {split}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -1022,6 +1073,11 @@ fn only_the_selected_bodys_artifact_is_embedded() {
     for entry in fs::read_dir(export.join("demo")).unwrap() {
         let name = entry.unwrap().file_name().to_string_lossy().into_owned();
         if let Some(key) = name.strip_suffix(".kernel.json") {
+            // The bodies only: a split (D209) is looked up under its own key and is never required.
+            let record = fs::read_to_string(export.join("demo").join(&name)).unwrap();
+            if record.contains("\"split_of\"") {
+                continue;
+            }
             fs::write(artifacts.join(format!("{key}.wgsl")), "").unwrap();
             fs::write(artifacts.join(format!("{key}.wgsl.reflection.json")), "{}").unwrap();
             keys.push(key.to_owned());

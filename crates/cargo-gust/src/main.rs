@@ -89,6 +89,14 @@
 //! element of a `Uniform<T>` and any storage element whose types are all scalars, vectors, matrices and structs of
 //! this module, so those are checked in full at export and are not listed.
 //!
+//! A `grid` kernel built for the GPU also has a split variant (m11.psplit-a, D209): the same Slang plus one hidden
+//! uniform, which lets a launch past the device's per-dimension workgroup limit run as pieces (D208). `build` compiles
+//! it as a second artifact of the body, under a key of its own (`<split key>.wgsl` and its reflection file beside the
+//! body's), and the manifest says so: schema 4, with `"split_of": "<key of the body>"` on the split's entry, which has
+//! the body's `module`, `name` and `entry_point`. A manifest without a split keeps schema 1, 2 or 3 and its bytes. The
+//! macro's export mode writes the split's record (`<key>.kernel.json`, schema 5: schema 4's grammar plus `split_of`)
+//! for every `grid` body, selected or not; `check` is red on a set whose split is missing.
+//!
 //! The Slang version recorded is the build tag the helper writes into every reflection JSON (`compiler`): the build
 //! that actually compiled. With `--allow-slang-mismatch` that can differ from the pin (`SLANG_PIN` in
 //! `gust::toolchain`), and then the manifest says so by carrying the other tag; `build` and `locate` print a note

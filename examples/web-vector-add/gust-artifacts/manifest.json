@@ -47,8 +47,42 @@
       "module": "double_add",
       "name": "map_kernel",
       "shape": "grid"
+    },
+    {
+      "clean_sha256": "d3e9047b66ede0da270b7848102f5e608fcc18ab70b6fa14a87337e2f92c7ff5",
+      "entry_point": "gpu_vector_add_add",
+      "formats": [
+        {
+          "file": "93b3f1ef65f948d2.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "2e1036f7ebb1518a6695c89a96e785b1580633882721b361eab324fef5cf89c9",
+          "sha256": "de362434a20c532803490c5fe694ab401ab60539be9c5411f16329da74db490d"
+        }
+      ],
+      "key": "93b3f1ef65f948d2",
+      "module": "vector_add",
+      "name": "add",
+      "shape": "grid",
+      "split_of": "52e85c5f03f72272"
+    },
+    {
+      "clean_sha256": "1002e115cc8205ddd3d2400c79e35565b7431b567519d22003885ea6f6513692",
+      "entry_point": "gpu_double_add_map_kernel",
+      "formats": [
+        {
+          "file": "fbf17feeb6d88aa8.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "c19d1e99b78b9a5d2c10d237fb2f9ddf17e1955eba4665fab4c97da7f8419d71",
+          "sha256": "bbd41972c22fdf3371e75a48c90c645fe91588b86c3073b1bcb59485d34b334f"
+        }
+      ],
+      "key": "fbf17feeb6d88aa8",
+      "module": "double_add",
+      "name": "map_kernel",
+      "shape": "grid",
+      "split_of": "5f5fc9afb786701a"
     }
   ],
-  "schema": 2,
+  "schema": 4,
   "slang": "2026.22"
 }

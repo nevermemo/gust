@@ -942,12 +942,15 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   compiled): the 2^32 invocation cap above, on both backends; more than `gust_wgpu::MAX_SPLIT_DISPATCHES` (4096)
   pieces (limit `split dispatches`); a staged graph node and the
   deprecated `dispatch_f32`/`dispatch_u32` (they are not cut); a kernel with no split variant (a hand-built descriptor,
-  a `pixel` kernel); a build without the run-time compiler (`slang-runtime`), because the
-  variant is compiled at run time; and a variant that exceeds another limit of the device (its one extra uniform, its
+  a `pixel` kernel); a build that has neither the run-time compiler (`slang-runtime`) nor a precompiled artifact of
+  the kernel's split variant (D209: `cargo gust build` writes that artifact beside the kernel's own, under a key of
+  its own, so a native build with the committed artifacts splits without any compiler, and an artifact is used before
+  a compile at run time, as for every kernel; the browser build is not measured and this paragraph claims nothing
+  for it); and a variant that exceeds another limit of the device (its one extra uniform, its
   binding index, the 16 bytes of the hidden uniform against `max_uniform_buffer_binding_size`), which keeps the plain
   refusal of the workgroup limit. So graphs (staged graph nodes, whose launches are checked when the graph is
-  validated), the deprecated `dispatch_f32`/`dispatch_u32`, `pixel` kernels and builds without
-  run-time compilation all keep the plain refusal. An indirect
+  validated), the deprecated `dispatch_f32`/`dispatch_u32`, `pixel` kernels and builds with no shader source for
+  the variant all keep the plain refusal. An indirect
   dispatch is neither split nor refused by the host for its workgroup count: the host never sees that count (the GPU
   reads it from the arguments buffer), so the count is unchecked by the host (the other limit checks of the launch
   still apply). With wgpu's default instance flags, wgpu itself may silently zero a count past the real device's

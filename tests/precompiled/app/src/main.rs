@@ -1,7 +1,9 @@
 // The consumer of the precompiled fixture (D45): it dispatches `kernels::vector_add::add` on the GPU and checks the
 // result against a host reference. It has no Slang: the shader is the committed WGSL artifact, verified against the
 // descriptor (D17) before a pipeline exists. A failed check ends the program with the error on stderr and exit code 1,
-// without the `verified:` line that `cargo xtask check-precompiled` looks for.
+// without the `verified:` line that `cargo xtask check-precompiled` looks for. It then launches the same kernel past a
+// lowered workgroup limit, which the host runs as pieces of the kernel's split variant from the split's own committed
+// artifact (D208, D209), and prints the `split:` line that the check also requires.
 
 use std::process::ExitCode;
 
@@ -52,10 +54,10 @@ fn run() -> Result<(), String> {
 
     let device = HeadlessDevice::new().map_err(|error| initialization_message(&error))?;
     println!("adapter: {}", device.adapter_info().name);
-    let a = device.create_typed_buffer("precompiled a", &a, GpuBufferAccess::ReadOnly);
-    let b = device.create_typed_buffer("precompiled b", &b, GpuBufferAccess::ReadOnly);
+    let a_buffer = device.create_typed_buffer("precompiled a", &a, GpuBufferAccess::ReadOnly);
+    let b_buffer = device.create_typed_buffer("precompiled b", &b, GpuBufferAccess::ReadOnly);
     let out = device.create_typed_buffer("precompiled out", &seed, GpuBufferAccess::ReadWrite);
-    vector_add::add::dispatch(&device, LENGTH as u32, &a, &b, &out)
+    vector_add::add::dispatch(&device, LENGTH as u32, &a_buffer, &b_buffer, &out)
         .map_err(|error| format!("dispatch failed: {error}"))?;
     let result = device
         .read_typed_buffer(&out)
@@ -74,6 +76,66 @@ fn run() -> Result<(), String> {
         ));
     }
     println!("verified: GPU result equals the host reference for {LENGTH} elements");
+    split_launch(device, &a, &b, &expected, &seed)
+}
+
+/// The same launch on a device whose per-dimension workgroup limit is lowered below the launch (D208): the host cuts it
+/// into pieces of the kernel's split variant. This binary has no run-time compiler, so the pieces can only run from the
+/// split's own precompiled artifact (D209); a build that lacks it fails the launch with the no-artifact error.
+fn split_launch(
+    device: HeadlessDevice,
+    a: &[f32],
+    b: &[f32],
+    expected: &[f32],
+    seed: &[f32],
+) -> Result<(), String> {
+    let descriptor = vector_add::add::DESCRIPTOR;
+    let split = descriptor
+        .split
+        .ok_or_else(|| "the kernel has no split variant".to_owned())?;
+    for artifact in split.artifacts {
+        println!(
+            "split artifact: {:?} key={} bytes={}",
+            artifact.format,
+            artifact.key,
+            artifact.bytes.len()
+        );
+    }
+    if split.artifacts.is_empty() {
+        return Err("the split variant carries no precompiled artifact".to_owned());
+    }
+    // 64 invocations per workgroup: `LENGTH` is 16 workgroups, so a limit of 4 makes four pieces.
+    let workgroups = LENGTH.div_ceil(descriptor.workgroup_size[0] as usize) as u32;
+    let limit = 4;
+    let mut limits = device.limits().clone();
+    limits.max_compute_workgroups_per_dimension = limit;
+    let device = device
+        .with_limits(limits)
+        .map_err(|error| format!("could not lower the workgroup limit: {error}"))?;
+    println!("split: {workgroups} workgroups against a limit of {limit}");
+    let a = device.create_typed_buffer("split a", a, GpuBufferAccess::ReadOnly);
+    let b = device.create_typed_buffer("split b", b, GpuBufferAccess::ReadOnly);
+    let out = device.create_typed_buffer("split out", seed, GpuBufferAccess::ReadWrite);
+    vector_add::add::dispatch(&device, LENGTH as u32, &a, &b, &out)
+        .map_err(|error| format!("split dispatch failed: {error}"))?;
+    let result = device
+        .read_typed_buffer(&out)
+        .map_err(|error| format!("split read-back failed: {error}"))?;
+    if result != expected {
+        let first = result
+            .iter()
+            .zip(expected)
+            .position(|(got, want)| got != want)
+            .unwrap_or(0);
+        return Err(format!(
+            "the split launch differs from the host reference at index {first} (got {:?}, expected {:?})",
+            result.get(first),
+            expected.get(first)
+        ));
+    }
+    println!(
+        "split: a launch past a lowered workgroup limit ran as pieces of the split artifact and equals the host reference for {LENGTH} elements"
+    );
     Ok(())
 }
 

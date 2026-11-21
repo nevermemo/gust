@@ -14,8 +14,24 @@
       "key": "be39104acabbe743",
       "module": "histogram",
       "name": "count"
+    },
+    {
+      "clean_sha256": "c88bae0ef3946063ceaa86cdd7680ef06a6e38e4dff71b0d551642f120542131",
+      "entry_point": "gpu_histogram_count",
+      "formats": [
+        {
+          "file": "eb03b996e0f77a10.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "bfe564a5c7af382eb3a430ebffb4541087fc295948b9f02025948a883785279b",
+          "sha256": "7ffa15a6a1236ebe3556b8289789948c402a63babb44da8268f74602a9df1227"
+        }
+      ],
+      "key": "eb03b996e0f77a10",
+      "module": "histogram",
+      "name": "count",
+      "split_of": "be39104acabbe743"
     }
   ],
-  "schema": 1,
+  "schema": 4,
   "slang": "2026.22"
 }

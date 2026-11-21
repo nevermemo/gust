@@ -98,6 +98,10 @@ const STRICT_PROFILE: &str = "native";
 /// The line `app` prints after the GPU result equals its host reference.
 pub(crate) const VERIFIED_PREFIX: &str = "verified: GPU result equals the host reference for ";
 
+/// The line `app` prints after a launch past a lowered workgroup limit ran as pieces of the kernel's split artifact
+/// (D208, D209; there is no run-time compiler in this binary) and its result equalled the host reference.
+pub(crate) const SPLIT_PREFIX: &str = "split: a launch past a lowered workgroup limit ran as pieces of the split artifact and equals the host reference for ";
+
 /// The line `app` prints with the name of the adapter it ran on.
 pub(crate) const ADAPTER_PREFIX: &str = "adapter: ";
 
@@ -599,7 +603,7 @@ pub(crate) struct RunReport {
 }
 
 /// The problems of the run of `app` in E1: it must exit 0, name its adapter and a WGSL artifact, and print the
-/// `verified:` line. Returns what it printed.
+/// `verified:` line and the `split:` line (D209). Returns what it printed.
 pub(crate) fn judge_run(
     success: bool,
     stdout: &str,
@@ -633,6 +637,16 @@ pub(crate) fn judge_run(
     if elements.is_none() {
         problems.push(format!(
             "`app` printed no `{VERIFIED_PREFIX}<n> elements` line"
+        ));
+    }
+    let split = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix(SPLIT_PREFIX))
+        .map(|rest| rest.trim_end_matches(" elements").trim())
+        .filter(|count| count.parse::<u64>().is_ok_and(|count| count > 0));
+    if split.is_none() {
+        problems.push(format!(
+            "`app` printed no `{SPLIT_PREFIX}<n> elements` line, so a launch past a workgroup limit did not run from the split artifact"
         ));
     }
     match (problems.is_empty(), adapter, elements) {

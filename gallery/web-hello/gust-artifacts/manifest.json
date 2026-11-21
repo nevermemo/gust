@@ -14,8 +14,24 @@
       "key": "193e4e282d7e14bd",
       "module": "add",
       "name": "map_kernel"
+    },
+    {
+      "clean_sha256": "7e6ad9a155ba7dcdd574c01613421f801b34aa6e83ad4d3d41c275f1a1240892",
+      "entry_point": "gpu_add_map_kernel",
+      "formats": [
+        {
+          "file": "2137830f74476349.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "9173cde6996fdd4abf0b05a08a6efe1a4e04257de6eed860e09f9f21329de1d0",
+          "sha256": "959acd80e28bfb781ab1080835a37c63c4e6b9d867caef5d3d6d488085de256a"
+        }
+      ],
+      "key": "2137830f74476349",
+      "module": "add",
+      "name": "map_kernel",
+      "split_of": "193e4e282d7e14bd"
     }
   ],
-  "schema": 1,
+  "schema": 4,
   "slang": "2026.22"
 }

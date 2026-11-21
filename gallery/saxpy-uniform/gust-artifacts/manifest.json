@@ -1,6 +1,22 @@
 {
   "kernels": [
     {
+      "clean_sha256": "1eaff2b6de3b1f7a689497b34f61405c7f51e6ee7d78362792a1b815da6f010d",
+      "entry_point": "gpu_saxpy_apply",
+      "formats": [
+        {
+          "file": "a87fc82a4b8295da.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "a1fc693b1ec09ec84f0b14d34afbc57ab59c0261127659a7c478fa0a22d92c5e",
+          "sha256": "a35c039000b09d8138f584f0b95729a8431d447943618d40df8a0e0772f0923a"
+        }
+      ],
+      "key": "a87fc82a4b8295da",
+      "module": "saxpy",
+      "name": "apply",
+      "split_of": "b2bf27fc68678ee7"
+    },
+    {
       "clean_sha256": "8d29fb63fa807b656b97813d8e3b5d92e159b65297b3674296555b0bcd35e927",
       "entry_point": "gpu_saxpy_apply",
       "formats": [
@@ -16,6 +32,6 @@
       "name": "apply"
     }
   ],
-  "schema": 1,
+  "schema": 4,
   "slang": "2026.22"
 }

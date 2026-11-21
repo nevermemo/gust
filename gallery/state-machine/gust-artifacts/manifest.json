@@ -1,6 +1,22 @@
 {
   "kernels": [
     {
+      "clean_sha256": "889ea069b23efbb3ba9172ccd5c25fc762c1d4455758d2cf025d6cd054e804f9",
+      "entry_point": "gpu_scanner_scan",
+      "formats": [
+        {
+          "file": "ab3ad2c5e932c839.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "c65ebfadd4aab5dbfe084b5ef3d72296e4f0c68a17a27193b51a653bf772c4d5",
+          "sha256": "d500b8f8e2c415bba9a66b120d9c64aee0c297a4c08785c7c7ad67546eb093d9"
+        }
+      ],
+      "key": "ab3ad2c5e932c839",
+      "module": "scanner",
+      "name": "scan",
+      "split_of": "bacf6392c8bb91c0"
+    },
+    {
       "clean_sha256": "bc13a4efe4a00e9cee00e833850d5fed799a5a800927f0bc5c503381920271c1",
       "entry_point": "gpu_scanner_scan",
       "formats": [
@@ -16,6 +32,6 @@
       "name": "scan"
     }
   ],
-  "schema": 1,
+  "schema": 4,
   "slang": "2026.22"
 }

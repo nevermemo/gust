@@ -9,8 +9,8 @@ minor version of all four packages, a patch only adds or fixes, so expect the to
 
 What this crate promises (the full text is the root README's section
 [Stability](https://github.com/nevermemo/gust/blob/v0.2.0/README.md#stability)): the `cargo gust` commands and the lines
-they print, which scripts and CI read; the file formats it writes and reads (`gust-artifacts/manifest.json` schema 3,
-record files schema 4, reflection records, and a newer release reads every older one); `gust.toml` and the
+they print, which scripts and CI read; the file formats it writes and reads (`gust-artifacts/manifest.json` schema 4
+(`split_of` links a split artifact to its body), record files schema 5, reflection records, and a newer release reads every older one); `gust.toml` and the
 `[package.metadata.gust]` table; and the environment variables `GUST_PROFILE`, `GUST_SLANG_HOME`,
 `GUST_SLANG_REFLECT`, `GUST_ROUTE__*`, `GUST_CPU_THREADS` (read by the CPU runtime of `gust-compute`, not by this tool),
 `GUST_EXPORT_DIR` and `GUST_ROUTED_PROFILE` (the last two are set by `cargo gust` for the crates' macros; do not set

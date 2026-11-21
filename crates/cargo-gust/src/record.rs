@@ -47,6 +47,17 @@
 //! `variant` in a record that says schema 1, 2 or 3: the number is what keeps an older reader from reading a subgroup
 //! body as the portable one. A kernel's bodies are the records with one (`module`, `name`); the export groups them
 //! ([`crate::export`]) and the manifest lists them ([`crate::manifest`], schema 3).
+//!
+//! Schema 5 (m11.psplit-a, D209) is schema 4's grammar plus one required key, `split_of`: the 16 hex digits of the key of
+//! the body the record is the split variant of (the same Slang plus the hidden `__gust_launch_base` uniform, which lets a
+//! launch past the device's per-dimension workgroup limit run as pieces). The macro writes it only for such a split,
+//! beside every `grid` body's own record; every other record keeps its bytes. `module`, `name`, `entry_point`,
+//! `requires` and `variant` are the body's own (both keys are always present, empty for a plain body), `key` is the
+//! split's own, from its own text, and `parameters` are the body's plus the hidden uniform, last, as
+//! `KernelDescriptor::__gust_launch_base_parameter` describes it; the reader refuses a record whose last parameter
+//! differs. A split is not a body: the export leaves it out of the `variants` lists ([`crate::export::variant_lists`]) and the
+//! manifest says `split_of` on its entry. `split_of` in a record of schema 1 to 4 is refused, as is a schema 5 record
+//! without it, or whose `split_of` is its own key.
 
 use std::{fs, path::Path};
 
@@ -73,12 +84,15 @@ pub(crate) const SHAPE_RECORD_SCHEMA: u32 = 3;
 /// The schema of a record whose body needs a capability or is a variant (M8, D139): schema 3's grammar plus `requires`
 /// and `variant`.
 pub(crate) const VARIANT_RECORD_SCHEMA: u32 = 4;
+/// The schema of the record of a split variant (m11.psplit-a, D209): schema 4's grammar plus `split_of`.
+pub(crate) const SPLIT_RECORD_SCHEMA: u32 = 5;
 /// Every record schema this tool reads (`RECORD_SCHEMA` of D89 is this set).
-pub(crate) const RECORD_SCHEMAS: [u32; 4] = [
+pub(crate) const RECORD_SCHEMAS: [u32; 5] = [
     RECORD_SCHEMA,
     SITE_RECORD_SCHEMA,
     SHAPE_RECORD_SCHEMA,
     VARIANT_RECORD_SCHEMA,
+    SPLIT_RECORD_SCHEMA,
 ];
 
 /// The suffix of the file that holds a record's JSON.
@@ -104,6 +118,10 @@ pub(crate) struct Record {
     /// The name of the variant function this record is, or `""` for the kernel's own body (every record of schema 1 to
     /// 3). `name` is the kernel's for all of its bodies.
     pub(crate) variant: String,
+    /// The key of the body this record is the split variant of (schema 5, m11.psplit-a, D209); `None` for a body. A
+    /// split is not a body: it has the body's `module`, `name`, `entry_point`, `requires` and `variant`, a key of its
+    /// own from its own Slang text, and the body's parameters plus the hidden `__gust_launch_base` uniform.
+    pub(crate) split_of: Option<String>,
     pub(crate) workgroup_size: [u32; 3],
     pub(crate) parameters: Vec<ParameterRecord>,
     /// The recorded Rust source file (relative, `/` separators); empty when unknown. For a schema 2 record: the
@@ -286,7 +304,14 @@ impl Record {
         // Schema 4 is schema 3's grammar plus `requires` and `variant`, so it may carry a `shape` too.
         let shape = match root.get("shape") {
             None => Shape::Grid,
-            Some(_) if schema != SHAPE_RECORD_SCHEMA && schema != VARIANT_RECORD_SCHEMA => {
+            Some(_)
+                if ![
+                    SHAPE_RECORD_SCHEMA,
+                    VARIANT_RECORD_SCHEMA,
+                    SPLIT_RECORD_SCHEMA,
+                ]
+                .contains(&schema) =>
+            {
                 return Err(format!(
                     "record: a schema {schema} record has no `shape` (it is a schema {SHAPE_RECORD_SCHEMA} key; the number is what keeps an older reader from reading a non-grid kernel as `grid`)"
                 ));
@@ -300,6 +325,7 @@ impl Record {
         };
         let (requires, variant) = parse_variant_facts(&root, schema)?;
         let key = string(&root, "key", "record")?;
+        let split_of = parse_split_of(&root, schema, &key)?;
         let entry_point = string(&root, "entry_point", "record")?;
         let expected = key_of(&entry_point, slang);
         if key != expected {
@@ -327,7 +353,9 @@ impl Record {
         // schema 2.
         let sited = match schema {
             SITE_RECORD_SCHEMA => true,
-            SHAPE_RECORD_SCHEMA | VARIANT_RECORD_SCHEMA => root.get("source").is_none(),
+            SHAPE_RECORD_SCHEMA | VARIANT_RECORD_SCHEMA | SPLIT_RECORD_SCHEMA => {
+                root.get("source").is_none()
+            }
             _ => false,
         };
         let (file, lines) = if sited {
@@ -355,6 +383,7 @@ impl Record {
             shape,
             requires,
             variant,
+            split_of,
             workgroup_size,
             parameters,
             file,
@@ -362,6 +391,9 @@ impl Record {
             slang: slang.to_owned(),
             sites: Vec::new(),
         };
+        if record.split_of.is_some() {
+            record.check_launch_base()?;
+        }
         Ok((record, schema, sited))
     }
 
@@ -421,6 +453,34 @@ impl Record {
     /// body's kernel is listed with its variants in the manifest.
     pub(crate) fn has_variant_facts(&self) -> bool {
         !self.requires.is_empty() || !self.variant.is_empty()
+    }
+
+    /// Whether this record is the split variant of a body rather than a body (schema 5).
+    pub(crate) fn is_split(&self) -> bool {
+        self.split_of.is_some()
+    }
+
+    /// The last parameter of a split is the hidden uniform, described exactly as the descriptor of the macro's split
+    /// describes it (`KernelDescriptor::__gust_launch_base_parameter`): the host trusts a variant only when it has
+    /// that shape, so a record that says otherwise would give an artifact the host refuses at run time.
+    fn check_launch_base(&self) -> Result<(), String> {
+        let rebuilt = self.descriptor();
+        let Some(last) = rebuilt.parameters.last() else {
+            return Err("record: a split has the hidden `__gust_launch_base` uniform as its last parameter, but this one has no parameters".to_owned());
+        };
+        let Some(binding) = last.binding else {
+            return Err(format!(
+                "record: the last parameter of a split must be the hidden `__gust_launch_base` uniform with a binding, found `{}` without one",
+                last.name
+            ));
+        };
+        if *last != KernelDescriptor::__gust_launch_base_parameter(binding.binding) {
+            return Err(format!(
+                "record: the last parameter of a split must be the hidden `__gust_launch_base` uniform (`__GustLaunchBase`, read only, a 16 byte std140 struct of four `u32`), found `{}`",
+                last.name
+            ));
+        }
+        Ok(())
     }
 
     /// SHA-256 of the clean Slang text (D45), as 64 hex digits.
@@ -594,7 +654,8 @@ fn first_out_of_order<'a>(given: &[&'a str], known: &[&str]) -> Option<(&'a str,
 /// portable one, so a record that carries one under another number is malformed, not portable. A schema 4 record has
 /// both and names a capability or a variant: the macro writes none that does not.
 fn parse_variant_facts(root: &Json, schema: u32) -> Result<(Vec<Capability>, String), String> {
-    if schema != VARIANT_RECORD_SCHEMA {
+    // Schema 5 is schema 4's grammar: a split always has both keys, and names the body's own (which may be none).
+    if schema != VARIANT_RECORD_SCHEMA && schema != SPLIT_RECORD_SCHEMA {
         for key in ["requires", "variant"] {
             if root.get(key).is_some() {
                 return Err(format!(
@@ -617,13 +678,43 @@ fn parse_variant_facts(root: &Json, schema: u32) -> Result<(Vec<Capability>, Str
         ));
     }
     let variant = string(root, "variant", "record")?;
-    if requires.is_empty() && variant.is_empty() {
+    // The split of a plain body names neither, and is schema 5; a schema 4 body that names neither is never written.
+    if schema == VARIANT_RECORD_SCHEMA && requires.is_empty() && variant.is_empty() {
         return Err(
             "record: schema 4 needs a capability in `requires` or a function in `variant` (a body with neither is written as schema 1, 2 or 3)"
                 .to_owned(),
         );
     }
     Ok((requires, variant))
+}
+
+/// The `split_of` of a record (schema 5): the key of the body the record is the split of, 16 lower-case hex digits and
+/// not the record's own. Required under schema 5 and refused under any other: the number is what keeps an older reader
+/// from reading a split as a kernel of its own, whose second record of one `module` and `name` it would refuse.
+fn parse_split_of(root: &Json, schema: u32, key: &str) -> Result<Option<String>, String> {
+    let Some(found) = root.get("split_of") else {
+        if schema == SPLIT_RECORD_SCHEMA {
+            return Err("record: a schema 5 record needs `split_of` (the key of the body it is the split of)".to_owned());
+        }
+        return Ok(None);
+    };
+    if schema != SPLIT_RECORD_SCHEMA {
+        return Err(format!(
+            "record: a schema {schema} record has no `split_of` (it is a schema {SPLIT_RECORD_SCHEMA} key; the number is what keeps an older reader from reading a split variant as a kernel of its own)"
+        ));
+    }
+    let owner = found
+        .as_str()
+        .ok_or("record: `split_of` must be a string")?;
+    if !is_hex16(owner) {
+        return Err("record: `split_of` must be 16 lower-case hex digits".to_owned());
+    }
+    if owner == key {
+        return Err(
+            "record: `split_of` is the record's own key (a split is not its own body)".to_owned(),
+        );
+    }
+    Ok(Some(owner.to_owned()))
 }
 
 fn leak(text: &str) -> &'static str {

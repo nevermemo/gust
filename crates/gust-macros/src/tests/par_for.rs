@@ -36,8 +36,24 @@ impl Scratch {
         Self(path)
     }
 
-    /// The names (not the paths) of the exported files that end with `suffix`, sorted.
+    /// The names (not the paths) of the files of the BODIES that end with `suffix`, sorted: a grid kernel's split
+    /// (D209) is a second record under a key of its own, and `every_file` lists it too.
     fn files(&self, suffix: &str) -> Vec<String> {
+        self.every_file(suffix)
+            .into_iter()
+            .filter(|name| !self.is_split(name))
+            .collect()
+    }
+
+    /// Whether the file `name` (`<key>.slang`, `<key>.kernel.json`, `<key>.<site>.site.json`) belongs to a split.
+    fn is_split(&self, name: &str) -> bool {
+        let key = &name[..16];
+        fs::read_to_string(self.0.join("demo").join(format!("{key}.kernel.json")))
+            .is_ok_and(|record| record.contains("\"split_of\""))
+    }
+
+    /// The names of every exported file that ends with `suffix`, bodies and splits, sorted.
+    fn every_file(&self, suffix: &str) -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(self.0.join("demo"))
             .map(|entries| {
                 entries
@@ -312,6 +328,20 @@ fn a_schema_2_record_has_no_source_and_the_sidecar_has_the_call_site() {
     assert!(sidecar.contains("\"file\": \"src/lib.rs\""), "{sidecar}");
     assert!(sidecar.contains("\"key\""), "{sidecar}");
     assert!(sidecar.contains("\"lines\""), "{sidecar}");
+    // The loop is a grid kernel, so it also exports its split (D209): a schema 5 record that names the body.
+    let all = scratch.every_file(".kernel.json");
+    assert_eq!(all.len(), 2, "{all:?}");
+    let body_key = scratch.files(".kernel.json")[0].replace(".kernel.json", "");
+    let split_name = all
+        .iter()
+        .find(|name| scratch.is_split(name))
+        .expect("a split record");
+    let split = scratch.read(split_name);
+    assert!(split.contains("\"schema\": 5"), "{split}");
+    assert!(
+        split.contains(&format!("\"split_of\": \"{body_key}\"")),
+        "{split}"
+    );
 }
 
 /// The Rust lines of a sidecar's line table, sorted and without repeats.
@@ -369,8 +399,9 @@ fn the_exported_files_hold_no_twin_text() {
         let scratch = Scratch::new("twin");
         let expansion = expand(&input, &scratch, "src/demo.rs", 1, Profile::Other);
         assert!(!failed(&expansion), "{expansion}");
-        let names = scratch.files("");
-        assert_eq!(names.len(), 3, "{names:?}");
+        // The body's three files and its split's three.
+        let names = scratch.every_file("");
+        assert_eq!(names.len(), 6, "{names:?}");
         for name in names {
             let text = scratch.read(&name);
             for marker in TWIN_TEXT {

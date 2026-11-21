@@ -3121,7 +3121,8 @@ impl HeadlessDevice {
     /// Decide whether a launch that the plain checks refused (`refused`) can run as pieces of the kernel's split
     /// variant (m11.g4b), and plan them. Only a `grid` launch refused for a workgroup limit (`refused` is that
     /// [`Error::DeviceLimit`]) qualifies, and only when the kernel's `split` is the one the `#[gpu]` macro makes
-    /// ([`split_variant_matches`]), this build can compile it, and the variant passes every limit the base passed (one
+    /// ([`split_variant_matches`]), the variant has a shader source in this build (its own precompiled artifact, D209,
+    /// or the run-time compiler, D208: [`split_variant_has_a_shader_source`]), and the variant passes every limit the base passed (one
     /// more uniform, its binding index, the hidden uniform's 16 bytes against the uniform binding size, the
     /// capabilities). Anything else returns `refused` unchanged, before anything
     /// is compiled. A launch the planner itself refuses (the invocation cap, too many pieces) returns that error.
@@ -3145,7 +3146,7 @@ impl HeadlessDevice {
             || self.limits.max_compute_workgroups_per_dimension == 0
             || kernel.shape != Shape::Grid
             || !split_variant_matches(kernel, variant)
-            || !split_variant_compiles_at_run_time(variant, cfg!(feature = "slang-runtime"))
+            || !split_variant_has_a_shader_source(variant, cfg!(feature = "slang-runtime"))
         {
             return Err(refused);
         }
@@ -4110,10 +4111,12 @@ fn split_pieces(
 
 /// Whether `variant` is the split variant the `#[gpu]` macro makes for `kernel`: the same kernel (module, name, entry
 /// point, shape, workgroup size, `requires`, target), the kernel's parameters and then one more, the hidden launch-base
-/// uniform at a binding past every binding of the kernel, and no split of its own. `KernelDescriptor::with_split` is
-/// public for the macro only; this check keeps a hand-set `split` that is not shaped like the macro's from being run.
-/// It cannot read the Slang: the run-time compiler's reflection is cross-checked against the variant's parameters when
-/// it compiles (`compile_at_run_time`), so a text that lacks the uniform fails there.
+/// uniform at a binding past every binding of the kernel, no split of its own, and no artifact or WGSL artifacts only
+/// (a precompiled variant is the same kernel text under a key of its own, D209; an artifact of another format is not
+/// one this host runs). `KernelDescriptor::with_split` is public for the macro only; this check keeps a hand-set `split`
+/// that is not shaped like the macro's from being run. It cannot read the Slang: the run-time compiler's reflection, or
+/// the verification of the artifact (`verify_artifact`, which holds the stored reflection to the variant's parameters),
+/// is what a text that lacks the uniform fails against when the variant is compiled.
 fn split_variant_matches(kernel: &KernelDescriptor, variant: &KernelDescriptor) -> bool {
     let Some((hidden, own)) = variant.parameters.split_last() else {
         return false;
@@ -4136,7 +4139,10 @@ fn split_variant_matches(kernel: &KernelDescriptor, variant: &KernelDescriptor) 
         && variant.requires == kernel.requires
         && variant.target == kernel.target
         && variant.split.is_none()
-        && variant.artifacts.is_empty()
+        && variant
+            .artifacts
+            .iter()
+            .all(|artifact| artifact.format == gust::Format::Wgsl)
         && own == kernel.parameters
         && past_every_binding
         && hidden.binding.is_some_and(|binding| {
@@ -4606,14 +4612,13 @@ fn select_shader_source(
     Err(no_artifact(kernel))
 }
 
-/// Whether a split variant is compiled at run time: it carries no precompiled artifact (the macro makes none), so it
-/// needs the run-time compiler. `run_time_compiler` is `cfg!(feature = "slang-runtime")` in production and an argument
-/// so that a test can reach both builds from the one it runs in.
-fn split_variant_compiles_at_run_time(variant: &KernelDescriptor, run_time_compiler: bool) -> bool {
-    matches!(
-        select_shader_source(variant, run_time_compiler),
-        Ok(ShaderSource::RunTime)
-    )
+/// Whether a split variant has a shader source in this build: a precompiled WGSL artifact of its own (D209), or the
+/// run-time compiler (D208). The same policy as any kernel's (D45): an artifact is used whether or not the compiler is
+/// there, and a variant with neither is `Error::NoArtifact`, which the planner reads as "this build cannot run the
+/// pieces" and answers with the launch's own refusal. `run_time_compiler` is `cfg!(feature = "slang-runtime")` in
+/// production and an argument so that a test can reach both builds from the one it runs in.
+fn split_variant_has_a_shader_source(variant: &KernelDescriptor, run_time_compiler: bool) -> bool {
+    select_shader_source(variant, run_time_compiler).is_ok()
 }
 
 /// The error of a kernel that has no WGSL artifact in a build without the run-time compiler.
@@ -4631,6 +4636,8 @@ mod tests {
 
     const WGSL_ARTIFACT: gust::Artifact =
         gust::Artifact::new(gust::Format::Wgsl, "0123456789abcdef", b"", "");
+    const SPIRV_ARTIFACT: gust::Artifact =
+        gust::Artifact::new(gust::Format::Spirv, "0123456789abcdef", b"", "");
 
     // ---- m11.g4b: the planner and the check of a split variant, on pure data (no device). ----
 
@@ -4858,12 +4865,16 @@ mod tests {
         other_entry.entry_point = "other";
         let other_size =
             KernelDescriptor::new("m", "k", "m_k", [16, 1, 1], VARIANT_PARAMETERS, "v");
-        let with_artifact = good.with_artifacts(&[WGSL_ARTIFACT]);
+        let spirv_artifact = good.with_artifacts(&[SPIRV_ARTIFACT]);
         let mut pixel = good;
         pixel.shape = Shape::Pixel;
-        for bad in [other_entry, other_size, with_artifact, pixel] {
+        for bad in [other_entry, other_size, spirv_artifact, pixel] {
             assert!(!split_variant_matches(&base, &bad));
         }
+        // A WGSL artifact of its own does not make it another thing (D209), and neither does having none.
+        let with_artifact = good.with_artifacts(&[WGSL_ARTIFACT]);
+        assert!(split_variant_matches(&base, &with_artifact));
+        assert!(split_variant_matches(&base, &good));
         // A variant with a variant of its own is no variant.
         static NESTED: KernelDescriptor =
             KernelDescriptor::new("m", "k", "m_k", [8, 1, 1], VARIANT_PARAMETERS, "variant");
@@ -4905,19 +4916,23 @@ mod tests {
     }
 
     #[test]
-    fn a_split_variant_is_planned_only_in_a_build_with_the_run_time_compiler() {
-        // m11.r4fix: the planner's own decision, for both builds. The variant has no artifact, so it needs the compiler;
-        // one that carried a WGSL artifact would be `Precompiled`, which the planner does not take either.
+    fn a_split_variant_is_planned_when_it_has_an_artifact_or_the_build_has_the_run_time_compiler() {
+        // m11.psplit-a (D209): the planner's own decision, for the four cases. An artifact is a shader source whether or
+        // not the compiler is there; without one, only the compiler is; with neither the launch keeps its refusal.
         assert!(DESCRIPTOR.artifacts.is_empty());
-        assert!(split_variant_compiles_at_run_time(&DESCRIPTOR, true));
-        assert!(!split_variant_compiles_at_run_time(&DESCRIPTOR, false));
+        assert!(split_variant_has_a_shader_source(&DESCRIPTOR, true));
+        assert!(!split_variant_has_a_shader_source(&DESCRIPTOR, false));
         let precompiled = DESCRIPTOR.with_artifacts(&[WGSL_ARTIFACT]);
         for run_time_compiler in [false, true] {
-            assert!(!split_variant_compiles_at_run_time(
+            assert!(split_variant_has_a_shader_source(
                 &precompiled,
                 run_time_compiler
             ));
         }
+        // An artifact of another format is no shader source of this host's: the same as none.
+        let spirv_only = DESCRIPTOR.with_artifacts(&[SPIRV_ARTIFACT]);
+        assert!(split_variant_has_a_shader_source(&spirv_only, true));
+        assert!(!split_variant_has_a_shader_source(&spirv_only, false));
     }
 
     #[test]

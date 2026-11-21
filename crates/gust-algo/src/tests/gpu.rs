@@ -1783,3 +1783,99 @@ fn gpu_untimed_calls_are_unaffected_by_earlier_timed_scopes() {
     let t = crate::timed(|| reduce::sum(&ints)).unwrap();
     assert_time_rule(&device, t.time, 1);
 }
+
+// ---- m11.scope: a caller's own batch in a `timed` scope ----
+
+#[gust::gpu]
+pub mod doubling {
+    /// `out[i] = values[i] * 2` for `i < out.len()`.
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn run(
+        id: SV_DispatchThreadID,
+        values: StructuredBuffer<uint>,
+        mut out: RWStructuredBuffer<uint>,
+    ) {
+        let i = id.x;
+        if i < out.len() {
+            out[i] = values[i] * 2u32;
+        }
+    }
+}
+
+#[test]
+fn gpu_timed_own_batch_and_reduce_share_one_scope() {
+    let device = device();
+    let info = device.adapter_info();
+    eprintln!("adapter: {} backend: {:?}", info.name, info.backend);
+
+    let words: Vec<u32> = (0..5_000u32).map(|i| i % 97).collect();
+    let length = u32::try_from(words.len()).unwrap();
+    let values = GpuVec::from_slice_on(&device, &words).unwrap();
+    let doubled_words: Vec<u32> = words.iter().map(|word| word * 2).collect();
+    let expected: u32 = doubled_words.iter().sum();
+    let timestamps = device.supports_gpu_timestamps();
+
+    // A fresh zeroed output for every dispatch, so a value read back proves that this dispatch ran.
+    let fresh = || GpuVec::<u32>::zeroed_on(&device, length).unwrap();
+    let own = |device: &gust_wgpu::HeadlessDevice, out: &GpuVec<u32>| {
+        let call = doubling::run::call(length, gust::Independent(&values), gust::Independent(out));
+        crate::dispatch_batch_in_scope(device, &[gust_wgpu::BufferDispatch::from(&call)])
+    };
+
+    // Outside a scope the batch runs, and a scope opened afterwards starts from zero.
+    let unscoped = fresh();
+    own(&device, &unscoped).unwrap();
+    assert_eq!(unscoped.to_vec().unwrap(), doubled_words);
+    assert_eq!(
+        crate::timed(|| Ok(())).unwrap().time,
+        crate::GpuTime::default()
+    );
+
+    // An empty slice is not a batch: it counts nothing, in a scope.
+    let empty =
+        crate::timed(|| crate::dispatch_batch_in_scope(&device, &[]).map_err(Error::from)).unwrap();
+    assert_eq!(empty.time, crate::GpuTime::default());
+
+    // The parts, each in a scope of its own, then both in one.
+    let out = fresh();
+    let part_own = crate::timed(|| own(&device, &out).map_err(Error::from))
+        .unwrap()
+        .time;
+    assert_eq!(out.to_vec().unwrap(), doubled_words);
+    let part_sum = crate::timed(|| reduce::sum(&out)).unwrap();
+    assert_eq!(part_sum.value, expected);
+    assert_eq!(part_own.batches, 1);
+    assert_eq!(part_sum.time.batches, 1);
+
+    let out = fresh();
+    let both = crate::timed(|| {
+        own(&device, &out)?;
+        reduce::sum(&out)
+    })
+    .unwrap();
+    assert_eq!(both.value, expected, "the in-scope own batch ran");
+    assert_eq!(both.time.batches, 2, "one own batch and one algo batch");
+    assert_eq!(both.time.gpu_elapsed.is_some(), timestamps);
+
+    if timestamps {
+        // The exact rule is pinned with nested scopes: the outer total is the sum of the inner ones, and the own batch
+        // adds a real, non-zero GPU time.
+        let out = fresh();
+        let nested = crate::timed(|| {
+            let inner_own = crate::timed(|| own(&device, &out).map_err(Error::from))?;
+            let inner_sum = crate::timed(|| reduce::sum(&out))?;
+            Ok((inner_own.time, inner_sum.time))
+        })
+        .unwrap();
+        let (inner_own, inner_sum) = nested.value;
+        let (own_time, sum_time) = (
+            inner_own.gpu_elapsed.unwrap(),
+            inner_sum.gpu_elapsed.unwrap(),
+        );
+        assert_eq!(nested.time.batches, 2);
+        assert_eq!(nested.time.gpu_elapsed, Some(own_time + sum_time));
+        assert!(own_time > std::time::Duration::ZERO);
+        assert!(nested.time.gpu_elapsed.unwrap() >= own_time);
+        assert!(nested.time.gpu_elapsed.unwrap() >= sum_time);
+    }
+}

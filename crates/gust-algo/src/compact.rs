@@ -78,7 +78,7 @@ pub fn indices(flags: &GpuVec<u32>) -> Result<(GpuVec<u32>, GpuVec<u32>), Error>
         Independent(&positions),
         Independent(&indices),
     );
-    crate::timing::dispatch_batch(device, &[BufferDispatch::from(&call)])?;
+    crate::timing::dispatch_batch_in_scope(device, &[BufferDispatch::from(&call)])?;
     Ok((indices, total))
 }
 
@@ -101,7 +101,7 @@ fn mask_of(flags: &GpuVec<u32>) -> Result<GpuVec<u32>, Error> {
         Independent(flags),
         Independent(&mask),
     );
-    crate::timing::dispatch_batch(device, &[BufferDispatch::from(&call)])?;
+    crate::timing::dispatch_batch_in_scope(device, &[BufferDispatch::from(&call)])?;
     Ok(mask)
 }
 
@@ -161,7 +161,7 @@ macro_rules! gather {
                     Independent(count),
                     Independent(out),
                 );
-                crate::timing::dispatch_batch(device, &[BufferDispatch::from(&call)])
+                crate::timing::dispatch_batch_in_scope(device, &[BufferDispatch::from(&call)])
             })
         }
     };

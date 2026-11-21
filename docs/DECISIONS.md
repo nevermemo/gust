@@ -1,6 +1,6 @@
 # Decisions and boundaries
 
-Append-only log. Next id: **D199**. Add a row for every owner decision or durable
+Append-only log. Next id: **D203**. Add a row for every owner decision or durable
 technical decision, with its date and source; supersede an old row with a new one
 instead of editing it. D01–D18 were recorded 2026-09-07 from the owner's GUST handoff,
 earlier reflection deferral, and independent inspection. Chat research is design

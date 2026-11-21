@@ -83,6 +83,10 @@ proof.
   launch, so `id` stays the global index and kernels need no edit. Graphs, the deprecated `dispatch_f32`/`_u32`,
   pixel kernels, hand-built descriptors without a macro-made variant and builds without run-time compilation
   (precompiled-only, the browser) keep `DeviceLimit`; the 2^32 invocation cap is unchanged.
+- Example `mc-histogram` (m11.mc): hash-sampled points deposited into a fixed-point histogram with `atomic_add`
+  (bit-equal on the host reference, the twin and the GPU), a density through the map API, and diffusion steps with
+  `rem_euclid` and `mul_add` checked within a bound derived from the GPU model of SEMANTICS; its large run is a
+  launch the host splits.
 - `KernelDescriptor::split` (m11.g4a, D208): every GPU `grid` kernel carries a split variant, compiled only when used,
   with one hidden launch-base uniform that its entry point adds to the invocation id. It is the ground for launches
   past the per-dimension workgroup limit (used by the host since m11.g4b). The kernel's own Slang,

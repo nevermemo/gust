@@ -629,6 +629,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       constant-bound loop that breaks on an integer counter (`while` is GUST-E0402). On the sentinel's inputs all
       four gave Rust's values on the Radeon 890M, the RTX 5090 and the RTX 5090 with the SPIR-V route; SEMANTICS
       names them and narrows the integer-exit advice. Opus review. `GPU_SUITE_PIN` 564 over 55 by count.
+    - m11.mc (`63e2f53`): the example `mc-histogram`, the first program using this milestone's additions together:
+      the hash generator, `atomic_add`, module consts, `rem_euclid`, `mul_add`, the map path and a split launch.
+      The histogram is exact (integers only on the path to the cell) and bit-equal on the host reference, the twin,
+      the Radeon 890M and the RTX 5090; 2^24 + 1000 samples needed 65,540 workgroups and were split by the host on
+      both; 8 diffusion steps stay within the derived bound (about 64 single-precision roundings, from the GPU
+      model of SEMANTICS), with the largest observed error about 21 times under it. Opus review: the first bound
+      charged one rounding per GPU addition and was corrected. Examples sit outside `GPU_SUITE_PIN`.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

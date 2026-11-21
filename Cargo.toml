@@ -11,6 +11,7 @@ members = [
     "examples/component-pool",
     "examples/hash-rng",
     "examples/map-chain",
+    "examples/mc-histogram",
     "examples/polynomial",
     "examples/particle-step",
     "examples/polar-transform",

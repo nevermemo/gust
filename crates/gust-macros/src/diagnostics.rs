@@ -121,6 +121,9 @@ codes! {
     StdTraitBound = 125 => "GUST-E0125";
     /// A trait path call (`Trait::m(x, ..)`, `<S as Trait>::m(x, ..)`) whose first argument is not a place.
     TraitPathReceiver = 126 => "GUST-E0126";
+    /// A module-level `const` outside the accepted form (`const NAME: u32 = 4096;`: one of `u32`, `i32`, `f32` or
+    /// `bool`, one literal, not generic), or a pattern that is the bare name of one.
+    ConstForm = 127 => "GUST-E0127";
 
     // E02xx: types.
     /// A primitive type outside the 32-bit scalar subset.
@@ -1355,6 +1358,7 @@ mod tests {
             || file.ends_with("src/tests/variant.rs")
             || file.ends_with("src/tests/subgroup.rs")
             || file.ends_with("src/tests/routes.rs")
+            || file.ends_with("src/tests/consts.rs")
             || file.ends_with("src/validate/mod.rs")
             || file.ends_with("src/validate/limits.rs")
             || file.ends_with("src/validate/classify/tests.rs")

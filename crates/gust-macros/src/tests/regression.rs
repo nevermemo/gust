@@ -6217,10 +6217,9 @@ fn a_method_cannot_take_the_name_of_a_dialect_method_a_slang_member_keyword_or_a
 
 #[test]
 fn the_module_item_message_names_impl_blocks() {
-    let error = translate(
-        "mod m { const K: uint = 1u32; #[kernel] pub fn run(id: SV_DispatchThreadID) {} }",
-    )
-    .expect_err("const");
+    let error =
+        translate("mod m { static K: u32 = 1; #[kernel] pub fn run(id: SV_DispatchThreadID) {} }")
+            .expect_err("static");
     assert_code(&error, Code::UnsupportedModuleItem);
     assert!(error.to_string().contains("`impl` blocks"), "{error}");
 }

@@ -157,11 +157,11 @@ Decision: D02.
 
 ### GUST-E0102 unsupported module item
 
-A GPU module holds functions, plain structs, field-less enums (GUST-E0122), the inherent `impl` blocks of its structs (several blocks for one struct are allowed) and, since slice m9.g1, traits of the module (GUST-E0124) with their impls.
+A GPU module holds functions, plain structs, field-less enums (GUST-E0122), the inherent `impl` blocks of its structs (several blocks for one struct are allowed) and, since slice m9.g1, traits of the module (GUST-E0124) with their impls, and, since slice m11.g3, `const` items of one scalar literal (GUST-E0127).
 Reached through `#[gpu]`.
-Rejected: `const`, `static`, `use`, nested `mod`, type aliases; an `impl` that is an `unsafe impl`, a trait impl of a trait the module does not declare (`impl Clone for S`), a negative impl, an associated `const` or an associated type, a `Self` anywhere but inside an `impl` block (inside one it is the struct of the block, in a type, a struct literal or a path such as `Self::make()`). A path call of a function that has a receiver (`S::area(c)`; write `c.area()`) or of an associated function that no struct has (`S::nowhere()`) is GUST-E0302, not this code. Methods and associated functions are accepted since M9 slices m9.a1 and m9.a2.
-Write instead: pass constants as uniform or value parameters, or write them inline.
-Decision: D02, D133 (methods), D154.
+Rejected: `static`, `use`, nested `mod`, type aliases; an `impl` that is an `unsafe impl`, a trait impl of a trait the module does not declare (`impl Clone for S`), a negative impl, an associated `const` or an associated type, a `Self` anywhere but inside an `impl` block (inside one it is the struct of the block, in a type, a struct literal or a path such as `Self::make()`). A path call of a function that has a receiver (`S::area(c)`; write `c.area()`) or of an associated function that no struct has (`S::nowhere()`) is GUST-E0302, not this code. Methods and associated functions are accepted since M9 slices m9.a1 and m9.a2.
+Write instead: a module-level `const NAME: u32 = 4096;` for a constant (GUST-E0127 for its form); pass other values as uniform or value parameters, or write them inline; drop the `static` (a `static` has no GPU lowering) or the `use` (the prelude names are in scope).
+Decision: D02, D133 (methods), D154, D205.
 
 ### GUST-E0103 generic struct
 
@@ -371,6 +371,14 @@ Rejected: `T::get(&make())`, `T::get(make())`, `T::get()`.
 Write instead: bind the value to a local first, `let s = make(); T::get(&s)`.
 Fixture: `tests/ui/trait-path-receiver` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D170 (M9 plan 2.6, slice m9.g1).
+
+### GUST-E0127 module const form
+
+A module-level `const NAME: T = <literal>;`, `pub` or private, is shared by every function of the module (slice m11.g3, D205). `T` is `u32`, `i32`, `f32` or `bool` (or `uint`, `int`, `float`), and the initializer is one literal of that type, or `-` and one literal for `i32` and `f32`. Nothing is evaluated: the Slang text and the Rust item (which the host and the CPU twin read) hold the same literal. Each constant is one line, `static const uint WIDTH = 4096;`, in the text of every kernel of the module before the enums, and the name goes through the collision table (`min` becomes `__gust_r_min` at the declaration and at every use). Documentation and lint attributes are accepted; any other attribute is GUST-E0115. A use is the bare name as a value. These are this code. In the form of the constant: a type other than the four scalars (a struct, a vector, an array, `usize`, `u64`); an initializer that is not one literal of the type (a call, arithmetic, another constant, `u32::MAX`, a parenthesized literal, `-` on a `u32`, a literal of another type or out of range); a generic `const` or `const _`. In its name: the name of a struct, an enum, a trait or a type parameter of the module (slangc would see a clash); the name of a method or a trait method (inside a Slang struct the member would be read where Rust reads the constant); the name of a field of a struct of the module (the same capture); and a name of the Rust prelude or of GUST's math and scalar prelude (`None`, `Some`, `Ok`, `Err`, `u32`, `i32`, `f32`, `Vec2`, `Mat4`, `uint`, `int`, `float`, `bool`). In a use: a pattern that is the bare name of a module constant, in a `match` arm (also inside `Some(..)` or an or-pattern), an `if let`, a `let`, a `for`, a parameter or a closure parameter (rustc compares a `match` arm with the constant where the Slang lowering would bind a new name; the others are errors of rustc as well). A constant inside a function is GUST-E0804, an associated constant in an `impl` is GUST-E0102, and a constant is not read as an array length (GUST-E0216) or in `workgroup_size(..)` (GUST-E0708).
+Reached through `#[gpu]`.
+Rejected: `const K: usize = 4;`, `const K: u32 = 2 + 2;`, `const K: u32 = u32::MAX;`, `const K: u32 = OTHER;`, `const K: Vec2 = Vec2::new(1.0, 2.0);`, `const K<T>: u32 = 1;`, `match x { K => .. }`.
+Write instead: the literal (`4294967295u32`), one constant per value, `if x == K { .. }` for a comparison, or a uniform or a value parameter for any other type.
+Decision: D205.
 
 ## E02xx: types
 
@@ -618,10 +626,10 @@ Decision: D02.
 
 ### GUST-E0308 associated constant or foreign path
 
-A path used as a value must be one local, parameter or helper name, or `Mat2::IDENTITY`, `Mat3::IDENTITY` or `Mat4::IDENTITY`.
+A path used as a value must be one local, parameter, helper or module `const` name (GUST-E0127), or `Mat2::IDENTITY`, `Mat3::IDENTITY` or `Mat4::IDENTITY`.
 Reached through `#[gpu]`.
 Accepted (slice m11.math): `std::f32::consts::PI`, `TAU` and `E`, also under `core::`, spelled as the full path (a `use` is
-GUST-E0102). They lower to `f32` literals that round-trip (`float(3.1415927)`); no other constant is accepted.
+GUST-E0102). They lower to `f32` literals that round-trip (`float(3.1415927)`); no other path constant is accepted (a constant of the module itself is a bare name, since slice m11.g3).
 Rejected: `f32::INFINITY`, `u32::MAX`, `core::f32::consts::LN_2`, `f32::consts::PI`, `Vec4::ZERO`.
 Write instead: write the literal, for example `4294967295u32`.
 Decision: D06.

@@ -583,6 +583,12 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       clash recorded for m11.zc. Tests: a Slangc-tier diagnostics test, exact-line collision tests, and a GPU test
       (Radeon 890M) whose kernel has a parameter named `Texture2D`. Unit suite on the lane green; `GPU_SUITE_PIN`
       525 over 51 by count.
+    - m11.g3 (`f7b911e`, fixes `0c9657d` and `15b5f61`; D205): module-level scalar `const` items lowered to
+      `static const` (`slang/consts.rs`); `GUST-E0127` refuses other forms, name clashes with types, methods,
+      fields and prelude names, and binding patterns that name a const (rustc would compare, the lowering would
+      bind). GPU tests in `tests/consts.rs` (literal forms with `i32::MIN`, a struct method and a closure reading a
+      const) on the Radeon 890M and the RTX 5090. Two Opus reviews (merge after fixes); Unit suite on the lane
+      green; `GPU_SUITE_PIN` 528 over 52, confirmed by full Gpu suites on the merged tree (890M 695 s, RTX 5090 527 s).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

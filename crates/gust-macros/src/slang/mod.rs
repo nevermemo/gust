@@ -13,6 +13,7 @@ use crate::{
 #[cfg(test)]
 mod collision_tests;
 pub(crate) mod collisions;
+pub(crate) mod consts;
 pub(crate) mod div_table;
 pub(crate) mod guards;
 pub(crate) mod mul_table;
@@ -1035,6 +1036,9 @@ pub(crate) fn emit_kernel_in(
     // so WGSL emits `array<atomic<T>>` storage.
     let mut atomic = AtomicUsage(std::collections::HashSet::new());
     atomic.visit_item_fn(kernel);
+
+    // The module-level constants (slice m11.g3): plain scalars, so before everything that could read one.
+    consts::emit_consts(&mut output, items)?;
 
     // Enums first, in source order: a function and a switch name them, and a struct cannot (GUST-E0211).
     for item in items {

@@ -65,6 +65,10 @@ proof.
   named `RWTexture2D`, `WTexture2D`, `SamplerState` or `Texture2D` is renamed in the emitted Slang
   (`__gust_r_SamplerState`); before, slangc refused the module. A program that uses one of those names gets new
   emitted text and a new artifact content key. A struct named `Texture2D` or `Sampler` stays `GUST-E0736`.
+- Module-level `const` items in a `#[gpu]` module (m11.g3, D205): `const NAME: T = <literal>;` with `T` one of `u32`,
+  `i32`, `f32` and `bool` is shared by every kernel, helper, method and closure of the module and by the host; it
+  lowers to a `static const` line and nothing is evaluated. Other forms, and a const whose name is also a type,
+  method, field or prelude name of the module or is used as a binding pattern, are the new `GUST-E0127`.
 - More math methods for compute kernels (m11.math2): `round` (half-way cases away from zero), `signum` (`f32` and
   `i32`), `to_radians`, `to_degrees`, `asin`, `acos` and `rem_euclid` (`f32`, `i32`, `u32`). `round`, `signum` and
   `rem_euclid` lower to `__gust_`-prefixed helpers defined only in a module that calls them. The seven names are

@@ -1,4 +1,4 @@
-// The array length is a literal, not an expression, GUST-E0216 (a `const` item is GUST-E0102 in a GPU module).
+// The array length is a literal, not an expression, GUST-E0216 (a module `const` is no length either).
 // expected.txt pins the code and the line of the type.
 
 #[gust::gpu]

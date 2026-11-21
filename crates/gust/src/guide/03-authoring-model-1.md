@@ -8,7 +8,9 @@ writes Slang text, and `slangc` compiles that text for the GPU. This chapter is 
 ## A `#[gpu]` module
 
 `#[gpu]` goes on an inline module (`mod name { .. }`, not `mod name;`). The module holds named-field structs, helper
-functions and kernels (and, see chapter 8, impl blocks, enums and traits). It imports the shader prelude for you,
+functions and kernels (and, see chapter 8, impl blocks, enums and traits), and `const NAME: u32 = 4096;` items that
+hold one scalar literal (`u32`, `i32`, `f32` or `bool`; GUST-E0127 for any other form) and are shared by every function
+of the module and by the host. It imports the shader prelude for you,
 so the names below are in scope without a `use`:
 
 - the scalar types `float`, `int` and `uint` (the Rust spellings `f32`, `i32` and `u32` mean the same and are also

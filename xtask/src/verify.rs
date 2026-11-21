@@ -1073,9 +1073,13 @@ pub(crate) struct GpuSuitePin {
 /// Slice m11.tx: 524 over 51 became 525 over 51. One new test in `tests/textures.rs` (user structs named like the
 /// Slang texture and sampler types, and a kernel parameter named `Texture2D`). Updated by count, not from a full Gpu
 /// suite run.
+///
+/// Slice m11.g3: 525 over 51 became 528 over 52. The new test file `tests/consts.rs` holds three tests (module-level
+/// `const` items read by kernels, the literal forms including `i32::MIN`, and a struct method and a closure that read
+/// a const) and adds one `test result:` line. Updated by count, not from a full Gpu suite run.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 525,
-    result_lines: 51,
+    passed: 528,
+    result_lines: 52,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

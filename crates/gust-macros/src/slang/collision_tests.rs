@@ -107,10 +107,13 @@ fn expected_pieces(position: Position, emitted: &str) -> Vec<String> {
 /// named like a type the macro maps itself (`float`, `int`, `uint`, `bool`) is read as that type.
 fn reachable(position: Position, name: &str) -> bool {
     !name.starts_with("__Gust")
-        && !(position == Position::Struct && MAPPED_TYPE_NAMES.contains(&name))
-        // A struct named `Texture2D` is a Rust-side texture type, refused with GUST-E0736 (m11.tx).
-        && !(position == Position::Struct && name == "Texture2D")
+        && !(position == Position::Struct
+            && (MAPPED_TYPE_NAMES.contains(&name) || RUST_SIDE_TEXTURE_NAMES.contains(&name)))
 }
+
+/// The Rust-side texture and sampler types of the dialect: a struct of one of these names is refused with GUST-E0736
+/// (m11.tx; `Sampler` is not in the table).
+const RUST_SIDE_TEXTURE_NAMES: &[&str] = &["Texture2D", "Sampler"];
 
 #[test]
 fn the_table_is_sorted_and_without_duplicates() {
@@ -791,17 +794,23 @@ fn texture_and_sampler_names_are_refused_only_as_struct_names_of_the_rust_side_t
         "struct __gust_r_WTexture2D",
         "struct __gust_r_SamplerState",
         "__gust_r_RWTexture2D s = __gust_struct_0;",
-        "RWTexture2D<float> image;",
-        "WTexture2D<float4> out;",
-        "SamplerState filter;",
-        "RWStructuredBuffer<__gust_r_RWTexture2D> a;",
-        "RWStructuredBuffer<__gust_r_WTexture2D> b;",
-        "RWStructuredBuffer<__gust_r_SamplerState> c;",
+        // Whole lines: the emitted texture and sampler types keep Slang's spelling, with no prefix in front.
+        "[[vk::binding(0, 0)]] [format(\"r32f\")] RWTexture2D<float> image;",
+        "[[vk::binding(1, 0)]] SamplerState filter;",
+        "[[vk::binding(2, 0)]] [format(\"rgba32f\")] WTexture2D<float4> out;",
+        "[[vk::binding(3, 0)]] RWStructuredBuffer<__gust_r_RWTexture2D> a;",
+        "[[vk::binding(4, 0)]] RWStructuredBuffer<__gust_r_WTexture2D> b;",
+        "[[vk::binding(5, 0)]] RWStructuredBuffer<__gust_r_SamplerState> c;",
     ] {
-        assert!(
-            lines.iter().any(|candidate| candidate.ends_with(line)),
-            "`{line}` missing in\n{text}"
-        );
+        assert!(lines.contains(&line), "`{line}` missing in\n{text}");
+    }
+    // The emitted types are never renamed: no renamed spelling is followed by a template or is a parameter's type.
+    for renamed_type in [
+        "__gust_r_RWTexture2D<",
+        "__gust_r_WTexture2D<",
+        "__gust_r_SamplerState filter",
+    ] {
+        assert!(!text.contains(renamed_type), "`{renamed_type}` in\n{text}");
     }
     for bare in [
         "struct RWTexture2D",
@@ -826,12 +835,11 @@ fn texture_and_sampler_names_are_refused_only_as_struct_names_of_the_rust_side_t
     .expect("the module is accepted");
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
     for line in [
-        "RWStructuredBuffer<float> __gust_r_Texture2D;",
-        "Texture2D<float> image;",
+        "[[vk::binding(0, 0)]] RWStructuredBuffer<float> __gust_r_Texture2D;",
+        "[[vk::binding(1, 0)]] Texture2D<float> image;",
     ] {
-        assert!(
-            lines.iter().any(|candidate| candidate.ends_with(line)),
-            "`{line}` missing in\n{text}"
-        );
+        assert!(lines.contains(&line), "`{line}` missing in\n{text}");
     }
+    assert!(!text.contains("__gust_r_Texture2D<"), "{text}");
+    assert!(!text.contains("] Texture2D<float> Texture2D;"), "{text}");
 }

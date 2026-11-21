@@ -2863,6 +2863,7 @@ fn the_fixture_kernels_that_sample_agree_with_the_twin_within_the_bound() {
 
 // ==== slice m11.tx: user structs named like the Slang texture and sampler types ====
 
+#[allow(non_snake_case)] // the kernel parameter named like a Slang type
 #[gust::gpu]
 mod renamed_texture_names {
     // These three names are Slang's own texture and sampler types, which the emitter writes for the parameters below.
@@ -2892,7 +2893,9 @@ mod renamed_texture_names {
         filter: Sampler,
         mut field: StorageTexture2D<R32Float>,
         mut out: WriteTexture2D<Rgba32Float>,
-        mut a_rows: RWStructuredBuffer<RWTexture2D>,
+        // A kernel parameter named like the Slang texture type is a global named `__gust_r_Texture2D`, beside the
+        // `Texture2D<float>` declaration of `image` (the parameter path of the rename).
+        mut r#Texture2D: RWStructuredBuffer<RWTexture2D>,
         mut rows: RWStructuredBuffer<Rows>,
     ) {
         let w = field.width();
@@ -2906,7 +2909,7 @@ mod renamed_texture_names {
             let old = field.load(id.x, id.y);
             field.store(id.x, id.y, old + seen);
             out.store(id.x, id.y, Vec4::new(seen, old, 3.0f32, 4.0f32));
-            a_rows[i] = RWTexture2D {
+            r#Texture2D[i] = RWTexture2D {
                 a: id.x * 100u32 + id.y,
             };
             let write = WTexture2D {

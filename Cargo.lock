@@ -255,6 +255,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash-rng"
+version = "0.2.0"
+dependencies = [
+ "gust-compute",
+ "gust-compute-wgpu",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

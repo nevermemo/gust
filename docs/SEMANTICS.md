@@ -979,12 +979,12 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   only, not a GPU launch: a `pixel` kernel has no variant
   (`a_gpu_grid_kernel_has_a_variant_and_a_cpu_or_pixel_kernel_has_none` in `crates/gust-macros/src/tests/profile.rs`),
   and a build without the run-time compiler plans no split
-  (`a_split_variant_is_planned_only_in_a_build_with_the_run_time_compiler` in `crates/gust-wgpu/src/lib.rs`). *Not claimed:* the order of the pieces and any visibility between them (one piece reading what another
+  (`a_split_variant_is_planned_only_in_a_build_with_the_run_time_compiler` in `crates/gust-wgpu/src/compile/source.rs`). *Not claimed:* the order of the pieces and any visibility between them (one piece reading what another
   wrote, atomics across pieces). *Inferred, not tested:* the plain refusal of a split-capable `#[gpu]` kernel through
   the deprecated `dispatch_f32`/`dispatch_u32`, which no test exercises with a kernel that
   carries a variant (`crates/gust-wgpu/tests/limits.rs` tests the refusal of hand-built descriptors, which have none,
   on that path). An indirect launch is not in that list: it is neither split nor refused by the host for its workgroup
-  count (read in `check_indirect_launch` and `prepare_indirect` in `crates/gust-wgpu/src/lib.rs`; m11.r5fix), and
+  count (read in `check_indirect_launch` and `prepare_indirect` in `crates/gust-wgpu/src/dispatch/prepare.rs`; m11.r5fix), and
   no test here launches a split-capable kernel indirectly.
 - **The portable floor (opt-in, m8.f, D143).** A crate that sets `limits = "portable"` in `[package.metadata.gust]` has every
   `#[kernel]` body, and the kernel of each `#[gpu]` function and `par_for!` call (m11.floor), checked when it compiles against `gust::limits::PORTABLE`, the WebGPU defaults: a workgroup of at most

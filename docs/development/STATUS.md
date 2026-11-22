@@ -844,6 +844,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       `continue`, and a value `match` as the tail of a value `if` branch, stay refused, typed or untyped
       (SEMANTICS sections 9 and 18). GPU_SUITE_PIN 576 over 59, confirmed by the full Gpu suite on the merged tree
       (RTX 5090); the slice's GPU test also ran on the Radeon 890M. Opus review: merge after fixes, fixes in.
+    - m13.split-rt (`b427881`, tidy round approved by the owner): the runtime's `lib.rs` (6,422 lines) split into
+      modules by concern (`check`, `buffers`, `dispatch`, `headless`, `compile`, `readback`, `typed_call`); lib.rs
+      keeps 157 lines of re-exports and root items. Moves only: no body changed, the same public items at the same
+      paths, 58 unit tests before and after (Opus review, line-by-line comparison). The review found three builds
+      the first round had not compiled (default features, `spirv-route`, wasm32); fixed, and the merge gate now
+      also checks the library alone, without default features, with each feature, for wasm32 and the docs build.
+      Full Gpu suite on the merged tree (RTX 5090) 576 over 59.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

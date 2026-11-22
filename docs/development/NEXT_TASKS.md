@@ -369,7 +369,7 @@ test module; do not mix that mechanical move with behavior changes.
 - SPIR-V execution of the goldens, after 0.1.0 (slice mr.v: D95 placed it in MR, the MR plan's Q5 deferred it to 0.1.x,
   D132; it replaces the M6 follow-up of the same gap, sanity-opus 2026-11-02, ruling 4). `gust-wgpu` executes WGSL only
   (D82). A passthrough needs `Features::PASSTHROUGH_SHADERS` (wgpu 30), a second `create_shader_module` path and a
-  per-adapter record, all in `gust-wgpu/src/lib.rs`. 0.1.0 ships the exported SPIR-V to Vulkan users, and MX adds
+  per-adapter record, all in `gust-wgpu/src/compile/` and `gust-wgpu/src/headless/`. 0.1.0 ships the exported SPIR-V to Vulkan users, and MX adds
   nothing that executes it: the SPIR-V of the golden sets (`textures` and `pixel` among the eleven) is validated with
   `spirv-val` and nothing more. The same gap leaves the matrix and uniform layout decorations unexecuted (SEMANTICS
   section 4).

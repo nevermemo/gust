@@ -791,6 +791,26 @@ fn gpu_a_scan_into_a_callers_buffer_equals_the_host_reference() {
     let nothing = GpuVec::<u32>::zeroed_on(&device, 0).unwrap();
     scan::inclusive_into(&empty, &nothing).unwrap();
     scan::exclusive_into(&empty, &nothing).unwrap();
+    // The scan's temporaries come from the pool: a second `exclusive_into` of the same size takes no new device buffer
+    // (read on the counted tests' shared device, whose pool counters no other test moves).
+    let turn = counted();
+    let counted_device = turn.device();
+    let values: Vec<u32> = (0..70_001).map(|index| index % 4).collect();
+    let input = GpuVec::from_slice_on(&counted_device, &values).unwrap();
+    let out = GpuVec::<u32>::zeroed_on(&counted_device, 70_001).unwrap();
+    scan::exclusive_into(&input, &out).unwrap();
+    let misses = counted_device.buffer_pool_stats().misses;
+    scan::exclusive_into(&input, &out).unwrap();
+    assert_eq!(
+        counted_device.buffer_pool_stats().misses,
+        misses,
+        "the second exclusive_into allocated"
+    );
+    assert_equals_reference(
+        "exclusive_into again",
+        &out.to_vec().unwrap(),
+        &reference_scan(&values, true),
+    );
 }
 
 /// A level 0 past a lowered workgroup limit is split by the host (D211) for the `_into` forms too: one pass inside the

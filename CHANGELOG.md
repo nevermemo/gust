@@ -79,7 +79,8 @@ proof.
   method, field or prelude name of the module or is used as a binding pattern, are the new `GUST-E0127`.
 - Constant expressions in module-level `const` items (m11.cexpr, D210): an initializer may combine literals and
   earlier consts of the module (`u32` and `i32` arithmetic, bit operators and shifts; `f32` `+ - * /` and negation;
-  `bool` `! && ||`). rustc and slangc compile the same expression; nothing is evaluated by the macro.
+  `bool` `! && ||`). rustc and slangc compile the same expression; nothing is evaluated by the macro. GPU
+  checks: Radeon 890M only; RTX 5090 pending.
 - Launches past the per-dimension workgroup limit run (m11.g4b, D208): a `grid` launch whose workgroup count on an
   axis exceeds `max_compute_workgroups_per_dimension` is split by the host into pieces (at most
   `MAX_SPLIT_DISPATCHES`, 4096) in one compute pass, and every invocation runs once with the ids of an unsplit
@@ -102,15 +103,15 @@ proof.
 - Example `field-relax` (m11.field): three scalar fields relax on one wrapping grid, each with its own spread and
   keep factor from one `Uniform` struct, checked within a per-step bound derived from the GPU model of SEMANTICS
   (one step and sixteen steps), plus an exact `u32` channel that conserves its sum (bit-equal on the host
-  reference, the twin and the GPU). Its grid constants are constant expressions of the side.
+  reference, the twin and the GPU). Its grid constants are constant expressions of the side. Radeon 890M only; RTX 5090 pending.
 - Example `cell-bins` (m11.bins): a reusable binning of elements by grid cell (count with `atomic_add`, an
   exclusive scan into a kept buffer with `gust_algo::scan::exclusive_into`, scatter by the old value of a cursor).
   The set of elements of each cell is exact; their order inside a cell is unspecified on the GPU. Checked per cell
-  as sets against a host counting sort, on the twin and the GPU.
+  as sets against a host counting sort, on the twin and the GPU. Radeon 890M only; RTX 5090 pending.
 - Example `walker-steer` (m11.steer): walkers sense a `u32` field ahead in three headings, turn toward the largest
   (a stated tie rule, and a hash-chosen turn with a set probability), move one wrapping cell and deposit with
   `atomic_add`; a cell kernel then relaxes the field by a shift. All integer: host reference, twin and GPU are
-  bit-equal after every step, with a proven `u32` bound.
+  bit-equal after every step, with a proven `u32` bound. Radeon 890M only; RTX 5090 pending.
 - `KernelDescriptor::split` (m11.g4a, D208): every GPU `grid` kernel carries a split variant, compiled only when used,
   with one hidden launch-base uniform that its entry point adds to the invocation id. It is the ground for launches
   past the per-dimension workgroup limit (used by the host since m11.g4b). The kernel's own Slang,

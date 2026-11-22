@@ -79,12 +79,16 @@ M11 and the design phase name the same work, D206). A game that uses GPU resourc
 run in its first slice, and gate examples carry no game wording (D201). Work lands on the `dev` branch (D202); the GPU
 for a run is the owner's call per night (D202, D207, D212). Kernel-language additions so far: float math, a
 deterministic hash generator shared by CPU and GPU, the old value of `atomic_add` (D203), module-level `const` items
-(D205; constant expressions next, D210), `rem_euclid` and `mul_add`, and launches past the per-dimension workgroup
-limit split by the host (D208; precompiled-only and browser builds get them before the design phase is called done,
-D209). `gust-algo` drops the workgroup half of its launch pre-check (D211). The budget-kit example measures
-game-shaped workloads on both development GPUs. Next: the round-5 sanity fixes, D210, D211 and D209, then sharing
-code between `#[gpu]` modules, then the engine pieces a large agent simulation needs (grid fields with diffusion and
-decay, binning by cell, per-agent update steps), each as a neutral example first.
+(D205; constant expressions, D210), `rem_euclid` and `mul_add`, and launches past the per-dimension workgroup
+limit split by the host (D208; precompiled-only builds run them from a precompiled split artifact, D214, and
+browser builds get them before the design phase is called done, D209). `gust-algo` drops the workgroup half of
+its launch pre-check (D211). The budget-kit example measures game-shaped workloads on both development GPUs.
+Done in rounds 5 and 6 (2026-11-21): the round-5 and round-6 sanity fixes, D210, D211, D209 for precompiled-only
+builds (D214), and neutral examples for the engine pieces a large agent simulation needs: grid fields with
+diffusion and decay (`field-relax`), binning by cell (`cell-bins`) and per-agent update steps (`walker-steer`).
+Their GPU runs are on the Radeon 890M only. Next: the RTX 5090 confirmations, a composite example that combines
+those pieces, clearer diagnostics where a refused construct also yields a misleading error, the browser half of
+D209, and sharing code between `#[gpu]` modules (today a user-side `macro_rules!` splice, m11.xsplice).
 
 **Done: M10, publication** (closed 2026-11-17, D185, under the release hold: nothing published; plan adopted 2026-11-14,
 D177 to D183; the owner chose the release sequence of D177: 0.2.0 first, 0.1.0 never published). Three lanes: releases

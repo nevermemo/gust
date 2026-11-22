@@ -1984,7 +1984,8 @@ the status log, not here.
 ## 17. Module-level constants (m11.g3, D205; expressions m11.cexpr, D210)
 
 A `const NAME: T = <literal>;` at the top of a `#[gpu]` module (`T` one of `u32`, `i32`, `f32`, `bool`; GUST-E0127 for
-any other form) is one value read by the host, the CPU twin and every kernel of the module. The macro evaluates
+any other form) is one value read by the host, the CPU twin and every kernel of the module (for an `f32` constant
+expression, see the documented difference under D39 below). The macro evaluates
 nothing: it leaves the Rust item as written, so the host and the twin read the literal rustc compiles, and writes the
 same literal as one `static const` line in the Slang text of each kernel, so the shader reads the value that literal has
 in Slang (`uint(4294967295)` for a `u32` above `i32::MAX`). Each side takes the literal as its own compiler reads it
@@ -2018,9 +2019,17 @@ operand, shifts by a constant, `!`, `!` followed by `/`, `%` and `>>` on a `u32`
 value the host reads from the same Rust item. Measured on the Radeon 890M (Vulkan, slangc as installed on 2026-11-21)
 and on no other adapter: every integer and `bool` value is equal, and every `f32` value is bit-equal, including `1.0 /
 3.0`, `0.1 * 0.3`, `0.1 + 0.2`, a chain of two of these, `-(0.1 + 0.2)`, `16777216.0 + 1.0` and `1.0 - 0.9`, where a
-rounding happens. In the WGSL slangc produced for one such kernel each constant was already a folded literal, so the
-`f32` values are slangc's constant folding and depend on the slangc version (2026.22 here) as well as the adapter. This
-promises nothing beyond what was measured: float results on other adapters and slangc versions are unmeasured.
+rounding happens. In the WGSL slangc produced for one such kernel each constant was already a folded literal (observed
+once, on the WGSL route, in a scratch run: no committed test reads the emitted text, and the SPIR-V route was not
+observed), so the `f32` values are probably slangc's constant folding and depend on the slangc version (2026.22 here)
+as well as the adapter. This promises nothing beyond what was measured: float results on other adapters and slangc
+versions are unmeasured.
+
+Documented difference (D39), finite `f32` constant expressions: rustc evaluates the expression the host and the twin
+read, and slangc evaluates the one the shader reads, so the two are separate evaluations and nothing makes them equal.
+They were equal for the forms the `cexpr` test measures (above; Radeon 890M only, RTX 5090 pending); nothing else
+was measured. Integer and `bool` constants stay one value on every side; an `f32` literal is read by each compiler on
+its own (above), and its values were compared only for the literals of that test.
 
 Documented difference (D39), non-finite and subnormal `f32` constants: rustc compiles `1.0 / 0.0`, `-1.0 / 0.0`,
 `0.0 / 0.0`, `3.0e38 * 10.0` (infinity) and `1.0e-38 / 1000.0` (subnormal) and the macro accepts them, and nothing

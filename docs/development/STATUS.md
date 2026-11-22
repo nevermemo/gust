@@ -728,6 +728,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       lines. One new test in `crates/gust-wgpu/tests/split.rs`: `GPU_SUITE_PIN` 568 to 569 over 56. Opus review
       fixes: E3 picks the body artifact by manifest, the web fixture test keys copies by manifest, a shared split
       link check, stale `DeviceLimit` docs. Radeon 890M only; the browser half (check-web) and RTX 5090 pending.
+    - Round 6 end (dev `085a6e9`, 2026-11-22): the full Gpu suite on the Radeon 890M (AMD driver 26.11.2, LLPC)
+      passed in 637 s: `GPU_SUITE_PIN` 568 over 56 (set by m11.cexpr), 63 pinned `gust-algo` adapter tests, the
+      difftest batches. The RTX 5090 half is pending.
+    - m11.r6fix (`e1ac7ec`): the round-6 sanity fixes (Fable, "proceed with fixes"). The field-relax and
+      walker-steer run commands set `GUST_PROFILE=dev`; SEMANTICS says slangc's `f32` folding was observed once on
+      the WGSL route and states finite `f32` constant expressions as a documented difference (D39), equal for the
+      forms the cexpr test measures; the scan-into test now asserts that a second same-size call takes no new pool
+      miss (cell-bins' docs cite it); field-relax's domain test covers both grid sizes; walker-steer's asserts
+      `s < 32`; cell-bins passes `side` in a `Uniform` made once. No new test, so the pins stay. Radeon 890M only; RTX 5090 pending.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

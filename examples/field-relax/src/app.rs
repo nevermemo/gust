@@ -527,25 +527,31 @@ mod tests {
 
     #[test]
     fn the_inputs_stay_inside_the_derivation_domain() {
-        let inputs = make_inputs(small::SIDE);
-        assert!(inputs.fields.iter().all(|v| (1.0 / 256.0..4.0).contains(v)));
-        // Not symmetric: no field equals another, and a field is not its own transpose.
-        let cells = small::SIDE * small::SIDE;
-        assert_ne!(inputs.fields[..cells], inputs.fields[cells..2 * cells]);
-        let side = small::SIDE;
-        assert!((0..side).any(|y| (0..y).any(|x| inputs.fields[y * side + x] != inputs.fields[x * side + y])));
-        // Counts stay far inside `u32` (the sum and the largest cell, with the spike).
-        let total: u64 = inputs.counts.iter().map(|&c| u64::from(c)).sum();
-        assert!(total < 1 << 31);
-        assert!(inputs.counts.iter().any(|&c| c >= 1 << 24));
-        // The smallest value after every step is a normal `f32` (SEMANTICS: subnormals may be flushed on a GPU).
-        let mut now: Vec<f64> = inputs.fields.iter().map(|&v| f64::from(v)).collect();
-        for _ in 0..STEPS {
-            now = reference_step_fields(side, &now);
-            let smallest = now.iter().copied().fold(f64::INFINITY, f64::min);
-            assert!(smallest > 1.0e-8, "{smallest}");
-            let largest = now.iter().copied().fold(0.0, f64::max);
-            assert!(largest < 4.0);
+        // Both sizes: the unit tests run the small grid, the GPU claims and `main` the big one.
+        for side in [small::SIDE, big::SIDE] {
+            let inputs = make_inputs(side);
+            assert!(inputs.fields.iter().all(|v| (1.0 / 256.0..4.0).contains(v)));
+            // Not symmetric: no field equals another, and a field is not its own transpose.
+            let cells = side * side;
+            assert_ne!(inputs.fields[..cells], inputs.fields[cells..2 * cells]);
+            assert!((0..side).any(|y| {
+                (0..y).any(|x| inputs.fields[y * side + x] != inputs.fields[x * side + y])
+            }));
+            // Counts stay far inside `u32` (the largest cell, with the spike; the sum is a `u64` on the host).
+            let largest = inputs.counts.iter().copied().max().unwrap();
+            assert!(
+                (1 << 24..1 << 25).contains(&largest),
+                "side {side}: {largest}"
+            );
+            // The smallest value after every step is a normal `f32` (SEMANTICS: subnormals may be flushed on a GPU).
+            let mut now: Vec<f64> = inputs.fields.iter().map(|&v| f64::from(v)).collect();
+            for _ in 0..STEPS {
+                now = reference_step_fields(side, &now);
+                let smallest = now.iter().copied().fold(f64::INFINITY, f64::min);
+                assert!(smallest > 1.0e-8, "side {side}: {smallest}");
+                let largest = now.iter().copied().fold(0.0, f64::max);
+                assert!(largest < 4.0, "side {side}: {largest}");
+            }
         }
     }
 

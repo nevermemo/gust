@@ -515,3 +515,180 @@ Routine checks do not rewrite `.ai/VALIDATION.json`. Use `cargo xtask verify --m
 	(`check-artifacts`, `check-full`, the Spirv suite) empty `generated-wgpu/` before the examples export
 	into it (m4.h), so the file of a deleted or renamed kernel cannot satisfy the name check or pass
 	`spirv-val`; the other modes leave the directory alone.
+
+## Appendix: SEMANTICS run narratives (m13.docs1a)
+
+Original text of the dated run records that `docs/SEMANTICS.md` used to carry inline, moved unchanged by slice
+m13.docs1a (blocks that began or ended inside a sentence are completed from the original). Section numbers in the text refer to SEMANTICS. SEMANTICS keeps the rules, the test names and the
+adapters as the evidence.
+
+### A1. Twin coverage of the examples (section 1)
+
+- **Twin coverage of the examples (exists, m3.c to m3.e2).** Every kernel with a typed call in these examples runs on
+  the twin next to the GPU and a host reference; none uses the opt-out. Integer, struct and copied outputs are exact;
+  float outputs use the bound derived in section 4. The twin equals the host reference bit for bit in each of them.
+  - `vector-add` (`add`), `polynomial` (`evaluate`): m3.c.
+  - `signal-pipeline` (`transform`): derived bound.
+  - `particle-step` (`scalar_order`, `field_order`, `snapshot`: exact; `step`: derived bounds).
+  - `typed-pipeline` (`calibrate`, `classify`, `finalize`): derived bounds, each kernel compared on the inputs the GPU
+    produced for the stage before; `severity` is exact after a stability check.
+  - `atomic-counter` (`increment`): exact.
+  - `staged-graph` (`transform`, `summarize`) and `component-pool` (`prepare_dispatch`: exact; `integrate`: derived
+    bounds for `x`, `y` and `vy`, exact `vx`, `steps` and untouched particles), kernel level only (m3.e2). `summarize` is
+    compared on the intermediate the GPU produced (`peak`, `above_threshold` and `count` exact, `total` derived);
+    `integrate` on the allocation, the active count and the indirect arguments the GPU frame started from and
+    produced. All four kernels have a twin, and none uses the opt-out.
+
+### A2. Section 1: the measured adapter and the slangc pins
+
+- **GPU target (exists).** A `#[gpu]` module is translated directly from the Rust syntax tree to Slang, `slangc`
+  compiles the Slang to WGSL, and wgpu runs the WGSL. The measured adapter is NVIDIA GeForce RTX 5090 on Vulkan,
+  driver 610.88, slangc 2026.20, 2026-11-01 (the semantics were first measured on slangc 2026.13.1, 2026-10-24, and the
+  Gpu suite passed again on 2026.20, on 2026.21 (2026-11-07) and on the pinned 2026.22, 2026-11-12). The WGSL specification is the portable
+  reference for this path. The contract does not extend to Slang's other targets: Slang itself leaves, for example,
+  integer division by zero undefined.
+
+### A3. The `pixel` shape: measured records (section 1)
+
+  - *Integer outputs: bit identity.* For `u32` and `i32` outputs (and a `bool` result, which travels as a `u32` word)
+    the same body gives the same bits as `grid`, as the twin and as an independent host replay (D62). Measured:
+    `tests/pixel.rs` ran `u32` and `i32` at sizes from 0 up to 16 785 409 (the squares up to 4097^2, the row width and
+    its neighbours, `8192k + 1` for k up to 1000, 1 000 003) with 0 differing words, and `u32` also at the cap of 2^26;
+    the cross-shape difftest (`check-difftest --shapes grid,pixel`, seeds 1 to 8) ran the generated programs as `pixel` (at
+    format 14, 104 of the 136 programs; of the other 32, which stay `grid`-only, the report counts 14 with a construct the
+    classifier has no rule for, 2 with another E0723 reason, 4 with a write at another index (E0725) and 12 with a use
+    of an output (E0728); 16 of the 136 are math programs) and found no integer or boolean
+    bit that differs from `grid` (DIFFTEST, "Shapes"). Integer vector outputs (`IVec2`,
+    `UVec4` and so on) are admitted by the classifier and have not been run as `pixel` outputs.
+  - *`f32` outputs: the bits may differ from `grid` (D128).* `pixel` keeps section 4's bounds, not `grid`'s bits: a
+    device may fuse `a * b + c` and round `x / y` within 2.5 ulp differently in the compute and the fragment stage. So
+    each shape is judged against the interpreter's interval, and a bit difference between the two shapes is an
+    observation, never a mismatch (D39: documented, not chased). This is the contract. Two gates compare the bits all
+    the same: the `f32`, `Vec2` and `Vec4` identity tests of `tests/pixel.rs` and `check-web`. Their bodies leave the
+    driver no freedom to differ: no multiply (so nothing to fuse) and no division, only moves and one `f32` addition (`x
+    + i as f32`, the `Vec2` and `Vec4` forms of it, and `a + b` in `web-vector-add`), which is exact when the sum is representable and otherwise may land on
+    either neighbour (WGSL "correctly rounded", 15.7.4), so two shapes are guaranteed alike only for a representable sum; the tests observed equal bits. The `u32` to `f32` conversion of the index is exact below 2^24 elements; the last squares of the tests
+    (4097^2 is above 2^24) rely on both stages converting alike, which they did. A body with a division or a
+    contractible multiply-add is not held to the bits. The record: up to 4 ulp between the shapes on the RTX 5090
+    (driver 610.88) for an unfused multiply-add chain after a division, with identical emitted Slang, WGSL and SPIR-V
+    (an earlier form of the `examples/shape-bench` K3, measured 2026-11-05 and not kept: 9 % to 11 % of the words
+    differed). Where the bits did agree: X-S1's form without the division, which the bench now has, wrote the same bits
+    in both shapes, as did the 36 `f32` programs of the difftest seeds 1 to 8 and the `f32`, `Vec2` and `Vec4` cases of
+    `tests/pixel.rs` (sizes as above, compared with an independent host replay), and `examples/web-vector-add` (an `f32`
+    add) matched the host and `grid` in Chrome. That agreement is evidence for those bodies and says nothing for a body
+    with a division or a contractible multiply-add.
+
+  - *Evidence.* RTX 5090: `crates/gust-wgpu/tests/pixel.rs` (the identity tests for `u32`, `i32`, `f32`, `Vec2` and
+    `Vec4`, the cap, the nearest-sampler kernel against the twin) and `shape_refusal.rs`; the difftest above. Headless
+    Chrome 156 on the same GPU: `examples/web-vector-add` ran the `pixel` form at 1000 and 8197 elements and matched the
+    host and `grid` bit for bit (X-S4, outcome A). On a software adapter the identity tests skip the sizes above 1 000
+    003 and the run is Gpu (software), never hardware. The `cpu` target runs a `pixel` kernel as a plain loop
+    (`tests/cpu-target`, `pixel_shade::shade`).
+
+### A4. `par_for!` evidence and routing rebuild measurement (section 1)
+
+Evidence (exists, m7.p): `gust-wgpu/tests/par_for.rs`
+  runs the ten calls of `tests/fixtures/par_for.rs` on the GPU and on the twin against independent host references
+  over 1, 2 and 3 dimensions, extents off the workgroup (including a 64 x 4 x 1 workgroup over a one-dimensional
+  loop and an 8 x 8 x 2 workgroup over a two-dimensional one, where an unguarded axis would run elements twice), a
+  zero extent, an over-cap extent, an extent past `u32`, scalars of every kind, the default device and resident
+  `GpuVec` bindings; `tests/cpu-target` runs a one- and a two-dimensional loop under `GUST_PROFILE=cpu` against host
+  loops; the macro's tests pin the Slang golden `tests/fixtures/par_for.slang`, the export records (a schema 2
+  record without `source` and the call-site sidecars, byte for byte) and the attribution of body errors.
+
+A switch between plain cargo (or rust-analyzer) and
+  `cargo gust` in one target directory rebuilds the routed kernel crates and the application only, as a route change
+  does (measured in m8.z: two crates in the routing fixture; with the check in `gust`'s build script it was three,
+  `gust` among them; in a real application every crate that depends on `gust` would rebuild, inferred from Cargo's rule
+  that a rerun build script rebuilds its dependents, not measured).
+
+### A5. Texture sampling: measured records (section 4)
+
+Measured on the adapter of section 1 (slice mx.t4, 533 coordinates on each of `r32float`, `rg32float` and
+`rgba32float`, so 1599 samples, per address mode and per device): where the coordinate is at least 1/128 of a texel from a
+texel edge the GPU picked the formula's texel on every sample, bit for bit, under ClampToEdge and under Repeat, with and
+without `float32-filterable`. Within 1/128 of an edge the samples were the edges themselves and the floats one step
+either side of them (about 3e-7 texel): there the GPU picked the formula's texel or a texel next to it, never another,
+and picked the neighbour for 24 of 63 samples under ClampToEdge and 24 of 99 under Repeat. All of those were at the
+5-wide edges (k/5 is not representable in `f32`, so `u * 5` is not exact there); the 4-wide probes (edges at k/4, a
+power of two with exact products, among them KM-14) all picked the formula's texel. That the rounding of `u * width`
+is the cause is an inference from that split, not a separate measurement.
+The band was then probed directly (fix round 1 of the slice): each edge and border at 2^-20, 2^-12, 2^-9, 2^-8 and 2^-7
+texel on either side, per address mode and per device. The GPU picked another texel only at 2^-20 (6 of 42 probes
+under ClampToEdge, 6 of 60 under Repeat; the farthest at 1.01e-6 texel, the distance being that of the rounded `f32`
+coordinate) and at none of the 2^-12 and farther distances (0 of 42 and 0 of 60 each). So the measured band on this
+adapter is about a millionth of a texel, four orders of magnitude inside the 1/128 tolerance, which is therefore slack and
+not a measurement of this device. The same probes ran on a device without `float32-filterable` and with it: the
+same counts. They have not been measured on any other adapter (lavapipe has not run the band probes yet).
+[`nearest_sampling_picks_the_texel_of_the_formula_under_clamp_and_repeat`]
+
+`float32-filterable` device): the largest `|gpu - twin|` was 0.865 of the bound under ClampToEdge and 0.977 of it under Repeat, so no sample left
+the domain and the `2^-8` term is close to what this adapter uses (that its weights are quantised is inferred from one
+value, KM-13, not measured). `|gpu - reference|`
+and `|twin - reference|` against an independent `f64` evaluation are inside the same bound. The ratios are one adapter's
+observation, printed by the test with `--nocapture`, not a requirement. The bound itself is enforced on every adapter.
+[`linear_sampling_is_within_the_error_domain_under_clamp_and_repeat`,
+`the_fixture_kernels_that_sample_agree_with_the_twin_within_the_bound`]
+
+### A6. Subgroup operations: what ran where (section 5)
+
+| Form | RTX 5090 (Vulkan) | Radeon 890M (Vulkan) | lavapipe (CI `dev+subgroups` step) |
+| --- | --- | --- | --- |
+| `subgroup_broadcast_first` on `i32` and `f32` | ran | not run on the Radeon 890M | passed (run 42378261589) |
+| `subgroup_broadcast` on `f32` with a literal lane (`WaveBroadcastLaneAt`) | ran | not run on the Radeon 890M | passed (run 42378261589) |
+| `subgroup_broadcast` on `i32` with a literal lane (`WaveBroadcastLaneAt`) | ran (m8.z, `broadcast_literal_i32`, size 32) | not run on the Radeon 890M | passed (run 42573264225, size 8) |
+| `subgroup_broadcast` on `i32` with a computed lane (`WaveReadLaneAt`, the form of S3's cell) | ran | not run on the Radeon 890M | passed (run 42378261589) |
+| `subgroup_broadcast` on `f32` with a computed lane (`WaveReadLaneAt`) | ran (m8.z, `broadcast_computed_f32`, size 32) | not run on the Radeon 890M | passed (run 42573264225, size 8) |
+| `subgroup_shuffle` on `i32` and `f32`, and on `u32` (computed lane, `WaveShuffle`; every shuffle in the fixtures has a computed lane; S3's cell was `WaveReadLaneAt`) | ran | not run on the Radeon 890M | passed (run 42378261589) |
+
+The tests open the first Vulkan adapter, so the Radeon 890M was not selected in this slice. The lavapipe cells are
+from the CI run of the `dev+subgroups` step, which runs the same file: run 42378261589 passed all 15 tests of
+`tests/subgroup.rs` on `8e59357`; the file has 17 since m8.z. The two m8.z cells ran on the RTX 5090 under
+`cargo xtask test --suite Gpu --profile dev+subgroups` (the 17 tests of `subgroup` and the 6 of `capabilities`
+passed, then `gust-algo`), each comparing every invocation of 256 and 300 elements with the host model and checking
+that the selected body holds the form (`WaveBroadcastLaneAt(x, uint(3))`, or `WaveReadLaneAt`, and the WGSL
+`subgroupBroadcast` or `subgroupShuffle`). Both cells also ran on lavapipe in the `dev+subgroups` step of gpu-software run 42573264225 (on `be5858f`; `llvmpipe` LLVM 20.1.2, subgroup size range 8 to 8, build capabilities `[Subgroups]`, 17 of 17 passed), and the same step was green in runs 42569921556 and 42557064170; neither has run on the Radeon 890M.
+
+- **What ran where.** The probe ran the 43 cells on the RTX 5090 and the Radeon 890M through Vulkan (43 of 43 on
+  both), and on lavapipe in CI (run 42216215411: llvmpipe, LLVM 20.1.2, Mesa 25.2.8, wgpu 30.0.1, subgroup size 8
+  read in the shader; 43 of 43 of the plain cells passed; the three `i32` bitwise cells in the `asuint` form were
+  added after that run and did not run on lavapipe). DX12 is not compiled into `gust-wgpu`; the probe ran it on four
+  entries (the RTX 5090, the 890M twice and WARP: 40 of 43 for the plain forms, the three `i32` bitwise cells failing
+  in naga's HLSL step, and passing in the `u32` form the dialect lowers to). Lavapipe is not visible to the Windows
+  Vulkan loader on the project's PC, so it runs only in CI. The tests of this slice ran on the RTX 5090; their
+  lavapipe run is the CI `dev+subgroups` step (see the table above). Not measured: Metal, the browser and
+  workgroup sizes other than 64.
+
+The Slang of the twelve bodies is pinned by
+  `tests/fixtures/subgroup.slang`, their SPIR-V validates with `spirv-val`, and the fix-up is tested on the WGSL slangc
+  writes for them. **Ran on**: the RTX 5090 (subgroup size 32), in this slice's own run, and lavapipe (the CI
+  `dev+subgroups` step, run 42378261589: `tests/subgroup.rs` at subgroup size 8, 15 of 15 passed). The probe of S3 ran
+  its 43 cells on the 5090 and the 890M through Vulkan, on lavapipe in CI (run 42216215411, 43 of 43 plain cells, 8
+  lanes read in the shader) and on four DX12 entries. The forms beyond S3's cells (`i32` and `f32` `broadcast_first`,
+  `broadcast` and `shuffle`, and `shuffle` with a computed lane) are **not run on the Radeon 890M**. **Not run**:
+  subgroup sizes other than 8 and 32 in these tests, and workgroup sizes other than 64.
+
+### A7. Atomics: golden counts of spike SL22 (section 6)
+
+  The returned flag is never part of the contract: the GPU form is statement-only. On the pinned Slang 2026.22, as on
+  2026.21 before it, the `atomics` golden is among the 131 golden entries whose WGSL was identical on the two (spike
+  SL22). The count is the `[shader(` lines of the 30 files `tests/fixtures/*.slang` that the spike compared; the
+  route-only `*.spirv-route.slang` files of m9.rt2 are not counted. The same count gives 132 in 31 files with the traits
+  golden, which was compared too, and 133 in 32 files in this tree; the generics golden of m9.g2 was written on 2026.22
+  and has no 2026.21 counterpart. The emitted WGSL retries after a spurious failure (Slang #13918: a retry loop around
+  `atomicCompareExchangeWeak`, read from the emitted text; not re-measured on a GPU), so the spurious failure that the
+  contract allows is not expected there. The contract stays weak because it covers other pins and targets; the
+  assertions are not tightened.
+
+### A8. Ledger: measured on lavapipe (section 7)
+
+Measured on lavapipe (llvmpipe, LLVM 20.1.2, Mesa 25.2.8, debug and release alike, 18 rows): KM-07 gives `0x7fc00000`
+(the operand NaN, `f32::NAN`, propagating) from a NaN operand and `0xffc00000` (the x86 default NaN) from `inf * 0.0`,
+`inf - inf`, `inf / inf` and `0.0 / 0.0`, where the RTX 5090 gives `0x7fffffff`; `3.0e38 / 3.0e38` gives 1 as Rust does,
+where the RTX 5090 gives 0; and KM-08 keeps denormals as Rust does (`1.0e-40 * 1.0` is `0x000116c2`, that is `1.0e-40`,
+and `1.0e-40 == 0.0` is false), where the RTX 5090 flushes them. KM-09 keeps its set rule on both kinds and gets no
+per-kind value: its observations vary between runs. KM-12 to KM-14 were measured on the RTX 5090 only (slice mx.t4);
+they have no software pin yet, so a lavapipe run compares them with the hardware pin and prints a NOTE where they
+differ, and nothing fails except the KM-13 bound. Both are unspecified, measured observations of one driver version
+each, not requirements, and the Rust and twin columns are unchanged.
+

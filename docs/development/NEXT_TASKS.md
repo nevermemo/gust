@@ -196,10 +196,9 @@ test module; do not mix that mechanical move with behavior changes.
   refused with `MatchPattern`); a classifier unit test of the map kernel passes an empty helper set and so sees a
   spurious `Unrecognised` (pass `helper_names` of the module); `Error::Borrowed`'s doc in `gust::cpu` still says "the
   buffer"; `expand` computes `helper_names` once per kernel instead of once per module.
-- Partly done in M8 (m8.v, D132): the CI job `semver` runs `cargo-semver-checks` for `gust-compute` and
-  `gust-compute-wgpu` against the branch `release/0.1` on pull requests into `main` and on pushes to `main`. Still open:
-  after 0.1.0 is published, the baseline becomes the published version, and a 0.1.x branch gets its own job (RELEASE.md,
-  "The semver baseline").
+- Done in M8 (m8.v, D132) and retired by D226 (2026-11-22): the CI job `semver` ran `cargo-semver-checks` for
+  `gust-compute` and `gust-compute-wgpu` against the branch `release/0.1`. It has no baseline now (nothing is
+  published, no release line is maintained) and returns with the first release (RELEASE.md, "The semver baseline").
 - mr.t2 follow-ups (Opus review): xtask still starts the helper without the ETXTBSY retry (the two launches in
   `xtask/src/verify.rs`; xtask has no `gust` dependency); a third copy of `HELPER_VARIABLE` and `default_helper` is left
   in `xtask/src/release.rs`; `gust::slang` now checks the `slangc` version, so D72's `__gust_keep` follow-up can be
@@ -443,7 +442,7 @@ test module; do not mix that mechanical move with behavior changes.
   (D106), so a consumer that renames a dependency adds `extern crate <name> as gust;`. A `crate = ..` argument, and
   `par_for!` forwarding `$crate`, would remove that step.
 - Release tooling for 0.1.x (the Fable and Codex sanity checks): `cargo-semver-checks` (done in M8 as the CI job
-  `semver`, above, D132) and still open `cargo-release` or `release-plz` for the four-way version bump RELEASE.md does
+  `semver`, above, D132; superseded by D226: the `semver` job is retired) and still open `cargo-release` or `release-plz` for the four-way version bump RELEASE.md does
   by hand; `cargo-msrv` adds nothing the MSRV gate lacks. check-release stays the gate: no tool builds the README
   recipe from the unpacked crates.
 - check-release R5 against docs.rs: closed by m10.r1 (R5's full run builds each docs.rs target on nightly, wasm32 for
@@ -470,7 +469,7 @@ test module; do not mix that mechanical move with behavior changes.
 - For the 0.2.0 release (the m8.v re-check; done in m8.x2): RELEASE.md's "Releasing 0.2.0 from main" now lists every
   version literal (the README's renamed-dependency example, "Not supported in 0.1.0" and "known limit of 0.1.0", the two
   crate READMEs' `~0.1`, the doc comment of `cargo-gust`'s `main.rs`), and CHANGELOG's `toml` text left "may break" for
-  its own section. Open at release: rerun the `semver` job and update the "Compatibility with the unpublished 0.1.0 line" part of the
+  its own section (superseded by D226; the `semver` job is retired). Open at release: rerun the `semver` job and update the "Compatibility with the unpublished 0.1.0 line" part of the
   CHANGELOG entry (run id and counts).
 - The routed device handle (D136, D137; spike m9.h, built in m9.h1 as `gust::routed::RoutedDevice`, additive, `Run` and
   `Call` unchanged) is built for storage buffers only. What remains: uniforms, textures and samplers through the handle
@@ -645,7 +644,9 @@ joint review, which is milestone M11, Realignment. Everything below that waits f
 milestones after it. Ids written "pack D1", "pack V1" and so on are the review pack's (work area, plans/review/pack.md),
 not rows of docs/DECISIONS.md.
 
-- The 0.2.0 candidate and the release lines (m10.r3; D177, D189, D198). The candidate `83124ad` (PR #54) passed the full
+- The 0.2.0 candidate and the release lines (m10.r3; D177, D189, D198). Superseded by D226 (2026-11-22): the 0.1 and
+  0.2 plans are abandoned, no release line is maintained, and the first release waits for maturity; the text below is
+  the record of what was open. The candidate `83124ad` (PR #54) passed the full
   `check-release` and `check-full` and stays gated and unpublished. Not done: RELEASE.md steps 0 to 8 (publish the four
   packages, post-publish verification, the `v0.2.0` tag and the GitHub release, the 0.0.0 yanks after 0.2.0 is up),
   cutting `release/0.2` at the published commit, moving `main` to the next `-dev` version, and the `semver` job's

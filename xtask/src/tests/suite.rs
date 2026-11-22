@@ -509,22 +509,31 @@ fn ci_runs_the_harness_steps_in_a_job_of_their_own_and_the_unit_jobs_skip_them()
     }
 }
 
-/// The `semver` job compares a branch with the line it was cut from, so it runs on a pull request into `main` and on a
-/// push to `main`, and on nothing else (m8.x1: a pull request into `release/0.1` was compared with its own line).
+/// The `semver` job is retired until the first release (D226): it had no baseline once `release/0.1` was abandoned.
+/// ci.yml has no such job and keeps a comment that cites D226 and RELEASE.md. Restoring the job is a deliberate edit of
+/// this test, as the first-release checklist of RELEASE.md says.
 #[test]
-fn the_semver_job_runs_on_pull_requests_into_main_and_pushes_to_main_only() {
+fn the_semver_job_is_retired_and_its_place_cites_d226() {
     let ci = workflow_text("ci.yml");
-    let job = job_text(&ci, "semver");
-    let conditions: Vec<&str> = job
-        .lines()
-        .filter(|line| line.starts_with("    if:"))
-        .collect();
-    assert_eq!(
-        conditions,
-        [
-            "    if: (github.event_name == 'pull_request' && github.base_ref == 'main') || github.ref == 'refs/heads/main'"
-        ],
-        "{job}"
+    assert!(
+        !ci.lines().any(|line| line.trim_end() == "  semver:"),
+        "ci.yml has a semver job again (see RELEASE.md, \"The semver baseline\")"
+    );
+    assert!(
+        ci.contains("The `semver` job") && ci.contains("(D226, 2026-11-22)"),
+        "the comment that marks the retired job is missing"
+    );
+    assert!(
+        ci.contains("The semver baseline"),
+        "the comment does not name the RELEASE.md section"
+    );
+    assert!(
+        ci.contains("RELEASE.md"),
+        "the comment does not point at RELEASE.md"
+    );
+    assert!(
+        !ci.contains("cargo semver-checks"),
+        "ci.yml runs cargo semver-checks again"
     );
 }
 

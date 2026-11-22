@@ -1,8 +1,15 @@
 # Release checklist: publishing the GUST crates to crates.io
 
-This is the procedure for the first public release, 0.2.0 (not yet published), and the
-template for later ones. 0.1.0 was prepared on the branch `release/0.1` and was never published (D177): that
-procedure was not used and `release/0.1` has no tag.
+**Current state (D226, owner, 2026-11-22).** GUST is prerelease and no release line is maintained: the 0.1 and 0.2
+plans are abandoned, and a first release waits for maturity. The release hold (D189, kept by D199) stays in force, so
+nothing is published. The branch `release/0.1` still exists (it was never published and has no tag); removing it is
+the owner's decision. The `semver` CI job is retired until the first release (see "The semver baseline"). The version
+`0.2.0` in the manifests is a prerelease version number, not a release plan.
+
+What follows is the procedure for the first release when it comes (the text says 0.2.0 where it was written for the
+planned first release; read it as "the first release version"), and the template for later ones. The parts that
+assumed a 0.1 or 0.2 line (the release lines, the 0.2.0 checklist and the `semver` baseline) are marked superseded
+by D226 below and kept for reference.
 Publishing, tagging, the GitHub release and yanking are the owner's acts (D115, amended by D177); the coordinator
 prepares everything up to a green gate and the commands below. The crate names are the published ones (D48, D106):
 `gust-compute-macros`, `gust-compute`, `gust-compute-wgpu` and `cargo-gust`. This is the release checklist of the
@@ -62,7 +69,8 @@ has the right scope; steps 2, 3 and 7 are where those show.
 
 The candidate `83124ad` was the gated one (full `check-full` and `check-release` passed on it), but `main` has moved
 past it and it stays unpublished under the hold. A publish therefore starts from a new candidate commit `<C>`, with a
-fresh `check-full`, a full `check-release` and a rerun of `semver` on that commit (NEXT_TASKS, "M10 follow-ups").
+fresh `check-full` and a full `check-release` on that commit (NEXT_TASKS, "M10 follow-ups"). The first release also
+restores the `semver` job and reruns it on that commit ("The semver baseline").
 
 Run from a clean checkout of `<C>`, not from a worktree that lanes use. Step 1 needs the pinned Slang and the reflection
 helper, and `cargo xtask` does not read the managed cache for either: the `slangc` of the pin must be first on `PATH`,
@@ -159,6 +167,9 @@ crates.io keeps every uploaded version forever: nothing published can be retract
 
 ## Release lines
 
+**Superseded by D226 (2026-11-22): no release line is maintained, and `release/0.2` is not planned.** The text below
+is kept as the plan that D177 made; nothing follows it until the owner plans a first release.
+
 0.2.0 is to be the first public release (D177, owner, 2026-11-14), and it is not published: the release hold D189,
 kept by D198, stops every publish until the owner lifts it. 0.1.0 is never published: `release/0.1` stays a branch
 with no tag and no `v0.1.0`, and nothing below uses it except as the semver baseline until 0.2.0 is on the registry.
@@ -188,6 +199,11 @@ same order. A breaking change bumps the minor version of all four (D111). A patc
 line (`release/0.2` for 0.2.x), a minor from `main`.
 
 ### Releasing 0.2.0 from `main`
+
+**First-release checklist.** Use it when a first release is planned, with the version of that day in place of 0.2.0
+(D226 abandoned 0.2.0 as the planned version). One more item: restore the `semver` job in `.github/workflows/ci.yml`
+(the placeholder comment names where) with a baseline that exists on that day, per "The semver baseline", and
+replace the test `the_semver_job_is_retired_and_its_place_cites_d226` in `xtask/src/tests/suite.rs`.
 
 This is the checklist of slice m10.r3. Besides the bump, change every `0.2.0-dev` requirement to the released form (a
 caret requirement does not match a pre-release, so the development line names the pre-release and the release must not).
@@ -220,8 +236,7 @@ The proof that none is left is `rg -n '0\.2\.0-dev|~0\.1' --glob '!target'`; the
   opening, that 0.2.0 is the first public release, stays). The 0.1.0 entry stays as history and already says it was
   never published. The "Compatibility with the unpublished 0.1.0 line" part (the `semver` report and the list of
   crates) is a record of one commit: rerun the job on the release commit and update its run id and counts;
-- the `semver` job's comment (m10.r2 already made it true for the branch baseline). Its baseline moves after the
-  publish, not before: see the next section.
+- the `semver` job, which is retired (D226) and returns with the first release: see the next section.
 
 The list above misses these literals (audit of slice m10.r0): the comment of `crates/cargo-gust/Cargo.toml` that says
 the pin is `=0.2.0-dev` until the release and the "(0.2.0-dev)" label of the M9 entry in `docs/DIAGNOSTICS.md`.
@@ -239,7 +254,13 @@ repository for `0.2.0-dev` and for `~0.1` as well.
 
 ### The semver baseline
 
-The `semver` job of `.github/workflows/ci.yml` reports what a branch breaks against the line below it, for
+**Retired by D226 (2026-11-22).** The `semver` job was removed from `.github/workflows/ci.yml` because it has no
+meaningful baseline: its baseline was the branch `release/0.1`, which is abandoned, and nothing is published. A
+comment in the workflow marks its place. It returns with the first release, with a baseline that exists then (a
+published version, or a tag). If `semver` is listed among the required checks of `main`, the owner drops it there. The
+description below is of the retired job, kept as the design to restore.
+
+The `semver` job of `.github/workflows/ci.yml` reported what a branch breaks against the line below it, for
 `gust-compute` and `gust-compute-wgpu`. 0.1.0 was never published (D177), so the baseline is the git ref `release/0.1`
 (`--baseline-rev release/0.1`) until 0.2.0 is on the registry. After that it is `--baseline-version 0.2.0`, the
 published version of the line below `main` (D148 amended by D177), and `main` is then `0.3.0-dev`. Move it in the

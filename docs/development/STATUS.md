@@ -2,6 +2,9 @@
 
 ## Active: roadmap M11 (2026-11-17; M10 closed, D185; M11 is the owner's joint review, D198)
 
+Since 2026-11-22 (D226) everything is prerelease and no 0.1 or 0.2 release line is maintained; the dated records below
+that mention those lines are history. The `semver` CI job is retired until the first release (RELEASE.md).
+
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
 2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done; M0.15
 (the CI `unit` job is a required check on `main`) followed on 2026-11-01. M1 (diagnostics) closed on

@@ -421,7 +421,8 @@ struct BuiltBody {
     artifacts: TokenStream,
     strict_artifact: TokenStream,
     export_error: TokenStream,
-    /// The split variant of the body (m11.g4a): `Some` for the selected body of a `grid` kernel built for the GPU.
+    /// The split variant of the body (m11.g4a): `Some` for every body of a `grid` kernel built for the GPU; only the
+    /// selected body's is in the descriptor.
     split: Option<SplitBody>,
     /// The renamed function (`__gpu_typecheck_*`), for the proof that a variant has its kernel's signature.
     typecheck: syn::Ident,
@@ -430,6 +431,12 @@ struct BuiltBody {
 /// The split variant of a body: the kernel's Slang with the hidden launch-base uniform (m11.g4a).
 struct SplitBody {
     source: String,
+    /// The key of the variant's artifacts: [`artifact::content_key`] of the body's entry point and the variant's text.
+    key: String,
+    /// What `gust-artifacts/` holds under that key, as this build sees it (m11.psplit-a, D209).
+    lookup: Lookup,
+    /// The line table of the variant's own text, for the export record.
+    lines: Vec<crate::slang::LineRecord>,
     /// The `SourceOrigin` of the variant's own text, whose lines are one or two further down than the base's.
     origin: TokenStream,
     /// The binding of the hidden uniform: the first one after the kernel's own.
@@ -650,9 +657,21 @@ fn expand_validated_with(
         let reported = reported_file(original_kernel, environment);
         let source_origin = source_origin(reported.as_deref(), manifest_dir, &emitted.lines);
         let slang_source = emitted.source;
-        // The split variant of the selected body of a kernel built for the GPU (m11.g4a): the same Slang with one
-        // hidden uniform. Nothing else looks at it: no artifact, no export record, no site record.
-        let split = if is_selected && !cpu_target && shape == Shape::Grid {
+        // The artifact pair of a key as this build sees it: a CPU build looks at no artifact: nothing is embedded and
+        // nothing is tracked. Nor does a build look at the artifact of a body it does not use: only the selected body is
+        // in the crate (M8, D139). Export mode is how `cargo gust build` writes the missing half, and it expands this
+        // crate to do so: a half pair must not stop that expansion, so it counts as absent there (and only there).
+        let find_artifact = |key: &str| match artifact::lookup(manifest_dir, key) {
+            _ if profile == Profile::Cpu || !is_selected => Lookup::Absent,
+            Lookup::Incomplete { .. } if export_mode => Lookup::Absent,
+            other => other,
+        };
+        // The split variant of a body of a `grid` kernel built for the GPU (m11.g4a): the same Slang with one hidden
+        // uniform. In export mode every such body has one, selected or not, so that its record is written and a later
+        // build that selects another body finds the split artifact of that one (m11.psplit-a, D209); outside export
+        // mode only the selected body emits one. Only the selected body's is embedded. It has a key of its own, from
+        // its own text, and the pair under that key is its artifact.
+        let split = if !cpu_target && shape == Shape::Grid && (is_selected || export_mode) {
             let facts = parameter_facts(stage, &function.sig.inputs)?;
             let binding = u32::try_from(facts.iter().filter(|fact| fact.binding.is_some()).count())
                 .expect("a kernel has fewer than 2^32 parameters");
@@ -672,8 +691,13 @@ fn expand_validated_with(
                 variant.source.contains(&declared),
                 "internal error: the split variant's binding differs from the descriptor's"
             );
+            let key = artifact::content_key(&entry_point, &variant.source);
+            let lookup = find_artifact(&key);
             Some(SplitBody {
                 origin: self::source_origin(reported.as_deref(), manifest_dir, &variant.lines),
+                key,
+                lookup,
+                lines: variant.lines,
                 source: variant.source,
                 binding,
             })
@@ -683,23 +707,24 @@ fn expand_validated_with(
         // The key hashes the clean text, so it is computed here: the Slang text is final, and the CPU twin (below)
         // never reaches it.
         let key = artifact::content_key(&entry_point, &slang_source);
-        let lookup = match artifact::lookup(manifest_dir, &key) {
-            // A CPU build looks at no artifact: nothing is embedded and nothing is tracked. Nor does a build look at
-            // the artifact of a body it does not use: only the selected body is in the crate (M8, D139).
-            _ if profile == Profile::Cpu || !is_selected => Lookup::Absent,
-            // Export mode is how `cargo gust build` writes the missing half, and it expands this crate to do so: a
-            // half pair must not stop that expansion, so it counts as absent there (and only there).
-            Lookup::Incomplete { .. } if export_mode => Lookup::Absent,
-            other => other,
-        };
+        let lookup = find_artifact(&key);
         let artifacts = artifact::artifact_tokens(&key, &lookup);
         // A kernel routed to the CPU has no artifact to require, in a strict profile (`native`, `web`) too: it is a CPU
         // body in a GPU build (D137).
-        let strict_artifact = if is_selected && !routed_cpu {
+        let mut strict_artifact = if is_selected && !routed_cpu {
             artifact_check_items(&lookup, original_name.span())
         } else {
             TokenStream::new()
         };
+        // The split's artifact is never required: without it the launch keeps its `DeviceLimit` refusal (D208). A half
+        // pair is the same error as a body's, and in export mode it counted as absent above.
+        if is_selected
+            && !routed_cpu
+            && let Some(split) = &split
+            && matches!(split.lookup, Lookup::Incomplete { .. })
+        {
+            strict_artifact.extend(artifact_check_items(&split.lookup, original_name.span()));
+        }
         if lookup == Lookup::Present && manifest_span.is_none() {
             manifest_span = Some(original_name.span());
         }
@@ -729,29 +754,56 @@ fn expand_validated_with(
                     lines: if file.is_some() { &emitted.lines } else { &[] },
                     shape: record_shape(shape),
                     variant: variant_record,
+                    split_of: None,
                 };
-                let written = match identity {
+                let write = |record: &artifact::KernelRecord<'_>, slang: &str| match identity {
                     Identity::Module => {
-                        artifact::write_records(directory, &key, &slang_source, &record.json())
+                        artifact::write_records(directory, record.key, slang, &record.json())
                     }
                     // A `par_for!` call: the record carries no origin (equal bodies write equal bytes) and the
                     // call's own file and line table go to its sidecar (R1.1 M5).
                     Identity::Site { call_line } => {
                         let site = artifact::SiteRecord {
-                            key: &key,
+                            key: record.key,
                             file: record.file,
                             lines: record.lines,
                         };
                         artifact::write_site_records(
                             directory,
-                            &key,
-                            &slang_source,
+                            record.key,
+                            slang,
                             &record.json_without_source(),
-                            &artifact::site_file_name(&key, record.file, call_line),
+                            &artifact::site_file_name(record.key, record.file, call_line),
                             &site.json(),
                         )
                     }
                 };
+                let mut written = write(&record, &slang_source);
+                // The split of the body is a record of its own (schema 5, m11.psplit-a): the body's parameters and the
+                // hidden uniform, the split's key and text, the body's `requires` and `variant`.
+                if let (Ok(()), Some(split)) = (&written, &split) {
+                    let mut split_parameters = parameters.clone();
+                    split_parameters.push(artifact::launch_base_parameter(split.binding));
+                    let split_file = origin_file(reported.as_deref(), manifest_dir, &split.lines);
+                    let split_record = artifact::KernelRecord {
+                        key: &split.key,
+                        parameters: &split_parameters,
+                        file: split_file.as_deref().unwrap_or_default(),
+                        lines: if split_file.is_some() {
+                            &split.lines
+                        } else {
+                            &[]
+                        },
+                        // A schema 5 record always names the body's `requires` and `variant`: none, for a plain body.
+                        variant: Some(variant_record.unwrap_or(artifact::VariantRecord {
+                            requires: &[],
+                            variant: "",
+                        })),
+                        split_of: Some(&key),
+                        ..record
+                    };
+                    written = write(&split_record, &split.source);
+                }
                 match written {
                     Ok(()) => TokenStream::new(),
                     Err(message) => artifact::error_item(
@@ -919,7 +971,13 @@ fn expand_validated_with(
                     source,
                     origin,
                     binding,
+                    key: split_key,
+                    lookup: split_lookup,
+                    ..
                 } = split;
+                // The variant's own artifact pair when the crate holds it, else none: a host compiles the variant at
+                // run time, or refuses the launch (D208, D209).
+                let split_artifacts = artifact::artifact_tokens(split_key, split_lookup);
                 let item = quote! {
                     #[doc(hidden)]
                     #[allow(non_upper_case_globals)]
@@ -936,7 +994,7 @@ fn expand_validated_with(
                         ],
                         slang_source: #source,
                         source: #origin,
-                        artifacts: &[],
+                        artifacts: #split_artifacts,
                         variant: #variant,
                         requires: &[#(#requires),*],
                         target: #target_path,
@@ -4620,8 +4678,9 @@ mod tests {
         expand_in(module, environment, Profile::Other).unwrap()
     }
 
-    /// Expands `source` in export mode once and returns its key and clean Slang text, as the records say them.
-    fn exported(source: &str) -> (String, String) {
+    /// Expands `source` in export mode once and returns every record it wrote as (key, clean Slang text, record text),
+    /// sorted by key. A grid kernel writes two: its body and its split (D209).
+    fn exported_all(source: &str) -> Vec<(String, String, String)> {
         let scratch = Scratch::new("exported");
         let records = scratch.0.join("records");
         expanded(source, &environment(None, Some(&records)));
@@ -4631,10 +4690,53 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .filter_map(|name| name.strip_suffix(".slang").map(str::to_owned))
             .collect();
-        assert_eq!(keys.len(), 1, "{keys:?}");
-        let key = keys.remove(0);
-        let slang = fs::read_to_string(directory.join(format!("{key}.slang"))).unwrap();
+        keys.sort();
+        keys.into_iter()
+            .map(|key| {
+                let slang = fs::read_to_string(directory.join(format!("{key}.slang"))).unwrap();
+                let record =
+                    fs::read_to_string(directory.join(format!("{key}.kernel.json"))).unwrap();
+                (key, slang, record)
+            })
+            .collect()
+    }
+
+    /// The key and clean Slang text of the one body `source` exports (its split, if any, is not it).
+    fn exported(source: &str) -> (String, String) {
+        let mut bodies: Vec<_> = exported_all(source)
+            .into_iter()
+            .filter(|(_, _, record)| !record.contains("\"split_of\""))
+            .collect();
+        assert_eq!(
+            bodies.len(),
+            1,
+            "{:?}",
+            bodies.iter().map(|b| &b.0).collect::<Vec<_>>()
+        );
+        let (key, slang, _) = bodies.remove(0);
         (key, slang)
+    }
+
+    /// The key and clean Slang text of the split `source` exports, and the key of the body it names.
+    fn exported_split(source: &str) -> (String, String, String) {
+        let mut splits: Vec<_> = exported_all(source)
+            .into_iter()
+            .filter(|(_, _, record)| record.contains("\"split_of\""))
+            .collect();
+        assert_eq!(
+            splits.len(),
+            1,
+            "{:?}",
+            splits.iter().map(|b| &b.0).collect::<Vec<_>>()
+        );
+        let (key, slang, record) = splits.remove(0);
+        let at = record.find("\"split_of\"").unwrap();
+        let owner = record[at..]
+            .split('"')
+            .nth(3)
+            .expect("split_of has a string value")
+            .to_owned();
+        (key, slang, owner)
     }
 
     /// A crate directory holding the artifact pair of `KERNEL` and, if asked, the manifest.
@@ -4682,6 +4784,105 @@ mod tests {
             1,
             "one include: {text}"
         );
+    }
+
+    /// m11.psplit-a (D209): the split is a second artifact of the same kernel under a key of its own.
+    #[test]
+    fn a_split_has_its_own_key_over_the_same_entry_point_and_its_own_text() {
+        let (body_key, body_slang) = exported(KERNEL);
+        let (key, slang, owner) = exported_split(KERNEL);
+        assert_ne!(key, body_key);
+        assert_eq!(owner, body_key);
+        assert_ne!(slang, body_slang);
+        assert!(slang.contains("__gust_launch_base"), "{slang}");
+        assert!(!body_slang.contains("__gust_launch_base"), "{body_slang}");
+        assert_eq!(key, artifact::content_key("gpu_layout_inspect", &slang));
+    }
+
+    #[test]
+    fn a_present_split_pair_is_embedded_in_the_split_descriptor_alone_and_never_required() {
+        let (body_key, _) = exported(KERNEL);
+        let (split_key, _, _) = exported_split(KERNEL);
+        let scratch = Scratch::new("split-pair-present");
+        for key in [&body_key, &split_key] {
+            scratch.artifact(&format!("{key}.wgsl"), "wgsl bytes");
+            scratch.artifact(&format!("{key}.wgsl.reflection.json"), "{}");
+        }
+        let text = expanded(KERNEL, &environment(Some(&scratch.0), None)).to_string();
+        assert!(
+            text.contains(&format!("Wgsl , \"{split_key}\" ,")),
+            "{text}"
+        );
+        assert!(text.contains(&format!("Wgsl , \"{body_key}\" ,")), "{text}");
+        assert_eq!(text.matches("include_bytes").count(), 2, "{text}");
+        // One requirement, the body's: the split is optional.
+        assert_eq!(text.matches("require_artifact").count(), 1, "{text}");
+        assert!(text.contains("require_artifact (true)"), "{text}");
+        assert!(!text.contains("compile_error"), "{text}");
+    }
+
+    #[test]
+    fn a_body_pair_without_a_split_pair_leaves_the_split_without_artifacts() {
+        let (body_key, _) = exported(KERNEL);
+        let (scratch, _) = crate_with_pair("split-pair-absent", false);
+        let text = expanded(KERNEL, &environment(Some(&scratch.0), None)).to_string();
+        assert!(text.contains(&format!("Wgsl , \"{body_key}\" ,")), "{text}");
+        assert_eq!(text.matches("include_bytes").count(), 1, "{text}");
+        // The split's own `artifacts` is the empty slice, and no error and no requirement comes of it.
+        assert_eq!(text.matches("artifacts : & []").count(), 1, "{text}");
+        assert!(!text.contains("compile_error"), "{text}");
+        assert_eq!(text.matches("require_artifact").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn half_a_split_pair_is_the_error_of_half_a_body_pair_and_absent_in_export_mode() {
+        let (body_key, _) = exported(KERNEL);
+        let (split_key, _, _) = exported_split(KERNEL);
+        let half = Scratch::new("split-pair-half");
+        half.artifact(&format!("{body_key}.wgsl"), "x");
+        half.artifact(&format!("{body_key}.wgsl.reflection.json"), "{}");
+        half.artifact(&format!("{split_key}.wgsl"), "x");
+        let output = expanded(KERNEL, &environment(Some(&half.0), None));
+        let text = output.to_string();
+        assert!(text.contains("[GUST-E0711]"), "{text}");
+        assert!(
+            text.contains(&format!(
+                "`gust-artifacts/{split_key}.wgsl.reflection.json` is missing"
+            )),
+            "{text}"
+        );
+        let records = half.0.join("target-records");
+        let text = expanded(KERNEL, &environment(Some(&half.0), Some(&records))).to_string();
+        assert!(!text.contains("compile_error"), "{text}");
+        assert_eq!(text.matches("artifacts : & []").count(), 1, "{text}");
+        assert!(
+            records
+                .join("demo-crate")
+                .join(format!("{split_key}.kernel.json"))
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn export_mode_writes_a_split_record_for_a_grid_kernel_and_none_for_a_pixel_kernel() {
+        let all = exported_all(KERNEL);
+        assert_eq!(all.len(), 2, "a body and its split");
+        let pixel = "mod layout {\n#[kernel(shape = pixel)]\npub fn inspect(id: SV_DispatchThreadID, values: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>) {\nout[id.x] = values[id.x];\n}\n}";
+        let scratch = Scratch::new("split-pixel");
+        let records = scratch.0.join("records");
+        expanded(pixel, &environment(None, Some(&records)));
+        let slangs = fs::read_dir(records.join("demo-crate"))
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".slang")
+            })
+            .count();
+        assert_eq!(slangs, 1, "a pixel kernel writes its body alone");
     }
 
     #[test]
@@ -4783,7 +4984,8 @@ mod tests {
                 keys += 1;
             }
         }
-        assert_eq!(keys, 2);
+        // Two bodies and the split of each (D209); only the bodies are required.
+        assert_eq!(keys, 4);
         for manifest in [false, true] {
             if manifest {
                 scratch.artifact("manifest.json", "{}");
@@ -4851,11 +5053,31 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect();
         names.sort();
-        assert_eq!(names.len(), 2, "{names:?}");
-        let key = names[0].strip_suffix(".kernel.json").unwrap().to_owned();
+        // The body's two files and its split's two (D209).
+        assert_eq!(names.len(), 4, "{names:?}");
+        let key = exported(source).0;
+        let (split_key, _, owner) = exported_split(source);
+        assert_eq!(owner, key);
         assert_eq!(
-            names,
-            [format!("{key}.kernel.json"), format!("{key}.slang")]
+            names
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            [
+                format!("{key}.kernel.json"),
+                format!("{key}.slang"),
+                format!("{split_key}.kernel.json"),
+                format!("{split_key}.slang"),
+            ]
+            .into_iter()
+            .collect()
+        );
+        let split_json =
+            fs::read_to_string(directory.join(format!("{split_key}.kernel.json"))).unwrap();
+        assert!(split_json.contains("\"schema\": 5"), "{split_json}");
+        assert!(
+            split_json.contains(&format!("\"split_of\": \"{key}\"")),
+            "{split_json}"
         );
         let slang = fs::read(directory.join(format!("{key}.slang"))).unwrap();
         assert_eq!(
@@ -4958,7 +5180,8 @@ mod tests {
             assert!(!record.contains("cpu"), "no `cpu` at all in {record}");
             checked += 1;
         }
-        assert_eq!(checked, 2);
+        // The body's two files and its split's two.
+        assert_eq!(checked, 4);
     }
 
     /// A user identifier is not twin text: a struct called `CpuDevice` and a function called `gust_dual` export like
@@ -5009,18 +5232,19 @@ mod tests {
             "{text}"
         );
         let directory = records.join("demo-crate");
-        let record = fs::read_dir(&directory)
+        let json = fs::read_dir(&directory)
             .unwrap()
             .map(|entry| entry.unwrap().path())
-            .find(|path| path.to_string_lossy().ends_with(".kernel.json"))
-            .unwrap();
-        let json = fs::read_to_string(record).unwrap();
+            .filter(|path| path.to_string_lossy().ends_with(".kernel.json"))
+            .map(|path| fs::read_to_string(path).unwrap())
+            .find(|json| !json.contains("\"split_of\""))
+            .expect("the body's record");
         assert!(json.contains("\"file\": \"src/kernels.rs\""), "{json}");
         assert!(!json.contains("\"lines\": []"), "{json}");
         // The same table, entry for entry: every `[start, end, rust_line]` triple of the descriptor is in the record.
         let mut triples = 0;
         // The kernel's own descriptor: the split variant's (m11.g4a) has a table of its own, shifted by the lines the
-        // hidden uniform adds, and no export record.
+        // hidden uniform adds, and a record of its own (D209) that this check does not read.
         let own = text
             .split("impl :: gust :: Kernel for ")
             .nth(1)

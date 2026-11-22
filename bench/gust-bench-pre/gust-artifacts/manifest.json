@@ -16,6 +16,22 @@
       "name": "add"
     },
     {
+      "clean_sha256": "db8894bf9f298f11a737e47888fed7ac251b309c993f79c9d6eb7ce2ed554a30",
+      "entry_point": "gpu_kernel_horner",
+      "formats": [
+        {
+          "file": "25581de2598b6796.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "0c5a8b2039485d0491c011dbfa55724ba796e5bb7c2d27e2ecc3396d92ba31d4",
+          "sha256": "765d43cf7e2ca42d5dddb68c4aa98fac82461737ecb9570487c55b8efe4c61a3"
+        }
+      ],
+      "key": "25581de2598b6796",
+      "module": "kernel",
+      "name": "horner",
+      "split_of": "2580c40b11271718"
+    },
+    {
       "clean_sha256": "57b03587b532dbba24bff2c9ba38c78ff0e17e0e4f315b2eeae8e95787667d42",
       "entry_point": "gpu_kernel_horner",
       "formats": [
@@ -29,6 +45,22 @@
       "key": "2580c40b11271718",
       "module": "kernel",
       "name": "horner"
+    },
+    {
+      "clean_sha256": "07fb470241d0e62625da925a3ae1501ce47374ec4ef0088047afa0368ae01cb7",
+      "entry_point": "gpu_kernel_amplify",
+      "formats": [
+        {
+          "file": "36b306f288d9af2d.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "d639f9efa5ead9b418898a0fb24feefeeb06cae3483c3d8055a3a885a8b4665f",
+          "sha256": "ceeaca8c16a61d29b21d6f7261953d1407bf64f7b53ba0c9a75a324d82c494e4"
+        }
+      ],
+      "key": "36b306f288d9af2d",
+      "module": "kernel",
+      "name": "amplify",
+      "split_of": "72467861bf259571"
     },
     {
       "clean_sha256": "96d9595afdcae1b6f66509ca89a978b359ebb0d33cee0fa0ce774f300ceb601c",
@@ -46,6 +78,22 @@
       "name": "center"
     },
     {
+      "clean_sha256": "cf049979d77a2313c076b5c80cd57afd8362b18ba4d2c2a8983ed3fd94922d5d",
+      "entry_point": "gpu_kernel_saxpy",
+      "formats": [
+        {
+          "file": "41b0648e98c02477.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "b4a2e98084d84c8a238a3fd0033f62c47bb440e8a4a407263b8df11b8bc5a492",
+          "sha256": "5237656e4cc4047aa803f32948e7da58f40919eea84516615f15123cd510a1a2"
+        }
+      ],
+      "key": "41b0648e98c02477",
+      "module": "kernel",
+      "name": "saxpy",
+      "split_of": "fe1197ff8b0197e2"
+    },
+    {
       "clean_sha256": "17fc71addb434ca58ef756c378f58e3f5ce2787921bb0b76687509bcc9542429",
       "entry_point": "gpu_kernel_histogram",
       "formats": [
@@ -59,6 +107,22 @@
       "key": "48733ffa27c233fd",
       "module": "kernel",
       "name": "histogram"
+    },
+    {
+      "clean_sha256": "d5460f5a7ae546873d1432a06869fb328a4f75fc038127cd0a9bf96aeb5a7d29",
+      "entry_point": "gpu_kernel_rescale",
+      "formats": [
+        {
+          "file": "5e384b36b7033a40.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "4f29abd839d104ea541500ff645625f46662c1a5aac5d49c9239c276dcdbeec3",
+          "sha256": "d555e57cdb680b11ce6484b47cc2573a7e86b3a5438fd3cd1ff027797f2bdd2d"
+        }
+      ],
+      "key": "5e384b36b7033a40",
+      "module": "kernel",
+      "name": "rescale",
+      "split_of": "73d07f630ab3f8dc"
     },
     {
       "clean_sha256": "2da1f0dd0281c6348ec18a6d9624b496e2252d4a79f0ad8f30f4b2d5383774ea",
@@ -91,6 +155,54 @@
       "name": "rescale"
     },
     {
+      "clean_sha256": "11b1a1622fd187dd8b4a75a4a7c910c9ddcf746de189acf17994f3a624cda464",
+      "entry_point": "gpu_kernel_matmul",
+      "formats": [
+        {
+          "file": "78c339242aef1c6b.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "beefe072481c20ff5eae364b012a82c67b77f035df882b3bf7ae9e5ee4e316e8",
+          "sha256": "470c7398618fb3f9b8e149d71c9ccdfaf6759f14321c731a0895ecd8857da03f"
+        }
+      ],
+      "key": "78c339242aef1c6b",
+      "module": "kernel",
+      "name": "matmul",
+      "split_of": "d75d85b7dd6c4338"
+    },
+    {
+      "clean_sha256": "8764ff65164707fd12a7d5699538b6e6f0a3e957362a9ec6d8e7616495de5d71",
+      "entry_point": "gpu_kernel_combine",
+      "formats": [
+        {
+          "file": "7a4db183e413b98f.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "cb83b8e1558b9f8a8d0ae9d6232f0ca55b6c375f95a13adfc1e0508119b2016c",
+          "sha256": "72540e3535d5a30f31f42748ad0786d8258dbc0df84ccea2d2a6aafbac89044e"
+        }
+      ],
+      "key": "7a4db183e413b98f",
+      "module": "kernel",
+      "name": "combine",
+      "split_of": "a4fa5b22981fab73"
+    },
+    {
+      "clean_sha256": "a9c162b0d2cd167cedb482f363cee6be1e041034d59d7775ab1478be3b5d4a46",
+      "entry_point": "gpu_kernel_step",
+      "formats": [
+        {
+          "file": "8d3c886651ac19c6.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "2c82ea07dee7b0afb24bbaac0ce505e453f9581807a6b10f07b21c651f97902b",
+          "sha256": "3346e073c4b031167a6b802af44440b09eba814eb3932f47240937dea4b33095"
+        }
+      ],
+      "key": "8d3c886651ac19c6",
+      "module": "kernel",
+      "name": "step",
+      "split_of": "f1dc6e78332f223a"
+    },
+    {
       "clean_sha256": "613bab5c992c4b0a1bb052e7a423553a31985f7db1947bbd56413966cc119bce",
       "entry_point": "gpu_kernel_combine",
       "formats": [
@@ -104,6 +216,22 @@
       "key": "a4fa5b22981fab73",
       "module": "kernel",
       "name": "combine"
+    },
+    {
+      "clean_sha256": "a58ee254a669093c2f5ffbd96ad4efc1d50eb7911ccfc18cbd9a41b9dfcf3158",
+      "entry_point": "gpu_kernel_energy",
+      "formats": [
+        {
+          "file": "aa1dc2bd1de30651.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "b650c3e3d2752499c1f4a47bd6a019dd962ffcd6d83c6802d05b260f03aa4fd2",
+          "sha256": "944784b400a23dfa4e2d3c8c436264d8585096750b64d825bacbf820583b634b"
+        }
+      ],
+      "key": "aa1dc2bd1de30651",
+      "module": "kernel",
+      "name": "energy",
+      "split_of": "c3cfe6e43f84e818"
     },
     {
       "clean_sha256": "8bf866a6e57b702d4b0c3d2ebf34cfd311ae0aea66a001ac9115a1edded861fe",
@@ -136,6 +264,38 @@
       "name": "shift"
     },
     {
+      "clean_sha256": "c975c287c94ab9d43b55ac4c1c9b37d5dcf7ddb63dd464737c4a5382c65b87ba",
+      "entry_point": "gpu_kernel_center",
+      "formats": [
+        {
+          "file": "d05547ed270416bd.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "6e257367ac4818a7ff6d96787719dd7a493059ab3a7f7b47979489ec4b6fd031",
+          "sha256": "0c17df10507d7b07316caa51ac0be07b72d797df77bd75377cbd50f2c6a0e780"
+        }
+      ],
+      "key": "d05547ed270416bd",
+      "module": "kernel",
+      "name": "center",
+      "split_of": "3d0023e9345d1f6f"
+    },
+    {
+      "clean_sha256": "de6da94cd884c280a64fc24dedfd1831fe4b82fece100f2ff7e8a83286e9d9e6",
+      "entry_point": "gpu_kernel_add",
+      "formats": [
+        {
+          "file": "d74ebbb03b0b41cb.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "06c397f94f5fac1db1c88f9967340cf8fa88971c65b17f5ee1402c279a137887",
+          "sha256": "9d4e7ee0d363a7837e37675d26790596c8dcdea77d33dd78ee2bdbb849efda01"
+        }
+      ],
+      "key": "d74ebbb03b0b41cb",
+      "module": "kernel",
+      "name": "add",
+      "split_of": "2446cbf187eae739"
+    },
+    {
       "clean_sha256": "7f1a75da06de34cc004299eac02f6e5032d71e4f724cc44bca6134f6abd72033",
       "entry_point": "gpu_kernel_matmul",
       "formats": [
@@ -149,6 +309,38 @@
       "key": "d75d85b7dd6c4338",
       "module": "kernel",
       "name": "matmul"
+    },
+    {
+      "clean_sha256": "f55726c629daf48fe539088af9e05901cc3d6670c83882501add41560b9cc4ab",
+      "entry_point": "gpu_kernel_histogram",
+      "formats": [
+        {
+          "file": "ded5734f21beb9b4.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "dffd8d5cfc8b799c7f09392023c7593e85a33407103e21b0eb95bfdcb38d1303",
+          "sha256": "3b11ea7283daf12cade396547836e46ceaa6cabd0501b12856616cfbd0b53c72"
+        }
+      ],
+      "key": "ded5734f21beb9b4",
+      "module": "kernel",
+      "name": "histogram",
+      "split_of": "48733ffa27c233fd"
+    },
+    {
+      "clean_sha256": "746915b5a7456d1b89835b2aca74b396ff74afdf5510a502ae263ce345ce8e89",
+      "entry_point": "gpu_kernel_shift",
+      "formats": [
+        {
+          "file": "ef09376afe36a9a7.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "17b5896261b2cd21ec909e5d98e0960593d2ffd924ffebd8ffeeffb28672c6c0",
+          "sha256": "4d665395b47dfa1407364a2613d42535cc1d3aaeafa37b825d6bd70811d4c5dd"
+        }
+      ],
+      "key": "ef09376afe36a9a7",
+      "module": "kernel",
+      "name": "shift",
+      "split_of": "caf1b826965fd2b5"
     },
     {
       "clean_sha256": "d8c6efc1e7a00cf1faed4aa83b5bfa73841bb18e3658c88c5123b55359807734",
@@ -181,6 +373,6 @@
       "name": "saxpy"
     }
   ],
-  "schema": 1,
+  "schema": 4,
   "slang": "2026.22"
 }

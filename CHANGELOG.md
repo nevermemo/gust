@@ -86,6 +86,12 @@ proof.
   launch, so `id` stays the global index and kernels need no edit. Graphs, the deprecated `dispatch_f32`/`_u32`,
   pixel kernels, hand-built descriptors without a macro-made variant and builds without run-time compilation
   (precompiled-only, the browser) keep `DeviceLimit`; the 2^32 invocation cap is unchanged.
+- Split launches in precompiled-only builds (m11.psplit-a, D209, D214): `cargo gust build` and `bless` also write a
+  precompiled pair for the split form of each `grid` kernel, keyed on its own Slang text and named in the manifest
+  by an optional `split_of` (manifest schema 4; kernel records schema 5). A launch past the per-dimension limit then
+  runs that artifact after the usual identity check; with neither it nor a run-time compiler it is still refused
+  with `DeviceLimit`. Manifests without a split keep their bytes and older schemas still load. The browser half is
+  not done yet. Radeon 890M only; RTX 5090 pending.
 - budget-kit rows (m11.kit3): W4 binning with the scatter (count, scan, and placement by the old value of
   `atomic_add`, checked per cell against a host counting sort) and W7, a sustained composite step with its GPU
   median, p95 and maximum and two host-side costs (the blocking timed batch, the return of `submit_batch`).

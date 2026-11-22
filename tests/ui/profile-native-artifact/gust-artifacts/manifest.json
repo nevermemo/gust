@@ -1,1 +1,37 @@
-{"artifacts":[{"kernel":"vector_add::add","key":"52e85c5f03f72272"}]}
+{
+  "kernels": [
+    {
+      "clean_sha256": "dc268a4fde3d423f58fe0ea93420c8aca987d7181d2df1d13f940feb96e86146",
+      "entry_point": "gpu_vector_add_add",
+      "formats": [
+        {
+          "file": "52e85c5f03f72272.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "ab2aae072f96b9055a9ebeafc29510bd893d6dc596e5739352cc6bf1c3163367",
+          "sha256": "6b83da9c0c13d3d1b156951e7baeb6b5a832a205ad4a6f1b63719767c125a614"
+        }
+      ],
+      "key": "52e85c5f03f72272",
+      "module": "vector_add",
+      "name": "add"
+    },
+    {
+      "clean_sha256": "d3e9047b66ede0da270b7848102f5e608fcc18ab70b6fa14a87337e2f92c7ff5",
+      "entry_point": "gpu_vector_add_add",
+      "formats": [
+        {
+          "file": "93b3f1ef65f948d2.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "2e1036f7ebb1518a6695c89a96e785b1580633882721b361eab324fef5cf89c9",
+          "sha256": "de362434a20c532803490c5fe694ab401ab60539be9c5411f16329da74db490d"
+        }
+      ],
+      "key": "93b3f1ef65f948d2",
+      "module": "vector_add",
+      "name": "add",
+      "split_of": "52e85c5f03f72272"
+    }
+  ],
+  "schema": 4,
+  "slang": "2026.22"
+}

@@ -1107,6 +1107,9 @@ mod tests {
             }
             checked += 1;
         }
-        assert_eq!(checked, 2, "one .slang and one .kernel.json");
+        assert_eq!(
+            checked, 4,
+            "one .slang and one .kernel.json for the body and for its split (D209)"
+        );
     }
 }

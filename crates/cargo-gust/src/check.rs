@@ -8,7 +8,8 @@
 //! - the manifest or the directory is missing, the manifest is unreadable, or it is not in canonical form (a
 //!   hand edit, or a checkout that rewrote its line endings);
 //! - a collected kernel has no manifest entry, or its entry names another module, name, entry point or clean-text
-//!   SHA-256;
+//!   SHA-256, or the `split_of` of the record (a split variant is a collected kernel of its own, with an entry of its
+//!   own: a set that lacks the split's entry is red, m11.psplit-a);
 //! - a manifest entry is not a collected kernel (an orphan), or has no WGSL artifact;
 //! - a manifest entry's `export_unchecked` list differs from the one the collected record gives (the storage and
 //!   uniform parameters whose layout the macro could not write);
@@ -243,6 +244,20 @@ fn compare_entry(
             record.key,
             entry.shape.name(),
             record.shape.name()
+        ));
+    }
+    if entry.split_of != record.split_of {
+        let show = |owner: &Option<String>| {
+            owner.as_deref().map_or_else(
+                || "none (a body)".to_owned(),
+                |owner| format!("the split of {owner}"),
+            )
+        };
+        report.problems.push(format!(
+            "kernel `{name}` (key {}): the manifest has {}, the source has {}; run `cargo gust build`",
+            record.key,
+            show(&entry.split_of),
+            show(&record.split_of)
         ));
     }
     let clean = record.clean_sha256();

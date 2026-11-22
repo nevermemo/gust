@@ -1538,3 +1538,125 @@ fn a_staged_graph_node_past_the_workgroup_limit_is_refused_not_split() {
         "a refused graph runs nothing"
     );
 }
+
+// ---- Slice m11.psplit-a: the split variant has an artifact of its own (D209). ----
+
+/// The split variant of `line` with the WGSL and reflection a build would store for it, compiled once here and handed
+/// back as an `Artifact` under the content key of the variant's own text; `tamper` flips one byte of the stored WGSL.
+fn line_with_a_split_artifact(tamper: bool) -> KernelDescriptor {
+    let variant = split_kernels::line::DESCRIPTOR
+        .split
+        .expect("a grid kernel built for the GPU has a split variant");
+    let clean = gust::reflect::compile_reflected_clean(
+        variant,
+        gust::slang::Target::Wgsl,
+        gust::reflect::native_compiler_path(),
+    )
+    .expect("the split variant compiles");
+    let mut wgsl = clean.compiled.artifact;
+    if tamper {
+        let at = wgsl
+            .iter()
+            .position(|byte| *byte == b'+')
+            .expect("the variant adds");
+        wgsl[at] = b'-';
+    }
+    let key: &'static str = Box::leak(
+        format!(
+            "{:016x}",
+            gust::artifact::content_key(variant.entry_point, variant.slang_source)
+        )
+        .into_boxed_str(),
+    );
+    let artifact = gust::Artifact::new(
+        gust::Format::Wgsl,
+        key,
+        Box::leak(wgsl.into_boxed_slice()),
+        Box::leak(clean.reflection_json.into_boxed_str()),
+    );
+    let with_artifact: &'static KernelDescriptor = Box::leak(Box::new(
+        variant.with_artifacts(Box::leak(Box::new([artifact]))),
+    ));
+    split_kernels::line::DESCRIPTOR.with_split(Some(with_artifact))
+}
+
+/// `line` over `n` elements through `descriptor`, as one extent launch; the host splits it when the limit says so.
+fn line_through(
+    device: &HeadlessDevice,
+    descriptor: &KernelDescriptor,
+    n: u32,
+    len: usize,
+) -> Result<Outputs, gust_wgpu::Error> {
+    let count = device
+        .create_uniform(
+            "count",
+            &Count {
+                n,
+                pad0: 0,
+                pad1: 0,
+                pad2: 0,
+            },
+        )
+        .unwrap();
+    let (hits, groups, locals) = fresh(device, n as usize, len);
+    let bindings = [
+        count.bind(Access::ReadOnly, LengthRule::Independent),
+        hits.bind(Access::ReadWrite, LengthRule::Independent),
+        groups.bind(Access::ReadWrite, LengthRule::Independent),
+        locals.bind(Access::ReadWrite, LengthRule::Independent),
+    ];
+    device.dispatch_batch(&[BufferDispatch::new_extent(
+        descriptor,
+        Extent::linear(n),
+        &bindings,
+    )])?;
+    Ok(outputs(device, &hits, &groups, &locals))
+}
+
+/// D209: a split launch whose variant carries its own precompiled artifact runs the artifact, equals the unsplit launch
+/// and the host reference, and a tampered artifact is the identity error and not a fallback compile.
+#[test]
+fn a_split_launch_runs_the_variants_own_artifact_and_equals_the_unsplit_launch() {
+    const N: u32 = 100;
+    const LEN: usize = 128;
+    let expected = line_expected(N, LEN);
+    let unsplit = line_unsplit(&device(), N, LEN);
+    assert_eq!(
+        unsplit, expected,
+        "the unsplit launch against the host reference"
+    );
+
+    let descriptor = line_with_a_split_artifact(false);
+    let lowered_device = lowered(device(), 4);
+    eprintln!(
+        "split artifact adapter: {:?}",
+        lowered_device.adapter_info()
+    );
+    assert!(
+        13 > lowered_device.limits().max_compute_workgroups_per_dimension,
+        "13 workgroups are past the lowered limit, so the launch is split"
+    );
+    let split = line_through(&lowered_device, &descriptor, N, LEN).expect("the split launch runs");
+    assert_eq!(
+        split, unsplit,
+        "the split launch from the artifact against the unsplit launch"
+    );
+    let stats = lowered_device.pipeline_cache_stats();
+    assert_eq!(
+        (stats.entries, stats.misses),
+        (1, 1),
+        "one pipeline, the variant's: the base is never compiled in a split launch"
+    );
+
+    // The artifact is what runs: one flipped byte is the identity error of an artifact, which a compile at run time
+    // (available in this build) would have hidden.
+    let tampered = line_with_a_split_artifact(true);
+    let fresh_device = lowered(device(), 4);
+    let error = line_through(&fresh_device, &tampered, N, LEN)
+        .expect_err("a tampered split artifact must not run");
+    assert!(
+        error.to_string().contains("artifact hash"),
+        "the artifact was verified and refused: {error}"
+    );
+    assert_cold(&fresh_device);
+}

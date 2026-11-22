@@ -229,7 +229,7 @@ fn error_of(json: &str) -> String {
 fn malformed_records_are_refused_with_the_path_of_the_problem() {
     for (json, expected) in [
         (
-            broken("\"schema\": 1", "\"schema\": 5"),
+            broken("\"schema\": 1", "\"schema\": 6"),
             "unsupported schema",
         ),
         (broken("  \"schema\": 1,\n", ""), "record: missing `schema`"),
@@ -490,10 +490,10 @@ fn a_schema_2_record_that_names_a_source_is_refused() {
 }
 
 #[test]
-fn an_unknown_schema_is_refused_naming_the_four_this_tool_reads() {
-    let error = error_of(&broken("  \"schema\": 1,", "  \"schema\": 5,"));
+fn an_unknown_schema_is_refused_naming_the_five_this_tool_reads() {
+    let error = error_of(&broken("  \"schema\": 1,", "  \"schema\": 6,"));
     assert!(
-        error.contains("unsupported schema") && error.contains("schemas 1, 2, 3 and 4"),
+        error.contains("unsupported schema") && error.contains("schemas 1, 2, 3, 4 and 5"),
         "{error}"
     );
 }
@@ -1297,4 +1297,276 @@ fn an_array_of_arrays_in_a_record_is_refused_by_path() {
         error.contains("layout.element.element: an array of arrays"),
         "{error}"
     );
+}
+
+// ---- schema 5: the record of a split variant (m11.psplit-a, D209) ----
+
+/// The Slang text of the sample's split: the sample's text plus the hidden uniform's declaration, as the emitter writes
+/// it (the key hashes it, so the record's key is the key of this text and the entry point).
+fn split_slang() -> String {
+    format!(
+        "[[vk::binding(2, 0)]] ConstantBuffer<__GustLaunchBase> __gust_launch_base;\n{SAMPLE_SLANG}"
+    )
+}
+
+/// The hidden uniform's parameter record as the macro prints it, at binding `binding`.
+fn launch_base_json(binding: u32) -> String {
+    let word = |name: &str, offset: u32| {
+        format!(
+            "            {{\n              \"name\": \"{name}\",\n              \"offset\": {offset},\n              \"type\": {{\n                \"alignment\": 4,\n                \"kind\": \"scalar\",\n                \"name\": \"u32\",\n                \"scalar\": \"u32\",\n                \"size\": 4,\n                \"stride\": 4\n              }}\n            }}"
+        )
+    };
+    let fields = [word("x", 0), word("y", 4), word("z", 8), word("pad", 12)].join(",\n");
+    format!(
+        "    {{\n      \"access\": \"read_only\",\n      \"binding\": {{\n        \"binding\": {binding},\n        \"group\": 0\n      }},\n      \"kind\": \"uniform\",\n      \"layout\": {{\n        \"element\": {{\n          \"alignment\": 16,\n          \"fields\": [\n{fields}\n          ],\n          \"kind\": \"struct\",\n          \"name\": \"__GustLaunchBase\",\n          \"size\": 16,\n          \"stride\": 16\n        }},\n        \"element_stride\": 16,\n        \"rules\": \"std140_v1\"\n      }},\n      \"name\": \"__gust_launch_base\",\n      \"rust_type\": \"__GustLaunchBase\"\n    }}"
+    )
+}
+
+/// The sample record as the macro writes the sample's split: its own key, the three parameters and then the hidden
+/// uniform, `requires` and `variant` (the body's own: none), and `split_of` the sample's key.
+fn split_record_json(requires: &str, variant: &str) -> String {
+    let key = key_of("gpu_demo_run", &split_slang());
+    broken(
+        "    }\n  ],\n  \"schema\": 1,\n",
+        &format!(
+            "    }},\n{}\n  ],\n  \"requires\": {requires},\n  \"schema\": 5,\n",
+            launch_base_json(2)
+        ),
+    )
+    .replacen(SAMPLE_KEY, &key, 1)
+    .replace(
+        "  },\n  \"workgroup_size\"",
+        &format!(
+            "  }},\n  \"split_of\": \"{SAMPLE_KEY}\",\n  \"variant\": {variant},\n  \"workgroup_size\""
+        ),
+    )
+}
+
+fn split_error(json: &str) -> String {
+    Record::parse(json, &split_slang()).unwrap_err()
+}
+
+#[test]
+fn a_schema_5_record_is_the_split_of_its_body_and_rebuilds_with_the_hidden_uniform() {
+    let json = split_record_json("[]", "\"\"");
+    let (record, schema, sited) = Record::parse_any(&json, &split_slang()).unwrap();
+    assert_eq!((schema, sited), (5, false));
+    assert!(record.is_split());
+    assert_eq!(record.split_of.as_deref(), Some(SAMPLE_KEY));
+    assert_ne!(record.key, SAMPLE_KEY);
+    assert_eq!(record.key, key_of("gpu_demo_run", &split_slang()));
+    // The kernel's own identity, a key of its own, the body's `requires` and `variant`.
+    assert_eq!(record.qualified_name(), "demo::run");
+    assert_eq!(record.entry_point, "gpu_demo_run");
+    assert!(record.requires.is_empty() && record.variant.is_empty());
+    assert!(!record.has_variant_facts());
+    assert_eq!(record.slang, split_slang());
+    // The body's parameters, then the hidden uniform, which is the descriptor's own, binding and layout included.
+    assert_eq!(record.parameters[..3], sample().parameters[..]);
+    let descriptor = record.descriptor();
+    assert_eq!(descriptor.parameters.len(), 4);
+    assert_eq!(
+        descriptor.parameters[3],
+        KernelDescriptor::__gust_launch_base_parameter(2)
+    );
+    // The records of the schemas before it are no splits.
+    assert!(!sample().is_split() && sample().split_of.is_none());
+}
+
+#[test]
+fn a_schema_5_record_keeps_the_requires_and_variant_of_its_body_and_may_lack_a_source() {
+    let json = split_record_json("[\"subgroups\"]", "\"run_subgroups\"");
+    let record = Record::parse(&json, &split_slang()).unwrap();
+    assert_eq!(record.requires, [Capability::Subgroups]);
+    assert_eq!(record.variant, "run_subgroups");
+    assert!(record.has_variant_facts() && record.is_split());
+    assert_eq!(record.body_name(), "demo::run_subgroups");
+    // The split of a `par_for!` body has no `source`: it is read like schema 2, with sidecars.
+    let start = json.find("  \"source\": {").unwrap();
+    let end = start + json[start..].find("  },\n").unwrap() + "  },\n".len();
+    let without = format!("{}{}", &json[..start], &json[end..]);
+    let (record, schema, sited) = Record::parse_any(&without, &split_slang()).unwrap();
+    assert_eq!((schema, sited), (5, true));
+    assert!(record.file.is_empty() && record.lines.is_empty());
+}
+
+#[test]
+fn a_schema_5_record_with_a_missing_or_malformed_split_of_is_refused() {
+    let good = split_record_json("[]", "\"\"");
+    let own = key_of("gpu_demo_run", &split_slang());
+    for (what, bad, wanted) in [
+        (
+            "no split_of",
+            good.replace(&format!("  \"split_of\": \"{SAMPLE_KEY}\",\n"), ""),
+            "a schema 5 record needs `split_of`",
+        ),
+        (
+            "not a string",
+            good.replace(
+                &format!("\"split_of\": \"{SAMPLE_KEY}\""),
+                "\"split_of\": 7",
+            ),
+            "`split_of` must be a string",
+        ),
+        (
+            "not hex",
+            good.replace(
+                &format!("\"split_of\": \"{SAMPLE_KEY}\""),
+                "\"split_of\": \"ABC\"",
+            ),
+            "`split_of` must be 16 lower-case hex digits",
+        ),
+        (
+            "its own key",
+            good.replace(
+                &format!("\"split_of\": \"{SAMPLE_KEY}\""),
+                &format!("\"split_of\": \"{own}\""),
+            ),
+            "`split_of` is the record's own key",
+        ),
+        (
+            "no requires",
+            good.replace("  \"requires\": [],\n", ""),
+            "missing `requires`",
+        ),
+        (
+            "no variant",
+            good.replace("  \"variant\": \"\",\n", ""),
+            "missing `variant`",
+        ),
+    ] {
+        let error = split_error(&bad);
+        assert!(error.contains(wanted), "{what}: {error}");
+    }
+}
+
+#[test]
+fn split_of_under_schema_1_to_4_is_refused() {
+    // The number is what keeps an older reader from reading a split as a kernel of its own.
+    for schema in 1..=4 {
+        let json = split_record_json("[\"subgroups\"]", "\"v\"")
+            .replace("  \"schema\": 5,", &format!("  \"schema\": {schema},"));
+        // A schema 4 record has requires and variant, a schema 1 to 3 one has neither: either way `split_of` is refused,
+        // and for schema 1 to 3 the older refusal of `requires` comes first.
+        let error = split_error(&json);
+        assert!(
+            error.contains("has no `split_of`") || error.contains("has no `requires`"),
+            "{schema}: {error}"
+        );
+    }
+    let plain = broken(
+        "  \"schema\": 1,\n",
+        "  \"schema\": 1,\n  \"split_of\": \"0123456789abcdef\",\n",
+    );
+    let error = error_of(&plain);
+    assert!(
+        error.contains("a schema 1 record has no `split_of` (it is a schema 5 key"),
+        "{error}"
+    );
+    let schema_4 = variant_record_json("[\"subgroups\"]", "\"v\"").replace(
+        "  \"schema\": 4,\n",
+        "  \"schema\": 4,\n  \"split_of\": \"0123456789abcdef\",\n",
+    );
+    let error = error_of(&schema_4);
+    assert!(
+        error.contains("a schema 4 record has no `split_of` (it is a schema 5 key"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_split_whose_last_parameter_is_not_the_hidden_uniform_is_refused() {
+    let good = split_record_json("[]", "\"\"");
+    for (what, bad) in [
+        (
+            "no hidden uniform",
+            good.replace(&format!(",\n{}", launch_base_json(2)), ""),
+        ),
+        (
+            "another name",
+            good.replace("\"name\": \"__gust_launch_base\"", "\"name\": \"__gust_other\""),
+        ),
+        (
+            "another layout size",
+            good.replace("\"size\": 16", "\"size\": 32"),
+        ),
+        (
+            "storage access",
+            good.replace(
+                "\"access\": \"read_only\",\n      \"binding\": {\n        \"binding\": 2",
+                "\"access\": \"read_write\",\n      \"binding\": {\n        \"binding\": 2",
+            ),
+        ),
+        (
+            "no binding",
+            good.replace(
+                "\"binding\": {\n        \"binding\": 2,\n        \"group\": 0\n      },\n      \"kind\": \"uniform\"",
+                "\"binding\": null,\n      \"kind\": \"uniform\"",
+            ),
+        ),
+    ] {
+        assert_ne!(bad, good, "{what}: the edit changed nothing");
+        let error = split_error(&bad);
+        assert!(
+            error.contains("the last parameter of a split must be the hidden `__gust_launch_base` uniform"),
+            "{what}: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_reader_of_schemas_1_to_4_refuses_a_schema_5_record() {
+    let before = [
+        RECORD_SCHEMA,
+        SITE_RECORD_SCHEMA,
+        SHAPE_RECORD_SCHEMA,
+        VARIANT_RECORD_SCHEMA,
+    ];
+    let json = split_record_json("[]", "\"\"");
+    let error = Record::parse_schemas(&json, &split_slang(), &before).unwrap_err();
+    assert!(
+        error.contains("unsupported schema") && error.contains("schemas 1, 2, 3 and 4"),
+        "{error}"
+    );
+    assert!(Record::parse_any(&json, &split_slang()).is_ok());
+    // The old readers still read what they always read.
+    for json in [
+        SAMPLE_RECORD_JSON.to_owned(),
+        site_record_json(),
+        pixel_record_json(),
+        variant_record_json("[\"subgroups\"]", "\"v\""),
+    ] {
+        assert!(Record::parse_schemas(&json, SAMPLE_SLANG, &before).is_ok());
+    }
+}
+
+#[test]
+fn a_directory_with_a_body_and_its_split_reads_both() {
+    let scratch = Scratch::new("split records");
+    let directory = scratch.0.join("records");
+    fs::create_dir_all(&directory).unwrap();
+    let slang = split_slang();
+    let key = key_of("gpu_demo_run", &slang);
+    fs::write(
+        directory.join(format!("{SAMPLE_KEY}.kernel.json")),
+        SAMPLE_RECORD_JSON,
+    )
+    .unwrap();
+    fs::write(directory.join(format!("{SAMPLE_KEY}.slang")), SAMPLE_SLANG).unwrap();
+    fs::write(
+        directory.join(format!("{key}.kernel.json")),
+        split_record_json("[]", "\"\""),
+    )
+    .unwrap();
+    fs::write(directory.join(format!("{key}.slang")), &slang).unwrap();
+    let records = read_records(&directory).unwrap();
+    assert_eq!(records.len(), 2);
+    let split = records.iter().find(|record| record.is_split()).unwrap();
+    let body = records.iter().find(|record| !record.is_split()).unwrap();
+    assert_eq!(
+        (split.key.as_str(), body.key.as_str()),
+        (key.as_str(), SAMPLE_KEY)
+    );
+    assert_eq!(split.split_of.as_deref(), Some(body.key.as_str()));
+    assert_eq!(split.qualified_name(), body.qualified_name());
 }

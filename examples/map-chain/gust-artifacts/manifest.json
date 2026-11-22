@@ -16,6 +16,22 @@
       "name": "map_kernel"
     },
     {
+      "clean_sha256": "d4a9977e3a3b4d640cd788062188bceb7dcb3df9bf663b4f845459c1a23335d0",
+      "entry_point": "gpu_rescale_map_kernel",
+      "formats": [
+        {
+          "file": "449b5edaa482c750.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "4d03d43f29dfa0358ed120424f7ebed822880cb56e666c2b3b900cbfb1e14321",
+          "sha256": "b92c7e3e6f879caa7a6a86c7d26906a6cc2c1e0df64cdfb16231c1f0124d527e"
+        }
+      ],
+      "key": "449b5edaa482c750",
+      "module": "rescale",
+      "name": "map_kernel",
+      "split_of": "f456c511b99696af"
+    },
+    {
       "clean_sha256": "794dba9a580f259556183dc475639ff9edc87c204455b734ba9de0dec418bf2d",
       "entry_point": "gpu_damp_map_kernel",
       "formats": [
@@ -31,6 +47,22 @@
       "name": "map_kernel"
     },
     {
+      "clean_sha256": "47c5f1699fe8c7fd2b7c0facfc5b12543eb98ddf68eac73e95b4cdc7601a462e",
+      "entry_point": "gpu_curve_map_kernel",
+      "formats": [
+        {
+          "file": "e1a6a90357570cc1.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "7491b55e73a9e0bb66c196c4f4268aa4ee4d7705e565317680015bd56f27cbae",
+          "sha256": "122a73fbfd90066e54de0d0d9d230125e12a5c17f0fabf4094b5cb72285a2fd0"
+        }
+      ],
+      "key": "e1a6a90357570cc1",
+      "module": "curve",
+      "name": "map_kernel",
+      "split_of": "443ab55c412cf3e5"
+    },
+    {
       "clean_sha256": "6420659a40a09aa85a374156185088b3d60218e34aea87340030c26039618185",
       "entry_point": "gpu_rescale_map_kernel",
       "formats": [
@@ -44,8 +76,24 @@
       "key": "f456c511b99696af",
       "module": "rescale",
       "name": "map_kernel"
+    },
+    {
+      "clean_sha256": "0eba3ec3edfbbb92a91364c7537bc7d75fffa782301ac49bfa497222c037d5b8",
+      "entry_point": "gpu_damp_map_kernel",
+      "formats": [
+        {
+          "file": "fe86c9a1a4c898c0.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "4fe257a2f78852c89c2af7036d034560ed513c0d0a04e50b9517805cacab488e",
+          "sha256": "bcb240f5f68488c59b9cf75ab13c6f62cdb73264d26f3b6398054ab55c674e4d"
+        }
+      ],
+      "key": "fe86c9a1a4c898c0",
+      "module": "damp",
+      "name": "map_kernel",
+      "split_of": "7a31d859726fa88f"
     }
   ],
-  "schema": 1,
+  "schema": 4,
   "slang": "2026.22"
 }

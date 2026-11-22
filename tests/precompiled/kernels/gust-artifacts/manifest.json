@@ -14,8 +14,24 @@
       "key": "52e85c5f03f72272",
       "module": "vector_add",
       "name": "add"
+    },
+    {
+      "clean_sha256": "d3e9047b66ede0da270b7848102f5e608fcc18ab70b6fa14a87337e2f92c7ff5",
+      "entry_point": "gpu_vector_add_add",
+      "formats": [
+        {
+          "file": "93b3f1ef65f948d2.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "2e1036f7ebb1518a6695c89a96e785b1580633882721b361eab324fef5cf89c9",
+          "sha256": "de362434a20c532803490c5fe694ab401ab60539be9c5411f16329da74db490d"
+        }
+      ],
+      "key": "93b3f1ef65f948d2",
+      "module": "vector_add",
+      "name": "add",
+      "split_of": "52e85c5f03f72272"
     }
   ],
-  "schema": 1,
+  "schema": 4,
   "slang": "2026.22"
 }

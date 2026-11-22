@@ -92,6 +92,7 @@ fn vector_add_record(null_layouts: &[&str]) -> Record {
         sites: Vec::new(),
         requires: Vec::new(),
         variant: String::new(),
+        split_of: None,
     }
 }
 

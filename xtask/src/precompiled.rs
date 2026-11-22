@@ -98,6 +98,15 @@ const STRICT_PROFILE: &str = "native";
 /// The line `app` prints after the GPU result equals its host reference.
 pub(crate) const VERIFIED_PREFIX: &str = "verified: GPU result equals the host reference for ";
 
+/// The line `app` prints after a launch past a lowered workgroup limit ran as pieces of the kernel's split artifact
+/// (D208, D209; there is no run-time compiler in this binary) and its result equalled the host reference.
+pub(crate) const SPLIT_PREFIX: &str = "split: a launch past a lowered workgroup limit ran as pieces of the split artifact and equals the host reference for ";
+
+/// The line `app` prints when the same launch of a kernel whose split has no precompiled artifact is refused with
+/// `DeviceLimit` (D208): this binary has no run-time compiler either, so nothing can run the pieces. The name of the
+/// limit follows.
+pub(crate) const SPLIT_REFUSED_PREFIX: &str = "split fallback: no split artifact and no run-time compiler, so the launch past the limit is refused with DeviceLimit on ";
+
 /// The line `app` prints with the name of the adapter it ran on.
 pub(crate) const ADAPTER_PREFIX: &str = "adapter: ";
 
@@ -599,7 +608,7 @@ pub(crate) struct RunReport {
 }
 
 /// The problems of the run of `app` in E1: it must exit 0, name its adapter and a WGSL artifact, and print the
-/// `verified:` line. Returns what it printed.
+/// `verified:` line and the `split:` line (D209). Returns what it printed.
 pub(crate) fn judge_run(
     success: bool,
     stdout: &str,
@@ -633,6 +642,24 @@ pub(crate) fn judge_run(
     if elements.is_none() {
         problems.push(format!(
             "`app` printed no `{VERIFIED_PREFIX}<n> elements` line"
+        ));
+    }
+    let split = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix(SPLIT_PREFIX))
+        .map(|rest| rest.trim_end_matches(" elements").trim())
+        .filter(|count| count.parse::<u64>().is_ok_and(|count| count > 0));
+    if split.is_none() {
+        problems.push(format!(
+            "`app` printed no `{SPLIT_PREFIX}<n> elements` line, so a launch past a workgroup limit did not run from the split artifact"
+        ));
+    }
+    if !stdout.lines().any(|line| {
+        line.strip_prefix(SPLIT_REFUSED_PREFIX)
+            .is_some_and(|rest| !rest.trim().is_empty())
+    }) {
+        problems.push(format!(
+            "`app` printed no `{SPLIT_REFUSED_PREFIX}<limit>` line, so a launch past a workgroup limit with no split artifact and no compiler was not refused"
         ));
     }
     match (problems.is_empty(), adapter, elements) {
@@ -897,7 +924,7 @@ fn e3_mutated_artifact(fixture: &Fixture, check_only: bool) -> Result<String, St
     let scratch = fixture.scratch.join("e3");
     let scratch_target = fixture.scratch_target_dir();
     copy_fixture(fixture, &scratch)?;
-    let artifact = single_artifact(&scratch.join("kernels").join("gust-artifacts"), "wgsl")?;
+    let artifact = body_wgsl_artifact(&scratch.join("kernels").join("gust-artifacts"))?;
     let original = fs::read(&artifact).map_err(|error| format!("check-precompiled E3: {error}"))?;
     let mutated =
         mutate_wgsl(&original).map_err(|error| format!("check-precompiled E3: {error}"))?;
@@ -2997,6 +3024,31 @@ fn copy_tree(source: &Path, destination: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// The body's `.wgsl` artifact of the generated set in `directory`, chosen by its manifest: the key a split entry names
+/// in `split_of` (the set holds the body's file and its split's file, so a count cannot tell them apart). A manifest
+/// that names no split belongs to a set with exactly one `.wgsl` file, which is the body's.
+fn body_wgsl_artifact(directory: &Path) -> Result<PathBuf, String> {
+    let manifest = directory.join("manifest.json");
+    let text = fs::read_to_string(&manifest)
+        .map_err(|error| format!("{}: {error}", manifest.display()))?;
+    let owner = text.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("\"split_of\": \"")?;
+        Some(rest.split('"').next()?.to_owned())
+    });
+    let Some(owner) = owner else {
+        return single_artifact(directory, "wgsl");
+    };
+    let path = directory.join(format!("{owner}.wgsl"));
+    if path.is_file() {
+        Ok(path)
+    } else {
+        Err(format!(
+            "the manifest names `{owner}` as a split's body, but {} does not exist",
+            path.display()
+        ))
+    }
 }
 
 /// The one file of `directory` that ends in `.extension` (and not in `.reflection.json`).

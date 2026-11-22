@@ -1,6 +1,22 @@
 {
   "kernels": [
     {
+      "clean_sha256": "26ab03b29bf0d17f2b0a5166f9c6e0e5ef8e804e27218e91513adfe8b3a293a8",
+      "entry_point": "gpu_blocks_add_offsets",
+      "formats": [
+        {
+          "file": "118713f46b6dfe65.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "4bf70dd9a2018bb2ab48a259a02b6d2952d64e34605b996d5105599f1a42a537",
+          "sha256": "28beeb4c187b752733df9dc9c2c8f9187cca3a25c5f77e764b4e6a54c46b8e2d"
+        }
+      ],
+      "key": "118713f46b6dfe65",
+      "module": "blocks",
+      "name": "add_offsets",
+      "split_of": "b19d20efc1b03d2a"
+    },
+    {
       "clean_sha256": "51c2ec56cbc1f4842d68ef1a87a3f2192fdf04d41a6814d589704bd8741669eb",
       "entry_point": "gpu_blocks_tile_sum",
       "formats": [
@@ -14,6 +30,22 @@
       "key": "2ffde1e1d0a69d58",
       "module": "blocks",
       "name": "tile_sum"
+    },
+    {
+      "clean_sha256": "e47dcc542e458a754c365371ae7e8cb9702d701142dcd7d52a0ae884c944aee2",
+      "entry_point": "gpu_blocks_tile_sum",
+      "formats": [
+        {
+          "file": "4c32b05368ce1263.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "afcf385d11a98926238244d868b2a5b67bad14d8c0285a8af7a1e89bd4f7c191",
+          "sha256": "8dcc29a0cde5abe5ec43f650549a59ce7eb637ab7e335894f97826b810413e39"
+        }
+      ],
+      "key": "4c32b05368ce1263",
+      "module": "blocks",
+      "name": "tile_sum",
+      "split_of": "2ffde1e1d0a69d58"
     },
     {
       "clean_sha256": "86d2997a87048b0827473b14581250dc9e9f6beae2e9a9b0e36f1cb09b39091c",
@@ -31,6 +63,22 @@
       "name": "tile_scan"
     },
     {
+      "clean_sha256": "ddbde168bb02144d1872b4c53eed8d86f95d2a1e1cf2b2aa68668305d9d2a5c4",
+      "entry_point": "gpu_blocks_tile_scan",
+      "formats": [
+        {
+          "file": "984210c60a8f71bc.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "fd91b81f9bb689c6f7ed3715ba9435e0e2cf128dce529f9c2c8585955abc463c",
+          "sha256": "41f4ce6f98e2080c9b114489b55b6212c4c1b61b3745905c055982746a6e25a9"
+        }
+      ],
+      "key": "984210c60a8f71bc",
+      "module": "blocks",
+      "name": "tile_scan",
+      "split_of": "62d8d3fc7802b74c"
+    },
+    {
       "clean_sha256": "ac0aa37ae840673270bf3ccfa3f152c7abb488ff9f73f6605f7583eb790682f8",
       "entry_point": "gpu_blocks_add_offsets",
       "formats": [
@@ -46,6 +94,6 @@
       "name": "add_offsets"
     }
   ],
-  "schema": 1,
+  "schema": 4,
   "slang": "2026.22"
 }

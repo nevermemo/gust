@@ -719,6 +719,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       intended. Probes: `RangeInclusive::contains` in a kernel is GUST-E0325 and also yields a misleading E0277 on
       the uniform struct; an untyped array literal is GUST-E0811 (typed local arrays work). Wired into `check-cpu`.
       Radeon 890M only; RTX 5090 pending.
+    - m11.psplit-a (`472b97a`, D209, D214): a precompiled split artifact per `grid` kernel. Kernel record schema 5
+      (required `split_of`), manifest schema 4 (optional `split_of` on split entries); the split pair is keyed on
+      the split Slang text and verified like any artifact (a tampered split artifact gives the identity error).
+      The 16 precompiled sets are re-blessed (manifests changed, split files added, no existing artifact changed).
+      The precompiled app (no compiler) runs a launch past a lowered limit as pieces of the split artifact, equal
+      to the host, and gets `DeviceLimit` when the split's artifacts are absent; check-precompiled requires both
+      lines. One new test in `crates/gust-wgpu/tests/split.rs`: `GPU_SUITE_PIN` 568 to 569 over 56. Opus review
+      fixes: E3 picks the body artifact by manifest, the web fixture test keys copies by manifest, a shared split
+      link check, stale `DeviceLimit` docs. Radeon 890M only; the browser half (check-web) and RTX 5090 pending.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

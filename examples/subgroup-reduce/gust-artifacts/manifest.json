@@ -1,6 +1,38 @@
 {
   "kernels": [
     {
+      "clean_sha256": "500a28f9842a1f9b7d6a305c4e0b5021a7d4bf52d2c838b1807393877edda12b",
+      "entry_point": "gpu_lanes_survey",
+      "formats": [
+        {
+          "file": "2185a5a9fab8e832.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "efcb895b0d1a3c8480c6a22163246ff8d5c6772d78e3956165275087ecac607a",
+          "sha256": "042e67a4f220209f796eca0adc17b73b3ac1b965c30557c7083aa6cac6a4121a"
+        }
+      ],
+      "key": "2185a5a9fab8e832",
+      "module": "lanes",
+      "name": "survey",
+      "split_of": "cfb2afd607dfe781"
+    },
+    {
+      "clean_sha256": "bcca9d8fe2c0a2da3e7da3e0d20e0ab00ef5c12ce5ea9761ad5c3d7de950c2e1",
+      "entry_point": "gpu_lanes_survey_subgroups",
+      "formats": [
+        {
+          "file": "99fdb1d8416e0607.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "22c1fadd74992df36cc22ee3099a7ee3c033b95149e487733397925b050f8390",
+          "sha256": "d023206d24c58871a74b25c78ef1ae5def1a6c95c59971206d0b936ce712405d"
+        }
+      ],
+      "key": "99fdb1d8416e0607",
+      "module": "lanes",
+      "name": "survey",
+      "split_of": "df919e5837eb650a"
+    },
+    {
       "clean_sha256": "2b4efb1867e69d2aec6b816bf3fb76a2cc4a2fe36a12056ddebe9819fe17ab4f",
       "entry_point": "gpu_lanes_survey",
       "formats": [
@@ -45,6 +77,6 @@
       "name": "survey"
     }
   ],
-  "schema": 3,
+  "schema": 4,
   "slang": "2026.22"
 }

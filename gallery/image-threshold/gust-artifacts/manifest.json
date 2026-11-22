@@ -31,8 +31,25 @@
       "module": "threshold",
       "name": "flag",
       "shape": "pixel"
+    },
+    {
+      "clean_sha256": "6f1023ccc2792de4c6a252e3f45abcf63a3b6f4e322e2d3b31580fb09ba9e133",
+      "entry_point": "gpu_threshold_binarize",
+      "formats": [
+        {
+          "file": "b7795670f9651028.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "9cd280238f2c34608b7c2138c6a13b8347dbd61e221e2775dc4f4ff8925cec02",
+          "sha256": "4b1c2fb76414a4a11803075895d42b4771d3c63cc8bcb5a0a96d6caa628c0839"
+        }
+      ],
+      "key": "b7795670f9651028",
+      "module": "threshold",
+      "name": "binarize",
+      "shape": "grid",
+      "split_of": "0f838e404feee7ae"
     }
   ],
-  "schema": 2,
+  "schema": 4,
   "slang": "2026.22"
 }

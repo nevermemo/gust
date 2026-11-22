@@ -1114,8 +1114,11 @@ pub(crate) struct GpuSuitePin {
 ///
 /// Slice m11.cexpr: 566 over 56 became 568 over 56. Two more tests in `tests/consts.rs` (the Rust values of the
 /// constant expressions, and the expressions on the GPU against them), on an existing `test result:` line.
+///
+/// Slice m11.psplit-a: 568 over 56 became 569 over 56. One more test in `crates/gust-wgpu/tests/split.rs` (a split
+/// launch runs the variant's own precompiled artifact and equals the unsplit launch), on an existing line.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 568,
+    passed: 569,
     result_lines: 56,
 };
 

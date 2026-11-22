@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     export::{
         plan,
-        tests::{FakeCompiler, other, sample},
+        tests::{FakeCompiler, other, sample, split_of},
     },
     testdata::SAMPLE_KEY,
 };
@@ -505,6 +505,53 @@ fn a_manifest_entry_whose_shape_differs_from_the_record_is_reported() {
     assert!(
         report.problems[0].contains("the manifest has shape `grid`, the source has `pixel`")
             && report.problems[0].contains("run `cargo gust build`"),
+        "{:?}",
+        report.problems
+    );
+}
+
+// ---- split variants (m11.psplit-a, D209) ----
+
+#[test]
+fn a_set_that_lacks_the_split_entry_is_red_and_the_set_a_build_writes_is_green() {
+    let body = sample();
+    let split = split_of(&body);
+    let records = vec![body.clone(), split.clone()];
+    // The set a build before splits existed wrote: the body only.
+    let stale = state_of(&planned(vec![body.clone()], &[Format::Wgsl]));
+    let report = check(&records, &stale);
+    assert_eq!(
+        report.problems,
+        [format!(
+            "kernel `demo::run` (key {}) has no entry in manifest.json; run `cargo gust build`",
+            split.key
+        )]
+    );
+    // The set a build of these sources writes: both entries, both file pairs, nothing else to say.
+    let fresh = state_of(&planned(records.clone(), &[Format::Wgsl]));
+    assert!(
+        fresh
+            .files
+            .iter()
+            .any(|(name, _)| name == &format!("{}.wgsl", split.key))
+    );
+    assert_eq!(check(&records, &fresh), Report::default());
+}
+
+#[test]
+fn the_split_link_of_the_manifest_is_compared_with_the_records() {
+    let body = sample();
+    let split = split_of(&body);
+    let state = state_of(&planned(vec![body.clone(), split.clone()], &[Format::Wgsl]));
+    // The sources now say the split's key is a body of its own: the manifest still links it.
+    let mut as_body = split.clone();
+    as_body.split_of = None;
+    let report = check(&[body.clone(), as_body], &state);
+    assert!(
+        report.problems.iter().any(|line| line.contains(&format!(
+            "kernel `demo::run` (key {}): the manifest has the split of {}, the source has none (a body)",
+            split.key, body.key
+        ))),
         "{:?}",
         report.problems
     );

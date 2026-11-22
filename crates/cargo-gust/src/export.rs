@@ -17,8 +17,8 @@ use gust::{
 
 use crate::{
     manifest::{
-        FormatEntry, KernelEntry, MANIFEST_FILE, Manifest, VariantEntry, artifact_file,
-        format_name, format_rank, reflection_file,
+        FormatEntry, KernelEntry, MANIFEST_FILE, Manifest, SplitFacts, VariantEntry, artifact_file,
+        format_name, format_rank, reflection_file, split_link_problem,
     },
     record::Record,
     sha256::sha256_hex,
@@ -131,7 +131,8 @@ pub(crate) fn variant_lists(
     records: &[Record],
 ) -> Result<Vec<(String, Vec<VariantEntry>)>, String> {
     let mut groups: Vec<((&str, &str), Vec<&Record>)> = Vec::new();
-    for record in records {
+    // A split variant has its body's `module` and `name` but is not one of the kernel's bodies (m11.psplit-a, D209).
+    for record in records.iter().filter(|record| !record.is_split()) {
         let at = (record.module.as_str(), record.name.as_str());
         match groups.iter_mut().find(|(group, _)| *group == at) {
             Some((_, members)) => members.push(record),
@@ -188,6 +189,34 @@ pub(crate) fn variant_lists(
     }
     lists.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(lists)
+}
+
+/// The links of the split records (schema 5) to the bodies in the same collection, by the rules the manifest reader
+/// holds the written entries to ([`split_link_problem`]); this refuses a collection that would write a manifest the
+/// reader refuses, before any file is compiled.
+pub(crate) fn check_splits(records: &[Record]) -> Result<(), String> {
+    let facts: Vec<SplitFacts<'_>> = records
+        .iter()
+        .map(|record| SplitFacts {
+            key: &record.key,
+            module: &record.module,
+            name: &record.name,
+            entry_point: &record.entry_point,
+            shape: record.shape,
+            split_of: record.split_of.as_deref(),
+            variants: 0,
+        })
+        .collect();
+    for (record, split) in records.iter().zip(&facts) {
+        if let Some(problem) = split_link_problem(split, &facts) {
+            return Err(format!(
+                "the split variant {} of `{}`: {problem}; run `cargo gust build` again so that the sources and the records agree",
+                record.key,
+                record.body_name()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// What `check` says about the `variants` lists: the stored manifest against the lists the collected records give
@@ -258,6 +287,7 @@ pub(crate) fn plan(
     compiler: &dyn Compiler,
 ) -> Result<Planned, String> {
     let records = dedupe(records)?;
+    check_splits(&records)?;
     let mut files = Vec::new();
     let mut kernels = Vec::new();
     let mut warnings = Vec::new();
@@ -317,6 +347,7 @@ pub(crate) fn plan(
             export_unchecked: record.unchecked_parameters(),
             formats: entries,
             variants: Vec::new(),
+            split_of: record.split_of.clone(),
         });
     }
     for (owner, bodies) in variant_lists(&records)? {
@@ -904,6 +935,166 @@ pub(crate) mod tests {
         assert!(
             problems[0].contains("has variants but no body of its own"),
             "{problems:?}"
+        );
+    }
+
+    // ---- split variants (m11.psplit-a, D209) ----
+
+    /// The split of `owner`: the same kernel and entry point, the hidden uniform's declaration added to the text, a key
+    /// of its own from that text, and `split_of` the body's key. (The fake compiler needs no real layout.)
+    pub(crate) fn split_of(owner: &Record) -> Record {
+        let mut split = owner.clone();
+        split.slang = format!(
+            "[[vk::binding(9, 0)]] ConstantBuffer<__GustLaunchBase> __gust_launch_base;\n{}",
+            owner.slang
+        );
+        split.key = crate::record::key_of(&split.entry_point, &split.slang);
+        split.split_of = Some(owner.key.clone());
+        split
+    }
+
+    #[test]
+    fn a_body_and_its_split_are_two_linked_entries_and_the_split_is_no_body() {
+        let owner = sample();
+        let split = split_of(&owner);
+        let planned = plan(
+            vec![split.clone(), owner.clone()],
+            &[Format::Wgsl],
+            &FakeCompiler::new(),
+        )
+        .unwrap();
+        // Two entries, a file pair each, and the manifest says which is the split of which.
+        assert_eq!(planned.manifest.kernels.len(), 2);
+        assert_eq!(planned.files.len(), 4);
+        assert_eq!(planned.manifest.schema(), crate::manifest::SPLIT_SCHEMA);
+        let entry = planned.manifest.entry(&split.key).unwrap();
+        assert_eq!(entry.split_of.as_deref(), Some(owner.key.as_str()));
+        assert_eq!(entry.qualified_name(), "demo::run");
+        assert_eq!(entry.entry_point, "gpu_demo_run");
+        assert!(entry.variants.is_empty());
+        assert_eq!(entry.clean_sha256, split.clean_sha256());
+        let body = planned.manifest.entry(&owner.key).unwrap();
+        assert!(body.split_of.is_none() && body.variants.is_empty());
+        let names: Vec<&str> = planned
+            .files
+            .iter()
+            .map(|file| file.name.as_str())
+            .collect();
+        assert!(
+            names.contains(&format!("{}.wgsl", split.key).as_str()),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&format!("{}.wgsl.reflection.json", split.key).as_str()),
+            "{names:?}"
+        );
+        // The reader accepts it (no "two entries of one kernel and no variants list"), and nothing is stale.
+        let parsed = crate::manifest::Manifest::parse(&planned.manifest.render()).unwrap();
+        assert_eq!(parsed.kernels.len(), 2);
+        assert_eq!(
+            variant_problems(&[owner.clone(), split.clone()], &parsed),
+            Vec::<String>::new()
+        );
+        // A split is no body: it makes no `variants` list.
+        assert!(variant_lists(&[owner.clone(), split]).unwrap().is_empty());
+        // Without the split the manifest is the schema 1 manifest it was.
+        let alone = plan(vec![owner], &[Format::Wgsl], &FakeCompiler::new()).unwrap();
+        assert_eq!(alone.manifest.schema(), crate::manifest::SCHEMA);
+        assert!(!alone.manifest.render().contains("split_of"));
+    }
+
+    #[test]
+    fn the_split_of_a_body_with_variants_leaves_the_variants_lists_as_they_were() {
+        let records = kernel_with_a_variant();
+        let without = plan(records.clone(), &[Format::Wgsl], &FakeCompiler::new()).unwrap();
+        let mut with_splits = records.clone();
+        for record in &records {
+            with_splits.push(split_of(record));
+        }
+        let planned = plan(with_splits.clone(), &[Format::Wgsl], &FakeCompiler::new()).unwrap();
+        assert_eq!(planned.manifest.kernels.len(), 6);
+        assert_eq!(planned.manifest.schema(), crate::manifest::SPLIT_SCHEMA);
+        // One list, of the two bodies, on the own body.
+        let own = body("sum", "sum", &[]).key;
+        let lists: Vec<_> = planned
+            .manifest
+            .kernels
+            .iter()
+            .filter(|entry| !entry.variants.is_empty())
+            .collect();
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0].key, own);
+        assert_eq!(
+            lists[0].variants,
+            without.manifest.entry(&own).unwrap().variants
+        );
+        assert_eq!(
+            variant_lists(&with_splits).unwrap(),
+            variant_lists(&records).unwrap()
+        );
+        // Three splits, each linked to its own body.
+        let splits = planned
+            .manifest
+            .kernels
+            .iter()
+            .filter(|entry| entry.split_of.is_some())
+            .count();
+        assert_eq!(splits, 3);
+        let parsed = crate::manifest::Manifest::parse(&planned.manifest.render()).unwrap();
+        assert_eq!(
+            variant_problems(&with_splits, &parsed),
+            Vec::<String>::new()
+        );
+        // The bodies' own entries are what they were.
+        for record in &records {
+            assert_eq!(
+                planned.manifest.entry(&record.key).unwrap().formats,
+                without.manifest.entry(&record.key).unwrap().formats
+            );
+        }
+    }
+
+    #[test]
+    fn a_split_that_does_not_fit_its_body_is_refused_before_anything_is_compiled() {
+        let owner = sample();
+        let split = split_of(&owner);
+        let refused = |records: Vec<Record>| {
+            plan(records, &[Format::Wgsl], &FakeCompiler::new()).unwrap_err()
+        };
+        // The body is not in the collection.
+        let error = refused(vec![split.clone()]);
+        assert!(
+            error.starts_with("the split variant ")
+                && error.contains("names no kernel of this set"),
+            "{error}"
+        );
+        // Another kernel's entry point.
+        let mut stray = split.clone();
+        stray.entry_point = "gpu_demo_other".to_owned();
+        stray.key = crate::record::key_of(&stray.entry_point, &stray.slang);
+        let error = refused(vec![owner.clone(), stray]);
+        assert!(
+            error.contains("is `demo::run` (entry point `gpu_demo_run`)"),
+            "{error}"
+        );
+        // Two splits of one body.
+        let mut second = split.clone();
+        second.slang.push_str("// again\n");
+        second.key = crate::record::key_of(&second.entry_point, &second.slang);
+        let error = refused(vec![owner.clone(), split.clone(), second]);
+        assert!(error.contains("has a second split variant"), "{error}");
+        // A split of a split.
+        let mut grand = split_of(&split);
+        grand.split_of = Some(split.key.clone());
+        let error = refused(vec![owner.clone(), split.clone(), grand]);
+        assert!(error.contains("is itself a split variant"), "{error}");
+        // A kernel that is not `grid`.
+        let mut pixel = split.clone();
+        pixel.shape = gust::Shape::Pixel;
+        let error = refused(vec![owner, pixel]);
+        assert!(
+            error.contains("only a `grid` kernel has a split variant"),
+            "{error}"
         );
     }
 }

@@ -706,14 +706,51 @@ fn all_five_committed_copies_of_the_precompiled_artifact_are_byte_copies_of_the_
         .filter(|name| name != "manifest.json")
         .collect();
     artifact_files.sort();
+    // The split's key is the `key` of the manifest entry that carries `split_of`; the body's is what `split_of` names.
+    let manifest = fs::read_to_string(source.join("manifest.json")).unwrap();
+    let mut last_key = None;
+    let mut split_key = None;
+    let mut body_key = None;
+    for line in manifest.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("\"key\": \"") {
+            last_key = rest.split('"').next().map(str::to_owned);
+        } else if let Some(rest) = line.strip_prefix("\"split_of\": \"") {
+            body_key = rest.split('"').next().map(str::to_owned);
+            split_key = last_key.clone();
+        }
+    }
+    let (split_key, body_key) = (
+        split_key.expect("the kernels fixture manifest has a split entry"),
+        body_key.expect("the kernels fixture manifest has a split_of"),
+    );
+    // The body's pair and its split's pair (D209); every file of both is copied byte for byte below.
     assert_eq!(
         artifact_files.len(),
-        2,
-        "the kernels fixture holds one WGSL and one reflection file: {artifact_files:?}"
+        4,
+        "the kernels fixture holds a WGSL and a reflection file for the body and for its split: {artifact_files:?}"
     );
     for copy in ARTIFACT_COPIES {
         for name in &artifact_files {
             let path = root.join(copy).join(name);
+            // The split's pair (D209) is blessed with the sets `cargo gust build` writes; the three fixtures below
+            // predate it and hold the body's pair only. Every other copy holds both pairs, byte for byte.
+            let body_only = [
+                "tests/ui/profile-native-no-manifest/gust-artifacts",
+                "crates/gust/tests/fixtures/precompiled",
+                "crates/gust-wgpu/tests/fixtures/precompiled",
+            ]
+            .contains(&copy);
+            if body_only && !name.starts_with(&body_key) {
+                assert!(
+                    name.starts_with(&split_key),
+                    "{name} is neither the body's ({body_key}) nor the split's ({split_key}) file"
+                );
+                assert!(
+                    !path.exists(),
+                    "{copy}/{name}: a body-only fixture holds a split file"
+                );
+                continue;
+            }
             let bytes = fs::read(&path).unwrap_or_else(|error| panic!("{copy}/{name}: {error}"));
             assert!(
                 bytes == fs::read(source.join(name)).unwrap(),
@@ -779,7 +816,13 @@ fn the_web_example_artifacts_are_a_byte_copy_of_the_precompiled_fixtures() {
     // The fixture is schema 1 (no shape keys), the example schema 2 (every entry ends in its "shape"). The fixture's
     // entry in its schema 2 form is the same text plus a grid shape, and it must be there exactly.
     for entry in entries(&source) {
-        let schema_2 = format!("{entry},\n      \"shape\": \"grid\"");
+        // Keys are sorted, so `shape` comes before the `split_of` of a split's entry.
+        let schema_2 = match entry.split_once(",\n      \"split_of\"") {
+            Some((head, tail)) => {
+                format!("{head},\n      \"shape\": \"grid\",\n      \"split_of\"{tail}")
+            }
+            None => format!("{entry},\n      \"shape\": \"grid\""),
+        };
         assert!(
             held.contains(&schema_2),
             "the manifest of the example lacks this kernel entry of the fixture, with \"shape\": \"grid\": {schema_2}"
@@ -801,6 +844,9 @@ fn the_web_example_artifacts_are_a_byte_copy_of_the_precompiled_fixtures() {
         pixel[0]
     );
     for entry in &held {
+        let entry = entry
+            .split_once(",\n      \"split_of\"")
+            .map_or(entry.as_str(), |split| split.0);
         assert!(
             entry.ends_with(",\n      \"shape\": \"grid\"")
                 || entry.ends_with(",\n      \"shape\": \"pixel\""),
@@ -817,15 +863,16 @@ fn the_web_example_artifacts_are_a_byte_copy_of_the_precompiled_fixtures() {
             .1
             .to_owned()
     };
-    let schema_1 = after_kernels(&source);
+    // Both manifests are schema 4 since D209 (an entry has `split_of`), which already covers the shape keys.
+    let fixture_tail = after_kernels(&source);
     assert!(
-        schema_1.contains("\"schema\": 1,"),
-        "the fixture is schema 1: {schema_1}"
+        fixture_tail.contains("\"schema\": 4,"),
+        "the fixture is schema 4: {fixture_tail}"
     );
     assert_eq!(
         after_kernels(&copy),
-        schema_1.replace("\"schema\": 1,", "\"schema\": 2,"),
-        "the schema (2, because an entry is a pixel kernel) and slang fields of the example's manifest differ from the fixture's"
+        fixture_tail,
+        "the schema and slang fields of the example's manifest differ from the fixture's"
     );
 }
 

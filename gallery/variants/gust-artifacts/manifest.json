@@ -43,8 +43,40 @@
           "variant": ""
         }
       ]
+    },
+    {
+      "clean_sha256": "fb420599587df9d794967015e92df1fb71a522897afabd594d56baf8fd2514c5",
+      "entry_point": "gpu_stats_tally_subgroups",
+      "formats": [
+        {
+          "file": "a8980d061c3e28fd.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "4b9ee2f9b1745ca9af62658cfeb587065cad6344f81e8a8a89c9da418025df3f",
+          "sha256": "5c4af876f0890e2864f48286a13841649a3672852171aed5a950776787ea4ae6"
+        }
+      ],
+      "key": "a8980d061c3e28fd",
+      "module": "stats",
+      "name": "tally",
+      "split_of": "23049946b11d6490"
+    },
+    {
+      "clean_sha256": "36debd1c2a3fd356184f280f00cc9f817a42d07696a1c4d52e1aebf784ce82f9",
+      "entry_point": "gpu_stats_tally",
+      "formats": [
+        {
+          "file": "f845a4f98b9043d2.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "efea136f6287fab7648653e62ef039779ce76b46f26b04d423ac0baa76a572b7",
+          "sha256": "e68dfd33dbbc1894adf7e00fcd9f2c14fac550168446ca4a192cf9c676731c83"
+        }
+      ],
+      "key": "f845a4f98b9043d2",
+      "module": "stats",
+      "name": "tally",
+      "split_of": "69a88d2b9bfe3f99"
     }
   ],
-  "schema": 3,
+  "schema": 4,
   "slang": "2026.22"
 }

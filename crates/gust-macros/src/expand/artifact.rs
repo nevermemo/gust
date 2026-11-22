@@ -16,6 +16,12 @@
 //! binding and the complete element layout tree, and the source file with its line table. They never hold CPU twin
 //! text (D45): [`write_records`] refuses a record that does.
 //!
+//! A `grid` body built for the GPU also has a split variant (m11.g4a): the same Slang plus one hidden uniform. It has a
+//! key of its own, from its own text ([`content_key`] of the body's entry point and the variant's text), and its
+//! artifact pair is looked up under that key like any other and embedded in the variant's descriptor when it is there
+//! (m11.psplit-a, D209); a missing pair is not an error, and the launch keeps its refusal. Export mode writes the
+//! variant's text and its record, schema 5 (`split_of` is the key of the body), for every such body, selected or not.
+//!
 //! Everything here reads the environment through [`Environment`], so tests pass their own directories instead of
 //! changing the process environment.
 
@@ -57,6 +63,11 @@ const SHAPE_SCHEMA: u64 = 3;
 /// grammar (`shape` present when the shape is not `grid`) plus `requires` and `variant`. A reader of schema 1 to 3
 /// refuses it instead of reading a subgroup body as portable. A body with neither keeps the schema of its kind.
 const VARIANT_SCHEMA: u64 = 4;
+
+/// The version of the `kernel.json` layout of a split variant (m11.psplit-a, D209): schema 4's grammar plus a required
+/// `split_of`, the key of the body the record is the split of. A reader of schema 1 to 4 refuses it instead of reading
+/// the split as a kernel of its own. Written only for the split of a `grid` body; every other record keeps its bytes.
+const SPLIT_SCHEMA: u64 = 5;
 
 /// What the expansion reads from the process environment.
 #[derive(Clone, Debug, Default)]
@@ -647,6 +658,45 @@ pub(super) struct ParameterRecord {
     pub layout: Option<ResourceLayout>,
 }
 
+/// The record of the hidden uniform of a split variant at `binding` of group 0, as
+/// `gust::KernelDescriptor::__gust_launch_base_parameter` describes it: `__gust_launch_base`, a `__GustLaunchBase`
+/// uniform, read only, `std140_v1` rules, a struct of four `u32` (`x`, `y`, `z`, `pad`) of 16 bytes.
+pub(super) fn launch_base_parameter(binding: u32) -> ParameterRecord {
+    let word = || Layout {
+        name: "u32".to_owned(),
+        size: 4,
+        alignment: 4,
+        kind: LayoutKind::Scalar("u32"),
+    };
+    let field = |name: &str, offset| LayoutField {
+        name: name.to_owned(),
+        offset,
+        layout: word(),
+    };
+    ParameterRecord {
+        name: "__gust_launch_base".to_owned(),
+        rust_type: "__GustLaunchBase".to_owned(),
+        kind: "uniform",
+        access: "read_only",
+        binding: Some(binding),
+        layout: Some(ResourceLayout {
+            rules: Rules::Std140V1,
+            element: Layout {
+                name: "__GustLaunchBase".to_owned(),
+                size: 16,
+                alignment: 16,
+                kind: LayoutKind::Struct(vec![
+                    field("x", 0),
+                    field("y", 4),
+                    field("z", 8),
+                    field("pad", 12),
+                ]),
+            },
+            texture: None,
+        }),
+    }
+}
+
 /// What `<key>.kernel.json` (schema 1) says about one kernel.
 pub(super) struct KernelRecord<'a> {
     pub key: &'a str,
@@ -664,6 +714,9 @@ pub(super) struct KernelRecord<'a> {
     /// What a variant or a capability-bound body adds (M8, D139); `None` for every body with an empty `requires`
     /// that is not a variant, whose record keeps the schema of its kind, byte for byte.
     pub variant: Option<VariantRecord<'a>>,
+    /// The key of the body this record is the split variant of (m11.psplit-a, D209); `None` for every body. A record
+    /// with one is schema 5; its `requires` and `variant` are the body's own.
+    pub split_of: Option<&'a str>,
 }
 
 /// The two keys of a schema 4 record (M8, D139).
@@ -703,7 +756,9 @@ impl KernelRecord<'_> {
     }
 
     fn write_json(&self, schema: u64, with_source: bool) -> String {
-        let schema = if self.variant.is_some() {
+        let schema = if self.split_of.is_some() {
+            SPLIT_SCHEMA
+        } else if self.variant.is_some() {
             VARIANT_SCHEMA
         } else if self.shape.is_some() {
             SHAPE_SCHEMA
@@ -781,6 +836,9 @@ impl KernelRecord<'_> {
                 ),
             ));
             members.push(("variant", Json::string(variant.variant)));
+        }
+        if let Some(owner) = self.split_of {
+            members.push(("split_of", Json::string(owner)));
         }
         if with_source {
             members.push((
@@ -2028,6 +2086,7 @@ pub(super) mod tests {
             }],
             shape: None,
             variant: None,
+            split_of: None,
         }
         .json()
     }
@@ -2104,6 +2163,7 @@ pub(super) mod tests {
             }],
             shape: None,
             variant: None,
+            split_of: None,
         }
         .json()
     }
@@ -2173,6 +2233,7 @@ pub(super) mod tests {
             ],
             shape: None,
             variant: None,
+            split_of: None,
         };
         write(&record)
     }
@@ -2297,6 +2358,88 @@ pub(super) mod tests {
             record.json_without_source()
         });
         assert!(site.contains("\"schema\": 4,\n") && !site.contains("\"source\""));
+    }
+
+    /// Schema 5 (m11.psplit-a, D209) is written only for the split variant of a `grid` body: schema 4's grammar plus
+    /// `split_of`, the key of the body, after `source` in key order. Every other record is what it was.
+    #[test]
+    fn a_split_record_is_schema_5_and_names_its_body() {
+        let schema_1 = sample_json();
+        assert!(!schema_1.contains("split_of"));
+        // A plain body names no capability and no variant, and its split says so in the two keys schema 5 always has.
+        let split = sample_written_by(|record| {
+            KernelRecord {
+                variant: Some(VariantRecord {
+                    requires: &[],
+                    variant: "",
+                }),
+                split_of: Some("fedcba9876543210"),
+                ..*record
+            }
+            .json()
+        });
+        assert_eq!(
+            split,
+            schema_1
+                .replace(
+                    "  ],\n  \"schema\": 1,\n",
+                    "  ],\n  \"requires\": [],\n  \"schema\": 5,\n"
+                )
+                .replace(
+                    "  },\n  \"workgroup_size\"",
+                    "  },\n  \"split_of\": \"fedcba9876543210\",\n  \"variant\": \"\",\n  \"workgroup_size\""
+                )
+        );
+        // A split of a variant body keeps the body's `requires` and `variant`, and the schema is 5, not 4.
+        let variant = sample_with_variant(&["subgroups"], "sum_subgroups", None, |record| {
+            KernelRecord {
+                split_of: Some("fedcba9876543210"),
+                ..*record
+            }
+            .json()
+        });
+        assert!(variant.contains("\"schema\": 5,\n"), "{variant}");
+        assert!(variant.contains("\"requires\": [\n    \"subgroups\"\n  ],\n"));
+        assert!(variant.contains("\"variant\": \"sum_subgroups\",\n"));
+        // A `par_for!` split has no `source` and the same schema.
+        let site = sample_written_by(|record| {
+            KernelRecord {
+                variant: Some(VariantRecord {
+                    requires: &[],
+                    variant: "",
+                }),
+                split_of: Some("fedcba9876543210"),
+                ..*record
+            }
+            .json_without_source()
+        });
+        assert!(site.contains("\"schema\": 5,\n") && !site.contains("\"source\""));
+    }
+
+    /// The hidden uniform's record is the descriptor's `__gust_launch_base_parameter` (cargo-gust's reader checks the
+    /// two against each other): a 16-byte `std140_v1` struct of four `u32` at the binding given.
+    #[test]
+    fn the_launch_base_parameter_is_a_16_byte_std140_struct_of_four_words() {
+        let parameter = launch_base_parameter(3);
+        assert_eq!(parameter.name, "__gust_launch_base");
+        assert_eq!(parameter.rust_type, "__GustLaunchBase");
+        assert_eq!((parameter.kind, parameter.access), ("uniform", "read_only"));
+        assert_eq!(parameter.binding, Some(3));
+        let layout = parameter.layout.expect("a layout");
+        assert_eq!(layout.rules, Rules::Std140V1);
+        let element = layout.element.json();
+        let mut text = String::new();
+        element.write(&mut text, 0);
+        assert!(text.contains("\"name\": \"__GustLaunchBase\""), "{text}");
+        assert!(text.contains("\"size\": 16") && text.contains("\"alignment\": 16"));
+        for (field, offset) in [("x", 0), ("y", 4), ("z", 8), ("pad", 12)] {
+            assert!(
+                text.contains(&format!(
+                    "\"name\": \"{field}\",\n      \"offset\": {offset},"
+                )),
+                "{field}: {text}"
+            );
+        }
     }
 
     #[test]

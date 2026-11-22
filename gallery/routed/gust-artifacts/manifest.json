@@ -29,8 +29,24 @@
       "key": "bf4f9c47f7037a35",
       "module": "tidy",
       "name": "saturate"
+    },
+    {
+      "clean_sha256": "3db705d9b2d7d8ac2c0d991830a4157003bee2b0bba2726584da025cb1a6a802",
+      "entry_point": "gpu_smooth_blur",
+      "formats": [
+        {
+          "file": "f33816251d7bc5a3.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "3d4443aae728d97a332f8aed3fd31d6b7fdd4084a091dea80efe3a70b623eaf3",
+          "sha256": "35f87c50f9a793d6ffe7d0dc045b720de3dabff9c7c619f1799d8faa0762ceea"
+        }
+      ],
+      "key": "f33816251d7bc5a3",
+      "module": "smooth",
+      "name": "blur",
+      "split_of": "bc059d70c97c354e"
     }
   ],
-  "schema": 1,
+  "schema": 4,
   "slang": "2026.22"
 }

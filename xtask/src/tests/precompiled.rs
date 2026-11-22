@@ -7,16 +7,16 @@ use std::{
 use super::{
     ADAPTER_PREFIX, BRIDGE_MARKERS, E4_EXPECTED, E6_BRIDGE_EXPECTED, E6_INFERRED_EXPECTED,
     E6_NATIVE_EXPECTED, E6Outcome, E6Profile, E8_PACKAGES, Expansion, INFERRED_SENTENCE,
-    INFERRED_WARNING, PRECOMPILED_DIR, RunReport, STRICT_PROFILE, StripReport, VERIFIED_PREFIX,
-    artifact_fresh_flags, bridge_user_manifest, child_environment, consumer_manifest,
-    count_occurrences, default_feature_problems, dependency_disables_defaults, e6_args, e6_cases,
-    e6_problems, e7_steps, expansion_problem, files_written, gust_build_problems,
-    has_build_script_warning, has_cargo_warning, identity_error, is_inside, is_slang_variable,
-    judge_run, kernels_patch_configs, lock_problems, marker_counts, markers_missing,
-    markers_present, mutate_wgsl, parse_warning_expectation, retarget_paths, section_version,
-    slang_free_package_problems, slang_free_problems, snapshot_differences, strip_path,
-    tree_problems, unused_patch_lines, with_bridge_user_dependency, with_bridge_user_member,
-    with_tool_dependency,
+    INFERRED_WARNING, PRECOMPILED_DIR, RunReport, SPLIT_PREFIX, SPLIT_REFUSED_PREFIX,
+    STRICT_PROFILE, StripReport, VERIFIED_PREFIX, artifact_fresh_flags, bridge_user_manifest,
+    child_environment, consumer_manifest, count_occurrences, default_feature_problems,
+    dependency_disables_defaults, e6_args, e6_cases, e6_problems, e7_steps, expansion_problem,
+    files_written, gust_build_problems, has_build_script_warning, has_cargo_warning,
+    identity_error, is_inside, is_slang_variable, judge_run, kernels_patch_configs, lock_problems,
+    marker_counts, markers_missing, markers_present, mutate_wgsl, parse_warning_expectation,
+    retarget_paths, section_version, slang_free_package_problems, slang_free_problems,
+    snapshot_differences, strip_path, tree_problems, unused_patch_lines,
+    with_bridge_user_dependency, with_bridge_user_member, with_tool_dependency,
 };
 use crate::{
     process::PROFILE_VARIABLE,
@@ -163,7 +163,7 @@ fn the_slang_free_assertion_names_a_variable_a_directory_and_a_wrong_profile() {
 #[test]
 fn a_run_is_judged_by_its_exit_code_its_adapter_its_artifact_and_the_verified_line() {
     let good = format!(
-        "precompiled vector-add\nkernel: vector_add::add\nartifact: Wgsl key=52e85c5f03f72272 bytes=476\n{ADAPTER_PREFIX}NVIDIA GeForce RTX 5090\n{VERIFIED_PREFIX}1000 elements\n"
+        "precompiled vector-add\nkernel: vector_add::add\nartifact: Wgsl key=52e85c5f03f72272 bytes=476\n{ADAPTER_PREFIX}NVIDIA GeForce RTX 5090\n{VERIFIED_PREFIX}1000 elements\n{SPLIT_PREFIX}1000 elements\n{SPLIT_REFUSED_PREFIX}max_compute_workgroups_per_dimension\n"
     );
     assert_eq!(
         judge_run(true, &good, ""),
@@ -185,6 +185,16 @@ fn a_run_is_judged_by_its_exit_code_its_adapter_its_artifact_and_the_verified_li
             "artifact: Wgsl",
         ),
         (good.replace("1000 elements", "0 elements"), "verified:"),
+        // D209: a run that never launched past a limit from the split artifact is not the evidence, whatever else it printed.
+        (good.replace(SPLIT_PREFIX, "pieces: "), "split:"),
+        (
+            good.replace(SPLIT_REFUSED_PREFIX, "refused: "),
+            "split fallback:",
+        ),
+        (
+            good.replace(&format!("{SPLIT_PREFIX}1000"), &format!("{SPLIT_PREFIX}0")),
+            "split:",
+        ),
         (
             good.replace("adapter: NVIDIA GeForce RTX 5090", "adapter:   "),
             "adapter:",
@@ -413,8 +423,15 @@ fn the_committed_e4_expectation_is_one_e0080_at_the_kernel_line() {
 #[test]
 fn the_committed_artifacts_are_the_ones_e3_mutates_and_e4_deletes() {
     let manifest = fixture_file("kernels/gust-artifacts/manifest.json");
-    assert!(manifest.contains("\"schema\": 1") && manifest.contains("\"format\": \"wgsl\""));
+    // Schema 4 since D209: the kernel's split is a second entry that names the body it belongs to (`split_of`).
+    assert!(manifest.contains("\"schema\": 4") && manifest.contains("\"format\": \"wgsl\""));
     let key = "52e85c5f03f72272";
+    assert!(
+        manifest.contains(&format!("\"split_of\": \"{key}\"")),
+        "the manifest links the split to the body E3 mutates"
+    );
+    // Only the split's entry has a `split_of`; the body's own entry, which E3 and E4 act on, has none.
+    assert_eq!(manifest.matches("\"split_of\"").count(), 1);
     let wgsl = fixture_file(&format!("kernels/gust-artifacts/{key}.wgsl"));
     assert!(
         mutate_wgsl(wgsl.as_bytes()).is_ok(),

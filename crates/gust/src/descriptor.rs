@@ -143,8 +143,9 @@ pub struct KernelDescriptor {
     /// several dispatches (a launch past the device's per-dimension workgroup limit) runs the variant, once per piece,
     /// with the id of the piece's first invocation in that uniform; a launch that needs no cut runs this descriptor
     /// as it always did. The variant's `parameters` are this descriptor's and then the hidden uniform
-    /// (`__gust_launch_base`, 16 bytes, four `u32`: `x`, `y`, `z` and padding), its `artifacts` are empty (a backend
-    /// compiles it at run time) and its own `split` is `None`.
+    /// (`__gust_launch_base`, 16 bytes, four `u32`: `x`, `y`, `z` and padding), its `artifacts` are its own
+    /// precompiled ones, if the build embedded any (otherwise a backend compiles it at run time; with neither, a launch
+    /// that needs the cut is refused with `DeviceLimit`) and its own `split` is `None`.
     ///
     /// `Some` for the selected body of a `grid` kernel built for the GPU, `None` for a `pixel` kernel, for a kernel
     /// built for the CPU, and for every descriptor built by hand ([`KernelDescriptor::new`]). A host runs a `split`

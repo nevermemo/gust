@@ -1,0 +1,15 @@
+[package]
+name = "event-drain"
+description = "A bounded GPU-to-host event queue: kernels append with an atomic counter and an overflow count, the host drains it late without blocking"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+gust.workspace = true
+gust-wgpu = { workspace = true, features = ["slang-runtime"] }
+
+[lints]
+workspace = true

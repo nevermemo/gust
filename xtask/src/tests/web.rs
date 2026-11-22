@@ -1152,6 +1152,16 @@ fn a_page_with_its_own_closing_part_is_split_and_any_other_closing_part_is_refus
             .contains("expected 5")
     );
     assert!(super::split_label(HELLO_LABEL, "something else").is_err());
+    // A gallery label does not take the split parts of check-web's page either.
+    let with_split = HELLO_LABEL.replace(
+        " | map_async",
+        " | split ran | split fallback DeviceLimit | map_async",
+    );
+    assert!(
+        super::split_label(&with_split, closing)
+            .unwrap_err()
+            .contains("expected 3")
+    );
     // Two parts only (no closing part) is refused too.
     let short = "nvidia blackwell | selected add.map_kernel=193e4e282d7e14bd:-:0";
     assert!(

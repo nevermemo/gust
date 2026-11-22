@@ -336,7 +336,7 @@ buffer at a stride of `max(16, min_uniform_buffer_offset_alignment)`, and encode
 (lazily, with its own cache key) and only the base for an unsplit one. The variant's shader is its own precompiled
 WGSL artifact when the crate holds one (m11.psplit-a, D209), else the run-time compiler's (D208), the same policy as
 any kernel (D45: an artifact wins); a browser build has no run-time compiler, so it splits from the artifact alone (the
-page `examples/web-vector-add` runs a launch past a lowered limit that way, and the launch without the artifact as
+page `examples/web-vector-add` runs a launch past a limit lowered with `with_limits` that way, and the launch without the artifact as
 `DeviceLimit`, m11.web). The artifact is a second artifact of the same kernel body: its key is
 `content_key(entry_point, split Slang text)` (the entry point is the body's; the text differs), its files are
 `<key>.wgsl` and `<key>.wgsl.reflection.json` beside the body's, and the link between the two is explicit. The macro

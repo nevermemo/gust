@@ -58,7 +58,8 @@ const SPLIT_WITHOUT_ARTIFACT: KernelDescriptor = match vector_add::add::DESCRIPT
 const WITHOUT_SPLIT_ARTIFACT: KernelDescriptor =
     vector_add::add::DESCRIPTOR.with_split(Some(&SPLIT_WITHOUT_ARTIFACT));
 
-/// The per-dimension workgroup limit the split launch runs under: [`LENGTH`] is 16 workgroups of 64, so four pieces.
+/// The per-dimension workgroup limit the split launch runs under (set with `with_limits`): [`LENGTH`] is 16 workgroups
+/// of 64, so four pieces.
 const LOWERED_LIMIT: u32 = 4;
 
 /// The element-wise map of the same job (D60), run by [`double_add::map_async`] after the vector add: it opens the
@@ -250,17 +251,24 @@ async fn split_launch(device: HeadlessDevice) -> Result<(), String> {
         &vec![UNWRITTEN; LENGTH],
         GpuBufferAccess::ReadWrite,
     );
-    vector_add::add::submit(&device, LENGTH as u32, &a, &b, &out)
+    let job = vector_add::add::submit(&device, LENGTH as u32, &a, &b, &out)
         .map_err(|error| format!("the split launch failed: {error}"))?;
+    let before = job.status();
     let result = device
         .read_typed_buffer_async(&out)
         .await
         .map_err(|error| format!("the split launch read-back failed: {error}"))?;
+    check_job_contract("the split launch", &job, before)?;
     if let Some(first) = first_difference(&result, &expected) {
+        let differing = result
+            .iter()
+            .zip(&expected)
+            .filter(|(got, want)| got.to_bits() != want.to_bits())
+            .count();
         return Err(format!(
-            "the split launch differs from the host reference: {} of {} values, first at index {first}",
-            result.len(),
-            expected.len()
+            "the split launch differs from the host reference: {differing} of {} values differ (read back {}), first at index {first}",
+            expected.len(),
+            result.len()
         ));
     }
 
@@ -275,9 +283,13 @@ async fn split_launch(device: HeadlessDevice) -> Result<(), String> {
         &bindings,
     );
     match device.submit_batch(&[launch]) {
-        Err(Error::DeviceLimit { .. }) => Ok(()),
+        Err(Error::DeviceLimit { limit, .. })
+            if limit.starts_with("max_compute_workgroups_per_dimension") =>
+        {
+            Ok(())
+        }
         Err(other) => Err(format!(
-            "a split launch without a split artifact must be refused with DeviceLimit, got {other}"
+            "a split launch without a split artifact must be refused with DeviceLimit on max_compute_workgroups_per_dimension, got {other}"
         )),
         Ok(_) => Err(
             "a split launch without a split artifact or a compiler ran: the pieces came from nowhere".to_owned(),

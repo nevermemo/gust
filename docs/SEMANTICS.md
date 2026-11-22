@@ -1519,8 +1519,10 @@ value form is accepted in one place only, the initializer of a `let`:
 in an expression or in a `return`, or a nested value `match`; the result may be a struct. **Untyped (m13.matchu).**
 The `let` may leave out the type when an arm shows it, by the rule of an untyped value `if` (section 18): the first arm
 whose tail shows a type gives it (a suffixed integer or `f32` literal, a `bool`, a comparison, an `as` cast, a vector
-constructor), a block arm by its tail, a nested value `match` or `if` by its own arms, through operators only when both
-sides agree or one is a vector; an arm that ends in `return`, `break` or `continue` shows nothing. The result is a
+constructor), a block arm by its tail, a nested value `match` by its own arms (a value `if` as an arm is
+`GUST-E0811`, typed or not), through operators only when both
+sides agree or one is a vector; an arm that ends in `return` shows nothing (an arm that ends in `break` or `continue`
+is refused, section 18). The result is a
 `bool`, `i32`, `u32`, `f32` or a vector; a struct result, whose literal shows no type by this rule, needs the typed
 form. When no arm shows a type (`let x = match e { 0 => 1, _ => 2 };`, a call in each arm, a struct literal) the `let`
 is `GUST-E0419`: write `let x: T = match e { .. };`. The lowering is the typed one. A `match` that gives a value in any
@@ -2084,6 +2086,9 @@ nothing gives no type, because `v * 0.5f32` is a vector when `v` is one, and a m
 **Also refused.** A tuple pattern (`let (a, b) = if ..`): bind one local. A branch whose tail is a block that holds an
 `if` (`{ { if .. } }`), and an annotation spelled with a path (`gust::Vec2`, which is GUST-E0324 as everywhere): write the `if` as the tail of the branch
 itself, and the plain type name. A branch may end in `return`, `break` or `continue`, with or without the `;`; in a value
-`match` arm the same three end the arm without the `break` the `switch` would otherwise get. A same-scope shadow
+`match` arm only `return` ends the arm (without the `break` the `switch` would otherwise get): an arm that ends in
+`break` or `continue` is refused (`GUST-E0518` with the `;`, `GUST-E0405` without it), typed or not. A branch whose
+tail is a value `match` is refused as well (`GUST-E0518`, the tail `match` is a statement `match`): a value `match` is
+the whole initializer of a `let`, and the type of an untyped `if` is never taken from one. A same-scope shadow
 (`let x = 1u32; let x = if c { x } else { 2u32 };`) is not refused by the macro: the text declares `x` twice in one
 Slang scope, which slangc refuses (section 9, measured for every `let`; not re-measured for this form).

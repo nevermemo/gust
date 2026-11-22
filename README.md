@@ -1295,10 +1295,10 @@ The direct syntax translator currently supports:
   evaluation on the GPU would differ from Rust's (GUST-E0421); see [SEMANTICS](docs/SEMANTICS.md) sections 14 and 16;
 - field-less enums and `match` (M9, m9.e1 and m9.e2, D157): `enum E { A, B = 3 }` (a `u32` or `#[repr(i32)]` repr, the
   user derives `PartialEq`), compared with `==` and `!=`, cast with `as` to the repr type, and matched as a Slang
-  `switch`: a statement `match` on an enum or an integer, and a value `match` as the initializer of a typed `let`. No
+  `switch`: a statement `match` on an enum or an integer, and a value `match` as the initializer of a `let` (typed, or untyped when an arm shows the type). No
   enum with data or a discriminant that is not a literal (GUST-E0122), no enum in a struct field, buffer, uniform or
   `Option` (GUST-E0211), no guard (GUST-E0418), no `break` or `continue` in an arm (GUST-E0417), and no value `match`
-  outside a typed `let` (GUST-E0419); see [SEMANTICS](docs/SEMANTICS.md) section 9;
+  outside a `let` initializer, or in an untyped `let` whose arms show no type (GUST-E0419); see [SEMANTICS](docs/SEMANTICS.md) section 9;
 - tuples (M9, m9.t, D158): `(a, b)` of two to eight elements (scalars, vectors, matrices, structs, enums, tuples) as a
   local, a parameter or a result of a helper or method, with `t.0` and destructuring `let (a, b) = ..;`. Not stored in a
   struct field, buffer, uniform or workgroup memory (GUST-E0212), no tuple comparison (GUST-E0213); see

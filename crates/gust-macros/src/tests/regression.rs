@@ -553,7 +553,8 @@ fn an_unannotated_unsuffixed_integer_literal_let_is_e0326() {
     );
     // `let x;` has no initializer to check: the emitter refuses it (E0803).
     assert_rejected(&kernel_with_body("let x;"), Code::LetNeedsInitializer);
-    // An `if` or a `match` is not a value in the dialect, so literal arms never reach this check (docs/DIAGNOSTICS.md).
+    // An `if` or a `match` value whose arms are unsuffixed literals shows no type, so the emitter refuses it and the
+    // literals never reach this check (docs/DIAGNOSTICS.md).
     assert_rejected(
         &kernel_with_body("let y = if id.x > 1u32 { 1 } else { 2 };"),
         Code::UnsupportedExpression,
@@ -7575,7 +7576,12 @@ fn a_match_that_gives_a_value_as_the_tail_of_a_function_is_gust_e0419() {
     ] {
         let error = translate(&with_mode(items, "out[id.x] = f(id.x);")).expect_err(items);
         assert_code_for(&error, Code::ValueMatchForm, items);
-        assert!(error.to_string().contains("typed `let`"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("an untyped `let` whose arms show the type takes it too"),
+            "{error}"
+        );
     }
     // The e1 statement form stays: a tail `match` whose arms return, or are unit blocks, in a helper and a kernel.
     translate(&with_mode(

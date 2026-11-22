@@ -267,3 +267,51 @@ fn a_match_whose_arms_show_no_type_needs_the_typed_form() {
     );
     assert!(text.contains("    uint w;\n"), "{text}");
 }
+
+#[test]
+fn an_arm_that_breaks_or_continues_is_refused_typed_or_not() {
+    // The validator takes a `return` as the end of a value arm; a `break` or a `continue` is not one (GUST-E0518 with
+    // the `;`, GUST-E0405 without it), so such an arm never reaches the inference and shows no type to it.
+    for jump in ["break", "continue"] {
+        for (arm, code) in [
+            (format!("{{ {jump}; }}"), Code::MatchArmBlock),
+            (format!("{{ {jump} }}"), Code::JumpAsValue),
+        ] {
+            for annotation in ["", ": u32"] {
+                let source = kernel(
+                    "",
+                    &format!(
+                        "for i in 0u32..4u32 {{ let w{annotation} = match i {{ 0 => {arm} 1 => 4u32, _ => 5u32 }}; out[i] = w; }}"
+                    ),
+                );
+                let error = lower(&source).expect_err(&source);
+                assert_code_for(&error, code, &source);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_value_match_as_the_tail_of_a_value_if_branch_is_refused_typed_or_not() {
+    // A value `match` is the whole initializer of a `let` only: the tail of a branch is a statement `match`, whose arms
+    // are blocks (GUST-E0518).
+    for annotation in ["", ": u32"] {
+        let source = kernel(
+            "",
+            &format!(
+                "let w{annotation} = if id.x > 3u32 {{ match id.x {{ 0 => 1u32, _ => 2u32 }} }} else {{ 3u32 }}; out[id.x] = w;"
+            ),
+        );
+        let error = lower(&source).expect_err(&source);
+        assert_code_for(&error, Code::MatchArmBlock, &source);
+    }
+}
+
+#[test]
+fn suffixing_one_arm_is_enough_to_leave_out_the_type() {
+    let text = accepted(
+        "",
+        "let w = match id.x { 0 => 1u32, _ => 2 }; out[id.x] = w;",
+    );
+    assert!(text.contains("    uint w;\n"), "{text}");
+}

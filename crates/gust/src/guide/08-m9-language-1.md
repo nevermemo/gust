@@ -19,7 +19,7 @@ uses most of them. The full forms, with every rejected shape and its code, are i
   (GUST-E0116).
 - **Field-less enums and `match`.** `enum E { A, B = 3 }` with a `u32` or `#[repr(i32)]` repr; you derive `PartialEq`
   yourself. Compare with `==`, cast with `as` to the repr type, and match as a Slang `switch`: a statement `match` on an
-  enum or an integer, and a value `match` as the initializer of a typed `let`. No enum with data (GUST-E0122), no enum
+  enum or an integer, and a value `match` as the initializer of a `let` (typed, or untyped when an arm shows the type). No enum with data (GUST-E0122), no enum
   in a struct field, buffer or uniform (GUST-E0211), no guard (GUST-E0418), no `break` or `continue` in an arm
   (GUST-E0417).
 - **Tuples.** `(a, b)` of two to eight elements as a local, a parameter or a result of a helper or method, with `t.0`

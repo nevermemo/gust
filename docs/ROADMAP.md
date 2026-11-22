@@ -90,10 +90,19 @@ A composite of them runs too (`walker-transport`), and so do walkers that retire
 (`walker-life`); a refused construct no longer adds a misleading error (m11.diag). The RTX 5090 is back (D215):
 the full Gpu suite and the GPU tests of those five examples passed there on 2026-11-22. Done since: the browser
 half of D209 (m11.web), `if`/`else` as a `let` value (D216), array constants (D219), the event-drain example
-(D217) and difftest format 14. Next: the m12 sanity fixes, the untyped value `match` (m13.matchu), a tidy round
-(file splits, shared helpers, build and check time), the examples' GPU coverage, and sharing code between
-`#[gpu]` modules (held for the owner; today a user-side `macro_rules!` splice, m11.xsplice).
-That order is the coordinator's and the owner proxy's under D212, not an owner ruling.
+(D217), difftest format 14, the m12 sanity fixes (m12.sfix), the untyped value `match` (D220) and the runtime
+split into modules (m13.split-rt).
+
+**Owner rulings of 2026-11-22 (D221 to D238)** set the path: GUST matures, then a game prototype test, then the
+GUST/Breeze boundary, then the changes that make GUST a standalone crate (D230). Everything is prerelease and the
+0.1 and 0.2 plans are abandoned (D226). Next, in the coordinator's order: the rest of the tidy round (shared test
+helpers, macro helpers, the Slang emitter split), gates for the runtime without `slang-runtime` and for wasm32,
+the examples' GPU coverage and budget-kit moved to `bench/`, the SEMANTICS and DIAGNOSTICS consolidation, and a
+GPU-friendly binning or sort spike for `gust-algo` (D235). After that, toward maturity: the runtime fixes of D223,
+the padding derive, the double-buffer helper and sizes as uniforms (D231 to D233), `map` with structs and
+multiple outputs (D221), wider textures and a render interop spike (D229), the rename to `#[gpu_module]` with
+`#[gpu_fn]`, `gpu_task!` and `gpu_batch!` (D237), and file-based module sharing inside a debugging system whose
+design comes to the owner first (D238). No hardware class is targeted (D236).
 
 **Done: M10, publication** (closed 2026-11-17, D185, under the release hold: nothing published; plan adopted 2026-11-14,
 D177 to D183; the owner chose the release sequence of D177: 0.2.0 first, 0.1.0 never published). Three lanes: releases

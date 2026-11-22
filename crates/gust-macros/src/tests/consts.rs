@@ -945,6 +945,9 @@ fn a_store_into_an_array_const_through_a_struct_pattern_is_e0127() {
         "let mut x = 0u32; let p = P(1u32, 2u32); P(T[0], x) = p;",
         "let mut x = 0u32; let p = P(1u32, 2u32); P(x, T[id.x as usize]) = p;",
         "let mut x = 0u32; let p = P(1u32, 2u32); (x, P(T[0], x)) = (1u32, p);",
+        "let mut x = 0u32; let s = S { a: 1u32, b: 2u32 }; S { a: T[0], .. } = s;",
+        "let mut x = 0u32; let s = S { a: 1u32, b: 2u32 }; self::S { a: x, b: T[0] } = s;",
+        "let mut x = 0u32; let p = P(1u32, 2u32); self::P(T[0], x) = p;",
     ] {
         let source = module(
             "const T: [u32; 4] = [1, 2, 3, 4]; pub struct S { pub a: u32, pub b: u32 } pub struct P(pub u32, pub u32);",

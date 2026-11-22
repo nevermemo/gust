@@ -129,7 +129,7 @@ jobs:
   difftest:
     # The differential test harness (tests/difftest, slice m5.c2, plan M5 R1-13), CPU side: a separate workspace
     # that the root's fmt, clippy and test never reach, so its own format check, clippy (all targets, warnings denied)
-    # and tests run here, then the batch `check-difftest --cpu-only --seeds 1-4` (64 generated programs, the
+    # and tests run here, then the batch `check-difftest --cpu-only --seeds 1-4` (68 generated programs, the
     # interpreter against the CPU twin; report.json judged by the xtask). A job of its own because the batch builds
     # the generated crate with `wgpu` from nothing (88 s cold on the development PC), which would lengthen `unit` past
     # its budget (R4.10); it runs beside `unit`, and `unit` and `slang` pass `--skip-difftest` (a test pins that these

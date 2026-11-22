@@ -80,13 +80,14 @@ proof.
 - Constant expressions in module-level `const` items (m11.cexpr, D210): an initializer may combine literals and
   earlier consts of the module (`u32` and `i32` arithmetic, bit operators and shifts; `f32` `+ - * /` and negation;
   `bool` `! && ||`). rustc and slangc compile the same expression; nothing is evaluated by the macro. GPU
-  checks: Radeon 890M only; RTX 5090 pending.
+  checks: Radeon 890M and RTX 5090.
 - Module-level array constants (m12.carr): `const NAME: [T; N] = [e0, e1, ..];` with `T` one of `u32`, `i32`, `f32`,
   `bool` and `N` a literal from 1 to 256 lowers to one `static const` array line per kernel and is read as `NAME[i]` or
   `NAME.len()`; a whole-array use, a store, a nested array and other element types are `GUST-E0127`.
 - Differential test format 14 (m11.dt2): the generated programs gain scalar math methods and module constants,
-  and a batch is 17 programs per seed (136 for the 8 default seeds). The math programs run on `grid` only, so under
-  `--shapes grid,pixel` 104 of the 136 also run as `pixel`.
+  and a batch is 17 programs per seed (136 for the 8 default seeds). Under `--shapes grid,pixel` 104 of the 136
+  also run as `pixel`; the other 32 stay `grid`-only for the reasons the classifier reports (an unrecognised construct,
+  a write at another index, a use of an output).
 - Launches past the per-dimension workgroup limit run (m11.g4b, D208): a `grid` launch whose workgroup count on an
   axis exceeds `max_compute_workgroups_per_dimension` is split by the host into pieces (at most
   `MAX_SPLIT_DISPATCHES`, 4096) in one compute pass, and every invocation runs once with the ids of an unsplit
@@ -99,7 +100,8 @@ proof.
   runs that artifact after the usual identity check; with neither it nor a run-time compiler it is still refused
   with `DeviceLimit`. A crate with no `grid` GPU kernel keeps its manifest bytes; the committed artifact sets were
   re-blessed with split entries added and no existing artifact changed, and older schemas still load. The browser
-  half is m11.web (below). Radeon 890M only; RTX 5090 pending.
+  half is m11.web (below). The split launch test ran on the Radeon 890M and, in the full Gpu suite, on the RTX 5090;
+  the precompiled half has no RTX 5090 record.
 - budget-kit rows (m11.kit3): W4 binning with the scatter (count, scan, and placement by the old value of
   `atomic_add`, checked per cell against a host counting sort) and W7, a sustained composite step with its GPU
   median, p95 and maximum and two host-side costs (the blocking timed batch, the return of `submit_batch`).

@@ -324,9 +324,11 @@ describes the intended behaviour and is not evidence.
     input; every output is written on every path (an `if` without `else` counts only under the guard `i < out.len()`);
     there is no `return`; and there is no workgroup memory, barrier, `LocalId`, `GroupId`, atomic, storage or write-only
     texture or explicit `workgroup_size`, and at least one output. A kernel outside those rules is `grid`-only and has
-    no `pixel` contract at all. The scalar math methods (`abs`, `floor`, `ceil`, `trunc`, `min`, `max`, `clamp`,
-    `mul_add`) have no entry in the classifier's ledger yet, so a kernel that calls one is `grid`-only and a
-    `shape = pixel` pin on it is GUST-E0723 (D94). Every output is bound `Shared`, so its length is `n`. A sampled `Texture2D` and a
+    no `pixel` contract at all. No scalar math method (`abs`, `floor`, `ceil`, `trunc`, `min`, `max`, `clamp`,
+    `mul_add`, `sqrt`, `sin`, `powf`, `fract` and the rest of the dialect's list) has an entry in the classifier's
+    ledger yet, so a kernel that calls one is `grid`-only and a `shape = pixel` pin on it is GUST-E0723 (D94). The
+    classifier test that pins this runs `.abs()`, with the validator out of the way; the other names follow the same
+    rule by the same ledger lookup, not by a test of their own. Every output is bound `Shared`, so its length is `n`. A sampled `Texture2D` and a
     `Sampler` may be read in a fragment; `sample` there has the contract of section 4 and is outside the exact one, as
     on `grid`.
   - *Integer outputs: bit identity.* For `u32` and `i32` outputs (and a `bool` result, which travels as a `u32` word)
@@ -334,7 +336,9 @@ describes the intended behaviour and is not evidence.
     `tests/pixel.rs` ran `u32` and `i32` at sizes from 0 up to 16 785 409 (the squares up to 4097^2, the row width and
     its neighbours, `8192k + 1` for k up to 1000, 1 000 003) with 0 differing words, and `u32` also at the cap of 2^26;
     the cross-shape difftest (`check-difftest --shapes grid,pixel`, seeds 1 to 8) ran the generated programs as `pixel` (at
-    format 14, 104 of the 136 programs; the 32 that call a math method stay `grid`-only) and found no integer or boolean
+    format 14, 104 of the 136 programs; of the other 32, which stay `grid`-only, the report counts 14 with a construct the
+    classifier has no rule for, 2 with another E0723 reason, 4 with a write at another index (E0725) and 12 with a use
+    of an output (E0728); 16 of the 136 are math programs) and found no integer or boolean
     bit that differs from `grid` (DIFFTEST, "Shapes"). Integer vector outputs (`IVec2`,
     `UVec4` and so on) are admitted by the classifier and have not been run as `pixel` outputs.
   - *`f32` outputs: the bits may differ from `grid` (D128).* `pixel` keeps section 4's bounds, not `grid`'s bits: a
@@ -2031,7 +2035,7 @@ versions are unmeasured.
 
 Documented difference (D39), finite `f32` constant expressions: rustc evaluates the expression the host and the twin
 read, and slangc evaluates the one the shader reads, so the two are separate evaluations and nothing makes them equal.
-They were equal for the forms the `cexpr` test measures (above; Radeon 890M only, RTX 5090 pending); nothing else
+They were equal for the forms the `cexpr` test measures (above; Radeon 890M and RTX 5090); nothing else
 was measured. Integer and `bool` constants stay one value on every side; an `f32` literal is read by each compiler on
 its own (above), and its values were compared only for the literals of that test.
 

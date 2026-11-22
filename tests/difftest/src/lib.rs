@@ -12,6 +12,8 @@ pub mod agg;
 #[cfg(test)]
 mod array_tests;
 pub mod ast;
+#[cfg(test)]
+mod batches;
 pub mod classify;
 #[cfg(test)]
 mod closure_tests;

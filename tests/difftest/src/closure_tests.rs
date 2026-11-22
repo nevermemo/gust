@@ -19,11 +19,9 @@ use crate::ast::{
     SHAPE_CLOSURE_MUT_PARAM, SHAPE_CLOSURE_SET_INDEX, SHAPE_CLOSURE_SET_OP, SHAPE_CLOSURE_STORE,
     SHAPE_CLOSURE_TWICE,
 };
+use crate::batches::{full_batch, space_batch};
 use crate::emit::emit_module;
-use crate::generator::{
-    ARRAY_END, CLOSURE_ATTEMPT_BASE, CLOSURE_PROGRAMS_PER_SEED, Space, generate_batch,
-    generate_batch_in,
-};
+use crate::generator::{ARRAY_END, CLOSURE_ATTEMPT_BASE, CLOSURE_PROGRAMS_PER_SEED, Space};
 use crate::interp::{Mutant, env_mutant, run, run_covered, run_mutant};
 
 const S0: Ty = Ty::Struct(0);
@@ -459,7 +457,7 @@ fn plus_one_as(var: u32, param: u32) -> Stmt {
 fn a_batch_ends_with_its_closure_programs() {
     assert_eq!(CLOSURE_PROGRAMS_PER_SEED, 2);
     for seed in 1..=4 {
-        let batch = generate_batch(seed).unwrap();
+        let batch = full_batch(seed);
         for p in &batch.programs[ARRAY_END..ARRAY_END + CLOSURE_PROGRAMS_PER_SEED] {
             assert!(p.attempt >= CLOSURE_ATTEMPT_BASE, "seed {seed}");
             assert!(
@@ -471,7 +469,7 @@ fn a_batch_ends_with_its_closure_programs() {
             batch.programs[ARRAY_END..ARRAY_END + CLOSURE_PROGRAMS_PER_SEED].len(),
             CLOSURE_PROGRAMS_PER_SEED
         );
-        let space = generate_batch_in(Space::Closure, seed).unwrap();
+        let space = space_batch(Space::Closure, seed);
         assert_eq!(
             &space.programs[..2],
             &batch.programs[ARRAY_END..ARRAY_END + CLOSURE_PROGRAMS_PER_SEED]
@@ -486,7 +484,7 @@ fn a_batch_ends_with_its_closure_programs() {
 #[test]
 fn generated_closures_have_distinct_names_and_pass_the_checker() {
     for seed in 1..=16 {
-        for p in generate_batch_in(Space::Closure, seed).unwrap().programs {
+        for p in &space_batch(Space::Closure, seed).programs {
             p.check()
                 .unwrap_or_else(|e| panic!("seed {seed} attempt {}: {e}", p.attempt));
             let mut names: Vec<u32> = Vec::new();
@@ -500,7 +498,7 @@ fn generated_closures_have_distinct_names_and_pass_the_checker() {
             for f in &p.methods.fns {
                 crate::ast::walk_all_stmts(&f.body, &mut visit);
             }
-            let text = emit_module(&p);
+            let text = emit_module(p);
             for name in &names {
                 assert!(
                     !vars.contains(name),
@@ -602,14 +600,14 @@ fn the_closure_programs_of_the_64_seed_runs_write_and_run_every_form_and_order_s
     let mut space = Vec::new();
     let mut batch = Vec::new();
     for seed in 1..=64 {
-        space.extend(generate_batch_in(Space::Closure, seed).unwrap().programs);
+        space.extend(space_batch(Space::Closure, seed).programs.iter().cloned());
         batch.extend(
-            generate_batch(seed)
-                .unwrap()
+            full_batch(seed)
                 .programs
-                .into_iter()
+                .iter()
                 .skip(ARRAY_END)
-                .take(CLOSURE_PROGRAMS_PER_SEED),
+                .take(CLOSURE_PROGRAMS_PER_SEED)
+                .cloned(),
         );
     }
     assert_eq!((space.len(), batch.len()), (1024, 128));
@@ -656,14 +654,14 @@ fn the_closure_mutants_change_generated_programs() {
     let mut space = Vec::new();
     let mut batch = Vec::new();
     for seed in 1..=64 {
-        space.extend(generate_batch_in(Space::Closure, seed).unwrap().programs);
+        space.extend(space_batch(Space::Closure, seed).programs.iter().cloned());
         batch.extend(
-            generate_batch(seed)
-                .unwrap()
+            full_batch(seed)
                 .programs
-                .into_iter()
+                .iter()
                 .skip(ARRAY_END)
-                .take(CLOSURE_PROGRAMS_PER_SEED),
+                .take(CLOSURE_PROGRAMS_PER_SEED)
+                .cloned(),
         );
     }
     // A change is a different output buffer (or a different domain verdict). A mutated run that breaks an assertion of
@@ -732,7 +730,7 @@ fn no_closure_fills_or_writes_back_an_array_in_the_driver_hole_form() {
     );
     let (mut array_sets, mut closures) = (0, 0);
     for seed in 1..=64 {
-        for p in generate_batch_in(Space::Closure, seed).unwrap().programs {
+        for p in &space_batch(Space::Closure, seed).programs {
             let mut defs: Vec<ClosureDef> = Vec::new();
             let mut collect = |s: &Stmt| {
                 if let Stmt::LetClosure { def } = s {

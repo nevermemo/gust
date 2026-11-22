@@ -21,6 +21,15 @@ A typed buffer is created from a slice with `create_typed_buffer(name, &data, ac
 structs of these with no implicit padding. `try_create_typed_buffer` and `create_zeroed_buffer` check the device's
 `max_buffer_size` first and return `Error::DeviceLimit`; `create_typed_buffer` itself does not.
 
+## Looking at a buffer
+
+`device.inspect(&buffer)` shows what a kernel wrote, with the field names of the element layout as columns:
+`.range(100..110)` narrows it, printing it (`{}`) prints the table, `.table()` returns the rows, `.stats()` the
+minimum, maximum and NaN count per field, `.to_json()` the same range as JSON, and `.snapshot()` copies the range so
+that `snapshot.changed(&device)` lists the elements a later dispatch changed. Each call is one readback of the range,
+so the buffer must be read-write; any other buffer returns `InspectError::Readback` with a hint. The `_async` forms
+are the ones that exist on `wasm32`.
+
 ## Typed calls
 
 For every kernel the `#[gpu]` macro generates three functions, and the first listing uses two of them:

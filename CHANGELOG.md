@@ -91,8 +91,9 @@ proof.
   precompiled pair for the split form of each `grid` kernel, keyed on its own Slang text and named in the manifest
   by an optional `split_of` (manifest schema 4; kernel records schema 5). A launch past the per-dimension limit then
   runs that artifact after the usual identity check; with neither it nor a run-time compiler it is still refused
-  with `DeviceLimit`. Manifests without a split keep their bytes and older schemas still load. The browser half is
-  not done yet. Radeon 890M only; RTX 5090 pending.
+  with `DeviceLimit`. A crate with no `grid` GPU kernel keeps its manifest bytes; the committed artifact sets were
+  re-blessed with split entries added and no existing artifact changed, and older schemas still load. The browser
+  half is not done yet. Radeon 890M only; RTX 5090 pending.
 - budget-kit rows (m11.kit3): W4 binning with the scatter (count, scan, and placement by the old value of
   `atomic_add`, checked per cell against a host counting sort) and W7, a sustained composite step with its GPU
   median, p95 and maximum and two host-side costs (the blocking timed batch, the return of `submit_batch`).
@@ -114,8 +115,9 @@ proof.
   bit-equal after every step, with a proven `u32` bound. Radeon 890M only; RTX 5090 pending.
 - Example `walker-transport` (m11.transport): one composite step of the three pieces above on one grid (bins of
   walkers by cell, a walk step with a crowding rule that reads the bin counts, an exact spread of the field and a
-  cleared deposit), 24 steps, all integer: host reference, twin and GPU are bit-equal after every step (field,
-  walkers and bins), with a proven `u32` bound. Radeon 890M only; RTX 5090 pending.
+  cleared deposit; four stages, the bins stage dispatching clear, count, scan and scatter), 24 steps, all integer:
+  host reference, twin and GPU are bit-equal after every step (field, walkers and the per-cell bin counts; the walkers
+  grouped by cell are equal per cell as sets after sorting), with a proven `u32` bound. Radeon 890M only; RTX 5090 pending.
 - Example `walker-life` (m11.life): walkers that move, lose energy, retire and spawn children, kept dense in their
   buffers by an exclusive scan of per-walker counts and a compaction kernel (no atomic append, so the order of
   spawned walkers does not depend on scheduling; the population is clamped at the capacity by slot). Host

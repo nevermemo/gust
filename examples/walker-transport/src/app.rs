@@ -2,7 +2,9 @@
 //!
 //! Many walkers move over a `u32` field on a periodic `SIDE x SIDE` grid. Everything is integer, so the host
 //! reference, the CPU twin and the GPU must agree bit for bit after every step: the field, each walker's cell and
-//! heading, and the bins of the walkers' cells. One step is four dispatches in this order:
+//! heading, and the per-cell counts of the bins. The walkers grouped by cell agree per cell as sets, compared after
+//! sorting each cell's slice (`Snapshot::grouped`): the raw order inside a cell is unspecified on the GPU. One step is
+//! four stages in this order (the bins stage itself dispatches clear, count, scan and scatter):
 //!
 //! 1. **bins** (`crate::bins`, copied from `examples/cell-bins` and adapted to integer cells): the per-cell counts of
 //!    the walkers' current cells, and the walkers grouped by cell.

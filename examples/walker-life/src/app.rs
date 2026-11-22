@@ -23,13 +23,14 @@
 //!    at or past `n` writes a count of 0.
 //! 2. `exclusive_into` (`gust_algo::scan`) over the `cap` counts gives each walker its first output slot, `starts[i]`.
 //!    The slots past `n` count 0, so the scan over `cap` is the scan over the `n` live walkers, and the sum of the
-//!    counts is `starts[cap - 1] + counts[cap - 1]`: the host reads those two back (the whole buffers, one `to_vec`
-//!    each; no extra kernel) and the next count is that sum clamped to `cap`.
+//!    counts is `starts[cap - 1] + counts[cap - 1]`.
 //! 3. `compact`, one invocation per live walker (`n` of them). A kept walker writes itself to slot `starts[i]`; a
 //!    child (energy `e / 2`, the heading `(draw2 >> 16) & 7`, the parent's new cell) to `starts[i] + keep`; the
 //!    parent keeps `e - e / 2` when it spawned, else `e`. The output goes to a second set of buffers and the host
 //!    swaps the sets. **Clamp:** a slot at or past `cap` is dropped, so the population is clamped at `cap`,
-//!    deterministically, by slot: the walkers of the lowest slots survive.
+//!    deterministically, by slot: the walkers of the lowest slots survive. After `compact` the host reads
+//!    `starts[cap - 1]` and `counts[cap - 1]` back (the whole buffers, one `to_vec` each; no extra kernel), and the
+//!    next count is their sum clamped to `cap`.
 //!
 //! No `atomic_add` assigns the slots: an atomic append would make the order of the spawned walkers depend on the
 //! schedule, and the walkers could not be compared one by one. The scan makes every slot a pure function of the

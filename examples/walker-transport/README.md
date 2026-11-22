@@ -1,10 +1,12 @@
 # walker-transport
 
 One composite step of bins, walkers and a field on a periodic `SIDE x SIDE` grid, 24 steps, all in integers, so the host
-reference, the CPU twin and the GPU are equal bit for bit after every step (field, walkers and bins). It runs the three
+reference, the CPU twin and the GPU are equal bit for bit after every step (field, walkers and the per-cell counts of
+the bins; the walkers grouped by cell are equal per cell as sets, compared after sorting each cell's slice, because the
+raw order inside a cell is unspecified on the GPU). On the GPU: Radeon 890M only, RTX 5090 pending. It runs the three
 pieces of `examples/field-relax`, `examples/walker-steer` and `examples/cell-bins` together.
 
-One step is four dispatches:
+One step is four stages (the bins stage itself dispatches clear, count, scan and scatter):
 
 - **bins** (`src/bins.rs`, the counting sort of `examples/cell-bins` copied and adapted to integer cells): the count of
   walkers in each cell, and the walkers grouped by cell.

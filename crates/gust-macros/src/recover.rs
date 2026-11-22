@@ -50,6 +50,44 @@ pub(crate) fn beside_error(
     tokens
 }
 
+/// The facade path of a `crate = <path>` argument of a `#[gpu(..)]` whose arguments as a whole are refused: the
+/// recovered code names `::gust::` as the expansion would, so it goes through the same rewrite
+/// ([`crate::forward::forward_crate`]) when a well-formed `crate = <path>` is there. `None` when none is, and then the
+/// code keeps `::gust::`.
+pub(crate) fn facade_in_arguments(arguments: &TokenStream) -> Option<syn::Path> {
+    struct Facade(syn::Path);
+    impl syn::parse::Parse for Facade {
+        fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+            crate::forward::parse_facade(input, Code::GpuArguments).map(Self)
+        }
+    }
+    let mut pieces: Vec<Vec<proc_macro2::TokenTree>> = vec![Vec::new()];
+    for tree in arguments.clone() {
+        match &tree {
+            proc_macro2::TokenTree::Punct(punct) if punct.as_char() == ',' => {
+                pieces.push(Vec::new())
+            }
+            _ => pieces.last_mut().expect("pieces is never empty").push(tree),
+        }
+    }
+    pieces.iter().find_map(|piece| {
+        let [
+            proc_macro2::TokenTree::Ident(key),
+            proc_macro2::TokenTree::Punct(equals),
+            rest @ ..,
+        ] = piece.as_slice()
+        else {
+            return None;
+        };
+        if key != "crate" || equals.as_char() != '=' {
+            return None;
+        }
+        crate::diagnostics::parse2::<Facade>(Code::GpuArguments, rest.iter().cloned().collect())
+            .ok()
+            .map(|facade| facade.0)
+    })
+}
+
 /// The module as the user wrote it, made safe to hand to rustc without the macro, or
 /// `None` when it has no inline content to recover.
 fn recovered_module(mut module: syn::ItemMod) -> Option<syn::ItemMod> {
@@ -65,8 +103,8 @@ fn recovered_module(mut module: syn::ItemMod) -> Option<syn::ItemMod> {
         }
     }
     strip_kernel_attributes(items);
-    let copyable = copyable_types(items);
     let written = hand_written_impls(items);
+    let copyable = copyable_types(items, &written);
     let provided = |name: &syn::Ident, attributes: &[syn::Attribute], trait_name: &str| {
         derives(attributes, trait_name) || written.contains(&(unraw(name), trait_name.to_owned()))
     };
@@ -89,7 +127,7 @@ fn recovered_module(mut module: syn::ItemMod) -> Option<syn::ItemMod> {
                     provided(&ident, attributes, trait_name)
                 });
                 (!written.contains(&(unraw(&ident), "GpuPod".to_owned())))
-                    .then(|| pod_stand_in(&ident))
+                    .then(|| pod_stand_in(&ident, &cfg_only(&item.attrs)))
             }
             _ => None,
         })
@@ -104,9 +142,11 @@ fn recovered_module(mut module: syn::ItemMod) -> Option<syn::ItemMod> {
 
 /// The `GpuPod` impl a struct of a refused module would have had, so host code that needs `GpuPod` of it adds no
 /// error. The layout carries no fields: the build fails anyway, and naming the field types would bring an error of
-/// its own for a field type that is no `GpuPod`.
-fn pod_stand_in(ident: &syn::Ident) -> syn::Item {
+/// its own for a field type that is no `GpuPod`. `cfg` is the struct's `cfg` conditions: a struct that is compiled
+/// out has no impl to name it.
+fn pod_stand_in(ident: &syn::Ident, cfg: &[syn::Attribute]) -> syn::Item {
     syn::parse_quote! {
+        #(#cfg)*
         unsafe impl ::gust::GpuPod for #ident {
             const LAYOUT: ::gust::TypeLayout = ::gust::TypeLayout::structure(
                 stringify!(#ident),
@@ -123,9 +163,9 @@ fn unraw(ident: &syn::Ident) -> String {
     ident.unraw().to_string()
 }
 
-/// The `(type, trait)` pairs of the hand-written `impl Clone for T`, `impl Copy for T` and `unsafe impl GpuPod for T`
-/// of the module (the validator refuses each of them, and the recovery hands them back, so adding the same impl would
-/// be a second error).
+/// The `(type, trait)` pairs of the hand-written `impl Clone for T`, `impl Copy for T`, `unsafe impl GpuPod for T` and
+/// `impl Drop for T` of the module (the validator refuses each of them, and the recovery hands them back, so adding the
+/// same impl would be a second error; a type with a `Drop` impl cannot be `Copy`, E0184).
 fn hand_written_impls(items: &[syn::Item]) -> HashSet<(String, String)> {
     let mut written = HashSet::new();
     for item in items {
@@ -139,7 +179,7 @@ fn hand_written_impls(items: &[syn::Item]) -> HashSet<(String, String)> {
         let (Some(last), Some(target)) = (path.segments.last(), target.path.segments.last()) else {
             continue;
         };
-        for name in ["Clone", "Copy", "GpuPod"] {
+        for name in ["Clone", "Copy", "GpuPod", "Drop"] {
             if crate::names::ident_is(&last.ident, name) {
                 written.insert((unraw(&target.ident), name.to_owned()));
             }
@@ -151,16 +191,19 @@ fn hand_written_impls(items: &[syn::Item]) -> HashSet<(String, String)> {
 /// The names of the module's types that are `Copy` by what the macro can see, so deriving `Copy` for them adds no
 /// error: a field-less enum, and a struct with named fields and no generics whose fields are all scalars, vectors,
 /// matrices, arrays of those, or such a type of the module. Anything else (a data enum, a tuple or generic struct,
-/// `Vec`, a type from outside) is left as the user wrote it.
-fn copyable_types(items: &[syn::Item]) -> HashSet<String> {
+/// `Vec`, a type from outside, a type with a hand-written `Drop` impl in `written`, and so a struct that holds one) is
+/// left as the user wrote it.
+fn copyable_types(items: &[syn::Item], written: &HashSet<(String, String)>) -> HashSet<String> {
+    let drops = |ident: &syn::Ident| written.contains(&(unraw(ident), "Drop".to_owned()));
     let mut copyable: HashSet<String> = items
         .iter()
         .filter_map(|item| match item {
             syn::Item::Enum(item)
-                if item
-                    .variants
-                    .iter()
-                    .all(|variant| variant.fields.is_empty()) =>
+                if !drops(&item.ident)
+                    && item
+                        .variants
+                        .iter()
+                        .all(|variant| variant.fields.is_empty()) =>
             {
                 Some(unraw(&item.ident))
             }
@@ -171,7 +214,8 @@ fn copyable_types(items: &[syn::Item]) -> HashSet<String> {
         .iter()
         .filter_map(|item| match item {
             syn::Item::Struct(item)
-                if item.generics.params.is_empty()
+                if !drops(&item.ident)
+                    && item.generics.params.is_empty()
                     && matches!(item.fields, syn::Fields::Named(_)) =>
             {
                 Some(item)
@@ -224,12 +268,11 @@ fn derive_missing(
     }
 }
 
-/// Whether a `#[derive(..)]` among `attributes` names `name` (by its last path segment).
+/// Whether a `#[derive(..)]` among `attributes` names `name` (by its last path segment), one inside a
+/// `#[cfg_attr(.., derive(..))]` included: adding another would be a duplicate derive.
 fn derives(attributes: &[syn::Attribute], name: &str) -> bool {
-    attributes
-        .iter()
-        .filter(|attribute| attribute.path().is_ident("derive"))
-        .any(|attribute| {
+    attributes.iter().any(|attribute| {
+        if attribute.path().is_ident("derive") {
             crate::diagnostics::parse_args_with(
                 attribute,
                 Code::MalformedDerive,
@@ -242,7 +285,47 @@ fn derives(attributes: &[syn::Attribute], name: &str) -> bool {
                         .is_some_and(|segment| crate::names::ident_is(&segment.ident, name))
                 })
             })
+        } else {
+            cfg_attr_parts(attribute).is_some_and(|(_, inner)| derives(&inner, name))
+        }
+    })
+}
+
+/// The condition and the attributes (each as an outer attribute) of a `#[cfg_attr(condition, attributes..)]`, `None`
+/// for any other attribute or one that does not parse.
+fn cfg_attr_parts(attribute: &syn::Attribute) -> Option<(syn::Meta, Vec<syn::Attribute>)> {
+    if !attribute.path().is_ident("cfg_attr") {
+        return None;
+    }
+    let metas = crate::diagnostics::parse_args_with(
+        attribute,
+        Code::MalformedDerive,
+        syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+    )
+    .ok()?;
+    let mut metas = metas.into_iter();
+    let condition = metas.next()?;
+    Some((
+        condition,
+        metas.map(|meta| syn::parse_quote!(#[#meta])).collect(),
+    ))
+}
+
+/// What decides whether an item with `attributes` exists: its `#[cfg(..)]` attributes, and a `#[cfg_attr(condition,
+/// cfg(..))]` cut down to its `cfg` parts, so an impl for the item can carry the same conditions.
+fn cfg_only(attributes: &[syn::Attribute]) -> Vec<syn::Attribute> {
+    attributes
+        .iter()
+        .filter_map(|attribute| {
+            if attribute.path().is_ident("cfg") {
+                return Some(attribute.clone());
+            }
+            let (condition, inner) = cfg_attr_parts(attribute)?;
+            let kept = cfg_only(&inner);
+            let metas = kept.iter().map(|attribute| &attribute.meta);
+            (!kept.is_empty()).then(|| syn::parse_quote!(#[cfg_attr(#condition, #(#metas),*)]))
         })
+        .collect()
 }
 
 fn is_kernel(attributes: &[syn::Attribute]) -> bool {

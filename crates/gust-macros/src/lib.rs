@@ -222,14 +222,21 @@ pub(crate) fn gpu_impl_routed(
     let (tag, krate) = if attribute.is_empty() {
         (None, None)
     } else {
-        match expand::routing::parse_attribute(attribute) {
+        match expand::routing::parse_attribute(attribute.clone()) {
             Ok(attribute) => (attribute.tag, attribute.krate),
             Err(error) => {
                 let module = match parsed {
                     Ok(syn::Item::Mod(module)) => Some(without_nested_gpu(module)),
                     _ => None,
                 };
-                return recover::beside_error(error, &item, module);
+                // The arguments as a whole are refused, but a well-formed `crate = <path>` among them still says
+                // where the facade is: the recovered code (its prelude import and `GpuPod` stand-ins name
+                // `::gust::`) is forwarded to it as the expansion would be.
+                let recovered = recover::beside_error(error, &item, module);
+                return match recover::facade_in_arguments(&attribute) {
+                    Some(path) => forward::forward_crate(recovered, &path),
+                    None => recovered,
+                };
             }
         }
     };

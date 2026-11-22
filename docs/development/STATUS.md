@@ -741,8 +741,10 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
     - m11.transport (`19abffc`): the example `walker-transport`, the first composite of this round's pieces: per
       step the bins of `cell-bins` (copied, integer cells), `walker-steer`'s walk plus a crowding rule (a walker in
       a cell holding more than `crowd` walkers takes the hash-chosen turn), `field-relax`'s exact spread on
-      `field + deposit`, and a cleared deposit; four dispatches, one `Uniform` written per step. Host reference, twin
-      and GPU bit-equal after every step for six cases (fewer and more walkers than a workgroup, one crowded cell
+      `field + deposit`, and a cleared deposit; four stages (the bins stage dispatches clear, count, scan and
+      scatter), one `Uniform` written per step. Host reference, twin and GPU bit-equal after every step (the bins'
+      walkers grouped by cell equal per cell as sets after sorting, since the raw order is unspecified on the GPU)
+      for six cases (fewer and more walkers than a workgroup, one crowded cell
       with and without one heading, `crowd = 0`, and a crowd above the walker count that equals a host run without
       the rule); the contention check rests on a derived bound. Both mutations fail. Opus review fixes: the run
       command, `crowd < walkers`, the bound's derivation, a zero-cell guard. Helpers are still copied between

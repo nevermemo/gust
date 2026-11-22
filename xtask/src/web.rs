@@ -493,14 +493,16 @@ type ListedBody = (String, String, usize);
 /// A kernel's `(module, name)`.
 type KernelPath = (String, String);
 
-/// The bodies the manifest lists for one kernel.
-type ListedKernel = (KernelPath, Vec<ListedBody>);
+/// The bodies the manifest lists for one kernel, and the keys of its splits (schema 4: an entry with `split_of`). A
+/// split is a known key but no body a page may select.
+type ListedKernel = (KernelPath, Vec<ListedBody>, Vec<String>);
 
-/// A kernel, the keys of its own entries and the bodies a `variants` list gives.
-type ManifestEntry = (KernelPath, Vec<String>, Vec<ListedBody>);
+/// A kernel, the keys of its own entries, the bodies a `variants` list gives and the keys of its splits.
+type ManifestEntry = (KernelPath, Vec<String>, Vec<ListedBody>, Vec<String>);
 
 /// The bodies the manifest lists, grouped by `(module, name)`: the items of a `variants` list when the kernel has one
-/// (schema 3; each body also has an entry of its own), else the key of the entry, the portable body.
+/// (schema 3; each body also has an entry of its own), else the key of the entry, the portable body. An entry with
+/// `split_of` (schema 4, D214) is the kernel's split, not a body: its key is kept apart.
 fn listed_bodies(manifest: &str) -> Result<Vec<ListedKernel>, String> {
     let json = crate::json::parse(manifest)
         .map_err(|error| format!("the committed manifest does not parse: {error}"))?;
@@ -524,11 +526,15 @@ fn listed_bodies(manifest: &str) -> Result<Vec<ListedKernel>, String> {
         };
         let position = entries
             .iter()
-            .position(|(path, _, _)| *path == (module.clone(), name.clone()))
+            .position(|(path, _, _, _)| *path == (module.clone(), name.clone()))
             .unwrap_or_else(|| {
-                entries.push(((module, name), Vec::new(), Vec::new()));
+                entries.push(((module, name), Vec::new(), Vec::new(), Vec::new()));
                 entries.len() - 1
             });
+        if entry.get("split_of").is_some() {
+            entries[position].3.push(key);
+            continue;
+        }
         entries[position].1.push(key);
         for variant in entry
             .get("variants")
@@ -550,7 +556,7 @@ fn listed_bodies(manifest: &str) -> Result<Vec<ListedKernel>, String> {
                 .push((key.to_owned(), function.to_owned(), requires));
         }
     }
-    for (path, keys, bodies) in entries {
+    for (path, keys, bodies, splits) in entries {
         // With a `variants` list the list is the kernel's bodies (each has an entry of its own, whose key is not a
         // portable body); without one the entry's key is the portable body.
         let bodies = if bodies.is_empty() {
@@ -560,7 +566,7 @@ fn listed_bodies(manifest: &str) -> Result<Vec<ListedKernel>, String> {
         } else {
             bodies
         };
-        listed.push((path, bodies));
+        listed.push((path, bodies, splits));
     }
     Ok(listed)
 }
@@ -577,9 +583,9 @@ pub(crate) fn selected_key_problems(selected: &[SelectedKernel], manifest: &str)
     let mut problems = Vec::new();
     for kernel in selected {
         let path = format!("{}.{}", kernel.module, kernel.name);
-        let Some((_, bodies)) = listed
+        let Some((_, bodies, splits)) = listed
             .iter()
-            .find(|(path, _)| path.0 == kernel.module && path.1 == kernel.name)
+            .find(|(path, _, _)| path.0 == kernel.module && path.1 == kernel.name)
         else {
             problems.push(format!(
                 "the page selected {path}, which the committed manifest does not list"
@@ -592,6 +598,11 @@ pub(crate) fn selected_key_problems(selected: &[SelectedKernel], manifest: &str)
         if kernel.key == "none" {
             problems.push(format!(
                 "{path}: the build embedded no artifact, so it selected no key"
+            ));
+        } else if splits.contains(&kernel.key) {
+            problems.push(format!(
+                "{path}: the selected key {} is the kernel's split, not a body (the manifest lists it with `split_of`)",
+                kernel.key
             ));
         } else if let Some((_, _, listed_requires)) = body {
             if *listed_requires != kernel.requires {
@@ -626,7 +637,7 @@ pub(crate) fn selected_key_problems(selected: &[SelectedKernel], manifest: &str)
             problems.push(format!("{path} is selected {times} times in the OK line"));
         }
     }
-    for ((module, name), _) in &listed {
+    for ((module, name), _, _) in &listed {
         if !selected
             .iter()
             .any(|kernel| kernel.module == *module && kernel.name == *name)

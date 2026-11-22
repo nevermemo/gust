@@ -1,6 +1,6 @@
 # Decisions and boundaries
 
-Append-only log. Next id: **D239**. Add a row for every owner decision or durable
+Append-only log. Next id: **D240**. Add a row for every owner decision or durable
 technical decision, with its date and source; supersede an old row with a new one
 instead of editing it. D01–D18 were recorded 2026-09-07 from the owner's GUST handoff,
 earlier reflection deferral, and independent inspection. Chat research is design
@@ -239,6 +239,7 @@ input, not proof of code state.
 | D236 | No target hardware class (owner, 2026-11-22, B5: "Isn't it up to the developer who uses it to decide that?"): GUST and Hurricane do not pick a hardware class; the developer does. Benchmarks and budget figures report every adapter as an equal, with scale knobs; a workload that fits a smaller size on one adapter is a result, not a miss, and thresholds are not reset after a miss. | Settles the pack's D4: no optimisation toward one adapter now. |
 | D237 | Names (owner, 2026-11-22, A9): the module attribute becomes `#[gpu_module]` (today `#[gpu]`), with `#[gpu_fn]`, `gpu_task!` (a stage) and `gpu_batch!`; a bare `gpu` name stays free for later use. | The rename of `#[gpu]` is a later slice, run with lanes drained; `.then` and `Batch` are not yet confirmed. |
 | D238 | Code sharing and debugging (owner, 2026-11-22, C1, with the coordinator's additions asked for): file-based sharing between modules (an include on the module attribute) with per-file diagnostics through a multi-file line table, built as part of a debugging system that also maps runtime faults and assertions back to Rust source, gives kernels a bounded printf-style log read back by the host, and offers a step-through view of one element through the CPU twin. | Its design comes first as a plan for the owner; the `macro_rules!` splice stays a documented workaround until then. |
+| D239 | Uniform padding form (owner via the proxy, 2026-11-22, refines D233): an inert `#[pad]` on a struct of a `#[gpu]` module that a uniform reaches, read by `#[gpu]` itself (a derive cannot add fields, and an attribute macro inside the module would expand after `#[gpu]`). It inserts private `f32` fields `_pad0`, `_pad1`, ... (the first free numbers) for every gap and tail of the constant-buffer layout, and generates a Rust-only `pub const fn new(<user fields in declaration order>) -> Self` that sets the padding to `0.0`. A user `new` in the module, arguments on `#[pad]`, a `#[pad]` on a non-struct, or on a struct no uniform reaches is GUST-E0219; unmarked structs keep GUST-E0209; storage structs are out of scope (their gaps are GUST-E0208, fixed by ordering). One slice, merged only with a reflection-layout test and GPU dispatch green on both adapters. | The name may be revisited by the D237 rename. The `_padN` names appear in the reflection record. |
 
 ## Notes
 

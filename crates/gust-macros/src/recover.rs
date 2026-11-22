@@ -20,6 +20,7 @@ use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident};
 
 use crate::diagnostics::Code;
+use crate::names::peel_type;
 
 /// `error` as a `compile_error!`, followed by the user's code.
 ///
@@ -241,9 +242,7 @@ fn copyable_types(items: &[syn::Item], written: &HashSet<(String, String)>) -> H
 }
 
 fn known_copy(ty: &syn::Type, copyable: &HashSet<String>) -> bool {
-    match ty {
-        syn::Type::Paren(inner) => known_copy(&inner.elem, copyable),
-        syn::Type::Group(inner) => known_copy(&inner.elem, copyable),
+    match peel_type(ty) {
         syn::Type::Array(array) => known_copy(&array.elem, copyable),
         syn::Type::Path(path) if path.qself.is_none() => {
             path.path.get_ident().is_some_and(|ident| {

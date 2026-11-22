@@ -6,6 +6,7 @@ use syn::visit::{self, Visit};
 
 use crate::diagnostics::{self, Code};
 use crate::math_types;
+use crate::names::{peel_expr, peel_type};
 use crate::profile::{BodyChecks, StageProfile};
 use crate::slang::texture;
 
@@ -103,9 +104,7 @@ pub(crate) fn math_constant(path: &syn::Path) -> Option<f32> {
 /// Why `expression` is visibly not a `u32` texel address (GUST-E0732), or `None` when it may be one: the macro sees no
 /// types, so it refuses what is plainly another type and leaves the rest to rustc, which checks the shadow body.
 fn address_problem(expression: &syn::Expr) -> Option<&'static str> {
-    match expression {
-        syn::Expr::Paren(paren) => address_problem(&paren.expr),
-        syn::Expr::Group(group) => address_problem(&group.expr),
+    match peel_expr(expression) {
         syn::Expr::Lit(literal) => match &literal.lit {
             syn::Lit::Float(_) => Some("a float literal"),
             syn::Lit::Int(int) if !matches!(int.suffix(), "" | "u32") => {
@@ -132,9 +131,7 @@ fn address_problem(expression: &syn::Expr) -> Option<&'static str> {
 /// Why `expression` is visibly not an `f32` sample coordinate (GUST-E0732), or `None`: the counterpart of
 /// [`address_problem`].
 fn coordinate_problem(expression: &syn::Expr) -> Option<&'static str> {
-    match expression {
-        syn::Expr::Paren(paren) => coordinate_problem(&paren.expr),
-        syn::Expr::Group(group) => coordinate_problem(&group.expr),
+    match peel_expr(expression) {
         syn::Expr::Lit(literal) => match &literal.lit {
             syn::Lit::Int(_) => {
                 Some("an integer literal (write `0.5`, or `1.0` for a whole number)")
@@ -402,13 +399,11 @@ fn fetch_add_call(expression: &syn::Expr) -> Option<&syn::ExprCall> {
 /// zero is defined (it yields infinity/NaN), so only integer div/rem by zero is
 /// a portable-semantic hazard.
 pub(crate) fn is_literal_zero(expression: &syn::Expr) -> bool {
-    match expression {
+    match peel_expr(expression) {
         syn::Expr::Lit(literal) => matches!(
             &literal.lit,
             syn::Lit::Int(value) if value.base10_digits().bytes().all(|digit| digit == b'0')
         ),
-        syn::Expr::Paren(paren) => is_literal_zero(&paren.expr),
-        syn::Expr::Group(group) => is_literal_zero(&group.expr),
         syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
             is_literal_zero(&unary.expr)
         }
@@ -423,19 +418,17 @@ pub(crate) fn is_literal_zero(expression: &syn::Expr) -> bool {
 /// WGSL, and rustc refuses it when building (`arithmetic_overflow`, not under `cargo check`). Only an amount Slang
 /// cannot fold (from a buffer, a parameter, a loop variable) is run-time, and only that kind masks on the GPU (KM-04).
 fn constant_shift_amount(expression: &syn::Expr) -> Option<i128> {
-    match expression {
+    match peel_expr(expression) {
         syn::Expr::Lit(literal) => match &literal.lit {
             syn::Lit::Int(value) => Some(value.base10_parse::<i128>().unwrap_or(i128::MAX)),
             _ => None,
         },
-        syn::Expr::Paren(paren) => constant_shift_amount(&paren.expr),
-        syn::Expr::Group(group) => constant_shift_amount(&group.expr),
         syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
             constant_shift_amount(&unary.expr).map(|value| value.saturating_neg())
         }
         syn::Expr::Cast(cast) => {
             let value = constant_shift_amount(&cast.expr)?;
-            let syn::Type::Path(target) = strip_type_parens(&cast.ty) else {
+            let syn::Type::Path(target) = peel_type(&cast.ty) else {
                 return None;
             };
             if crate::names::path_is(&target.path, "u32")
@@ -458,12 +451,10 @@ fn constant_shift_amount(expression: &syn::Expr) -> Option<i128> {
 /// minus) without a type suffix. Slang would type it `int` while rustc may infer
 /// `u32` from the other bound, so the counter types would silently diverge.
 fn is_unsuffixed_integer_literal(expression: &syn::Expr) -> bool {
-    match expression {
+    match peel_expr(expression) {
         syn::Expr::Lit(literal) => {
             matches!(&literal.lit, syn::Lit::Int(value) if value.suffix().is_empty())
         }
-        syn::Expr::Paren(paren) => is_unsuffixed_integer_literal(&paren.expr),
-        syn::Expr::Group(group) => is_unsuffixed_integer_literal(&group.expr),
         syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
             is_unsuffixed_integer_literal(&unary.expr)
         }
@@ -821,7 +812,7 @@ fn field_layout(
 ) -> Option<(u32, u32)> {
     // `[T; N]` is `N` elements of `T` end to end with the alignment of `T` (a Rust array has no padding between
     // elements, and `GpuPod for [T; N]` admits only elements whose stride is their size; slice m9.r2a).
-    if let syn::Type::Array(array) = strip_type_parens(ty) {
+    if let syn::Type::Array(array) = peel_type(ty) {
         let length = crate::slang::array_length_literal(&array.len)?;
         if depth > 16 {
             return None;
@@ -2297,7 +2288,7 @@ fn validate_struct(item: &syn::ItemStruct) -> syn::Result<()> {
     visitor.option_forbidden = Some("GPU struct fields");
     visitor.result_forbidden = Some("GPU struct fields");
     visitor.visit_item_struct(item);
-    visitor.finish()
+    visitor.errors.finish()
 }
 
 /// The integer literal of an enum discriminant (`3`, `3u32`, `-2` with a signed repr), and whether it is negated.
@@ -2440,7 +2431,7 @@ fn validate_enum(item: &syn::ItemEnum) -> syn::Result<()> {
         .retain(|attribute| !attribute.path().is_ident("repr"));
     let mut visitor = RestrictedVisitor::new(HashSet::new(), HashSet::new());
     visitor.visit_item_enum(&clean);
-    visitor.finish()
+    visitor.errors.finish()
 }
 
 /// GUST-E0211: an enum is a value of the invocation, never a stored one. No `GpuPod` exists for a type with invalid bit
@@ -2630,7 +2621,7 @@ fn check_stored_array(array: &syn::TypeArray, place: &str) -> syn::Result<()> {
             ),
         ));
     }
-    if let syn::Type::Path(path) = strip_type_parens(&array.elem)
+    if let syn::Type::Path(path) = peel_type(&array.elem)
         && let Some(ident) = path.path.get_ident()
         && let Some(math) = math_types::math_type(&ident.unraw().to_string())
         && !math.buffer
@@ -3001,7 +2992,7 @@ fn validate_function(
         visitor.body_tail_match = Some(std::ptr::from_ref(tail) as usize);
     }
     visitor.visit_item_fn(function);
-    visitor.finish()?;
+    visitor.errors.finish()?;
     // The closures bound in the body, once nothing else in it was found (slice m9.c).
     validate_closures(
         stage,
@@ -3308,7 +3299,7 @@ fn validate_closures(
         fields: &no_fields,
     });
 
-    let mut errors: Option<syn::Error> = None;
+    let mut errors = diagnostics::Collector::default();
     for (local, pattern, closure) in sites {
         let result = validate_closure(
             stage,
@@ -3323,13 +3314,10 @@ fn validate_closures(
             free_owner.as_ref(),
         );
         if let Err(error) = result {
-            match &mut errors {
-                Some(existing) => existing.combine(error),
-                None => errors = Some(error),
-            }
+            errors.push(error);
         }
     }
-    errors.map_or(Ok(()), Err)
+    errors.finish()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3416,7 +3404,7 @@ fn validate_closure(
                 ),
             ));
         }
-        syn::ReturnType::Type(_, ty) if matches!(strip_type_parens(ty), syn::Type::Tuple(tuple) if tuple.elems.is_empty()) =>
+        syn::ReturnType::Type(_, ty) if matches!(peel_type(ty), syn::Type::Tuple(tuple) if tuple.elems.is_empty()) =>
         {
             return Err(diagnostics::error(
                 Code::ClosureSignature,
@@ -3662,10 +3650,8 @@ struct TextureFacts {
 
 /// Whether `ty` is a tuple type with at least one element (`()` is the unit type, which is no tuple here).
 fn is_tuple_type(ty: &syn::Type) -> bool {
-    match ty {
+    match peel_type(ty) {
         syn::Type::Tuple(tuple) => !tuple.elems.is_empty(),
-        syn::Type::Paren(inner) => is_tuple_type(&inner.elem),
-        syn::Type::Group(inner) => is_tuple_type(&inner.elem),
         _ => false,
     }
 }
@@ -3678,9 +3664,7 @@ const MAX_TUPLE_ELEMENTS: usize = 8;
 /// `Result` (scalars, vectors, matrices, module structs and enums) or a tuple; arrays, references and the rest are
 /// refused (GUST-E0213).
 fn tuple_element_problem(element: &syn::Type) -> Option<&'static str> {
-    match element {
-        syn::Type::Paren(inner) => tuple_element_problem(&inner.elem),
-        syn::Type::Group(inner) => tuple_element_problem(&inner.elem),
+    match peel_type(element) {
         syn::Type::Tuple(_) => None,
         syn::Type::Path(path) => {
             let last = path.path.segments.last()?.ident.unraw().to_string();
@@ -3697,7 +3681,7 @@ fn tuple_element_problem(element: &syn::Type) -> Option<&'static str> {
 /// Why `element` cannot be the element type of an array (GUST-E0217): `None` for a scalar, vector, matrix or struct or
 /// enum of the module (slice m9.r1).
 fn array_element_problem(element: &syn::Type) -> Option<&'static str> {
-    match strip_type_parens(element) {
+    match peel_type(element) {
         syn::Type::Array(_) => Some(
             "an array element cannot be an array: nested arrays are not supported, use one flat array and index `i * N + j`",
         ),
@@ -3720,24 +3704,6 @@ fn array_element_problem(element: &syn::Type) -> Option<&'static str> {
         _ => Some(
             "an array element is a scalar, vector, matrix, struct or enum type of the module (no tuple, reference or other type)",
         ),
-    }
-}
-
-/// `ty` without the parentheses and invisible groups around it.
-fn strip_type_parens(ty: &syn::Type) -> &syn::Type {
-    match ty {
-        syn::Type::Paren(inner) => strip_type_parens(&inner.elem),
-        syn::Type::Group(inner) => strip_type_parens(&inner.elem),
-        other => other,
-    }
-}
-
-/// `expression` without the parentheses and invisible groups around it.
-fn strip_parens(expression: &syn::Expr) -> &syn::Expr {
-    match expression {
-        syn::Expr::Paren(inner) => strip_parens(&inner.expr),
-        syn::Expr::Group(inner) => strip_parens(&inner.expr),
-        other => other,
     }
 }
 
@@ -3791,7 +3757,7 @@ pub(crate) fn is_switch_match(expression: &syn::ExprMatch) -> bool {
 
 /// The `match` that `expression` is, through parentheses, when it lowers to a `switch`.
 fn switch_match_of(expression: &syn::Expr) -> Option<&syn::ExprMatch> {
-    match strip_parens(expression) {
+    match peel_expr(expression) {
         syn::Expr::Match(expression) if is_switch_match(expression) => Some(expression),
         _ => None,
     }
@@ -3936,7 +3902,7 @@ struct RestrictedVisitor {
     /// one is GUST-E0330. The names are unique in a function and apart from every other binding (GUST-E0328), so the
     /// set needs no shadowing rules; it is restored at the end of a block.
     closures: HashSet<String>,
-    error: Option<syn::Error>,
+    errors: diagnostics::Collector,
 }
 
 impl RestrictedVisitor {
@@ -3970,14 +3936,14 @@ impl RestrictedVisitor {
             index_depth: 0,
             len_casts: HashSet::new(),
             closures: HashSet::new(),
-            error: None,
+            errors: diagnostics::Collector::default(),
         }
     }
 
     /// Whether `expression` is a tuple, when the macro can tell without types: a tuple expression, a parameter or local
     /// that holds one, or a call of a helper or method that returns one (a method by its name alone).
     fn is_tuple_expr(&self, expression: &syn::Expr) -> bool {
-        match strip_parens(expression) {
+        match peel_expr(expression) {
             syn::Expr::Tuple(tuple) => !tuple.elems.is_empty(),
             syn::Expr::Path(path) if path.qself.is_none() => path
                 .path
@@ -4049,7 +4015,7 @@ impl RestrictedVisitor {
         }
         if let Some(ty) = annotation {
             let same_length = matches!(
-                strip_type_parens(ty),
+                peel_type(ty),
                 syn::Type::Tuple(types) if types.elems.len() == tuple.elems.len()
             );
             if !same_length {
@@ -4073,7 +4039,7 @@ impl RestrictedVisitor {
             );
             return;
         }
-        let element_types: Vec<Option<&syn::Type>> = match annotation.map(strip_type_parens) {
+        let element_types: Vec<Option<&syn::Type>> = match annotation.map(peel_type) {
             Some(syn::Type::Tuple(types)) => types.elems.iter().map(Some).collect(),
             _ => vec![None; tuple.elems.len()],
         };
@@ -4082,7 +4048,7 @@ impl RestrictedVisitor {
             self.visit_type(ty);
         }
         if let Some(initial) = &local.init {
-            if matches!(strip_parens(&initial.expr), syn::Expr::Match(_)) {
+            if matches!(peel_expr(&initial.expr), syn::Expr::Match(_)) {
                 self.reject(
                     Code::ValueMatchForm,
                     &initial.expr,
@@ -4128,9 +4094,7 @@ impl RestrictedVisitor {
     /// The enum of the module that `expression` is a value of, when the macro can tell without types: a variant path, a
     /// parameter or local declared with the enum, or a call of a helper that returns one.
     fn enum_of(&self, expression: &syn::Expr) -> Option<String> {
-        match expression {
-            syn::Expr::Paren(inner) => self.enum_of(&inner.expr),
-            syn::Expr::Group(inner) => self.enum_of(&inner.expr),
+        match peel_expr(expression) {
             syn::Expr::Path(path) if path.qself.is_none() => {
                 if let Some(name) = path.path.get_ident() {
                     return self.enum_values.get(&name.unraw().to_string()).cloned();
@@ -4212,7 +4176,7 @@ impl RestrictedVisitor {
             SwitchOn::Integer
         } else {
             let scrutinee_ok = matches!(
-                strip_parens(&expression.expr),
+                peel_expr(&expression.expr),
                 syn::Expr::Path(_) | syn::Expr::Call(_) | syn::Expr::MethodCall(_)
             );
             // A method call's enum is not tracked; the first arm names it.
@@ -4395,7 +4359,7 @@ impl RestrictedVisitor {
     /// An arm of a value `match`: an expression, a block that ends in an expression (or in a `return`), or a nested
     /// value `match`. The value is assigned to the `let` it initializes.
     fn visit_value_arm(&mut self, body: &syn::Expr) {
-        match strip_parens(body) {
+        match peel_expr(body) {
             syn::Expr::Block(block) if block.label.is_none() => {
                 self.visit_value_block(&block.block);
             }
@@ -4446,7 +4410,7 @@ impl RestrictedVisitor {
 
     /// Whether `expression` is a bare use of a uniform parameter, possibly in parentheses.
     fn is_uniform_parameter(&self, expression: &syn::Expr) -> bool {
-        match expression {
+        match peel_expr(expression) {
             syn::Expr::Path(path) => {
                 path.qself.is_none()
                     && path
@@ -4454,20 +4418,16 @@ impl RestrictedVisitor {
                         .get_ident()
                         .is_some_and(|name| self.uniforms.contains(&name.unraw().to_string()))
             }
-            syn::Expr::Paren(paren) => self.is_uniform_parameter(&paren.expr),
-            syn::Expr::Group(group) => self.is_uniform_parameter(&group.expr),
             _ => false,
         }
     }
 
     /// The name of a bare parameter use: `img` or `(img)`.
     fn direct_name(expression: &syn::Expr) -> Option<String> {
-        match expression {
+        match peel_expr(expression) {
             syn::Expr::Path(path) if path.qself.is_none() => {
                 path.path.get_ident().map(|ident| ident.unraw().to_string())
             }
-            syn::Expr::Paren(paren) => Self::direct_name(&paren.expr),
-            syn::Expr::Group(group) => Self::direct_name(&group.expr),
             _ => None,
         }
     }
@@ -4611,14 +4571,12 @@ impl RestrictedVisitor {
 
     /// The identifier a place expression is rooted in: `out` for `out`, `out[i]`, `out[i].a.b` and parenthesised forms.
     fn place_root(expression: &syn::Expr) -> Option<String> {
-        match expression {
+        match peel_expr(expression) {
             syn::Expr::Path(path) if path.qself.is_none() => {
                 path.path.get_ident().map(|ident| ident.unraw().to_string())
             }
             syn::Expr::Field(field) => Self::place_root(&field.base),
             syn::Expr::Index(index) => Self::place_root(&index.expr),
-            syn::Expr::Paren(paren) => Self::place_root(&paren.expr),
-            syn::Expr::Group(group) => Self::place_root(&group.expr),
             _ => None,
         }
     }
@@ -4777,24 +4735,11 @@ impl RestrictedVisitor {
     }
 
     fn reject(&mut self, code: Code, node: impl quote::ToTokens, message: &str) {
-        self.push(diagnostics::error(code, node, message));
-    }
-
-    /// Adds `error` after the ones already collected.
-    fn push(&mut self, error: syn::Error) {
-        if let Some(existing) = &mut self.error {
-            existing.combine(error);
-        } else {
-            self.error = Some(error);
-        }
-    }
-
-    fn finish(self) -> syn::Result<()> {
-        self.error.map_or(Ok(()), Err)
+        self.errors.reject(code, node, message);
     }
 
     fn is_known_result(&self, expression: &syn::Expr) -> bool {
-        match expression {
+        match peel_expr(expression) {
             syn::Expr::Path(path) => path
                 .path
                 .get_ident()
@@ -4806,8 +4751,6 @@ impl RestrictedVisitor {
                     .is_some_and(|name| self.result_helpers.contains(&name.unraw().to_string())),
                 _ => false,
             },
-            syn::Expr::Paren(paren) => self.is_known_result(&paren.expr),
-            syn::Expr::Group(group) => self.is_known_result(&group.expr),
             _ => false,
         }
     }
@@ -5171,7 +5114,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_expr_cast(&mut self, cast: &'ast syn::ExprCast) {
         // `i as usize` is the index of an array (slice m9.r1) and nothing else: the dialect has no `usize` value.
-        if matches!(strip_type_parens(&cast.ty), syn::Type::Path(path)
+        if matches!(peel_type(&cast.ty), syn::Type::Path(path)
             if path.qself.is_none() && crate::names::path_is(&path.path, "usize"))
         {
             if self.index_depth == 0 {
@@ -5194,7 +5137,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         // `a.len() as u32`: the one place the `usize` length of an array may stand outside an index.
-        if let syn::Expr::MethodCall(call) = strip_parens(&cast.expr)
+        if let syn::Expr::MethodCall(call) = peel_expr(&cast.expr)
             && crate::names::ident_is(&call.method, "len")
         {
             self.len_casts.insert(std::ptr::from_ref(call) as usize);
@@ -5252,7 +5195,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-        if matches!(strip_parens(&call.func), syn::Expr::Closure(_)) {
+        if matches!(peel_expr(&call.func), syn::Expr::Closure(_)) {
             self.reject(
                 Code::ClosureValue,
                 call,
@@ -5571,7 +5514,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         }
         if let Some(nested) = array.elems.iter().find(|element| {
             matches!(
-                strip_parens(element),
+                peel_expr(element),
                 syn::Expr::Array(_) | syn::Expr::Repeat(_)
             )
         }) {
@@ -5595,7 +5538,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         if matches!(
-            strip_parens(&repeat.expr),
+            peel_expr(&repeat.expr),
             syn::Expr::Array(_) | syn::Expr::Repeat(_)
         ) {
             self.reject(
@@ -6050,7 +5993,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         for element in &ty.elems {
-            if crate::slang::parameter_flavor(strip_type_parens(element))
+            if crate::slang::parameter_flavor(peel_type(element))
                 != crate::slang::ParameterFlavor::Value
             {
                 self.reject(
@@ -6086,7 +6029,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         }
         // A resource parameter by name is no value either (the values of a buffer element are read through it).
         if let Some(resource) = tuple.elems.iter().find(|element| {
-            matches!(strip_parens(element), syn::Expr::Path(path)
+            matches!(peel_expr(element), syn::Expr::Path(path)
             if path.qself.is_none()
                 && path.path.get_ident().is_some_and(|name| {
                     let name = name.unraw().to_string();
@@ -6495,7 +6438,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 let (ok_name, _, err_name, _) = match result_match_arms(expression) {
                     Ok(arms) => arms,
                     Err(error) => {
-                        self.push(error);
+                        self.errors.push(error);
                         return;
                     }
                 };
@@ -6599,17 +6542,11 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     fn visit_expr_unary(&mut self, expression: &'ast syn::ExprUnary) {
         // `*x` dereferences a reference, and no value of the dialect is one (`&self` is lowered to `this`, which is not
         // a pointer), so Slang would be handed `*this`: refused here with the code of an unsupported expression.
-        let before = self
-            .error
-            .as_ref()
-            .map_or(0, |error| error.into_iter().count());
+        let before = self.errors.count();
         visit::visit_expr_unary(self, expression);
         // The operand is judged first (`*u` on a whole uniform is GUST-E0321), and the dereference only when nothing
         // in the operand was refused, so one expression gives one report.
-        let after = self
-            .error
-            .as_ref()
-            .map_or(0, |error| error.into_iter().count());
+        let after = self.errors.count();
         if matches!(expression.op, syn::UnOp::Deref(_)) && before == after {
             self.reject(
                 Code::UnsupportedExpression,
@@ -6784,10 +6721,8 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 /// of an array `.len()` that does so is refused, because the emitter replaces `.len()` by a constant (M1, fix round 1 of
 /// m9.r2a). Names, literals, fields, indexes and plain arithmetic do not.
 fn len_receiver_runs_code(expr: &syn::Expr) -> bool {
-    match expr {
+    match peel_expr(expr) {
         syn::Expr::Path(_) | syn::Expr::Lit(_) => false,
-        syn::Expr::Paren(inner) => len_receiver_runs_code(&inner.expr),
-        syn::Expr::Group(inner) => len_receiver_runs_code(&inner.expr),
         syn::Expr::Field(field) => len_receiver_runs_code(&field.base),
         syn::Expr::Index(index) => {
             len_receiver_runs_code(&index.expr) || len_receiver_runs_code(&index.index)

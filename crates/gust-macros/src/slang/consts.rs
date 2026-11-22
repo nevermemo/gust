@@ -14,6 +14,7 @@ use syn::ext::IdentExt as _;
 
 use super::{array_length_literal, emit_ident, emit_literal, emit_type, integer_literal};
 use crate::diagnostics::{self, Code};
+use crate::names::peel_expr;
 use crate::validate::{ConstScalar, const_binary_operator, const_scalar};
 
 /// Writes one `static const <type> <name> = <expression>;` line per constant of `items`, in source order, followed by
@@ -60,7 +61,7 @@ fn emit_array(
     else {
         return Err(not_a_constant(item));
     };
-    let elements = match peel(&item.expr) {
+    let elements = match peel_expr(&item.expr) {
         syn::Expr::Array(list) => list
             .elems
             .iter()
@@ -106,7 +107,7 @@ impl Drop for ConstArrayScope {
 /// The length of `place` when it is the bare name of an array constant (it stands where a local array's table says the
 /// same: the index guard of the SPIR-V route and `.len()`).
 pub(super) fn array_length_of(place: &syn::Expr) -> Option<u32> {
-    let syn::Expr::Path(path) = peel(place) else {
+    let syn::Expr::Path(path) = peel_expr(place) else {
         return None;
     };
     let name = path.qself.is_none().then(|| path.path.get_ident())??;
@@ -131,7 +132,7 @@ fn emit_const_expr(
         },
         syn::Expr::Unary(unary) => match unary.op {
             syn::UnOp::Neg(_) => {
-                if let syn::Expr::Lit(literal) = peel(&unary.expr) {
+                if let syn::Expr::Lit(literal) = peel_expr(&unary.expr) {
                     // The bare `-literal` of slice m11.g3 stays bare; inside an expression it is one parenthesised term.
                     let text = format!(
                         "-{}",
@@ -168,15 +169,6 @@ fn emit_const_expr(
             Ok(format!("({left} {operator} {right})"))
         }
         _ => Err(not_a_constant(item)),
-    }
-}
-
-/// The expression under any parentheses.
-pub(crate) fn peel(expr: &syn::Expr) -> &syn::Expr {
-    match expr {
-        syn::Expr::Paren(inner) => peel(&inner.expr),
-        syn::Expr::Group(inner) => peel(&inner.expr),
-        other => other,
     }
 }
 

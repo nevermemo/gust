@@ -873,6 +873,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       test and on a per-package passed count that differs from its pin. `cargo xtask check-examples --gpu` names the
       adapter and runs them on their own. Opus review: merge, with small fixes done. Runs at merge: Radeon 890M and
       RTX 5090, 69 of 69 each.
+    - m13.dedup-macros (tidy round approved by the owner): the proc-macro crate shares one `peel_expr` and one
+      `peel_type` (names.rs), one `diagnostics::Collector` for combined errors, and one `Usage` walk in place of nine
+      visitors; 508 lines removed, 315 added. Emitted Slang and line tables byte-identical for 379 modules (444
+      kernels, texture and pixel kernels included) with the SPIR-V route's guards off and on. Opus review: merge.
+      Full Gpu suite on the merged tree (RTX 5090) at the pins.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

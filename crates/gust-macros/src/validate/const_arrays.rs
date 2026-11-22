@@ -9,7 +9,7 @@ use syn::visit::{self, Visit};
 
 use super::{ConstScope, check_const_expr, const_form, const_scalar};
 use crate::diagnostics::{self, Code};
-use crate::slang::consts::peel;
+use crate::names::peel_expr;
 
 /// The most elements an array constant has.
 const MAX_LENGTH: u32 = 256;
@@ -61,7 +61,7 @@ pub(super) fn validate(
         };
         return Err(const_form(&array.elem, message));
     };
-    match peel(&item.expr) {
+    match peel_expr(&item.expr) {
         syn::Expr::Array(list) => {
             if list.elems.len() != length as usize {
                 return Err(const_form(
@@ -121,7 +121,7 @@ struct Uses<'a> {
 impl Uses<'_> {
     /// The array constant `expr` names, when it is the bare name of one.
     fn named(&self, expr: &syn::Expr) -> Option<String> {
-        let syn::Expr::Path(path) = peel(expr) else {
+        let syn::Expr::Path(path) = peel_expr(expr) else {
             return None;
         };
         let name = path.qself.is_none().then(|| path.path.get_ident())??;
@@ -132,7 +132,7 @@ impl Uses<'_> {
     /// The array constant a place is an element of (`NAME[i]`, `NAME[i].f`), also on the left of a destructuring
     /// assignment (`(NAME[0], x) = ..`, `[NAME[0], x] = ..`, `S { a: NAME[0] } = ..`, `P(NAME[0], x) = ..`).
     fn root(&self, place: &syn::Expr) -> Option<String> {
-        match peel(place) {
+        match peel_expr(place) {
             syn::Expr::Index(index) => self.named(&index.expr).or_else(|| self.root(&index.expr)),
             syn::Expr::Field(field) => self.root(&field.base),
             syn::Expr::Tuple(tuple) => tuple.elems.iter().find_map(|element| self.root(element)),
@@ -141,7 +141,7 @@ impl Uses<'_> {
                 .fields
                 .iter()
                 .find_map(|field| self.root(&field.expr)),
-            syn::Expr::Call(call) if matches!(peel(&call.func), syn::Expr::Path(_)) => {
+            syn::Expr::Call(call) if matches!(peel_expr(&call.func), syn::Expr::Path(_)) => {
                 call.args.iter().find_map(|argument| self.root(argument))
             }
             _ => None,

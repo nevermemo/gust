@@ -23,6 +23,7 @@ use std::fmt::Write as _;
 use syn::{ext::IdentExt as _, visit::Visit};
 
 use super::ParameterFlavor;
+use crate::names::peel_expr;
 
 /// The access a texture parameter has in the shader: the `TextureAccess` of its `TextureLayout`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -510,10 +511,8 @@ pub(crate) fn is_texture_method(call: &syn::ExprMethodCall) -> bool {
 /// `out`, `(out)` and `((out))` are all `out`. `width()` and `height()` name a prologue local after it, so they must
 /// agree with the validator's `direct_name` about what a plain receiver is.
 fn receiver_ident(expression: &syn::Expr) -> Option<&syn::Ident> {
-    match expression {
+    match peel_expr(expression) {
         syn::Expr::Path(path) if path.qself.is_none() => path.path.get_ident(),
-        syn::Expr::Paren(paren) => receiver_ident(&paren.expr),
-        syn::Expr::Group(group) => receiver_ident(&group.expr),
         _ => None,
     }
 }

@@ -25,6 +25,7 @@ use syn::visit::{self, Visit};
 
 use super::traits::{self, Traits};
 use crate::diagnostics::{self, Code};
+use crate::names::peel_type;
 
 /// Whether a signature declares anything generic: type, lifetime or const parameters, or a `where` clause.
 pub(crate) fn is_generic(signature: &syn::Signature) -> bool {
@@ -275,7 +276,7 @@ pub(crate) fn check_signature(
     let mut scan = Scan {
         declared: &declared,
         nesting: 0,
-        error: None,
+        errors: diagnostics::Collector::default(),
     };
     for argument in &signature.inputs {
         if let syn::FnArg::Typed(argument) = argument {
@@ -284,7 +285,7 @@ pub(crate) fn check_signature(
     }
     scan.visit_return_type(&signature.output);
     scan.visit_block(block);
-    scan.error.map_or(Ok(()), Err)
+    scan.errors.finish()
 }
 
 /// Why a type parameter cannot be called `name`, or `None`.
@@ -324,9 +325,7 @@ fn name_problem(name: &str, taken: &HashSet<String>) -> Option<String> {
 
 /// Whether `ty` is exactly the name `name` (parentheses aside).
 fn is_bare(ty: &syn::Type, name: &str) -> bool {
-    match ty {
-        syn::Type::Paren(inner) => is_bare(&inner.elem, name),
-        syn::Type::Group(inner) => is_bare(&inner.elem, name),
+    match peel_type(ty) {
         syn::Type::Path(path) => {
             path.qself.is_none()
                 && path
@@ -387,18 +386,10 @@ struct Scan<'a> {
     declared: &'a [String],
     /// How many compound types (arrays, tuples, references, paths with arguments) enclose the type being visited.
     nesting: usize,
-    error: Option<syn::Error>,
+    errors: diagnostics::Collector,
 }
 
 impl Scan<'_> {
-    fn push(&mut self, error: syn::Error) {
-        if let Some(existing) = &mut self.error {
-            existing.combine(error);
-        } else {
-            self.error = Some(error);
-        }
-    }
-
     fn names(&self, ident: &syn::Ident) -> bool {
         let name = ident.unraw().to_string();
         self.declared.contains(&name)
@@ -413,7 +404,7 @@ impl<'ast> Visit<'ast> for Scan<'_> {
             syn::Type::Path(path) if path.qself.is_none() && path.path.get_ident().is_some() => {
                 let ident = path.path.get_ident().expect("checked");
                 if self.nesting > 0 && self.names(ident) {
-                    self.push(diagnostics::error(
+                    self.errors.push(diagnostics::error(
                         Code::ExternOrGenericFunction,
                         ty,
                         format!(
@@ -437,7 +428,7 @@ impl<'ast> Visit<'ast> for Scan<'_> {
             && self.names(&first.ident)
             && ty.path.segments.len() > 1
         {
-            self.push(diagnostics::error(
+            self.errors.push(diagnostics::error(
                 Code::ExternOrGenericFunction,
                 ty,
                 "a path through a type parameter (`T::Item`) is not part of the dialect: a trait declares methods only",
@@ -452,7 +443,7 @@ impl<'ast> Visit<'ast> for Scan<'_> {
             .into_iter()
             .any(|tree| mentions_declared(&tree, self.declared));
         if mentions {
-            self.push(diagnostics::error(
+            self.errors.push(diagnostics::error(
                 Code::ExternOrGenericFunction,
                 closure,
                 "a closure in a generic function cannot name the type parameter: the closure becomes a function of its own in the Slang text, with no generic list; give the closure concrete types or call a generic helper from it",

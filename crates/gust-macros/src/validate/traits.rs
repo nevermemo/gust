@@ -16,6 +16,7 @@ use syn::visit::{self, Visit};
 use syn::visit_mut::{self, VisitMut};
 
 use crate::diagnostics::{self, Code};
+use crate::names::peel_expr;
 
 /// The traits of a module: name to the names of the methods the trait declares.
 pub(crate) type Traits = HashMap<String, Vec<String>>;
@@ -60,9 +61,7 @@ pub(crate) fn trait_path_name(path: &syn::Path) -> Option<String> {
 /// Whether `expression` is a place, syntactically: a name (`self` included), a field of a place, an element of a place,
 /// or parentheses around one. A call, a literal, a path of two segments and a block are not.
 pub(crate) fn is_place(expression: &syn::Expr) -> bool {
-    match expression {
-        syn::Expr::Paren(inner) => is_place(&inner.expr),
-        syn::Expr::Group(inner) => is_place(&inner.expr),
+    match peel_expr(expression) {
         syn::Expr::Path(path) => {
             path.qself.is_none()
                 && path.path.leading_colon.is_none()
@@ -88,19 +87,17 @@ pub(crate) fn desugar(module: &syn::ItemMod) -> syn::Result<Option<syn::ItemMod>
     let mut copy = module.clone();
     let mut rewrite = PathCalls {
         traits: &traits,
-        error: None,
+        errors: diagnostics::Collector::default(),
     };
     rewrite.visit_item_mod_mut(&mut copy);
-    match rewrite.error {
-        Some(error) => Err(error),
-        None => Ok(Some(copy)),
-    }
+    rewrite.errors.finish()?;
+    Ok(Some(copy))
 }
 
 /// Rewrites `Trait::m(place, args..)` into `place.m(args..)`.
 struct PathCalls<'a> {
     traits: &'a Traits,
-    error: Option<syn::Error>,
+    errors: diagnostics::Collector,
 }
 
 impl PathCalls<'_> {
@@ -155,7 +152,7 @@ impl PathCalls<'_> {
         };
         let method = self.method_of(call)?;
         let Some(first) = call.args.first() else {
-            self.push(diagnostics::error(
+            self.errors.push(diagnostics::error(
                 Code::TraitPathReceiver,
                 call,
                 format!(
@@ -169,7 +166,7 @@ impl PathCalls<'_> {
             other => other,
         };
         if !is_place(place) {
-            self.push(diagnostics::error(
+            self.errors.push(diagnostics::error(
                 Code::TraitPathReceiver,
                 first,
                 format!(
@@ -191,48 +188,28 @@ impl PathCalls<'_> {
     }
 }
 
-impl PathCalls<'_> {
-    fn push(&mut self, error: syn::Error) {
-        if let Some(existing) = &mut self.error {
-            existing.combine(error);
-        } else {
-            self.error = Some(error);
-        }
-    }
-}
-
 /// Refuses `dyn Trait`, `impl Trait` and a trait of the module used as a type anywhere in `items` (GUST-E0218): a
 /// local, a field, a parameter, a result, a cast, a generic argument. The `impl Trait for S` header names the trait as
 /// a path, not as a type, and is not a use.
 pub(crate) fn check_type_uses(items: &[syn::Item], traits: &Traits) -> syn::Result<()> {
     let mut scan = TypeUses {
         traits,
-        error: None,
+        errors: diagnostics::Collector::default(),
     };
     for item in items {
         scan.visit_item(item);
     }
-    scan.error.map_or(Ok(()), Err)
+    scan.errors.finish()
 }
 
 struct TypeUses<'a> {
     traits: &'a Traits,
-    error: Option<syn::Error>,
-}
-
-impl TypeUses<'_> {
-    fn push(&mut self, error: syn::Error) {
-        if let Some(existing) = &mut self.error {
-            existing.combine(error);
-        } else {
-            self.error = Some(error);
-        }
-    }
+    errors: diagnostics::Collector,
 }
 
 impl<'ast> Visit<'ast> for TypeUses<'_> {
     fn visit_type_trait_object(&mut self, ty: &'ast syn::TypeTraitObject) {
-        self.push(diagnostics::error(
+        self.errors.push(diagnostics::error(
             Code::TraitTypeUse,
             ty,
             "`dyn Trait` has no GPU lowering: traits are static dispatch only (the receiver's concrete type picks the method); call the method on a value of a struct or enum of the module",
@@ -240,7 +217,7 @@ impl<'ast> Visit<'ast> for TypeUses<'_> {
     }
 
     fn visit_type_impl_trait(&mut self, ty: &'ast syn::TypeImplTrait) {
-        self.push(diagnostics::error(
+        self.errors.push(diagnostics::error(
             Code::TraitTypeUse,
             ty,
             "`impl Trait` as a type is not part of the dialect: name the struct or enum of the module (a generic helper `fn f<T: Trait>(t: T)` takes the bound)",
@@ -252,7 +229,7 @@ impl<'ast> Visit<'ast> for TypeUses<'_> {
             && let Some(name) = trait_path_name(&ty.path)
             && self.traits.contains_key(&name)
         {
-            self.push(diagnostics::error(
+            self.errors.push(diagnostics::error(
                 Code::TraitTypeUse,
                 ty,
                 format!(

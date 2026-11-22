@@ -1538,7 +1538,7 @@ fn check_counted_call(call: &[String], stdout: &str) -> Result<(), String> {
             ));
         }
     }
-    Ok(())
+    crate::examples_gpu::check_pinned_example_tests(call, stdout)
 }
 
 /// The cargo call that runs one example binary and exports its SPIR-V (the Spirv suite).
@@ -1695,7 +1695,9 @@ fn run_strict_build(
 /// artifacts (the example has two bodies, each a WGSL file with its reflection record), so a portable artifact with
 /// wrong bytes under an unchanged key fails too.
 fn check_strict_subgroups_example(root: &Path) -> Result<String, String> {
-    run_cargo_test_captured(root, &strict_subgroups_test_args())?;
+    let call = strict_subgroups_test_args();
+    let (_, stdout) = run_cargo_test_captured(root, &call)?;
+    crate::examples_gpu::check_pinned_example_tests(&call, &stdout)?;
     let target = crate::workspace::cargo_target_dir(root).join("strict-subgroups");
     run_strict_build(
         root,

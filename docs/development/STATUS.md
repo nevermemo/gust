@@ -868,6 +868,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       anchor kept; the stale GUST-E0813 statement on arrays now matches the code. The 1,500-line target was not met
       (2,150 lines): the section 1 rules exist nowhere else, so the diet moves to a later slice. Opus review: merge
       after fixes; fixed.
+    - m13.exgpu (`cc284e5`, m12 sanity follow-up): every example's ignored GPU tests are pinned by name (69 in 21
+      packages, subgroup-reduce included); check-examples and check-full fail on a missing, failed or still-ignored
+      test and on a per-package passed count that differs from its pin. `cargo xtask check-examples --gpu` names the
+      adapter and runs them on their own. Opus review: merge, with small fixes done. Runs at merge: Radeon 890M and
+      RTX 5090, 69 of 69 each.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

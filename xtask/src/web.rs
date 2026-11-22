@@ -15,7 +15,9 @@
 //! `create_zeroed_buffer_async`, the `WgpuJob` contract, `map_async`, `map_gpu` and `to_vec_async`, and more).
 //! The page also reports, after the adapter words, the key each kernel selected (M8, slice m8.e); the check compares them
 //! with the committed manifest (`selected_key_problems`) and requires the page to say that a device opened with the
-//! `subgroups` capability was refused with `MissingCapability` (the browser backend offers no capability, D142).
+//! `subgroups` capability was refused with `MissingCapability` (the browser backend offers no capability, D142), and
+//! the two split parts (D208, D209; m11.web): a launch past a lowered workgroup limit ran as pieces of the split
+//! artifact and equalled the host reference, and the same launch without that artifact was refused with `DeviceLimit`.
 //! The label printed at the end is `Gpu (WebGPU, Chrome <version>, <vendor> <architecture>)`, or `Gpu (software ...)`
 //! when the adapter is a software one. Nothing here runs Slang: the shader is the committed WGSL artifact.
 //!
@@ -247,7 +249,7 @@ pub(crate) fn check_web_report(args: &[String]) -> Result<String, String> {
         started,
     )?;
     Ok(format!(
-        "check-web passed: the page logged `{OK_PREFIX}{}`: the real gust-wgpu vector-add (1000 and 8197 elements) ran in both forms, grid and pixel, on the browser GPU, and each equalled the host reference and the other bit for bit. The job contract of the browser held for each submission (status Pending right after the submit and Complete after the awaited readback; wait, wait_timeout and the generated dispatch return Error::WouldBlock), and map_gpu read back the host's result through to_vec_async. The key each of the {} kernels selected is one the committed manifest lists, none needs a capability, and a device opened with the subgroups capability was refused with Error::MissingCapability.\n  evidence: {}\n  {}",
+        "check-web passed: the page logged `{OK_PREFIX}{}`: the real gust-wgpu vector-add (1000 and 8197 elements) ran in both forms, grid and pixel, on the browser GPU, and each equalled the host reference and the other bit for bit. The job contract of the browser held for each submission (status Pending right after the submit and Complete after the awaited readback; wait, wait_timeout and the generated dispatch return Error::WouldBlock), and map_gpu read back the host's result through to_vec_async. A launch past a lowered per-dimension workgroup limit ran as pieces of the kernel's split artifact and equalled the host reference, and the same launch without the split's artifact was refused with Error::DeviceLimit. The key each of the {} kernels selected is one the committed manifest lists, none needs a capability, and a device opened with the subgroups capability was refused with Error::MissingCapability.\n  evidence: {}\n  {}",
         run.label,
         run.selected.len(),
         evidence_label(run.chrome_version.as_deref(), &run.adapter),
@@ -410,6 +412,13 @@ const MANIFEST_PATH: &str = "examples/web-vector-add/gust-artifacts/manifest.jso
 /// The last part of the page's `GUST_OK` line: a device opened with the `subgroups` capability was refused.
 const SUBGROUPS_REFUSED: &str = "subgroups MissingCapability";
 
+/// The two parts of `check-web`'s own page between the selected kernels and the closing part (D208, D209; m11.web): a
+/// `grid` launch past a lowered per-dimension workgroup limit ran as pieces of the split artifact and equalled the host
+/// reference, and the same launch without the split's artifact was refused with `DeviceLimit`. A page whose closing
+/// part is something else (the gallery's) has no such parts.
+const SPLIT_RAN: &str = "split ran";
+const SPLIT_REFUSED: &str = "split fallback DeviceLimit";
+
 /// One kernel as the wasm module reports it (`selected_kernels` of the example): the body its build selected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SelectedKernel {
@@ -423,25 +432,48 @@ pub(crate) struct SelectedKernel {
 }
 
 /// Splits the label of the page's `GUST_OK` line, `<vendor> <architecture> | selected <kernel=key:variant:n ...> |
-/// subgroups MissingCapability`, into the adapter words and the kernels the build selected. An OK line without the
-/// selected kernels, or without the refusal of the `subgroups` capability, is an error: the page did not prove them.
+/// split ran | split fallback DeviceLimit | subgroups MissingCapability`, into the adapter words and the kernels the build
+/// selected. An OK line without the selected kernels, without either split part or without the refusal of the
+/// `subgroups` capability is an error: the page did not prove them.
 #[cfg(test)]
 pub(crate) fn split_page_label(label: &str) -> Result<(String, Vec<SelectedKernel>), String> {
     split_label(label, SUBGROUPS_REFUSED)
 }
 
-/// [`split_page_label`] for a page whose last part is `closing` (`check-web`'s is [`SUBGROUPS_REFUSED`]).
+/// The error for an OK line of the wrong number of parts.
+fn wrong_part_count(found: usize, expected: usize, proofs: &[&str], closing: &str) -> String {
+    let named: String = proofs.iter().map(|part| format!("`{part}`, ")).collect();
+    format!(
+        "the OK line has {found} part(s) separated by ` | `, expected {expected}: the adapter words, `selected ...`, {named}and `{closing}`"
+    )
+}
+
+/// [`split_page_label`] for a page whose last part is `closing` (`check-web`'s is [`SUBGROUPS_REFUSED`], and only its
+/// label has the two split parts, [`SPLIT_RAN`] and [`SPLIT_REFUSED`], before it).
 pub(crate) fn split_label(
     label: &str,
     closing: &str,
 ) -> Result<(String, Vec<SelectedKernel>), String> {
-    let parts: Vec<&str> = label.split(" | ").collect();
-    let [adapter, selected, refusal] = parts.as_slice() else {
-        return Err(format!(
-            "the OK line has {} part(s) separated by ` | `, expected 3: the adapter words, `selected ...` and `{closing}`",
-            parts.len()
-        ));
+    let proofs: &[&str] = if closing == SUBGROUPS_REFUSED {
+        &[SPLIT_RAN, SPLIT_REFUSED]
+    } else {
+        &[]
     };
+    let parts: Vec<&str> = label.split(" | ").collect();
+    let expected = 3 + proofs.len();
+    let [adapter, selected, middle @ .., refusal] = parts.as_slice() else {
+        return Err(wrong_part_count(parts.len(), expected, proofs, closing));
+    };
+    if middle.len() != proofs.len() {
+        return Err(wrong_part_count(parts.len(), expected, proofs, closing));
+    }
+    for (found, wanted) in middle.iter().zip(proofs) {
+        if found != wanted {
+            return Err(format!(
+                "the OK line does not say `{wanted}` where the page must prove it: {found:?}"
+            ));
+        }
+    }
     if *refusal != closing {
         return Err(if closing == SUBGROUPS_REFUSED {
             format!(

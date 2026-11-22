@@ -5,7 +5,8 @@
 //! under `GUST_PROFILE=web`, runs `wasm-bindgen --target web`, serves `index.html` with the result from a loopback
 //! server, opens it in headless Chrome and reads the one line that [`run`] logs to the console:
 //!
-//! - `GUST_OK <vendor> <architecture> | selected <module.kernel=key:variant:n ...> | subgroups MissingCapability`
+//! - `GUST_OK <vendor> <architecture> | selected <module.kernel=key:variant:n ...> | split ran | split fallback
+//!   DeviceLimit | subgroups MissingCapability`
 //!   when `create_zeroed_buffer_async` (wasm32 only, so no native test reaches it) returns an output buffer that
 //!   reads back as all `+0.0` bits, and when both forms of the kernel (the `grid` form, a compute pass, and the
 //!   `pixel` form, a render pass whose fragments write the output buffer, D120) equal the host reference and each
@@ -17,7 +18,10 @@
 //!   function (which opens the default device itself) returns what the host computes, and its resident `map_gpu`
 //!   (which submits and does not wait there) reads back, through `to_vec_async`, the same; and when a device
 //!   opened with the `subgroups` capability is refused with `Error::MissingCapability` (wgpu's WebGPU backend maps no
-//!   subgroup feature, D142; M8, slice m8.e). The `selected` part names, for each kernel, the key of the artifact the build
+//!   subgroup feature, D142; M8, slice m8.e); and when a `grid` launch past a lowered per-dimension workgroup limit
+//!   (D208, D209; m11.web) runs as pieces of the kernel's split variant from the split's own precompiled artifact and
+//!   equals the host reference ([`split_launch`]), and the same launch of the kernel whose split variant has no
+//!   artifact is refused with `Error::DeviceLimit`, because a browser build has no run-time compiler. The `selected` part names, for each kernel, the key of the artifact the build
 //!   embedded, the variant it selected (`-` for the portable body) and how many capabilities that body requires
 //!   ([`selected_kernels`]); `check-web` compares it with the committed manifest;
 //! - `GUST_FAIL <reason>` on any error or panic.
@@ -25,10 +29,10 @@
 //! The whole crate is `cfg(target_arch = "wasm32")`: on the host it is empty.
 #![cfg(target_arch = "wasm32")]
 
-use gust::JobStatus;
 use gust::capability::Capability;
 use gust::gpu;
-use gust_wgpu::{DeviceOptions, Error, GpuBufferAccess, HeadlessDevice, WgpuJob};
+use gust::{Access, Extent, JobStatus, KernelDescriptor, LengthRule, Resource};
+use gust_wgpu::{BufferDispatch, DeviceOptions, Error, GpuBufferAccess, HeadlessDevice, WgpuJob};
 use js_sys::{Function, Object, Promise, Reflect};
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
@@ -44,6 +48,18 @@ const TWO_DRAWS: usize = 8197;
 /// What the pixel form's output holds before the call: no sum of the inputs equals it, so an element that no fragment
 /// wrote cannot pass.
 const UNWRITTEN: f32 = -1.0e9;
+
+/// The split variant of the vector add without its precompiled artifact, and the kernel with that split: the launch past
+/// a lowered limit then has no shader for its pieces (a browser build has no run-time compiler) and is refused.
+const SPLIT_WITHOUT_ARTIFACT: KernelDescriptor = match vector_add::add::DESCRIPTOR.split {
+    Some(split) => split.with_artifacts(&[]),
+    None => panic!("the kernel has no split variant"),
+};
+const WITHOUT_SPLIT_ARTIFACT: KernelDescriptor =
+    vector_add::add::DESCRIPTOR.with_split(Some(&SPLIT_WITHOUT_ARTIFACT));
+
+/// The per-dimension workgroup limit the split launch runs under: [`LENGTH`] is 16 workgroups of 64, so four pieces.
+const LOWERED_LIMIT: u32 = 4;
 
 /// The element-wise map of the same job (D60), run by [`double_add::map_async`] after the vector add: it opens the
 /// default device itself (in the browser through `gust_wgpu::default_device_async`) and awaits the result. Small
@@ -197,12 +213,76 @@ async fn vector_add_on_the_browser_gpu() -> Result<String, String> {
             doubled.len()
         ));
     }
+    split_launch(device).await?;
     subgroups_are_refused().await?;
     Ok(format!(
-        "{} | selected {} | subgroups MissingCapability",
+        "{} | selected {} | split ran | split fallback DeviceLimit | subgroups MissingCapability",
         browser_adapter_label().await,
         selected_kernels()
     ))
+}
+
+/// A `grid` launch past a lowered per-dimension workgroup limit (D208, D209), as `tests/precompiled/app` runs it
+/// natively: the host cuts it into pieces of the kernel's split variant, which can only run from the split's own
+/// committed artifact here (the browser build has no run-time compiler). The result must equal the host reference
+/// word for word, and the output starts as [`UNWRITTEN`], so a piece that did not run cannot pass. Then the same launch
+/// of the kernel whose split variant has no artifact must be refused with `Error::DeviceLimit`, before any submission.
+async fn split_launch(device: HeadlessDevice) -> Result<(), String> {
+    let split = vector_add::add::DESCRIPTOR
+        .split
+        .ok_or_else(|| "the kernel has no split variant".to_owned())?;
+    if split.artifacts.is_empty() {
+        return Err("the split variant carries no precompiled artifact".to_owned());
+    }
+    let a: Vec<f32> = (0..LENGTH).map(|i| i as f32).collect();
+    let b: Vec<f32> = (0..LENGTH).map(|i| 2.0 * i as f32 + 0.5).collect();
+    let expected: Vec<f32> = a.iter().zip(&b).map(|(left, right)| left + right).collect();
+
+    let mut limits = device.limits().clone();
+    limits.max_compute_workgroups_per_dimension = LOWERED_LIMIT;
+    let device = device
+        .with_limits(limits)
+        .map_err(|error| format!("could not lower the workgroup limit: {error}"))?;
+    let a = device.create_typed_buffer("split a", &a, GpuBufferAccess::ReadOnly);
+    let b = device.create_typed_buffer("split b", &b, GpuBufferAccess::ReadOnly);
+    let out = device.create_typed_buffer(
+        "split out",
+        &vec![UNWRITTEN; LENGTH],
+        GpuBufferAccess::ReadWrite,
+    );
+    vector_add::add::submit(&device, LENGTH as u32, &a, &b, &out)
+        .map_err(|error| format!("the split launch failed: {error}"))?;
+    let result = device
+        .read_typed_buffer_async(&out)
+        .await
+        .map_err(|error| format!("the split launch read-back failed: {error}"))?;
+    if let Some(first) = first_difference(&result, &expected) {
+        return Err(format!(
+            "the split launch differs from the host reference: {} of {} values, first at index {first}",
+            result.len(),
+            expected.len()
+        ));
+    }
+
+    let bindings = [
+        a.bind(Access::ReadOnly, LengthRule::Shared),
+        b.bind(Access::ReadOnly, LengthRule::Shared),
+        out.bind(Access::ReadWrite, LengthRule::Shared),
+    ];
+    let launch = BufferDispatch::new_extent(
+        &WITHOUT_SPLIT_ARTIFACT,
+        Extent::linear(LENGTH as u32),
+        &bindings,
+    );
+    match device.submit_batch(&[launch]) {
+        Err(Error::DeviceLimit { .. }) => Ok(()),
+        Err(other) => Err(format!(
+            "a split launch without a split artifact must be refused with DeviceLimit, got {other}"
+        )),
+        Ok(_) => Err(
+            "a split launch without a split artifact or a compiler ran: the pieces came from nowhere".to_owned(),
+        ),
+    }
 }
 
 /// The body this build selected for each kernel, as `check-web` reads it: `<module>.<kernel>=<key>:<variant>:<n>` with the

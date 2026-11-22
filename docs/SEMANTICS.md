@@ -945,8 +945,8 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   a `pixel` kernel); a build that has neither the run-time compiler (`slang-runtime`) nor a precompiled artifact of
   the kernel's split variant (D209: `cargo gust build` writes that artifact beside the kernel's own, under a key of
   its own, so a native build with the committed artifacts splits without any compiler, and an artifact is used before
-  a compile at run time, as for every kernel; the browser build is not measured and this paragraph claims nothing
-  for it); and a variant that exceeds another limit of the device (its one extra uniform, its
+  a compile at run time, as for every kernel; the browser build splits the same way, from the artifact alone, and
+  without it the launch keeps the `DeviceLimit`: `examples/web-vector-add` runs both under `check-web`); and a variant that exceeds another limit of the device (its one extra uniform, its
   binding index, the 16 bytes of the hidden uniform against `max_uniform_buffer_binding_size`), which keeps the plain
   refusal of the workgroup limit. So graphs (staged graph nodes, whose launches are checked when the graph is
   validated), the deprecated `dispatch_f32`/`dispatch_u32`, `pixel` kernels and builds with no shader source for

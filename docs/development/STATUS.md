@@ -901,6 +901,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       closures, helpers, operators, usage, lowering, records); mod.rs keeps 152 lines. Moves only: 108 private items
       became `pub(super)`, nothing wider; emitted Slang for 379 modules and 444 kernels is byte-identical with the
       guards off and on. Doc pointers follow. Opus review: merge after fixes (pointers); fixed.
+    - m13.uifast (build-time spike m13.btime, R5): `cargo xtask check-ui` judges the 229 plain fixtures from one
+      shared `cargo check --workspace --keep-going` call split per package; the 30 fixtures with `env.txt` or
+      dependency features (all 7 `build-error:` ones among them) keep their own call. A fixture missing from the
+      stream fails, and the shared call's stderr is then reported once. Verdicts unchanged (215 fail, 7 build-fail,
+      37 compile of 259); about 500 s to about 70 s on a busy machine. Opus review: merge after fixes; fixed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

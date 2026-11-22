@@ -1,5 +1,6 @@
 #[cfg(doc)]
 use crate::BufferBinding;
+#[cfg(not(target_arch = "wasm32"))]
 use gust::Access;
 
 /// Host data for one reflected `Storage<f32>` or `StorageMut<f32>` parameter.

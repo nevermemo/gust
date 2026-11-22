@@ -1,12 +1,13 @@
 use crate::texture;
+use crate::{BufferBinding, Error, GpuSamplerBinding, binding_resource_layout, render};
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(deprecated)]
-use crate::{
-    BufferBinding, Error, F32Binding, GpuSamplerBinding, U32Binding, binding_resource_layout,
-    render,
-};
+use crate::{F32Binding, U32Binding};
+#[cfg(not(target_arch = "wasm32"))]
+use gust::GpuPod;
 use gust::target::Target;
 use gust::{
-    Access, BindingKind, Extent, GpuPod, KernelDescriptor, ParameterDescriptor, ParameterKind,
+    Access, BindingKind, Extent, KernelDescriptor, ParameterDescriptor, ParameterKind,
     ResourceLayout, Shape,
 };
 

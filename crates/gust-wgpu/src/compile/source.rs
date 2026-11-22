@@ -1,5 +1,7 @@
 use crate::Error;
 use crate::cache;
+#[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
+use crate::passthrough;
 use gust::KernelDescriptor;
 
 /// The feature the SPIR-V route needs (m9.rt2): `PASSTHROUGH_SHADERS`, when the feature is on, the adapter is Vulkan

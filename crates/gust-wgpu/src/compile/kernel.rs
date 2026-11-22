@@ -1,4 +1,6 @@
 use crate::cache::{CachedKernel, KernelCacheKey, Pipeline};
+#[cfg(not(feature = "slang-runtime"))]
+use crate::no_artifact;
 use crate::{Error, HeadlessDevice, ShaderSource, render, select_shader_source};
 use gust::{Access, KernelDescriptor, ParameterDescriptor, ParameterKind, Shape};
 use std::sync::Arc;

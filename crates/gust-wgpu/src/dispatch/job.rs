@@ -2,6 +2,8 @@ use crate::Error;
 #[cfg(doc)]
 use crate::HeadlessDevice;
 use gust::JobStatus;
+#[cfg(target_arch = "wasm32")]
+use std::sync::{Arc, atomic::Ordering};
 use std::time::Duration;
 
 /// Fence for one submitted wgpu command buffer.
@@ -64,7 +66,7 @@ pub struct WgpuJob<'device> {
     /// submitted nothing). An `Arc<AtomicBool>` is `Send + Sync` and the callback must be `Send`; the field exists on
     /// `wasm32` only, so the auto traits of `WgpuJob` on native are what they were.
     #[cfg(target_arch = "wasm32")]
-    done: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) done: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl WgpuJob<'_> {

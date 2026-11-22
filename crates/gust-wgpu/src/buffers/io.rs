@@ -1,5 +1,7 @@
+#[cfg(not(target_arch = "wasm32"))]
+use crate::TransferTiming;
 use crate::{
-    Error, GpuBuffer, GpuBufferAccess, GpuUniform, HeadlessDevice, TransferTiming,
+    Error, GpuBuffer, GpuBufferAccess, GpuUniform, HeadlessDevice,
     assert_pod_matches_storage_layout, check_uniform_type,
 };
 use gust::{GpuPod, pod_slice_as_bytes};

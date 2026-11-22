@@ -1,3 +1,5 @@
+#[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
+use crate::passthrough;
 use crate::{HeadlessDevice, render};
 #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
 use crate::{Route, RouteEvent};

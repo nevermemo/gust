@@ -1,5 +1,7 @@
 use crate::Error;
-use gust::{GpuPod, pod_slice_as_bytes};
+use gust::GpuPod;
+#[cfg(not(target_arch = "wasm32"))]
+use gust::pod_slice_as_bytes;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn f32_as_bytes(values: &[f32]) -> &[u8] {

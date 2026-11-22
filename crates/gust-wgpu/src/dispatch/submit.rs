@@ -2,17 +2,26 @@
 use crate::completion::blocking::recv_mapping;
 #[allow(deprecated)]
 use crate::{
-    BufferBinding, BufferDispatch, DispatchOutput, DispatchTiming, Error, F32Binding,
-    F32BufferBinding, F32BufferDispatch, HeadlessDevice, PassTimestamps, TIMESTAMP_RESULT_BYTES,
-    TimestampProfiler, U32Binding, U32DispatchOutput, WgpuJob, f32_as_bytes, validate_dispatch,
+    BufferBinding, BufferDispatch, Error, F32BufferBinding, F32BufferDispatch, HeadlessDevice,
+    WgpuJob,
+};
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(deprecated)]
+use crate::{
+    DispatchOutput, DispatchTiming, F32Binding, PassTimestamps, TIMESTAMP_RESULT_BYTES,
+    TimestampProfiler, U32Binding, U32DispatchOutput, f32_as_bytes, validate_dispatch,
     validate_u32_dispatch,
 };
-use gust::{Access, BindingKind, KernelDescriptor, pod_slice_as_bytes};
+use gust::KernelDescriptor;
+#[cfg(not(target_arch = "wasm32"))]
+use gust::{Access, BindingKind, pod_slice_as_bytes};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc;
-use std::time::Duration;
+#[cfg(target_arch = "wasm32")]
+use std::sync::{Arc, atomic::Ordering};
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::Instant;
+use std::time::{Duration, Instant};
+#[cfg(not(target_arch = "wasm32"))]
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 impl HeadlessDevice {

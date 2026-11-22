@@ -1,10 +1,9 @@
+#[cfg(not(target_arch = "wasm32"))]
+use crate::TransferTiming;
 use crate::completion::Completion;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::completion::blocking::block_on_mapping;
-use crate::{
-    Error, GpuBuffer, GpuBufferAccess, HeadlessDevice, PendingMapping, TransferTiming,
-    TypedReadback,
-};
+use crate::{Error, GpuBuffer, GpuBufferAccess, HeadlessDevice, PendingMapping, TypedReadback};
 use gust::GpuPod;
 use std::marker::PhantomData;
 #[cfg(not(target_arch = "wasm32"))]

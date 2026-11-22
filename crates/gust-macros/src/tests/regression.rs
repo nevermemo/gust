@@ -2068,6 +2068,85 @@ fn rejected_module_is_returned_beside_the_error_without_kernel_attributes() {
     assert_eq!(module.attrs, [allow]);
 }
 
+const REJECTED_MODULE_WITH_STRUCTS: &str = "mod demo { \
+    pub struct Params { pub low: uint, pub high: uint } \
+    #[derive(Clone)] pub struct Own { pub a: uint } \
+    pub struct Wrapper<T> { pub inner: T } \
+    pub struct Pair(pub uint, pub uint); \
+    pub struct Nested { pub p: Params, pub xs: [uint; 4], pub v: Vec2 } \
+    pub struct Heavy { pub values: Vec<uint> } \
+    pub struct Holder { pub heavy: Heavy } \
+    pub struct Mine { pub a: uint } \
+    impl Clone for Mine { fn clone(&self) -> Self { Mine { a: self.a } } } \
+    impl Copy for Mine {} \
+    #[kernel] pub fn run(id: SV_DispatchThreadID) { \
+        let value: Result<uint, uint> = Ok(1u32); let x = value.unwrap(); \
+    } \
+}";
+
+/// Host code that needs `GpuPod` of a struct of a refused module must not add a rustc error beside the macro's
+/// (the struct is fine): the recovery gives the struct the derives and the impl the expansion would have.
+#[test]
+fn rejected_module_keeps_the_pod_impls_of_its_structs() {
+    let item: proc_macro2::TokenStream = REJECTED_MODULE_WITH_STRUCTS.parse().unwrap();
+    let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
+    assert_leading_compile_error(&items, Some(Code::ManualCloneCopy));
+    let content = &recovered_module(&items).content.as_ref().unwrap().1;
+    let derived = |name: &str| -> Vec<String> {
+        content
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Struct(item) if item.ident == name => Some(
+                    item.attrs
+                        .iter()
+                        .map(|attribute| quote::ToTokens::to_token_stream(attribute).to_string())
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .next()
+            .unwrap()
+    };
+    assert_eq!(
+        derived("Params"),
+        ["# [derive (Clone)]", "# [derive (Copy)]"]
+    );
+    // A derive the user wrote is a refusal of its own and is not written twice.
+    assert_eq!(derived("Own"), ["# [derive (Clone)]", "# [derive (Copy)]"]);
+    let impls: Vec<String> = content
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Impl(item)
+                if item.trait_.as_ref().is_some_and(|(_, path, _)| {
+                    path.segments
+                        .last()
+                        .is_some_and(|last| last.ident == "GpuPod")
+                }) =>
+            {
+                Some(quote::ToTokens::to_token_stream(&*item.self_ty).to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    // No impl for a generic struct or a tuple struct, which the expansion gives none either, nor for a struct with a
+    // field that is not known to be `Copy` (a derive would be an error of its own), nor for one that holds such a
+    // struct. A struct that implements `Clone` and `Copy` by hand (refused, and handed back) gets no derive, only
+    // the `GpuPod` stand-in; its own impls are the user's, and the stand-in is the only one added.
+    assert_eq!(impls, ["Params", "Own", "Nested", "Mine"]);
+    assert_eq!(derived("Nested").len(), 2);
+    assert!(derived("Heavy").is_empty());
+    assert!(derived("Holder").is_empty());
+    assert!(derived("Mine").is_empty());
+    assert!(derived("Wrapper").is_empty());
+}
+
+/// The example the message of GUST-E0811 gives for an untyped array `let` is accepted as written.
+#[test]
+fn the_array_example_of_the_untyped_let_message_is_accepted() {
+    let body = "let a: [u32; 3] = [1, 2, 3]; out[id.x] = a[0];";
+    translate(&with_kernel("", body)).expect(body);
+}
+
 #[test]
 fn recovery_strips_kernel_attributes_from_nested_modules_and_impls() {
     let item: proc_macro2::TokenStream = "mod demo { \

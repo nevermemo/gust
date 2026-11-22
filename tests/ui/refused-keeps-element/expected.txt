@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see math-refused/expected.txt).
+# A macro error is a `compile_error!` and has no rustc code, so `code: none`; the line is the `while`.
+code: none
+file: refused-keeps-element/src/main.rs
+line: 18
+message: [GUST-E0402] `while` loops are not supported

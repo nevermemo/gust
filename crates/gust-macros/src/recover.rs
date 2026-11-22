@@ -8,12 +8,18 @@
 //!
 //! Measured with rustc 1.98.0 on `examples/vector-add` with one rejection inside the
 //! `#[gpu]` module (whose kernel `app.rs` also references through `DESCRIPTOR`):
-//! `cargo check` reports exactly one error both without and with this recovery, and no
-//! error about the missing items in either case. The recovery therefore does not change
-//! the command-line error count; its benefit is for editors and is not measured here.
+//! `cargo check` reports exactly one error both without and with the recovery of the
+//! module as written, and no error about the missing items in either case. For a module
+//! whose structs host code uses as `GpuPod`, the plain recovery added a second error (the
+//! struct is not a GPU POD type), so the structs the expansion would have given `Clone`,
+//! `Copy` and `GpuPod` get them here too (tests/ui `refused-keeps-*`).
+
+use std::collections::HashSet;
 
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident};
+
+use crate::diagnostics::Code;
 
 /// `error` as a `compile_error!`, followed by the user's code.
 ///
@@ -24,7 +30,9 @@ use quote::{ToTokens, format_ident};
 /// failure or an item that is not a module) the raw `item` tokens follow unchanged. A
 /// module without inline content (`mod m;`) gets the error alone: re-emitting it would
 /// make rustc look for a file. No kernel handle stubs are invented: items the expansion
-/// would have generated (kernel structs, `DESCRIPTOR`) stay missing.
+/// would have generated (kernel structs, `DESCRIPTOR`) stay missing. The one exception is the `Clone`, `Copy` and
+/// `GpuPod` impls of the module's structs: host code names them (an upload of the struct), and without them rustc
+/// would add an error saying the struct is not a GPU POD type, which hides the one error that names the cause.
 pub(crate) fn beside_error(
     error: syn::Error,
     item: &TokenStream,
@@ -57,11 +65,184 @@ fn recovered_module(mut module: syn::ItemMod) -> Option<syn::ItemMod> {
         }
     }
     strip_kernel_attributes(items);
+    let copyable = copyable_types(items);
+    let written = hand_written_impls(items);
+    let provided = |name: &syn::Ident, attributes: &[syn::Attribute], trait_name: &str| {
+        derives(attributes, trait_name) || written.contains(&(unraw(name), trait_name.to_owned()))
+    };
+    // A field-less enum is `Clone` and `Copy` as in the expansion, so a struct field of it adds no error.
+    for item in items.iter_mut() {
+        if let syn::Item::Enum(item) = item
+            && copyable.contains(&unraw(&item.ident))
+        {
+            derive_missing(&mut item.attrs, |attributes, trait_name| {
+                provided(&item.ident, attributes, trait_name)
+            });
+        }
+    }
+    let stand_ins: Vec<syn::Item> = items
+        .iter_mut()
+        .filter_map(|item| match item {
+            syn::Item::Struct(item) if copyable.contains(&unraw(&item.ident)) => {
+                let ident = item.ident.clone();
+                derive_missing(&mut item.attrs, |attributes, trait_name| {
+                    provided(&ident, attributes, trait_name)
+                });
+                (!written.contains(&(unraw(&ident), "GpuPod".to_owned())))
+                    .then(|| pod_stand_in(&ident))
+            }
+            _ => None,
+        })
+        .collect();
+    items.extend(stand_ins);
     items.insert(0, syn::parse_quote! { use ::gust::prelude::*; });
     module.attrs.push(syn::parse_quote! {
         #[allow(dead_code, unused_variables, unused_mut, unused_imports)]
     });
     Some(module)
+}
+
+/// The `GpuPod` impl a struct of a refused module would have had, so host code that needs `GpuPod` of it adds no
+/// error. The layout carries no fields: the build fails anyway, and naming the field types would bring an error of
+/// its own for a field type that is no `GpuPod`.
+fn pod_stand_in(ident: &syn::Ident) -> syn::Item {
+    syn::parse_quote! {
+        unsafe impl ::gust::GpuPod for #ident {
+            const LAYOUT: ::gust::TypeLayout = ::gust::TypeLayout::structure(
+                stringify!(#ident),
+                ::core::mem::size_of::<Self>() as u32,
+                ::core::mem::align_of::<Self>() as u32,
+                &[],
+            );
+        }
+    }
+}
+
+fn unraw(ident: &syn::Ident) -> String {
+    use syn::ext::IdentExt as _;
+    ident.unraw().to_string()
+}
+
+/// The `(type, trait)` pairs of the hand-written `impl Clone for T`, `impl Copy for T` and `unsafe impl GpuPod for T`
+/// of the module (the validator refuses each of them, and the recovery hands them back, so adding the same impl would
+/// be a second error).
+fn hand_written_impls(items: &[syn::Item]) -> HashSet<(String, String)> {
+    let mut written = HashSet::new();
+    for item in items {
+        let syn::Item::Impl(item) = item else {
+            continue;
+        };
+        let (Some((_, path, _)), syn::Type::Path(target)) = (&item.trait_, item.self_ty.as_ref())
+        else {
+            continue;
+        };
+        let (Some(last), Some(target)) = (path.segments.last(), target.path.segments.last()) else {
+            continue;
+        };
+        for name in ["Clone", "Copy", "GpuPod"] {
+            if crate::names::ident_is(&last.ident, name) {
+                written.insert((unraw(&target.ident), name.to_owned()));
+            }
+        }
+    }
+    written
+}
+
+/// The names of the module's types that are `Copy` by what the macro can see, so deriving `Copy` for them adds no
+/// error: a field-less enum, and a struct with named fields and no generics whose fields are all scalars, vectors,
+/// matrices, arrays of those, or such a type of the module. Anything else (a data enum, a tuple or generic struct,
+/// `Vec`, a type from outside) is left as the user wrote it.
+fn copyable_types(items: &[syn::Item]) -> HashSet<String> {
+    let mut copyable: HashSet<String> = items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Enum(item)
+                if item
+                    .variants
+                    .iter()
+                    .all(|variant| variant.fields.is_empty()) =>
+            {
+                Some(unraw(&item.ident))
+            }
+            _ => None,
+        })
+        .collect();
+    let structs: Vec<&syn::ItemStruct> = items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Struct(item)
+                if item.generics.params.is_empty()
+                    && matches!(item.fields, syn::Fields::Named(_)) =>
+            {
+                Some(item)
+            }
+            _ => None,
+        })
+        .collect();
+    loop {
+        let before = copyable.len();
+        for item in &structs {
+            if item
+                .fields
+                .iter()
+                .all(|field| known_copy(&field.ty, &copyable))
+            {
+                copyable.insert(unraw(&item.ident));
+            }
+        }
+        if copyable.len() == before {
+            return copyable;
+        }
+    }
+}
+
+fn known_copy(ty: &syn::Type, copyable: &HashSet<String>) -> bool {
+    match ty {
+        syn::Type::Paren(inner) => known_copy(&inner.elem, copyable),
+        syn::Type::Group(inner) => known_copy(&inner.elem, copyable),
+        syn::Type::Array(array) => known_copy(&array.elem, copyable),
+        syn::Type::Path(path) if path.qself.is_none() => {
+            path.path.get_ident().is_some_and(|ident| {
+                let name = unraw(ident);
+                crate::math_types::known_layout(&name).is_some() || copyable.contains(&name)
+            })
+        }
+        _ => false,
+    }
+}
+
+/// `#[derive(Clone)]` and `#[derive(Copy)]` for whichever of the two `provided` does not say the type has.
+fn derive_missing(
+    attributes: &mut Vec<syn::Attribute>,
+    provided: impl Fn(&[syn::Attribute], &str) -> bool,
+) {
+    for name in ["Clone", "Copy"] {
+        if !provided(attributes, name) {
+            let name = format_ident!("{name}");
+            attributes.push(syn::parse_quote!(#[derive(#name)]));
+        }
+    }
+}
+
+/// Whether a `#[derive(..)]` among `attributes` names `name` (by its last path segment).
+fn derives(attributes: &[syn::Attribute], name: &str) -> bool {
+    attributes
+        .iter()
+        .filter(|attribute| attribute.path().is_ident("derive"))
+        .any(|attribute| {
+            crate::diagnostics::parse_args_with(
+                attribute,
+                Code::MalformedDerive,
+                syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+            )
+            .is_ok_and(|paths| {
+                paths.iter().any(|path| {
+                    path.segments
+                        .last()
+                        .is_some_and(|segment| crate::names::ident_is(&segment.ident, name))
+                })
+            })
+        })
 }
 
 fn is_kernel(attributes: &[syn::Attribute]) -> bool {

@@ -2044,7 +2044,7 @@ fn emit_statement(
                     return Err(diagnostics::error(
                         Code::UnsupportedExpression,
                         value,
-                        "an array literal or repeat initializes a typed `let`, because Slang cannot infer the type of `{ .. }`: write `let a: [T; N] = ..;`",
+                        "an array literal or repeat initializes a typed `let`, because Slang cannot infer the type of `{ .. }`: write `let a: [u32; 3] = [1, 2, 3];`, with the element type and the length in the binding (typed elements such as `1u32` do not replace it)",
                     ));
                 };
                 if let syn::Expr::Repeat(repeat) = value {

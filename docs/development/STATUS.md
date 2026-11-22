@@ -753,6 +753,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       SEMANTICS 15.7.2 allows a GPU to assume no infinity); the non-finite const note says no committed test
       reproduces it; the cexpr pin note cites the round-6 end suite; the empty-scan exception to the alias and
       foreign-device refusals is documented. Wording only.
+    - m11.diag (`21d804c`): a refused module is handed back (`gust-macros` `recover.rs`) with the `Clone`/`Copy` derives
+      and a stand-in `GpuPod` impl (empty layout; the `compile_error!` always comes first, so no build succeeds with
+      it) for structs whose fields are all known `Copy` types and that have no hand-written impl, and `Clone`/`Copy`
+      for field-less enums. Four new `tests/ui` fixtures, each exactly one error: a refusal followed by an upload of
+      a uniform (E0325), of a buffer element (E0402), with a hand-written `impl Clone` (E0102) and with a struct that
+      holds a data enum (E0211). `GUST-E0811`'s message shows `let a: [u32; 3] = [1, 2, 3];`, and a unit test
+      compiles that exact example. Opus review: sound; its fixes (hand-written impls, non-`Copy` fields) are in.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

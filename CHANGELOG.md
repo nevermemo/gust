@@ -116,6 +116,10 @@ proof.
   walkers by cell, a walk step with a crowding rule that reads the bin counts, an exact spread of the field and a
   cleared deposit), 24 steps, all integer: host reference, twin and GPU are bit-equal after every step (field,
   walkers and bins), with a proven `u32` bound. Radeon 890M only; RTX 5090 pending.
+- One error for a refused `#[gpu]` module (m11.diag): when the macro refuses a module, the structs it hands back
+  keep the `Clone`, `Copy` and `GpuPod` impls a successful expansion adds (where no impl was written by hand and every
+  field is a known `Copy` type), so host code that uploads one of them no longer adds a misleading E0277 "not a GUST
+  GPU POD type" next to the GUST error. `GUST-E0811` now shows a typed binding (`let a: [u32; 3] = [1, 2, 3];`).
 - `KernelDescriptor::split` (m11.g4a, D208): every GPU `grid` kernel carries a split variant, compiled only when used,
   with one hidden launch-base uniform that its entry point adds to the invocation id. It is the ground for launches
   past the per-dimension workgroup limit (used by the host since m11.g4b). The kernel's own Slang,

@@ -862,6 +862,12 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       check, the SPIR-V route check); 477 lines removed, 394 added; 415 tests and every test binary kept; the
       constructor tests keep their own calls. Opus review: merge. Full Gpu suite on the merged tree (RTX 5090) 576
       over 59; the lane's Gpu suite also passed on the Radeon 890M.
+    - m13.docs1a (`e4a36da`, D227 document diet, first part): SEMANTICS reads as a contract. Section 1 is one
+      bullet per feature with its rules kept, launch limits are section 5a, sections 9-18 share one shape, and dated
+      run records moved word for word to `docs/development/VALIDATION.md` appendix A1-A8. Every code, D id and
+      anchor kept; the stale GUST-E0813 statement on arrays now matches the code. The 1,500-line target was not met
+      (2,150 lines): the section 1 rules exist nowhere else, so the diet moves to a later slice. Opus review: merge
+      after fixes; fixed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

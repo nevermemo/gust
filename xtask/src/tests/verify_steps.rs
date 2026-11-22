@@ -404,9 +404,15 @@ fn the_release_call_must_report_both_release_only_tests_by_name() {
     assert!(check_counted_call(&release, &failed).is_err());
     // The count still applies first.
     assert!(check_counted_call(&release, &both.replace(summary, "")).is_err());
-    // Other counted calls (the examples) do not need the names.
+    // An example without ignored tests needs no names; one with them does (examples_gpu::EXAMPLE_GPU_TESTS).
+    let no_ignored = owned(&["test", "-p", "shape-bench", "--", "--include-ignored"]);
+    assert_eq!(check_counted_call(&no_ignored, summary), Ok(()));
     let example = owned(&["test", "-p", "polynomial", "--", "--include-ignored"]);
-    assert_eq!(check_counted_call(&example, summary), Ok(()));
+    let error = check_counted_call(&example, summary).unwrap_err();
+    assert!(
+        error.contains("`app::tests::headless_gpu_matches_cpu_reference`"),
+        "{error}"
+    );
 }
 
 // ---- the strict proof of the subgroups capability (m8.e) ----

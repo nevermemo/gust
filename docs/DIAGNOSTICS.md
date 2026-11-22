@@ -439,16 +439,17 @@ Decision: D17, D40.
 A struct whose fields leave padding (before a field, or at the tail) cannot be a `GpuPod` type: `pod_slice_as_bytes` would read the padding bytes, which are uninitialised.
 Reached through `#[gpu]`. The check covers scalars, vectors, matrices and the module's own structs; a struct with a field type the macro cannot see into is left to the `const` assertions of the expansion, which fail compilation instead.
 Rejected: `struct S { a: f32, v: Vec2 }` (`v` would sit at offset 8, after four padding bytes), `struct S { v: Vec2, a: f32 }` (the size is 16, the fields end at 12).
-Write instead: order the fields by decreasing alignment and fill what is left with explicit fields, `struct S { v: Vec2, a: f32, pad: f32 }`.
-Decision: D17.
+Write instead: order the fields by decreasing alignment and fill what is left with explicit fields, `struct S { v: Vec2, a: f32, pad: f32 }`. For a struct a uniform reaches, mark it `#[pad]` and GUST inserts the padding (the message of this code names the attribute for such a struct; test `e0208_for_a_struct_a_uniform_reaches_names_the_attribute_and_for_a_storage_struct_does_not`); a struct only a storage buffer reaches has no such mark, and the fix is the order.
+Decision: D17, D239.
 
 ### GUST-E0209 implicit padding in a uniform struct
 
-A struct a uniform reaches has a constant-buffer layout in which every struct is rounded up to 16 bytes (a nested struct also starts at a multiple of 16), so fields that are padding-free in Rust can still leave a gap before a field or a tail. GUST never inserts padding: the upload copies the bytes of the Rust value, and padding bytes are uninitialised. The message names the field or struct and the bytes of explicit padding to write.
+A struct a uniform reaches has a constant-buffer layout in which every struct is rounded up to 16 bytes (a nested struct also starts at a multiple of 16), so fields that are padding-free in Rust can still leave a gap before a field or a tail. GUST inserts padding only into a struct marked `#[pad]`; anywhere else a gap or tail is still GUST-E0209: the upload copies the bytes of the Rust value, and padding bytes are uninitialised, so the padding must be fields. The message names the field or struct, the bytes of explicit padding to write, and the attribute.
 Reached through `#[gpu]`. A gap that a field's own alignment causes (and so `#[repr(C)]` has too) is GUST-E0208 first, as is a tail past the largest field alignment; a gap caused only by the 16-byte alignment of a nested struct, and a tail that only the rounding up to 16 causes, are GUST-E0209. A struct with a field type the macro cannot see into is left to the `const` assertions of the expansion, which fail compilation instead.
 Rejected: `struct Params { a: f32 }` (ends at byte 4, a constant buffer rounds it up to 16), `struct Params { a: f32, b: f32, c: f32 }`, `struct Params { a: f32, inner: Inner }` where `Inner` is four `f32` (`inner` would sit at byte 16, 12 bytes after `a` ends), each when a `Uniform<Params>` parameter reaches it. The same structs are fine as storage elements.
-Write instead: explicit padding fields, `struct Params { a: f32, pad0: f32, pad1: f32, pad2: f32 }`, or order the fields so that whole 16-byte rows are filled.
-Decision: D17, D40.
+Write instead: mark the struct `#[pad]` (`#[pad] struct Params { a: f32 }`; see GUST-E0219), or write explicit padding fields, `struct Params { a: f32, pad0: f32, pad1: f32, pad2: f32 }`, or order the fields so that whole 16-byte rows are filled.
+Fixture: `tests/ui/pad-unmarked` (code: none; the message names `#[pad]`); the same struct marked `#[pad]` compiles, `tests/ui/pad-ok`.
+Decision: D17, D40, D239.
 
 ### GUST-E0210 malformed `Workgroup` type
 
@@ -531,6 +532,15 @@ Rejected: `fn f(x: &dyn Shape)`, `fn f(x: impl Shape)`, `fn f() -> impl Shape`, 
 Write instead: the concrete struct or enum, `fn f(x: Rect)`; for several shapes, one function per type or a helper both call.
 Fixture: `tests/ui/trait-dyn` and `tests/ui/trait-impl-arg` (code: none). A trait-typed field or local has no UI fixture, because rustc adds its own E0782 beside the macro's error and a fixture holds exactly one; the unit test `each_trait_refusal_carries_its_code` covers both.
 Decision: D170.
+
+### GUST-E0219 misplaced or malformed `#[pad]`
+
+`#[pad]` goes on a struct of the `#[gpu]` module that a uniform reaches (as the parameter's element or as a field of a struct that is) and takes no arguments. `#[gpu]` reads it, after the variants are lowered and before the module is validated, and inserts private `f32` fields `_pad0`, `_pad1`, ... (the first numbers the struct does not use) for every gap and for the tail of the constant-buffer layout, a nested struct's 16-byte start and the 16-byte tail included. It also generates a Rust-only `pub const fn new(<the struct's own fields in declaration order>) -> Self` that sets the padding to `0.0` (with `#[allow(clippy::too_many_arguments)]`, spanned at the attribute). The padded struct is the one the validator, the layout assertions, the `GpuPod` impl, the reflection record and the Slang all see: the `_padN` names appear in the reflection record (`StructFieldLayout` and the reflected struct fields) and in the Slang struct, unchanged. A nested struct that is itself marked is padded first; an unmarked one keeps GUST-E0209. A field the layout cannot hold keeps its own code (`Mat2` GUST-E0205, an array GUST-E0215), and a struct with a field type whose layout the macro cannot compute (a type it cannot see into) gets no padding: the `const` assertions of the expansion report it.
+Reached through `#[gpu]`.
+Rejected: `#[pad(4)]` or `#[pad = ".."]` (arguments); `#[pad]` on a function, enum, `const`, `impl` or another item that is no struct, and on a struct without named fields; `#[pad]` on a struct no uniform parameter reaches, and on one only a storage buffer reaches (a storage gap is GUST-E0208, fixed by ordering the fields); a `new` in an inherent `impl` of a marked struct in the module, which would clash with the generated one. An `impl` with a `new` outside the module is invisible to the macro: rustc then reports its own E0592 on the generated function. Host code builds a marked struct with `new` only: the padding fields are private, so a struct literal is a rustc error that names `_pad0`.
+Write instead: `#[pad] struct Params { a: f32 }` on a struct a `Uniform<Params>` parameter reaches, built as `Params::new(1.0)`; another name for your own `new`, or no `#[pad]` and the padding written as fields.
+Fixture: `tests/ui/pad-args`, `tests/ui/pad-non-struct`, `tests/ui/pad-tuple-struct`, `tests/ui/pad-unreached`, `tests/ui/pad-storage-only` and `tests/ui/pad-new-clash` (code: none, one error each); the control that compiles is `tests/ui/pad-ok`.
+Decision: D233, D239.
 
 ## E03xx: expressions and calls
 

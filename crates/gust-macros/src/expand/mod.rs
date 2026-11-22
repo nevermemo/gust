@@ -17,6 +17,8 @@ use artifact::Lookup;
 pub(crate) use artifact::TWIN_TEXT;
 pub(crate) use artifact::{Environment, content_key};
 
+pub(crate) mod pad;
+
 mod map;
 #[cfg(test)]
 pub(crate) use map::expand_map_in_routed;
@@ -343,6 +345,11 @@ pub(crate) fn expand_in_routed(
 ) -> syn::Result<TokenStream> {
     // The variants become kernels first (M8, D139), so that every body is validated and lowered like any kernel.
     let (module, plan) = variant::lower(module)?;
+    // The `#[pad]` structs are padded next (m14.pad, D239), so that the validator, the layout assertions, the `GpuPod`
+    // impls and the Slang emitter all read the padded struct. This is the one place a user's module enters the
+    // expansion: the `#[gpu]` function and `par_for!` paths expand a module of their own making, which holds no
+    // user struct, through `expand_validated`.
+    let (module, constructors) = pad::apply(module, &GRID)?;
     crate::validate::limits::check_declared(&module, environment.manifest_dir.as_deref())?; // before E0718 (m8.f)
     crate::validate::validate_module_in(&GRID, &module)?;
     expand_validated_with(
@@ -350,7 +357,7 @@ pub(crate) fn expand_in_routed(
         environment,
         profile,
         &GRID,
-        &TokenStream::new(),
+        &constructors,
         Identity::Module,
         &plan,
         request,

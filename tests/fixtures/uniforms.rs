@@ -1,6 +1,6 @@
 #[gust::gpu]
 mod uniforms {
-    // GUST never inserts padding: the fields written here are the whole constant-buffer layout. A struct a uniform
+    // No struct here is marked `#[pad]`, so the fields written are the whole constant-buffer layout. A struct a uniform
     // reaches is rounded up to 16 bytes, so `Light` fills its last 8 bytes with explicit fields and `Frame` is built so
     // that every field sits where std140 puts it (the 8-byte `offset` before the two scalars, 128 bytes in all).
     pub struct Light {

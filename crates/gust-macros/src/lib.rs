@@ -100,6 +100,10 @@ mod value_if_tests;
 #[path = "tests/value_match_untyped.rs"]
 mod value_match_untyped_tests;
 
+#[cfg(test)]
+#[path = "tests/pad.rs"]
+mod pad_tests;
+
 /// Marks an inline Rust module as GUST GPU code, or a free scalar function as an element-wise map (D60).
 ///
 /// On a module, the macro validates a deliberately small Rust subset, translates each
@@ -315,5 +319,8 @@ fn without_nested_gpu(mut module: syn::ItemMod) -> syn::ItemMod {
             }
         }
     }
-    expand::variant::recoverable(module)
+    // A `#[pad]` struct goes back padded, with its `new`, when the module has no misuse of the attribute (m14.pad):
+    // host code names both, and a missing one would be a second error. Where the attribute is misused the module goes
+    // back as written and `recover.rs` drops the attribute.
+    expand::pad::recover(expand::variant::recoverable(module), &profile::GRID)
 }

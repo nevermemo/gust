@@ -1,0 +1,7 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: pad-unmarked/src/main.rs
+line: 5
+message: [GUST-E0209] `Params` ends at byte 4 but a constant-buffer struct is rounded up to 16 bytes
+message: mark the struct `#[pad]` and GUST inserts the padding

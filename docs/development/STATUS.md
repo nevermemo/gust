@@ -929,6 +929,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       batches) is identical before and after. One before/after pair on a loaded machine: the three modules
       500 s to 396 s (-21 %); generation dominated their time (summed over threads, so not a wall-clock
       share). The other modules can reuse the cache in a follow-up. Opus review: merge.
+    - m14.pad (D239): `#[pad]` on a struct a uniform reaches makes GUST insert the private padding fields
+      std140 needs and generate a `const fn new` taking the user fields in declaration order (pads zero).
+      Misuse is E0219; E0208 and E0209 name `#[pad]` for a struct a uniform reaches, not for a storage-only
+      one. Eight ui fixtures, unit cases per gap kind, and `tests/uniform_pad.rs` (reflection layout against
+      the padded Rust structs, values built with `new` read back on the GPU and the CPU twin). Generated
+      Slang for unmarked modules is unchanged. Gpu suite 578 over 60 on the Radeon 890M (lane) and the
+      RTX 5090 (merge gate). Opus review: merge after fixes; fixed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

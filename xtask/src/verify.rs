@@ -1130,9 +1130,14 @@ pub(crate) struct GpuSuitePin {
 /// Slice m13.matchu: 574 over 58 became 576 over 59. The new test file `tests/value_match_untyped.rs` holds two tests
 /// (the host expectation, and an untyped value `match` on the GPU and in the CPU twin) and adds one `test result:`
 /// line. Updated by count; the merge gate's full Gpu suite on the RTX 5090 checks it.
+///
+/// Slice m14.pad: 576 over 59 became 578 over 60. The new test file `tests/uniform_pad.rs` holds two tests (the
+/// reflection record of three `#[pad]` uniforms against their padded Rust structs, and the structs built with the
+/// generated `new` and read field by field on the GPU and on the CPU twin) and adds one `test result:` line. Updated by
+/// count, then checked by full Gpu suite runs on the Radeon 890M (lane) and the RTX 5090 (merge gate).
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 576,
-    result_lines: 59,
+    passed: 578,
+    result_lines: 60,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

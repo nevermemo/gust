@@ -19,7 +19,8 @@
 //! ```
 //!
 //! The kernel is `run(gid, extent: Uniform<__GustExtent>, buffers..)`. The extent record holds the three extents, the
-//! scalar bindings (a `bool` as a `u32` word) and explicit padding up to 16 bytes (GUST never inserts padding). The
+//! scalar bindings (a `bool` as a `u32` word) and padding fields up to 16 bytes that the record itself declares
+//! (`#[pad]` is for a struct you write). The
 //! body runs inside the guard `if x < extent.x && y < extent.y && z < extent.z` over all three axes, whatever the arity
 //! of the loop (an unused axis has extent 1, so a taller workgroup runs nothing on it).
 //!

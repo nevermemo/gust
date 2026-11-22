@@ -69,7 +69,9 @@ merge `2f96e69`) answer the two sanity checks: `cargo gust` exports the profile 
 kernel refuses a build whose profile differs, `check-full` runs the subgroup Gpu suite, and the two subgroup forms
 that had run nowhere ran on the RTX 5090 and lavapipe. M8 is closed (D153).
 
-**Now: M11, realignment** (from 2026-11-17, D198). The owner's joint review of the whole project: the review pack
+**Now: M13, tidy, then M14, the API surface** (D242, 2026-11-22), inside M11's design phase. M13 finishes the build and test speed work and the cleanup: the difftest cache, a quiet-machine rerun of the merged test binary, the Slang 2026.22.1 pin if its spike says GO, the remaining duplication and split candidates, and a close with `check-full` on both adapters after the M13 sanity check. M14 then settles the surface that Breeze and Hurricane code will use: `#[pad]` (D239), the runtime fixes of D223, `map` with structs and multiple outputs (D221), D240's debugging minimum, and last the D237 rename. Everything else in the old M14 list waits. Done in M13 so far: the rulings records, every example's GPU tests gated per adapter, SEMANTICS and DIAGNOSTICS consolidated (D241 keeps their size), shared helpers in the proc macro and the runtime tests, the Slang emitter split, `check-cfg`, `check-ui` from one shared cargo call, budget-kit in `bench/`, faster dev builds (line tables, `rust-lld` on Windows MSVC), and the trail-step record.
+
+**M11, realignment** (from 2026-11-17, D198; open while the joint review and the release hold last). The owner's joint review of the whole project: the review pack
 (decisions, misalignments with the owner's vision, drift between docs and code) is refreshed for the M10 close, the
 owner holds the session, and the rulings are recorded as decision rows and folded into this roadmap. The release hold
 (D189) stays until the owner lifts it. The milestones after M11 follow its rulings.
@@ -95,14 +97,7 @@ split into modules (m13.split-rt).
 
 **Owner rulings of 2026-11-22 (D221 to D238)** set the path: GUST matures, then a game prototype test, then the
 GUST/Breeze boundary, then the changes that make GUST a standalone crate (D230). Everything is prerelease and the
-0.1 and 0.2 plans are abandoned (D226). Next, in the coordinator's order: the rest of the tidy round (shared test
-helpers, macro helpers, the Slang emitter split), gates for the runtime without `slang-runtime` and for wasm32,
-the examples' GPU coverage and budget-kit moved to `bench/`, the SEMANTICS and DIAGNOSTICS consolidation, and a
-GPU-friendly binning or sort spike for `gust-algo` (D235). After that, toward maturity: the runtime fixes of D223,
-the padding derive, the double-buffer helper and sizes as uniforms (D231 to D233), `map` with structs and
-multiple outputs (D221), wider textures and a render interop spike (D229), the rename to `#[gpu_module]` with
-`#[gpu_fn]`, `gpu_task!` and `gpu_batch!` (D237), and file-based module sharing inside a debugging system whose
-design comes to the owner first (D238). No hardware class is targeted (D236).
+0.1 and 0.2 plans are abandoned (D226). M13 and M14 carry this path in the order of D242 (see Now); the debugging design was accepted as D240 and the padding form is `#[pad]` (D239). No hardware class is targeted (D236).
 
 **Done: M10, publication** (closed 2026-11-17, D185, under the release hold: nothing published; plan adopted 2026-11-14,
 D177 to D183; the owner chose the release sequence of D177: 0.2.0 first, 0.1.0 never published). Three lanes: releases
@@ -295,6 +290,8 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 | M9 Language breadth II | Methods in `impl` blocks; user enums with `match`; tuples; fixed-size arrays; non-capturing closures; then traits mapped to Slang interfaces and generics | done (2026-11-14, D176); plan adopted 2026-11-09 (D154 to D164; owner-delegated); slices: m9.0 (`65e6bac`), m9.s0 (probes), m9.r2h (`80a0cf9`), m9.a1 (`cd44fa5`), m9.h1 (`b4ddc53`, D165), m9.a2 (`4f477ad`), m9.r1m (measurement), m9.r2b (`ea13399`), m9.e1 (`0f9bc16`), m9.d1a (`cce661d`), m9.e2 (`f6b6156`), m9.f1 (`b2d6826`), m9.t (`8a69d82`), m9.d1b (`ccc829e`), m9.r1 (`6d8ec45`), m9.d1c (`c0d5d27`), m9.r2a (`f8fef97`), m9.d1d (`c4a35ba`), m9.c (`ab19167`), m9.d1e (`13d2651`), m9.k (checkpoint), m9.shift (`bedb1de`), m9.sen (`92e8312`), m9.pa (`28eaf73`), m9.g1 (`6c875d6`), m9.p (`48b3bf3`), m9.g2 (`4090483`), m9.rt2 (`0e05776`), m9.d2 (`6e6d79c`), m9.x2 (`cfc5241`), m9.x1 (`ce0cf5c`), m9.z (`9c38524`), m9.x3 (`ef2a73b`) |
 | M10 Publication | Benchmarks against rayon, hand-written WGSL with wgpu, CubeCL and rust-gpu; a "Rust program to GPU" example gallery; docs and a book; the API stability pass toward 1.0; the crates.io releases after MR's first | done: closed 2026-11-17 (D185); plan adopted 2026-11-14 (D177 to D183) |
 | M11 Realignment | The owner's joint review of the whole project (D189, D198): its decisions, misalignments with the owner's vision, and drift between docs and code; the rulings recorded as decision rows and folded into the roadmap; the release hold lifted or kept by the owner. The milestones after M11 follow its rulings | active: from 2026-11-17 (D198) |
+| M13 Tidy | Build and test speed, duplication and file splits, gates for the runtime feature sets and wasm32, documentation consolidation, the Slang pin, closed with `check-full` on both adapters (D221 to D241, D242) | active: from 2026-11-22 |
+| M14 API surface | `#[pad]`, the runtime fixes of D223, `map` with structs and multiple outputs, the debugging minimum of D240, then the D237 rename; the rest of the maturity list after it (D242) | planned |
 
 Order after M5 (owner, 2026-11-02, D75): M6, M7, MX (execution shapes and textures), MR (the first public
 crates.io release), then M8, M9 and M10. MX and MR keep letters so that the decisions naming M8 to M10 stay

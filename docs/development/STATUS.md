@@ -1,6 +1,6 @@
 # Current status
 
-## Active: roadmap M11 (2026-11-17; M10 closed, D185; M11 is the owner's joint review, D198)
+## Active: roadmap M13, then M14 (D242), inside M11 (2026-11-17; M10 closed, D185; M11 is the owner's joint review, D198)
 
 Since 2026-11-22 (D226) everything is prerelease and no 0.1 or 0.2 release line is maintained; the dated records below
 that mention those lines are history. The `semver` CI job is retired until the first release (RELEASE.md).
@@ -916,7 +916,9 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       "line-tables-only"`, backtraces keep file:line) and the Windows MSVC target links with the toolchain's
       `rust-lld`; the spike measured the incremental macro-edit and runtime-edit gates 25-31 % faster. The variant
       with full debug info for workspace crates saved 19.8 %, under the pre-registered 20 %, so the fallback was
-      taken. Release, bench, Linux and wasm32 builds are unchanged. Coordinator review (config only).
+      taken. The release and bench profiles are unchanged, but every Windows MSVC build of the checkout
+      (release and `bench/` included) links with `rust-lld`; Linux and wasm32 builds are unchanged.
+      Coordinator review (config only).
     - m13.trail2rec (D4): `bench/README.md` records the walker step of a game prototype test (a local spike, code
       not in the repository): two signals at 2^20 walkers on the Radeon 890M ran 8.06 / 9.00 ms (median / p95)
       against the pre-registered 4.0 / 8.0 ms, so the rule failed; 2^18 fits (2.85 / 3.24 ms); the RTX 5090 ran

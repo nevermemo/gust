@@ -491,7 +491,7 @@ A workspace build unifies features: the self dev-dependencies and `gust-algo` sw
 
 ## Debug build settings (m13.profile)
 
-The root `Cargo.toml` sets `[profile.dev] debug = "line-tables-only"` (backtraces keep file and line, variable-level debug information is gone) and `.cargo/config.toml` links the Windows MSVC target with the `rust-lld` that ships with the toolchain, so incremental dev and test builds link and load faster. Release and bench profiles and the Linux and wasm32 builds are unchanged.
+The root `Cargo.toml` sets `[profile.dev] debug = "line-tables-only"` (backtraces keep file and line, variable-level debug information is gone) and `.cargo/config.toml` links the Windows MSVC target with the `rust-lld` that ships with the toolchain, so incremental dev and test builds link and load faster. The release and bench profiles are unchanged, but the linker setting applies to every Windows MSVC build of this checkout, release builds and the `bench/` workspace included; Linux and wasm32 builds are unchanged. A contributor keeps their own linker by setting `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER`, which takes precedence over the config file.
 
 ## Minimum Rust version
 

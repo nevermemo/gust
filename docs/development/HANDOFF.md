@@ -2,8 +2,8 @@
 
 ## Current state
 
-- Branch: `main`
-- Active: M11 (Realignment, the owner's joint review of the whole project, D198). M10 (publication) closed on 2026-11-17
+- Branch: `dev` (D202)
+- Active: M13, then M14 (D242), inside M11 (Realignment, the owner's joint review of the whole project, D198). M10 (publication) closed on 2026-11-17
   (D185). The release hold D189 is in force, so M10 published nothing: the 0.2.0 candidate `83124ad` stays gated and
   unpublished. D226 (2026-11-22) abandoned the 0.1 and 0.2 plans: everything is prerelease, no release line is
   maintained, and the first release waits for maturity. Api2b, api3, the publishable benchmark runs and every public

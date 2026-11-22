@@ -60,7 +60,7 @@ use crate::{
     checks::cargo_home,
     json::{self, Json},
     precompiled::{is_inside, lock_packages, snapshot, unused_patch_lines},
-    process::{PROFILE_VARIABLE, cargo_program, exit_code, untar_crate_command},
+    process::{PROFILE_VARIABLE, cargo_program, exit_code},
     workspace::workspace_root,
 };
 
@@ -1879,6 +1879,17 @@ fn r1_package(run: &Run, publishable: &[&Member]) -> Result<PathBuf, String> {
             .map_err(|error| format!("check-release R1: {}: {error}", from.display()))?;
     }
     Ok(crates)
+}
+
+/// `tar -xzf ../crates/{file}` run in `directory`: unpacks a packaged `.crate` that sits in the sibling `crates`
+/// folder. `tar` runs in the unpacked directory and reads the archive by a relative path: a drive letter in an
+/// argument would be read as a host name by some tars.
+pub(crate) fn untar_crate_command(directory: &Path, file: &str) -> Command {
+    let mut tar = Command::new("tar");
+    tar.current_dir(directory)
+        .args(["-xzf", &format!("../crates/{file}")])
+        .stdin(Stdio::null());
+    tar
 }
 
 /// R2, second half: unpack each `.crate` and judge its tree again. Returns the directory with the trees.

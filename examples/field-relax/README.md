@@ -7,7 +7,7 @@ Three scalar fields and an exact integer channel relaxing on one periodic `SIDE 
   `next = k * mul_add(d * 0.25, n + s + e + w, (1 - d) * c)`. The fields are one `f32` buffer (field-major), the
   integer channel one `u32` buffer, each with an `a` and a `b` copy that the steps alternate between.
 - The integer channel keeps `c - 4 * (c >> 3)` and receives `x >> 3` from each neighbour. It is equal bit for bit on the
-  host reference, the CPU twin and the GPU after every step (on the GPU: Radeon 890M only, RTX 5090 pending), and its sum
+  host reference, the CPU twin and the GPU after every step (on the GPU: Radeon 890M and RTX 5090), and its sum
   never changes.
 - The six parameters (`d` and `k` of three fields) reach the kernel through one `Uniform<Params>` struct, with two
   explicit pad fields for the `Std140V1` layout (no parameter buffer, no launch per field).

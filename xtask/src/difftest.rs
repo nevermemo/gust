@@ -41,7 +41,10 @@ use std::{
 
 use crate::{
     checks::tests_not_ok,
-    json::{self, Json, array, field, float, text, uint},
+    json::{
+        self, Json,
+        report::{array, field, float, text, uint},
+    },
     process::{require_tests_ran, sum_test_results, workspace_command},
     workspace::{cargo_target_dir, workspace_root},
 };

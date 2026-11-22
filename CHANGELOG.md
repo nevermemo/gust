@@ -84,6 +84,9 @@ proof.
 - Module-level array constants (m12.carr): `const NAME: [T; N] = [e0, e1, ..];` with `T` one of `u32`, `i32`, `f32`,
   `bool` and `N` a literal from 1 to 256 lowers to one `static const` array line per kernel and is read as `NAME[i]` or
   `NAME.len()`; a whole-array use, a store, a nested array and other element types are `GUST-E0127`.
+- Differential test format 14 (m11.dt2): the generated programs gain scalar math methods and module constants,
+  and a batch is 17 programs per seed (136 for the 8 default seeds). The math programs run on `grid` only, so under
+  `--shapes grid,pixel` 104 of the 136 also run as `pixel`.
 - Launches past the per-dimension workgroup limit run (m11.g4b, D208): a `grid` launch whose workgroup count on an
   axis exceeds `max_compute_workgroups_per_dimension` is split by the host into pieces (at most
   `MAX_SPLIT_DISPATCHES`, 4096) in one compute pass, and every invocation runs once with the ids of an unsplit
@@ -96,7 +99,7 @@ proof.
   runs that artifact after the usual identity check; with neither it nor a run-time compiler it is still refused
   with `DeviceLimit`. A crate with no `grid` GPU kernel keeps its manifest bytes; the committed artifact sets were
   re-blessed with split entries added and no existing artifact changed, and older schemas still load. The browser
-  half is not done yet. Radeon 890M only; RTX 5090 pending.
+  half is m11.web (below). Radeon 890M only; RTX 5090 pending.
 - budget-kit rows (m11.kit3): W4 binning with the scatter (count, scan, and placement by the old value of
   `atomic_add`, checked per cell against a host counting sort) and W7, a sustained composite step with its GPU
   median, p95 and maximum and two host-side costs (the blocking timed batch, the return of `submit_batch`).
@@ -107,24 +110,24 @@ proof.
 - Example `field-relax` (m11.field): three scalar fields relax on one wrapping grid, each with its own spread and
   keep factor from one `Uniform` struct, checked within a per-step bound derived from the GPU model of SEMANTICS
   (one step and sixteen steps), plus an exact `u32` channel that conserves its sum (bit-equal on the host
-  reference, the twin and the GPU). Its grid constants are constant expressions of the side. Radeon 890M only; RTX 5090 pending.
+  reference, the twin and the GPU). Its grid constants are constant expressions of the side. Radeon 890M and RTX 5090.
 - Example `cell-bins` (m11.bins): a reusable binning of elements by grid cell (count with `atomic_add`, an
   exclusive scan into a kept buffer with `gust_algo::scan::exclusive_into`, scatter by the old value of a cursor).
   The set of elements of each cell is exact; their order inside a cell is unspecified on the GPU. Checked per cell
-  as sets against a host counting sort, on the twin and the GPU. Radeon 890M only; RTX 5090 pending.
+  as sets against a host counting sort, on the twin and the GPU. Radeon 890M and RTX 5090.
 - Example `walker-steer` (m11.steer): walkers sense a `u32` field ahead in three headings, turn toward the largest
   (a stated tie rule, and a hash-chosen turn with a set probability), move one wrapping cell and deposit with
   `atomic_add`; a cell kernel then relaxes the field by a shift. All integer: host reference, twin and GPU are
-  bit-equal after every step, with a proven `u32` bound. Radeon 890M only; RTX 5090 pending.
+  bit-equal after every step, with a proven `u32` bound. Radeon 890M and RTX 5090.
 - Example `walker-transport` (m11.transport): one composite step of the three pieces above on one grid (bins of
   walkers by cell, a walk step with a crowding rule that reads the bin counts, an exact spread of the field and a
   cleared deposit; four stages, the bins stage dispatching clear, count, scan and scatter), 24 steps, all integer:
   host reference, twin and GPU are bit-equal after every step (field, walkers and the per-cell bin counts; the walkers
-  grouped by cell are equal per cell as sets after sorting), with a proven `u32` bound. Radeon 890M only; RTX 5090 pending.
+  grouped by cell are equal per cell as sets after sorting), with a proven `u32` bound. Radeon 890M and RTX 5090.
 - Example `walker-life` (m11.life): walkers that move, lose energy, retire and spawn children, kept dense in their
   buffers by an exclusive scan of per-walker counts and a compaction kernel (no atomic append, so the order of
   spawned walkers does not depend on scheduling; the population is clamped at the capacity by slot). Host
-  reference, twin and GPU are bit-equal after every step. Radeon 890M only; RTX 5090 pending.
+  reference, twin and GPU are bit-equal after every step. Radeon 890M and RTX 5090.
 - The portable floor covers every kernel form (m11.floor): a crate with `limits = "portable"` now gets GUST-E0746
   for the kernel of a `#[gpu]` function and of a `par_for!` call too, not only for `#[kernel]` items of a `#[gpu]`
   module. Crates without the setting are unchanged.

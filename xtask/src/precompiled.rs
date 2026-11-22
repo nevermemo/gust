@@ -80,11 +80,8 @@ use std::{
 use crate::{
     checks::{RUSTFLAGS_VARIABLES, dual_target_dir, precompiled_dual_steps, run_dual_step},
     json::{self, Json},
-    process::{
-        PROFILE_VARIABLE, exit_code, set_workspace_profile, slangc_cannot_be_found,
-        untar_crate_command,
-    },
-    release::{PackageSpec, WorkDir, package_files, package_problems},
+    process::{PROFILE_VARIABLE, exit_code, set_workspace_profile, slangc_cannot_be_found},
+    release::{PackageSpec, WorkDir, package_files, package_problems, untar_crate_command},
     ui::{Expectation, judge, parse_expectation, parse_expected},
     workspace::{cargo_target_dir, workspace_root},
 };
@@ -361,7 +358,8 @@ impl Fixture {
     }
 }
 
-/// `$CARGO` when set (it is under `cargo xtask`), else `cargo`.
+/// `$CARGO` as read from the captured environment `parent` (not from the process), else `cargo`; the name is
+/// matched without regard to case, as Windows spells environment variable names.
 fn cargo_program(parent: &[(OsString, OsString)]) -> OsString {
     parent
         .iter()

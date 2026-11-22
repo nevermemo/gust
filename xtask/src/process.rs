@@ -101,17 +101,6 @@ pub(crate) fn run_capture(command: &mut Command, program: &str) -> Result<Output
         .map_err(|error| format!("could not launch {program}: {error}"))
 }
 
-/// `tar -xzf ../crates/{file}` run in `directory`: unpacks a packaged `.crate` that sits in the sibling `crates`
-/// folder. `tar` runs in the unpacked directory and reads the archive by a relative path: a drive letter in an
-/// argument would be read as a host name by some tars.
-pub(crate) fn untar_crate_command(directory: &Path, file: &str) -> Command {
-    let mut tar = Command::new("tar");
-    tar.current_dir(directory)
-        .args(["-xzf", &format!("../crates/{file}")])
-        .stdin(Stdio::null());
-    tar
-}
-
 pub(crate) struct CheckRecord {
     pub(crate) program: String,
     pub(crate) arguments: Vec<String>,

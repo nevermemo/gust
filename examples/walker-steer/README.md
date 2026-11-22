@@ -2,7 +2,7 @@
 
 Walkers on a periodic `SIDE x SIDE` grid that sample a `u32` field ahead, turn toward the strongest sample, move one
 cell and deposit into the field, 24 steps, all in integers, so the host reference, the CPU twin and the GPU are equal
-bit for bit after every step (field and walkers; on the GPU: Radeon 890M only, RTX 5090 pending).
+bit for bit after every step (field and walkers; on the GPU: Radeon 890M and RTX 5090).
 
 - `walk` (one invocation per walker): read the field `dist` cells ahead at headings `h - 1`, `h` and `h + 1` (mod 8),
   take the largest (ties: straight, then `h - 1`, clockwise, then `h + 1`), with probability `prob / 2^16` replace the choice by a hash-chosen one

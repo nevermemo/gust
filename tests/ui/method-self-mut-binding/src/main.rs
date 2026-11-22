@@ -1,6 +1,6 @@
 // A method whose receiver is `mut self` (m9.a2, GUST-E0116): a method that changes its receiver takes `&mut self`.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Counter {
         pub n: uint,

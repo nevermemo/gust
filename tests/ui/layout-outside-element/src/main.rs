@@ -1,4 +1,4 @@
-// A buffer element declared outside the `#[gust::gpu]` module whose hand-written `GpuPod` says it
+// A buffer element declared outside the `#[gust::gpu_module]` module whose hand-written `GpuPod` says it
 // is one four-byte scalar while the Rust type is eight bytes. The descriptor records the claimed
 // layout, so the const element assertion names the kernel parameter in one `E0080` at the
 // attribute.
@@ -14,7 +14,7 @@ unsafe impl gust::GpuPod for Short {
     const LAYOUT: gust::TypeLayout = gust::TypeLayout::scalar("Short", gust::ScalarKind::U32);
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod kernels {
     #[kernel]
     pub fn run(id: SV_DispatchThreadID, out: RWStructuredBuffer<super::Short>) {

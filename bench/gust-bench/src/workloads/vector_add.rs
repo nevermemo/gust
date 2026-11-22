@@ -1,9 +1,9 @@
 //! W1: vector-add, `out[i] = a[i] + b[i]`, f32. Memory-bandwidth bound: 12 bytes moved per element.
 
-use gust::gpu;
+use gust::gpu_module;
 
 /// The GUST kernel. Workgroup size 256 (see `workloads::WORKGROUP`).
-#[gpu]
+#[gpu_module]
 pub mod kernel {
     #[kernel(workgroup_size(256, 1, 1))]
     pub fn add(

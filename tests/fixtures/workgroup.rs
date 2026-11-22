@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod workgroup {
     // One workgroup sums up to 256 elements in shared memory: a tree of eight rounds, a barrier between the rounds.
     // The kernel has no CPU twin (`cpu = "unsupported"`): a barrier needs the lockstep twin of a later slice.

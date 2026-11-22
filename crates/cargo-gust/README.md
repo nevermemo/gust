@@ -1,6 +1,6 @@
 # cargo-gust
 
-The command-line tool of GUST (`cargo gust ...`). It collects the `#[gpu]` kernels of a crate, compiles them with
+The command-line tool of GUST (`cargo gust ...`). It collects the `#[gpu_module]` kernels of a crate, compiles them with
 Slang and writes the committed `gust-artifacts/` directory that a production build runs without any compiler. It also
 installs and checks the pinned Slang release.
 

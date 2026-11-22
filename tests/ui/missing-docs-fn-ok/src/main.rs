@@ -1,5 +1,5 @@
 //! Control case for the `missing_docs` lint (slice mr.b2): a crate with `#![deny(missing_docs)]` compiles over a
-//! `#[gust::gpu]` function, whose expansion adds a module of the same name with the map calls, and over a `par_for!`
+//! `#[gust::gpu_fn]` function, whose expansion adds a module of the same name with the map calls, and over a `par_for!`
 //! call. Built under `GUST_PROFILE=cpu` (env.txt), where the generated calls run on `gust::cpu::CpuDevice` and nothing
 //! names a GPU API; `missing-docs-mod-ok` covers the module forms in the dev profile. This crate must compile.
 #![deny(missing_docs)]
@@ -7,13 +7,13 @@
 use gust::{cpu::CpuDevice, math::Vec2};
 
 /// `a * x + y` for every element.
-#[gust::gpu]
+#[gust::gpu_fn]
 pub fn saxpy(a: f32, x: f32, y: f32) -> f32 {
     a * x + y
 }
 
 /// Shifts a vector element by a scalar.
-#[gust::gpu]
+#[gust::gpu_fn]
 pub fn shift(v: Vec2, s: f32) -> Vec2 {
     Vec2::new(v.x + s, v.y + s)
 }

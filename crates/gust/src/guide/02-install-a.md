@@ -9,13 +9,13 @@ GUST will be released as four packages that always share one version:
 
 | Package | Library name | What it is |
 | --- | --- | --- |
-| `gust-compute` | `gust` | The `#[gpu]` attribute, `par_for!`, typed buffers and calls, the CPU runtime |
+| `gust-compute` | `gust` | The `#[gpu_module]` attribute, `par_for!`, typed buffers and calls, the CPU runtime |
 | `gust-compute-wgpu` | `gust_wgpu` | The headless wgpu backend that runs the kernels |
 | `gust-compute-macros` | `gust_macros` | The proc macros; `gust-compute` uses them and you never depend on them |
 | `cargo-gust` | none (a binary) | The `cargo gust` tool: precompiled artifacts and the pinned Slang |
 
 The package name and the library name differ, so you add one and write the other: `cargo add gust-compute
-gust-compute-wgpu`, then `use gust::gpu;` and `use gust_wgpu::...` in the code. Do not run `cargo add gust`: that name
+gust-compute-wgpu`, then `use gust::gpu_module;` and `use gust_wgpu::...` in the code. Do not run `cargo add gust`: that name
 belongs to an unrelated crate. Once 0.2.0 is on crates.io, a requirement such as `0.2` is enough. A pre-release (a
 `-dev` version taken by git or path, say) is not matched by `0.2`, so where such a dependency line carries a `version`
 key, name the pre-release in full; the library crates pin each other to one exact version.
@@ -50,9 +50,9 @@ gust-dev = ["gust-compute-wgpu/slang-runtime"]
 `gust-dev` has to be a feature of your own crate. A `slang-runtime` feature on the dependency line makes `cargo build
 --release` fail, because a release build refuses the run-time compiler.
 
-The program has one `#[gpu]` module with one kernel. The kernel adds two buffers element by element; the
+The program has one `#[gpu_module]` module with one kernel. The kernel adds two buffers element by element; the
 `if i < out.len()` guard makes sizes that are not a multiple of the workgroup size safe. This block is compiled by
-this crate's doctests (`no_run`: it needs no GPU to compile), with `use gust::gpu;` hidden:
+this crate's doctests (`no_run`: it needs no GPU to compile), with `use gust::gpu_module;` hidden:
 
 ```rust,no_run
-# use gust::gpu;
+# use gust::gpu_module;

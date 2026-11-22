@@ -374,7 +374,7 @@ fn check_bound(bound: &syn::TypeParamBound, traits: &Traits) -> syn::Result<()> 
         )
     } else {
         format!(
-            "`{written}` is not a trait declared in this module: a generic bound is a trait of this `#[gpu]` module or `Copy` (a bound with arguments, a trait from elsewhere and a std trait are refused)"
+            "`{written}` is not a trait declared in this module: a generic bound is a trait of this `#[gpu_module]` module or `Copy` (a bound with arguments, a trait from elsewhere and a std trait are refused)"
         )
     };
     Err(diagnostics::error(Code::StdTraitBound, bound, message))

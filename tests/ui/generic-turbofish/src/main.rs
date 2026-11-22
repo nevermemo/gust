@@ -1,6 +1,6 @@
 // Explicit type arguments on a call of a generic helper (m9.g2, GUST-E0123): type arguments are inferred only.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Tag {
         fn tag(&self) -> u32;

@@ -3,7 +3,7 @@
 // first also holds 8 storage buffers and 16384 bytes of workgroup memory, the last 12 uniform buffers, 16 sampled
 // textures, 16 samplers and 4 storage textures. This crate must compile.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod kernels {
     pub struct Params {
         pub gain: f32,

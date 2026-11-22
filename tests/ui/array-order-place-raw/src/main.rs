@@ -1,6 +1,6 @@
 // `a[r#s.n as usize] = r#s.bump()`: a raw identifier is the same variable, so this is GUST-E0421 like the plain form.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Counter {
         pub n: u32,

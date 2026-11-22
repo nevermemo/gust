@@ -10,7 +10,7 @@ page and they disagree. None of the paths below is part of the published package
 
 ## The pipeline
 
-GUST does not have a compiler IR, and that is a decision, not a gap. The `#[gpu]` macro does a small job:
+GUST does not have a compiler IR, and that is a decision, not a gap. The `#[gpu_module]` macro does a small job:
 
 1. **Parse and validate** a GPU-safe subset of Rust syntax, with a stable diagnostic code for every rejection.
 2. **Keep the Rust body.** The body is kept as an ordinary private Rust function, so rustc provides name resolution
@@ -30,7 +30,7 @@ decision of its own, not a detail of a feature.
 
 ## Where each step lives
 
-- **`crates/gust-macros`**: the `#[gpu]` and `par_for!` macros. `validate/` holds the accepted subset, `slang/` the
+- **`crates/gust-macros`**: the `#[gpu_module]` and `par_for!` macros. `validate/` holds the accepted subset, `slang/` the
   Slang emitter, `expand/` the host handles and maps, `profile/` what differs between the `grid` and `pixel` stages,
   and `diagnostics.rs` the codes.
 - **`crates/gust`**: the library `gust` (package `gust-compute`): the host-side types, `gust::cpu` (the CPU twin and

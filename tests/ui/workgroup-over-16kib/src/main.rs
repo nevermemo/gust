@@ -1,7 +1,7 @@
 // All workgroup arrays of a kernel together may take 16384 bytes. Here 4097 `f32` take 16388: GUST-E0718. expected.txt
 // pins the code and the line of the signature.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(256, 1, 1), cpu = "unsupported")]
     pub fn reduce(

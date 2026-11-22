@@ -9,9 +9,9 @@
 //! });
 //! ```
 //!
-//! The macro builds a kernel in the dialect around the body, hands it to the expansion every `#[gpu]` module goes
-//! through (so the Slang, the descriptor, the typed calls, the CPU `Run` impl and the artifact handling are those of
-//! any kernel), and adds the host function that launches it:
+//! The macro builds a kernel in the dialect around the body, hands it to the expansion every `#[gpu_module]` module
+//! goes through (so the Slang, the descriptor, the typed calls, the CPU `Run` impl and the artifact handling are those
+//! of any kernel), and adds the host function that launches it:
 //!
 //! ```text
 //! { mod __gust_pf_<hash16> { struct __GustExtent {..}  #[kernel(..)] fn run(..) {..}  fn launch(..) {..} .. }

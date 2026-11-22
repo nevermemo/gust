@@ -14,11 +14,11 @@ and any other value, including an empty one, fails the build.
 | Profile | What the build is |
 | --- | --- |
 | `dev` | Kernels compile at run time through Slang (the `slang-runtime` feature); neither strict rule applies. For development and tests. |
-| `native` | Strict: every `#[gpu]` kernel needs a precompiled artifact or the build fails at the kernel, and the run-time Slang bridge is refused. |
+| `native` | Strict: every `#[gpu_module]` kernel needs a precompiled artifact or the build fails at the kernel, and the run-time Slang bridge is refused. |
 | `web` | The same strictness for the browser (`wasm32`). |
 | `cpu` | The production CPU target: no Slang, no GPU runtime. See below. |
 
-With `GUST_PROFILE` unset, `cargo build --release` of a crate with `#[gpu]` kernels is `native` (`web` on `wasm32`) and
+With `GUST_PROFILE` unset, `cargo build --release` of a crate with `#[gpu_module]` kernels is `native` (`web` on `wasm32`) and
 the build script prints a warning that says so; cargo shows a build script's warning only for path and workspace
 packages, or with `-vv`, so a crate that depends on `gust-compute` from crates.io does not see it. The CPU is never
 inferred. A profile may name a capability after its target, `<target>(+<capability>)*`, as in `native+subgroups`; the
@@ -63,7 +63,7 @@ Routing sends a kernel to the CPU or the GPU for a whole build, chosen by the ap
 author. Three pieces:
 
 1. The kernel crate declares route tags in its `Cargo.toml` (`[package.metadata.gust.routes]`), each optionally with the
-   targets it allows and a default, and a module opts in with `#[gpu(route = "tag")]`.
+   targets it allows and a default, and a module opts in with `#[gpu_module(route = "tag")]`.
 2. The application chooses in a `gust.toml` beside the `Cargo.toml` of the package that `cargo gust` works on. The key
    is the Cargo package name and the tag, the value is `"gpu"`, `"cpu"` or a table keyed by build profile.
 3. `cargo gust run` and `cargo gust test` read the `gust.toml` and give cargo one `GUST_ROUTE__<package>__<tag>`

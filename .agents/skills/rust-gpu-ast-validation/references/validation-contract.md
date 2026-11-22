@@ -2,7 +2,7 @@
 
 The source is a deliberately restricted Rust-shaped GPU module. Existing project tests define the current subset. This bundle does not impose an older prototype's feature list.
 
-Attribute procedural macros receive token streams. If the boundary is `#[gpu] mod ...`, an inline module contains items while an outline declaration does not contain another file's contents. Reject outline modules unless the project has an explicit source-loading design. Do not add filesystem probing to macro expansion as an incidental fix.
+Attribute procedural macros receive token streams. If the boundary is `#[gpu_module] mod ...`, an inline module contains items while an outline declaration does not contain another file's contents. Reject outline modules unless the project has an explicit source-loading design. Do not add filesystem probing to macro expansion as an incidental fix.
 
 Keep a small capability table in project documentation: source construct, validation rule, direct emission rule, independent host-reference expectation and tests. Accept a feature only when each relevant column is supported. Start from an allowlist rather than a blacklist of CPU library names.
 

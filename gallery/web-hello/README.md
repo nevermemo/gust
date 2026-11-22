@@ -1,6 +1,6 @@
 # web-hello (gallery G9)
 
-The sum of `hello-gust` in a browser: one `#[gpu]` map function, `add(a, b) = a + b`, run on the browser's GPU through
+The sum of `hello-gust` in a browser: one `#[gpu_fn]` map function, `add(a, b) = a + b`, run on the browser's GPU through
 `map_async`, and compared in the page, element by element and bit for bit, with a plain Rust host reference.
 
 What it shows: the browser path. A browser cannot block, so the generated `map` and `map_on` do not exist on `wasm32`

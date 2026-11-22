@@ -10,10 +10,10 @@
 //! first (the harness's `poison`, and `end_to_end` clears inside its timed span because a host call needs a clean
 //! result). After `p` dispatches since the last clear every count is `p` times the reference.
 
-use gust::gpu;
+use gust::gpu_module;
 
 /// The GUST kernel. Workgroup size 256 (see `workloads::WORKGROUP`).
-#[gpu]
+#[gpu_module]
 pub mod kernel {
     #[kernel(workgroup_size(256, 1, 1))]
     pub fn histogram(

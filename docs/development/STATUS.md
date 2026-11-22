@@ -963,6 +963,17 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       `CARGO_PROFILE_DEV_DEBUG=full`; the records above gained the lines and corrections the reviews asked for;
       CHANGELOG and ROADMAP follow D226 and D227; the difftest workspace's rustfmt drift is fixed. Opus review:
       merge after fixes; fixed.
+    - m14.rename (D237, D243; group 2's first slice, alone): `#[gpu]` is now `#[gpu_module]` on a module and
+      `#[gpu_fn]` on a function, through one expansion path; either attribute on the wrong item is GUST-E0702,
+      whose message names the attribute that fits (three unit tests). Diagnostics, DIAGNOSTICS, docs, guide,
+      examples, templates and fixtures use the new spellings; decision rows, history and earlier STATUS entries
+      keep the old one. The difftest corpus hashes `lib.rs`, so `DIFFTEST_FORMAT` is 15; older formats are
+      read with the old spelling and no pin changed (a test pins the format-14 hashes). The misuse errors have
+      ui fixtures. Gates on the Radeon 890M (lane and merge gate: the crate profile, the Gpu suite, check-difftest,
+      check-examples and check-gallery); the RTX 5090 Gpu suite and check-difftest passed on the merge before the
+      review fixes, which changed no emitted code. RTX 5090: owed (quiet window 2026-11-22, D250): check-examples,
+      check-web and the Gpu suite on the fixed merge. `GPU_SUITE_PIN` 591 over 61. Opus review: merge after fixes;
+      fixed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

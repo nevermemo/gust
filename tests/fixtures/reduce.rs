@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod reduce {
     // m7.r1: the passes of `gust_algo::reduce` (plan section 5.2). One module; each element type has, for `sum`,
     // `min` and `max`, a block-strided pass kernel and a terminal kernel.

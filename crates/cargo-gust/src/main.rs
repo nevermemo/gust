@@ -1,7 +1,7 @@
 //! `cargo gust`: the export tool for GUST kernels (D45, D46).
 //!
-//! A `#[gpu]` module is compiled to Slang by the macro; this tool turns the Slang into WGSL (and SPIR-V) ahead of
-//! time and commits the result, so that a production build needs no Slang at all. The pieces:
+//! A `#[gpu_module]` module is compiled to Slang by the macro; this tool turns the Slang into WGSL (and SPIR-V) ahead
+//! of time and commits the result, so that a production build needs no Slang at all. The pieces:
 //!
 //! 1. **Collect.** `cargo check -p <crate>` runs in an isolated target directory (`<target>/gust-export`) with
 //!    `GUST_EXPORT_DIR` set to a directory that is new for the run and `GUST_PROFILE=dev`. In export mode the macro
@@ -55,9 +55,9 @@
 //!   summary and the notes on a preset `GUST_ROUTE__*` variable go to standard error. An error names `gust.toml`, the
 //!   line and the tag, and cargo does not build (`cargo metadata` runs to read the declarations). The driver also sets
 //!   `GUST_ROUTED_PROFILE` to the profile it resolved the routes for, read from the command line and `GUST_PROFILE`;
-//!   the `#[gpu]` expansion of a routed module fails the compilation of its crate when `gust` was built for another
-//!   profile (a target from `build.target` or `CARGO_BUILD_TARGET`, or a custom profile that inherits `release`), so a
-//!   kernel is never routed for the wrong profile. A run that applies no `gust.toml` removes the variable.
+//!   the `#[gpu_module]` expansion of a routed module fails the compilation of its crate when `gust` was built for
+//!   another profile (a target from `build.target` or `CARGO_BUILD_TARGET`, or a custom profile that inherits
+//!   `release`), so a kernel is never routed for the wrong profile. A run that applies no `gust.toml` removes the variable.
 //! - `cargo gust doctor` shows the located Slang and where its licence notices are, the helper (refused when it was
 //!   built against another Slang than the located `slangc`), `spirv-val`, the profile a build here would get and the
 //!   install command.
@@ -153,8 +153,8 @@
 //! # Limits
 //!
 //! Only kernels in the package's library and binary targets are collected (`cargo check -p`), not tests or examples.
-//! The `#[gpu]` macro names records by their 64-bit key. In export mode it never overwrites an existing record whose
-//! bytes differ: the second kernel with that key fails to expand (E0712, naming both kernels when it can read the
+//! The `#[gpu_module]` macro names records by their 64-bit key. In export mode it never overwrites an existing record
+//! whose bytes differ: the second kernel with that key fails to expand (E0712, naming both kernels when it can read the
 //! first one's name, else the key), and rewriting identical bytes is fine. The tool still rejects a record whose text
 //! does not match its key, and two records that share a key and differ in text, as defence in depth.
 //!

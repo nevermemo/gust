@@ -1,6 +1,6 @@
 // A mutating trait method on a storage element (m9.g1, GUST-E0333).
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Grow {
         fn grow(&mut self);

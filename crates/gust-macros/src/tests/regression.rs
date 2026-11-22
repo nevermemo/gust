@@ -2266,9 +2266,9 @@ fn the_stand_in_of_a_cfg_struct_carries_its_cfg_and_a_cfg_attr_derive_counts() {
     assert!(attributes_of("Other").is_empty());
 }
 
-/// When the arguments of `#[gpu(..)]` are refused as a whole, the recovered code names the facade as the expansion
-/// would: a well-formed `crate = <path>` among them forwards the prelude import and the stand-ins to it, and with
-/// none they keep `::gust::`.
+/// When the arguments of `#[gpu_module(..)]` are refused as a whole, the recovered code names the facade as the
+/// expansion would: a well-formed `crate = <path>` among them forwards the prelude import and the stand-ins to it, and
+/// with none they keep `::gust::`.
 #[test]
 fn recovery_after_refused_arguments_uses_the_facade_path_the_expansion_would() {
     let module = "mod demo { pub struct Params { pub a: uint } }";
@@ -3719,8 +3719,8 @@ fn mismatch_golden() {
 }
 
 /// The build-directory errors (a half artifact pair, an export write, a package name) carry stable codes like every
-/// other rejection `#[gpu]` reports (docs/DIAGNOSTICS.md). They are items beside a usable module, not `syn` errors, so
-/// the rendered text is asserted.
+/// other rejection `#[gpu_module]` reports (docs/DIAGNOSTICS.md). They are items beside a usable module, not `syn`
+/// errors, so the rendered text is asserted.
 #[test]
 fn build_directory_failures_carry_their_codes() {
     use crate::expand::expand_with_directories;
@@ -5895,9 +5895,9 @@ fn star_assign_on_a_place_with_a_wrapping_method_is_not_a_call_in_a_matrix_modul
 const TEXTURES_FIXTURE: &str = include_str!("../../../../tests/fixtures/textures.rs");
 const TEXTURES_GOLDEN: &str = include_str!("../../../../tests/fixtures/textures.slang");
 
-/// The textures fixture as `#[gpu]` receives it (the attribute is the macro's own).
+/// The textures fixture as `#[gpu_module]` receives it (the attribute is the macro's own).
 fn textures_module() -> String {
-    TEXTURES_FIXTURE.replacen("#[gust::gpu]", "", 1)
+    TEXTURES_FIXTURE.replacen("#[gust::gpu_module]", "", 1)
 }
 
 #[test]

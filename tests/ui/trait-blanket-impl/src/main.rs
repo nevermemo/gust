@@ -1,6 +1,6 @@
 // A blanket impl (m9.g1, GUST-E0121): an impl is for a struct or a unit enum of the module.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Shape {
         fn area(&self) -> u32;

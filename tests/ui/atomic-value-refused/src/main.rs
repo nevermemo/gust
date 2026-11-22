@@ -1,7 +1,7 @@
 // The old value of an atomic other than `atomic_add` is GUST-E0606 (m11.fetch narrowed the rule to these): the value
 // of `atomic_exchange` is not accepted anywhere, a `let` initializer included. expected.txt pins the code and the line.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod fetch {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn swap(

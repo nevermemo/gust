@@ -49,7 +49,7 @@ use gust_wgpu::{BufferBinding, DeviceOptions, GpuBufferAccess, HeadlessDevice};
 // or bounds. As in the fixture, every operand comes from a buffer, so the validator cannot reject a kernel and the
 // compiler cannot fold it. `at` is the texel address `[x, y]` for the first two kernels and the normalised
 // coordinate `[u, v]` for `sample_at`.
-#[gust::gpu]
+#[gust::gpu_module]
 mod texture_edges {
     // KM-12: `load` at the address of `at`; the loaded texel goes to `seen`.
     #[kernel(workgroup_size(1, 1, 1))]
@@ -2815,7 +2815,7 @@ fn the_ledger_mode_is_the_overflow_mode_of_this_crate() {
 
 // A kernel without storage parameters: the only observable effect of its twin is a panic, so it divides by a value
 // that reaches zero at invocation 2 (the shadow body is rustc's own arithmetic, as in the ledger rows above).
-#[gust::gpu]
+#[gust::gpu_module]
 mod zero_storage {
     #[kernel(workgroup_size(1, 1, 1))]
     pub fn divide_by_distance(id: SV_DispatchThreadID) {

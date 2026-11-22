@@ -1,6 +1,6 @@
 // A constant amount through parentheses and an `as` cast is still constant: GUST-E0335 names the folded value, 40.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<u32>) {

@@ -3,7 +3,7 @@
 
 use gust::math::Vec3;
 
-#[gust::gpu]
+#[gust::gpu_fn]
 pub fn length_squared(v: Vec3) -> f32 {
     v.x * v.x + v.y * v.y + v.z * v.z
 }

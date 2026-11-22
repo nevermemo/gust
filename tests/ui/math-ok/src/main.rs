@@ -4,7 +4,7 @@
 // `signum`, `to_radians`, `to_degrees`, `asin`, `acos` and `rem_euclid` (on `f32` and `u32`; the literal operand of the
 // integer `rem_euclid` carries a suffix).
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod shaping {
     #[kernel]
     pub fn shape(

@@ -1,6 +1,6 @@
 // `#[pad]` on a struct no uniform reaches, GUST-E0219.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Params {
         pub a: f32,

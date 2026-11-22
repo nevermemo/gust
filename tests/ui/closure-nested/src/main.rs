@@ -1,7 +1,7 @@
 // A closure inside a closure (m9.c, GUST-E0332): each closure is a function of its own.
 // Expected: one error at the inner closure, line 8.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>) {

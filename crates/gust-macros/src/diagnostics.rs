@@ -1,4 +1,4 @@
-//! Stable diagnostic codes for every rejection `#[gpu]` reports.
+//! Stable diagnostic codes for every rejection `#[gpu_module]` and `#[gpu_fn]` report.
 //!
 //! `syn::Error` carries only a message, so the code is part of the message text:
 //! `[GUST-E0401] <message>`. rustc shows it as `error: [GUST-E0401] <message>`, which
@@ -64,7 +64,7 @@ macro_rules! codes {
 
 codes! {
     // E01xx: module and item shape.
-    /// `#[gpu]` on a module without inline content.
+    /// `#[gpu_module]` on a module without inline content.
     InlineModuleRequired = 101 => "GUST-E0101";
     /// An item other than a function or a plain struct inside the module.
     UnsupportedModuleItem = 102 => "GUST-E0102";
@@ -360,9 +360,9 @@ codes! {
     AtomicReceiverNotBuffer = 610 => "GUST-E0610";
 
     // E07xx: macro entry and `#[kernel]` options.
-    /// Arguments on `#[gpu]`.
+    /// Arguments on `#[gpu_module]`.
     GpuArguments = 701 => "GUST-E0701";
-    /// `#[gpu]` on something that does not parse as a module.
+    /// `#[gpu_module]` on something that does not parse as a module.
     ItemNotModule = 702 => "GUST-E0702";
     /// More than one `#[kernel]` on a function.
     DuplicateKernelAttribute = 703 => "GUST-E0703";
@@ -386,13 +386,13 @@ codes! {
     ExportWriteFailed = 712 => "GUST-E0712";
     /// Export mode with a `CARGO_PKG_NAME` that cannot name the record directory.
     ExportPackageName = 713 => "GUST-E0713";
-    /// `#[gpu]` on a function that is not a map function: no parameter, a return type or a parameter type that is not
-    /// a buffer element, or a `#[kernel]` on it.
+    /// `#[gpu_fn]` on a function that is not a map function: no parameter, a return type or a parameter type that is
+    /// not a buffer element, or a `#[kernel]` on it.
     MapSignature = 714 => "GUST-E0714";
     /// A map function whose name, or one of whose parameters' names, collides with a name the generated module
     /// defines.
     MapNameCollision = 715 => "GUST-E0715";
-    /// `#[gpu]` on a function inside a `#[gpu]` module.
+    /// `#[gpu_fn]` on a function inside a `#[gpu_module]` module.
     NestedGpuFunction = 716 => "GUST-E0716";
     /// A kernel with workgroup memory or a barrier that does not say `cpu = "unsupported"`.
     BarrierKernelCpu = 717 => "GUST-E0717";
@@ -449,8 +449,8 @@ codes! {
 
     // E0740 to E0750: variants (M8, D139).
     /// A malformed or misplaced `#[variant]`: not `of = <kernel>` with an optional `requires(..)`, on something that is
-    /// not a function of a `#[gpu]` module, on a `#[kernel]`, setting an option of the kernel, or with a signature
-    /// that is not its kernel's.
+    /// not a function of a `#[gpu_module]` module, on a `#[kernel]`, setting an option of the kernel, or with a
+    /// signature that is not its kernel's.
     VariantAttribute = 740 => "GUST-E0740";
     /// An unknown capability or alias in a `requires(..)`.
     UnknownCapability = 741 => "GUST-E0741";
@@ -486,7 +486,8 @@ codes! {
 
     // E0753: the crate's declarations in its manifest (M8, D138).
     // E0737 to E0739 and E0752 are not assigned (docs/DIAGNOSTICS.md).
-    /// A malformed `[package.metadata.gust]` table in the `Cargo.toml` of the crate that holds the `#[gpu]` module, the `#[gpu]` function or the `par_for!` call.
+    /// A malformed `[package.metadata.gust]` table in the `Cargo.toml` of the crate that holds the `#[gpu_module]`
+    /// module, the `#[gpu_fn]` function or the `par_for!` call.
     GustMetadata = 753 => "GUST-E0753";
 
     // E08xx: rejections only the emitter makes, after validation passed.
@@ -1327,13 +1328,13 @@ mod tests {
         );
     }
 
-    // --- Reachability: which codes a `#[gpu]` input can produce ---
+    // --- Reachability: which codes a `#[gpu_module]` input can produce ---
 
-    /// Codes no `#[gpu]` input can produce, each with the reason. The emitter and the
+    /// Codes no `#[gpu_module]` input can produce, each with the reason. The emitter and the
     /// expander keep these checks as a second line of defence: the validator rejects the
     /// same shape first, so they fire only when a module skips validation. Each has a unit
     /// test that calls the emitter or expander directly. `docs/DIAGNOSTICS.md` marks the
-    /// same codes "Unreachable through `#[gpu]`"; a test compares the two.
+    /// same codes "Unreachable through `#[gpu_module]`"; a test compares the two.
     const UNREACHABLE: &[(Code, &str)] = &[
         (
             Code::PodStructNamedFields,
@@ -1383,7 +1384,7 @@ mod tests {
         }
     }
 
-    /// Whether an assertion in `file` exercises the validator and emitter together as `#[gpu]`
+    /// Whether an assertion in `file` exercises the validator and emitter together as `#[gpu_module]`
     /// does (the regression tests, the map tests, and the validator's own tests).
     fn is_pipeline_test_file(file: &str) -> bool {
         let file = file.replace('\\', "/");
@@ -1432,7 +1433,7 @@ mod tests {
     }
 
     /// Every code is asserted by a test that runs the validator or the validator and emitter
-    /// together as `#[gpu]` does (`tests/regression.rs` and the validator's own tests), or is
+    /// together as `#[gpu_module]` does (`tests/regression.rs` and the validator's own tests), or is
     /// listed in `UNREACHABLE`; and a listed code is asserted directly by some test.
     ///
     /// "Asserted" is measured, not read from the source: the test binary runs again with
@@ -1577,8 +1578,11 @@ mod tests {
         sections
     }
 
-    const REACHED: &str = "Reached through `#[gpu]`";
-    const NOT_REACHED: &str = "Unreachable through `#[gpu]`";
+    const REACHED: &str = "Reached through `#[gpu_module]`";
+    const REACHED_MAP: &str = "Reached through `#[gpu_fn]`";
+    /// The map-only codes (the signature and the name of a `#[gpu_fn]` function): only they say `REACHED_MAP` (D237).
+    const MAP_ONLY: [&str; 2] = ["GUST-E0714", "GUST-E0715"];
+    const NOT_REACHED: &str = "Unreachable through `#[gpu_module]`";
 
     fn doc_text() -> String {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/DIAGNOSTICS.md");
@@ -1594,11 +1598,14 @@ mod tests {
         let mut problems = Vec::new();
         for section in sections {
             let body = section.body.join("\n");
-            let reached = body.matches(REACHED).count();
+            let map_only = MAP_ONLY.contains(&section.code.as_str());
+            let reached = body
+                .matches(if map_only { REACHED_MAP } else { REACHED })
+                .count();
             let not_reached = body.matches(NOT_REACHED).count();
             if reached + not_reached != 1 {
                 problems.push(format!(
-                    "{}: must say exactly once whether it is reached through `#[gpu]` ({reached} + {not_reached})",
+                    "{}: must say exactly once whether it is reached through `#[gpu_module]` or `#[gpu_fn]` ({reached} + {not_reached})",
                     section.code
                 ));
             } else if (not_reached == 1) != unreachable(&section.code) {
@@ -1637,7 +1644,7 @@ mod tests {
         problems
     }
 
-    /// Each section of the doc page says whether `#[gpu]` can reach its code, matching
+    /// Each section of the doc page says whether `#[gpu_module]` can reach its code, matching
     /// `UNREACHABLE`, and opens with a line saying what the code means.
     #[test]
     fn the_doc_marks_reachability_as_the_unreachable_list_does_and_opens_with_a_meaning() {
@@ -1651,14 +1658,14 @@ mod tests {
     #[test]
     fn section_problems_finds_missing_conflicting_and_misplaced_statements() {
         let sample = "## E01xx\n\
-            ### GUST-E0101 ok\n\nMeans a thing.\nReached through `#[gpu]`.\nRejected: x.\n\n\
-            ### GUST-E0102 unreachable ok\n\nMeans a thing.\nUnreachable through `#[gpu]`: defence in depth.\nRejected: x.\n\n\
+            ### GUST-E0101 ok\n\nMeans a thing.\nReached through `#[gpu_module]`.\nRejected: x.\n\n\
+            ### GUST-E0102 unreachable ok\n\nMeans a thing.\nUnreachable through `#[gpu_module]`: defence in depth.\nRejected: x.\n\n\
             ### GUST-E0103 no statement\n\nMeans a thing.\nRejected: x.\n\n\
-            ### GUST-E0104 both\n\nMeans.\nReached through `#[gpu]`. Unreachable through `#[gpu]`.\n\n\
-            ### GUST-E0105 wrong\n\nMeans.\nReached through `#[gpu]`.\n\n\
-            ### GUST-E0106 no meaning\n\nReached through `#[gpu]`.\nRejected: x.\n\n\
-            ### GUST-E0107 fenced\n\n```text\n### GUST-E0199 not a heading\n```\nMeans.\nReached through `#[gpu]`.\n\
-            ## Next family\nReached through `#[gpu]`.\n";
+            ### GUST-E0104 both\n\nMeans.\nReached through `#[gpu_module]`. Unreachable through `#[gpu_module]`.\n\n\
+            ### GUST-E0105 wrong\n\nMeans.\nReached through `#[gpu_module]`.\n\n\
+            ### GUST-E0106 no meaning\n\nReached through `#[gpu_module]`.\nRejected: x.\n\n\
+            ### GUST-E0107 fenced\n\n```text\n### GUST-E0199 not a heading\n```\nMeans.\nReached through `#[gpu_module]`.\n\
+            ## Next family\nReached through `#[gpu_module]`.\n";
         let sections = doc_sections(sample);
         let codes: Vec<&str> = sections.iter().map(|s| s.code.as_str()).collect();
         assert_eq!(

@@ -7,10 +7,10 @@ use crate::{F32Binding, U32Binding};
 ///
 /// ```
 /// # #![allow(deprecated)]
-/// use gust::gpu;
+/// use gust::gpu_module;
 /// use gust_wgpu::{F32Binding, HeadlessDevice};
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod double {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -45,10 +45,10 @@ pub struct DispatchOutput {
 ///
 /// ```
 /// # #![allow(deprecated)]
-/// use gust::gpu;
+/// use gust::gpu_module;
 /// use gust_wgpu::{HeadlessDevice, U32Binding};
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod bump {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn run(id: SV_DispatchThreadID, mut data: RWStructuredBuffer<uint>) {

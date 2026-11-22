@@ -1,6 +1,6 @@
 // A trait path call on a call (m9.g1, GUST-E0126): the receiver must be a place, bind it first.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Shape {
         fn area(&self) -> u32;

@@ -1,6 +1,6 @@
 // `usize` is accepted as the cast of an index only, so a `usize` parameter is GUST-E0334.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     fn pick(a: [u32; 4], n: usize) -> u32 {
         a[n]

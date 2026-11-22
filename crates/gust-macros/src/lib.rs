@@ -1,23 +1,23 @@
-//! The procedural macros of GUST: `#[gpu]` and `par_for!`.
+//! The procedural macros of GUST: `#[gpu_module]`, `#[gpu_fn]` and `par_for!`.
 //!
-//! Use them through `gust` (`gust::gpu`, `gust::par_for!`), which re-exports them and owns the types they emit; this
-//! crate is not meant to be depended on directly. `#[gpu]` validates a small Rust subset and translates it directly
-//! from the `syn` syntax tree to Slang; every rejection carries a stable diagnostic code (`GUST-E....`, see
-//! `docs/DIAGNOSTICS.md`).
+//! Use them through `gust` (`gust::gpu_module`, `gust::gpu_fn`, `gust::par_for!`), which re-exports them and owns the
+//! types they emit; this crate is not meant to be depended on directly. `#[gpu_module]` and `#[gpu_fn]` validate a
+//! small Rust subset and translate it directly from the `syn` syntax tree to Slang; every rejection carries a stable
+//! diagnostic code (`GUST-E....`, see `docs/DIAGNOSTICS.md`).
 //!
 //! # Generated items and `missing_docs`
 //!
 //! The macros emit public items (the handle and descriptor of each kernel, the typed calls, the module of a map
 //! function). Each is documented or `#[doc(hidden)]`, so a crate with `#![deny(missing_docs)]`
-//! compiles over a `#[gpu]` module or function.
+//! compiles over a `#[gpu_module]` module or `#[gpu_fn]` function.
 //!
 //! # Stability
 //!
 //! The crate is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version, a patch release only
 //! adds or fixes. The four crates of a release (`gust`, this crate, the wgpu backend and `cargo-gust`) share one
 //! version and depend on each other with exact (`=`) pins, because the macros emit items that only the same release of
-//! `gust` has. What a minor bump may change: the Slang that `#[gpu]` emits, the diagnostics' wording (their codes
-//! are stable, see `docs/DIAGNOSTICS.md`), and the accepted subset of Rust, which may grow.
+//! `gust` has. What a minor bump may change: the Slang that `#[gpu_module]` emits, the diagnostics' wording (their
+//! codes are stable, see `docs/DIAGNOSTICS.md`), and the accepted subset of Rust, which may grow.
 //!
 //! # Support surface
 //!
@@ -104,31 +104,46 @@ mod value_match_untyped_tests;
 #[path = "tests/pad.rs"]
 mod pad_tests;
 
-/// Marks an inline Rust module as GUST GPU code, or a free scalar function as an element-wise map (D60).
+/// Marks an inline Rust module as GUST GPU code.
 ///
-/// On a module, the macro validates a deliberately small Rust subset, translates each
-/// kernel directly to Slang, and generates host-side handles and descriptors. On a
-/// function (`#[gpu] pub fn saxpy(a: f32, x: f32, y: f32) -> f32 { .. }`) the function stays
-/// as written and the macro adds a module of the same name with a generated grid-stride
-/// kernel and the calls `map`, `map_on`, `map_gpu`, `map_gpu_on`, `map_async` and
-/// `map_on_async` (under `GUST_PROFILE=cpu`: `map`, `map_on` and `map_on_async`).
+/// The macro validates a deliberately small Rust subset, translates each kernel directly to Slang, and generates
+/// host-side handles and descriptors. A free scalar function takes [`gpu_fn`] instead (D237); `#[gpu_module]` on
+/// anything but an inline module is GUST-E0702.
 ///
 /// Two optional arguments, in either order and each at most once (anything else is GUST-E0701): `route = "<tag>"`
 /// (build-time routing) and `crate = <path>`. The expansion names the facade as `::gust`, which only a crate with a
 /// direct dependency on `gust-compute` named `gust` has; a crate that reaches it through another crate's
-/// `pub use gust;` says where with `#[gpu(crate = ::inner::gust)]` (the path starts with `::` or `crate::`). A final
-/// pass then rewrites each `::gust::` of the output that begins a path to that path: not one after a path segment (as
-/// in `::inner::gust::`) or in a qualified path (`<T as X>::gust::`); one after a keyword, `->`, a lifetime or the end
-/// of a list of generics (`impl<T> ::gust::Tr`) is rewritten, and so is one after a `>` with no `<` before it in the
-/// same group. A `::gust` right after any other `>` is left as written, which includes a comparison when an earlier `<`
-/// (an operator too, in this or an earlier statement of the block) is still unmatched, as in `a < b && d > ::gust::K`:
-/// rustc then reports E0433 for it, and writing `d > (::gust::K)` avoids that. Spacing is ignored, so `S<T> ::gust::x`
-/// and `S<T>::gust::x` are alike. Tokens you wrote yourself inside the module that spell
-/// one are rewritten too. Without the argument nothing is rewritten. The
-/// function-map form still names `::gust_wgpu` literally, so it needs a direct dependency on `gust-compute-wgpu`
-/// (the module form does not).
+/// `pub use gust;` says where with `#[gpu_module(crate = ::inner::gust)]` (the path starts with `::` or `crate::`). A
+/// final pass then rewrites each `::gust::` of the output that begins a path to that path: not one after a path
+/// segment (as in `::inner::gust::`) or in a qualified path (`<T as X>::gust::`); one after a keyword, `->`, a
+/// lifetime or the end of a list of generics (`impl<T> ::gust::Tr`) is rewritten, and so is one after a `>` with no
+/// `<` before it in the same group. A `::gust` right after any other `>` is left as written, which includes a
+/// comparison when an earlier `<` (an operator too, in this or an earlier statement of the block) is still unmatched,
+/// as in `a < b && d > ::gust::K`: rustc then reports E0433 for it, and writing `d > (::gust::K)` avoids that.
+/// Spacing is ignored, so `S<T> ::gust::x` and `S<T>::gust::x` are alike. Tokens you wrote yourself inside the module
+/// that spell one are rewritten too. Without the argument nothing is rewritten.
 #[proc_macro_attribute]
-pub fn gpu(attribute: TokenStream, item: TokenStream) -> TokenStream {
+pub fn gpu_module(attribute: TokenStream, item: TokenStream) -> TokenStream {
+    gpu_entry(Form::Module, attribute, item)
+}
+
+/// Marks a free scalar function as an element-wise map (D60).
+///
+/// The function stays as written (`#[gpu_fn] pub fn saxpy(a: f32, x: f32, y: f32) -> f32 { .. }`) and the macro adds a
+/// module of the same name with a generated grid-stride kernel and the calls `map`, `map_on`, `map_gpu`,
+/// `map_gpu_on`, `map_async` and `map_on_async` (under `GUST_PROFILE=cpu`: `map`, `map_on` and `map_on_async`). A
+/// module takes [`gpu_module`] instead (D237); `#[gpu_fn]` on anything but a free function is GUST-E0702.
+///
+/// It takes the same two optional arguments as [`gpu_module`], `route = "<tag>"` and `crate = <path>`, with the same
+/// rules (`#[gpu_fn(crate = ::inner::gust)]`). The expansion names `::gust_wgpu` literally, so it needs a direct
+/// dependency on `gust-compute-wgpu` (the module form does not).
+#[proc_macro_attribute]
+pub fn gpu_fn(attribute: TokenStream, item: TokenStream) -> TokenStream {
+    gpu_entry(Form::Function, attribute, item)
+}
+
+/// The shared body of the two attribute macros.
+fn gpu_entry(form: Form, attribute: TokenStream, item: TokenStream) -> TokenStream {
     // The one place that reads the build profile (D44, R1-9): everything below takes it as an argument, so tests
     // never set an environment variable. `gust`'s build script validates the value; the macro only asks whether it
     // is exactly `cpu`. The expansion also emits `option_env!("GUST_PROFILE")`, which is what makes rustc track this
@@ -136,12 +151,33 @@ pub fn gpu(attribute: TokenStream, item: TokenStream) -> TokenStream {
     let value = std::env::var("GUST_PROFILE").ok();
     let profile = expand::Profile::from_value(value.as_deref());
     gpu_impl_routed(
+        form,
         attribute.into(),
         item.into(),
         profile,
         &expand::routing::process_variable,
     )
     .into()
+}
+
+/// Which attribute macro was written: the item it is on has to match (D237).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Form {
+    /// `#[gpu_module]`: an inline module.
+    Module,
+    /// `#[gpu_fn]`: a free scalar function, the element-wise map.
+    Function,
+}
+
+impl Form {
+    /// The form that fits `item`, for tests that pass an item without saying which attribute is on it.
+    #[cfg(test)]
+    fn of(item: &proc_macro2::TokenStream) -> Form {
+        match diagnostics::parse2::<syn::Item>(Code::ItemNotModule, item.clone()) {
+            Ok(syn::Item::Fn(_)) => Form::Function,
+            _ => Form::Module,
+        }
+    }
 }
 
 /// A parallel loop written at the call site (slice m7.p, plan section 3.1):
@@ -164,8 +200,9 @@ pub fn gpu(attribute: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// A third clause, `crate(<path>);`, goes with the others (before the loop, each at most
 /// once) and names where `gust` is for a crate that reaches it through another crate (`crate(::inner::gust);`, as
-/// `#[gpu(crate = ..)]` does); the path starts with `::` or `crate::`. It rewrites each `::gust::` of the
-/// expansion that begins a path (the rule of `#[gpu(crate = ..)]`), in your body too. The expansion names `::gust_wgpu` literally, so a call still needs a direct dependency
+/// `#[gpu_module(crate = ..)]` does); the path starts with `::` or `crate::`. It rewrites each `::gust::` of the
+/// expansion that begins a path (the rule of `#[gpu_module(crate = ..)]`), in your body too. The expansion names
+/// `::gust_wgpu` literally, so a call still needs a direct dependency
 /// on `gust-compute-wgpu`. The clause is the grammar's own: `crate` followed by `(` cannot begin a loop pattern.
 ///
 /// ```text
@@ -175,7 +212,7 @@ pub fn gpu(attribute: TokenStream, item: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro]
 pub fn par_for(input: TokenStream) -> TokenStream {
-    // The one place that reads the build profile, as for `#[gpu]` (D44, R1-9).
+    // The one place that reads the build profile, as for `#[gpu_module]` (D44, R1-9).
     let value = std::env::var("GUST_PROFILE").ok();
     let profile = expand::Profile::from_value(value.as_deref());
     par_for::par_for(input.into(), profile).into()
@@ -202,7 +239,8 @@ pub(crate) fn gpu_impl(
     gpu_impl_with(attribute, item, expand::Profile::Other)
 }
 
-/// [`gpu`] on `proc_macro2` tokens, so it can be tested outside a proc-macro context.
+/// [`gpu_entry`] on `proc_macro2` tokens, so it can be tested outside a proc-macro context. The form is the one that
+/// fits `item`; a test of the refusal of the wrong attribute calls [`gpu_impl_routed`] with the form it wants.
 ///
 /// Every failure returns the `compile_error!` followed by the user's own code (see
 /// [`recover`]), so rustc and editors still resolve the module's items and the one real
@@ -216,14 +254,15 @@ pub(crate) fn gpu_impl_with(
     item: proc_macro2::TokenStream,
     profile: expand::Profile,
 ) -> proc_macro2::TokenStream {
-    gpu_impl_routed(attribute, item, profile, &|_| None)
+    gpu_impl_routed(Form::of(&item), attribute, item, profile, &|_| None)
 }
 
 /// [`gpu_impl_with`] with the place the route variables are read from (the process for the macro, M8, D66). The
-/// arguments `#[gpu]` takes are `route = "<tag>"` and `crate = <path>` (audit S6); anything else is GUST-E0701. With a
-/// `crate` the whole output, errors and the user's own code beside them included, goes through
+/// arguments `#[gpu_module]` and `#[gpu_fn]` take are `route = "<tag>"` and `crate = <path>` (audit S6); anything else
+/// is GUST-E0701. With a `crate` the whole output, errors and the user's own code beside them included, goes through
 /// [`forward::forward_crate`].
 pub(crate) fn gpu_impl_routed(
+    form: Form,
     attribute: proc_macro2::TokenStream,
     item: proc_macro2::TokenStream,
     profile: expand::Profile,
@@ -253,22 +292,24 @@ pub(crate) fn gpu_impl_routed(
         }
     };
     let request = expand::routing::Request { tag, variables };
-    let expansion = expand_item(parsed, &item, profile, &request);
+    let expansion = expand_item(form, parsed, &item, profile, &request);
     match krate {
         Some(path) => forward::forward_crate(expansion, &path),
         None => expansion,
     }
 }
 
-/// The expansion of the item `#[gpu]` is on, before the facade path is forwarded.
+/// The expansion of the item the attribute of `form` is on, before the facade path is forwarded. An item of the other
+/// kind is GUST-E0702, and the message names the attribute that fits it (D237).
 fn expand_item(
+    form: Form,
     parsed: syn::Result<syn::Item>,
     item: &proc_macro2::TokenStream,
     profile: expand::Profile,
     request: &expand::routing::Request<'_>,
 ) -> proc_macro2::TokenStream {
     match parsed {
-        Ok(syn::Item::Mod(module)) => {
+        Ok(syn::Item::Mod(module)) if form == Form::Module => {
             match expand::expand_with_routed(module.clone(), profile, request) {
                 Ok(tokens) => tokens,
                 Err(error) => recover::beside_error(error, item, Some(without_nested_gpu(module))),
@@ -278,7 +319,7 @@ fn expand_item(
         // written.
         // A `#[variant]` on it is GUST-E0740: the function is one body. It goes back without the attribute, which
         // would be an unknown attribute, and so a second error, to rustc.
-        Ok(syn::Item::Fn(function)) => {
+        Ok(syn::Item::Fn(function)) if form == Form::Function => {
             if let Some(error) = expand::variant::misplaced_on_function(&function) {
                 let function = expand::variant::without_variant(function);
                 return recover::beside_error(
@@ -292,20 +333,45 @@ fn expand_item(
                 Err(error) => recover::beside_error(error, item, None),
             }
         }
+        // The other attribute's item: a module under `#[gpu_fn]` goes back as written, with the nested attributes
+        // dropped as for any rejected module. A function under `#[gpu_module]` goes back without `#[kernel]` and
+        // `#[variant]`: they are unknown attributes outside a module, and so a second error, to rustc.
+        Ok(syn::Item::Fn(mut function)) => {
+            let error =
+                diagnostics::error(Code::ItemNotModule, &function, wrong_item_message(form));
+            function.attrs.retain(|attribute| {
+                !attribute.path().is_ident("kernel") && !attribute.path().is_ident("variant")
+            });
+            recover::beside_error(error, &quote::ToTokens::to_token_stream(&function), None)
+        }
+        Ok(syn::Item::Mod(module)) => {
+            let error = diagnostics::error(Code::ItemNotModule, &module, wrong_item_message(form));
+            recover::beside_error(error, item, Some(without_nested_gpu(module)))
+        }
         Ok(other) => {
-            let error = diagnostics::error(
-                Code::ItemNotModule,
-                &other,
-                "#[gpu] goes on an inline module (`#[gpu] mod name { .. }`) or on a free scalar function \
-                 (`#[gpu] fn name(..) -> T { .. }`)",
-            );
+            let error = diagnostics::error(Code::ItemNotModule, &other, wrong_item_message(form));
             recover::beside_error(error, item, None)
         }
         Err(error) => recover::beside_error(error, item, None),
     }
 }
 
-/// A rejected module goes back beside the error as written, except that a `#[gpu]` function inside it (GUST-E0716)
+/// The text of GUST-E0702 for an item the attribute of `form` does not take: what it takes, and which attribute takes
+/// the other kind.
+fn wrong_item_message(form: Form) -> &'static str {
+    match form {
+        Form::Module => {
+            "`#[gpu_module]` goes on an inline module (`#[gpu_module] mod name { .. }`); a free scalar function takes \
+             `#[gpu_fn]` (`#[gpu_fn] fn name(..) -> T { .. }`)"
+        }
+        Form::Function => {
+            "`#[gpu_fn]` goes on a free scalar function (`#[gpu_fn] fn name(..) -> T { .. }`); an inline module takes \
+             `#[gpu_module]` (`#[gpu_module] mod name { .. }`)"
+        }
+    }
+}
+
+/// A rejected module goes back beside the error as written, except that a `#[gpu_fn]` function inside it (GUST-E0716)
 /// loses the attribute: left on, it would expand by itself in the user's crate and add errors that only follow from
 /// the first. A `#[variant]` function goes back as a `#[kernel]` and `#[variant]` anywhere else is dropped (M8, D139):
 /// the recovery of `recover.rs` knows the one attribute, and an unknown attribute would be a second error.

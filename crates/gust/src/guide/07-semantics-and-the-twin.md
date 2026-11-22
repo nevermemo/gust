@@ -1,6 +1,6 @@
 # Semantics and the twin
 
-A `#[gpu]` kernel is Rust that runs on a GPU, so two questions decide whether you can trust a result: what does the
+A `#[gpu_module]` kernel is Rust that runs on a GPU, so two questions decide whether you can trust a result: what does the
 kernel mean, and where may the GPU and plain Rust disagree. This chapter is the short version of
 [SEMANTICS](https://github.com/nevermemo/gust/blob/main/docs/SEMANTICS.md), the page that states the contract. It
 summarises sections 1 to 3 (scope, labels, the defined domain), the known-mismatch ledger (section 7) and the SPIR-V
@@ -98,8 +98,8 @@ index against the length of every buffer it reads or writes (condition 6). The d
 (`no_run`):
 
 ```rust,no_run
-# use gust::gpu;
-#[gpu]
+# use gust::gpu_module;
+#[gpu_module]
 mod hashing {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn mix(

@@ -44,7 +44,7 @@ and a value above 4096 is refused beside W9). On these backends:
 | `cubecl-wgpu`, `cubecl-wgpu-tuned` | the `cubecl` build only: W1 to W4, W7 and W9 written as CubeCL 0.11.4 kernels in Rust, run through CubeCL's wgpu runtime on the run's adapter; same algorithm (checked launch, line size 1; not a like-for-like row, see the CubeCL comparator below) and tuned (unchecked launch, line size 4 where the length allows) (the CubeCL comparator, below) |
 | `gust-twin` | the GUST CPU twin (`--cfg gust_dual`), single thread, a semantic reference with per-call validation (not the production CPU target) |
 | `gust-cpu` | the production CPU target (`GUST_PROFILE=cpu` build, no GPU runtime): the kernel's Rust body through `CpuDevice`, single thread, typed dispatch |
-| `gust-cpu-par` | the same build's generated element-wise map (`#[gpu] fn`, chunked over scoped threads), W1 and W2 only (a map takes scalars, W3 needs a runtime coefficient array, W4 is a scatter) |
+| `gust-cpu-par` | the same build's generated element-wise map (`#[gpu_fn] fn`, chunked over scoped threads), W1 and W2 only (a map takes scalars, W3 needs a runtime coefficient array, W4 is a scatter) |
 | `rayon-1`, `rayon-N` | `par_iter` over host slices in a pool of 1 thread and of all logical cores |
 | `serial` | a plain loop (sanity baseline, not in the spike's brief) |
 
@@ -207,7 +207,7 @@ pipeline was already created once on the same device by `prepare`).
 
 **Precompiled cold start.**
 
-The `#[gpu]` macro embeds artifacts found in `gust-artifacts/` beside the Cargo.toml of the package that compiles it.
+The `#[gpu_module]` macro embeds artifacts found in `gust-artifacts/` beside the Cargo.toml of the package that compiles it.
 `gust-bench` has none, so it compiles Slang at run time. `gust-bench-pre` is the same harness sources (its binary
 `gust-bench-pre` has `path = "../gust-bench/src/main.rs"`) in a package of its own, with the committed artifacts in
 `gust-bench-pre/gust-artifacts/` (every kernel the build has: add, saxpy, horner, histogram, matmul and step, and the six W6 stage kernels: center, amplify, shift, rescale, energy and combine); a build of it embeds them and its

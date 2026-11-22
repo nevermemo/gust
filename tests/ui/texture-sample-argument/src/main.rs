@@ -2,7 +2,7 @@
 // `Sampler`, so rustc reports nothing of its own, but the shader needs the parameter.
 // expected.txt pins the code, the line of the offending node and the message.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod shade {
     #[kernel]
     pub fn paint(id: SV_DispatchThreadID, image: Texture2D<Vec4>, filter: Sampler, mut out: WriteTexture2D<Rgba32Float>) {

@@ -1,7 +1,7 @@
 // A `return` in a kernel that calls a subgroup operation is GUST-E0415, as it is for a barrier: an invocation that
 // leaves early never reaches the operation the others combine at.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod scan {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn totals(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mut out: RWStructuredBuffer<u32>) {

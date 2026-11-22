@@ -1,6 +1,6 @@
 // A tuple struct is GUST-E0104: a struct has named fields. expected.txt pins the code and the line of the struct.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Pair(u32, f32);
 

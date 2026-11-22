@@ -33,10 +33,10 @@ use crate::{
 /// the `GpuVec` dropped may run after the pool has cleared or reused the buffer. Submit them before the drop.
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 /// use gust_wgpu::GpuVec;
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn add_one(id: SV_DispatchThreadID, src: StructuredBuffer<float>, mut dst: RWStructuredBuffer<float>) {

@@ -1,6 +1,6 @@
 // A subgroup operation under an `if` is GUST-E0747: only the invocations that take the branch would combine.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod scan {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn totals(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mut out: RWStructuredBuffer<u32>) {

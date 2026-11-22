@@ -1,7 +1,7 @@
 // `.len()` of an array is the constant `N`, so a call inside its receiver would not run on the GPU while the CPU twin
 // runs it: GUST-E0306 (bind the element to a local first).
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Counter {
         pub n: u32,

@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod arrays {
     // Slice m9.r1 (D159): fixed-size arrays `[T; N]` as values: `N` a literal above zero, `T` a scalar, vector, matrix or
     // struct or enum of the module. Literals `[a, b]` and repeats `[e; N]`; indexing with `i as usize` (the only place

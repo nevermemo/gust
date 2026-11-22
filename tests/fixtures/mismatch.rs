@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod mismatch {
     // Known-mismatch ledger kernels (roadmap M3, m3.a1, docs/SEMANTICS.md). Every kernel
     // reads its operands from buffers, so the validator cannot reject them and the

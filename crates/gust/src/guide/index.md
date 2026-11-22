@@ -14,7 +14,7 @@ is split over two crates because the running chapters need the backend, and `gus
 1. [Why GUST][`crate::guide::why_gust`]: what GUST is, and what it is not.
 2. [Install and the first program][`crate::guide::install_and_first_program`]: the packages, the tools, and a vector
    add.
-3. [The authoring model][`crate::guide::authoring_model`]: `#[gpu]` modules, kernels, the accepted subset and the
+3. [The authoring model][`crate::guide::authoring_model`]: `#[gpu_module]` modules, kernels, the accepted subset and the
    diagnostic codes.
 4. Running kernels: typed calls, buffers, batches, staged graphs and resident data. Written; it lives in
    `gust_wgpu::guide` (linked at the end of this page).

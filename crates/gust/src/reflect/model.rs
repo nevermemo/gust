@@ -383,9 +383,9 @@ impl PodCrossCheck {
 /// The result of a native compile: the compiler output and the reflection of the same linked program.
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {

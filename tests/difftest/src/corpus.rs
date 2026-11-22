@@ -27,14 +27,22 @@ pub fn batch_hash(programs: &[Program]) -> u64 {
     batch_hash_as_format(programs, DIFFTEST_FORMAT)
 }
 
-/// [`batch_hash`] with the format stamp of the emitted text read as `format`: the stamp is the one thing a format bump
-/// changes in a program that is otherwise the same, so this reproduces the hash an older format wrote for it.
+/// The first format whose emitted modules say `#[gust::gpu_module]`: the attribute of formats 1 to 14 was
+/// `#[gust::gpu]` (m14.rename, D237).
+const GPU_MODULE_ATTRIBUTE_FORMAT: u32 = 15;
+
+/// [`batch_hash`] with the format stamp of the emitted text read as `format`, and the attribute spelled as that format
+/// wrote it: the stamp and the spelling of the attribute are the two things a format bump has changed in a program
+/// that is otherwise the same, so this reproduces the hash an older format wrote for it.
 pub fn batch_hash_as_format(programs: &[Program], format: u32) -> u64 {
-    let text = emit_crate_source(programs).replacen(
+    let mut text = emit_crate_source(programs).replacen(
         &format!("(DIFFTEST_FORMAT {DIFFTEST_FORMAT})"),
         &format!("(DIFFTEST_FORMAT {format})"),
         1,
     );
+    if format < GPU_MODULE_ATTRIBUTE_FORMAT {
+        text = text.replace("#[gust::gpu_module]", "#[gust::gpu]");
+    }
     let mut hash = fnv1a64(text.as_bytes());
     for program in programs {
         for input in &program.inputs {
@@ -148,6 +156,28 @@ mod tests {
         for (seed, hash) in format_3 {
             let batch = generate_batch_in(Space::Float, seed).unwrap();
             let same = batch_hash_as_format(&batch.programs, 3) == hash;
+            assert!(same, "seed {seed}");
+        }
+    }
+
+    /// Format 15 (m14.rename) only respells the attribute (`#[gust::gpu]` became `#[gust::gpu_module]`), so every seed
+    /// still holds its format-14 programs: the batch hashes of `seeds.txt` at format 14 (read with the stamp as 14,
+    /// which writes the old spelling) are the same, whole batch, math space included.
+    #[test]
+    fn a_batch_still_holds_the_format_14_programs_of_every_seed() {
+        let format_14 = [
+            (1, 0x2221_b032_44da_60e1_u64),
+            (2, 0xb9f1_827a_ca78_2593),
+            (3, 0xcc09_ed99_0b24_fe53),
+            (4, 0x6805_b3ea_01ea_d76f),
+            (5, 0x632b_8803_c8ab_1b22),
+            (6, 0x5a94_0e93_645b_ca4d),
+            (7, 0x3c28_481e_4cd6_635f),
+            (8, 0xb947_3fe1_b8e5_45fb),
+        ];
+        for (seed, hash) in format_14 {
+            let batch = generate_batch(seed).unwrap();
+            let same = batch_hash_as_format(&batch.programs, 14) == hash;
             assert!(same, "seed {seed}");
         }
     }

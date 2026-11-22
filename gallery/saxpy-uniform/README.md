@@ -6,7 +6,7 @@
 
 What it shows:
 
-- A uniform is a struct of the `#[gpu]` module with no implicit padding. `Params` writes its three `pad` fields out, so
+- A uniform is a struct of the `#[gpu_module]` module with no implicit padding. `Params` writes its three `pad` fields out, so
   the 16 bytes of the constant buffer (a uniform's size is a multiple of 16) are the 16 bytes of the Rust value.
   `create_uniform` refuses a padded type with a message that names the fix,
   and the macro refuses a layout with a gap at compile time.

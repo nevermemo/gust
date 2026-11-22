@@ -1,7 +1,7 @@
 // An enum is never stored: a buffer whose element is an enum is GUST-E0211. expected.txt pins the code and the line
 // of the parameter type.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[derive(PartialEq, Eq)]
     pub enum Level {

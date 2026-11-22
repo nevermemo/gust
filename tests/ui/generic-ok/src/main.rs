@@ -1,7 +1,7 @@
 // Control case for generics (m9.g2): a generic helper with two bounds and a `where` clause, a generic inherent method,
 // `-> T`, a generic helper that calls another, a unit enum as the instantiation. This crate must compile.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod shapes {
     pub trait Shape {
         fn area(&self) -> u32;

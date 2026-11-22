@@ -12,7 +12,7 @@ use gust::routed::{Error, OnCpu, Routed, RoutedBuffer, RoutedDevice};
 use gust::{Access, Call, Kernel, KernelDescriptor, LengthRule, Resource, Run};
 use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod on_gpu {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn scale2(
@@ -27,7 +27,7 @@ mod on_gpu {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod twin {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn plus1_body(

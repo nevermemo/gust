@@ -1,7 +1,7 @@
 // The accepted forms: every access of a texture, a sampler, the sizes, a kernel without a sampler and one with two.
 // This crate must compile, so the expansion (descriptor, typed call, CPU twin) is checked by rustc.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod shade {
     #[kernel(workgroup_size(8, 8, 1))]
     pub fn blur(id: SV_DispatchThreadID, image: Texture2D<Vec4>, bilinear: Sampler, mut out: WriteTexture2D<Rgba32Float>) {

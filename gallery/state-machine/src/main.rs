@@ -1,10 +1,10 @@
 // ANCHOR: imports
-use gust::{Independent, gpu};
+use gust::{Independent, gpu_module};
 use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 // ANCHOR_END: imports
 
 // ANCHOR: kernel
-#[gpu]
+#[gpu_module]
 mod scanner {
     /// What a symbol is, as far as the scanner cares.
     #[derive(PartialEq, Eq)]

@@ -9,7 +9,7 @@ use std::ops::Bound;
 use gust_wgpu::inspect::InspectError;
 use gust_wgpu::{BufferBinding, Error, GpuBufferAccess};
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod world {
     pub struct Agent {
         pub id: uint,

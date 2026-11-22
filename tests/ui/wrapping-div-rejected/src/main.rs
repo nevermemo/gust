@@ -2,7 +2,7 @@
 // arguments that is not one of the accepted ones is E0325, and the message lists the accepted methods; it used to be
 // E0304 with the text "GPU built-ins do not accept arguments or type arguments". expected.txt pins the code.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod hashing {
     #[kernel]
     pub fn divide(id: SV_DispatchThreadID, input: StructuredBuffer<uint>, mut output: RWStructuredBuffer<uint>) {

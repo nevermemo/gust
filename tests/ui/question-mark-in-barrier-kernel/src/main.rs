@@ -3,7 +3,7 @@
 // helper on purpose: in the unit-returning kernel itself rustc would add its own E0277 to the one macro error, which
 // this check refuses. The kernel-body case is covered by the unit tests of the barrier pass and of the rejections.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     fn half(x: u32) -> Option<u32> {
         Some(x / 2u32)

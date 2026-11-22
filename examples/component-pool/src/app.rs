@@ -34,7 +34,7 @@
 
 use std::{path::PathBuf, time::Instant};
 
-use gust::{Independent, KernelDescriptor, gpu};
+use gust::{Independent, KernelDescriptor, gpu_module};
 use gust_algo::{compact, schedule::Pass};
 #[cfg(test)]
 use gust_wgpu::BufferBinding;
@@ -43,7 +43,7 @@ use gust_wgpu::{
     StagedGraph, render_wgpu_source,
 };
 
-#[gpu]
+#[gpu_module]
 mod pool {
     #[derive(Debug, PartialEq)]
     pub struct Particle {

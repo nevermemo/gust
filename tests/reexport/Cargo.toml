@@ -1,4 +1,4 @@
-# Fixture workspace for the facade-path option (`#[gpu(crate = ..)]` and `par_for!`'s `crate(..);`, audit S6, D48):
+# Fixture workspace for the facade-path option (`#[gpu_module(crate = ..)]` and `par_for!`'s `crate(..);`, audit S6, D48):
 # `inner` depends on `gust-compute` and re-exports it (`pub use gust;`); `outer` depends on `inner` and on
 # `gust-compute-wgpu` (which the map form and `par_for!` still name literally) but NOT on `gust-compute`, and must
 # compile the module form, a `route` module, a map function and `par_for!` through `::inner::gust`. It is a workspace

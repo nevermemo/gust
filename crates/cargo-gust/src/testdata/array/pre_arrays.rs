@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 pub mod pre_arrays {
     pub struct Bag {
         pub items: [u32; 4],

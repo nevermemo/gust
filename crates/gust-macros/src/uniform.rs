@@ -171,7 +171,7 @@ pub(crate) fn check_parameters(stage: &dyn StageProfile, items: &[syn::Item]) ->
             return Err(diagnostics::error(
                 Code::UniformElement,
                 resource.parameter,
-                "a uniform parameter holds one struct declared in the same `#[gpu]` module: write `Uniform<Params>` \
+                "a uniform parameter holds one struct declared in the same `#[gpu_module]` module: write `Uniform<Params>` \
                  with `Params` a struct of the module (a scalar, a vector or a matrix goes in a field of it)",
             ));
         }

@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod scan {
     // m7.r2: the kernels of `gust_algo::scan` (plan section 5.3), `u32` only, plain `+` (inside the domain while no
     // inclusive prefix, the total included, overflows).

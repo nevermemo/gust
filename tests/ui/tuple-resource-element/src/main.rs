@@ -1,7 +1,7 @@
 // A buffer is no element of a tuple, GUST-E0212: a helper takes values only (D154), and a tuple would carry the
 // buffer in. expected.txt pins the code and the line of the element type.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     fn read(t: (StructuredBuffer<u32>, u32)) -> u32 {
         t.0[t.1]

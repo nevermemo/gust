@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod uniforms {
     // No struct here is marked `#[pad]`, so the fields written are the whole constant-buffer layout. A struct a uniform
     // reaches is rounded up to 16 bytes, so `Light` fills its last 8 bytes with explicit fields and `Frame` is built so

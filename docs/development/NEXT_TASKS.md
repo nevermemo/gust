@@ -51,7 +51,7 @@ test module; do not mix that mechanical move with behavior changes.
   `F32Binding`/`U32Binding` types are deprecated since 0.2.0, removal planned for 1.0.
 - O4: access typestate on `GpuBuffer` (`GpuBuffer<T, A>`) so a read-only buffer passed
   as read-write fails at compile time; changes every `create_*` signature and the pool.
-- O3: a `#[gpu]` parameter attribute for independent length, if D15's call-site
+- O3: a `#[gpu_module]` parameter attribute for independent length, if D15's call-site
   `Independent(&buf)` is revisited when M7's primitives need it.
 - Kernels with a `Uniform<T>`/`ConstantBuffer<T>` parameter have no generated typed call,
   and the headless runtime rejects them (`Error::UnsupportedParameter`); plain value
@@ -91,8 +91,8 @@ test module; do not mix that mechanical move with behavior changes.
   and derivation-domain tests of each check-cpu example (`CPU_REQUIRED_TESTS`) are required
   by name; the example calls of `check-examples` and `check-full` and the filtered
   check-feature calls are still counted only.
-- The module-wide `#[allow(unexpected_cfgs)]` that the `#[gpu]` expansion carries also
-  silences a user's cfg typos inside the `#[gpu]` module; narrow it to the emitted twin
+- The module-wide `#[allow(unexpected_cfgs)]` that the `#[gpu_module]` expansion carries also
+  silences a user's cfg typos inside the `#[gpu_module]` module; narrow it to the emitted twin
   items.
 - `invocations` in `gust::cpu` (done in m7.d, D102): it walks the rounded grid in all three axes, caps its range at
   2^32 ids and debug-asserts that `validate` already refused a larger launch (it uses `launch_invocations`). The twin
@@ -131,7 +131,7 @@ test module; do not mix that mechanical move with behavior changes.
 
 ## M6 follow-ups (filed during M6)
 
-- `cargo xtask check-artifacts` does not export the `#[gpu]` modules of integration tests (for example
+- `cargo xtask check-artifacts` does not export the `#[gpu_module]` modules of integration tests (for example
   `crates/gust-wgpu/tests/vectors.rs`); their kernels are checked only where the tests run them (m6.g1). Done
   in m6.x for the three golden modules (products, vectors, uniforms); other test modules are still unexported.
 - A constant float2x2 or float3x3 (`Mat2::IDENTITY`, `Mat3::IDENTITY`) crashes the runner when its SPIR-V is
@@ -286,16 +286,16 @@ test module; do not mix that mechanical move with behavior changes.
   scaling from 1e6 in all three runs (smoke and two published) while 1 and 256 multiply-adds scale linearly
   (not investigated). Probe slice (M7 sanity, Fable/Opus): time the dense64 cell at 4.2e6 with timestamp queries; in
   run 1 dense64 took 69.95 ms and dense256 took 69.88 ms, and across runs the cell took 43.6, 50.9 and 70.0 ms.
-  Also: a `#[gpu] fn` from an artifact under `native` (the workspace profile pin requires
+  Also: a `#[gpu_fn] fn` from an artifact under `native` (the workspace profile pin requires
   `slang-runtime` on every
-  example's gust-wgpu, and `native` refuses it; tests/precompiled has no `#[gpu] fn`); `map_async` runs in
+  example's gust-wgpu, and `native` refuses it; tests/precompiled has no `#[gpu_fn] fn`); `map_async` runs in
   headless Chrome inside `check-web` (web-vector-add awaits `double_add::map_async` and fails unless the page logs
   `GUST_OK`), on one adapter and browser only, and it opens a second device through
   `default_device_async` beside the explicit one; the resident chain's count sees only pooled buffers, so a
   submission or read-back counter would close the gap (m7.a2 review).
 - m7.a1 follow-ups: a `#[diagnostic::on_unimplemented]` on `MapArg` so a type mismatch
   reads in GUST's words (re-pin the two check-ui fixtures); `missing_docs` fires on generated constants of both
-  `#[gpu] mod` and `#[gpu] fn` (older); `TooLong` is unit-tested only.
+  `#[gpu_module] mod` and `#[gpu_fn] fn` (older); `TooLong` is unit-tested only.
 - m7.a0 follow-ups (filed at the M7 close): only `create_zeroed_buffer` has an `_async` sibling, and only on wasm32;
   `try_create_typed_buffer` has none, and the wasm32 synchronous forms apply the size pre-check without the
   out-of-memory scope. The out-of-memory path is unit-test only (no allocation was driven to a real device
@@ -438,7 +438,7 @@ test module; do not mix that mechanical move with behavior changes.
 - A prebuilt reflection helper per platform: `cargo gust slang build-helper` compiles the helper with a C++ compiler
   against the managed Slang. A prebuilt binary per platform, fetched and checked like the Slang pin, would drop the
   compiler from the first-user path (MR plan, mr.z).
-- `#[gpu(crate = ..)]` and a `$crate` forwarder in `par_for!`: generated code names `::gust::` and `::gust_wgpu::`
+- `#[gpu_module(crate = ..)]` and a `$crate` forwarder in `par_for!`: generated code names `::gust::` and `::gust_wgpu::`
   (D106), so a consumer that renames a dependency adds `extern crate <name> as gust;`. A `crate = ..` argument, and
   `par_for!` forwarding `$crate`, would remove that step.
 - Release tooling for 0.1.x (the Fable and Codex sanity checks): `cargo-semver-checks` (done in M8 as the CI job
@@ -497,7 +497,7 @@ test module; do not mix that mechanical move with behavior changes.
   recurs: retry the enumeration, or fail with a message that names the empty enumeration (a test is never skipped
   silently, AGENTS.md).
 - The portable floor (`limits = "portable"`, GUST-E0746) checks `#[kernel]` functions only. It does not check the
-  `#[gpu] fn` element-wise maps or `par_for!` calls, which stay with the launch checks of `gust-compute-wgpu`
+  `#[gpu_fn] fn` element-wise maps or `par_for!` calls, which stay with the launch checks of `gust-compute-wgpu`
   (`DeviceLimit` at run time). README's "The portable floor is opt-in" bullet, SEMANTICS' "The portable floor (opt-in,
   m8.f, D143)" and DIAGNOSTICS' GUST-E0746 entry say so. A build-time check for them is open and filed with no slice.
 - A run of `crates/gust-wgpu/tests/subgroup.rs` on the Radeon 890M with adapter selection (`DeviceOptions` by index or

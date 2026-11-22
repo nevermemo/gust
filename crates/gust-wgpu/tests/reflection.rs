@@ -150,7 +150,7 @@ fn cached_pipeline_does_not_authorize_a_changed_contract() {
 /// the compile copy's `#line` directives). The macro now emits that local as `__gust_r_new`, which slangc takes, so
 /// the test deletes the prefix from the Slang text and keeps the macro's line table: the bare `new` is the
 /// Slang-only error, on the same lines.
-#[gust::gpu]
+#[gust::gpu_module]
 mod rejected_by_slang {
     #[kernel]
     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
@@ -314,7 +314,7 @@ fn the_native_helper_reports_a_handwritten_failure_at_the_rust_line() {
     assert!(!text.contains("reflection.rs"), "{text}");
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod nested {
     pub struct Inner {
         pub value: float,

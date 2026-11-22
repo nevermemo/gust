@@ -1,7 +1,7 @@
 // Spike M9.s0 X4 (pre-registered, slice m9.c): a closure that calls an earlier closure captures it (GUST-E0329).
 // Expected: one error at the let of quad, line 9, naming double.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>) {

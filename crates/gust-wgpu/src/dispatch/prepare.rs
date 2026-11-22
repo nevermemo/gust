@@ -168,7 +168,7 @@ impl HeadlessDevice {
 
     /// Decide whether a launch that the plain checks refused (`refused`) can run as pieces of the kernel's split
     /// variant (m11.g4b), and plan them. Only a `grid` launch refused for a workgroup limit (`refused` is that
-    /// [`Error::DeviceLimit`]) qualifies, and only when the kernel's `split` is the one the `#[gpu]` macro makes
+    /// [`Error::DeviceLimit`]) qualifies, and only when the kernel's `split` is the one the `#[gpu_module]` macro makes
     /// ([`split_variant_matches`]), the variant has a shader source in this build (its own precompiled artifact, D209,
     /// or the run-time compiler, D208: [`split_variant_has_a_shader_source`]), and the variant passes every limit the base passed (one
     /// more uniform, its binding index, the hidden uniform's 16 bytes against the uniform binding size, the

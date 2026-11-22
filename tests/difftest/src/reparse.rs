@@ -2,7 +2,7 @@
 //!
 //! `reparse(emit_module(p))` must give back exactly the body and the result of `p`. This is the check that catches an
 //! emitter that drops a parenthesis: rustc would accept `a << b + c` (it reads `a << (b + c)`), so neither the
-//! `#[gpu]` validator nor `cargo check` can see the difference; the AST comparison can.
+//! `#[gpu_module]` validator nor `cargo check` can see the difference; the AST comparison can.
 //!
 //! The parser reads only the grammar the emitter writes: `let`, assignment, `if`/`else`, `for v in 0u32..Nu32`, the
 //! final `out[i] = ...` store, and expressions with parentheses, unary `-`/`!`, `as`, the binary operators and

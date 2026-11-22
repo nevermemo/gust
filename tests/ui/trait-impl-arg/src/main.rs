@@ -1,6 +1,6 @@
 // impl Trait in a signature (m9.g1, GUST-E0218).
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Shape {
         fn area(&self) -> u32;

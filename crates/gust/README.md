@@ -2,14 +2,14 @@
 
 The core library of GUST: write a GPU kernel as a Rust module, and a proc macro translates the Rust syntax tree
 directly to Slang. This crate holds the typed surface (kernel descriptors, typed buffers, `Call` and `Run`), the
-`#[gpu]` attribute, the precompiled-artifact check, and the optional run-time Slang bridge.
+`#[gpu_module]` attribute, the precompiled-artifact check, and the optional run-time Slang bridge.
 
 GUST is an experimental Rust to Slang compute subsystem. It is pre-1.0 and follows SemVer for 0.x: a break bumps the
 minor version of all four packages, a patch only adds or fixes, so expect the API to change between 0.x minors.
 
 What this crate promises (the full text is the root README's section
 [Stability](https://github.com/nevermemo/gust/blob/v0.2.0/README.md#stability)): every item that is not `#[doc(hidden)]`;
-the `#[gpu]` language, meaning the accepted constructs and their lowering contract, and the `GUST-E....` diagnostic
+the `#[gpu_module]` language, meaning the accepted constructs and their lowering contract, and the `GUST-E....` diagnostic
 codes (a code keeps its meaning, a message may be reworded); the file formats that `cargo gust` writes and this crate
 checks; `gust.toml` and the `[package.metadata.gust]` table; the features `slang-runtime` and `spirv-route` by name; and
 the seven environment variables `GUST_PROFILE`, `GUST_SLANG_HOME`, `GUST_SLANG_REFLECT`, `GUST_ROUTE__*`,
@@ -24,7 +24,7 @@ cargo add gust-compute
 cargo add gust-compute-wgpu   # the headless wgpu backend that runs the kernels
 ```
 
-The package is `gust-compute`; the library is named `gust`, so code writes `use gust::...` and `#[gust::gpu]`.
+The package is `gust-compute`; the library is named `gust`, so code writes `use gust::...` and `#[gust::gpu_module]`.
 
 - The `slang-runtime` feature (off by default) compiles a kernel at run time by launching `slangc` and the native
   reflection helper. A production build leaves it off and ships the artifacts that `cargo gust build` writes.

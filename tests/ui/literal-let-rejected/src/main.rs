@@ -3,7 +3,7 @@
 // a division, a comparison or a shift. The help text asks for a suffix or an annotation. expected.txt pins the code
 // and the line of the literal, which is where the error points.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod sums {
     #[kernel]
     pub fn total(id: SV_DispatchThreadID, input: StructuredBuffer<uint>, mut output: RWStructuredBuffer<uint>) {

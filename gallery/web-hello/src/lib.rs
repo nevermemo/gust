@@ -1,17 +1,17 @@
-//! web-hello (gallery G9): the hello-gust sum in a browser. One `#[gpu]` map function, run on the browser's GPU through
-//! `map_async` and checked, in the page, against a plain Rust host reference. `cargo xtask check-gallery` builds the
-//! crate for `wasm32-unknown-unknown`, serves it from a loopback server, opens it in headless Chrome and reads the one
-//! line the page's Rust code logs to the console (see the README). On the host the crate is a library whose tests run the
-//! same kernel on the CPU twin.
+//! web-hello (gallery G9): the hello-gust sum in a browser. One `#[gpu_fn]` map function, run on the browser's GPU
+//! through `map_async` and checked, in the page, against a plain Rust host reference. `cargo xtask check-gallery`
+//! builds the crate for `wasm32-unknown-unknown`, serves it from a loopback server, opens it in headless Chrome and
+//! reads the one line the page's Rust code logs to the console (see the README). On the host the crate is a library
+//! whose tests run the same kernel on the CPU twin.
 
 // ANCHOR: imports
-use gust::gpu;
+use gust::gpu_fn;
 // ANCHOR_END: imports
 
 // ANCHOR: kernel
-/// The element-wise sum of two vectors. `#[gpu]` on a plain scalar function keeps the function as written and adds a
+/// The element-wise sum of two vectors. `#[gpu_fn]` on a plain scalar function keeps the function as written and adds a
 /// module of the same name with the kernel and the calls that run it (`map`, `map_async`, ..).
-#[gpu]
+#[gpu_fn]
 pub fn add(a: f32, b: f32) -> f32 {
     a + b
 }

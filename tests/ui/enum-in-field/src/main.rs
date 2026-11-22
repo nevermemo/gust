@@ -1,7 +1,7 @@
 // An enum is never stored: it has no `GpuPod` layout, so a struct field of an enum type is GUST-E0211. expected.txt pins
 // the code and the line of the field type.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[derive(PartialEq, Eq)]
     pub enum Level {

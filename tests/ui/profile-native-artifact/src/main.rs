@@ -8,7 +8,7 @@
 // error of `profile-native-no-artifact`, which is the point. The files are the ones `crates/gust/tests/fixtures/
 // precompiled` holds for this same kernel: the helper's output, not hand-written (see that directory's manifest).
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod vector_add {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn add(

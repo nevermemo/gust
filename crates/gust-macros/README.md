@@ -1,6 +1,6 @@
 # gust-compute-macros
 
-The proc macros of GUST: `#[gpu]` on a Rust module (or function) and `par_for!`. They translate the Rust syntax tree
+The proc macros of GUST: `#[gpu_module]` on a Rust module, `#[gpu_fn]` on a free scalar function and `par_for!`. They translate the Rust syntax tree
 directly to Slang and emit a kernel descriptor, with no intermediate shader IR.
 
 This crate is an implementation detail of `gust-compute`, which re-exports the macros. Depend on `gust-compute`, not on

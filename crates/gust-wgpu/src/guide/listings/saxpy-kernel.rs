@@ -1,4 +1,4 @@
-#[gpu]
+#[gpu_module]
 mod saxpy {
     /// The uniform: one value in a constant buffer, read by every invocation. A uniform is a struct of the module
     /// whose layout has no implicit padding and whose size is a multiple of 16 bytes, so the three `pad` fields are

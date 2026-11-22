@@ -14,9 +14,9 @@ use crate::{
 const FIXTURE: &str = include_str!("../../../../tests/fixtures/grid.rs");
 const GOLDEN: &str = include_str!("../../../../tests/fixtures/grid.slang");
 
-/// The fixture module as `#[gpu]` receives it (the attribute is the macro's own).
+/// The fixture module as `#[gpu_module]` receives it (the attribute is the macro's own).
 fn fixture_module() -> String {
-    FIXTURE.replacen("#[gust::gpu]", "", 1)
+    FIXTURE.replacen("#[gust::gpu_module]", "", 1)
 }
 
 /// The expansion of the fixture with all whitespace removed, so assertions do not depend on token spacing.

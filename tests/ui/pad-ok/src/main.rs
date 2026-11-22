@@ -2,7 +2,7 @@
 // (a tail), a struct with a nested struct (a gap and a tail) and a struct with a gap before a vector. This crate must
 // compile.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[pad]
     pub struct Tail {

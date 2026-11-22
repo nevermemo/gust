@@ -1,4 +1,4 @@
-// Control case for the typed host API of `#[gust::gpu]`: the generated `call`, `submit` and `dispatch`
+// Control case for the typed host API of `#[gust::gpu_module]`: the generated `call`, `submit` and `dispatch`
 // compile for a mock backend, with `Independent`, with user parameters named `element_count` and
 // `device`, with user types named like the generated generics (`R0`, `D`), and for a kernel without
 // storage parameters. This must compile, so a change to the generated signatures (a missing `'r`
@@ -57,7 +57,7 @@ impl<K: Kernel, const N: usize> Run<K, N> for Mock {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod kernels {
     // Named like the generics the macro uses internally.
     pub struct R0 {

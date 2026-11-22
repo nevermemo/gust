@@ -1,11 +1,11 @@
 //! Polar coordinates and rotation with the float math methods of the kernel language (slice m11.math).
 
-use gust::gpu;
+use gust::gpu_module;
 use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
 
 const POINTS: usize = 4096;
 
-#[gpu]
+#[gpu_module]
 mod polar {
     pub struct Polar {
         pub radius: f32,

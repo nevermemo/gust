@@ -17,4 +17,4 @@ G10, `variants`, tallies a stream into three cells. The portable body does up to
 the subgroup body combines the values of the subgroup first and lets one lane do the atomics:
 
 ```rust,no_run
-# use gust::gpu;
+# use gust::gpu_module;

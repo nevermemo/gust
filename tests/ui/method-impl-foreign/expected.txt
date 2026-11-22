@@ -3,4 +3,4 @@
 code: none
 file: method-impl-foreign/src/main.rs
 line: 15
-message: [GUST-E0121] an `impl` is for a struct defined in this `#[gpu]` module
+message: [GUST-E0121] an `impl` is for a struct defined in this `#[gpu_module]` module

@@ -29,4 +29,4 @@ first kernel sums a tile of 64 elements with a tree of six rounds; the second is
 adds each tile's offset and has no workgroup memory, so it has a twin:
 
 ```rust,no_run
-# use gust::gpu;
+# use gust::gpu_module;

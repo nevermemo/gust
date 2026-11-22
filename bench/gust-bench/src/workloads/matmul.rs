@@ -38,7 +38,7 @@
 //! carries error (a test pins the input grid). A backend that fails the bound fails the cell; the bound is never widened
 //! to pass. Domain (a test pins it): finite inputs in `[-1, 1)`, so no partial sum passes `N <= 2048`.
 
-use gust::gpu;
+use gust::gpu_module;
 
 use super::{
     mix,
@@ -47,7 +47,7 @@ use super::{
 
 /// The GUST kernel: `c[row * n + col] = sum_k a[row * n + k] * b[k * n + col]`, the matrix size `n` read from `dims[0]`.
 /// Workgroup 16 by 16 (256 invocations). Every buffer is `Independent`: the dispatch is a whole number of workgroups.
-#[gpu]
+#[gpu_module]
 pub mod kernel {
     #[allow(clippy::len_zero, clippy::assign_op_pattern)]
     #[kernel(workgroup_size(16, 16, 1))]

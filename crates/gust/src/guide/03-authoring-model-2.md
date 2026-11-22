@@ -18,4 +18,4 @@ When many invocations update one location, a plain read-modify-write loses updat
 instead. G3, `histogram`, counts keys into eight bins, so every bin is hit by thousands of invocations at once:
 
 ```rust,no_run
-# use gust::gpu;
+# use gust::gpu_module;

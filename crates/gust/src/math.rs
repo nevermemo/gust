@@ -1,4 +1,4 @@
-//! `gust::math`: the vector and matrix types of `#[gpu]` kernels, in pure Rust (slice m6.a2).
+//! `gust::math`: the vector and matrix types of `#[gpu_module]` kernels, in pure Rust (slice m6.a2).
 //!
 //! These are the Rust shadows of Slang's `float2/3/4`, `int2/4`, `uint2/3/4` and `float2x2/3x3/4x4`. A kernel body is
 //! ordinary Rust, so the CPU twin runs these types' methods and operators; they are plain `f32`, `i32` and `u32`

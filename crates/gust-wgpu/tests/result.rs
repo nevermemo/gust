@@ -8,7 +8,7 @@ use gust::cpu::CpuDevice;
 use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-#[gust::gpu]
+#[gust::gpu_module]
 mod mixed_option_result {
     fn classify(value: uint) -> Result<uint, uint> {
         if value > 0u32 { Ok(value) } else { Err(value) }

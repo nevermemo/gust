@@ -17,7 +17,7 @@ job cannot block either: its status is `Pending` until wgpu reports the submitte
 `Error::WouldBlock`. The generated `dispatch` submits its work, which will run, and then returns that error at run time.
 In a browser you submit, and then await a read-back.
 
-For an element-wise map (a `#[gpu]` function on plain scalars) the macro generates the awaiting form for you:
+For an element-wise map (a `#[gpu_fn]` function on plain scalars) the macro generates the awaiting form for you:
 `add::map_async(&a, &b).await` opens the default device (`default_device_async`, which in the browser is
 asynchronous), uploads the slices, runs the generated kernel and awaits the read-back. The page below uses only that.
 The blocking `map` and `map_on` that the macro generates on native targets are not emitted on `wasm32`, so
@@ -26,7 +26,7 @@ The blocking `map` and `map_on` that the macro generates on native targets are n
 
 ## The program
 
-The kernel is a scalar function. `#[gpu]` on such a function keeps it as written, and adds a module of the same name
+The kernel is a scalar function. `#[gpu_fn]` on such a function keeps it as written, and adds a module of the same name
 with the kernel and the calls that run it (`map_async` and, on native targets, `map`, among others). The reference is
 plain Rust over slices; it never goes through the kernel, so a match is evidence about the kernel and not about itself.
 The inputs are small integers, so every sum is exact in `f32` on any target and every comparison can be exact. Each

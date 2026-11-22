@@ -1,5 +1,5 @@
 use gust::{
-    Extent, gpu,
+    Extent, gpu_module,
     texture::{Address, Filter, R32Float, SamplerOptions, TextureUse},
 };
 use gust_wgpu::{GpuBufferAccess, HeadlessDevice};

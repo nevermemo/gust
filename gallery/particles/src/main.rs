@@ -1,12 +1,12 @@
 // ANCHOR: imports
-use gust::gpu;
+use gust::gpu_module;
 // The GPU side is only built outside the tests: the tests run the loop on the CPU twin (see `Dev` below).
 #[cfg(not(test))]
 use gust_wgpu::{BufferDispatch, GpuBufferAccess, HeadlessDevice};
 // ANCHOR_END: imports
 
 // ANCHOR: kernel
-#[gpu]
+#[gpu_module]
 mod particles {
     /// A particle: arrays inside a struct. The layout is the one Rust has (`repr(C)`, 20 bytes), so the host fills
     /// the buffer with this very type.

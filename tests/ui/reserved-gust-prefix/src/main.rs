@@ -2,7 +2,7 @@
 // macro's own emitted text and of its rename of colliding names (`__gust_r_`), so a user name there could capture or
 // be mistaken for it. The macro refuses them with E0901, on the identifier itself.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod kernels {
     #[kernel]
     pub fn copy(

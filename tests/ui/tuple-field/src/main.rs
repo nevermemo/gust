@@ -1,7 +1,7 @@
 // A tuple is never stored: it has no `GpuPod` layout, so a struct field of a tuple type is GUST-E0212. expected.txt pins
 // the code and the line of the field type.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Cell {
         pub pair: (u32, f32),

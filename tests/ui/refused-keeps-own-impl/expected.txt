@@ -3,4 +3,4 @@
 code: none
 file: refused-keeps-own-impl/src/main.rs
 line: 15
-message: [GUST-E0102] a trait impl is for a trait declared in this `#[gpu]` module
+message: [GUST-E0102] a trait impl is for a trait declared in this `#[gpu_module]` module

@@ -2,7 +2,7 @@
 // invocations one after the other and cannot honour a barrier. This is GUST-E0717; expected.txt pins the code and the
 // line of the signature.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(256, 1, 1))]
     pub fn reduce(

@@ -1,13 +1,17 @@
 # The authoring model
 
-A GUST kernel is Rust source that rustc checks and the `#[gpu]` macro then translates, node by node, into Slang. There
+A GUST kernel is Rust source that rustc checks and the `#[gpu_module]` macro then translates, node by node, into Slang. There
 is no second language to learn and no intermediate representation in between: the macro reads the Rust syntax tree and
 writes Slang text, and `slangc` compiles that text for the GPU. This chapter is about what you can write inside a
-`#[gpu]` module, how a kernel is declared, and what happens when you write something the dialect does not accept.
+`#[gpu_module]` module, how a kernel is declared, and what happens when you write something the dialect does not accept.
 
-## A `#[gpu]` module
+> Renamed (D237): the attribute used to be spelled `#[gpu]` for both forms. A module now takes `#[gpu_module]` and a
+> free scalar function (the element-wise map) takes `#[gpu_fn]`. `gust::gpu` is gone and there is no alias,
+> so code written against the old name needs the new one at each use.
 
-`#[gpu]` goes on an inline module (`mod name { .. }`, not `mod name;`). The module holds named-field structs, helper
+## A `#[gpu_module]` module
+
+`#[gpu_module]` goes on an inline module (`mod name { .. }`, not `mod name;`). The module holds named-field structs, helper
 functions and kernels (and, see chapter 8, impl blocks, enums and traits), and `const NAME: u32 = 4096;` items that
 hold one scalar literal (`u32`, `i32`, `f32` or `bool`; GUST-E0127 for any other form) and are shared by every function
 of the module and by the host. It imports the shader prelude for you,
@@ -35,4 +39,4 @@ The first listing is gallery entry G2, `saxpy-uniform` in the repository's `gall
 `out[i] = a * x[i] + y[i]`, where `a` is one value that every invocation reads:
 
 ```rust,no_run
-# use gust::gpu;
+# use gust::gpu_module;

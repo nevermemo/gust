@@ -10,7 +10,7 @@ the complete, current text
 0.2.0 was the first public release. GUST follows SemVer for 0.x:
 
 - a change that breaks existing code bumps the minor version (0.2 to 0.3);
-- a patch release only adds or fixes. A construct may be added to the `#[gpu]` language in a patch, and is refused only
+- a patch release only adds or fixes. A construct may be added to the `#[gpu_module]` language in a patch, and is refused only
   in a minor;
 - the four packages (`gust-compute`, `gust-compute-macros`, `gust-compute-wgpu` and `cargo-gust`) are released together
   at one version and depend on each other with exact (`=`) versions, so upgrade them together. A breaking change in one
@@ -27,7 +27,7 @@ The promise covers the parts you write against:
 - the public API of `gust-compute` and `gust-compute-wgpu`: every item that is not `#[doc(hidden)]`. Every public
   enum is `#[non_exhaustive]` except a few closed sets that the README names, so match the others with a wildcard
   arm;
-- the `#[gpu]` language: the set of accepted constructs with their lowering contract (SEMANTICS, and
+- the `#[gpu_module]` language: the set of accepted constructs with their lowering contract (SEMANTICS, and
   [chapter 7][`crate::guide::semantics_and_the_twin`]);
 - the diagnostic codes, `GUST-E....`: a code keeps its meaning and is never reused, and the message text may be
   reworded, so match on the code;

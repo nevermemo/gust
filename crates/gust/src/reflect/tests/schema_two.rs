@@ -541,7 +541,7 @@ fn vector_widths_and_matrix_dimensions_are_two_to_four() {
     assert!(read(&matrix, &kernel).is_ok());
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod vector_add {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn add(

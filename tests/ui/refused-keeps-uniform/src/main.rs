@@ -5,7 +5,7 @@
 
 fn upload<T: gust::GpuPod>(_value: &T) {}
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod shaping {
     pub struct Params {
         pub low: u32,

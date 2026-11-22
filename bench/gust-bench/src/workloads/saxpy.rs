@@ -24,11 +24,11 @@
 //! The old allowance, two f32 epsilons (`2^-22`) of the same magnitude, assumed round to nearest (`u = 2^-24`, factor
 //! about `2^-23`); this form follows the rule W3, W7 and W9 follow, so a GPU gets the factor of `u = 2^-23`.
 
-use gust::gpu;
+use gust::gpu_module;
 
 use super::Rounding;
 
-#[gpu]
+#[gpu_module]
 pub mod kernel {
     #[allow(clippy::len_zero)]
     #[kernel(workgroup_size(256, 1, 1))]

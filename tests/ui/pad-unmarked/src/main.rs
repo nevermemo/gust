@@ -1,6 +1,6 @@
 // A struct a uniform reaches, without `#[pad]`, keeps GUST-E0209; the message names the attribute.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Params {
         pub a: f32,

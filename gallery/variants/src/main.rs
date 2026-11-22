@@ -1,11 +1,11 @@
 // ANCHOR: imports
 use gust::capability::Capability;
-use gust::{Independent, gpu};
+use gust::{Independent, gpu_module};
 use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 // ANCHOR_END: imports
 
 // ANCHOR: kernel
-#[gpu]
+#[gpu_module]
 mod stats {
     /// Sum, count over a limit and maximum of a stream, into three cells. The portable body: every invocation does its
     /// own atomic operations, so the three cells see one operation per element.

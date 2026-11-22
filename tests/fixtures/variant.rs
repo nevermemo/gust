@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod variant {
     // Variants of a kernel (M8, m8.b1, D139). `double` is the kernel and its portable body; `double_subgroups` is the
     // body a device with subgroups gets instead. Both are plain bodies here: no subgroup operation exists in the

@@ -1,12 +1,12 @@
-//! `#[pad]` (slice m14.pad, D233 and D239): the padding of a uniform struct, inserted by `#[gpu]` itself.
+//! `#[pad]` (slice m14.pad, D233 and D239): the padding of a uniform struct, inserted by `#[gpu_module]` itself.
 //!
-//! A struct of a `#[gpu]` module that a uniform reaches may carry the inert attribute `#[pad]`. `#[gpu]` reads it in
-//! one pass, after [`super::variant::lower`] and before validation, and rewrites the struct: every gap and the tail
-//! of its constant-buffer layout ([`crate::uniform::std140_struct`]: a nested struct starts at a multiple of 16, and
-//! the struct is rounded up to 16) becomes private `f32` fields `_pad0`, `_pad1`, ... in field order (the first
+//! A struct of a `#[gpu_module]` module that a uniform reaches may carry the inert attribute `#[pad]`. `#[gpu_module]`
+//! reads it in one pass, after [`super::variant::lower`] and before validation, and rewrites the struct: every gap and
+//! the tail of its constant-buffer layout ([`crate::uniform::std140_struct`]: a nested struct starts at a multiple of
+//! 16, and the struct is rounded up to 16) becomes private `f32` fields `_pad0`, `_pad1`, ... in field order (the first
 //! numbers the struct does not use already). The validator, the layout assertions, the `GpuPod` impl and the Slang
-//! emitter then read the padded struct, so all of them agree by construction; an unmarked struct is untouched and
-//! keeps GUST-E0209.
+//! emitter then read the padded struct, so all of them agree by construction; an unmarked struct is untouched and keeps
+//! GUST-E0209.
 //!
 //! A marked struct also gets the Rust-only constructor `pub const fn new(<its fields in declaration order>) -> Self`
 //! that sets the padding to `0.0`. It is returned as tokens for the `extra` items of the expansion and never lowered

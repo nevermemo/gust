@@ -1,7 +1,7 @@
 // A destructured name takes the per-binding checks of a plain `let`, GUST-E0901: `__gust_r_new` would capture the
 // local `new`, which is renamed to it. expected.txt pins the code and the line of the binding.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn run(id: SV_DispatchThreadID, input: StructuredBuffer<u32>, mut out: RWStructuredBuffer<u32>) {

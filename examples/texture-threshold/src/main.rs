@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
 use gust::{
-    Extent, Independent, gpu, slang, spirv,
+    Extent, Independent, gpu_module, slang, spirv,
     texture::{R32Float, R32Uint, TextureUse},
 };
 use gust_wgpu::{GpuBufferAccess, GpuTexture2d, HeadlessDevice, render_wgpu_source};
 
-#[gpu]
+#[gpu_module]
 mod threshold {
     /// Marks the texels of a storage texture that are brighter than one half.
     ///

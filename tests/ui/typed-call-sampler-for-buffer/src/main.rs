@@ -1,8 +1,8 @@
 // A sampler where the kernel has a storage buffer is a compile error in the typed call: a sampler is a `SamplerArg`,
 // not a `Resource`, so it cannot fill the output parameter, whose type must be a `Resource` of kind `Storage`. The
-// kernel and its `blur_call` are written by hand, as `#[gpu]` cannot declare a texture parameter before slice mx.t3.
-// The output is taken as a plain `&R2` here: through the macro's `impl Into<Arg<_>>` the same mistake is reported
-// twice (once for the conversion and once for the `Resource` bound), and a fixture pins exactly one error.
+// kernel and its `blur_call` are written by hand, as `#[gpu_module]` cannot declare a texture parameter before slice
+// mx.t3. The output is taken as a plain `&R2` here: through the macro's `impl Into<Arg<_>>` the same mistake is
+// reported twice (once for the conversion and once for the `Resource` bound), and a fixture pins exactly one error.
 // expected.txt pins the code and the line of the call.
 #![allow(dead_code)]
 use std::{marker::PhantomData, time::Duration};
@@ -83,7 +83,7 @@ impl<K: Kernel, const N: usize> Run<K, N> for Mock {
     }
 }
 
-// A kernel with a texture, a sampler and an output buffer, written by hand: `#[gpu]` cannot declare a texture
+// A kernel with a texture, a sampler and an output buffer, written by hand: `#[gpu_module]` cannot declare a texture
 // parameter before slice mx.t3, but the typed call's bounds below are the ones the macro will emit.
 struct Blur;
 

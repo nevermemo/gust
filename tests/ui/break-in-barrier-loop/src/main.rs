@@ -1,7 +1,7 @@
 // A conditional `break` in a loop that holds a barrier is GUST-E0416: some invocations would leave the loop while
 // the others wait at the barrier. expected.txt pins the code and the line of the `break`.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(256, 1, 1), cpu = "unsupported")]
     pub fn reduce(

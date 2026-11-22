@@ -5,4 +5,4 @@ code: E0277
 file: kernel-missing/src/main.rs
 line: 10
 message: `u32` is not a GUST kernel handle
-label: pass the zero-sized handle that `#[gpu]` generates for a `#[kernel]` function
+label: pass the zero-sized handle that `#[gpu_module]` generates for a `#[kernel]` function

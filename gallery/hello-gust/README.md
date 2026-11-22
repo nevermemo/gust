@@ -5,7 +5,7 @@ crates by the package names `gust-compute` and `gust-compute-wgpu` (here by path
 the run-time compile path, and commits the `gust-artifacts/` that `cargo gust build` wrote, so a release build needs no
 Slang.
 
-What it shows: the first-user path. One `#[gpu]` module with one kernel, a headless device, three buffers, the typed
+What it shows: the first-user path. One `#[gpu_module]` module with one kernel, a headless device, three buffers, the typed
 `dispatch` and the read-back. The `tests` module runs the same kernel on the CPU twin and compares it with a plain Rust
 host reference (not with the kernel's own output), including sizes that are not a multiple of the workgroup size.
 

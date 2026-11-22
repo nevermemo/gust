@@ -3,7 +3,7 @@
 // so a dependent crate can dispatch on the CPU in a production binary. Built under any other profile the impl is
 // absent and the dispatch is the E0277 that `app/src/bin/single_dispatch.rs` expects (e-d-expected.txt).
 
-#[gust::gpu]
+#[gust::gpu_module]
 pub mod vector_add {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn add(
@@ -20,7 +20,7 @@ pub mod vector_add {
 }
 
 // The expression of `examples/polynomial`, so its derived bound applies: v^3 - 2 v^2 + 0.5 v + 1, written order.
-#[gust::gpu]
+#[gust::gpu_module]
 pub mod polynomial {
     #[kernel(workgroup_size(128, 1, 1))]
     pub fn evaluate(
@@ -41,7 +41,7 @@ pub mod polynomial {
 }
 
 // Every invocation increments the same counter: the result is the number of invocations that executed the add.
-#[gust::gpu]
+#[gust::gpu_module]
 pub mod atomic_counter {
     #[kernel(workgroup_size(1, 1, 1))]
     pub fn increment(_id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) {
@@ -50,7 +50,7 @@ pub mod atomic_counter {
 }
 
 // The kernel that opted out of the CPU: it has no `Run` impl for `CpuDevice` under any profile, `cpu` included.
-#[gust::gpu]
+#[gust::gpu_module]
 pub mod opt_out {
     #[kernel(cpu = "unsupported")]
     pub fn negate(
@@ -70,7 +70,7 @@ pub mod opt_out {
 // of the test below are small integers, so every result is exact in `f32`.
 use gust::math::Vec4;
 
-#[gust::gpu]
+#[gust::gpu_module]
 pub mod vector_ops {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn blend(
@@ -95,7 +95,7 @@ pub mod vector_ops {
 // race-free and every texel has one writer. The inputs of `app` are halves, so the doubling is exact in `f32`.
 use gust::texture::{R32Float, R32Uint};
 
-#[gust::gpu]
+#[gust::gpu_module]
 pub mod texture_ops {
     /// Doubles every texel of `image` in place and records, in `mirrored` at the mirrored column, the row-major index
     /// of the texel it came from. The dispatch is a whole number of workgroups and may be larger than the texture, so
@@ -119,7 +119,7 @@ pub mod texture_ops {
 // never a shape), so it builds and runs in the production CPU build like the `grid` kernels, with no fragment, no
 // scissor and no draw. Every element is written once at the element's own index, as the `pixel` shape requires. The
 // inputs of `app` are multiples of a quarter, so `2v + 1` is exact in `f32`.
-#[gust::gpu]
+#[gust::gpu_module]
 pub mod pixel_shade {
     #[kernel(shape = pixel)]
     pub fn shade(
@@ -132,7 +132,7 @@ pub mod pixel_shade {
     }
 }
 
-// The map functions (M7, D60): `#[gust::gpu]` on a function. Built under `GUST_PROFILE=cpu` only, because under any
+// The map functions (M7, D60): `#[gust::gpu_fn]` on a function. Built under `GUST_PROFILE=cpu` only, because under any
 // other profile the generated host functions name `gust-wgpu`, which this crate does not depend on; `map_case::run` is
 // the one entry `app` calls in every build. Under another profile it is an error, never a silent pass:
 // `check-cpu-target` requires the line that only the real case prints (`CPU target: map calls match (`), exactly

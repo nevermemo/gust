@@ -628,7 +628,7 @@ impl ResourceLayout {
 /// disagrees with Rust (stride, size or alignment), is not a storage type (a `Std140V1` struct with `align(16)`, say)
 /// or is an array fails when `LAYOUT` is used. That check is a constant evaluated after monomorphisation, so
 /// `cargo check` may not report it and `cargo build` does (the macro half, slice r2a, is to refuse these types in
-/// `#[gpu]` modules at expansion).
+/// `#[gpu_module]` modules at expansion).
 ///
 /// ```
 /// use gust::{GpuPod, TypeLayoutKind};
@@ -702,7 +702,7 @@ impl ResourceLayout {
 /// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a GUST GPU POD type",
-    label = "declare a plain struct inside the same `#[gpu]` module so that the macro implements `GpuPod` for it; `u32`, `i32` and `f32` already implement it",
+    label = "declare a plain struct inside the same `#[gpu_module]` module so that the macro implements `GpuPod` for it; `u32`, `i32` and `f32` already implement it",
     note = "an `unsafe impl` written by hand must uphold the layout contract in the safety section of `GpuPod`",
     note = "arrays `[T; N]` implement it for N in 1..=32 and 64, 128, 256, 512, 1024, 2048, 4096 (not 0), when `T` does and its std430 stride equals its Rust size; `Vec3`, `IVec3`, `UVec3` and `Mat3` do not implement it, so they cannot be array elements"
 )]

@@ -1,7 +1,7 @@
 // Control case for arrays (m9.r1): literal, repeat, dynamic and literal index, index assignment, `.len()`, an array
 // parameter and result of a helper. This crate must compile.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     fn twice(a: [u32; 3]) -> [u32; 3] {
         [a[0] * 2u32, a[1] * 2u32, a[2] * 2u32]

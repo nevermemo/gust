@@ -1,0 +1,5 @@
+code: none
+file: item-gpu-module-on-fn/src/main.rs
+line: 5
+message: [GUST-E0702] `#[gpu_module]` goes on an inline module
+message: a free scalar function takes `#[gpu_fn]`

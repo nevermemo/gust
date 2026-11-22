@@ -8,10 +8,10 @@ use gust::{Artifact, Format, KernelDescriptor, Shape, capability::Capability};
 /// dispatch of a kernel compiles it (a miss); the next dispatch of the same kernel finds it (a hit):
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 /// use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod double {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {

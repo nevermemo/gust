@@ -32,7 +32,7 @@ are the ones that exist on `wasm32`.
 
 ## Typed calls
 
-For every kernel the `#[gpu]` macro generates three functions, and the first listing uses two of them:
+For every kernel the `#[gpu_module]` macro generates three functions, and the first listing uses two of them:
 
 - `call(element_count, resources..)` builds a reusable `gust::Call` that names the bound resources;
 - `submit(device, element_count, resources..)` starts it and returns a job;

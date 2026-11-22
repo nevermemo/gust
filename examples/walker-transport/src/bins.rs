@@ -29,10 +29,10 @@
 
 #[cfg(any(test, gust_dual))]
 use gust::cpu::{CpuBuffer, CpuDevice};
-use gust::{Independent, gpu};
+use gust::{Independent, gpu_module};
 use gust_wgpu::{DeviceHandle, GpuVec, HeadlessDevice};
 
-#[gpu]
+#[gpu_module]
 mod binning {
     /// Zeroes the counts and the cursors (both have one slot per cell).
     #[kernel(workgroup_size(256, 1, 1))]

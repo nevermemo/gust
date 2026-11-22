@@ -1,7 +1,7 @@
 // An arm of an enum `match` takes no `if` guard: the Slang `switch` has none, GUST-E0418. expected.txt pins the code and
 // the line of the guard.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[derive(PartialEq, Eq)]
     pub enum Level {

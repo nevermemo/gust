@@ -2,7 +2,7 @@
 // this kernel in every build, whatever the tag is routed to (m8.r1, GUST-E0744). A macro error (`code: none`), reported at
 // the kernel's name (line 8).
 
-#[gust::gpu(route = "physics")]
+#[gust::gpu_module(route = "physics")]
 mod kernels {
     #[kernel(cpu = "unsupported")]
     pub fn scale(

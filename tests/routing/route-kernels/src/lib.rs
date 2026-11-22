@@ -2,7 +2,7 @@
 //! by the variable `cargo gust` sets from an app's `gust.toml`, so the same source is a GPU kernel or a CPU body.
 
 /// Tag `physics` (targets gpu and cpu, default gpu).
-#[gust::gpu(route = "physics")]
+#[gust::gpu_module(route = "physics")]
 pub mod physics {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn scale(
@@ -18,7 +18,7 @@ pub mod physics {
 }
 
 /// Tag `physics.broadphase`, a child of `physics`: it follows an entry or a default of `physics` unless it has its own.
-#[gust::gpu(route = "physics.broadphase")]
+#[gust::gpu_module(route = "physics.broadphase")]
 pub mod broadphase {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn pairs(
@@ -34,7 +34,7 @@ pub mod broadphase {
 }
 
 /// Tag `fusion` (no `targets`, default cpu).
-#[gust::gpu(route = "fusion")]
+#[gust::gpu_module(route = "fusion")]
 pub mod fusion {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn blend(

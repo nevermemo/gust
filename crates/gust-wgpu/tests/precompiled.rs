@@ -18,10 +18,10 @@ mod common;
 
 use common::device;
 
-use gust::{Artifact, Format, KernelDescriptor, gpu, reflect::Error as ReflectionError};
+use gust::{Artifact, Format, KernelDescriptor, gpu_module, reflect::Error as ReflectionError};
 use gust_wgpu::{BufferBinding, Error, GpuBufferAccess, HeadlessDevice};
 
-#[gpu]
+#[gpu_module]
 mod vector_add {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn add(
@@ -305,7 +305,7 @@ fn the_generated_host_snippet_prefers_the_embedded_artifact() {
 // A buffer element that is, or holds, a fixed-size array. The artifacts are `cargo gust build` of this module on a
 // scratch copy, as for `vector_add`. Before m9.pa the build refused them ("unsupported element type `array`").
 
-#[gpu]
+#[gpu_module]
 mod pre_arrays {
     pub struct Bag {
         pub items: [u32; 4],

@@ -1,7 +1,7 @@
 // The accepted forms of the shape pin: grid on a kernel that could also be a pixel, grid next to a workgroup size,
 // and grid on a kernel that no pixel could be. This crate must compile.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod shade {
     #[kernel(shape = grid)]
     pub fn plain(id: SV_DispatchThreadID, input: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>) {

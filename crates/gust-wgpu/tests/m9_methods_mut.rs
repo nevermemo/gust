@@ -140,7 +140,7 @@ const KEEP_SCORE: [u32; 8] = [3, 3, 3, 2, 2, 0, 0, 0];
 const KEEP_HITS: [u32; 8] = [11, 11, 11, 10, 10, 0, 0, 0];
 const KEEP_XOR: [u32; 8] = [0, 0, 0, 1, 1, 0, 0, 0];
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod keep_calls {
     pub struct Probe {
         pub hits: uint,
@@ -295,7 +295,7 @@ fn the_keep_helper_module_compiles_to_spirv() {
 // them. This module has no other wrapped list than the two method calls, so only the scan of method calls can define
 // `__gust_keep` here (the seed 31 shape of the difftest, `v.m2(a[i] < b, c)`). Values as above: by_ref = KEEP_SCORE,
 // by_mut = KEEP_HITS.
-#[gust::gpu]
+#[gust::gpu_module]
 mod keep_methods {
     pub struct Probe {
         pub hits: uint,

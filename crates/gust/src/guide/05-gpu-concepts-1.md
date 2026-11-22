@@ -55,4 +55,4 @@ guards against the texture's own size, which it reads like a buffer's length. `f
 for each element of a one-dimensional call, reads the texel through a sampler at its centre, and writes one flag.
 
 ```rust,no_run
-# use gust::gpu;
+# use gust::gpu_module;

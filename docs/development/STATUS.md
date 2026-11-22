@@ -690,7 +690,8 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
     - m11.fric1b (`a62a85a`): `gust_algo::scan::exclusive_into` / `inclusive_into` write into a caller's buffer (one
       code path with the allocating forms; same v1/v0 choice, storage refusal and D211 split). A wrong length is
       `Error::Length` with no dispatch (asserted by batch count); the input passed as the output is refused as an
-      aliased binding. budget-kit builds its per-step scan before the timed steps and its `Workload` is a boxed
+      aliased binding. budget-kit makes the scan's output buffer (and, in the scatter row, the scatter call)
+      before the timed steps, while the scan itself runs inside each step; its `Workload` is a boxed
       closure (rows unchanged apart from timings; its wall-clock fallback no longer includes that setup). Five GPU
       tests; `ALGO_GPU_TESTS` 58 to 63. Radeon 890M only; RTX 5090 pending. m11.fric1 (dispatch from a shared
       device handle) stopped at its kill rule: generated `dispatch` takes the resource's `Device` type, so it needs a
@@ -708,7 +709,7 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       and the scan's temporaries come from the device pool from the second rebuild on). Per-cell sets exact, order
       inside a cell unspecified (stated in rustdoc and README); the checks sort each cell. Cases: empty, all in one
       cell, the last row and column, positions far past the grid and `+inf` (clamped in `f32`), a hash spread past
-      a workgroup, six rebuilds into one `Bins`. Two mutations fail as intended. Wired into `check-cpu` (six twin
+      a workgroup, seven rebuilds into one `Bins`. Two mutations fail as intended. Wired into `check-cpu` (six twin
       tests by name). Whether binning becomes a `gust-algo` operation stays the owner's question. Radeon 890M
       only; RTX 5090 pending.
     - m11.steer (`b07d53d`): the example `walker-steer`: a `walk` kernel per walker (sense `dist` ahead in headings
@@ -746,6 +747,12 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       the rule); the contention check rests on a derived bound. Both mutations fail. Opus review fixes: the run
       command, `crowd < walkers`, the bound's derivation, a zero-cell guard. Helpers are still copied between
       examples (sharing between modules is an open item). Radeon 890M only; RTX 5090 pending.
+    - m11.r6c (`bf52e99`): the Codex half of the round-6 sanity check ("proceed with fixes"; the items m11.r6fix
+      had not closed). The `_into` allocation claims say what is kept (the result buffer) and what each call still
+      builds; cell-bins promises the clamp for finite positions only (`+inf` is fed by a test, not promised, as
+      SEMANTICS 15.7.2 allows a GPU to assume no infinity); the non-finite const note says no committed test
+      reproduces it; the cexpr pin note cites the round-6 end suite; the empty-scan exception to the alias and
+      foreign-device refusals is documented. Wording only.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -269,7 +269,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     println!(
-        "{} rebuilds into the same bins, no buffer allocated by a rebuild",
+        "{} rebuilds into the same bins (the bins' own buffers are reused; the scan's temporaries come from the device pool)",
         cases.len()
     );
     Ok(())

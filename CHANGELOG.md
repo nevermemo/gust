@@ -137,8 +137,9 @@ proof.
 - `gust_algo::dispatch_batch_in_scope` (m11.scope; in the unpublished `gust-algo`): dispatches a caller's own batch
   and counts it in the enclosing `timed` scope.
 - `gust_algo::scan::exclusive_into` and `inclusive_into` (m11.fric1b; in the unpublished `gust-algo`): a scan into
-  an output buffer the caller owns, so a caller that scans every step allocates nothing per step; `exclusive` and
-  `inclusive` now allocate and call them. A wrong output length is the new `Error::Length` (`Error` is
+  an output buffer the caller owns, so a caller that scans every step need not allocate the result per step (each call
+  still builds its schedule, calls and host-side values, and a cold device pool can allocate the scan's temporaries);
+  `exclusive` and `inclusive` now allocate and call them. A wrong output length is the new `Error::Length` (`Error` is
   `#[non_exhaustive]`), refused before any dispatch.
 - `#[gpu(crate = <path>)]` and the `crate(<path>);` clause of `par_for!` (audit S6, D48): for a crate that reaches
   `gust` through another crate's `pub use gust;`, the macro rewrites the `::gust::` paths of its output to the given

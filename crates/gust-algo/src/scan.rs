@@ -68,6 +68,9 @@ pub fn inclusive_with(variant: Variant, input: &GpuVec<u32>) -> Result<GpuVec<u3
 /// - `Error::Device(gust_wgpu::Error::AliasedBinding { .. })` when `out` is `input` (nothing is dispatched).
 /// - An `out` of another device is not checked up front: the dispatch refuses it, as `Error::Device` (a buffer of
 ///   another device is reported by `gust_wgpu` as foreign, `Error::ForeignPersistentBuffer`), before anything runs.
+///
+/// The last two refusals come from the dispatch, so an empty `input` (and `out`), which dispatches nothing, is `Ok`
+/// even when `out` is `input` or belongs to another device; the length rule applies to it as to any input.
 /// - Otherwise as for [`inclusive`].
 pub fn inclusive_into(input: &GpuVec<u32>, out: &GpuVec<u32>) -> Result<(), Error> {
     inclusive_into_with(shipped(Operation::Inclusive), input, out)

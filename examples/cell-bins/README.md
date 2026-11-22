@@ -4,7 +4,8 @@ Binning elements by the cell of a `side x side` grid they lie in, as a piece a p
 (m11.bins). The `bins` module (`src/bins.rs`) owns the buffers: per-cell counts, the starts (the exclusive scan of the
 counts, `gust_algo::scan::exclusive_into` into a buffer kept across steps), a cursor, and the element order.
 `Bins::new(handle, side, capacity)` makes them once; `Bins::rebuild(&xs, &ys)` rebuilds the bins from the positions
-(each in `[0, side)`, or past it: a position at or past `side - 1` goes to the last cell of its axis, also `+inf`; cell =
+(each in `[0, side)`, or past it: a finite position at or past `side - 1` goes to the last cell of its axis; `+inf`
+is fed to the same clamp by the test cases but is not promised, since a GPU may assume no infinity is present; cell =
 `floor(x) + side * floor(y)`) into the same buffers. The bins' own buffers are made once; the scan's temporaries come from
 the device pool: the first rebuild may allocate them, and a second `exclusive_into` of the same size takes no new device
 buffer (the pool's miss counter does not move; a test in `gust-algo` asserts this for `exclusive_into`

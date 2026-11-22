@@ -1,7 +1,7 @@
 // A user trait named like a Slang stdlib interface (m9.g1): `IFloat` is renamed in the generated Slang, so the crate
 // compiles. This crate must compile.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod halves {
     pub trait IFloat {
         fn half(&self) -> u32;

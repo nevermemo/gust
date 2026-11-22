@@ -27,14 +27,22 @@ pub fn batch_hash(programs: &[Program]) -> u64 {
     batch_hash_as_format(programs, DIFFTEST_FORMAT)
 }
 
-/// [`batch_hash`] with the format stamp of the emitted text read as `format`: the stamp is the one thing a format bump
-/// changes in a program that is otherwise the same, so this reproduces the hash an older format wrote for it.
+/// The first format whose emitted modules say `#[gust::gpu_module]`: the attribute of formats 1 to 14 was `#[gust::gpu]`
+/// (m14.rename, D237).
+const GPU_MODULE_ATTRIBUTE_FORMAT: u32 = 15;
+
+/// [`batch_hash`] with the format stamp of the emitted text read as `format`, and the attribute spelled as that format
+/// wrote it: the stamp and the spelling of the attribute are the two things a format bump has changed in a program
+/// that is otherwise the same, so this reproduces the hash an older format wrote for it.
 pub fn batch_hash_as_format(programs: &[Program], format: u32) -> u64 {
-    let text = emit_crate_source(programs).replacen(
+    let mut text = emit_crate_source(programs).replacen(
         &format!("(DIFFTEST_FORMAT {DIFFTEST_FORMAT})"),
         &format!("(DIFFTEST_FORMAT {format})"),
         1,
     );
+    if format < GPU_MODULE_ATTRIBUTE_FORMAT {
+        text = text.replace("#[gust::gpu_module]", "#[gust::gpu]");
+    }
     let mut hash = fnv1a64(text.as_bytes());
     for program in programs {
         for input in &program.inputs {

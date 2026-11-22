@@ -1,7 +1,7 @@
 // Control case for tuples (m9.t): a helper that returns a tuple, a destructuring (plain and annotated), `t.0`, a tuple
 // argument, a tuple of tuples and an element assignment. This crate must compile.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     fn classify(v: u32) -> (u32, f32) {
         (v * 2u32 + 1u32, v as f32 * 0.5f32)

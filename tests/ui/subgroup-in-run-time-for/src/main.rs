@@ -1,7 +1,7 @@
 // A subgroup operation in a `for` loop with a run-time bound is GUST-E0747: the trip count would differ per
 // invocation, so some invocations would not reach the call.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod scan {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn totals(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mut out: RWStructuredBuffer<u32>) {

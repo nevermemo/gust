@@ -43,7 +43,7 @@ fn a_renamed_kernel_is_one_missing_and_one_unexpected_file() {
 #[test]
 fn the_expected_list_is_twenty_one_sorted_unique_spirv_names() {
     // 14 before m7.t14 and m7.a2; component-pool's compaction adds three, and map-chain adds the three kernels of its
-    // `#[gpu] fn` maps (`<function>__map_kernel`). texture-threshold adds `threshold__mark` (mx.t4).
+    // `#[gpu_fn] fn` maps (`<function>__map_kernel`). texture-threshold adds `threshold__mark` (mx.t4).
     assert_eq!(EXPECTED_SPIRV.len(), 21);
     for map_kernel in ["curve", "damp", "rescale"] {
         assert!(

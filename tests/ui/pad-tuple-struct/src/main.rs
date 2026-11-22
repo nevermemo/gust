@@ -1,6 +1,6 @@
 // `#[pad]` on a struct without named fields, GUST-E0219.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[pad]
     pub struct Params(pub f32);

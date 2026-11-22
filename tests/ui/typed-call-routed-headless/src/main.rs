@@ -7,7 +7,7 @@
 
 use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 
-#[gust::gpu(route = "physics")]
+#[gust::gpu_module(route = "physics")]
 mod kernels {
     #[kernel]
     pub fn scale(

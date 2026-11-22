@@ -2,7 +2,7 @@
 // string is the macro's error E0709. A macro error carries no rustc code, so expected.txt says `code: none`
 // and pins the macro's own message text.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod kernels {
     #[kernel(cpu = "off")]
     pub fn copy(

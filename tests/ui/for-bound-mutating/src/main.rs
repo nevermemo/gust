@@ -1,6 +1,6 @@
 // A `&mut self` call in the bound of a `for` range (m9.a2, GUST-E0421): the Slang loop evaluates the end bound first.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Counter {
         pub n: uint,

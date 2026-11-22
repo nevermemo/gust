@@ -1,7 +1,7 @@
 // A closure call in the bound of a for range (m9.c, GUST-E0421): refused like a mutating call, conservatively.
 // Expected: one error at the bound, line 9.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>) {

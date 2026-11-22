@@ -2,11 +2,11 @@
 //!
 //! [`PORTABLE`] is the limits every WebGPU implementation must offer, which are `wgpu`'s `Limits::default()`: the
 //! numbers a kernel can count in its own body. A crate opts into the floor with `limits = "portable"` in the
-//! `[package.metadata.gust]` table of its `Cargo.toml`, and the `#[gpu]` macro then refuses a kernel that is over any of
+//! `[package.metadata.gust]` table of its `Cargo.toml`, and the `#[gpu_module]` macro then refuses a kernel that is over any of
 //! them (GUST-E0746) when the crate is compiled. Without that setting nothing is checked at compile time and the
 //! launch checks of `gust-compute-wgpu` (D36) stay the only ones.
 //!
-//! Only the `#[kernel]` functions of a `#[gpu]` module are checked (their `#[variant]` bodies included). The `#[gpu]`
+//! Only the `#[kernel]` functions of a `#[gpu_module]` module are checked (their `#[variant]` bodies included). The `#[gpu_module]`
 //! function (an element-wise map) and `par_for!` go through other entry points and are not checked, and the limits that
 //! depend on how a kernel is launched are left to the checks of `gust-compute-wgpu` (`DeviceLimit` at launch). A
 //! portable crate is therefore not guaranteed to launch on every WebGPU device; GUST-E0746 in `docs/DIAGNOSTICS.md` says

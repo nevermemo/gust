@@ -4,10 +4,10 @@ use std::path::PathBuf;
 use gust::cpu::{CpuDevice, Error as CpuError};
 #[cfg(test)]
 use gust::{Access, ResourceBinding};
-use gust::{gpu, slang, spirv};
+use gust::{gpu_module, slang, spirv};
 use gust_wgpu::{GpuBufferAccess, HeadlessDevice, render_wgpu_source};
 
-#[gpu]
+#[gpu_module]
 mod vector_add {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn add(

@@ -1,7 +1,7 @@
 // Recursion through a generic helper and the impl of its bound (m9.g2, GUST-E0120): a call `t.m()` is an edge to every
 // method named `m`, so every instantiation is covered.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Depth {
         fn depth(&self) -> u32;

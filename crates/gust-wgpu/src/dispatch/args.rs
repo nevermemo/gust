@@ -13,10 +13,10 @@ use gust::{Extent, KernelDescriptor};
 /// [`Error::Extent`] when the graph runs), and reads `element_count`.
 ///
 /// ```
-/// use gust::{Extent, gpu};
+/// use gust::{Extent, gpu_module};
 /// use gust_wgpu::{BufferBinding, BufferDispatch, GpuBufferAccess, HeadlessDevice};
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod double {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -128,10 +128,10 @@ impl<'a> BufferDispatch<'a> {
 ///
 /// ```
 /// # #![allow(deprecated)]
-/// use gust::gpu;
+/// use gust::gpu_module;
 /// use gust_wgpu::{F32BufferBinding, F32BufferDispatch, GpuBufferAccess, HeadlessDevice};
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod double {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {

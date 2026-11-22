@@ -146,9 +146,9 @@ impl Artifact {
 /// `slang-runtime` feature and the pinned Slang) and verifies it as a precompiled artifact:
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -211,9 +211,9 @@ pub struct Verified {
 ///
 /// ```
 /// use gust::artifact::{Artifact, Format, verify_artifact};
-/// use gust::gpu;
+/// use gust::gpu_module;
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -377,7 +377,7 @@ mod tests {
         assert_eq!(Format::Spirv.target(), Target::Spirv);
     }
 
-    #[gust::gpu]
+    #[gust::gpu_module]
     mod vector_add {
         #[kernel(workgroup_size(64, 1, 1))]
         pub fn add(

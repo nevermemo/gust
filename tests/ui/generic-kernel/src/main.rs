@@ -1,6 +1,6 @@
 // A generic kernel (m9.g2, GUST-E0114): kernels are concrete, generics are helpers and inherent methods.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Tag {
         fn tag(&self) -> u32;

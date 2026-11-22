@@ -1,4 +1,4 @@
-#[gpu]
+#[gpu_module]
 mod threshold {
     /// A `grid` kernel on a storage texture: every texel brighter than one half becomes 1.0 and every other texel 0.0,
     /// in place. The dispatch is a whole number of 8 by 8 workgroups and so may be larger than the texture; the kernel

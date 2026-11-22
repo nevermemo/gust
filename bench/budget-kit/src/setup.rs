@@ -9,7 +9,7 @@ pub(crate) const STEPS: usize = 30;
 pub(crate) const WARMUP: usize = 5;
 /// One frame at 60 Hz, in milliseconds.
 pub(crate) const FRAME_MS: f64 = 1000.0 / 60.0;
-// The width of the invocation grid the kernels index through: the module-level constant of the `#[gpu]` module.
+// The width of the invocation grid the kernels index through: the module-level constant of the `#[gpu_module]` module.
 pub(crate) use crate::kernels::kit::ROW;
 
 /// Particle and field sizes (the counts are exact; "1M" is 2^20 and "4M" is 2^22).

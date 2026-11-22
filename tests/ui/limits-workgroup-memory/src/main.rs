@@ -1,7 +1,7 @@
 // The same kernel as workgroup-over-16kib, which is GUST-E0718 in a crate without the setting: in a crate with
 // `limits = "portable"` the workgroup memory limit is the floor's, and GUST-E0746 stands where E0718 would.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(256, 1, 1), cpu = "unsupported")]
     pub fn reduce(

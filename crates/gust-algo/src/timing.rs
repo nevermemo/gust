@@ -242,7 +242,7 @@ pub fn timed<R>(run: impl FnOnce() -> Result<R, Error>) -> Result<Timed<R>, Erro
 /// use gust_algo::{dispatch_batch_in_scope, reduce, timed};
 /// use gust_wgpu::{BufferDispatch, GpuVec, default_device};
 ///
-/// #[gust::gpu]
+/// #[gust::gpu_module]
 /// mod double {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn run(

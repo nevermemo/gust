@@ -1,7 +1,7 @@
 // A `break` in an arm of an enum `match` would end the Slang `switch`, not the loop around it, GUST-E0417. expected.txt
 // pins the code and the line of the `break`.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[derive(PartialEq, Eq)]
     pub enum Level {

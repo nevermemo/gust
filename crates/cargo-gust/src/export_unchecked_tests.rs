@@ -1,7 +1,7 @@
 //! `export_unchecked`: storage parameters whose element layout the macro could not write (`layout: null`).
 //!
 //! These tests use the real vector-add artifact and the reflection JSON the native helper wrote for it (gust's
-//! fixture, spike S1) with the descriptor `#[gust::gpu]` makes of the same kernel, so the cross-check that runs here is
+//! fixture, spike S1) with the descriptor `#[gust::gpu_module]` makes of the same kernel, so the cross-check that runs here is
 //! gust's own and no helper is needed.
 
 use gust::{Access, ParameterKind, ScalarKind, ShaderLayoutRules, artifact::verify_artifact};
@@ -12,7 +12,7 @@ use crate::{
     testdata::{VECTOR_ADD_KEY, VECTOR_ADD_REFLECTION, VECTOR_ADD_WGSL},
 };
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod vector_add {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn add(

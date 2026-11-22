@@ -1,6 +1,6 @@
 [package]
 name = "cargo-gust"
-description = "Export tool for GUST: collects #[gpu] kernels, compiles them with Slang, writes gust-artifacts"
+description = "Export tool for GUST: collects #[gpu_module] kernels, compiles them with Slang, writes gust-artifacts"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

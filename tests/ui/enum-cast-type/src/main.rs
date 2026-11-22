@@ -1,7 +1,7 @@
 // An enum casts with `as` to its repr type only (`u32` here), GUST-E0122. expected.txt pins the code and the line of
 // the wrong target type.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[derive(PartialEq, Eq)]
     pub enum Level {

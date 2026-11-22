@@ -53,7 +53,7 @@ fn assert_spirv(device: &HeadlessDevice, qualified: &str) {
 #[cfg(not(feature = "spirv-route"))]
 fn assert_spirv(_device: &HeadlessDevice, _qualified: &str) {}
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod probes {
     // Workgroup memory read before any write (D174a). `wg_dirty` fills the group with a pattern first; `wg_read_first`
     // reads before writing, in a dispatch that may reuse the same shared memory.

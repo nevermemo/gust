@@ -1,6 +1,6 @@
 //! Uniforms on the GPU (roadmap M6, slice m6.g2; Gpu tier).
 //!
-//! Every kernel below is a `#[gpu]` kernel with a `Uniform<T>` parameter, dispatched through the typed `call` the macro
+//! Every kernel below is a `#[gpu_module]` kernel with a `Uniform<T>` parameter, dispatched through the typed `call` the macro
 //! generates. Each runs three ways: on the GPU (`HeadlessDevice`, the WGSL route; the native reflection helper checks
 //! the descriptor first, D17, now with a `constantBuffer` binding), as the CPU twin (the same typed call through
 //! `CpuDevice`, D22), and against an independent host reference written in this file with plain `f64` arithmetic (it
@@ -31,7 +31,7 @@ use gust_wgpu::{GpuBuffer, GpuBufferAccess, HeadlessDevice, StagedGraph};
 /// The element count of every dispatch: not a multiple of the workgroup width (64), so the guard matters.
 const N: usize = 70;
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod probes {
     // `gain` at 0 and three explicit padding fields: 16 bytes, no implicit padding.
     pub struct Gain {

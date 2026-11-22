@@ -47,7 +47,7 @@ cubecl = []
 [lints]
 workspace = true
 
-# The harness sources are gust-bench's own. The #[gpu] expansion looks for `gust-artifacts/` beside the Cargo.toml of
+# The harness sources are gust-bench's own. The #[gpu_module] expansion looks for `gust-artifacts/` beside the Cargo.toml of
 # the package that compiles it, so this package is the precompiled variant: `cargo gust build --manifest-path
 # bench/gust-bench-pre/Cargo.toml` writes the artifacts, and a build of this package embeds them. A binary of its own
 # name keeps its output apart from gust-bench's. Its tests are the precompiled-route test only (the rest run in

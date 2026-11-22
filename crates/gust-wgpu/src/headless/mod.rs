@@ -20,10 +20,10 @@ pub(crate) static NEXT_DEVICE_ID: AtomicU64 = AtomicU64::new(1);
 /// Open one, create buffers on it, run a kernel and read the result back:
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 /// use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod double {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {

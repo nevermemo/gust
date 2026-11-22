@@ -1,4 +1,4 @@
-//! The kernel records the `#[gpu]` macro writes in export mode (D46), and the `KernelDescriptor` the tool rebuilds
+//! The kernel records the `#[gpu_module]` macro writes in export mode (D46), and the `KernelDescriptor` the tool rebuilds
 //! from them.
 //!
 //! For every kernel the macro writes `<key>.slang` (the clean Slang text, exact bytes) and `<key>.kernel.json`
@@ -31,7 +31,7 @@
 //! descriptor it builds has the origin of the first.
 //!
 //! Schema 3 (mx.k, D89) is schema 2's grammar plus an optional `shape` (`grid` or `pixel`; absent means `grid`), and
-//! the macro writes it only for a kernel whose shape is not `grid`: a `grid` kernel keeps schema 1 (a `#[gpu]` module
+//! the macro writes it only for a kernel whose shape is not `grid`: a `grid` kernel keeps schema 1 (a `#[gpu_module]` module
 //! or function) or schema 2 (a `par_for!` call), byte for byte. `source` is optional in schema 3: a record that has one
 //! is read like schema 1, one that has none like schema 2, with its call sites in sidecars. The number moves so that a
 //! reader of schemas 1 and 2 refuses a non-grid record instead of reading it as `grid`; this reader also refuses a
@@ -75,7 +75,7 @@ use crate::{
     sha256::sha256_hex,
 };
 
-/// The schema of a record that carries its own `source`: a `#[gpu]` module or function.
+/// The schema of a record that carries its own `source`: a `#[gpu_module]` module or `#[gpu_fn]` function.
 pub(crate) const RECORD_SCHEMA: u32 = 1;
 /// The schema of a `par_for!` record and of its sidecars: no `source` in the record, one sidecar per call site.
 pub(crate) const SITE_RECORD_SCHEMA: u32 = 2;

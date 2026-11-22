@@ -103,7 +103,8 @@ fn body(statement: &str) -> String {
 
 #[test]
 fn the_subgroup_fixture_matches_the_golden() {
-    let module: syn::ItemMod = parse_str(FIXTURE.replacen("#[gust::gpu]", "", 1).trim()).unwrap();
+    let module: syn::ItemMod =
+        parse_str(FIXTURE.replacen("#[gust::gpu_module]", "", 1).trim()).unwrap();
     let (lowered, plan) = variant::lower(module).unwrap();
     validate_module(&lowered).unwrap();
     for kernel in [
@@ -183,7 +184,8 @@ fn the_golden_lowers_every_operation_of_the_dialect() {
 
 #[test]
 fn the_variants_lower_to_attributes_that_require_subgroups() {
-    let module: syn::ItemMod = parse_str(FIXTURE.replacen("#[gust::gpu]", "", 1).trim()).unwrap();
+    let module: syn::ItemMod =
+        parse_str(FIXTURE.replacen("#[gust::gpu_module]", "", 1).trim()).unwrap();
     let (lowered, _) = variant::lower(module).unwrap();
     for item in &lowered.content.as_ref().unwrap().1 {
         let syn::Item::Fn(function) = item else {
@@ -675,7 +677,7 @@ fn expand(source: &str, value: &str) -> String {
 
 #[test]
 fn the_fixture_expands_under_every_profile_and_the_selected_body_follows_the_capability() {
-    let module = FIXTURE.replacen("#[gust::gpu]", "", 1);
+    let module = FIXTURE.replacen("#[gust::gpu_module]", "", 1);
     let portable = expand(&module, "dev");
     assert!(
         portable.contains("entry_point:\"gpu_subgroup_partial_sums\""),
@@ -734,7 +736,7 @@ fn a_kernel_with_the_largest_workgroup_dimensions_expands_without_a_panic() {
 
 #[test]
 fn the_cpu_form_of_the_kernel_with_a_subgroup_body_is_the_portable_body() {
-    let module = FIXTURE.replacen("#[gust::gpu]", "", 1);
+    let module = FIXTURE.replacen("#[gust::gpu_module]", "", 1);
     let cpu = expand(&module, "cpu");
     assert!(!cpu.contains("Wave"), "{cpu}");
 }

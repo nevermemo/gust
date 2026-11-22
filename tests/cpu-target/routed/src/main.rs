@@ -1,6 +1,6 @@
 // Step E-j (m8.r1): runs the CPU-routed `scale` of the library on `CpuDevice` and compares it with a host loop, then
 // calls the CPU-routed map function `triple` of this binary (review r1, S6). Both are routed by the one variable
-// `GUST_ROUTE__routed__physics=cpu` in a `native` build: `triple` is a `#[gpu(route = ..)] fn`, whose host functions are
+// `GUST_ROUTE__routed__physics=cpu` in a `native` build: `triple` is a `#[gpu_fn(route = ..)] fn`, whose host functions are
 // the `cpu` family only because its tag resolved to the CPU, a combination that no other gate compiles. The binary is
 // not compiled when the library fails (the unrouted control), so the control keeps its one error.
 
@@ -10,7 +10,7 @@ use routed::kernels;
 const ELEMENTS: usize = 1024;
 
 /// The map function: routed with the module of the library (the same tag), so the same variable decides both.
-#[gust::gpu(route = "physics")]
+#[gust::gpu_fn(route = "physics")]
 pub fn triple(x: f32) -> f32 {
     x * 3.0
 }

@@ -512,7 +512,7 @@ impl<T> IndexMut<u32> for StorageMut<'_, T> {
 }
 
 /// The read-only view of a uniform (constant buffer) that a kernel's `Uniform<T>` parameter has: `T` is a struct of the
-/// `#[gpu]` module, read one field at a time (`params.scale`). `Deref` gives that on the CPU twin, which passes
+/// `#[gpu_module]` module, read one field at a time (`params.scale`). `Deref` gives that on the CPU twin, which passes
 /// `Uniform(copy)` of the bound value.
 ///
 /// ```

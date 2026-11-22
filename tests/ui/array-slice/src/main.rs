@@ -1,6 +1,6 @@
 // A slice type is GUST-E0111; a helper takes arrays by value with a literal length.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     fn total(a: &[u32]) -> u32 {
         a[0]

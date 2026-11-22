@@ -185,7 +185,7 @@ pub(crate) fn split_pieces(
     Ok(pieces)
 }
 
-/// Whether `variant` is the split variant the `#[gpu]` macro makes for `kernel`: the same kernel (module, name, entry
+/// Whether `variant` is the split variant the `#[gpu_module]` macro makes for `kernel`: the same kernel (module, name, entry
 /// point, shape, workgroup size, `requires`, target), the kernel's parameters and then one more, the hidden launch-base
 /// uniform at a binding past every binding of the kernel, no split of its own, and no artifact or WGSL artifacts only
 /// (a precompiled variant is the same kernel text under a key of its own, D209; an artifact of another format is not

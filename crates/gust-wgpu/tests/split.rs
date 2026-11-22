@@ -1,6 +1,6 @@
 //! The split variant of a `grid` kernel on a GPU (slice m11.g4a, D201, D205).
 //!
-//! Every `grid` kernel the `#[gpu]` macro builds for the GPU also carries a second descriptor,
+//! Every `grid` kernel the `#[gpu_module]` macro builds for the GPU also carries a second descriptor,
 //! `K::DESCRIPTOR.split`: the same Slang with one hidden uniform at the next free binding, whose `x`, `y` and `z` are
 //! added to the dispatch-thread id before anything reads it. This slice proves that variant by running it on a GPU
 //! with a split the TEST does by hand: one `BufferDispatch` per piece, each with its own base uniform, in one batch.
@@ -24,7 +24,7 @@ use gust::{
 };
 use gust_wgpu::{BufferBinding, BufferDispatch, GpuBuffer, GpuBufferAccess, HeadlessDevice};
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod split_kernels {
     // `n` and three explicit padding fields: 16 bytes, no implicit padding.
     pub struct Count {

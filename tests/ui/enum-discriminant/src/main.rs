@@ -1,7 +1,7 @@
 // A discriminant of a GPU enum is an integer literal: a computed one would have to be evaluated by both Rust and Slang,
 // GUST-E0122. expected.txt pins the code and the line of the discriminant.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[derive(PartialEq, Eq)]
     pub enum Level {

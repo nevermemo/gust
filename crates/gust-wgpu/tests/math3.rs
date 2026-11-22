@@ -32,7 +32,7 @@ use common::{device_reported as device, ulp};
 use gust::cpu::CpuDevice;
 use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod math3 {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn pow_u32(

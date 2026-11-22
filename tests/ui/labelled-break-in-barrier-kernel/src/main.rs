@@ -1,7 +1,7 @@
 // A labelled loop is rejected in every kernel, GUST-E0403, so a barrier kernel adds no second error for the labelled
 // `break` that leaves it. expected.txt pins the code and the line of the label.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(256, 1, 1), cpu = "unsupported")]
     pub fn reduce(

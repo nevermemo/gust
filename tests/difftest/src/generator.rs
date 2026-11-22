@@ -88,7 +88,11 @@ use closure_gen::{ArgBias, Cl};
 /// (`u32` or `i32`, expressions of literals and earlier constants, D210) that its integer expressions read. The
 /// older spaces decode as in format 13 (a seed's first float, vector, method, enum, value, array, closure and trait
 /// programs are those of format 13); the batch cut is new.
-pub const DIFFTEST_FORMAT: u32 = 14;
+///
+/// 15: the attribute of the emitted modules is spelled `#[gust::gpu_module]` (slice m14.rename, D237); it was
+/// `#[gust::gpu]`. The programs are format 14's, and so is every pin of an older format, which is read with the old
+/// spelling (`batch_hash_as_format`).
+pub const DIFFTEST_FORMAT: u32 = 15;
 
 /// Which programs the generator writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -563,7 +567,7 @@ impl Gen<'_> {
                 Expr::bin(BinOp::BitOr, e, Expr::Lit(ty, 1))
             }
             2 => match self.expr(ty, depth) {
-                // A literal zero divisor is rejected by the `#[gpu]` validator (`DivisionByLiteralZero`) even in a
+                // A literal zero divisor is rejected by the `#[gpu_module]` validator (`DivisionByLiteralZero`) even in a
                 // branch no input reaches, so it is never emitted.
                 Expr::Lit(_, 0) => Expr::Lit(ty, 1),
                 other => other,

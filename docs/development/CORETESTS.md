@@ -1,6 +1,6 @@
 # Scalar coretests transcription
 
-This page records which scalar integer and float cases of the Rust core tests GUST transcribes into `#[gpu]`
+This page records which scalar integer and float cases of the Rust core tests GUST transcribes into `#[gpu_module]`
 kernels, the literals they must produce, the sets the GPU may produce instead, and what was left out and why. It is
 the record of roadmap slice m5.d1 (M5, "coretests on every target"). The kernels are `tests/fixtures/coretests.rs`;
 `crates/gust/tests/coretests_twin.rs` runs the CPU twin of every kernel against the literals of the table below
@@ -180,7 +180,7 @@ operator on the same type with an operand of the same class inside the domain: a
 `crates/gust-wgpu/tests/mismatch.rs` (GPU, twin and plain Rust) or an operation in another file of `tests/fixtures/`
 (the evidence column names the case). The class is a judgement; the evidence is the column. An operator-type pair is
 `existing` when any of those kernels runs that operator on that type at all. The kernels of `examples/` and of the
-other `#[gpu]` modules in `crates/*/tests/` were also searched, by reading their operator lines, for the pairs reported
+other `#[gpu_module]` modules in `crates/*/tests/` were also searched, by reading their operator lines, for the pairs reported
 `new`, and none uses them.
 
 Unique coverage: triples=70 new=50 existing=20

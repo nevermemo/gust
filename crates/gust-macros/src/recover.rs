@@ -1,4 +1,4 @@
-//! Error recovery for `#[gpu]`: the original tokens beside `compile_error!`.
+//! Error recovery for `#[gpu_module]`: the original tokens beside `compile_error!`.
 //!
 //! When the macro rejects its input it used to return only the error. Returning the
 //! user's code as well keeps the module's items present, so an editor (rust-analyzer
@@ -7,7 +7,7 @@
 //! build still fails and nothing is accepted silently.
 //!
 //! Measured with rustc 1.98.0 on `examples/vector-add` with one rejection inside the
-//! `#[gpu]` module (whose kernel `app.rs` also references through `DESCRIPTOR`):
+//! `#[gpu_module]` module (whose kernel `app.rs` also references through `DESCRIPTOR`):
 //! `cargo check` reports exactly one error both without and with the recovery of the
 //! module as written, and no error about the missing items in either case. For a module
 //! whose structs host code uses as `GpuPod`, the plain recovery added a second error (the
@@ -51,7 +51,7 @@ pub(crate) fn beside_error(
     tokens
 }
 
-/// The facade path of a `crate = <path>` argument of a `#[gpu(..)]` whose arguments as a whole are refused: the
+/// The facade path of a `crate = <path>` argument of a `#[gpu_module(..)]` whose arguments as a whole are refused: the
 /// recovered code names `::gust::` as the expansion would, so it goes through the same rewrite
 /// ([`crate::forward::forward_crate`]) when a well-formed `crate = <path>` is there. `None` when none is, and then the
 /// code keeps `::gust::`.

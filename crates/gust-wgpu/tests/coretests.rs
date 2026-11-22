@@ -1,6 +1,6 @@
 //! The scalar coretests transcription on the GPU (roadmap M5, slice m5.d2; Gpu tier).
 //!
-//! `tests/fixtures/coretests.rs` holds the five `#[gpu]` kernels of the cases that `docs/development/CORETESTS.md`
+//! `tests/fixtures/coretests.rs` holds the five `#[gpu_module]` kernels of the cases that `docs/development/CORETESTS.md`
 //! transcribes from the Rust core tests (tag 1.98.0). This file runs every kernel on the adapter and on its CPU twin
 //! and compares each output slot with the expected literal of the table under the acceptance set of the row (M5 plan
 //! R1-7): exact for integers and `bool` inside the domain, every `f32` within 2.5 ULP of the literal for float `/`,

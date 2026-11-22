@@ -777,7 +777,7 @@ fn the_web_example_artifacts_are_a_byte_copy_of_the_precompiled_fixtures() {
     };
     let expected = names(&source);
     assert!(!expected.is_empty(), "no artifacts in {}", source.display());
-    // The example may hold more kernels than the fixture (its own `#[gpu] fn`, whose pair `cargo gust build` writes
+    // The example may hold more kernels than the fixture (its own `#[gpu_fn] fn`, whose pair `cargo gust build` writes
     // beside the fixture's): every file of the fixture is there, byte for byte, and the manifest lists at least the
     // fixture's kernel entries, each verbatim in its schema 2 form (manifest.json itself differs by the extra entries,
     // and by the schema: once the example holds a pixel kernel (mx.w) its manifest is schema 2, where every entry

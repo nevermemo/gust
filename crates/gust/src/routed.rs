@@ -18,7 +18,7 @@
 //!
 //! # How it stays static and layered
 //!
-//! - The kernel names its target in the type system through [`Routed::Side`] ([`OnCpu`] or [`OnGpu`]). The `#[gpu]`
+//! - The kernel names its target in the type system through [`Routed::Side`] ([`OnCpu`] or [`OnGpu`]). The `#[gpu_module]`
 //!   macro emits one `impl Routed` line per kernel next to the `GpuKernel` marker; a hand-written kernel writes it
 //!   itself. One associated type, not two marker bounds, because two blanket impls bounded on two different markers
 //!   overlap in rustc's coherence check (E0119). Nothing is looked up at run time.
@@ -120,7 +120,7 @@ mod sealed {
 }
 
 /// A kernel whose target is a compile-time fact: `type Side = OnGpu` for a kernel this build runs on a GPU (it also
-/// implements `GpuKernel`), `type Side = OnCpu` for a CPU-routed one. The `#[gpu]` macro emits this beside the
+/// implements `GpuKernel`), `type Side = OnCpu` for a CPU-routed one. The `#[gpu_module]` macro emits this beside the
 /// `GpuKernel` marker, so every kernel it builds has it; a hand-written kernel writes it.
 ///
 /// A kernel without it does not run on a [`RoutedDevice`]:
@@ -175,7 +175,7 @@ mod sealed {
 /// ```
 #[diagnostic::on_unimplemented(
     message = "the kernel `{Self}` does not say which target it runs on, so `gust::routed::RoutedDevice` cannot run it",
-    note = "a `#[gpu]` kernel gets `Routed` from the macro; a hand-written `Kernel` adds `impl gust::routed::Routed for {Self} {{ type Side = gust::routed::OnGpu; }}` (or `OnCpu`)"
+    note = "a `#[gpu_module]` kernel gets `Routed` from the macro; a hand-written `Kernel` adds `impl gust::routed::Routed for {Self} {{ type Side = gust::routed::OnGpu; }}` (or `OnCpu`)"
 )]
 pub trait Routed: Kernel {
     /// [`OnGpu`] or [`OnCpu`].
@@ -673,7 +673,7 @@ impl<T: GpuPod, G: GpuBackend> Resource for RoutedBuffer<T, G> {
 /// or kernel can implement it and its `run` can change.
 #[diagnostic::on_unimplemented(
     message = "the kernel `{K}` has no executable form for the side `{Self}` in this build, so a `RoutedDevice` cannot run it",
-    note = "an `OnCpu` kernel needs a CPU body here (`CpuDevice: Run<{K}, N>`): a kernel marked `#[kernel(cpu = \"unsupported\")]` has none, and a `#[gpu]` kernel gets one in test builds, under `--cfg gust_dual` and under `GUST_PROFILE=cpu`",
+    note = "an `OnCpu` kernel needs a CPU body here (`CpuDevice: Run<{K}, N>`): a kernel marked `#[kernel(cpu = \"unsupported\")]` has none, and a `#[gpu_module]` kernel gets one in test builds, under `--cfg gust_dual` and under `GUST_PROFILE=cpu`",
     note = "an `OnGpu` kernel needs a GPU backend that implements `Run<{K}, N>` and the `GpuKernel` marker"
 )]
 ///

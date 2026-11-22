@@ -5,13 +5,13 @@ use crate::target::Target;
 
 /// Marker implemented by the zero-sized host handle generated for each kernel.
 ///
-/// The handle is the type that carries the kernel's name inside its `#[gpu]` module, so generic code can take a kernel
+/// The handle is the type that carries the kernel's name inside its `#[gpu_module]` module, so generic code can take a kernel
 /// by type:
 ///
 /// ```
-/// use gust::{Kernel, gpu};
+/// use gust::{Kernel, gpu_module};
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -31,14 +31,14 @@ use crate::target::Target;
 /// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a GUST kernel handle",
-    label = "pass the zero-sized handle that `#[gpu]` generates for a `#[kernel]` function; it implements `Kernel`"
+    label = "pass the zero-sized handle that `#[gpu_module]` generates for a `#[kernel]` function; it implements `Kernel`"
 )]
 pub trait Kernel {
     /// The descriptor of the kernel this handle stands for.
     const DESCRIPTOR: KernelDescriptor;
 }
 
-/// A `#[gpu]` module as the macro describes it: its name and its kernels.
+/// A `#[gpu_module]` module as the macro describes it: its name and its kernels.
 ///
 /// ```
 /// use gust::{KernelDescriptor, ModuleDescriptor};
@@ -58,7 +58,7 @@ pub struct ModuleDescriptor {
 }
 
 impl ModuleDescriptor {
-    /// The descriptor of a module called `name` with `kernels`. The `#[gpu]` macro calls this for
+    /// The descriptor of a module called `name` with `kernels`. The `#[gpu_module]` macro calls this for
     /// `MODULE_DESCRIPTOR`; the struct is `#[non_exhaustive]` (0.2.0), so a literal is no longer possible outside this
     /// crate: `ModuleDescriptor { name, kernels }` becomes `ModuleDescriptor::new(name, kernels)`.
     pub const fn new(name: &'static str, kernels: &'static [KernelDescriptor]) -> Self {
@@ -67,7 +67,7 @@ impl ModuleDescriptor {
 }
 
 /// Everything the host knows about one kernel: where it lives, its Slang source, its workgroup size, its parameters,
-/// its shape, its capabilities, its target and its precompiled artifacts. The `#[gpu]` macro builds one per `#[kernel]`
+/// its shape, its capabilities, its target and its precompiled artifacts. The `#[gpu_module]` macro builds one per `#[kernel]`
 /// function.
 ///
 /// API change (0.2.0, M8): the struct is `#[non_exhaustive]`, so a later field is not a breaking change again, and a
@@ -89,7 +89,7 @@ impl ModuleDescriptor {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct KernelDescriptor {
-    /// The name of the `#[gpu]` module that holds the kernel.
+    /// The name of the `#[gpu_module]` module that holds the kernel.
     pub module: &'static str,
     /// The kernel function's name.
     pub name: &'static str,
@@ -188,7 +188,7 @@ const LAUNCH_BASE_LAYOUT: crate::TypeLayout = {
     crate::TypeLayout::structure("__GustLaunchBase", 16, 16, FIELDS)
 };
 
-/// The `#[gpu]` macro's way to build a [`KernelDescriptor`] with named fields (support surface, hidden): it calls
+/// The `#[gpu_module]` macro's way to build a [`KernelDescriptor`] with named fields (support surface, hidden): it calls
 /// [`KernelDescriptor::__gust_descriptor`], so a field added to the struct is a compile error in the expansion until
 /// the macro sets it, and the names keep adjacent string arguments from being swapped.
 ///
@@ -365,9 +365,9 @@ impl SourceOrigin {
 /// An inclusive, 1-based Slang line range generated from one Rust line.
 ///
 /// ```
-/// use gust::{Kernel, gpu};
+/// use gust::{Kernel, gpu_module};
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -514,7 +514,7 @@ impl KernelDescriptor {
         self
     }
 
-    /// The descriptor with `split` as its [`split`](Self::split). For the `#[gpu]` macro and tests: a host never
+    /// The descriptor with `split` as its [`split`](Self::split). For the `#[gpu_module]` macro and tests: a host never
     /// trusts a variant that is not shaped like the macro's (a `gust-wgpu` host checks the parameters, the entry
     /// point and the workgroup size before it runs one), but a hand-made one has no meaning beyond that.
     #[doc(hidden)]
@@ -523,7 +523,7 @@ impl KernelDescriptor {
         self
     }
 
-    /// The parameter descriptor of the hidden uniform of a split variant, at `binding` of group 0. The `#[gpu]` macro
+    /// The parameter descriptor of the hidden uniform of a split variant, at `binding` of group 0. The `#[gpu_module]` macro
     /// calls this; support surface, not covered by the stability promise.
     #[doc(hidden)]
     pub const fn __gust_launch_base_parameter(binding: u32) -> ParameterDescriptor {
@@ -537,7 +537,7 @@ impl KernelDescriptor {
         }
     }
 
-    /// The constructor the `#[gpu]` macro calls: every field at once, so that a field added later is a compile error
+    /// The constructor the `#[gpu_module]` macro calls: every field at once, so that a field added later is a compile error
     /// in the macro's output until the macro sets it. Support surface: not covered by the stability promise.
     #[doc(hidden)]
     #[allow(clippy::too_many_arguments)]
@@ -600,12 +600,12 @@ impl fmt::Display for QualifiedName<'_> {
 
 /// One kernel parameter: what it is, how the kernel uses it and where the shader binds it.
 ///
-/// A `#[gpu]` kernel's descriptor lists them in declaration order:
+/// A `#[gpu_module]` kernel's descriptor lists them in declaration order:
 ///
 /// ```
-/// use gust::{Access, Kernel, ParameterKind, gpu};
+/// use gust::{Access, Kernel, ParameterKind, gpu_module};
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -641,9 +641,9 @@ pub struct ParameterDescriptor {
 /// Backend-neutral shader resource address assigned from a kernel parameter.
 ///
 /// ```
-/// use gust::{Kernel, ResourceBinding, gpu};
+/// use gust::{Kernel, ResourceBinding, gpu_module};
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -671,7 +671,7 @@ pub struct ResourceBinding {
 /// API change (mx.t1): the enum is `#[non_exhaustive]` and has two new variants, [`Texture`](Self::Texture) and
 /// [`Sampler`](Self::Sampler). A `match` outside this crate must add a wildcard arm. Constructing a variant is
 /// unchanged. Inside the workspace every such `match` already had one (`gust-compute-wgpu`'s `validate_kernel` and
-/// `gust-compute`'s own `reflect`), so none of them changed, and both refuse the two new kinds. The `#[gpu]` macro
+/// `gust-compute`'s own `reflect`), so none of them changed, and both refuse the two new kinds. The `#[gpu_module]` macro
 /// produces both kinds since mx.t3 (a `Texture2D<T>`, `StorageTexture2D<F>`, `WriteTexture2D<F>` or `Sampler` kernel
 /// parameter), and `cargo-gust`'s record reader and the macro's artifact writer know the names `texture` and
 /// `sampler`.
@@ -711,9 +711,9 @@ pub enum ParameterKind {
 /// How a kernel accesses a parameter.
 ///
 /// ```
-/// use gust::{Access, Kernel, gpu};
+/// use gust::{Access, Kernel, gpu_module};
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn copy(id: SV_DispatchThreadID, src: StructuredBuffer<float>, mut dst: RWStructuredBuffer<float>) {

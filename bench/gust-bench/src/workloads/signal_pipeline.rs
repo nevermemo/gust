@@ -51,13 +51,13 @@
 // The check loops index several parallel slices by element and stage; an iterator form would only hide that.
 #![allow(clippy::needless_range_loop)]
 
-use gust::gpu;
+use gust::gpu_module;
 
 use super::{Rounding, polynomial::U64};
 
 /// The six GUST kernels, one per stage (workgroup size 256, see `workloads::WORKGROUP`). Every kernel guards on its
 /// output's length, as the other workloads' do.
-#[gpu]
+#[gpu_module]
 pub mod kernel {
     #[kernel(workgroup_size(256, 1, 1))]
     pub fn center(

@@ -1,7 +1,7 @@
 // A pixel pin on a kernel with a workgroup barrier and no workgroup memory (GUST-E0723).
 // expected.txt pins the code, the line of the pin and the reason.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod shade {
     #[kernel(shape = pixel, cpu = "unsupported")]
     pub fn paint(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>) {

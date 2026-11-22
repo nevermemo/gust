@@ -3,7 +3,7 @@
 // `for` with two literal bounds. Built under `GUST_PROFILE=dev+subgroups` (env.txt) so that rustc compiles the
 // SELECTED variant: its descriptor with `requires: &[Capability::Subgroups]` and its Slang. This crate must compile.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod scan {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn totals(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mut out: RWStructuredBuffer<u32>) {

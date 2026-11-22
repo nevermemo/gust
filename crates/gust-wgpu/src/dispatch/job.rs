@@ -30,10 +30,10 @@ use std::time::Duration;
 /// On native, `submit` starts a call and returns the job; `wait` blocks until that submission is done:
 ///
 /// ```
-/// use gust::{JobStatus, gpu};
+/// use gust::{JobStatus, gpu_module};
 /// use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod double {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {

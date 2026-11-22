@@ -2,7 +2,7 @@
 // crate declares `physics` and routes the module to `render`. GUST-E0748 is a macro error, so `code: none`; it is
 // reported at the tag's string literal (line 5), and names the tags the crate does declare.
 
-#[gust::gpu(route = "render")]
+#[gust::gpu_module(route = "render")]
 mod kernels {
     #[kernel]
     pub fn scale(

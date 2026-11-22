@@ -43,9 +43,9 @@ pub fn native_compiler_path() -> PathBuf {
 /// `GUST_SLANG_REFLECT` or `GUST_SLANG_HOME` is an error here, with the variable and its value in the text.
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -93,9 +93,9 @@ pub fn compile_reflected(
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -206,9 +206,9 @@ pub(super) fn outdated_helper_note(output: &std::process::Output) -> &'static st
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -249,9 +249,9 @@ pub struct CleanCompilation {
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -507,9 +507,9 @@ pub(super) fn slangc_reflection_command(
 /// Compile exactly this target and entry point, requesting Slang's JSON metadata.
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {

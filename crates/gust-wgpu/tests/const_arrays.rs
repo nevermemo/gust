@@ -14,7 +14,7 @@ mod common;
 use gust::{Independent, cpu::CpuDevice};
 use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod tables {
     pub const PRIMES: [u32; 16] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53];
     pub const STEPS: [i32; 8] = [-3, 5, -7, 11, -13, 17, -19, 23];
@@ -46,7 +46,7 @@ mod tables {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod lookups {
     pub const LUT: [u32; 6] = [10, 20, 30, 40, 50, 60];
     pub const BITS: [bool; 4] = [true, false, false, true];

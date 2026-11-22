@@ -70,14 +70,14 @@
 //!
 //! # Why two modules
 //!
-//! `SIDE` is a module constant, so one `#[gpu]` module has one grid size (`MASK = SIDE - 1` and `CELLS = SIDE * SIDE`
+//! `SIDE` is a module constant, so one `#[gpu_module]` module has one grid size (`MASK = SIDE - 1` and `CELLS = SIDE * SIDE`
 //! are constant expressions of it, D210). The macro below takes the side and writes the module and the
 //! host code that drives it once per size: `big` (512, the run of `main` and the GPU tests) and, under `cfg(test)`,
 //! `small` (32, the unit tests on the twin).
 
 #[cfg(any(test, gust_dual))]
 use gust::cpu::CpuDevice;
-use gust::{Independent, gpu};
+use gust::{Independent, gpu_module};
 use gust_wgpu::{DeviceHandle, GpuVec, HeadlessDevice, default_device};
 
 /// The number of fields. The kernel and the parameter struct spell out three.
@@ -93,7 +93,7 @@ pub const RATES: [(f32, f32); FIELDS] = [
 /// The seed of each field's inputs, and of the integer channel.
 const SEEDS: [u32; FIELDS + 1] = [0x1234_5678, 0x9abc_def0, 0x0bad_cafe, 0xfeed_f00d];
 
-// ---- Host side shared by every size: inputs and references, plain Rust, not the `#[gpu]` bodies. ----
+// ---- Host side shared by every size: inputs and references, plain Rust, not the `#[gpu_module]` bodies. ----
 
 /// A multiply-xorshift finaliser: "lowbias32" from Chris Wellons' hash-prospector
 /// (https://github.com/skeeto/hash-prospector; public domain, Unlicense), as in `examples/hash-rng`.
@@ -283,13 +283,13 @@ pub fn verify(name: &str, inputs: &Inputs, trace: &Trace) -> Result<Report, Stri
     Ok(report)
 }
 
-/// Writes, per size, the `#[gpu]` module and the host code that drives it.
+/// Writes, per size, the `#[gpu_module]` module and the host code that drives it.
 macro_rules! field_program {
     ($name:ident, $side:tt) => {
         pub mod $name {
             use super::*;
 
-            #[gpu]
+            #[gpu_module]
             pub mod k {
                 /// Cells per side: a power of two.
                 pub const SIDE: u32 = $side;

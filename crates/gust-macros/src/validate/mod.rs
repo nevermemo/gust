@@ -574,13 +574,18 @@ pub fn range_bounds(iterable: &syn::Expr) -> Result<(&syn::Expr, &syn::Expr), Re
     }
 }
 
-/// `#[gpu]`, `#[gust::gpu]` or `#[::gust::gpu]`: a path that ends in `gpu`.
+/// `gpu_module` or `gpu_fn` when `attribute` is that attribute, bare or behind a path (`#[gust::gpu_fn]`,
+/// `#[::gust::gpu_module]`), else `None`.
+pub(crate) fn gpu_attribute_name(attribute: &syn::Attribute) -> Option<&'static str> {
+    let last = attribute.path().segments.last()?;
+    ["gpu_module", "gpu_fn"]
+        .into_iter()
+        .find(|name| last.ident == name)
+}
+
+/// Whether `attribute` is `#[gpu_module]` or `#[gpu_fn]` (see [`gpu_attribute_name`]).
 pub(crate) fn is_gpu_attribute(attribute: &syn::Attribute) -> bool {
-    attribute
-        .path()
-        .segments
-        .last()
-        .is_some_and(|segment| segment.ident == "gpu")
+    gpu_attribute_name(attribute).is_some()
 }
 
 /// [`validate_module_in`] for the `grid` profile, the entry point of the tests; the expander passes its profile.
@@ -653,7 +658,7 @@ pub(crate) fn validate_module_in(
         return Err(diagnostics::error(
             Code::InlineModuleRequired,
             module,
-            "#[gpu] requires an inline module; use `#[gpu] mod name { ... }`",
+            "#[gpu_module] requires an inline module; use `#[gpu_module] mod name { ... }`",
         ));
     }
     // A trait path call (`T::m(&s, a)`, `<S as T>::m(&s, a)`) is judged as the method call it lowers to (slice m9.g1);
@@ -720,16 +725,18 @@ pub(crate) fn validate_module_in(
     for item in items {
         match item {
             syn::Item::Fn(function) => {
-                if let Some(attribute) = function
+                if let Some((attribute, name)) = function
                     .attrs
                     .iter()
-                    .find(|attribute| is_gpu_attribute(attribute))
+                    .find_map(|attribute| Some((attribute, gpu_attribute_name(attribute)?)))
                 {
                     return Err(diagnostics::error(
                         Code::NestedGpuFunction,
                         attribute,
-                        "`#[gpu]` on a function goes on a free function outside any `#[gpu]` module: a module \
-                         already is GPU code, and its functions are helpers or `#[kernel]`s",
+                        format!(
+                            "`#[{name}]` on a function goes on a free function outside any `#[gpu_module]` module: a \
+                             module already is GPU code, and its functions are helpers or `#[kernel]`s"
+                        ),
                     ));
                 }
                 // A generic helper (slice m9.g2); a generic kernel is refused by `validate_function` (GUST-E0114).
@@ -1239,7 +1246,7 @@ fn validate_impl(
                 return Err(diagnostics::error(
                     Code::UnsupportedModuleItem,
                     path,
-                    "a trait impl is for a trait declared in this `#[gpu]` module (`trait T { fn m(&self); }`); other traits (`Clone`, `Default`, operators) have no GPU lowering: write the methods in an inherent `impl S { .. }`",
+                    "a trait impl is for a trait declared in this `#[gpu_module]` module (`trait T { fn m(&self); }`); other traits (`Clone`, `Default`, operators) have no GPU lowering: write the methods in an inherent `impl S { .. }`",
                 ));
             }
         }
@@ -1259,11 +1266,11 @@ fn validate_impl(
         None if implemented.is_some() && context.methods.enums.contains_key(&name) => &no_fields,
         None => {
             let message = if implemented.is_some() {
-                "a trait impl is for a struct or a unit enum defined in this `#[gpu]` module; a type from elsewhere has no Slang definition to hold the methods"
+                "a trait impl is for a struct or a unit enum defined in this `#[gpu_module]` module; a type from elsewhere has no Slang definition to hold the methods"
             } else if context.methods.enums.contains_key(&name) {
-                "methods on an enum are not supported: an inherent `impl` is for a struct defined in this `#[gpu]` module; write a free function that takes the enum, or implement a trait of the module for it"
+                "methods on an enum are not supported: an inherent `impl` is for a struct defined in this `#[gpu_module]` module; write a free function that takes the enum, or implement a trait of the module for it"
             } else {
-                "an `impl` is for a struct defined in this `#[gpu]` module; a type from elsewhere has no Slang definition to hold the methods"
+                "an `impl` is for a struct defined in this `#[gpu_module]` module; a type from elsewhere has no Slang definition to hold the methods"
             };
             return Err(diagnostics::error(
                 Code::ImplForeignType,
@@ -4950,7 +4957,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 self.reject(
                     Code::CpuOnlyName,
                     path,
-                    "CPU-only library/type is not available inside a #[gpu] module",
+                    "CPU-only library/type is not available inside a #[gpu_module] module",
                 );
                 return;
             }
@@ -5237,7 +5244,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 self.reject(
                     Code::CpuOnlyName,
                     path,
-                    "CPU-only library/type is not available inside a #[gpu] module",
+                    "CPU-only library/type is not available inside a #[gpu_module] module",
                 );
                 return;
             }

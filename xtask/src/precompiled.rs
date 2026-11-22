@@ -1,6 +1,6 @@
 //! `cargo xtask check-precompiled [--check-only] [--work-dir PATH]`: the evidence that a production-shaped consumer of
 //! precompiled kernels needs no Slang (D45, D46). The fixture is `tests/precompiled`, a workspace of its own like
-//! `tests/dual`: the `kernels` crate holds one `#[gpu]` vector-add and its committed `gust-artifacts/` (written by
+//! `tests/dual`: the `kernels` crate holds one `#[gpu_module]` vector-add and its committed `gust-artifacts/` (written by
 //! `cargo gust build`), and `app` dispatches it through `gust-wgpu` with `default-features = false` and checks the
 //! result.
 //!
@@ -50,7 +50,7 @@
 //!   (`cargo-warning:` in the expectation) but that still unifies the feature, so the release build is `dev` with the
 //!   same warning. Each warning is matched as a whole line.
 //! - **E7**: a change of `GUST_EXPORT_DIR`, which the macro tracks through `option_env!`, makes cargo expand the
-//!   `#[gpu]` module of `kernels` again (and the macro writes its records), and the same value does not. Then, with
+//!   `#[gpu_module]` module of `kernels` again (and the macro writes its records), and the same value does not. Then, with
 //!   Slang, `cargo gust build` runs twice on a copy of the fixture whose artifacts were deleted first: run 1 writes them, run 2 (the run on unchanged input) writes nothing, and the output is byte-identical and the
 //!   tool prints no `pruned` line (R2-3, S3).
 //! - **E8**: distribution (R2-4, R4.6). `cargo package` of `gust-compute-macros`, `gust-compute`, `gust-compute-wgpu` and `kernels` must list
@@ -1910,7 +1910,7 @@ pub(crate) struct ExportStep {
 }
 
 /// The steps of E7a. The macro emits `option_env!("GUST_EXPORT_DIR")` in every expansion, so cargo tracks the variable
-/// and expands the `#[gpu]` module again when its value changes (the nonce of `cargo gust build`, R2-3), and not
+/// and expands the `#[gpu_module]` module again when its value changes (the nonce of `cargo gust build`, R2-3), and not
 /// when it does not. `gust`'s build script tracks `GUST_PROFILE` only, so nothing else could explain the second kind.
 pub(crate) fn e7_steps() -> [ExportStep; 6] {
     [
@@ -1985,7 +1985,7 @@ pub(crate) fn expansion_problem(step: &ExportStep, flags: &[bool]) -> Option<Str
             step.label
         )),
         (Expansion::Again, true) => Some(format!(
-            "{}: `kernels` was fresh, but the value of `GUST_EXPORT_DIR` changed, so cargo must expand its `#[gpu]` module again",
+            "{}: `kernels` was fresh, but the value of `GUST_EXPORT_DIR` changed, so cargo must expand its `#[gpu_module]` module again",
             step.label
         )),
         _ => None,
@@ -2009,7 +2009,7 @@ fn record_counts(directory: &Path) -> (usize, usize) {
     (slang, json)
 }
 
-/// E7a: a change of `GUST_EXPORT_DIR` expands the `#[gpu]` module again. Returns the summary.
+/// E7a: a change of `GUST_EXPORT_DIR` expands the `#[gpu_module]` module again. Returns the summary.
 fn e7_reexpansion(fixture: &Fixture) -> Result<String, String> {
     let copy = fixture.scratch.join("e7-expand");
     copy_fixture(fixture, &copy)?;

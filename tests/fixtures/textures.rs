@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod textures {
     // Textures and samplers (slice mx.t3, D62, D64). A texture is a kernel parameter and a resource: it is bound with
     // a view, and its texel type or format is part of its type. The methods are `load(x, y)` (a texel by integer

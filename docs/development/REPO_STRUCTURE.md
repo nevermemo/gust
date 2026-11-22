@@ -40,7 +40,7 @@ Keep the current crate split until a measured need appears:
 - `gust`: public API, descriptors, ABI metadata, Rust shadow types, Slang/compiler bridge, reflection and SPIR-V helpers.
 - `gust-macros`: proc-macro validation, expansion and Rust AST -> Slang lowering.
 - `gust-wgpu`: headless wgpu runtime, buffers, dispatch, pipeline cache, graph and pool support.
-- `cargo-gust`: the `cargo gust` subcommand; collects `#[gpu]` kernels, compiles them with the pinned Slang, writes and re-checks the committed `gust-artifacts/` (`init`, `build`, `check`, `doctor`, `slang`). A binary only.
+- `cargo-gust`: the `cargo gust` subcommand; collects `#[gpu_module]` kernels, compiles them with the pinned Slang, writes and re-checks the committed `gust-artifacts/` (`init`, `build`, `check`, `doctor`, `slang`). A binary only.
 - `gust-algo`: device-resident algorithms (reduce, scan, compact) written as GUST kernels over `GpuVec`; a workspace crate that is not published (`publish = false`, D110).
 - `xtask`: dependency-light project automation and validation commands.
 
@@ -53,7 +53,7 @@ Every example has a tiny `src/main.rs` that delegates to `src/app.rs`. The app m
 ```text
 src/main.rs       binary entry point only
 src/app.rs        top-level wiring and public run/main function
-src/gpu.rs        #[gpu] module and descriptors
+src/gpu.rs        #[gpu_module] module and descriptors
 src/cpu.rs        independent host reference
 src/host.rs       runtime setup, buffers, graph/pool helpers, artifact export
 src/tests.rs      ignored example validation tests

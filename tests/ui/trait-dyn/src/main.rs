@@ -1,6 +1,6 @@
 // dyn dispatch (m9.g1, GUST-E0218): traits are static dispatch only.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Shape {
         fn area(&self) -> u32;

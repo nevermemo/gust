@@ -9,7 +9,7 @@ use gust::cpu::{CpuDevice, CpuJob, Error as CpuError};
 use gust::routed::{Error, NoGpu, OnCpu, OnGpu, Routed, RoutedBuffer, RoutedDevice};
 use gust::{Access, Call, Kernel, KernelDescriptor, LengthRule, Resource, Run};
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod kernels {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn triple_body(

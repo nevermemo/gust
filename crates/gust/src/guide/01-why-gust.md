@@ -1,6 +1,6 @@
 # Why GUST
 
-GUST (GPU <3 rUST) lets you write GPU compute kernels as Rust modules. A `#[gpu]` module is ordinary Rust syntax with
+GUST (GPU <3 rUST) lets you write GPU compute kernels as Rust modules. A `#[gpu_module]` module is ordinary Rust syntax with
 a deliberately small, GPU-safe vocabulary. rustc checks it, and the same source is translated to readable
 [Slang](https://shader-slang.org/), which produces the shader for the target (WGSL and SPIR-V).
 

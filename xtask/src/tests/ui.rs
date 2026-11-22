@@ -9,7 +9,7 @@ use crate::workspace::workspace_root;
 
 const MESSAGE: &str = "`Outside` is not a GUST GPU POD type";
 const NOTE: &str = "an `unsafe impl` written by hand must uphold the layout contract in the safety section of `GpuPod`";
-const LABEL: &str = "declare a plain struct inside the same `#[gpu]` module so that the macro implements `GpuPod` for it; `u32`, `i32` and `f32` already implement it";
+const LABEL: &str = "declare a plain struct inside the same `#[gpu_module]` module so that the macro implements `GpuPod` for it; `u32`, `i32` and `f32` already implement it";
 
 /// The `compiler-message` line of `cargo check --message-format json -p gpupod-missing` on
 /// Windows (probe/d0-json-gpupod-missing.log), trimmed from a real run; the fields the matcher
@@ -19,7 +19,7 @@ const LABEL: &str = "declare a plain struct inside the same `#[gpu]` module so t
 /// is relative to the fixture workspace and uses backslashes, the label sits on the span (not on
 /// a child), the `GpuPod` help and the attribute's note are child messages, and the child spans
 /// name other files and lines.
-const GPUPOD_MISSING_LINE: &str = r#"{"reason":"compiler-message","target":{"kind":["bin"],"crate_types":["bin"],"name":"gpupod-missing"},"message":{"rendered":"error[E0277]: `Outside` is not a GUST GPU POD type\n   --> gpupod-missing\\src\\main.rs:13:65\n","$message_type":"diagnostic","children":[{"children":[],"code":null,"level":"help","message":"the trait `GpuPod` is not implemented for `Outside`","rendered":null,"spans":[{"byte_end":120,"byte_start":106,"column_end":15,"column_start":1,"expansion":null,"file_name":"gpupod-missing\\src\\main.rs","is_primary":true,"label":null,"line_end":6,"line_start":6,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}]},{"children":[],"code":null,"level":"note","message":"an `unsafe impl` written by hand must uphold the layout contract in the safety section of `GpuPod`","rendered":null,"spans":[]},{"children":[],"code":null,"level":"help","message":"the following other types implement trait `GpuPod`","rendered":null,"spans":[{"byte_end":4000,"byte_start":3974,"column_end":27,"column_start":1,"expansion":null,"file_name":"crates\\gust\\src\\abi.rs","is_primary":true,"label":"`f32`","line_end":141,"line_start":141,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}]}],"code":{"code":"E0277","explanation":null},"level":"error","message":"`Outside` is not a GUST GPU POD type","spans":[{"byte_end":459,"byte_start":445,"column_end":79,"column_start":65,"expansion":null,"file_name":"gpupod-missing\\src\\main.rs","is_primary":true,"label":"declare a plain struct inside the same `#[gpu]` module so that the macro implements `GpuPod` for it; `u32`, `i32` and `f32` already implement it","line_end":13,"line_start":13,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}]}}"#;
+const GPUPOD_MISSING_LINE: &str = r#"{"reason":"compiler-message","target":{"kind":["bin"],"crate_types":["bin"],"name":"gpupod-missing"},"message":{"rendered":"error[E0277]: `Outside` is not a GUST GPU POD type\n   --> gpupod-missing\\src\\main.rs:13:65\n","$message_type":"diagnostic","children":[{"children":[],"code":null,"level":"help","message":"the trait `GpuPod` is not implemented for `Outside`","rendered":null,"spans":[{"byte_end":120,"byte_start":106,"column_end":15,"column_start":1,"expansion":null,"file_name":"gpupod-missing\\src\\main.rs","is_primary":true,"label":null,"line_end":6,"line_start":6,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}]},{"children":[],"code":null,"level":"note","message":"an `unsafe impl` written by hand must uphold the layout contract in the safety section of `GpuPod`","rendered":null,"spans":[]},{"children":[],"code":null,"level":"help","message":"the following other types implement trait `GpuPod`","rendered":null,"spans":[{"byte_end":4000,"byte_start":3974,"column_end":27,"column_start":1,"expansion":null,"file_name":"crates\\gust\\src\\abi.rs","is_primary":true,"label":"`f32`","line_end":141,"line_start":141,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}]}],"code":{"code":"E0277","explanation":null},"level":"error","message":"`Outside` is not a GUST GPU POD type","spans":[{"byte_end":459,"byte_start":445,"column_end":79,"column_start":65,"expansion":null,"file_name":"gpupod-missing\\src\\main.rs","is_primary":true,"label":"declare a plain struct inside the same `#[gpu_module]` module so that the macro implements `GpuPod` for it; `u32`, `i32` and `f32` already implement it","line_end":13,"line_start":13,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}]}}"#;
 
 /// A second error of the same crate, trimmed the same way from a run of `gpupod-missing` with
 /// `let _ = undefined_name;` added to `main` (probe/d0-json-second-error.log). rustc printed it
@@ -799,11 +799,13 @@ fn the_repository_fixtures_are_a_workspace_of_their_own_and_every_crate_is_liste
             "kernel-missing/src/main.rs",
             10,
             &["`u32` is not a GUST kernel handle"],
-            &["pass the zero-sized handle that `#[gpu]` generates for a `#[kernel]` function"],
+            &[
+                "pass the zero-sized handle that `#[gpu_module]` generates for a `#[kernel]` function"
+            ],
         ))
     );
     assert_eq!(find("gpupod-present").expectation, Expectation::Compiles);
-    // The two const layout fixtures: one E0080 reported at the `#[gust::gpu]` line (line 17), pinned by message.
+    // The two const layout fixtures: one E0080 reported at the `#[gust::gpu_module]` line (line 17), pinned by message.
     assert_eq!(
         find("layout-outside-field").expectation,
         fails(expected(
@@ -835,7 +837,7 @@ fn the_repository_fixtures_are_a_workspace_of_their_own_and_every_crate_is_liste
 /// The `compiler-message` line of `cargo check --message-format json -p layout-outside-field`
 /// (probe/d2-fixture.log), trimmed from a real run on Windows. A `const` panic that a macro generated
 /// is reported at core's `panic.rs`, not in the user's file: the primary span is there and the user's
-/// `#[gust::gpu]` line is only the call site of its expansion chain. Cut: `package_id`,
+/// `#[gust::gpu_module]` line is only the call site of its expansion chain. Cut: `package_id`,
 /// `manifest_path`, `explanation`, `def_site_span`s, byte offsets, columns and `text`. Changed: the
 /// machine path of `panic.rs` is replaced by the `/rustc/<hash>` form that rustc prints with
 /// remapped paths. Kept: `file_name` of the call sites is relative to the fixture workspace with
@@ -1566,7 +1568,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             "gust: unknown capability `gpu` in GUST_PROFILE `native+gpu`; use subgroups"
         ])
     );
-    // A malformed `[package.metadata.gust]` is GUST-E0753 at the `#[gpu]` module; the fixture sets no variable.
+    // A malformed `[package.metadata.gust]` is GUST-E0753 at the `#[gpu_module]` module; the fixture sets no variable.
     let malformed = find("profile-manifest-malformed");
     assert!(malformed.env.is_empty(), "{:?}", malformed.env);
     assert!(

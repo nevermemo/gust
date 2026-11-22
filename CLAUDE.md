@@ -23,7 +23,7 @@ After each slice, check usage; usage is shared with another project on the owner
 Project skills live in `.agents/skills/<name>/SKILL.md`. Claude Code does not load that folder automatically, so
 read the matching `SKILL.md` before work in its area:
 
-- `rust-gpu-ast-validation`: accepting or rejecting Rust constructs in `#[gpu]` modules.
+- `rust-gpu-ast-validation`: accepting or rejecting Rust constructs in `#[gpu_module]` modules.
 - `rust-to-slang-lowering`: syn AST to Slang emission rules.
 - `slang-language`: generated Slang and slangc target issues.
 - `compiler-testing`: regression, golden and differential tests.

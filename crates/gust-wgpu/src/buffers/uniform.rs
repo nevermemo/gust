@@ -18,10 +18,10 @@ use std::marker::PhantomData;
 /// copy in the command stream.
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 /// use gust_wgpu::{GpuBufferAccess, GpuUniform, HeadlessDevice};
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod scale {
 ///     /// A uniform is a struct with no implicit padding and a size that is a multiple of 16 bytes.
 ///     pub struct Params {

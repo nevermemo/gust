@@ -1,6 +1,6 @@
 //! Backend-neutral typed dispatch surface (roadmap M2, slice m2.a).
 //!
-//! A `#[gpu]` kernel handle (a [`Kernel`]) gets generated `call`, `submit` and `dispatch` functions, a kernel with a
+//! A `#[gpu_module]` kernel handle (a [`Kernel`]) gets generated `call`, `submit` and `dispatch` functions, a kernel with a
 //! `Uniform<T>`/`ConstantBuffer<T>` parameter included (slice m6.u2; the host types for the uniform are here and in
 //! the backends); `call` turns
 //! typed buffer references into a [`Call`]: the kernel, the element count and one erased [`TypedDevice::Binding`] per
@@ -51,7 +51,7 @@
 //! The `tests` module exercises this surface with two devices. The recording mock mirrors a GPU backend: one blanket
 //! `Run` impl, it records the call and never runs a kernel body (D21/D22). The CPU side is the real
 //! [`crate::cpu::CpuDevice`] (M3): the tests implement `Run` for it per hand-written test kernel, in the shape the
-//! `#[gpu]` macro emits for real kernels (slice m3.c), and run *hand-written test bodies* through the same `Call`.
+//! `#[gpu_module]` macro emits for real kernels (slice m3.c), and run *hand-written test bodies* through the same `Call`.
 //! The CPU backend implements the backend contract above; its binding identity and access are read through
 //! `gust::cpu` only (the `CpuBinding` is opaque here), so this module adds no backend-neutral accessor for them.
 
@@ -973,7 +973,7 @@ impl<K: Kernel, const N: usize, const S: usize> Described<K, N, S> {
 impl KernelDescriptor {
     /// Number of `Storage` parameters (a typed call binds the uniform and texture parameters too).
     ///
-    /// Not part of the stable surface: `#[gpu]` expansions use it in a constant assertion that the generated
+    /// Not part of the stable surface: `#[gpu_module]` expansions use it in a constant assertion that the generated
     /// typed call takes as many arguments as the descriptor has storage, uniform and texture parameters.
     #[doc(hidden)]
     pub const fn storage_parameter_count(&self) -> usize {
@@ -1166,7 +1166,7 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// equal the number of `Storage` plus `Uniform` parameters of that descriptor. A mismatch is a compile error
     /// when the call is instantiated (a failed constant assertion). That is after monomorphisation: `cargo check`,
     /// clippy and rust-analyzer do not report it, and it never fires for a `call` nothing uses. This is a backstop;
-    /// the `#[gpu]` macro also emits a non-generic `const _: () = assert!(..)` per kernel. The count is the only
+    /// the `#[gpu_module]` macro also emits a non-generic `const _: () = assert!(..)` per kernel. The count is the only
     /// property of `bindings` that is checked here: order, access, element and device are the generated code's
     /// and the backend's business.
     ///
@@ -1680,7 +1680,7 @@ mod tests {
         }
     }
 
-    // Test bodies (not `#[gpu]` shadow bodies): the same shape and guards as GPU kernels.
+    // Test bodies (not `#[gpu_module]` shadow bodies): the same shape and guards as GPU kernels.
 
     fn scale_body(
         id: Invocation,

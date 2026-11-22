@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
-use gust::{Independent, gpu, slang, spirv};
+use gust::{Independent, gpu_module, slang, spirv};
 use gust_wgpu::{GpuBufferAccess, HeadlessDevice, render_wgpu_source};
 
-#[gpu]
+#[gpu_module]
 mod atomic_counter {
     /// T10 vertical slice: every thread increments the same shared counter.
     /// The final value must equal the number of threads that executed the increment.

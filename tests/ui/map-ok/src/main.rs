@@ -1,4 +1,4 @@
-// Control case for `#[gust::gpu]` on a function (D60): the accepted signatures expand and compile. Built under
+// Control case for `#[gust::gpu_fn]` on a function (D60): the accepted signatures expand and compile. Built under
 // `GUST_PROFILE=cpu` (env.txt), where the generated `map` and `map_on` run on `gust::cpu::CpuDevice` and nothing names
 // a GPU API. A scalar, `bool`, an integer, a vector and a matrix are all elements, and a 3-wide value is fine inside
 // the body. The functions stay plain Rust.
@@ -8,23 +8,23 @@ use gust::{
     math::{Mat4, Vec2, Vec3},
 };
 
-#[gust::gpu]
+#[gust::gpu_fn]
 pub fn saxpy(a: f32, x: f32, y: f32) -> f32 {
     a * x + y
 }
 
-#[gust::gpu]
+#[gust::gpu_fn]
 pub fn both(flag: bool, n: u32) -> bool {
     n % 2u32 == 0u32 && flag
 }
 
-#[gust::gpu]
+#[gust::gpu_fn]
 pub fn lift(v: Vec2, s: f32) -> Vec2 {
     let w = Vec3::new(v.x, v.y, s);
     Vec2::new(w.x + w.z, w.y)
 }
 
-#[gust::gpu]
+#[gust::gpu_fn]
 pub fn same(m: Mat4) -> Mat4 {
     m
 }

@@ -26,12 +26,12 @@ pub(crate) use map::expand_map_in_routed;
 pub(crate) use map::map_kernel;
 pub(crate) use map::{ElementReject, element_types, expand_map_routed};
 
-/// What names a kernel's export record to the tool that reads it: a `#[gpu]` module or function is one place in the
+/// What names a kernel's export record to the tool that reads it: a `#[gpu_module]` module or `#[gpu_fn]` function is one place in the
 /// source, so its record says where (schema 1, `source`); a `par_for!` call is a body that can stand at any number of
 /// places, so its record says nothing of them (schema 2) and each place writes its own sidecar (R1.1 M5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Identity {
-    /// A `#[gpu]` module or function: schema 1, the record holds the kernel's `source`.
+    /// A `#[gpu_module]` module or `#[gpu_fn]` function: schema 1, the record holds the kernel's `source`.
     Module,
     /// A `par_for!` call whose first line is `call_line`: schema 2 and a sidecar `<key>.<site16>.site.json`.
     Site { call_line: u32 },
@@ -276,7 +276,7 @@ pub fn expand_with(module: syn::ItemMod, profile: Profile) -> syn::Result<TokenS
     expand_in(module, &Environment::from_process(), profile)
 }
 
-/// [`expand_with`] for a module that may carry a route (`#[gpu(route = "tag")]`, M8, D65 to D67).
+/// [`expand_with`] for a module that may carry a route (`#[gpu_module(route = "tag")]`, M8, D65 to D67).
 pub(crate) fn expand_with_routed(
     module: syn::ItemMod,
     profile: Profile,
@@ -303,7 +303,7 @@ pub(crate) fn expand_with_directories(
     expand_in(module, &environment, Profile::Other)
 }
 
-/// [`expand_with_directories`] for a `#[gpu]` function (an element-wise map): the same environment, so that the tests
+/// [`expand_with_directories`] for a `#[gpu_fn]` function (an element-wise map): the same environment, so that the tests
 /// of the manifest can drive the map path, which reads the crate's manifest too (GUST-E0753 at the function's name).
 #[cfg(test)]
 pub(crate) fn expand_map_with_directories(
@@ -347,7 +347,7 @@ pub(crate) fn expand_in_routed(
     let (module, plan) = variant::lower(module)?;
     // The `#[pad]` structs are padded next (m14.pad, D239), so that the validator, the layout assertions, the `GpuPod`
     // impls and the Slang emitter all read the padded struct. This is the one place a user's module enters the
-    // expansion: the `#[gpu]` function and `par_for!` paths expand a module of their own making, which holds no
+    // expansion: the `#[gpu_fn]` function and `par_for!` paths expand a module of their own making, which holds no
     // user struct, through `expand_validated`.
     let (module, constructors) = pad::apply(module, &GRID)?;
     crate::validate::limits::check_declared(&module, environment.manifest_dir.as_deref())?; // before E0718 (m8.f)
@@ -388,7 +388,7 @@ pub(crate) fn expand_validated(
     )
 }
 
-/// [`expand_validated`] for a module that may carry a route: the map generator's `#[gpu(route = "tag")] fn`.
+/// [`expand_validated`] for a module that may carry a route: the map generator's `#[gpu_fn(route = "tag")] fn`.
 pub(crate) fn expand_validated_routed(
     module: syn::ItemMod,
     environment: &Environment,
@@ -1126,9 +1126,9 @@ fn expand_validated_with(
     })
 }
 
-/// Build-time routing (M8, D65 to D67, D137): the target a `#[gpu]` module is built for.
+/// Build-time routing (M8, D65 to D67, D137): the target a `#[gpu_module]` module is built for.
 ///
-/// `#[gpu(route = "physics")]` on a module (or on a `#[gpu] fn`) names a tag the crate declares in
+/// `#[gpu_module(route = "physics")]` on a module (or on a `#[gpu_fn] fn`) names a tag the crate declares in
 /// `[package.metadata.gust.routes]` of its own `Cargo.toml`. The module's target is resolved once per expansion,
 /// nearest first:
 ///
@@ -1260,7 +1260,7 @@ pub(crate) mod routing {
         }
     }
 
-    /// The tag `#[gpu(route = "..")]` named, and where.
+    /// The tag `#[gpu_module(route = "..")]` named, and where.
     #[derive(Clone, Debug)]
     pub(crate) struct Tag {
         /// The text of the literal.
@@ -1269,7 +1269,7 @@ pub(crate) mod routing {
         pub span: Span,
     }
 
-    /// What `#[gpu(..)]` says: the route tag and the facade path, each of them optional.
+    /// What `#[gpu_module(..)]` says: the route tag and the facade path, each of them optional.
     pub(crate) struct Attribute {
         /// `route = "<tag>"`.
         pub tag: Option<Tag>,
@@ -1277,11 +1277,11 @@ pub(crate) mod routing {
         pub krate: Option<syn::Path>,
     }
 
-    /// The arguments `#[gpu]` takes: `route = "<tag>"` and `crate = <path>`, in either order, each at most once, with
+    /// The arguments `#[gpu_module]` takes: `route = "<tag>"` and `crate = <path>`, in either order, each at most once, with
     /// an optional trailing comma.
     struct Arguments(Attribute);
 
-    const ARGUMENTS_TEXT: &str = "#[gpu] takes `route = \"<tag>\"` and `crate = <path>` (for example `crate = ::inner::gust`), \
+    const ARGUMENTS_TEXT: &str = "`#[gpu_module]` and `#[gpu_fn]` take `route = \"<tag>\"` and `crate = <path>` (for example `crate = ::inner::gust`), \
                                   each at most once, separated by commas";
 
     impl Parse for Arguments {
@@ -1297,7 +1297,7 @@ pub(crate) mod routing {
                         return Err(diagnostics::error(
                             Code::GpuArguments,
                             keyword,
-                            "#[gpu] takes `crate = <path>` at most once",
+                            "`#[gpu_module]` and `#[gpu_fn]` take `crate = <path>` at most once",
                         ));
                     }
                     input.parse::<syn::Token![=]>()?;
@@ -1318,7 +1318,7 @@ pub(crate) mod routing {
                         return Err(diagnostics::error(
                             Code::GpuArguments,
                             name,
-                            "#[gpu] takes `route = \"<tag>\"` at most once",
+                            "`#[gpu_module]` and `#[gpu_fn]` take `route = \"<tag>\"` at most once",
                         ));
                     }
                     input.parse::<syn::Token![=]>()?;
@@ -1344,7 +1344,7 @@ pub(crate) mod routing {
         }
     }
 
-    /// The arguments of `#[gpu(..)]`; GUST-E0701 for anything but `route = "<tag>"` and `crate = <path>`.
+    /// The arguments of `#[gpu_module(..)]`; GUST-E0701 for anything but `route = "<tag>"` and `crate = <path>`.
     pub(crate) fn parse_attribute(arguments: TokenStream) -> syn::Result<Attribute> {
         let Arguments(attribute) = diagnostics::parse2(Code::GpuArguments, arguments)?;
         Ok(attribute)
@@ -2459,7 +2459,7 @@ pub(crate) mod variant {
                     return Err(diagnostics::error(
                         Code::VariantAttribute,
                         attribute,
-                        "#[variant] goes on a function of a `#[gpu]` module, beside the `#[kernel]` it replaces",
+                        "#[variant] goes on a function of a `#[gpu_module]` module, beside the `#[kernel]` it replaces",
                     ));
                 }
             }
@@ -2636,13 +2636,13 @@ pub(crate) mod variant {
         Ok((module, plan))
     }
 
-    /// The error for `#[variant]` on a `#[gpu]` function (an element-wise map has one body), or `None` without one.
+    /// The error for `#[variant]` on a `#[gpu_fn]` function (an element-wise map has one body), or `None` without one.
     pub(crate) fn misplaced_on_function(function: &syn::ItemFn) -> Option<syn::Error> {
         let attribute = function.attrs.iter().find(|a| is_variant(a))?;
         Some(diagnostics::error(
             Code::VariantAttribute,
             attribute,
-            "#[variant] goes on a function of a `#[gpu]` module; a `#[gpu]` function is one body",
+            "#[variant] goes on a function of a `#[gpu_module]` module; a `#[gpu_fn]` function is one body",
         ))
     }
 
@@ -2808,7 +2808,7 @@ fn parameter_records(
 }
 
 /// Reads the two variables that decide what a kernel crate's expansion contains, so that rustc records them as
-/// dependencies of the crate (`option_env!` is tracked) and Cargo re-expands the `#[gpu]` module when either one
+/// dependencies of the crate (`option_env!` is tracked) and Cargo re-expands the `#[gpu_module]` module when either one
 /// changes: `GUST_PROFILE` (the profile, D44) and `GUST_EXPORT_DIR` (export mode, D46). The values are not used.
 fn tracked_environment() -> TokenStream {
     quote! {
@@ -3853,7 +3853,7 @@ fn typed_call_items(
         .map(|(index, (argument, resource))| {
             let (element, kind) = (&argument.element, &argument.kind);
             // Spanned on the parameter, so rustc's "required by this bound" note points at the
-            // kernel parameter the bound belongs to, not at `#[gpu]`.
+            // kernel parameter the bound belongs to, not at `#[gpu_module]`.
             let span = argument.name.span();
             if index == 0 {
                 quote_spanned!(span=> #resource: ::gust::Resource<Element = #element, Kind = #kind> + 'r)
@@ -4529,7 +4529,7 @@ mod tests {
 
     use super::*;
 
-    /// Not reachable through `#[gpu]`: the validator rejects a struct without named fields
+    /// Not reachable through `#[gpu_module]`: the validator rejects a struct without named fields
     /// (E0104) before the host side is generated. Listed in the guard's `UNREACHABLE`.
     #[test]
     fn pod_struct_without_named_fields_is_coded_when_validation_is_skipped() {

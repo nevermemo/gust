@@ -9,7 +9,7 @@
 //! });
 //! ```
 //!
-//! The macro builds a kernel in the dialect around the body, hands it to the expansion every `#[gpu]` module goes
+//! The macro builds a kernel in the dialect around the body, hands it to the expansion every `#[gpu_module]` module goes
 //! through (so the Slang, the descriptor, the typed calls, the CPU `Run` impl and the artifact handling are those of
 //! any kernel), and adds the host function that launches it:
 //!

@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod vectors {
     pub struct Particle {
         pub position: Vec2,

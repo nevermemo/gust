@@ -1,6 +1,6 @@
 // A trait impl for a foreign type (m9.g1, GUST-E0121).
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Shape {
         fn area(&self) -> u32;

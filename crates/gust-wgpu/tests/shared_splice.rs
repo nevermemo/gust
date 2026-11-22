@@ -1,8 +1,8 @@
-//! Two `#[gpu]` modules share a helper `fn`, a `const` and a `struct` through a user-side `macro_rules!` splice, on the
+//! Two `#[gpu_module]` modules share a helper `fn`, a `const` and a `struct` through a user-side `macro_rules!` splice, on the
 //! GPU and on the CPU twin (slice m11.xsplice; Gpu tier).
 //!
-//! `with_shared!` wraps a module and expands to `#[gust::gpu] mod name { <shared items> <the module's own items> }`.
-//! `macro_rules!` expands before the attribute macro runs, so `#[gpu]` receives one ordinary inline module with the
+//! `with_shared!` wraps a module and expands to `#[gust::gpu_module] mod name { <shared items> <the module's own items> }`.
+//! `macro_rules!` expands before the attribute macro runs, so `#[gpu_module]` receives one ordinary inline module with the
 //! shared items already inside it. The two modules below call the same helper, read the same const and use the same
 //! struct; each kernel runs on the GPU and on the CPU twin against a host reference, and a non-GPU test checks that
 //! each kernel's Slang text carries the shared const, struct and helper (tested, via `DESCRIPTOR.slang_source`).
@@ -21,7 +21,7 @@ use gust_wgpu::{BufferBinding, GpuBufferAccess};
 /// Wraps a module and splices the shared items in before the module's own items.
 macro_rules! with_shared {
     ($vis:vis mod $name:ident { $($body:tt)* }) => {
-        #[gust::gpu]
+        #[gust::gpu_module]
         $vis mod $name {
             pub const FACTOR: u32 = 3;
 

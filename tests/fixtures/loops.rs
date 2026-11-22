@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod loops {
     pub struct Window {
         pub lo: uint,

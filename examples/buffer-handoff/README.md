@@ -2,7 +2,7 @@
 
 A GUST output buffer used by another wgpu compute pass on the same device, without a CPU round trip.
 
-- The `#[gpu]` kernel `count` hashes each thread index into one of 64 bins and counts it with `atomic_add`. Integer
+- The `#[gpu_module]` kernel `count` hashes each thread index into one of 64 bins and counts it with `atomic_add`. Integer
   atomics are exact, so the histogram does not depend on thread order.
 - The CPU twin and a plain-Rust reference compute the same histogram; the reference is uploaded as the expected buffer.
 - A compute pass the example owns (hand-written WGSL, its own `wgpu` pipeline) reads GUST's histogram buffer directly,

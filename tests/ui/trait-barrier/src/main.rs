@@ -1,6 +1,6 @@
 // A barrier in an impl method (m9.g1, D154, GUST-E0414).
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Sync {
         fn sync(&self) -> u32;

@@ -2,7 +2,7 @@
 // both are `u32` words in a buffer: `add_one::map(&flags)` is rustc's E0277 (`&[bool; 2]` does not implement the
 // `MapArg<u32, _>` bound). The other direction is map-u32-for-bool. Built under `GUST_PROFILE=cpu` (env.txt).
 
-#[gust::gpu]
+#[gust::gpu_fn]
 pub fn add_one(n: u32) -> u32 {
     n + 1u32
 }

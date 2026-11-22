@@ -1,6 +1,6 @@
 // An array of arrays is GUST-E0217 (nested arrays are not in this slice). expected.txt pins the code and the line.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     fn first(a: [[u32; 2]; 2]) -> u32 {
         1u32

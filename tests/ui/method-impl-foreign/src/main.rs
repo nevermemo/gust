@@ -6,7 +6,7 @@ pub struct Outside {
     pub radius: f32,
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod shapes {
     pub struct Circle {
         pub radius: f32,

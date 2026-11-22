@@ -48,7 +48,7 @@ use gust_wgpu::{
 /// would dominate the test), `iota` writes a function of the index alone. Most grid kernels take the default workgroup
 /// of 64; `grid_iota` sets 128 beside the `pixel` kernels of the module (a mix the emitter refused with E0707 before
 /// slice mx.p1b's macro fix).
-#[gust::gpu]
+#[gust::gpu_module]
 mod ident {
     fn mix(i: u32) -> u32 {
         i * 2654435761u32 + 12345u32

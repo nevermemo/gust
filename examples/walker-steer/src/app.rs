@@ -36,13 +36,13 @@
 //!
 //! # Why two modules
 //!
-//! `SIDE` is a module constant, so one `#[gpu]` module has one grid size. The macro below writes the module and the
+//! `SIDE` is a module constant, so one `#[gpu_module]` module has one grid size. The macro below writes the module and the
 //! host code that drives it once per size: `big` (128, the run of `main` and the GPU tests) and, under `cfg(test)`,
 //! `small` (16).
 
 #[cfg(any(test, gust_dual))]
 use gust::cpu::CpuDevice;
-use gust::{Independent, gpu};
+use gust::{Independent, gpu_module};
 use gust_wgpu::{DeviceHandle, GpuVec, HeadlessDevice, default_device};
 
 /// Steps of every run.
@@ -61,7 +61,7 @@ const DIRS: [(i64, i64); 8] = [
     (1, -1),
 ];
 
-// ---- Host side shared by every size: inputs and the reference, plain Rust, not the `#[gpu]` bodies. ----
+// ---- Host side shared by every size: inputs and the reference, plain Rust, not the `#[gpu_module]` bodies. ----
 
 /// The hash-rng finaliser ("lowbias32", Chris Wellons' hash-prospector, public domain).
 fn mix(x: u32) -> u32 {
@@ -287,13 +287,13 @@ fn case(name: &'static str, walkers: usize, start: Start, dist: u32, prob: u32) 
     }
 }
 
-/// Writes, per size, the `#[gpu]` module and the host code that drives it.
+/// Writes, per size, the `#[gpu_module]` module and the host code that drives it.
 macro_rules! walker_program {
     ($name:ident, $side:tt) => {
         pub mod $name {
             use super::*;
 
-            #[gpu]
+            #[gpu_module]
             pub mod k {
                 /// Cells per side: a power of two.
                 pub const SIDE: u32 = $side;

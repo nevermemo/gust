@@ -2,7 +2,7 @@
 // positions, a statement of the kernel body and a statement of a top-level `for` with two literal bounds. This crate
 // must compile, so the validator, the lowering and the preserved Rust all accept it.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(256, 1, 1), cpu = "unsupported")]
     pub fn reduce(

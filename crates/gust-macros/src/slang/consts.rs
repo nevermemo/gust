@@ -1,4 +1,4 @@
-//! The module-level `const` items of a `#[gpu]` module (slice m11.g3, D205; expressions: slice m11.cexpr, D210).
+//! The module-level `const` items of a `#[gpu_module]` module (slice m11.g3, D205; expressions: slice m11.cexpr, D210).
 //!
 //! The validator (`validate_const`) has already checked the form: `const NAME: T = <expression>;` with `T` one of the
 //! four scalars and the expression made of literals of `T`, earlier constants of `T`, parentheses and the operators

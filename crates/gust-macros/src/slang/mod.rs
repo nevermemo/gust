@@ -1,4 +1,4 @@
-//! The Slang emitter: turns a validated `#[gpu]` module and one of its kernels into Slang text and a line table.
+//! The Slang emitter: turns a validated `#[gpu_module]` module and one of its kernels into Slang text and a line table.
 //!
 //! The entry points are [`emit_kernel_in`] (and the test-only `emit_kernel`); the other files hold the emitter by
 //! concern, and this one declares them and re-exports what the rest of the crate names.
@@ -110,7 +110,7 @@ mod tests {
     }
 
     /// The emitter re-checks shapes the validator already rejects, so these sites are
-    /// unreachable through `#[gpu]`; they are exercised on the emitter functions directly
+    /// unreachable through `#[gpu_module]`; they are exercised on the emitter functions directly
     /// and must still carry their own codes.
     #[test]
     fn emitter_rejections_carry_their_codes() {

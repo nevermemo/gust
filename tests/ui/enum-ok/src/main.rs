@@ -1,7 +1,7 @@
 // Control case for enums (m9.e1): a field-less enum with an explicit discriminant, a signed one, a helper that takes and
 // returns an enum, `==`, `as u32` and a statement `match` with a grouped arm and `_`. This crate must compile.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[derive(PartialEq, Eq)]
     pub enum Mode {

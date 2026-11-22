@@ -53,7 +53,7 @@ impl<K: Kernel, const N: usize> Run<K, N> for Mock {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod kernels {
     #[kernel]
     pub fn scale(

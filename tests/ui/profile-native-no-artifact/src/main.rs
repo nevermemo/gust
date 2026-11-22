@@ -3,7 +3,7 @@
 // line in this file, not inside `gust`. `profile-dev-no-artifact` builds this very file under `dev` and must compile.
 // No artifact can exist yet (the macro embeds none before slice m4.c), so this fixture needs no artifact file.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod kernels {
     #[kernel]
     fn fill(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {

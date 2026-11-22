@@ -1,4 +1,4 @@
-// The element-wise map calls of `#[gust::gpu]` on a function (M7, D60) in the production CPU target: `map` and `map_on`
+// The element-wise map calls of `#[gust::gpu_fn]` on a function (M7, D60) in the production CPU target: `map` and `map_on`
 // run on `gust::cpu::CpuDevice` with no GPU API, in parallel chunks of the output (slice m7.c, `GUST_CPU_THREADS`), and
 // the CPU-only chunk body `__gust_map_cpu_chunk` runs one range of elements. Built under `GUST_PROFILE=cpu` only (see
 // `build.rs`).
@@ -11,22 +11,22 @@ use gust::{
     map::{Broadcast, Error},
 };
 
-#[gust::gpu]
+#[gust::gpu_fn]
 pub fn scale_add(a: f32, x: f32, y: f32) -> f32 {
     a * x + y
 }
 
-#[gust::gpu]
+#[gust::gpu_fn]
 pub fn pick(flag: bool, x: u32, y: u32) -> u32 {
     if flag { x } else { y }
 }
 
-#[gust::gpu]
+#[gust::gpu_fn]
 pub fn both(a: u32, b: u32, c: u32) -> u32 {
     a % b + a / c
 }
 
-#[gust::gpu]
+#[gust::gpu_fn]
 pub fn is_multiple(a: u32, b: u32) -> bool {
     a % b == 0
 }

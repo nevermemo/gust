@@ -1,6 +1,6 @@
 //! The crate's declarations in its manifest: `[package.metadata.gust]` (M8, D138, plan section 2.1).
 //!
-//! `#[gpu]` (a module or a map function) and `par_for!` read `CARGO_MANIFEST_DIR/Cargo.toml` once per expansion.
+//! `#[gpu_module]` (a module) or `#[gpu_fn]` (a map function) and `par_for!` read `CARGO_MANIFEST_DIR/Cargo.toml` once per expansion.
 //! Three keys are declared:
 //!
 //! ```toml
@@ -22,7 +22,7 @@
 //!
 //! What an E0753 can point at: the error is raised at the module's name, at the function's name or at the call (a proc
 //! macro has no span in `Cargo.toml`), so rustc shows that identifier, and the file, line and column of the offending
-//! key or value are in the message. Every `#[gpu]` module, every `#[gpu] fn` (an element-wise map) and every `par_for!`
+//! key or value are in the message. Every `#[gpu_module]` module, every `#[gpu_fn] fn` (an element-wise map) and every `par_for!`
 //! call of the crate reports it once, because each goes through `expand_validated`. The path in the message is always
 //! the bare file name. A crate with none of the three never has its manifest read.
 //!

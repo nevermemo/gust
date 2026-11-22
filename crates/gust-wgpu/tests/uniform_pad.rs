@@ -21,7 +21,7 @@ use gust::slang::Target;
 use gust::{GpuPod, KernelDescriptor, Run, TypeLayoutKind};
 use gust_wgpu::{GpuBuffer, GpuBufferAccess, HeadlessDevice};
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod padded {
     // `gain` at 0, then 12 bytes of padding (`_pad0` to `_pad2`): 16 bytes.
     #[pad]

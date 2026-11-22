@@ -228,7 +228,7 @@ fn sparse_bindings_run_on_the_spirv_route() {
 
 // ---- the kernels with a guard ----
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod probes {
     // Dynamic indices out of range: a local array, a workgroup array, from run-time values (the index clamp).
     #[kernel(workgroup_size(64, 1, 1), cpu = "unsupported")]

@@ -1,7 +1,7 @@
 // A `&mut self` call in the place of an assignment (m9.a2 review M1, GUST-E0421): Rust evaluates the value first and
 // Slang evaluates the call in the index first, so the GPU would write another element than the CPU twin.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Counter {
         pub n: uint,

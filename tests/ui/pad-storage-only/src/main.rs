@@ -1,6 +1,6 @@
 // `#[pad]` on a struct only a storage buffer reaches, GUST-E0219 (a storage gap is GUST-E0208, fixed by ordering).
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[pad]
     pub struct Item {

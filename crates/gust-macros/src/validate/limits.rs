@@ -7,8 +7,8 @@
 //! pins it to the list of values that `gust`'s own test and `gust-compute-wgpu`'s equality test (against
 //! `wgpu::Limits::default()` and the limits of an opened device) also pin.
 //!
-//! Three entry points reach it (m11.floor): the `#[kernel]` items of a `#[gpu]` module ([`check_declared`] in
-//! `expand_in`), the kernel that a `#[gpu] fn` element-wise map generates ([`check_generated`], reported at the
+//! Three entry points reach it (m11.floor): the `#[kernel]` items of a `#[gpu_module]` module ([`check_declared`] in
+//! `expand_in`), the kernel that a `#[gpu_fn] fn` element-wise map generates ([`check_generated`], reported at the
 //! function's signature) and the kernel that `par_for!` generates (`check_generated` on the module it builds, after
 //! its bindings are classified, so the buffers and the uniform record are the generated parameters; reported at the
 //! call). A generated kernel is counted like a written one: a map binds one storage buffer per parameter and
@@ -136,7 +136,7 @@ pub(crate) fn check_declared(
     check(module, declared(manifest_dir), None)
 }
 
-/// [`check_declared`] for a kernel a macro generates (a `#[gpu] fn` map, `par_for!`): a violation is reported at `at`,
+/// [`check_declared`] for a kernel a macro generates (a `#[gpu_fn] fn` map, `par_for!`): a violation is reported at `at`,
 /// the user's own tokens, and names the kernel `label`, because the generated kernel's signature has no source of its
 /// own.
 pub(crate) fn check_generated(
@@ -805,7 +805,7 @@ mod tests {
         assert_code(&error, Code::PortableFloor);
     }
 
-    /// A `#[gpu] fn` with `count` parameters of `f32`: the generated map kernel binds `count + 1` storage buffers.
+    /// A `#[gpu_fn] fn` with `count` parameters of `f32`: the generated map kernel binds `count + 1` storage buffers.
     fn map_function(count: usize) -> syn::ItemFn {
         let parameters: Vec<String> = (0..count).map(|index| format!("p{index}: f32")).collect();
         crate::diagnostics::testing::parse_str(&format!(

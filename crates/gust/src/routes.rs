@@ -1,7 +1,7 @@
 //! Names of build-time routes (D65 to D67, D137).
 //!
 //! A route tag names a group of kernels (`physics`, `physics.broadphase`) whose target a build chooses. The choice
-//! reaches the `#[gpu]` macro through an environment variable per tag, `GUST_ROUTE__<package>__<tag>`. This module is
+//! reaches the `#[gpu_module]` macro through an environment variable per tag, `GUST_ROUTE__<package>__<tag>`. This module is
 //! the spelling of that variable for the driver (`cargo gust`). The macro cannot call it, because `gust-compute`
 //! depends on `gust-compute-macros` and not the other way round: `gust-compute-macros` keeps a token-for-token copy
 //! (the same arrangement as `content_key` in `gust-macros/src/expand/artifact.rs`), and both crates assert one golden

@@ -7,7 +7,12 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
-- Added `#[pad]` for a struct of a `#[gpu]` module that a uniform reaches: `#[gpu]` inserts the `f32` padding fields
+- Renamed the attribute: `#[gpu]` on an inline module is now `#[gpu_module]` and `#[gpu]` on a free function (the
+  element-wise map) is now `#[gpu_fn]`, with the same arguments (`route`, `crate`) and behaviour. `gust::gpu` is no
+  longer exported and there is no alias. `#[gpu_module]` on a function, or `#[gpu_fn]` on a module or any other item,
+  is `GUST-E0702` and the message names the attribute that fits. The generated Slang is unchanged (m14.rename,
+  D237, D243).
+- Added `#[pad]` for a struct of a `#[gpu_module]` module that a uniform reaches: `#[gpu_module]` inserts the `f32` padding fields
   `_pad0`, `_pad1`, ... of its constant-buffer layout and generates `new(<your fields>)`; a misplaced `#[pad]` is the
   new `GUST-E0219`, and an unmarked struct keeps `GUST-E0209` (m14.pad, D239).
 

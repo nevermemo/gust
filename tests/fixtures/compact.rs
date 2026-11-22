@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod compact {
     // m7.r3: the kernels of `gust_algo::compact` (plan section 5.4). The sums and the scan of a compaction are the
     // `reduce` and `scan` kernels; these are the three element-wise steps around them.

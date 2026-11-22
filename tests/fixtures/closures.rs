@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod closures {
     pub struct Counter {
         pub n: u32,

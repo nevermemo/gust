@@ -1,6 +1,6 @@
 //! Public contract for the Rust-to-Slang GUST compiler.
 //!
-//! The `#[gpu]` macro lives in a separate proc-macro crate. This crate owns the
+//! The `#[gpu_module]` macro lives in a separate proc-macro crate. This crate owns the
 //! small, intentionally Slang-shaped vocabulary used by annotated modules,
 //! generated Slang descriptors, and host runtime interfaces.
 //!
@@ -8,7 +8,7 @@
 //!
 //! A compute entry point cannot return a value:
 //! ```compile_fail
-//! #[gust::gpu]
+//! #[gust::gpu_module]
 //! mod invalid {
 //!     #[kernel]
 //!     fn run(id: SV_DispatchThreadID) -> uint { id.x }
@@ -16,7 +16,7 @@
 //! ```
 //! Conditional attributes inside the shader cannot silently lose their meaning:
 //! ```compile_fail
-//! #[gust::gpu]
+//! #[gust::gpu_module]
 //! mod invalid {
 //!     #[kernel]
 //!     fn run(id: SV_DispatchThreadID) {
@@ -27,7 +27,7 @@
 //! ```
 //! rustc still checks shadow arithmetic after macro validation:
 //! ```compile_fail
-//! #[gust::gpu]
+//! #[gust::gpu_module]
 //! mod invalid {
 //!     #[kernel]
 //!     fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
@@ -38,7 +38,7 @@
 //! Types and casts outside the 32-bit scalar subset are rejected by the macro,
 //! even though rustc would accept them in the shadow body:
 //! ```compile_fail
-//! #[gust::gpu]
+//! #[gust::gpu_module]
 //! mod invalid {
 //!     #[kernel]
 //!     fn run(id: SV_DispatchThreadID) {
@@ -78,7 +78,7 @@
 //! assigning fields by name in source order. This preserves field identity even
 //! when the literal lists fields in a different order than the declaration:
 //! ```
-//! #[gust::gpu]
+//! #[gust::gpu_module]
 //! mod valid {
 //!     struct Pair { first: uint, second: uint }
 //!     #[kernel]
@@ -91,7 +91,7 @@
 //! # The CPU runtime: the `cpu` target and the twin
 //!
 //! [`cpu`] runs a kernel's Rust shadow body on the CPU (`CpuDevice`, `CpuBuffer`). It is the runtime of the `cpu`
-//! target (D21, D51) and the engine of the CPU twin (D22). The per-kernel impl of the typed calls that the `#[gpu]`
+//! target (D21, D51) and the engine of the CPU twin (D22). The per-kernel impl of the typed calls that the `#[gpu_module]`
 //! macro emits for it is the twin under `cfg(test)` of the crate that defines the kernel or under `--cfg gust_dual`,
 //! unless the kernel has `#[kernel(cpu = "unsupported")]`; under `GUST_PROFILE=cpu` the macro emits the same impl in
 //! every build and that build is the `cpu` target (see "Build profiles"). Nothing of it is re-exported at the crate
@@ -101,7 +101,7 @@
 //!
 //! The environment variable `GUST_PROFILE` chooses the profile of a build (D44): `dev`, `native`, `web` or `cpu`.
 //! `gust`'s build script reads it; any other value, including an empty one, fails the build and names the four.
-//! `native` and `web` are strict: every `#[gpu]` kernel must have a precompiled artifact (see [`artifact`]), or the
+//! `native` and `web` are strict: every `#[gpu_module]` kernel must have a precompiled artifact (see [`artifact`]), or the
 //! build fails with a compile error at the kernel, and the `slang-runtime` feature is refused, so the build contains
 //! no run-time Slang compiler. `dev` has neither rule. `profile::NAME` is the effective profile (support surface, see below).
 //!
@@ -112,11 +112,11 @@
 //! profile that accepts the `slang-runtime` feature, so it is the profile of the tests of subgroup kernels.
 //!
 //! A crate that must run on every WebGPU device sets `limits = "portable"` in its `[package.metadata.gust]` table (M8):
-//! the macro then refuses a `#[kernel]` of a `#[gpu]` module that is over [`limits::PORTABLE`] (GUST-E0746). The
-//! `#[gpu]` element-wise map and `par_for!` are not checked, nor are the limits that depend on the launch (the runtime
+//! the macro then refuses a `#[kernel]` of a `#[gpu_module]` module that is over [`limits::PORTABLE`] (GUST-E0746). The
+//! `#[gpu_fn]` element-wise map and `par_for!` are not checked, nor are the limits that depend on the launch (the runtime
 //! checks those). The setting is off by default.
 //!
-//! `cpu` is the production CPU target (D21): the `#[gpu]` macro emits the kernel's `Run` impl for
+//! `cpu` is the production CPU target (D21): the `#[gpu_module]` macro emits the kernel's `Run` impl for
 //! [`cpu::CpuDevice`] in every build, without the test and `gust_dual` gate, uses no
 //! artifact, and the `slang-runtime` feature is refused, so the build holds no run-time Slang bridge. `gust-compute-wgpu`
 //! evaluates `profile::require_gpu_target`, which fails under it, so a crate graph that reaches the GPU runtime does
@@ -130,7 +130,7 @@
 //! `PROFILE=release`, the profile is `web` for `wasm32` and `native` for every other target, and the build prints
 //! `warning: gust-compute@<version>: gust: release build without GUST_PROFILE treated as native` (or `web`; cargo shows a build
 //! script's warning only for path and workspace packages, or with `-vv`, so a registry or git dependency stays
-//! silent). So `cargo build --release` of any crate with `#[gpu]` kernels needs artifacts and no bridge, except where
+//! silent). So `cargo build --release` of any crate with `#[gpu_module]` kernels needs artifacts and no bridge, except where
 //! the internal `cargo-gust-bridge` feature (D108) is in the graph (the `cargo-gust` install, a workspace that has
 //! `cargo-gust` as a member, or a mistaken `cargo-gust` dependency): there the profile is `dev`, with a warning that
 //! only path and workspace builds show. A release build that wants the bridge, such as
@@ -148,7 +148,7 @@
 //! # Stability
 //!
 //! `gust-compute` is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version (`0.1` to `0.2`), and a
-//! patch release (`0.1.0` to `0.1.1`) only adds or fixes. The four crates of a release (this crate, the `#[gpu]` macro
+//! patch release (`0.1.0` to `0.1.1`) only adds or fixes. The four crates of a release (this crate, the `#[gpu_module]` macro
 //! crate, the wgpu backend and `cargo-gust`) share one version and depend on each other with exact (`=`) pins, because
 //! the macro emits items that only the same release of this crate has: take them at the same version, and a minor bump
 //! of one is a minor bump of all.
@@ -189,7 +189,7 @@
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-// The `#[gpu]` expansion names `::gust::..`; this lets the crate's own unit tests expand it too.
+// The `#[gpu_module]` expansion names `::gust::..`; this lets the crate's own unit tests expand it too.
 #[cfg(test)]
 extern crate self as gust;
 
@@ -239,7 +239,7 @@ pub use dispatch::{
     Arg, BindingKind, Call, Extent, Independent, LengthRule, Resource, Run, SampledCall,
     SamplerArg, SamplerDevice, SamplerSet, TypedDevice, kind,
 };
-pub use gust_macros::{gpu, par_for};
+pub use gust_macros::{gpu_fn, gpu_module, par_for};
 pub use job::{Device, Job, JobStatus};
 pub use reflect::{
     PodCrossCheck, ReflectedField, ReflectedResource, ReflectedType, ReflectedTypeKind, Reflection,
@@ -259,7 +259,7 @@ pub use texture::{
     Sampler, SamplerOptions, StorageTexture2D, Texture2D, TextureUse, WriteTexture2D,
 };
 
-/// Names automatically imported into every `#[gpu]` module.
+/// Names automatically imported into every `#[gpu_module]` module.
 pub mod prelude {
     pub use crate::math::{IVec2, IVec4, Mat2, Mat3, Mat4, UVec2, UVec4, Vec2, Vec3, Vec4};
     pub use crate::texture::{

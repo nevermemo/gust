@@ -3,7 +3,7 @@
 //! `gust`'s build script reads `GUST_PROFILE` (`dev`, `native`, `web` or `cpu`), infers `native` (`web` on `wasm32`)
 //! for a release build without it (`cpu` is never inferred), and hands the result to this crate as
 //! `cfg(gust_profile = "..")`. [`NAME`] is the effective profile, [`STRICT`] is true for `native` and `web`, and
-//! [`IS_CPU`] is true for `cpu`. Code the `#[gpu]` macro generates calls [`require_artifact`], which makes a strict
+//! [`IS_CPU`] is true for `cpu`. Code the `#[gpu_module]` macro generates calls [`require_artifact`], which makes a strict
 //! build fail at the kernel when no precompiled artifact is present; under `cpu` no artifact is used, so it does
 //! nothing there.
 //!
@@ -40,7 +40,7 @@ const fn cpu_profile(name: &str) -> bool {
 
 /// Whether the profile this build of `gust` has is `name` (`dev`, `native`, `web` or `cpu`).
 ///
-/// Hidden: the code the `#[gpu]` macro writes for a module with a route tag calls it, and nothing else (m8.z). The
+/// Hidden: the code the `#[gpu_module]` macro writes for a module with a route tag calls it, and nothing else (m8.z). The
 /// macro cannot see the profile this build inferred, only this constant can; it compares it with the profile
 /// `cargo gust` resolved the routes for (`GUST_ROUTED_PROFILE`) and fails the compilation of the routed crate when the
 /// two differ.
@@ -69,9 +69,9 @@ const fn same_name(left: &str, right: &str) -> bool {
 /// The text of the compile error that [`require_artifact`] raises.
 const MISSING: &str = "gust: a strict profile (GUST_PROFILE native or web) needs a precompiled artifact for this kernel; run `cargo gust build`, or build with GUST_PROFILE=dev";
 
-/// Fails const evaluation, at the `#[gpu]` kernel that called it, when the profile is strict and `present` is false.
+/// Fails const evaluation, at the `#[gpu_module]` kernel that called it, when the profile is strict and `present` is false.
 ///
-/// The `#[gpu]` macro emits `const _: () = ::gust::profile::require_artifact(..)` for every kernel; `present` says
+/// The `#[gpu_module]` macro emits `const _: () = ::gust::profile::require_artifact(..)` for every kernel; `present` says
 /// whether the kernel has a precompiled artifact. Under `dev` and `cpu` this does nothing.
 pub const fn require_artifact(present: bool) {
     check_artifact(STRICT, present);
@@ -103,9 +103,9 @@ const fn check_gpu_target(is_cpu: bool) {
 /// The text of the compile error that [`require_manifest`] raises.
 const MISSING_MANIFEST: &str = "gust: a strict profile (GUST_PROFILE native or web) needs gust-artifacts/manifest.json in the kernel crate; run `cargo gust init` and `cargo gust build`, or build with GUST_PROFILE=dev";
 
-/// Fails const evaluation, at the `#[gpu]` kernel that called it, when the profile is strict and `present` is false.
+/// Fails const evaluation, at the `#[gpu_module]` kernel that called it, when the profile is strict and `present` is false.
 ///
-/// The `#[gpu]` macro emits `const _: () = ::gust::profile::require_manifest(..)` beside `require_artifact(true)` for a
+/// The `#[gpu_module]` macro emits `const _: () = ::gust::profile::require_manifest(..)` beside `require_artifact(true)` for a
 /// kernel that has its artifact pair; `present` says whether the crate has `gust-artifacts/manifest.json`. The
 /// manifest is what makes cargo re-expand the module when an artifact changes. Under `dev` and `cpu` this does
 /// nothing.

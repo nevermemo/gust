@@ -1,7 +1,7 @@
 // Scalar operator and conversion cases transcribed from the Rust core tests, library/coretests/tests/num/ in
 // rust-lang/rust at tag 1.98.0 (commit 88d9e12ae178fab0fb5cc050a94da85685d449ea). Copyright The Rust Project
 // Developers; the Rust sources are licensed MIT OR Apache-2.0, as is this repository. Only the operations, the
-// operand values and the expected results are taken from the tests. The kernels are written for the #[gpu]
+// operand values and the expected results are taken from the tests. The kernels are written for the #[gpu_module]
 // dialect and no test function or comment is copied. Where the source states no literal (it compares two
 // spellings, or two expressions), the expected value was derived by hand and docs/development/CORETESTS.md
 // marks the row "derived".
@@ -14,7 +14,7 @@
 // (global id 0) writes one result per slot of `out`. The ids in the comments are the CT-nn ids of the table.
 // A comparison writes 1 for true and 0 for false. All values are inside the defined domain of
 // docs/SEMANTICS.md section 3.
-#[gust::gpu]
+#[gust::gpu_module]
 mod coretests {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn ints(

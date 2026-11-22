@@ -154,7 +154,7 @@ fn rejected(result: syn::Result<TokenStream>) -> syn::Error {
 // The fixture
 
 fn fixture_module() -> String {
-    FIXTURE.replacen("#[gust::gpu]", "", 1)
+    FIXTURE.replacen("#[gust::gpu_module]", "", 1)
 }
 
 #[test]

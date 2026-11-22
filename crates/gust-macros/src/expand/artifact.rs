@@ -46,7 +46,7 @@ const DIRECTORY: &str = "gust-artifacts";
 /// The manifest of that directory.
 const MANIFEST: &str = "manifest.json";
 
-/// The version of the `kernel.json` layout of a `#[gpu]` module or function: it carries the kernel's `source`.
+/// The version of the `kernel.json` layout of a `#[gpu_module]` module or `#[gpu_fn]` function: it carries the kernel's `source`.
 const SCHEMA: u64 = 1;
 
 /// The version of the `kernel.json` layout of a `par_for!` call (R1.1 M5): the same record without `source`, so equal
@@ -54,7 +54,7 @@ const SCHEMA: u64 = 1;
 const SITE_SCHEMA: u64 = 2;
 
 /// The version of the `kernel.json` layout of a kernel whose shape is not `grid` (mx.k, D89): schema 2's grammar
-/// (`source` optional: present for a `#[gpu]` module or function, absent for a `par_for!` call) plus `shape`. The
+/// (`source` optional: present for a `#[gpu_module]` module or `#[gpu_fn]` function, absent for a `par_for!` call) plus `shape`. The
 /// number moves so that a reader of schema 1 and 2 refuses the record instead of reading a pixel kernel as `grid`. A
 /// `grid` kernel keeps schema 1 or 2 and has no `shape` key, byte for byte.
 const SHAPE_SCHEMA: u64 = 3;
@@ -2284,7 +2284,7 @@ pub(super) mod tests {
         let schema_1 = sample_json();
         let schema_2 = sample_written_by(|record| record.json_without_source());
         assert!(!schema_1.contains("shape") && !schema_2.contains("shape"));
-        // A `#[gpu]` kernel of another shape keeps its `source`.
+        // A `#[gpu_module]` kernel of another shape keeps its `source`.
         let module = sample_with_shape("pixel", |record| record.json());
         assert_eq!(
             module,

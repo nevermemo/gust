@@ -239,7 +239,7 @@ fn a_module_without_the_attribute_is_untouched() {
     assert!(constructors.is_empty());
 }
 
-/// The module `source` expanded as `#[gpu]` does, and the tokens as text.
+/// The module `source` expanded as `#[gpu_module]` does, and the tokens as text.
 fn expanded(source: &str) -> syn::Result<String> {
     let module: syn::ItemMod = parse_str(source)?;
     expand::expand(module).map(|tokens| tokens.to_string())
@@ -444,7 +444,7 @@ fn fields_the_layout_cannot_hold_keep_their_own_errors_under_the_attribute() {
     assert_code(&array, Code::ArrayInUniform);
 }
 
-/// The output of `#[gpu]` on `source`, as text.
+/// The output of `#[gpu_module]` on `source`, as text.
 fn gpu_text(source: &str) -> String {
     let item: proc_macro2::TokenStream = source.parse().unwrap();
     crate::gpu_impl_with(

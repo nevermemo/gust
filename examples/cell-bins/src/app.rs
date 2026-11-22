@@ -1,6 +1,6 @@
 //! The checks of the bins (see [`crate::bins`] for the contract): cases, a host reference, and the per-cell comparison.
 //!
-//! The host reference is a counting sort written out here, with its own copy of the cell arithmetic, not the `#[gpu]`
+//! The host reference is a counting sort written out here, with its own copy of the cell arithmetic, not the `#[gpu_module]`
 //! bodies. The order inside a cell is unspecified on the GPU, so the comparison sorts each cell's slice and compares
 //! sets; the counts and the starts are exact `u32` values.
 //!

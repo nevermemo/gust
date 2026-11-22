@@ -2058,7 +2058,7 @@ fn gpu_untimed_calls_are_unaffected_by_earlier_timed_scopes() {
 
 // ---- m11.scope: a caller's own batch in a `timed` scope ----
 
-#[gust::gpu]
+#[gust::gpu_module]
 pub mod doubling {
     /// `out[i] = values[i] * 2` for `i < out.len()`.
     #[kernel(workgroup_size(64, 1, 1))]

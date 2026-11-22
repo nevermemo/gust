@@ -220,7 +220,7 @@ pub(crate) mod variant {
     // own, portable body) of the first and `total_portable` (the variant that needs nothing) of the second; one with
     // them selects `double_subgroups` and `total`. Either way these two modules give two of the four descriptors; the
     // test finds each stored body by key and the other two are checked against their own records.
-    #[gust::gpu]
+    #[gust::gpu_module]
     mod variant_probe {
         #[kernel(workgroup_size(64, 1, 1))]
         pub fn double(
@@ -245,7 +245,7 @@ pub(crate) mod variant {
         }
     }
 
-    #[gust::gpu]
+    #[gust::gpu_module]
     mod gated_probe {
         #[kernel(workgroup_size(64, 1, 1), requires(subgroups))]
         pub fn total(

@@ -97,7 +97,7 @@ Do not wait for Codex during normal local swarm work.
 
 ## Invariants
 
-- Preserve `#[gpu]` whole-module authoring, direct syn → Slang, readable artifacts,
+- Preserve `#[gpu_module]` whole-module authoring, direct syn → Slang, readable artifacts,
   real GPU tests, typed buffers, pipeline caching, ordered batches, and async jobs.
 - No new custom shader instruction IR or handwritten SPIR-V backend. An eventual
   execution graph is a high-level CPU/GPU scheduling model, not a replacement for Slang.

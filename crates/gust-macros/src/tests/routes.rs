@@ -1326,9 +1326,11 @@ fn a_gpu_fn_reports_a_malformed_manifest_at_its_name_and_a_bad_route_at_the_tag(
 // The entry point
 
 fn output_text(attribute: &str, item: &str) -> String {
+    let item: proc_macro2::TokenStream = item.parse().unwrap();
     crate::gpu_impl_routed(
+        crate::Form::of(&item),
         attribute.parse().unwrap(),
-        item.parse().unwrap(),
+        item,
         Profile::Other,
         &|_| None,
     )

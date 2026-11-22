@@ -1,7 +1,7 @@
 // A method cannot take the name of a method of the dialect: `len` is the length of a buffer, so `fn len(&self)` is
 // GUST-E0328. expected.txt pins the code and the line of the method.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod shapes {
     pub struct Circle {
         pub radius: f32,

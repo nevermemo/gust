@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod methods {
     pub struct Circle {
         pub radius: f32,

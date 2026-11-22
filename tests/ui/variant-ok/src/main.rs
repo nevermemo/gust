@@ -2,7 +2,7 @@
 // plain bodies, so this crate compiles under every profile: the variant has the signature of its kernel, and rustc
 // proves that with the const the macro emits (a mismatch the token rule missed would be E0308 at the variant).
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod reduce {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn sum(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mut out: RWStructuredBuffer<u32>) {

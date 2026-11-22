@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod traits {
     // Slice m9.g1 (D170): traits as Slang interfaces, static dispatch only. A method has a receiver and no body.
     pub trait Shape {

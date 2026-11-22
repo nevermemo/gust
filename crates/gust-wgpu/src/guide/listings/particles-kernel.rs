@@ -1,4 +1,4 @@
-#[gpu]
+#[gpu_module]
 mod particles {
     /// A particle: arrays inside a struct. The layout is the one Rust has (`repr(C)`, 20 bytes), so the host fills
     /// the buffer with this very type.

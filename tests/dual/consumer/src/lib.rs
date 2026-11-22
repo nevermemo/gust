@@ -66,7 +66,7 @@ mod twin_overflow {
 
     // A kernel of this package, in the shape of `kernel_lib::kernels::add_one`. Its twin is compiled here, under this
     // package's `cfg(test)`.
-    #[gust::gpu]
+    #[gust::gpu_module]
     mod own {
         #[kernel(workgroup_size(64, 1, 1))]
         pub fn add_one(
@@ -180,7 +180,7 @@ mod vector_overflow {
 
     use gust::cpu::{CpuBuffer, CpuDevice, Error, OverflowChecks};
 
-    #[gust::gpu]
+    #[gust::gpu_module]
     mod own {
         #[kernel(workgroup_size(64, 1, 1))]
         pub fn add_one_uvec2(

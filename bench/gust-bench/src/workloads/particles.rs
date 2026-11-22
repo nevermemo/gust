@@ -69,12 +69,12 @@
 //! float field of every particle with the f64 trajectory; the integers and the mass must be bit-exact. A backend that
 //! fails the bound fails the cell; the bound is never widened to pass.
 
-use gust::gpu;
+use gust::gpu_module;
 
 use super::{Rounding, polynomial::U64};
 
 /// The GUST kernel (workgroup size 256, see `workloads::WORKGROUP`), and the struct types it takes.
-#[gpu]
+#[gpu_module]
 pub mod kernel {
     #[derive(Debug, PartialEq)]
     pub struct Pair {

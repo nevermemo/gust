@@ -1,1 +1,1 @@
-use gust::gpu;
+use gust::gpu_fn;

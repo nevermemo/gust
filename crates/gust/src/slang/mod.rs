@@ -268,9 +268,9 @@ impl From<std::io::Error> for Error {
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -306,9 +306,9 @@ pub fn compile(kernel: &KernelDescriptor, target: Target) -> Result<Vec<u8>, Err
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -351,9 +351,9 @@ pub(crate) fn decode_spirv(bytes: &[u8]) -> Result<Vec<u32>, Error> {
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -384,9 +384,9 @@ pub fn compile_wgsl(kernel: &KernelDescriptor) -> Result<String, Error> {
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -415,9 +415,9 @@ pub fn compile_source(source: &str, entry: &str, target: Target) -> Result<Vec<u
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -994,9 +994,9 @@ impl Drop for TemporaryDirectory {
 /// Write the Slang source of `kernel` to `path`. Fails with [`Error::Io`] when the file cannot be written.
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn double(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {

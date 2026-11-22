@@ -1,6 +1,6 @@
 // `for x in a` over an array is GUST-E0409: only an exclusive integer range is iterable.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<u32>) {

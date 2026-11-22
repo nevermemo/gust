@@ -6,12 +6,12 @@ file carries the build's capabilities, DIFFTEST_FORMAT 7; the program space is t
 structs with methods, DIFFTEST_FORMAT 8) and m9.d1b (enums and statement `match`, DIFFTEST_FORMAT 9) and m9.d1c (the
 value-form `match`, integer patterns and tuples, DIFFTEST_FORMAT 10) and m9.d1d (arrays, DIFFTEST_FORMAT 11) and
 m9.d1e (non-capturing closures, DIFFTEST_FORMAT 12) and m9.d2 (traits and generic helpers, DIFFTEST_FORMAT 13) and
-m11.dt2 (scalar math methods and module constants, DIFFTEST_FORMAT 14). The crate generates integer, boolean and `f32`
+m11.dt2 (scalar math methods and module constants, DIFFTEST_FORMAT 14) and m14.rename (the emitted modules say `#[gust::gpu_module]`, DIFFTEST_FORMAT 15). The crate generates integer, boolean and `f32`
 kernels from a seed, and (since format 6) kernels that compute with the `gust::math` vectors and matrices as locals and
 intermediates (buffers and results stay scalar), and (since format 8) integer kernels that call methods of module
 structs, evaluates them with an independent
 interpreter that tracks the defined domain (and, for floats, an interval of every value a conforming WGSL implementation
-may hold), writes them as a `#[gust::gpu]` crate, and `difftest-run` builds a batch of them, runs every program on the
+may hold), writes them as a `#[gust::gpu_module]` crate, and `difftest-run` builds a batch of them, runs every program on the
 interpreter, the CPU twin and the GPU, and reports what disagreed. The crate itself is std only and has no GPU code: the
 GPU code lives in the generated run crate, which depends on `gust-compute` and `gust-compute-wgpu` (library names `gust`
 and `gust_wgpu`). `difftest-run --shrink` reduces one failing program (local use only; see Shrinking). A unit test is
@@ -48,7 +48,7 @@ Types `u32`, `i32`, `bool`, and (since format 2) `f32`. One to three read-only i
   of two, masks), locals, `i`, `a[i]` and other in-bounds reads (`a[(e) % a.len()]`, `a[a.len() - 1 - i]`),
   `+ - * / % & | ^ << >>`, unary `-` (`i32` only) and `!`, comparisons, `&&`, `||`, and `as` between `u32` and `i32`.
   The right operand of a shift is always `u32`. `bool as u32` is not generated (ARCHITECTURE.md: it is unproven).
-- A divisor is never a literal zero, in any branch: the `#[gpu]` validator rejects `DivisionByLiteralZero` even where
+- A divisor is never a literal zero, in any branch: the `#[gpu_module]` validator rejects `DivisionByLiteralZero` even where
   no input reaches (a test scans 20000 decoded programs for one). An all-ones divisor (`-1` for `i32`) is biased in,
   and then the dividend is often a plain read of an `i32` input, so that `i32::MIN / -1` is reached; seed 1 of the
   corpus discards one program for it (at format 2 it was seed 2, twice). Over seeds 1 to 300 the discard fired in 23
@@ -150,7 +150,7 @@ tuples, arrays, closures) extends the space in its own small slice and bumps the
   `&mut self` call in a `for` bound. Everything else `ast::Check` accepts is generated.
 - A test compiles the method space of seeds 1 to 12 (the 16 method-space programs of each seed, 192 in all; the 36 of them
   that a batch keeps are among them, the batch programs of the other seeds are only compiled by a `check-difftest` run)
-  through `#[gust::gpu]` and rustc (`method_programs_compile_through_the_macro_without_a_gust_diagnostic`), and fails on
+  through `#[gust::gpu_module]` and rustc (`method_programs_compile_through_the_macro_without_a_gust_diagnostic`), and fails on
   any `[GUST-E` diagnostic or rustc error. Its first run found E0810 and the `bool` field; the generator now avoids both.
 
 **The interpreter's order rules** (`interp.rs`, written from the Rust Reference, not from the emitted Slang; a struct is
@@ -675,7 +675,7 @@ Slang passes a parameter as a read-only value, so even a `mut` parameter is no `
 reports it, and rustc then reports a cascade of E0382 moves on the unexpanded module, which first looked like a second
 problem). The generator keeps struct parameters out of the `&mut self` receiver roots (`forbid`) and calls `&self` and
 by-value methods on them; their fields may still be written. All 192 closure programs of seeds 1 to 12 compile through
-`#[gust::gpu]` and rustc with no `[GUST-E` diagnostic (`closure_programs_compile_through_the_macro_without_a_gust_diagnostic`).
+`#[gust::gpu_module]` and rustc with no `[GUST-E` diagnostic (`closure_programs_compile_through_the_macro_without_a_gust_diagnostic`).
 
 **Interpreter rules** (Rust Reference, not the emitted Slang). The arguments of a call are evaluated left to right,
 each fully, before the body; parameters are bound by value (an array or struct argument is copied, so a callee that
@@ -971,7 +971,7 @@ them in the method space (209 method attempts: `overflow` 80, `static` 51, `no-c
 
 ## The emitter
 
-`emit.rs` writes `src/lib.rs` (one documented `#[gust::gpu] pub mod s<seed>_a<attempt>` per program with the kernel
+`emit.rs` writes `src/lib.rs` (one documented `#[gust::gpu_module] pub mod s<seed>_a<attempt>` per program with the kernel
 `k`), plus `Cargo.toml` and the template `Cargo.lock`. Conventions:
 
 - Every non-atomic operand is parenthesised, so the text never depends on precedence. A dropped parenthesis is
@@ -1546,7 +1546,7 @@ harness.
 - `tests/roundtrip.rs`: the run crate of seeds 1 to 8 (128 kernels plus the generated test module) passes
   `cargo check --tests --locked`; all 128 corpus programs (the float ones included, so the dialect accepts `f32` buffers,
   arithmetic, comparisons and casts as emitted) in one crate pass `cargo check --locked`; a crate with a type error
-  and a crate with a module the `#[gpu]` validator rejects (`while`) each fail with the expected message (the check is
+  and a crate with a module the `#[gpu_module]` validator rejects (`while`) each fail with the expected message (the check is
   live). It runs `cargo check` directly, not through the repository's cargo lock wrapper, because the test itself runs
   inside the outer locked `cargo test` gate, which already holds the slot; its generated crates use their own target
   directory under `CARGO_TARGET_TMPDIR`.
@@ -1676,7 +1676,7 @@ seeds 1 to 12, 192 programs, `cargo check`, generic methods included), `classify
 
 ## Math methods and module constants (format 14, slice m11.dt2)
 
-`DIFFTEST_FORMAT` is 14. A batch is 17 programs per seed: one float, three vector, one method, two enum, two value, two
+`DIFFTEST_FORMAT` is 15: format 15 (m14.rename, D237) changes only the spelling of the attribute in the emitted text, the programs are format 14's, and a pin of an older format is read with the old spelling. A batch is 17 programs per seed: one float, three vector, one method, two enum, two value, two
 array, two closure, two trait and two math programs (`PROGRAMS_PER_SEED` of the generator, `PROGRAMS_PER_SEED` of
 `xtask/src/difftest.rs`, and the report's `17 x seeds` check agree). The math space (`Space::Math`, attempts from
 8 000 000) is the scalar float space plus `a.rem_euclid(b)` on `u32` and `i32`, `a.mul_add(b, c)`, `x.abs()`,

@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod fetch {
     // m11.fetch: the old value of `atomic_add`, bound by a `let`. `workgroup_size(1, 1, 1)` makes the dispatch
     // produce exactly one invocation per item, as in the `atomics` fixture.

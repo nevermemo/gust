@@ -22,7 +22,7 @@ use gust_wgpu::{BufferBinding, DeviceOptions, Error, GpuBufferAccess, HeadlessDe
 /// The kernels. The subgroup body follows the discipline of D140: every subgroup operation is the whole value of a
 /// `let` at the top level of the body, the bounds guard is a statement `if` around the load and the stores (an
 /// invocation past the end of the data holds 0 and still takes part), and there is no `return`.
-#[gust::gpu]
+#[gust::gpu_module]
 pub mod lanes {
     // Words of invocation i, at `i * 4`: the subgroup size, the lane, the ballot popcount and the inclusive prefix sum.
     // The portable body writes zeros.

@@ -1,6 +1,6 @@
 // A `new` of the user's in the module clashes with the constructor `#[pad]` generates, GUST-E0219.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[pad]
     pub struct Params {

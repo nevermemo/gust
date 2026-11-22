@@ -1,7 +1,7 @@
 // A subgroup operation in a helper function is GUST-E0745: the helper is called under conditions it cannot see, so
 // the operation belongs in the kernel body.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod scan {
     fn total(value: u32) -> u32 {
         subgroup_add(value)

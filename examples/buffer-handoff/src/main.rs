@@ -1,4 +1,4 @@
-use gust::{Independent, gpu};
+use gust::{Independent, gpu_module};
 use gust_wgpu::{GpuBuffer, GpuBufferAccess, HeadlessDevice};
 
 /// Indices hashed by the demo and by the tests. A multiple of the workgroup size, so no thread needs a bounds check.
@@ -6,7 +6,7 @@ const COUNT: u32 = 4096;
 /// Histogram bins. The kernel masks with `BINS - 1`, so this must stay a power of two (63 is written in the kernel).
 const BINS: usize = 64;
 
-#[gpu]
+#[gpu_module]
 mod histogram {
     /// A multiply-xorshift finaliser. Every shift amount is a literal below 32 (D39).
     pub fn mix(x: u32) -> u32 {

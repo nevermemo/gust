@@ -1,7 +1,7 @@
 // A barrier in a helper is GUST-E0414: a helper may be called under a condition, so not every invocation would reach
 // it. expected.txt pins the code and the line of the barrier.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     fn sync() {
         workgroup_barrier();

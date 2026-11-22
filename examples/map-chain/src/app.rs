@@ -1,4 +1,4 @@
-//! Three element-wise maps (`#[gpu] fn`, D60) chained two ways.
+//! Three element-wise maps (`#[gpu_fn] fn`, D60) chained two ways.
 //!
 //! - **Resident**: the input goes to the device once as a `GpuVec`, `map_gpu_on` runs the three steps on device
 //!   buffers (each step's result is the next step's argument, never read back), and one `to_vec` reads the answer.
@@ -6,7 +6,7 @@
 //!   back into a `Vec`, which the next step uploads again.
 //!
 //! Both are checked against an independent host reference (`reference`, plain `f64` arithmetic written out in this
-//! file, not the `#[gpu]` bodies) within a bound derived below, and against each other. On the CPU twin
+//! file, not the `#[gpu_fn]` bodies) within a bound derived below, and against each other. On the CPU twin
 //! (`CpuDevice`, test and dual builds) the same chain runs the functions' own Rust bodies.
 //!
 //! # The float bound
@@ -46,30 +46,30 @@ use std::path::PathBuf;
 #[cfg(any(test, gust_dual))]
 use gust::cpu::CpuDevice;
 use gust::{
-    KernelDescriptor, gpu,
+    KernelDescriptor, gpu_fn,
     map::{Broadcast, Error as MapError},
 };
 use gust_wgpu::{DeviceHandle, GpuVec, HeadlessDevice, default_device};
 
-// The plain Rust function behind each `#[gpu]` stays callable (D60), but this program calls only the generated maps,
+// The plain Rust function behind each `#[gpu_fn]` stays callable (D60), but this program calls only the generated maps,
 // so the lint is silenced here.
 // Step 1: an affine map. Both constants are broadcast scalars (a one-element buffer, read at index 0).
 #[allow(dead_code)]
-#[gpu]
+#[gpu_fn]
 pub fn rescale(x: f32, gain: f32, offset: f32) -> f32 {
     x * gain + offset
 }
 
 // Step 2: a quadratic.
 #[allow(dead_code)]
-#[gpu]
+#[gpu_fn]
 pub fn curve(x: f32, k: f32) -> f32 {
     x * x * k + x
 }
 
 // Step 3: a shift and a scale.
 #[allow(dead_code)]
-#[gpu]
+#[gpu_fn]
 pub fn damp(x: f32, shift: f32, scale: f32) -> f32 {
     (x + shift) * scale
 }
@@ -97,7 +97,7 @@ pub fn input(len: usize) -> Vec<f32> {
         .collect()
 }
 
-/// The chain on one value in `f64`, written out here and not taken from the `#[gpu]` bodies.
+/// The chain on one value in `f64`, written out here and not taken from the `#[gpu_fn]` bodies.
 pub fn reference(x: f32) -> f64 {
     let y1 = f64::from(x) * f64::from(GAIN) + f64::from(OFFSET);
     let y2 = y1 * y1 * f64::from(CURVE) + y1;
@@ -241,7 +241,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         materialised(&handle, &x).expect("materialised chain");
     });
 
-    println!("map-chain: three #[gpu] fn maps, resident versus materialised");
+    println!("map-chain: three #[gpu_fn] fn maps, resident versus materialised");
     println!("adapter: {}", handle.adapter_info().name);
     println!(
         "conditions: n = {MAIN_LEN}, {WARM_UP} warm-up calls, {REPEATS} timed calls, host slice in and host Vec out"

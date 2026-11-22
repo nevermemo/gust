@@ -1,6 +1,6 @@
 // `#[pad]` takes no arguments, GUST-E0219.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[pad(4)]
     pub struct Params {

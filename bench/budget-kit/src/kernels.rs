@@ -1,8 +1,8 @@
-//! The `#[gpu]` module of the kit: every kernel, in one place.
+//! The `#[gpu_module]` module of the kit: every kernel, in one place.
 
-use gust::gpu;
+use gust::gpu_module;
 
-#[gpu]
+#[gpu_module]
 pub(crate) mod kit {
     pub struct Params {
         pub n: u32,

@@ -14,7 +14,7 @@ use crate::{
 /// and is not a member of the root workspace, so `cargo test --workspace` never builds it.
 pub(crate) const UI_DIR: &str = "tests/ui";
 
-/// The two-crate fixture of the facade-path option (`#[gpu(crate = ..)]`, audit S6, D48), relative to the repository
+/// The two-crate fixture of the facade-path option (`#[gpu_module(crate = ..)]`, audit S6, D48), relative to the repository
 /// root: a workspace of its own (`inner` re-exports `gust`; `outer` does not depend on it), whose package `outer` must
 /// compile. It is no case of `tests/ui` because it has two crates and no expected error.
 pub(crate) const REEXPORT_DIR: &str = "tests/reexport";
@@ -210,7 +210,7 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
     let shared = cases.iter().filter(|case| shares_call(case)).count();
     let own = cases.len() - shared;
     Ok(format!(
-        "UI check passed: {failing} fixture crate(s) failed to compile with exactly the expected rustc error, {refused} failed in the build script of gust with the expected text and {} compiled cleanly (tests/ui, `cargo check --locked --message-format json`: the {shared} fixtures without env.txt, `build-error:` or `features` in one shared `--keep-going` call split per package, each of the other {own} in a call of its own; {with_env} have variables of their own from env.txt). The re-export fixture ({REEXPORT_DIR}, `#[gpu(crate = ..)]`) also compiled, with no direct dependency on gust (that step took {reexport_seconds} s). Only the keys of each expected.txt (code, file, line, message and label) are compared, all within the one error of the crate itself (warnings and other crates are ignored, a second error fails) read from cargo's JSON, not the whole rustc output; a `build-error:` text is looked up in cargo's stderr; no slangc and no GPU were involved.\n",
+        "UI check passed: {failing} fixture crate(s) failed to compile with exactly the expected rustc error, {refused} failed in the build script of gust with the expected text and {} compiled cleanly (tests/ui, `cargo check --locked --message-format json`: the {shared} fixtures without env.txt, `build-error:` or `features` in one shared `--keep-going` call split per package, each of the other {own} in a call of its own; {with_env} have variables of their own from env.txt). The re-export fixture ({REEXPORT_DIR}, `#[gpu_module(crate = ..)]`) also compiled, with no direct dependency on gust (that step took {reexport_seconds} s). Only the keys of each expected.txt (code, file, line, message and label) are compared, all within the one error of the crate itself (warnings and other crates are ignored, a second error fails) read from cargo's JSON, not the whole rustc output; a `build-error:` text is looked up in cargo's stderr; no slangc and no GPU were involved.\n",
         cases.len() - failing - refused
     ))
 }

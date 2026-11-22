@@ -1,6 +1,6 @@
 /// Stage one: saturate every sample at 255. The tag `tidy` is declared in `Cargo.toml`, and `gust.toml` routes it to
 /// the CPU: a small, cheap stage that is not worth a trip through the GPU.
-#[gpu(route = "tidy")]
+#[gpu_module(route = "tidy")]
 mod tidy {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn saturate(
@@ -21,7 +21,7 @@ mod tidy {
 
 /// Stage two: a weighted sum of each sample and its two neighbours (weights 1, 2, 1; the ends repeat themselves). The
 /// tag `smooth` is routed to the GPU.
-#[gpu(route = "smooth")]
+#[gpu_module(route = "smooth")]
 mod smooth {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn blur(

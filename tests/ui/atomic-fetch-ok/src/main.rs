@@ -1,7 +1,7 @@
 // Control case for m11.fetch: the old value of `atomic_add`, as the whole initializer of a `let`, for a `u32` cell and
 // an `i32` cell. This crate must compile, so the validator, the lowering and the preserved Rust all accept it.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod fetch {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn scatter(

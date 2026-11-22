@@ -2,12 +2,12 @@ use std::{path::PathBuf, time::Instant};
 
 #[cfg(test)]
 use gust::GpuPod;
-use gust::{KernelDescriptor, gpu};
+use gust::{KernelDescriptor, gpu_module};
 use gust_wgpu::{
     BufferDispatch, GpuBufferAccess, HeadlessDevice, PipelineCacheStats, render_wgpu_source,
 };
 
-#[gpu]
+#[gpu_module]
 mod sensor_pipeline {
     #[derive(Debug, PartialEq)]
     pub struct SensorReading {

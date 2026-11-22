@@ -1,6 +1,6 @@
 // A variant of a function that is no kernel of the module (GUST-E0742).
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod reduce {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn sum(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mut out: RWStructuredBuffer<u32>) {

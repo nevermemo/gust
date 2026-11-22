@@ -1,6 +1,6 @@
 // A trait method named like an inherent method of the type (m9.g1, GUST-E0328, the P18 ruling): slangc takes both silently.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Shape {
         fn area(&self) -> u32;

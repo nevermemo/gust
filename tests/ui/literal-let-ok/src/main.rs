@@ -2,7 +2,7 @@
 // literal-only expression and a typed operand. This crate must compile, so the validator, the lowering and the
 // preserved Rust all accept it.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod sums {
     #[kernel]
     pub fn total(id: SV_DispatchThreadID, input: StructuredBuffer<uint>, mut output: RWStructuredBuffer<uint>) {

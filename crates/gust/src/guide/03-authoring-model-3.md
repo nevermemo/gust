@@ -64,8 +64,8 @@ doctest expects it not to compile (the compile failure is the point; the doctest
 code it reports):
 
 ```rust,compile_fail
-# use gust::gpu;
-#[gpu]
+# use gust::gpu_module;
+#[gpu_module]
 mod rejected {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn spin(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
@@ -85,8 +85,8 @@ has the `loop`. It is compiled by the doctest (`no_run`: nothing runs), so the p
 macro refuses:
 
 ```rust,no_run
-# use gust::gpu;
-#[gpu]
+# use gust::gpu_module;
+#[gpu_module]
 mod accepted {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn once(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {

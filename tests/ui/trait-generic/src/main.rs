@@ -1,6 +1,6 @@
 // A generic trait (m9.g1, GUST-E0124); bounds are slice m9.g2.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Scale<A> {
         fn scale(&self, by: A) -> u32;

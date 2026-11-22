@@ -1,4 +1,4 @@
-//! The map generator (m7.a1, D60): `#[gpu]` on a free scalar function.
+//! The map generator (m7.a1, D60): `#[gpu_fn]` on a free scalar function.
 
 use proc_macro2::TokenStream;
 
@@ -32,7 +32,7 @@ fn kernel_slang(function: &syn::ItemFn) -> String {
         .source
 }
 
-/// The expansion of `source` (a `#[gpu]` item) for `profile`.
+/// The expansion of `source` (a `#[gpu_module]` item) for `profile`.
 fn expansion(source: &str, profile: Profile) -> TokenStream {
     let item: TokenStream = source.parse().unwrap();
     crate::gpu_impl_with(TokenStream::new(), item, profile)
@@ -383,7 +383,7 @@ fn names_the_module_defines_are_e0715() {
 
 #[test]
 fn nested_gpu_functions_are_e0716() {
-    for attribute in ["gpu", "gust::gpu"] {
+    for attribute in ["gpu_fn", "gust::gpu_fn", "gpu_module"] {
         let source = format!("mod m {{ #[{attribute}] pub fn f(x: f32) -> f32 {{ x }} }}");
         let output = expansion(&source, Profile::Other).to_string();
         assert!(output.starts_with(":: core :: compile_error !"), "{output}");
@@ -393,12 +393,12 @@ fn nested_gpu_functions_are_e0716() {
 
 #[test]
 fn a_rejected_module_returns_without_the_nested_attribute() {
-    // Left on, the inner `#[gust::gpu]` would expand by itself in the user's crate and add errors that only follow.
+    // Left on, the inner `#[gust::gpu_module]` would expand by itself in the user's crate and add errors that only follow.
     let source =
-        "mod m { #[gust::gpu] pub fn f(x: f32) -> f32 { x } pub fn g(x: f32) -> f32 { x } }";
+        "mod m { #[gust::gpu_fn] pub fn f(x: f32) -> f32 { x } pub fn g(x: f32) -> f32 { x } }";
     let output = expansion(source, Profile::Other).to_string();
     assert!(output.starts_with(":: core :: compile_error !"), "{output}");
-    assert!(!output.contains("# [gust :: gpu]"), "{output}");
+    assert!(!output.contains("# [gust :: gpu_fn]"), "{output}");
     assert!(
         output.contains("pub fn f") && output.contains("pub fn g"),
         "{output}"
@@ -457,4 +457,70 @@ fn arguments_are_still_rejected_on_a_function() {
         output.contains("pub fn f"),
         "the function follows the error: {output}"
     );
+}
+
+/// `item` under the attribute of `form`, as the proc macro gets it, with no arguments.
+fn under(form: crate::Form, item: &str) -> String {
+    crate::gpu_impl_routed(
+        form,
+        TokenStream::new(),
+        item.parse().unwrap(),
+        Profile::Other,
+        &|_| None,
+    )
+    .to_string()
+}
+
+#[test]
+fn gpu_module_on_a_function_is_e0702_and_names_gpu_fn() {
+    let output = under(crate::Form::Module, "pub fn f(x: f32) -> f32 { x }");
+    assert!(output.starts_with(":: core :: compile_error !"), "{output}");
+    assert_rendered_code(&output, Code::ItemNotModule);
+    assert!(
+        output.contains("`#[gpu_module]` goes on an inline module"),
+        "{output}"
+    );
+    assert!(output.contains("takes `#[gpu_fn]`"), "{output}");
+    // The function follows the error as written: no second diagnostic.
+    assert!(output.contains("pub fn f"), "{output}");
+    assert_eq!(output.matches("[GUST-E").count(), 1, "{output}");
+}
+
+#[test]
+fn gpu_fn_on_a_module_is_e0702_and_names_gpu_module() {
+    let output = under(
+        crate::Form::Function,
+        "mod m { #[kernel] pub fn run() {} pub fn g(x: f32) -> f32 { x } }",
+    );
+    assert!(output.starts_with(":: core :: compile_error !"), "{output}");
+    assert_rendered_code(&output, Code::ItemNotModule);
+    assert!(
+        output.contains("`#[gpu_fn]` goes on a free scalar function"),
+        "{output}"
+    );
+    assert!(output.contains("takes `#[gpu_module]`"), "{output}");
+    // The module follows the error, and the one diagnostic is the only one.
+    assert!(output.contains("mod m"), "{output}");
+    assert_eq!(output.matches("[GUST-E").count(), 1, "{output}");
+}
+
+#[test]
+fn each_attribute_on_another_item_names_its_own_form() {
+    for (form, own) in [
+        (
+            crate::Form::Module,
+            "`#[gpu_module]` goes on an inline module",
+        ),
+        (
+            crate::Form::Function,
+            "`#[gpu_fn]` goes on a free scalar function",
+        ),
+    ] {
+        for source in ["struct S;", "const X: u32 = 1;", "use std::fmt;"] {
+            let output = under(form, source);
+            assert_rendered_code(&output, Code::ItemNotModule);
+            assert!(output.contains(own), "{output}\nfor {source}");
+            assert_eq!(output.matches("[GUST-E").count(), 1, "{output}");
+        }
+    }
 }

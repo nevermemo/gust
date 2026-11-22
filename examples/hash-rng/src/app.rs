@@ -1,13 +1,13 @@
 // The literal in `unit` is 2^-24 written out exactly, as the dialect has no `const`.
 #![allow(clippy::excessive_precision)]
 
-use gust::{Independent, gpu};
+use gust::{Independent, gpu_module};
 use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 
 /// Indices hashed by the demo and by the tests.
 const COUNT: usize = 4096;
 
-#[gpu]
+#[gpu_module]
 mod rng {
     /// A multiply-xorshift finaliser. Every shift amount is a literal below 32 (D39).
     ///

@@ -59,7 +59,7 @@ use wgpu::naga::{
 };
 
 // The Rust sources of the goldens. Each is included into a module of its own (the test files that run them define one
-// module per file); `KERNELS` is the descriptor list of the fixture's `#[gpu]` module. The two lints are the ones the
+// module per file); `KERNELS` is the descriptor list of the fixture's `#[gpu_module]` module. The two lints are the ones the
 // fixtures trip on as Rust: `coretests.rs` compares against the type's minimum on purpose (its test file allows the
 // same lint), and `vectors.rs` writes `w = w * s` on purpose (its golden pins that spelling beside `w *= v`).
 macro_rules! fixture {
@@ -72,7 +72,7 @@ macro_rules! fixture {
     };
 }
 
-// `map.rs` holds five `#[gpu]` functions (m7.a1), so it is five modules of one kernel each and no single
+// `map.rs` holds five `#[gpu_fn]` functions (m7.a1), so it is five modules of one kernel each and no single
 // `MODULE_DESCRIPTOR`: this second form names the functions and joins their descriptors in file order, which is the
 // order of the sections of `map.slang`. `Vec2` is the one name the functions use from the prelude of the file.
 macro_rules! fixture_functions {
@@ -1237,7 +1237,7 @@ fn allow_listed_entries_still_fail() {
 
 /// The kernel the committed precompiled WGSL belongs to: a copy of `vector_add::add` of `tests/precompiled.rs`, whose
 /// `fixture_is_current` test ties the committed file to that kernel's source (a drift shows here as a finding too).
-#[gust::gpu]
+#[gust::gpu_module]
 mod vector_add {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn add(
@@ -1302,7 +1302,7 @@ fn the_committed_precompiled_wgsl_validates_and_has_the_descriptor_layouts() {
 
 // ---- Controls: the gate fails on the defects it exists for. None of these needs slangc. ----
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod control {
     pub struct Body {
         pub position: Vec2,

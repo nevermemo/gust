@@ -1,7 +1,7 @@
 // A barrier in an arm of a value `match` is GUST-E0414 like one in an `if`: an arm runs for some invocations only.
 // expected.txt pins the code and the line of the barrier.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(64, 1, 1), cpu = "unsupported")]
     pub fn run(

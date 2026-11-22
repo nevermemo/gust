@@ -56,7 +56,7 @@ impl<K: Kernel, const N: usize> Run<K, N> for Mock {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod kernels {
     pub struct Params {
         pub gain: f32,

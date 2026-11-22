@@ -1,10 +1,10 @@
 // ANCHOR: imports
-use gust::gpu;
+use gust::gpu_module;
 use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 // ANCHOR_END: imports
 
 // ANCHOR: kernel
-#[gpu]
+#[gpu_module]
 mod vector_add {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn add(

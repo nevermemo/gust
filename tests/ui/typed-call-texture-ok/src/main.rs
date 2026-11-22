@@ -80,7 +80,7 @@ impl<K: Kernel, const N: usize> Run<K, N> for Mock {
     }
 }
 
-// A kernel with a texture, a sampler and an output buffer, written by hand: `#[gpu]` cannot declare a texture
+// A kernel with a texture, a sampler and an output buffer, written by hand: `#[gpu_module]` cannot declare a texture
 // parameter before slice mx.t3, but the typed call's bounds below are the ones the macro will emit.
 struct Blur;
 

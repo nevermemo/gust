@@ -49,7 +49,7 @@ use gust_wgpu::{BufferBinding, Error, GpuBuffer, GpuBufferAccess, HeadlessDevice
 /// The element count of every dispatch: not a multiple of the workgroup width, so the guard matters.
 const N: usize = 131;
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod vectors {
     // A struct of vector and matrix fields. Offsets (StorageV2): color 0, xf 16, frame 80, mass 96, tag 100,
     // extra 104, size 112 (alignment 16), with no padding anywhere.

@@ -1,17 +1,17 @@
 # Semantics contract and known limitations
 
-This page states what a `#[gpu]` kernel means on every GUST target, where the targets are allowed to differ, and
+This page states what a `#[gpu_module]` kernel means on every GUST target, where the targets are allowed to differ, and
 how sure each statement is. It is the executable-semantics contract of D22, narrowed to a defined domain by D38 and
 confirmed by the owner in D39. The cases outside the domain are written as limitations for users: the owner's
 position is that such differences are expected edge cases that developers avoid anyway, so GUST documents them and
 does not try to make the targets match.
 
-The CPU twin exists: `gust::cpu` (slice m3.b) is its backend and the `#[gpu]` macro emits the twin of every kernel with
+The CPU twin exists: `gust::cpu` (slice m3.b) is its backend and the `#[gpu_module]` macro emits the twin of every kernel with
 a typed call (slice m3.c). The fixture tests assert the twin next to the GPU and the independent host reference, the
 atomic functions run for real on the twin, and the ledger has a twin column (slice m3.d). `cargo xtask check-cpu`
 (slice m3.c2) is a step of the Unit suite and runs the locked, GPU-free tests of the vector-add, polynomial,
 signal-pipeline, particle-step, typed-pipeline, atomic-counter (slice m3.e1), staged-graph and component-pool (slice
-m3.e2) examples, of map-chain (slice m7.a2), whose twin runs the plain bodies of its three `#[gpu] fn` maps, and of
+m3.e2) examples, of map-chain (slice m7.a2), whose twin runs the plain bodies of its three `#[gpu_fn] fn` maps, and of
 texture-threshold (slice mx.t4) and shape-bench (slice mx.p1c) (the list is `CPU_TESTS` in `xtask/src/checks.rs`).
 `cargo xtask check-dual` (slices m3.f1 and m3.f2) proves across crates that the twin is absent from a
 production build and present in a `--cfg gust_dual` build, and, with an integer kernel whose `+` overflows, that a twin
@@ -26,7 +26,7 @@ One paragraph per feature: what it is, the rule in brief, and where the full rul
 used to stand beside these rules are in the appendix "SEMANTICS run narratives (m13.docs1a)" of
 [VALIDATION](development/VALIDATION.md); the tests and adapters named here are the evidence.
 
-- **GPU target (exists).** A `#[gpu]` module is translated directly from the Rust syntax tree to Slang, `slangc`
+- **GPU target (exists).** A `#[gpu_module]` module is translated directly from the Rust syntax tree to Slang, `slangc`
   compiles the Slang to WGSL, and wgpu runs the WGSL. The measured adapter is NVIDIA GeForce RTX 5090 on Vulkan,
   driver 610.88, slangc 2026.20, 2026-11-01 (the later slangc pins and runs are in the appendix). The WGSL
   specification is the portable reference. The contract does not extend to Slang's other targets: Slang itself leaves,
@@ -80,7 +80,7 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
   - *Limits.* Only the `u32` id range is enforced. The GPU's workgroup and storage limits are not emulated (section 5a).
   - *Panics.* A panic in a kernel body follows the build's panic strategy. It unwinds out of `dispatch` and `submit`
     under `panic = "unwind"` and aborts the process under `panic = "abort"`. Nothing catches it.
-  - *Parallelism (exists, m7.c).* The calls of a generated map (`#[gpu]` on a function: `map`, `map_on`,
+  - *Parallelism (exists, m7.c).* The calls of a generated map (`#[gpu_fn]` on a function: `map`, `map_on`,
     `map_on_async`) run in parallel chunks of the output on scoped `std` threads: each chunk is a range of element
     indexes that the generator owns and writes only its own elements, so the result is bit for bit the one a single
     thread gives. If elements panic, the panic of the lowest index is raised with its own payload and nothing is
@@ -104,7 +104,7 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
   reference (the per-kernel list, with each kernel's exact or derived-bound label, is appendix A1 of
   [VALIDATION](development/VALIDATION.md); section 4, "Derived kernels", has the bounds); none uses the opt-out.
   Integer, struct and copied outputs are exact; float outputs use the bound derived in section 4.
-- **Build-time routing (exists, m8.r1, D65 to D67, D137).** `#[gpu(route = "<tag>")]` on a module or a function sends
+- **Build-time routing (exists, m8.r1, D65 to D67, D137).** `#[gpu_module(route = "<tag>")]` on a module or `#[gpu_fn(route = "<tag>")]` on a function sends
   that item to one target for the whole build, where `GUST_PROFILE=cpu` sends every item. The tag is declared in the
   owning crate's `[package.metadata.gust.routes]` (a tag is used only by the crate that declares it, GUST-E0748
   otherwise), and the target is the first of these that is set: `GUST_PROFILE=cpu`; the variable
@@ -129,7 +129,7 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
   site is then E0277. Evidence is `cargo xtask check-dual` E4 (a routed kernel library and its consumer; the unrouted
   control is a `cargo build` of the same unit, so it also fails if the variable were not tracked) and
   `cargo xtask check-cpu-target` E-j (the crate `routed` under `native`, a CPU-routed kernel and a CPU-routed
-  `#[gpu(route = ..)] fn` map built and run, then the same `cargo build --release` flipped set, unset, set, unset in one
+  `#[gpu_fn(route = ..)] fn` map built and run, then the same `cargo build --release` flipped set, unset, set, unset in one
   warm directory, where each unset state must recompile and fail like the control); both are `Cpu` evidence, never GPU
   evidence.
   - **The routing driver (exists, m8.r2, D151)** is where an application sets the variables without writing them:
@@ -143,7 +143,7 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
     and `GUST_PROFILE`), while `gust`'s build script infers it from what cargo hands it (`PROFILE` and the target
     architecture), which also see `build.target` in `.cargo/config.toml`, `CARGO_BUILD_TARGET`, a custom profile that
     inherits `release` and a `GUST_PROFILE` set in the `[env]` table of the config. So the driver also sets
-    `GUST_ROUTED_PROFILE` to the profile it resolved the routes for (m8.z), and the code the `#[gpu]` macro writes for a
+    `GUST_ROUTED_PROFILE` to the profile it resolved the routes for (m8.z), and the code the `#[gpu_module]` macro writes for a
     module with a route tag reads it with `option_env!` and compares it with the profile `gust` was built for (a hidden
     `gust::profile::is_profile`). When they differ, that crate does not compile: the error is at the route's literal and
     names both profiles and the likely cause, so a kernel is never routed for a profile the build is not. Only a module
@@ -166,7 +166,7 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
   buffer parameter, `Uniform` for a uniform one), so a uniform where a buffer is expected, or the reverse, is a compile
   error (the `typed-call-kind-mismatch` case of `tests/ui`); a hand-built call is still refused at submit
   (`BindingKind`). A uniform is read-only for the kernel and one element long whatever the dispatch's element count.
-  `T` is a struct of the same `#[gpu]` module (GUST-E0206), declared `#[repr(C, align(16))]` by the macro with const
+  `T` is a struct of the same `#[gpu_module]` module (GUST-E0206), declared `#[repr(C, align(16))]` by the macro with const
   assertions of its `Std140V1` offsets and size. A struct a uniform reaches is not also a storage element
   (GUST-E0207), holds no `Mat2` or `bool` (GUST-E0205), and is read one field at a time, never as a whole value
   (GUST-E0321). The twin runs the kernel with a copy of the value. Its ABI is `Std140V1` (`std140-v1` in the generated
@@ -174,7 +174,7 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
   be padding-free, because the upload copies the bytes of the Rust value and padding is uninitialised: `create_uniform`
   and `CpuDevice::uniform` refuse a padded `T` with a message that names the fix, explicit padding fields, and the twin
   also refuses a uniform parameter whose rule is not `Std140V1`. GUST inserts padding only into a struct marked
-  `#[pad]` (D239): `#[gpu]` adds private `f32` fields `_pad0`, `_pad1`, ... for every gap and for the tail of the
+  `#[pad]` (D239): `#[gpu_module]` adds private `f32` fields `_pad0`, `_pad1`, ... for every gap and for the tail of the
   constant-buffer layout, and a Rust-only `const fn new(<the fields you wrote>)` that sets them to `0.0`; the `_padN`
   names appear in the reflection record. Anywhere else a gap before a field or a tail is still GUST-E0209, naming the
   explicit padding fields to write or the attribute; a misplaced `#[pad]` is GUST-E0219.
@@ -186,7 +186,7 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
   `GpuUniform` bound to two kernels, and a graph update between two dispatches, each against an independent host
   reference and the twin, and checks that the reflected `constantBuffer` size equals Rust's `size_of` of the element
   (D17; that check has no host reference).
-- **Element-wise map (exists, m7.a1, D99).** `#[gpu]` on a free function whose parameters and result are scalars,
+- **Element-wise map (exists, m7.a1, D99).** `#[gpu_fn]` on a free function whose parameters and result are scalars,
   `Vec2`, `Vec4`, `IVec2`, `IVec4`, `UVec2`, `UVec4`, `Mat2` or `Mat4` generates a kernel and the calls `map`, `map_on`,
   `map_gpu`, `map_gpu_on`, `map_async` and `map_on_async` in a module of the function's name
   (`crates/gust-macros/src/expand/map.rs`). The function body is the dialect, so sections 3 and 4 apply to it as to any
@@ -231,7 +231,7 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
     (D26). Section 8 lists what the map tests pin.
 - **`par_for!` (exists, m7.p).** `par_for!(PATTERN in RANGES, [bindings] { body })` runs the body once for every
   index of a one-, two- or three-dimensional range that starts at 0, on the device named by `on(..)` or the default
-  one. The loop variable is the invocation's global id on that axis and the body is the `#[gpu]` dialect (the same
+  one. The loop variable is the invocation's global id on that axis and the body is the `#[gpu_module]` dialect (the same
   validator, the same codes). The macro adds a guard on all three axes (an unused axis has extent 1), so the invocations
   of a workgroup that lie outside the extent, along any axis, run nothing; an extent of 0 on any axis runs nothing and
   returns `Ok(())`. An extent that does not fit `u32` is an `Err`, and so is a launch past the invocation cap of
@@ -269,7 +269,7 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
   `STORAGE`) and the device instance at submit. Formats are the nine of `gust::texture::Format`
   (`R32/Rg32/Rgba32` x `Uint/Sint/Float`); `StorageTexture2D` (read-write) exists for the three r32 formats only,
   `WriteTexture2D` (write-only) for all nine.
-  *As built on the GPU (slices mx.t2 to mx.t4; measured on the adapter above).* A `#[gust::gpu]` kernel takes
+  *As built on the GPU (slices mx.t2 to mx.t4; measured on the adapter above).* A `#[gust::gpu_module]` kernel takes
   `Texture2D<T>` (sampled), `StorageTexture2D<R32*>`, `WriteTexture2D<F>` and `Sampler` parameters, and the typed
   `dispatch` and `dispatch_extent` take `gust_wgpu::GpuTexture2d<F>` and `GpuSampler` for them. `load` and `store` are
   exact: on all nine formats the GPU and the twin agree bit for bit and with an independent host expectation, and
@@ -1051,14 +1051,14 @@ numbers of this page are kept, so this section carries the number 5a.
   (`a_gpu_grid_kernel_has_a_variant_and_a_cpu_or_pixel_kernel_has_none` in `crates/gust-macros/src/tests/profile.rs`),
   and a build without the run-time compiler plans no split
   (`a_split_variant_is_planned_only_in_a_build_with_the_run_time_compiler` in `crates/gust-wgpu/src/compile/source.rs`). *Not claimed:* the order of the pieces and any visibility between them (one piece reading what another
-  wrote, atomics across pieces). *Inferred, not tested:* the plain refusal of a split-capable `#[gpu]` kernel through
+  wrote, atomics across pieces). *Inferred, not tested:* the plain refusal of a split-capable `#[gpu_module]` kernel through
   the deprecated `dispatch_f32`/`dispatch_u32`, which no test exercises with a kernel that
   carries a variant (`crates/gust-wgpu/tests/limits.rs` tests the refusal of hand-built descriptors, which have none,
   on that path). An indirect launch is not in that list: it is neither split nor refused by the host for its workgroup
   count (read in `check_indirect_launch` and `prepare_indirect` in `crates/gust-wgpu/src/dispatch/prepare.rs`; m11.r5fix), and
   no test here launches a split-capable kernel indirectly.
 - **The portable floor (opt-in, m8.f, D143).** A crate that sets `limits = "portable"` in `[package.metadata.gust]` has every
-  `#[kernel]` body, and the kernel of each `#[gpu]` function and `par_for!` call (m11.floor), checked when it compiles against `gust::limits::PORTABLE`, the WebGPU defaults: a workgroup of at most
+  `#[kernel]` body, and the kernel of each `#[gpu_fn]` function and `par_for!` call (m11.floor), checked when it compiles against `gust::limits::PORTABLE`, the WebGPU defaults: a workgroup of at most
   256 x 256 x 64 and 256 invocations, 8 storage buffers, 12 uniform buffers, 16 sampled textures, 4 storage textures,
   16 samplers and 16384 bytes of workgroup memory per kernel. A kernel over one limit is GUST-E0746 (which stands where
   E0718 would for such a crate). Without the setting nothing is checked at compile time and the launch checks above stay
@@ -1222,7 +1222,7 @@ never failed, and a zero read from buffer data never triggered it. Through D3D12
 and its flags. The generated Slang, WGSL and SPIR-V are correct and the AMD Radeon 890M computes Rust's values,
 so GUST does not refuse or rewrite the form. Programs that write a real change are not affected. A stored array in
 a struct field is affected the same way; arrays in storage buffers were not measured. The GPU test
-`driver_sentinel` (m9.sen) runs three `#[gpu]` kernels shaped like the investigations' programs (the D168 kernels read
+`driver_sentinel` (m9.sen) runs three `#[gpu_module]` kernels shaped like the investigations' programs (the D168 kernels read
 `v[0]` directly) and expects these wrong values on the RTX 5090 and Rust's elsewhere; if their results change on the
 5090, it fails, the cue to re-measure before touching the difftest guard. With the `spirv-route` feature on and the
 route taken (section 15), the defect did not reproduce on the RTX 5090: the sentinel reads the route of its kernels
@@ -1677,7 +1677,7 @@ sources non-negative and in range; these cases are not tested on the GPU.
 ### Refused, with codes
 
 **Two atomics on one cell in an assignment are refused (m9.z).** The old value of an atomic is not an operand in a
-`#[gpu]` body (the CPU twin returns it; section 6; the one exception since `m11.fetch` is the old value of `atomic_add`
+`#[gpu_module]` body (the CPU twin returns it; section 6; the one exception since `m11.fetch` is the old value of `atomic_add`
 as the whole initializer of a `let`), so `out[atomic_add(&mut c[i], 1u32) as usize] = atomic_add(&mut c[i], 10u32);`
 and `let i = atomic_add(&mut c[i], 1u32) + 1u32;` are refused with `GUST-E0606` (an atomic as a value). Any ordinary read or
 write of a buffer that the kernel also uses atomically, an index that reads the atomic cell among them, is refused with
@@ -1760,7 +1760,7 @@ values written by hand), the macro tests in `crates/gust-macros/src/tests/regres
 
 ### Accepted
 
-A `#[gpu]` module may declare `trait T { fn m(&self, ..) -> R; fn n(self, ..) -> Self; fn k(&mut self, ..); }`: methods
+A `#[gpu_module]` module may declare `trait T { fn m(&self, ..) -> R; fn n(self, ..) -> Self; fn k(&mut self, ..); }`: methods
 with a receiver and no body (`GUST-E0124` for anything else: a default body, an associated item, a supertrait, a generic
 trait or method). `impl T for S` is accepted for a struct or a field-less enum of the module (`GUST-E0121` for a foreign
 type or a blanket impl; `GUST-E0124` for `&mut self` on an enum). A trait is not a type (`GUST-E0218`: `dyn`,
@@ -2008,7 +2008,7 @@ the status log, not here.
 
 ### Accepted
 
-A `const NAME: T = <literal>;` at the top of a `#[gpu]` module (`T` one of `u32`, `i32`, `f32`, `bool`; GUST-E0127 for
+A `const NAME: T = <literal>;` at the top of a `#[gpu_module]` module (`T` one of `u32`, `i32`, `f32`, `bool`; GUST-E0127 for
 any other form) is one value read by the host, the CPU twin and every kernel of the module (for an `f32` constant
 expression, see the documented difference under D39 below). The macro evaluates
 nothing: it leaves the Rust item as written, so the host and the twin read the literal rustc compiles, and writes the

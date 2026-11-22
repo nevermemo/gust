@@ -15,6 +15,8 @@
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident};
 
+use crate::diagnostics::Code;
+
 /// `error` as a `compile_error!`, followed by the user's code.
 ///
 /// For a parsed inline module the code is the module with the attributes rustc does not
@@ -24,7 +26,9 @@ use quote::{ToTokens, format_ident};
 /// failure or an item that is not a module) the raw `item` tokens follow unchanged. A
 /// module without inline content (`mod m;`) gets the error alone: re-emitting it would
 /// make rustc look for a file. No kernel handle stubs are invented: items the expansion
-/// would have generated (kernel structs, `DESCRIPTOR`) stay missing.
+/// would have generated (kernel structs, `DESCRIPTOR`) stay missing. The one exception is the `Clone`, `Copy` and
+/// `GpuPod` impls of the module's structs: host code names them (an upload of the struct), and without them rustc
+/// would add an error saying the struct is not a GPU POD type, which hides the one error that names the cause.
 pub(crate) fn beside_error(
     error: syn::Error,
     item: &TokenStream,
@@ -57,11 +61,83 @@ fn recovered_module(mut module: syn::ItemMod) -> Option<syn::ItemMod> {
         }
     }
     strip_kernel_attributes(items);
+    // A field-less enum is `Clone` and `Copy` as in the expansion, so a struct field of it adds no error.
+    for item in items.iter_mut() {
+        if let syn::Item::Enum(item) = item
+            && item
+                .variants
+                .iter()
+                .all(|variant| variant.fields.is_empty())
+        {
+            derive_missing(&mut item.attrs);
+        }
+    }
+    let stand_ins: Vec<syn::Item> = items
+        .iter_mut()
+        .filter_map(|item| match item {
+            syn::Item::Struct(item) => pod_stand_in(item),
+            _ => None,
+        })
+        .collect();
+    items.extend(stand_ins);
     items.insert(0, syn::parse_quote! { use ::gust::prelude::*; });
     module.attrs.push(syn::parse_quote! {
         #[allow(dead_code, unused_variables, unused_mut, unused_imports)]
     });
     Some(module)
+}
+
+/// The `Clone`, `Copy` and `GpuPod` impls a struct of a refused module would have had, so host code that needs
+/// `GpuPod` of it adds no error. `None` for a struct the expansion gives no impl (generic, or without named fields).
+/// The layout carries no fields: the build fails anyway, and naming the field types would bring an error of its own
+/// for a field type that is no `GpuPod`. A derive the user wrote (a refusal of its own) is not added twice.
+fn pod_stand_in(item: &mut syn::ItemStruct) -> Option<syn::Item> {
+    if !item.generics.params.is_empty() || !matches!(item.fields, syn::Fields::Named(_)) {
+        return None;
+    }
+    derive_missing(&mut item.attrs);
+    let ident = &item.ident;
+    Some(syn::parse_quote! {
+        unsafe impl ::gust::GpuPod for #ident {
+            const LAYOUT: ::gust::TypeLayout = ::gust::TypeLayout::structure(
+                stringify!(#ident),
+                ::core::mem::size_of::<Self>() as u32,
+                ::core::mem::align_of::<Self>() as u32,
+                &[],
+            );
+        }
+    })
+}
+
+/// `#[derive(Clone)]` and `#[derive(Copy)]` for whichever of the two `attributes` do not name already.
+fn derive_missing(attributes: &mut Vec<syn::Attribute>) {
+    for name in ["Clone", "Copy"] {
+        if !derives(attributes, name) {
+            let name = format_ident!("{name}");
+            attributes.push(syn::parse_quote!(#[derive(#name)]));
+        }
+    }
+}
+
+/// Whether a `#[derive(..)]` among `attributes` names `name` (by its last path segment).
+fn derives(attributes: &[syn::Attribute], name: &str) -> bool {
+    attributes
+        .iter()
+        .filter(|attribute| attribute.path().is_ident("derive"))
+        .any(|attribute| {
+            crate::diagnostics::parse_args_with(
+                attribute,
+                Code::MalformedDerive,
+                syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+            )
+            .is_ok_and(|paths| {
+                paths.iter().any(|path| {
+                    path.segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == name)
+                })
+            })
+        })
 }
 
 fn is_kernel(attributes: &[syn::Attribute]) -> bool {

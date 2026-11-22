@@ -2068,6 +2068,58 @@ fn rejected_module_is_returned_beside_the_error_without_kernel_attributes() {
     assert_eq!(module.attrs, [allow]);
 }
 
+const REJECTED_MODULE_WITH_STRUCTS: &str = "mod demo { \
+    pub struct Params { pub low: uint, pub high: uint } \
+    #[derive(Clone)] pub struct Own { pub a: uint } \
+    pub struct Wrapper<T> { pub inner: T } \
+    pub struct Pair(pub uint, pub uint); \
+    #[kernel] pub fn run(id: SV_DispatchThreadID) { \
+        let value: Result<uint, uint> = Ok(1u32); let x = value.unwrap(); \
+    } \
+}";
+
+/// Host code that needs `GpuPod` of a struct of a refused module must not add a rustc error beside the macro's
+/// (the struct is fine): the recovery gives the struct the derives and the impl the expansion would have.
+#[test]
+fn rejected_module_keeps_the_pod_impls_of_its_structs() {
+    let item: proc_macro2::TokenStream = REJECTED_MODULE_WITH_STRUCTS.parse().unwrap();
+    let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
+    assert_leading_compile_error(&items, Some(Code::ManualCloneCopy));
+    let content = &recovered_module(&items).content.as_ref().unwrap().1;
+    let derived = |name: &str| -> Vec<String> {
+        content
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Struct(item) if item.ident == name => Some(
+                    item.attrs
+                        .iter()
+                        .map(|attribute| quote::ToTokens::to_token_stream(attribute).to_string())
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .next()
+            .unwrap()
+    };
+    assert_eq!(
+        derived("Params"),
+        ["# [derive (Clone)]", "# [derive (Copy)]"]
+    );
+    // A derive the user wrote is a refusal of its own and is not written twice.
+    assert_eq!(derived("Own"), ["# [derive (Clone)]", "# [derive (Copy)]"]);
+    let impls: Vec<String> = content
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Impl(item) => {
+                Some(quote::ToTokens::to_token_stream(&*item.self_ty).to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    // No impl for a generic struct or a tuple struct, which the expansion gives none either.
+    assert_eq!(impls, ["Params", "Own"]);
+}
+
 #[test]
 fn recovery_strips_kernel_attributes_from_nested_modules_and_impls() {
     let item: proc_macro2::TokenStream = "mod demo { \

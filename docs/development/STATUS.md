@@ -795,7 +795,8 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
     - m11.kit4 (`69b0013`, owner proxy round 10): budget-kit row W8, a whole step in one timed scope of four
       batches on a 1024 x 1024 field (diffuse, step, bin clear, count, scan and scatter, a deposit into a `u32`
       grid folded into the field, retire by hash, a scan of alive flags, compaction and spawn) at 2^17 and 2^20
-      particles, 600 sustained steps. Checked exactly against a host model after steps 1 and 2, the first step
+      particles, 600 sustained steps. Checked against a host model (integer intermediates and the lifecycle
+      exactly, float values within the tolerances its README gives) after steps 1 and 2, the first step
       the capacity clamps and the last; storage buffers per kernel are read from the generated descriptors (at
       most 4). Opus review: no must-fix; its fixes are in. Small and full runs green on the Radeon 890M; RTX 5090
       pending. Measured times stay outside the repository.
@@ -811,23 +812,28 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
     - m12.ifx (`4372a49`, owner proxy round 12, D216): `if`/`else` as the whole initializer of a `let`, for
       scalars and non-matrix vectors, lowered to a Slang local assigned in each branch (SEMANTICS section 18).
       The remaining forms stay GUST-E0811, each with its own message and test. A GPU and CPU twin test shows
-      one branch per element; GPU_SUITE_PIN 571 over 57, confirmed by the full Gpu suite on the merged tree.
+      one branch per element; GPU_SUITE_PIN 571 over 57, confirmed by the full Gpu suite on the merged tree
+      (RTX 5090); the slice's GPU test also ran on the Radeon 890M.
       Opus review: two must-fix (the pin; inference through operators), both fixed with the should-fixes.
     - m11.events (`6aa2437`, owner proxy round 11; kept by the owner, D217): example event-drain, a bounded
       GPU-to-host event queue drained late without blocking (a ring of LAG + 1 queues, one non-blocking poll per
       frame); events checked per step as a set against the host, head and overflow exactly. Opus review fixes in.
+      Its GPU tests passed on the Radeon 890M and the RTX 5090 (merge gate).
     - m11.web (`830ec08`; Chrome run approved by the owner, D218): the browser page of
       web-vector-add runs a launch past a lowered workgroup limit from the split artifact, and the fallback as
-      `DeviceLimit` naming the per-dimension limit; `check-web` requires both and passed on headless Chrome.
+      `DeviceLimit` naming the per-dimension limit; `check-web` requires both and passed on headless Chrome 158
+      (WebGPU adapter reported as nvidia blackwell, the RTX 5090).
       Opus review fixes in (the split launch's job is checked; a gallery label with split parts is refused).
     - m11.dt2 (`559cf9c`): the difftest generator gains scalar math methods and module constants
       (DIFFTEST_FORMAT 14, 17 programs per seed, 136 at 8 seeds; math programs are grid-only); the soundness test
       checks both forms of `mul_add`. The three recorded reports were regenerated with the real harness at
-      17 per seed and keep their pass assertions. Opus review fixes in.
+      17 per seed and keep their pass assertions. Opus review fixes in. `check-difftest` passed on the Radeon
+      890M and the RTX 5090 at the merge.
     - m12.carr (`6776dab`): module-level array constants, read-only, indexed with the local-array rule
       (SEMANTICS section 17); stores through plain, compound and destructuring assignment and whole-array uses
       are GUST-E0127. GPU test indices from the element id, buffer data and a loop counter; GPU_SUITE_PIN 574
-      over 58, confirmed by the full Gpu suite on the merged tree. Opus review: merge, two should-fix items fixed.
+      over 58, confirmed by the full Gpu suite on the merged tree (RTX 5090); the slice's GPU test also ran on the
+      Radeon 890M. Opus review: merge, two should-fix items fixed. Decision row D219.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

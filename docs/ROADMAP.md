@@ -87,9 +87,12 @@ Done on 2026-11-21 and 22: the round-5 and round-6 sanity fixes, D210, D211, D20
 builds (D214), and neutral examples for the engine pieces a large agent simulation needs: grid fields with
 diffusion and decay (`field-relax`), binning by cell (`cell-bins`) and per-agent update steps (`walker-steer`).
 A composite of them runs too (`walker-transport`), and so do walkers that retire and spawn, kept dense by a scan
-(`walker-life`); a refused construct no longer adds a misleading error (m11.diag). Their GPU runs are on the Radeon
-890M only. Next: the RTX 5090 confirmations, the browser half of
-D209, and sharing code between `#[gpu]` modules (today a user-side `macro_rules!` splice, m11.xsplice).
+(`walker-life`); a refused construct no longer adds a misleading error (m11.diag). The RTX 5090 is back (D215):
+the full Gpu suite and the GPU tests of those five examples passed there on 2026-11-22. Done since: the browser
+half of D209 (m11.web), `if`/`else` as a `let` value (D216), array constants (D219), the event-drain example
+(D217) and difftest format 14. Next: the m12 sanity fixes, the untyped value `match` (m13.matchu), a tidy round
+(file splits, shared helpers, build and check time), the examples' GPU coverage, and sharing code between
+`#[gpu]` modules (held for the owner; today a user-side `macro_rules!` splice, m11.xsplice).
 That order is the coordinator's and the owner proxy's under D212, not an owner ruling.
 
 **Done: M10, publication** (closed 2026-11-17, D185, under the release hold: nothing published; plan adopted 2026-11-14,

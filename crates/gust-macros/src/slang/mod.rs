@@ -1495,6 +1495,229 @@ fn emit_value_match(
     Ok(())
 }
 
+/// `T x;` and the `if` that assigns it, for `let x: T = if c { a } else { b };` (slice m12.ifx). The condition is
+/// evaluated once and exactly one branch runs, as in Rust; each branch assigns the local as its last step. The type is
+/// the annotation, or the one the tails show (`type_of_if_tails`). When the name of the local occurs in the `if` (the
+/// condition or a branch reads an outer local of that name), the branches assign a temporary and the local is declared
+/// from it after, so the `if` never reads the new local (as for a value `match`).
+fn emit_value_if(
+    output: &mut String,
+    table: &mut LineTable,
+    name: &syn::Ident,
+    annotation: Option<&syn::Type>,
+    expression: &syn::ExprIf,
+    indent: usize,
+    index: usize,
+) -> syn::Result<()> {
+    let padding = "    ".repeat(indent);
+    check_value_if(expression)?;
+    let ty = match annotation {
+        Some(ty) => value_if_type(ty)?,
+        None => type_of_if_tails(expression).ok_or_else(|| {
+            diagnostics::error(
+                Code::UnsupportedExpression,
+                expression,
+                "the type of an `if` value is not visible in its branches: annotate the `let` (`let x: u32 = if c { a } else { b };`), or end a branch in a suffixed literal (`1u32`, `2.0f32`), a `bool`, a comparison, an `as` cast or a vector constructor",
+            )
+        })?,
+    };
+    let declared = emit_ident(name);
+    let target = if mentions_ident(expression.to_token_stream(), &name.unraw().to_string()) {
+        format!("__gust_if_{indent}_{index}")
+    } else {
+        declared.clone()
+    };
+    writeln!(output, "{padding}{ty} {target};").unwrap();
+    emit_value_if_chain(output, table, expression, indent, &target)?;
+    if target != declared {
+        writeln!(output, "{padding}{ty} {declared} = {target};").unwrap();
+    }
+    Ok(())
+}
+
+/// The refusals of an `if` value that need no type: every `if` of the chain has an `else`, and none tests a pattern.
+fn check_value_if(expression: &syn::ExprIf) -> syn::Result<()> {
+    if matches!(expression.cond.as_ref(), syn::Expr::Let(_)) {
+        return Err(diagnostics::error(
+            Code::UnsupportedExpression,
+            &expression.cond,
+            "an `if let` does not give a value: write the `if let` as a statement that assigns a local declared before it",
+        ));
+    }
+    match expression
+        .else_branch
+        .as_ref()
+        .map(|(_, other)| other.as_ref())
+    {
+        None => Err(diagnostics::error(
+            Code::UnsupportedExpression,
+            expression,
+            "an `if` that gives a value needs an `else`: every path assigns the local",
+        )),
+        Some(syn::Expr::If(nested)) => check_value_if(nested),
+        Some(_) => Ok(()),
+    }
+}
+
+/// The Slang type of an annotated `if` value: a scalar or a vector, nothing else.
+fn value_if_type(ty: &syn::Type) -> syn::Result<String> {
+    let plain = match unparenthesized_type(ty) {
+        syn::Type::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => path
+            .path
+            .segments
+            .last()
+            .filter(|segment| segment.arguments.is_empty())
+            .map(|segment| segment.ident.unraw().to_string()),
+        _ => None,
+    };
+    let accepted = plain.as_deref().is_some_and(|name| {
+        matches!(
+            name,
+            "bool" | "i32" | "u32" | "f32" | "int" | "uint" | "float"
+        ) || math_types::math_type(name).is_some_and(|math| !math.matrix)
+    });
+    if !accepted {
+        return Err(diagnostics::error(
+            Code::UnsupportedExpression,
+            ty,
+            "an `if` that gives a value is a `bool`, `i32`, `u32`, `f32` or a vector (`Vec2`, `Vec3`, `Vec4`, `IVec2`, `IVec4`, `UVec2`, `UVec3`, `UVec4`): an array, a struct, a matrix, a tuple or an `Option` is assigned by `if`/`else` statements",
+        ));
+    }
+    emit_type(ty)
+}
+
+/// The Slang type the tails of an `if` chain show, when one of them shows it: a suffixed integer or `f32` literal, a
+/// `bool`, a comparison, an `as` cast to a scalar, or the constructor of a vector.
+fn type_of_if_tails(expression: &syn::ExprIf) -> Option<String> {
+    let in_block = |block: &syn::Block| match block.stmts.last() {
+        Some(syn::Stmt::Expr(tail, None)) => type_of_tail(tail),
+        _ => None,
+    };
+    in_block(&expression.then_branch).or_else(|| match &expression.else_branch {
+        Some((_, other)) => match other.as_ref() {
+            syn::Expr::If(nested) => type_of_if_tails(nested),
+            syn::Expr::Block(block) => in_block(&block.block),
+            _ => None,
+        },
+        None => None,
+    })
+}
+
+/// The Slang type a tail expression shows by itself, if it does (see [`type_of_if_tails`]).
+fn type_of_tail(tail: &syn::Expr) -> Option<String> {
+    match tail {
+        syn::Expr::Paren(inner) => type_of_tail(&inner.expr),
+        syn::Expr::Group(inner) => type_of_tail(&inner.expr),
+        syn::Expr::If(nested) => type_of_if_tails(nested),
+        syn::Expr::Lit(literal) => match &literal.lit {
+            syn::Lit::Int(value) => match value.suffix() {
+                "u32" => Some("uint".to_owned()),
+                "i32" => Some("int".to_owned()),
+                _ => None,
+            },
+            syn::Lit::Float(value) if value.suffix() == "f32" => Some("float".to_owned()),
+            syn::Lit::Bool(_) => Some("bool".to_owned()),
+            _ => None,
+        },
+        syn::Expr::Cast(cast) => value_if_type(&cast.ty).ok(),
+        syn::Expr::Call(call) => match call.func.as_ref() {
+            syn::Expr::Path(path) => math_types::associated_item(&path.path)
+                .filter(|(math, _)| !math.matrix)
+                .map(|(math, _)| math.slang.to_owned()),
+            _ => None,
+        },
+        syn::Expr::Unary(unary) => type_of_tail(&unary.expr),
+        syn::Expr::Binary(binary) => match binary.op {
+            syn::BinOp::Eq(_)
+            | syn::BinOp::Ne(_)
+            | syn::BinOp::Lt(_)
+            | syn::BinOp::Le(_)
+            | syn::BinOp::Gt(_)
+            | syn::BinOp::Ge(_)
+            | syn::BinOp::And(_)
+            | syn::BinOp::Or(_) => Some("bool".to_owned()),
+            syn::BinOp::Shl(_) | syn::BinOp::Shr(_) => type_of_tail(&binary.left),
+            // A scalar beside a vector or a matrix gives the vector or matrix, so the first operand is no guide: the
+            // operands must show the same type, or one of them a vector (then that is the type). Anything else gives
+            // none, and the `let` is annotated (a matrix result is refused there).
+            _ => {
+                let left = type_of_tail(&binary.left);
+                let right = type_of_tail(&binary.right);
+                match (left, right) {
+                    (Some(left), Some(right)) if left == right => Some(left),
+                    (left, right) => [left, right]
+                        .into_iter()
+                        .flatten()
+                        .find(|ty| is_vector_slang_type(ty)),
+                }
+            }
+        },
+        _ => None,
+    }
+}
+
+/// Whether `slang` is the Slang spelling of a vector type of `gust::math`.
+fn is_vector_slang_type(slang: &str) -> bool {
+    math_types::MATH_TYPES
+        .iter()
+        .any(|math| !math.matrix && math.slang == slang)
+}
+
+/// The `if`/`else` chain of a value `if`: each branch ends by assigning `target`. An `else if` is an `if` in the
+/// `else` block, so each level keeps its own braces.
+fn emit_value_if_chain(
+    output: &mut String,
+    table: &mut LineTable,
+    expression: &syn::ExprIf,
+    indent: usize,
+    target: &str,
+) -> syn::Result<()> {
+    let padding = "    ".repeat(indent);
+    writeln!(
+        output,
+        "{padding}if ({})",
+        emit_expression(&expression.cond)?
+    )
+    .unwrap();
+    writeln!(output, "{padding}{{").unwrap();
+    emit_value_if_block(output, table, &expression.then_branch, indent + 1, target)?;
+    writeln!(output, "{padding}}}").unwrap();
+    let Some((_, alternative)) = &expression.else_branch else {
+        unreachable!("an `if` value has an `else` (check_value_if)")
+    };
+    writeln!(output, "{padding}else").unwrap();
+    writeln!(output, "{padding}{{").unwrap();
+    match alternative.as_ref() {
+        syn::Expr::If(nested) => emit_value_if_chain(output, table, nested, indent + 1, target)?,
+        syn::Expr::Block(block) => {
+            emit_value_if_block(output, table, &block.block, indent + 1, target)?;
+        }
+        _ => unreachable!("the `else` of an `if` is a block or an `if`"),
+    }
+    writeln!(output, "{padding}}}").unwrap();
+    Ok(())
+}
+
+/// A branch of a value `if`: its statements, then its value assigned to `target`. A tail that is itself an `if` is a
+/// chain of its own that assigns the same target.
+fn emit_value_if_block(
+    output: &mut String,
+    table: &mut LineTable,
+    block: &syn::Block,
+    indent: usize,
+    target: &str,
+) -> syn::Result<()> {
+    if let Some((syn::Stmt::Expr(syn::Expr::If(inner), None), head)) = block.stmts.split_last() {
+        check_value_if(inner)?;
+        emit_statements(output, table, head, indent, false)?;
+        let record = table.begin(output, inner.span());
+        emit_value_if_chain(output, table, inner, indent, target)?;
+        table.finish_written(output, record);
+        return Ok(());
+    }
+    emit_value_block(output, table, block, indent, target).map(|_| ())
+}
+
 /// Whether the identifier `name` occurs anywhere in `tokens`.
 fn mentions_ident(tokens: proc_macro2::TokenStream, name: &str) -> bool {
     tokens.into_iter().any(|tree| match tree {
@@ -1505,7 +1728,7 @@ fn mentions_ident(tokens: proc_macro2::TokenStream, name: &str) -> bool {
 }
 
 /// The body of an arm of a value `match` at `indent`: assigns its value to `target`. Returns whether the arm ends in a
-/// `return`, so that it needs no `break`.
+/// `return`, `break` or `continue`, so that it needs no `break`.
 fn emit_value_arm(
     output: &mut String,
     table: &mut LineTable,
@@ -1532,7 +1755,12 @@ fn emit_value_block(
     target: &str,
 ) -> syn::Result<bool> {
     match block.stmts.split_last() {
-        Some((syn::Stmt::Expr(tail, None), head)) if !matches!(tail, syn::Expr::Return(_)) => {
+        Some((syn::Stmt::Expr(tail, None), head))
+            if !matches!(
+                tail,
+                syn::Expr::Return(_) | syn::Expr::Break(_) | syn::Expr::Continue(_)
+            ) =>
+        {
             emit_statements(output, table, head, indent, false)?;
             let record = table.begin(output, tail.span());
             let diverges = emit_value_tail(output, table, tail, indent, head.len(), target)?;
@@ -1543,7 +1771,10 @@ fn emit_value_block(
             emit_statements(output, table, &block.stmts, indent, false)?;
             Ok(matches!(
                 block.stmts.last(),
-                Some(syn::Stmt::Expr(syn::Expr::Return(_), _))
+                Some(syn::Stmt::Expr(
+                    syn::Expr::Return(_) | syn::Expr::Break(_) | syn::Expr::Continue(_),
+                    _
+                ))
             ))
         }
     }
@@ -1975,6 +2206,13 @@ fn emit_statement(
                     "Slang let bindings require an initializer",
                 )
             })?;
+            if matches!(unparenthesized_expr(&initial.expr), syn::Expr::If(_)) {
+                return Err(diagnostics::error(
+                    Code::UnsupportedExpression,
+                    &initial.expr,
+                    "an `if` that gives a value is not destructured by a tuple pattern: bind it to one local (`let w: u32 = if c { 1u32 } else { 2u32 };`), then use the local",
+                ));
+            }
             // One temporary holds the whole value (evaluated once, in Rust's order), then one local per element.
             let temporary = format!("__gust_tuple_{index}");
             let element_types: Vec<Option<String>> = match annotation {
@@ -2034,6 +2272,18 @@ fn emit_statement(
             | syn::Expr::Group(syn::ExprGroup { expr, .. }) = value
             {
                 value = expr;
+            }
+            // The value form of `if`/`else` (slice m12.ifx): `T x;` and an `if` that assigns it in each branch.
+            if let syn::Expr::If(expression) = value {
+                return emit_value_if(
+                    output,
+                    table,
+                    &pattern.ident,
+                    annotation,
+                    expression,
+                    indent,
+                    index,
+                );
             }
             // Arrays (slice m9.r1). Slang cannot infer the type of `{ .. }`, so the `let` is typed.
             let array_annotation = annotation
@@ -2890,6 +3140,13 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             unary.op.to_token_stream(),
             emit_expression(&unary.expr)?
         ),
+        syn::Expr::If(branch) => {
+            return Err(diagnostics::error(
+                Code::UnsupportedExpression,
+                branch,
+                "an `if` gives a value only as the whole initializer of a `let` (`let x: u32 = if c { 1u32 } else { 2u32 };`), with an `else`: bind it to a local first, then use the local",
+            ));
+        }
         other => {
             return Err(diagnostics::error(
                 Code::UnsupportedExpression,

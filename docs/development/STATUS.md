@@ -760,6 +760,16 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       a uniform (E0325), of a buffer element (E0402), with a hand-written `impl Clone` (E0102) and with a struct that
       holds a data enum (E0211). `GUST-E0811`'s message shows `let a: [u32; 3] = [1, 2, 3];`, and a unit test
       compiles that exact example. Opus review: sound; its fixes (hand-written impls, non-`Copy` fields) are in.
+    - m11.life (`e8af7c1`): the example `walker-life`: `act` over the capacity's slots (a live walker turns, moves,
+      loses energy, decides to retire or spawn; slots past the live count write 0), `exclusive_into` over the
+      counts, a host read-back of the last start and count, and `compact` (a kept walker to its start, its child
+      next; slots at or past the capacity dropped). The host reference is a push-and-truncate loop. Twin and GPU
+      bit-equal per step for cases that die out, stay steady, hit the capacity, and exceed a workgroup; two
+      mutations fail. Finding: `compact` with separate keep and count buffers needs 9 storage buffers in one stage
+      and was refused with `DeviceLimit`: GUST opens devices with wgpu's default of 8 for that limit
+      (`LimitsPolicy` raises only buffer size, binding size and workgroups per dimension), not the adapter's; the
+      example packs two bits into one `flags` buffer. Raising that limit is an open design item. Radeon 890M only;
+      RTX 5090 pending.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

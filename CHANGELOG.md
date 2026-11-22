@@ -116,6 +116,10 @@ proof.
   walkers by cell, a walk step with a crowding rule that reads the bin counts, an exact spread of the field and a
   cleared deposit), 24 steps, all integer: host reference, twin and GPU are bit-equal after every step (field,
   walkers and bins), with a proven `u32` bound. Radeon 890M only; RTX 5090 pending.
+- Example `walker-life` (m11.life): walkers that move, lose energy, retire and spawn children, kept dense in their
+  buffers by an exclusive scan of per-walker counts and a compaction kernel (no atomic append, so the order of
+  spawned walkers does not depend on scheduling; the population is clamped at the capacity by slot). Host
+  reference, twin and GPU are bit-equal after every step. Radeon 890M only; RTX 5090 pending.
 - One error for a refused `#[gpu]` module (m11.diag): when the macro refuses a module, the structs it hands back
   keep the `Clone`, `Copy` and `GpuPod` impls a successful expansion adds (where no impl was written by hand and every
   field is a known `Copy` type), so host code that uploads one of them no longer adds a misleading E0277 "not a GUST

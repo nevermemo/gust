@@ -902,6 +902,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "walker-life"
+version = "0.2.0"
+dependencies = [
+ "gust-algo",
+ "gust-compute",
+ "gust-compute-wgpu",
+]
+
+[[package]]
 name = "walker-steer"
 version = "0.2.0"
 dependencies = [

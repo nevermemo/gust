@@ -297,7 +297,10 @@ fn rounded_invocations(width: u32, height: u32) -> u64 {
 /// 2^32, the most invocations one launch may run.
 const CAP: u64 = 1 << 32;
 
-/// The line printed in place of a dispatch of 2^32 invocations that a CPU adapter does not run.
+/// The line printed in place of a dispatch of 2^32 invocations that a CPU adapter does not run. A software rasteriser
+/// (lavapipe, which the public CI runs the suite on) takes minutes of CPU time for such a launch, so the tests below do
+/// not dispatch one on it (`common::is_cpu_adapter`): they say so, still assert the accept decision, and still dispatch
+/// every rejected launch, which fails before any GPU work.
 fn not_run_on_a_cpu_adapter(device: &HeadlessDevice, what: &str) {
     eprintln!(
         "grid: the adapter {:?} is a CPU adapter; the dispatch of 2^32 invocations for {what} was not run \

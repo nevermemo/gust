@@ -93,8 +93,7 @@ fn $name() {
         "the test needs a contended cell, got {heaviest}"
     );
 
-    let device =
-        common::device();
+    let device = common::device();
     let info = device.adapter_info();
     eprintln!("adapter: {} backend: {:?}", info.name, info.backend);
 

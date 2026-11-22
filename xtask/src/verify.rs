@@ -1126,9 +1126,13 @@ pub(crate) struct GpuSuitePin {
 /// Slice m12.carr: 571 over 57 became 574 over 58. The new test file `tests/const_arrays.rs` holds three tests (the
 /// host expectation, tables of 16, 8 and 4 entries read at dynamic indices in a loop, and a helper, a method, a closure,
 /// a `bool` table and `.len()`, each on the GPU and on the CPU twin) and adds one `test result:` line. Updated by count.
+///
+/// Slice m13.matchu: 574 over 58 became 576 over 59. The new test file `tests/value_match_untyped.rs` holds two tests
+/// (the host expectation, and an untyped value `match` on the GPU and in the CPU twin) and adds one `test result:`
+/// line. Updated by count; the merge gate's full Gpu suite on the RTX 5090 checks it.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 574,
-    result_lines: 58,
+    passed: 576,
+    result_lines: 59,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

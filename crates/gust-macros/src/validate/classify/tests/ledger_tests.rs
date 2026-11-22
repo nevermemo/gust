@@ -482,8 +482,8 @@ fn the_ledger_lists_exactly_the_pattern_kinds_the_validator_and_the_emitter_acce
 }
 
 /// The value form of `match` (m9.e2) adds no `syn` kind: it is the `Match` expression the ledger lists, as the
-/// initializer of a typed `Local`. The validator takes it there and nowhere else, and the classifier's definite-write
-/// walk reads its arms like the statement form's.
+/// initializer of a `Local` (typed, or untyped when its arms show the type, slice m13.matchu). The validator takes it
+/// there and nowhere else, and the classifier's definite-write walk reads its arms like the statement form's.
 #[test]
 fn a_value_match_is_a_let_initializer_the_ledger_lists() {
     assert!(kinds::lookup(Class::Expression, "Match").is_some());
@@ -493,15 +493,13 @@ fn a_value_match_is_a_let_initializer_the_ledger_lists() {
         "let t: f32 = match Mode::A { Mode::A => 1.0f32, _ => { let u = 2.0f32; match id.x { 0 => u, _ => 4.0f32 } } }; out[id.x] = t;",
         // Writes in the arms are definite when every arm writes, as for a statement `match`.
         "let _t: u32 = match id.x { 0u32 => { out[id.x] = 1.0f32; 1u32 } _ => { out[id.x] = 2.0f32; 2u32 } };",
+        // An untyped `let` takes its type from the arms.
+        "let t = match id.x { 0u32 => 1.0f32, _ => 2.0f32 }; out[id.x] = t;",
     ] {
         let source = probe_module(PARAMETERS, body);
         assert_eq!(verdict(&source), Accepted, "{source}");
     }
     for (body, code) in [
-        (
-            "let t = match id.x { 0u32 => 1.0f32, _ => 2.0f32 }; out[id.x] = t;",
-            Code::ValueMatchForm,
-        ),
         (
             "out[id.x] = match id.x { 0u32 => 1.0f32, _ => 2.0f32 };",
             Code::ValueMatchForm,

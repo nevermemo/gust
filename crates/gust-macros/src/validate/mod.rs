@@ -4185,7 +4185,7 @@ impl RestrictedVisitor {
 
     /// Judges a `match` that lowers to a Slang `switch` (slice m9.e1, D157, and e2 for integers and the value form) and
     /// visits its parts: on an enum (`E::A | E::B`, `_`) or on an integer (`0`, `1 | 2`, `-1i32`, `_`), as a statement or
-    /// as the initializer of a typed `let`.
+    /// as the initializer of a `let`.
     /// Refuses a `match` on a tuple (GUST-E0515; tuple patterns are not part of the dialect). Returns whether it did.
     fn reject_tuple_scrutinee(&mut self, expression: &syn::ExprMatch) -> bool {
         if !self.is_tuple_expr(&expression.expr) {
@@ -6274,7 +6274,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             self.reject(
                 Code::ValueMatchForm,
                 expression,
-                "a `match` that gives a value is accepted only as the initializer of a typed `let`: `let x: u32 = match e { E::A => 1u32, _ => 2u32 };`; bind it to a typed local first, then use the local",
+                "a `match` that gives a value is accepted only as the initializer of a typed `let` (or of an untyped `let` whose arms show the type): `let x: u32 = match e { E::A => 1u32, _ => 2u32 };`; bind it to a typed local first, then use the local",
             );
             return;
         }
@@ -6482,7 +6482,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 self.reject(
                     Code::ValueMatchForm,
                     expression,
-                    "a `match` that gives a value is accepted only as the initializer of a typed `let`, not as the tail of a function: `let x: u32 = match e { E::A => 1u32, _ => 2u32 }; x`; bind it to a typed local first, then return the local",
+                    "a `match` that gives a value is accepted only as the initializer of a typed `let`, not as the tail of a function (an untyped `let` whose arms show the type takes it too): `let x: u32 = match e { E::A => 1u32, _ => 2u32 }; x`; bind it to a typed local first, then return the local",
                 );
             }
             syn::Stmt::Expr(syn::Expr::Match(expression), _) if is_switch_match(expression) => {
@@ -6710,18 +6710,8 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             .as_ref()
             .and_then(|initial| switch_match_of(&initial.expr))
         {
-            // The value form (slice m9.e2): the initializer of a typed `let`, and of nothing else.
-            if !matches!(local.pat, syn::Pat::Type(_)) {
-                self.reject(
-                    Code::ValueMatchForm,
-                    value_match,
-                    "a `match` that gives a value needs a typed `let`, because the Slang local is declared before its `switch` assigns it: `let x: u32 = match e { E::A => 1u32, _ => 2u32 };`",
-                );
-                if let Ok((binding, _)) = crate::slang::local_binding(&local.pat) {
-                    self.enum_values.remove(&binding.ident.unraw().to_string());
-                }
-                return;
-            }
+            // The value form (slices m9.e2 and m13.matchu): the initializer of a `let`, and of nothing else. Whether
+            // an untyped `let` has a type its arms show is decided where the type is inferred, when Slang is emitted.
             self.visit_pat(&local.pat);
             self.check_switch_match(value_match, MatchForm::Value);
         } else if let Some(call) = local

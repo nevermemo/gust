@@ -1080,12 +1080,12 @@ Write instead: test the condition inside the arm with an `if`.
 Fixture: `tests/ui/match-guard` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D157 (M9 plan 2.2, slice m9.e1).
 
-### GUST-E0419 value `match` outside a typed `let`
+### GUST-E0419 value `match` outside a `let`, or with no visible type
 
-A `match` that gives a value is a Slang `switch` whose arms assign a local, and Slang needs the local declared with its type before the `switch`. So the value form is accepted in one place only, the initializer of a `let` with a type (`let x: T = match e { .. };`). The same `match` as the initializer of an untyped `let`, as an argument, an operand, the value of an assignment, a `return`, a `for` bound, a condition or the tail of a function with a result type (`fn f(v: u32) -> u32 { match v { 0 => 1u32, _ => 2u32 } }`) is refused with this code; a tail `match` whose arms `return` or are unit blocks is the statement form and stays accepted. A `match` on a `Result` in these places keeps GUST-E0513. Each arm gives a value: an expression, or a block whose last line is an expression without `;` (or a `return`), anything else is GUST-E0518.
+A `match` that gives a value is a Slang `switch` whose arms assign a local, and Slang needs the local declared with its type before the `switch`. So the value form is accepted in one place only, the initializer of a `let`: with a type (`let x: T = match e { .. };`), or without one when an arm shows the type by the rule of an untyped value `if` (a suffixed literal, a `bool`, a comparison, an `as` cast, a vector constructor; `let x = match v { 0 => 1u32, _ => 2u32 };` is a `u32`; SEMANTICS.md, sections 9 and 18). The same `match` as the initializer of an untyped `let` whose arms show no type (unsuffixed literals, a call in each arm, a struct literal), as an argument, an operand, the value of an assignment, a `return`, a `for` bound, a condition or the tail of a function with a result type (`fn f(v: u32) -> u32 { match v { 0 => 1u32, _ => 2u32 } }`) is refused with this code; a tail `match` whose arms `return` or are unit blocks is the statement form and stays accepted. A `match` on a `Result` in these places keeps GUST-E0513. Each arm gives a value: an expression, or a block whose last line is an expression without `;` (or a `return`), anything else is GUST-E0518.
 Reached through `#[gpu]`.
-Rejected: `let x = match v { 0 => 1u32, _ => 2u32 };`, `out[i] = match v { .. };`, `f(match v { .. })`, `1u32 + match v { .. }`, and `match v { .. }` as the tail of a function that gives a `u32`.
-Write instead: `let x: u32 = match v { 0 => 1u32, _ => 2u32 };` and use `x`.
+Rejected: `let x = match v { 0 => 1, _ => 2 };`, `let x = match v { 0 => f(1u32), _ => f(2u32) };`, `out[i] = match v { .. };`, `f(match v { .. })`, `1u32 + match v { .. }`, and `match v { .. }` as the tail of a function that gives a `u32`.
+Write instead: `let x: u32 = match v { 0 => 1, _ => 2 };`, or `let x: u32 = match v { 0 => f(1u32), _ => f(2u32) };`, or suffix one arm (`let x = match v { 0 => 1u32, _ => 2 };`), and use `x`; bind any other position to a local first.
 Fixtures: `tests/ui/match-value-untyped`, `tests/ui/match-value-position` and `tests/ui/match-value-tail` (`cargo xtask check-ui`, `code: none` plus the message); the control case is `tests/ui/match-value-ok`.
 Decision: D157 (M9 plan 2.2, slice m9.e2).
 
@@ -1211,7 +1211,7 @@ Decision: D14.
 
 ### GUST-E0513 Result match as a value
 
-A `match` on a `Result` is a statement, not an expression with a value (an enum or integer `match` that gives a value is GUST-E0419 outside a typed `let`). For the statement form of an enum or integer `match` this also fires when an arm ends in a value (an expression without `;`, such as `Mode::A => { c.reset() }`): end the arm's last statement with `;`.
+A `match` on a `Result` is a statement, not an expression with a value (an enum or integer `match` that gives a value is GUST-E0419 outside a `let` initializer). For the statement form of an enum or integer `match` this also fires when an arm ends in a value (an expression without `;`, such as `Mode::A => { c.reset() }`): end the arm's last statement with `;`.
 Reached through `#[gpu]`.
 Rejected: `let x = match r { Ok(v) => { v } Err(e) => { e } };`.
 Write instead: assign inside the arms to a `let mut` local, and end the match with `;`.
@@ -1252,7 +1252,7 @@ Decision: D14.
 
 ### GUST-E0518 match arm block
 
-Each arm body is a block, in a `Result` match and in a statement `match` on an enum or an integer; in a value `match` an arm is an expression, or a block that ends in an expression without `;` (or in a `return`), and a value arm whose block ends any other way is this code too. A `match` that gives a value outside a typed `let` is GUST-E0419, not this code, except in the tail of a nested block or an `if`, which still reports this code (an open nit in NEXT_TASKS).
+Each arm body is a block, in a `Result` match and in a statement `match` on an enum or an integer; in a value `match` an arm is an expression, or a block that ends in an expression without `;` (or in a `return`), and a value arm whose block ends any other way is this code too. A `match` that gives a value outside a `let` initializer is GUST-E0419, not this code, except in the tail of a nested block or an `if`, which still reports this code (an open nit in NEXT_TASKS).
 Reached through `#[gpu]`.
 Rejected: `Ok(x) => x`, `E::A => 1u32,` in a statement `match`, and in a value `match` an arm block that ends in a statement (`E::A => { let t = 1u32; }`).
 Write instead: `Ok(x) => { .. }`, `E::A => { .. }`, and for a value arm an expression or a block that ends in one.

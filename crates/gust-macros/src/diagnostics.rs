@@ -285,7 +285,7 @@ codes! {
     JumpInMatchArm = 417 => "GUST-E0417";
     /// A guard (`if cond`) on an arm of an enum `match`.
     EnumMatchGuard = 418 => "GUST-E0418";
-    /// A `match` that gives a value anywhere but the initializer of a typed `let`.
+    /// A `match` that gives a value anywhere but the initializer of a `let`, or in an untyped `let` whose arms show no type.
     ValueMatchForm = 419 => "GUST-E0419";
     /// A `&mut self` method call in a `for` range bound (the emitted bound pattern evaluates in another order).
     ForBoundSideEffect = 421 => "GUST-E0421";

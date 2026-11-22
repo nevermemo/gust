@@ -838,6 +838,12 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       home each (`process::cargo_program`, `process::run_capture`, one `slangc_cannot_be_found`, JSON accessors
       in `json.rs`), about 40 lines fewer; behaviour unchanged (xtask tests 672 before and after; Opus review:
       every changed message compared, merge).
+    - m13.matchu (`9c7a856`, owner proxy round 13, D220): an untyped value `match` takes its type from an arm by
+      the m12.ifx rule (a suffixed literal or a typed binding in one arm is enough) and lowers as the typed form;
+      with no typed arm it stays GUST-E0419 and the message names both forms. An arm ending in `break` or
+      `continue`, and a value `match` as the tail of a value `if` branch, stay refused, typed or untyped
+      (SEMANTICS sections 9 and 18). GPU_SUITE_PIN 576 over 59, confirmed by the full Gpu suite on the merged tree
+      (RTX 5090); the slice's GPU test also ran on the Radeon 890M. Opus review: merge after fixes, fixes in.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -1,6 +1,6 @@
 # Decisions and boundaries
 
-Append-only log. Next id: **D220**. Add a row for every owner decision or durable
+Append-only log. Next id: **D221**. Add a row for every owner decision or durable
 technical decision, with its date and source; supersede an old row with a new one
 instead of editing it. D01–D18 were recorded 2026-09-07 from the owner's GUST handoff,
 earlier reflection deferral, and independent inspection. Chat research is design
@@ -220,6 +220,7 @@ input, not proof of code state.
 | D217 | Which design-phase examples stay (owner, 2026-11-22, chat: "Yes, do that"): event-drain (the only test of a late, non-blocking GPU-to-host read-back) and the trail-field example are kept and merged; the two-rate and coarse-grid examples are not merged as examples of their own, and their patterns (work every Nth step, a fine-to-coarse aggregate) are folded into the trail-field example; their branches stay as reference. | Examples are tests: each kept one is exact on host, CPU twin and GPU. |
 | D218 | `check-web` may run headless Chrome (owner, 2026-11-22, chat: "Yes to Chrome for check-web."): the check starts its own headless browser on loopback only; the owner's own browser is never touched. | Unblocks slice m11.web. |
 | D219 | Module-level array constants (owner proxy, 2026-11-22, round 13; slice m12.carr; for the owner to confirm or veto): `const NAME: [T; N] = [..];` with `T` one of `u32`, `i32`, `f32`, `bool` and a literal `N` from 1 to 256 is read-only and read as `NAME[i]` or `NAME.len()`, indexed by the local-array rule (D172); a store in any form, a whole-array use, a nested array and other element types are GUST-E0127. | Extends D205 and D210; SEMANTICS section 17. |
+| D220 | An untyped value `match` (owner proxy, 2026-11-22, round 13; slice m13.matchu; for the owner to confirm or veto): `let x = match e { .. };` without a type takes its type from an arm by the rule of an untyped value `if` (D216) and lowers as the typed form; with no arm that shows a type it stays GUST-E0419. Only `return` ends a value arm; `break` and `continue` in an arm, and a value `match` as the tail of a value `if` branch, stay refused. | Extends D216; SEMANTICS section 18. |
 
 ## Notes
 

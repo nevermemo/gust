@@ -355,7 +355,7 @@ to older programs in a batch are the cut: one float program fewer, one enum prog
 (D163); an order difference is never a D39 note.
 
 **Program space** (`Space::Value`, attempts from `VALUE_ATTEMPT_BASE` = 4 000 000; the enum space plus the value forms).
-- The value `match` is written only as a typed `let` initialiser (E0419). It matches on an enum (variable, call or variant
+- The value `match` is written only as a typed `let` initialiser (the macro also takes an untyped one when an arm shows the type; the generator does not write it). It matches on an enum (variable, call or variant
   path, E0515) or on an integer with literal patterns: `u32` or `i32` literals, `|` groups, each value once, a final `_`
   (E0521), no `i32::MIN` pattern. Arms are an expression, a block that ends in an expression, a nested value `match`, or
   (in helpers) a block that ends in `return`. A helper that returns from an arm carries the per-function
@@ -367,7 +367,7 @@ to older programs in a batch are the cut: one float program fewer, one enum prog
   only structs with scalar fields appear. An unannotated destructuring never has an enum element (it would not be tracked).
 - Never generated: tuple comparison (E0213), a tuple in a field or a buffer (E0212), a tuple `match` scrutinee (E0515),
   `_` or nested destructuring patterns (E0319), a 1-element tuple or one of more than eight, an unsuffixed integer literal
-  in a tuple literal (E0326), a value `match` outside a typed `let`, a name with a reserved prefix.
+  in a tuple literal (E0326), a value `match` outside a `let` initializer, a name with a reserved prefix.
 - A value program without a value form is discarded as `no-value` (a new class beside `no-call`).
 
 **Interpreter** (from the Rust Reference, not from the emitted Slang): a tuple literal evaluates its elements left to

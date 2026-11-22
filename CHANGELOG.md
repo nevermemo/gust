@@ -143,6 +143,9 @@ proof.
   each branch, so the condition is evaluated once and exactly one branch runs. Scalar (`bool`, `i32`, `u32`, `f32`)
   and vector values only; an `if` without `else`, an `if let`, an `if` anywhere but the whole initializer of a `let`,
   and an array, struct or matrix value stay `GUST-E0811`.
+- An untyped value `match` (m13.matchu): `let x = match e { 0 => 1u32, _ => 2u32 };` takes its type from an arm by the
+  rule of an untyped value `if`, and lowers as the typed form does. When no arm shows a type, it stays `GUST-E0419`
+  and the message names the typed form.
 - Example event-drain (m11.events): a bounded GPU-to-host event queue that the host drains late, without
   blocking the frame.
 - The browser page of web-vector-add (m11.web) runs a launch past a lowered workgroup limit from the split

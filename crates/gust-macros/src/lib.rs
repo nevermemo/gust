@@ -96,6 +96,10 @@ mod const_tests;
 #[path = "tests/value_if.rs"]
 mod value_if_tests;
 
+#[cfg(test)]
+#[path = "tests/value_match_untyped.rs"]
+mod value_match_untyped_tests;
+
 /// Marks an inline Rust module as GUST GPU code, or a free scalar function as an element-wise map (D60).
 ///
 /// On a module, the macro validates a deliberately small Rust subset, translates each

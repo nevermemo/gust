@@ -1,7 +1,9 @@
 include!("../../../tests/fixtures/option.rs");
 
+mod common;
+
 use gust::cpu::CpuDevice;
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
 /// Independent host reference. Ordinary Rust `Option` semantics the GPU lowering
 /// (Slang `Optional<T>`) must reproduce: presence tests, `unwrap_or`, `if let`, and
@@ -25,8 +27,7 @@ fn reference(x: u32) -> (u32, u32, (u32, u32)) {
 
 #[test]
 fn option_lowering_executes_on_gpu() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     eprintln!("option adapter: {:?}", device.adapter_info());
     for count in [1, 63, 64, 65, 257] {
         // Covers both parities, values below 8 (Some pair) and above 1000 (Some missing).

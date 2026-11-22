@@ -9,8 +9,10 @@
 //!
 //! The twin is a second assertion and never GPU evidence.
 
+mod common;
+
 use gust::{Independent, cpu::CpuDevice};
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
 #[gust::gpu]
 mod tables {
@@ -184,8 +186,7 @@ fn tables_read_at_dynamic_indices_in_a_loop_equal_the_host_on_the_gpu_and_the_tw
     let picks = picks();
     let want = walk_expected(&picks);
 
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let info = device.adapter_info();
     eprintln!("adapter: {} backend: {:?}", info.name, info.backend);
 
@@ -247,8 +248,7 @@ fn a_helper_a_method_a_closure_a_bool_table_and_len_read_array_constants_on_the_
     let src = picks();
     let want = mixed_expected(&src);
 
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let info = device.adapter_info();
     eprintln!("adapter: {} backend: {:?}", info.name, info.backend);
 

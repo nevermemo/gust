@@ -8,6 +8,10 @@
 
 include!("../../../tests/fixtures/grid.rs");
 
+mod common;
+
+use common::{device, is_cpu_adapter};
+
 use gust::{
     Extent, Independent,
     cpu::{self, CpuDevice},
@@ -16,10 +20,6 @@ use gust_wgpu::{Error, GpuBufferAccess, HeadlessDevice};
 
 /// The workgroup of `cells` and `corner`, per axis.
 const TILE: u32 = 16;
-
-fn device() -> HeadlessDevice {
-    HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip")
-}
 
 /// A value no kernel writes, to show a cell the dispatch never reached.
 const UNWRITTEN: u32 = u32::MAX;
@@ -297,14 +297,10 @@ fn rounded_invocations(width: u32, height: u32) -> u64 {
 /// 2^32, the most invocations one launch may run.
 const CAP: u64 = 1 << 32;
 
-/// Whether the adapter is a software rasteriser (lavapipe, which the public CI runs the suite on): a launch of 2^32
-/// invocations is minutes of CPU time there, so the tests below do not dispatch one on it (they say so and still
-/// assert the accept decision, and still dispatch every rejected launch, which fails before any GPU work).
-fn is_cpu_adapter(device: &HeadlessDevice) -> bool {
-    device.adapter_info().device_type == wgpu::DeviceType::Cpu
-}
-
-/// The line printed in place of a dispatch of 2^32 invocations that a CPU adapter does not run.
+/// The line printed in place of a dispatch of 2^32 invocations that a CPU adapter does not run. A software rasteriser
+/// (lavapipe, which the public CI runs the suite on) takes minutes of CPU time for such a launch, so the tests below do
+/// not dispatch one on it (`common::is_cpu_adapter`): they say so, still assert the accept decision, and still dispatch
+/// every rejected launch, which fails before any GPU work.
 fn not_run_on_a_cpu_adapter(device: &HeadlessDevice, what: &str) {
     eprintln!(
         "grid: the adapter {:?} is a CPU adapter; the dispatch of 2^32 invocations for {what} was not run \

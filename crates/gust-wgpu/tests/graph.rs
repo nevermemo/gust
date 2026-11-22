@@ -7,6 +7,10 @@
 //! not adjusted to its output. Kernels are macro-generated; the calls are the generated `call` functions.
 //! Expectations come from independent host references, never from running a shader shadow body.
 
+mod common;
+
+use common::device;
+
 use gust::Independent;
 use gust_wgpu::{Error, GpuBuffer, GpuBufferAccess, HeadlessDevice, NodeId, StagedGraph};
 
@@ -187,10 +191,6 @@ mod pool {
             particles[i] = p;
         }
     }
-}
-
-fn device() -> HeadlessDevice {
-    HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip")
 }
 
 /// The edges of `node` as plain indices.

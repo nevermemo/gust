@@ -14,6 +14,10 @@
 
 include!("../../../tests/fixtures/uniforms.rs");
 
+mod common;
+
+use common::device;
+
 use std::mem::{offset_of, size_of};
 
 use gust::cpu::CpuDevice;
@@ -134,10 +138,6 @@ mod probes {
 
 use probes::{Gain, Inner, Outer, Tint, Xform};
 use uniforms::{Frame, Light};
-
-fn device() -> HeadlessDevice {
-    HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip")
-}
 
 fn gain(value: f32) -> Gain {
     Gain {

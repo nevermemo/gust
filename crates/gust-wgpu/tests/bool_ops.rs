@@ -8,8 +8,10 @@
 // accepts, so these two lints of the host-side view of the kernel body do not apply.
 #![allow(clippy::eq_op, clippy::needless_return)]
 
+mod common;
+
 use gust::cpu::CpuDevice;
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
 #[gust::gpu]
 mod bool_ops {
@@ -205,8 +207,7 @@ fn expected() -> Vec<u32> {
 
 #[test]
 fn bool_and_integer_bitwise_operators_execute_on_gpu() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let input =
         device.create_typed_buffer("bool ops input", &input_data(), GpuBufferAccess::ReadOnly);
     let out = device.create_typed_buffer(

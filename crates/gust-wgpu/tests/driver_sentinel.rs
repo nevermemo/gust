@@ -56,6 +56,10 @@ mod loop_break {
     }
 }
 
+mod common;
+
+use common::spirv_route_taken;
+
 use gust::Run;
 use gust::cpu::CpuDevice;
 use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
@@ -183,8 +187,7 @@ fn judged<T: PartialEq + Copy + std::fmt::Debug>(
 
 #[test]
 fn the_nvidia_array_defect_is_still_there_or_absent_elsewhere() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let info = device.adapter_info();
     let adapter = format!(
         "{} (vendor {:#06x}, driver {:?} {:?}, {:?})",
@@ -264,21 +267,6 @@ fn the_nvidia_array_defect_is_still_there_or_absent_elsewhere() {
     }
 }
 
-/// Whether every kernel this device built so far took the SPIR-V route (m9.rt2). `false` without the feature.
-#[cfg(feature = "spirv-route")]
-fn spirv_route_taken(device: &HeadlessDevice) -> bool {
-    let events = device.route_events();
-    !events.is_empty()
-        && events
-            .iter()
-            .all(|event| event.route == gust_wgpu::Route::Spirv)
-}
-
-#[cfg(not(feature = "spirv-route"))]
-fn spirv_route_taken(_device: &HeadlessDevice) -> bool {
-    false
-}
-
 // m11.ld: the iteration at which the break is due, per invocation (Rust's value is n == t).
 const LOOP_T: [u32; 6] = [100, 127, 128, 129, 200, 250];
 // The values measured on the RTX 5090 (NVIDIA 610.88, Vulkan) on both routes: a `<` break due after 128 iterations is
@@ -288,8 +276,7 @@ const LOOP_EQ_DEFECT: [u32; 6] = [100, 127, 0, 0, 0, 0];
 
 #[test]
 fn the_nvidia_float_break_loop_defect_is_still_there_or_absent_elsewhere() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let info = device.adapter_info();
     let adapter = format!(
         "{} (vendor {:#06x}, driver {:?} {:?}, {:?})",

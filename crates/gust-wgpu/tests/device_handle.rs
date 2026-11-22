@@ -5,6 +5,8 @@
 //! check of xtask builds the real thing). The call sites are the same source whatever a kernel's side is. Expected values
 //! are worked by hand (D26, D42); the GPU values come from the adapter, never from the twin.
 
+mod common;
+
 use gust::cpu::{CpuDevice, CpuJob, Error as CpuError};
 use gust::routed::{Error, OnCpu, Routed, RoutedBuffer, RoutedDevice};
 use gust::{Access, Call, Kernel, KernelDescriptor, LengthRule, Resource, Run};
@@ -78,7 +80,7 @@ fn plus1(
 }
 
 fn gpu_handle() -> RoutedDevice<HeadlessDevice> {
-    RoutedDevice::with_gpu(HeadlessDevice::new().expect("a Vulkan compute adapter"))
+    RoutedDevice::with_gpu(common::device())
 }
 
 /// The call-site code of the chain: it names no target, only the handle.
@@ -167,7 +169,7 @@ fn a_buffer_of_another_handle_is_refused_by_each_side_s_own_device_check() {
 
 #[test]
 fn explicit_device_calls_still_work_beside_the_handle() {
-    let device = HeadlessDevice::new().expect("a Vulkan compute adapter");
+    let device = common::device();
     let input = device.create_typed_buffer("in", &[1.0f32, 2.0], GpuBufferAccess::ReadWrite);
     let out = device.create_typed_buffer("out", &[0.0f32; 2], GpuBufferAccess::ReadWrite);
     on_gpu::scale2::dispatch(&device, 2, &input, &out).unwrap();

@@ -1,8 +1,10 @@
+mod common;
+
 use gust::{
     Access, GpuPod, KernelDescriptor, ParameterDescriptor, ParameterKind, ResourceBinding,
     ResourceLayout, reflect::Error as ReflectionError, slang::Target,
 };
-use gust_wgpu::{BufferBinding, Error, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, Error, GpuBufferAccess};
 
 const PARAMETERS: &[ParameterDescriptor] = &[ParameterDescriptor {
     name: "output",
@@ -40,7 +42,7 @@ fn assert_mismatch(error: Error, expected: &str) {
 
 #[test]
 fn rejects_workgroup_mismatch_before_dispatch() {
-    let device = HeadlessDevice::new().expect("Vulkan adapter required");
+    let device = common::device();
     let output = device.create_typed_buffer("reflection gate", &[3.0], GpuBufferAccess::ReadWrite);
     let descriptor = KERNEL.with_workgroup_size([32, 1, 1]);
     let error = device
@@ -54,7 +56,7 @@ fn rejects_workgroup_mismatch_before_dispatch() {
 
 #[test]
 fn rejects_resource_mismatches_before_dispatch() {
-    let device = HeadlessDevice::new().expect("Vulkan adapter required");
+    let device = common::device();
     let floats =
         device.create_typed_buffer("reflection floats", &[3.0], GpuBufferAccess::ReadWrite);
     let integers =
@@ -115,7 +117,7 @@ fn rejects_resource_mismatches_before_dispatch() {
 
 #[test]
 fn cached_pipeline_does_not_authorize_a_changed_contract() {
-    let device = HeadlessDevice::new().expect("Vulkan adapter required");
+    let device = common::device();
     let output =
         device.create_typed_buffer("cached reflection", &[3.0], GpuBufferAccess::ReadWrite);
     let bindings = [BufferBinding::read_write(&output)];
@@ -342,7 +344,7 @@ mod nested {
 
 #[test]
 fn reflected_nested_and_scalar_buffers_execute_with_cache_hits() {
-    let device = HeadlessDevice::new().expect("Vulkan adapter required; no silent GPU skip");
+    let device = common::device();
     for count in [0, 1, 63, 64, 65, 257] {
         let values: Vec<_> = (0..count)
             .map(|index| nested::Outer {

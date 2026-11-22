@@ -12,40 +12,18 @@
 
 #![cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]
 
-use std::{
-    future::Future,
-    pin::pin,
-    sync::Arc,
-    task::{Context, Poll, Waker},
-    thread,
-    time::{Duration, Instant},
-};
+mod common;
+
+use common::drive;
 
 use gust::{
     cpu::CpuDevice,
     map::{Broadcast, CEILING, Error as MapError},
     math::Vec2,
 };
-use gust_wgpu::{DeviceHandle, GpuVec, HeadlessDevice, default_device};
+use gust_wgpu::{DeviceHandle, GpuVec, default_device};
 
 include!("../../../tests/fixtures/map.rs");
-
-/// Drive a future that completes only while the device is polled.
-fn drive<T>(future: impl Future<Output = T>) -> T {
-    let mut future = pin!(future);
-    let mut context = Context::from_waker(Waker::noop());
-    let started = Instant::now();
-    loop {
-        if let Poll::Ready(value) = future.as_mut().poll(&mut context) {
-            return value;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "the call never completed"
-        );
-        thread::sleep(Duration::from_millis(1));
-    }
-}
 
 const SIZES: [usize; 8] = [0, 1, 2, 255, 256, 257, 1000, 65_537];
 
@@ -262,7 +240,7 @@ fn resident_arguments_chain_without_a_round_trip() {
 #[test]
 fn resident_arguments_of_two_devices_are_mixed_devices() {
     let default = default_device().unwrap();
-    let other: DeviceHandle = Arc::new(HeadlessDevice::new().expect("Vulkan adapter required"));
+    let other: DeviceHandle = common::device_handle();
     assert_ne!(default.id(), other.id());
     let on_other = GpuVec::from_slice_on(&other, &[1u32, 2, 3]).unwrap();
     let on_default = GpuVec::from_slice_on(&default, &[1u32, 2, 3]).unwrap();

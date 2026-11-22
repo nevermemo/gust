@@ -20,8 +20,10 @@
 // The kernel lists one parameter per buffer.
 #![allow(clippy::too_many_arguments)]
 
+mod common;
+
 use gust::{Independent, cpu::CpuDevice};
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
 #[gust::gpu]
 mod value_match_untyped {
@@ -174,8 +176,7 @@ fn the_host_expectation_has_the_values_the_comment_gives() {
 #[test]
 fn an_untyped_value_match_takes_its_type_from_its_arms_on_the_gpu_and_the_twin() {
     let want = expected();
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let info = device.adapter_info();
     eprintln!(
         "value_match_untyped adapter: {} backend: {:?}",

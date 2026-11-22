@@ -13,6 +13,10 @@
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(clippy::disallowed_methods)]
 
+mod common;
+
+use common::device_handle as device;
+
 use std::{
     env,
     sync::Arc,
@@ -20,7 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gust_wgpu::{DeviceHandle, Error, GpuBufferAccess, GpuVec, HeadlessDevice};
+use gust_wgpu::{DeviceHandle, Error, GpuBufferAccess, GpuVec};
 
 const DEFAULT_THREADS: usize = 8;
 const DEFAULT_SECONDS: u64 = 4;
@@ -62,12 +66,6 @@ fn setting<T: std::str::FromStr>(name: &str, default: T) -> T {
         .ok()
         .and_then(|text| text.parse().ok())
         .unwrap_or(default)
-}
-
-fn device() -> DeviceHandle {
-    Arc::new(
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip"),
-    )
 }
 
 /// The values thread `thread` uploads in iteration `iteration`; the length changes so that the pool serves several

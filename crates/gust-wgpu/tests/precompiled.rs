@@ -14,6 +14,10 @@
 //!
 //! Every test runs on the GPU and fails without an adapter, like the rest of the Gpu suite.
 
+mod common;
+
+use common::device;
+
 use gust::{Artifact, Format, KernelDescriptor, gpu, reflect::Error as ReflectionError};
 use gust_wgpu::{BufferBinding, Error, GpuBufferAccess, HeadlessDevice};
 
@@ -43,10 +47,6 @@ const ARTIFACT: Artifact = Artifact::new(Format::Wgsl, KEY, WGSL, REFLECTION);
 const PRE: KernelDescriptor = vector_add::add::DESCRIPTOR.with_artifacts(&[ARTIFACT]);
 
 const COUNT: usize = 1000;
-
-fn device() -> HeadlessDevice {
-    HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip")
-}
 
 /// A descriptor equal to [`PRE`] in every field but the artifact.
 fn with_artifact(artifact: Artifact) -> KernelDescriptor {

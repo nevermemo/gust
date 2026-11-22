@@ -10,6 +10,10 @@
 
 include!("../../../tests/fixtures/semantics.rs");
 
+mod common;
+
+use common::device;
+
 use gust::{
     Access, Arg, Call, Extent, GpuPod, Independent, Kernel, KernelDescriptor, LengthRule,
     ParameterDescriptor, ParameterKind, Resource, ResourceBinding, ResourceLayout, Run,
@@ -263,10 +267,6 @@ f32_call!(sparse1000_call, Sparse1000, 1, p: R0 = ReadWrite);
 // ---- helpers ----
 
 const COUNT: usize = 70;
-
-fn device() -> HeadlessDevice {
-    HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip")
-}
 
 fn ramp() -> Vec<f32> {
     (0..COUNT).map(|index| index as f32 + 1.0).collect()

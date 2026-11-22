@@ -13,8 +13,10 @@
 //! modules, and a host helper written against one does not accept the other. The shared `fn` and `const` are a private
 //! `mix` and a `FACTOR` in each module.
 
+mod common;
+
 use gust::{Independent, cpu::CpuDevice};
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
 /// Wraps a module and splices the shared items in before the module's own items.
 macro_rules! with_shared {
@@ -106,8 +108,7 @@ fn the_shared_items_are_in_each_modules_own_slang_text() {
 
 #[test]
 fn two_spliced_modules_run_on_the_gpu_and_the_twin() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let info = device.adapter_info();
     eprintln!("adapter: {} backend: {:?}", info.name, info.backend);
 

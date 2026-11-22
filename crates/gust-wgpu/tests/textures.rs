@@ -19,13 +19,9 @@
 
 #![cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]
 
-use std::{
-    future::Future,
-    pin::pin,
-    task::{Context, Poll, Waker},
-    thread,
-    time::{Duration, Instant},
-};
+mod common;
+
+use common::{assert_cold, device, drive};
 
 use gust::{
     Access, Call, GpuPod, Kernel, KernelDescriptor, LengthRule, ParameterDescriptor, ParameterKind,
@@ -44,10 +40,6 @@ use gust_wgpu::{
     StagedGraph, render_wgpu_source,
 };
 
-fn device() -> HeadlessDevice {
-    HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip")
-}
-
 /// Options as `device()` opens (Vulkan, the portable limits) with the given optional features.
 fn options(features: FeaturesPolicy) -> DeviceOptions {
     DeviceOptions::default()
@@ -61,32 +53,6 @@ fn options(features: FeaturesPolicy) -> DeviceOptions {
 fn feature_device() -> HeadlessDevice {
     HeadlessDevice::with_options(options(FeaturesPolicy::Adapter))
         .expect("Vulkan adapter required; this test must not silently skip")
-}
-
-/// Poll `future` every millisecond until it is ready (see `async_readback.rs`).
-fn drive<F: Future>(future: F) -> F::Output {
-    let mut context = Context::from_waker(Waker::noop());
-    let mut future = pin!(future);
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
-            return output;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the texture readback was still pending after 60 s"
-        );
-        thread::sleep(Duration::from_millis(1));
-    }
-}
-
-fn assert_cold(device: &HeadlessDevice) {
-    let stats = device.pipeline_cache_stats();
-    assert_eq!(
-        (stats.entries, stats.misses, stats.hits),
-        (0, 0, 0),
-        "the error must precede compilation and the cache lookup"
-    );
 }
 
 // ---- host transfers: create, write, read ----
@@ -779,7 +745,7 @@ fn a_linear_sampler_needs_float32_filterable() {
         }
         other => panic!("expected TextureFilter, got {other:?}"),
     }
-    assert_cold(&plain);
+    assert_cold(&plain, "the error");
     // The device is still usable: a nearest sampler binds.
     let nearest = plain.create_sampler(SamplerOptions::default()).unwrap();
     assert_eq!(
@@ -1000,7 +966,7 @@ fn one_texture_bound_sampled_and_as_storage_is_aliased() {
         matches!(result, Err(Error::AliasedBinding { .. })),
         "{result:?}"
     );
-    assert_cold(&device);
+    assert_cold(&device, "the error");
 }
 
 #[test]
@@ -1056,7 +1022,7 @@ fn a_texture_without_the_sampled_use_is_refused_for_a_sampled_parameter() {
         }
         other => panic!("expected TextureUse, got {other:?}"),
     }
-    assert_cold(&device);
+    assert_cold(&device, "the error");
 }
 
 // ---- storage textures ----
@@ -1107,7 +1073,7 @@ fn a_storage_parameter_needs_the_storage_use_and_its_exact_format() {
         }
         other => panic!("expected TextureFormat, got {other:?}"),
     }
-    assert_cold(&device);
+    assert_cold(&device, "the error");
 }
 
 #[test]
@@ -1192,7 +1158,7 @@ fn incoherent_texture_descriptors_are_refused() {
             "{name}: the generated host refuses it too"
         );
     }
-    assert_cold(&device);
+    assert_cold(&device, "the error");
 }
 
 #[test]
@@ -1242,7 +1208,7 @@ fn a_missing_or_extra_sampler_is_a_binding_count_error() {
         matches!(result, Err(Error::BindingCount { .. })),
         "{result:?}"
     );
-    assert_cold(&device);
+    assert_cold(&device, "the error");
 }
 
 #[test]
@@ -1376,7 +1342,7 @@ fn the_staged_graph_refuses_texture_and_sampler_kernels() {
         }
         other => panic!("expected UnsupportedParameter, got {:?}", other.err()),
     }
-    assert_cold(&device);
+    assert_cold(&device, "the error");
 }
 
 // ---- limits ----
@@ -1426,7 +1392,7 @@ fn sampled_textures_above_the_limit_are_an_error_before_compilation() {
         ])
         .err();
     assert_limit(error, "max_sampled_textures_per_shader_stage", 1, 0);
-    assert_cold(&device);
+    assert_cold(&device, "the error");
 }
 
 #[test]
@@ -1446,7 +1412,7 @@ fn storage_textures_above_the_limit_are_an_error_before_compilation() {
         .dispatch_buffers(&Fill::DESCRIPTOR, 32, &bindings)
         .err();
     assert_limit(error, "max_storage_textures_per_shader_stage", 2, 1);
-    assert_cold(&device);
+    assert_cold(&device, "the error");
 }
 
 #[test]
@@ -1468,7 +1434,7 @@ fn samplers_above_the_limit_are_an_error_before_compilation() {
         ])
         .err();
     assert_limit(error, "max_samplers_per_shader_stage", 1, 0);
-    assert_cold(&device);
+    assert_cold(&device, "the error");
 }
 
 #[test]
@@ -1494,7 +1460,7 @@ fn a_texture_side_above_the_limit_is_an_error_at_creation_and_at_launch() {
         .dispatch_buffers(&LoadUint::DESCRIPTOR, 15, &bindings)
         .err();
     assert_limit(error, "max_texture_dimension_2d", 5, 4);
-    assert_cold(&device);
+    assert_cold(&device, "the error");
 }
 
 // ---- the generated host ----

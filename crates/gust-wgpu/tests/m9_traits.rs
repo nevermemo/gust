@@ -1,8 +1,10 @@
 include!("../../../tests/fixtures/traits.rs");
 
+mod common;
+
 use gust::Run;
 use gust::cpu::CpuDevice;
-use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::GpuBufferAccess;
 
 // Expected values, written by hand from the rules of the fixture (not computed by a function that mirrors the kernel).
 //
@@ -55,8 +57,7 @@ const ORDER_SELF: [u32; 5] = [1, 203, 405, 607, 809];
 #[test]
 #[allow(clippy::needless_range_loop)]
 fn traits_execute_on_gpu_and_on_the_cpu_twin() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     eprintln!("traits adapter: {:?}", device.adapter_info());
     for count in [1, 63, 64, 65, 257] {
         let input: Vec<u32> = (0..count).map(|i| (i % 5) as u32 * 2).collect();

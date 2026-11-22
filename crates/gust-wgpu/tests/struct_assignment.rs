@@ -1,5 +1,7 @@
+mod common;
+
 use gust::cpu::CpuDevice;
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
 #[gust::gpu]
 mod assignments {
@@ -41,7 +43,7 @@ mod assignments {
 
 #[test]
 fn struct_assignment_reads_the_complete_rhs_before_writing() {
-    let device = HeadlessDevice::new().expect("Vulkan adapter required; no silent skip");
+    let device = common::device();
     eprintln!("struct assignment adapter: {:?}", device.adapter_info());
     for count in [1, 63, 64, 65, 257] {
         let values: Vec<_> = (0..count)

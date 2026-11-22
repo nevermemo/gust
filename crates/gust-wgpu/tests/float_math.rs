@@ -10,18 +10,14 @@
 //! The inputs stay inside the domain each bound states; NaN, infinity and subnormal inputs are not fed.
 include!("../../../tests/fixtures/float_math.rs");
 
+mod common;
+
+use common::{device_reported as device, ulp};
+
 use gust::cpu::CpuDevice;
 use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
 
 const COUNT: usize = 5000;
-
-fn device() -> HeadlessDevice {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
-    let info = device.adapter_info();
-    println!("adapter: {} backend: {:?}", info.name, info.backend);
-    device
-}
 
 /// A deterministic stream of 32-bit values (xorshift32), so the inputs are the same on every adapter.
 struct Stream(u32);
@@ -51,13 +47,6 @@ fn floats_with_edges(seed: u32, span: f32, edges: &[f32]) -> Vec<f32> {
         values.push(stream.range(-span, span));
     }
     values
-}
-
-/// `2^e` for the exponent of `x`, the unit in the last place of a normal `f32`.
-fn ulp(x: f32) -> f64 {
-    let magnitude = x.abs().max(f32::MIN_POSITIVE);
-    let exponent = ((magnitude.to_bits() >> 23) & 0xff) as i32 - 127;
-    2f64.powi(exponent - 23)
 }
 
 fn buffer<T: gust::GpuPod>(

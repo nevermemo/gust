@@ -34,6 +34,10 @@
 // Kernel signatures list one parameter per buffer, and the host loops index several arrays in step.
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
+mod common;
+
+use common::device;
+
 use std::collections::BTreeMap;
 
 use gust::GpuPod;
@@ -659,10 +663,6 @@ fn gpu_out<T: GpuPod + Clone>(
     zero: T,
 ) -> GpuBuffer<T> {
     device.create_typed_buffer(label, &vec![zero; length], GpuBufferAccess::ReadWrite)
-}
-
-fn device() -> HeadlessDevice {
-    HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip")
 }
 
 /// Independent host references (column-major, `f64`; no `gust::math`).

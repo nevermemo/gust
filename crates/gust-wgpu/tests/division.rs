@@ -10,6 +10,10 @@
 
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
+mod common;
+
+use common::device;
+
 use gust::{
     Independent,
     cpu::CpuDevice,
@@ -121,10 +125,6 @@ impl Lcg {
             .wrapping_add(1_442_695_040_888_963_407);
         (self.0 >> 33) as u32
     }
-}
-
-fn device() -> HeadlessDevice {
-    HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip")
 }
 
 fn gpu_in<T: gust::GpuPod>(device: &HeadlessDevice, label: &str, data: &[T]) -> GpuBuffer<T> {

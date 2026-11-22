@@ -28,6 +28,10 @@
 
 include!("../../../tests/fixtures/mismatch.rs");
 
+mod common;
+
+use common::spirv_route_taken;
+
 use std::{
     any::Any,
     collections::BTreeSet,
@@ -2406,8 +2410,7 @@ fn ledger_path(kind: AdapterKind) -> &'static str {
 #[test]
 fn known_mismatches_pin_the_gpu_the_plain_rust_and_the_cpu_twin_outcome() {
     let mode = overflow_checks();
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let info = device.adapter_info();
     let kind = AdapterKind::of(info.device_type);
     let identity = format!(
@@ -2887,19 +2890,4 @@ fn a_kernel_without_storage_parameters_runs_on_the_twin() {
             .as_ref(),
     );
     assert!(message.starts_with(DIV_ZERO), "{message}");
-}
-
-/// Whether every kernel this device built so far took the SPIR-V route (m9.rt2). `false` without the feature.
-#[cfg(feature = "spirv-route")]
-fn spirv_route_taken(device: &HeadlessDevice) -> bool {
-    let events = device.route_events();
-    !events.is_empty()
-        && events
-            .iter()
-            .all(|event| event.route == gust_wgpu::Route::Spirv)
-}
-
-#[cfg(not(feature = "spirv-route"))]
-fn spirv_route_taken(_device: &HeadlessDevice) -> bool {
-    false
 }

@@ -857,6 +857,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       GUST-E0127 (test with nine cases, failing on the old code); every scalar math method is grid-only under the
       pixel shape (E0723; `.abs()` tested); SEMANTICS rests the driver-defect argument on D169's trigger; xtask
       follow-ups; CI workflows also run on pushes to `dev`. Opus review: merge after fixes, fixes in.
+    - m13.dedup-tests (`13432f6`, tidy round approved by the owner): the runtime's integration tests share one
+      `tests/common/mod.rs` (device setup and its adapter logging, `assert_cold`, `drive`, `ulp`, the CPU-adapter
+      check, the SPIR-V route check); 477 lines removed, 394 added; 415 tests and every test binary kept; the
+      constructor tests keep their own calls. Opus review: merge. Full Gpu suite on the merged tree (RTX 5090) 576
+      over 59; the lane's Gpu suite also passed on the Radeon 890M.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

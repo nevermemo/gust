@@ -6,41 +6,21 @@
 
 #![cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]
 
+mod common;
+
+use common::{device_handle as device, drive};
+
 use std::{
     future::Future,
-    pin::pin,
     sync::Arc,
-    task::{Context, Poll, Waker},
-    thread,
-    time::{Duration, Instant},
+    task::{Context, Waker},
 };
 
 use gust::{
     Access, GpuPod, KernelDescriptor, ParameterDescriptor, ParameterKind, ResourceBinding,
     ResourceLayout,
 };
-use gust_wgpu::{BufferBinding, DeviceHandle, Error, GpuVec, HeadlessDevice};
-
-fn device() -> DeviceHandle {
-    Arc::new(HeadlessDevice::new().expect("Vulkan adapter required"))
-}
-
-/// Drive a future that completes only while the device is polled (each poll of it polls the device once).
-fn drive<T>(future: impl Future<Output = T>) -> T {
-    let mut future = pin!(future);
-    let mut context = Context::from_waker(Waker::noop());
-    let started = Instant::now();
-    loop {
-        if let Poll::Ready(value) = future.as_mut().poll(&mut context) {
-            return value;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(30),
-            "the readback never completed"
-        );
-        thread::sleep(Duration::from_millis(1));
-    }
-}
+use gust_wgpu::{BufferBinding, Error, GpuVec, HeadlessDevice};
 
 const fn storage(name: &'static str, access: Access, binding: u32) -> ParameterDescriptor {
     ParameterDescriptor {

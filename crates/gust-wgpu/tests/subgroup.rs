@@ -20,6 +20,8 @@
 
 include!("../../../tests/fixtures/subgroup.rs");
 
+mod common;
+
 use gust::cpu::CpuDevice;
 use gust::{
     Access, Arg, Call, GpuPod, Kernel, KernelDescriptor, ParameterDescriptor, ParameterKind,
@@ -405,7 +407,7 @@ fn selected() -> bool {
 }
 
 fn headless() -> HeadlessDevice {
-    HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip")
+    common::device()
 }
 
 /// Runs a fixture kernel over `input` (read-only) with an output of `words` per element, every word starting as

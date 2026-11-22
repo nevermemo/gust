@@ -1241,7 +1241,9 @@ pub mod s9_a4 {
                 program.check().unwrap();
                 // The reparser reads the scalar, vector and math subsets; a method program is checked by the CPU twin
                 // against the interpreter instead (the independent reading of its parenthesisation).
-                if (!program.methods.is_empty() && program.methods.consts.is_empty()) || program.has_array() {
+                if (!program.methods.is_empty() && program.methods.consts.is_empty())
+                    || program.has_array()
+                {
                     continue;
                 }
                 let text = emit_module(program);

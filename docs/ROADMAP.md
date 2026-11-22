@@ -15,8 +15,8 @@ detail lives in [NEXT_TASKS](development/NEXT_TASKS.md) and task contracts in
   (see [VALIDATION](development/VALIDATION.md)).
 - Change the order or content of milestones only with an owner decision recorded in
   DECISIONS.
-- No kill rules are attached for now (owner, 2026-10-23); scope is reviewed at
-  milestone boundaries instead.
+- Milestones carry no kill rules (owner, 2026-10-23); scope is reviewed at milestone
+  boundaries instead. Spikes do carry kill rules since D227 (owner, 2026-11-22).
 
 ## Direction
 

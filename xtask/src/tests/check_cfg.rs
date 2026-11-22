@@ -21,6 +21,7 @@ fn the_runs_are_pinned_by_name_and_arguments() {
             false,
             "-p gust-compute --lib --features spirv-route",
         ),
+        ("gust-algo: no features", false, "-p gust-algo --lib"),
         (
             "gust-compute-wgpu: no features",
             false,
@@ -102,7 +103,7 @@ fn a_missing_wasm_target_is_skipped_and_not_counted_as_a_pass() {
     }
     let line = summary(&outcomes);
     assert!(
-        line.starts_with("check-cfg: 6 builds linted, 2 SKIPPED (not passed): "),
+        line.starts_with("check-cfg: 7 builds linted, 2 SKIPPED (not passed): "),
         "{line}"
     );
     assert!(
@@ -123,7 +124,7 @@ fn a_run_with_nothing_skipped_says_so() {
             .iter()
             .all(|(_, outcome)| *outcome == Outcome::Passed)
     );
-    assert_eq!(summary(&outcomes), "check-cfg passed: 8 of 8 builds linted");
+    assert_eq!(summary(&outcomes), "check-cfg passed: 9 of 9 builds linted");
 }
 
 #[test]
@@ -190,5 +191,5 @@ fn the_first_failure_stops_the_run_and_names_the_combination() {
         error,
         "check-cfg: gust-compute-wgpu: slang-runtime failed: cargo clippy failed (exit 101)"
     );
-    assert_eq!(ran, names()[..4], "nothing runs after the failure");
+    assert_eq!(ran, names()[..5], "nothing runs after the failure");
 }

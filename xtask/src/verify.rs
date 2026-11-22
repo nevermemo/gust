@@ -8,6 +8,7 @@ use std::{
 
 use crate::{
     arch::check_arch,
+    check_cfg::check_cfg_report,
     checks::{GOLDEN_SPIRV_SETS, check_dual, tests_not_ok},
     difftest::check_difftest_report,
     docs::docs_check,
@@ -189,15 +190,54 @@ pub(crate) fn verify_with(mode: VerifyMode, record: bool, skip_web: bool) -> Res
         write_validation(&root, &run, result.as_ref().err(), &checks, &artifacts)?;
     }
     result?;
-    if skipped.is_empty() {
-        println!("GUST verification passed.");
-    } else {
-        println!(
-            "GUST verification passed, with {} skipped on request: this is not the full release record.",
-            skipped.join(", ")
-        );
-    }
+    println!("{}", closing_line(&skipped));
     Ok(())
+}
+
+/// The start of the name of each wasm32 build that `check-cfg` skipped for want of the standard library (Fast mode).
+pub(crate) const WASM_SKIP_PREFIX: &str = "check-cfg skipped: ";
+
+/// The last line of a passing run. Checks left out on request (`--skip-web`) and wasm32 builds skipped for want of the
+/// target are named apart: the first make the run "not the full release record", the second ask for `--require-wasm`.
+pub(crate) fn closing_line(skipped: &[String]) -> String {
+    let (wasm, requested): (Vec<&String>, Vec<&String>) = skipped
+        .iter()
+        .partition(|name| name.starts_with(WASM_SKIP_PREFIX));
+    let mut line = String::from("GUST verification passed");
+    if !requested.is_empty() {
+        let names: Vec<&str> = requested.iter().map(|name| name.as_str()).collect();
+        line.push_str(&format!(
+            ", with {} skipped on request: this is not the full release record",
+            names.join(", ")
+        ));
+    }
+    if !wasm.is_empty() {
+        line.push_str(&format!(
+            ", {} wasm32 builds skipped (the target is not installed; install it, pass --require-wasm or run check-full)",
+            wasm.len()
+        ));
+    }
+    line.push('.');
+    line
+}
+
+/// Run `check-cfg` in process and record it; its skipped wasm32 builds join `skipped`.
+fn run_check_cfg(
+    root: &Path,
+    require_wasm: bool,
+    checks: &mut Vec<CheckRecord>,
+    skipped: &mut Vec<String>,
+) -> Result<(), String> {
+    let outcome = check_cfg_report(root, require_wasm).map(|report| {
+        skipped.extend(
+            report
+                .skipped
+                .iter()
+                .map(|name| format!("{WASM_SKIP_PREFIX}{name}")),
+        );
+        format!("{}\n", report.line)
+    });
+    run_integration(checks, "check-cfg", outcome)
 }
 
 /// The name `--skip-web` records for the browser entry of the gallery's GPU part (beside `check-web`).
@@ -283,6 +323,15 @@ fn verify_inner(
                 .stderr
                 .push_str(&format!("test-count guard: {error}\n"));
             return Err(error);
+        }
+        // The runtime crates per feature set and for wasm32 (m13.sfix2): no workspace-wide build compiles them, so a
+        // gated unused import or a broken cfg showed only in CI. Fast and Full only (Smoke stays small), right after the
+        // seconds-long format check. Full requires the wasm32 standard library as CI does; Fast skips the wasm32 runs
+        // when it is missing, and the closing line says so ([`closing_line`]).
+        if args.first().is_some_and(|name| name == "fmt")
+            && matches!(mode, VerifyMode::Fast | VerifyMode::Full)
+        {
+            run_check_cfg(root, mode == VerifyMode::Full, checks, skipped)?;
         }
     }
     if matches!(mode, VerifyMode::Examples | VerifyMode::Full) {

@@ -21,6 +21,11 @@
 //! The *set* of elements in each cell is exact. Their *order* inside a cell is unspecified on the GPU (the order in
 //! which the atomic adds happen), so [`Snapshot::grouped`] sorts each cell's slice before anything is compared. A cell
 //! index at or past the number of cells is the caller's error: the kernels do not check it.
+//!
+//! The bins' own buffers (the counts, the cursors, the starts and the order) are made once, by [`Bins::new`], and every
+//! rebuild overwrites all of the counts, the cursors and the starts (and the first `n` slots of the order). The scan
+//! takes its temporaries (one per level of totals) from the device pool: the first rebuild may miss the pool and
+//! allocate them, and from the second rebuild on they are reused.
 
 #[cfg(any(test, gust_dual))]
 use gust::cpu::{CpuBuffer, CpuDevice};
@@ -77,6 +82,14 @@ mod binning {
 
 type Error = Box<dyn std::error::Error>;
 
+/// The check of the number of cells, shared by the device bins and the twin: at least one cell.
+fn check_cells(cells: u32) -> Result<(), Error> {
+    if cells == 0 {
+        return Err("the bins have no cells (0 cells)".into());
+    }
+    Ok(())
+}
+
 /// The check of one rebuild, shared by the device bins and the twin: at most `capacity` elements.
 fn check_elements(elements: usize, capacity: usize) -> Result<(), Error> {
     if elements > capacity {
@@ -97,6 +110,7 @@ pub struct Bins {
 impl Bins {
     /// Bins for `cells` cells and up to `capacity` elements, with every buffer allocated.
     pub fn new(handle: &DeviceHandle, cells: u32, capacity: u32) -> Result<Self, Error> {
+        check_cells(cells)?;
         Ok(Self {
             handle: DeviceHandle::clone(handle),
             counts: GpuVec::zeroed_on(handle, cells)?,
@@ -196,16 +210,17 @@ pub struct TwinBins {
 #[cfg(any(test, gust_dual))]
 impl TwinBins {
     /// Bins for `cells` cells and up to `capacity` elements.
-    pub fn new(cells: u32, capacity: u32) -> Self {
+    pub fn new(cells: u32, capacity: u32) -> Result<Self, Error> {
+        check_cells(cells)?;
         let device = CpuDevice::new();
         let zeros = vec![0u32; cells as usize];
-        Self {
+        Ok(Self {
             counts: device.buffer(&zeros),
             starts: device.buffer(&zeros),
             cursor: device.buffer(&zeros),
             order: device.buffer(&vec![0u32; capacity as usize]),
             device,
-        }
+        })
     }
 
     /// The per-cell counts, valid after a rebuild.

@@ -13,7 +13,7 @@
 //!      `heading + 1`);
 //!    - draws `r = hash(hash(seed, step), walker)`. With probability `prob / 2^16` (the low 16 bits of `r` below
 //!      `prob`) the choice is replaced by `(r >> 16) % 3`, as turn 0, 1 or 2 for `heading - 1`, `heading` or
-//!      `heading + 1`;
+//!      `heading + 1` (the modulo is slightly biased: turn 0 has probability 21846/65536, the others 21845/65536);
 //!    - **crowding rule:** if its current cell holds more than `crowd` walkers (the count of step 1), the choice is
 //!      replaced by that same turn `(r >> 16) % 3` regardless of `prob`. It is the *same draw* `r` as the random
 //!      turn, not a second one, so a walker that is both crowded and drawn for a random turn takes one turn;
@@ -26,8 +26,8 @@
 //! 4. `clear_deposit`, one invocation per cell: the deposit to zero. It is its own dispatch because `spread` reads the
 //!    deposit of the neighbours, so no invocation of `spread` may clear it.
 //!
-//! The host then swaps the two field buffers. The walkers read only the field and the bins of the previous step and
-//! the deposits are integer sums, which commute, so the order of the walkers never matters.
+//! The host then swaps the two field buffers. The walkers read only the field of the previous step and the bins
+//! rebuilt in phase 1 of the same step (from the positions after the previous step), and the deposits are integer sums, which commute, so the order of the walkers never matters.
 //!
 //! One `Uniform<Params>` is created once and rewritten before every step.
 //!
@@ -667,7 +667,7 @@ macro_rules! transport_program {
             /// The same steps on the CPU twin (the kernels' own Rust bodies).
             #[cfg(any(test, gust_dual))]
             pub fn run_twin(case: &Case) -> Result<Vec<State>, Box<dyn std::error::Error>> {
-                let mut bins = TwinBins::new(k::CELLS, case.walkers as u32);
+                let mut bins = TwinBins::new(k::CELLS, case.walkers as u32)?;
                 let start = make_start(SIDE, case);
                 let mut field = bins.device().buffer(&start.field);
                 let mut spread = bins.device().buffer(&vec![0u32; SIDE * SIDE]);
@@ -783,14 +783,16 @@ mod tests {
                         case.name
                     );
                 }
-                // The rule fires exactly when some walker is in a cell above the crowd: the run differs from the
-                // run without the rule, and it does not when the crowd is above the walker count.
+                // The rule fires when some walker is in a cell above the crowd. The inputs are chosen so that this
+                // happens exactly when `crowd < walkers` (a property of these inputs, asserted below); no count can
+                // exceed the walker count, so at `crowd == walkers` the rule never fires. When it fires the run
+                // differs from the run without the rule, and when it does not the two runs are equal.
                 let fires = trace[..STEPS]
                     .iter()
                     .any(|s| s.counts.iter().any(|&c| c > case.crowd));
                 assert_eq!(
                     fires,
-                    case.crowd as usize <= case.walkers,
+                    (case.crowd as usize) < case.walkers,
                     "{}: the rule fires",
                     case.name
                 );
@@ -809,9 +811,11 @@ mod tests {
                         case.name
                     );
                 }
-                // Contention is exercised: with every walker in one cell and heading, the crowded walkers split over
-                // three headings, so one deposit cell takes about a third of `amount * walkers`; after the spread
-                // lost part of it, at least an eighth.
+                // Contention is exercised, and the bound is guaranteed. With every walker in one cell and heading
+                // (A = amount, W = walkers, all crowded), the walkers take one of three headings, so by pigeonhole
+                // some deposit cell gets at least A*W/3. The spread keeps `g - 4*(g >> 3) >= g/2` of a cell's own
+                // `g`, so after step 1 that cell holds at least A*W/6, which is more than A*W/8. A start spread out
+                // over the grid deposits far less per cell and stays far below.
                 if matches!(case.start, Start::OneCellOneHeading) && case.prob == 0 {
                     let largest = u64::from(*trace[1].field.iter().max().unwrap());
                     assert!(

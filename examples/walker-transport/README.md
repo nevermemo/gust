@@ -28,5 +28,12 @@ written every step.
   walker crowded (`crowd = 0`), and a crowd above the walker count, which must equal a host run without the rule. A
   failure names the first differing walker, field cell, bin count or bin slot.
 
-Run with `cargo run --release -p walker-transport`; the CPU tests run with `cargo test -p walker-transport`, and the GPU
-tests with `cargo test -p walker-transport -- --include-ignored --nocapture`.
+Run with
+
+```text
+GUST_PROFILE=dev cargo run --release -p walker-transport
+```
+
+(`GUST_PROFILE=dev` is needed because a plain release build is strict and refuses run-time Slang, which this crate
+turns on; see "Build profiles" in the top-level README). The CPU tests run with `cargo test -p walker-transport`, and
+the GPU tests with `cargo test -p walker-transport -- --include-ignored --nocapture`.

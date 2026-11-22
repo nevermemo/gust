@@ -472,3 +472,23 @@ workgroups and is rejected). Three f32 streams of the last size are 192 MiB, bey
 - W4's histogram accumulates across dispatches (a batch of passes keeps counting); the harness counts the passes since
   the bins were cleared and divides the counts by that number, and a count that is not a multiple of it fails the check.
   The bytes per element of W4 (4) count the key stream only, so its GB/s is the compulsory traffic, not the atomics'.
+
+## Record: the walker step of a game prototype test (m13.trail2rec, D4)
+
+A local spike (its code is not in this repository) ran a walker step for a game prototype test: walkers on a
+1024 x 1024 grid sense one or two signal fields, turn, move, deposit into a field, and the fields diffuse and decay,
+one batch per step, deterministic (GPU equal to the CPU twin and to a host reference at a small size; two GPU runs
+bit-equal at 2^18 walkers). Wall clock per step after 60 warm-up steps, 600 counted steps, in ms (median / p95):
+
+| Signals | Walkers | Radeon 890M | RTX 5090 |
+| --- | --- | --- | --- |
+| 2 | 2^18 | 2.85 / 3.24 | not run |
+| 2 | 2^19 | 4.90 / 5.53 | not run |
+| 2 | 2^20 | 8.06 / 9.00 | 0.39 / 0.66 |
+| 2 | 2^21 | 11.99 / 17.47 | 0.49 / 0.68 |
+| 1 | 2^20 | 1.67 / 4.13 | 0.36 / 0.53 |
+
+The pre-registered rule (two signals at 2^20 on the Radeon 890M: median at most 4.0 ms, p95 at most 8.0 ms) failed;
+2^18 fits. The rule is not moved after the miss, and the movement kernel is not tuned toward one adapter. The scale
+knobs are the walker count, the number of signals and the grid size; on the 890M the two-signal sense-and-move kernel
+takes about two thirds of the kernel time at 2^20. Shared machine, not publishable.

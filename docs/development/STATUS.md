@@ -917,6 +917,10 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       `rust-lld`; the spike measured the incremental macro-edit and runtime-edit gates 25-31 % faster. The variant
       with full debug info for workspace crates saved 19.8 %, under the pre-registered 20 %, so the fallback was
       taken. Release, bench, Linux and wasm32 builds are unchanged. Coordinator review (config only).
+    - m13.trail2rec (D4): `bench/README.md` records the walker step of a game prototype test (a local spike, code
+      not in the repository): two signals at 2^20 walkers on the Radeon 890M ran 8.06 / 9.00 ms (median / p95)
+      against the pre-registered 4.0 / 8.0 ms, so the rule failed; 2^18 fits (2.85 / 3.24 ms); the RTX 5090 ran
+      0.39 / 0.66 ms. No threshold reset, no tuning toward one adapter.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

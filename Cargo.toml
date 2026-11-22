@@ -27,6 +27,7 @@ members = [
     "examples/walker-steer",
     "examples/walker-transport",
     "examples/walker-life",
+    "examples/event-drain",
     "examples/web-vector-add",
     "xtask",
 ]

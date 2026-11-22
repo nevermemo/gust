@@ -56,7 +56,7 @@ fn the_expected_list_is_twenty_one_sorted_unique_spirv_names() {
     assert!(EXPECTED_SPIRV.iter().all(|name| name.contains("__")));
 }
 
-/// The shape bench, hash-rng, polar-transform, buffer-handoff, mc-histogram, field-relax, cell-bins, walker-steer, walker-transport and walker-life run in `verify`'s example steps but export nothing: `export-artifacts`
+/// The shape bench, hash-rng, polar-transform, buffer-handoff, mc-histogram, field-relax, cell-bins, walker-steer, walker-transport, walker-life and event-drain run in `verify`'s example steps but export nothing: `export-artifacts`
 /// must not spend a GPU smoke on them, and no kernel of them may be expected among the exported SPIR-V.
 #[test]
 fn export_artifacts_skips_the_examples_that_export_nothing() {
@@ -73,7 +73,8 @@ fn export_artifacts_skips_the_examples_that_export_nothing() {
             "cell-bins",
             "walker-steer",
             "walker-transport",
-            "walker-life"
+            "walker-life",
+            "event-drain"
         ]
     );
     for example in NO_EXPORT_EXAMPLES {

@@ -813,6 +813,9 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       The remaining forms stay GUST-E0811, each with its own message and test. A GPU and CPU twin test shows
       one branch per element; GPU_SUITE_PIN 571 over 57, confirmed by the full Gpu suite on the merged tree.
       Opus review: two must-fix (the pin; inference through operators), both fixed with the should-fixes.
+    - m11.events (`6aa2437`, owner proxy round 11; kept by the owner, D217): example event-drain, a bounded
+      GPU-to-host event queue drained late without blocking (a ring of LAG + 1 queues, one non-blocking poll per
+      frame); events checked per step as a set against the host, head and overflow exactly. Opus review fixes in.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

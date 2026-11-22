@@ -9,10 +9,10 @@
 //!   [`Address`].
 //! - **The kernel-side types.** [`Texture2D`], [`StorageTexture2D`], [`WriteTexture2D`] and [`Sampler`] are what a
 //!   `#[gpu_module]` kernel's parameters are in the Rust shadow body, as `Storage` and `StorageMut` are for buffers.
-//They are
-//!   views over host memory: the CPU twin builds them from a [`CpuTexture2d`](crate::cpu::texture::CpuTexture2d) and
-//!   runs the shadow body, so they carry the twin's semantics of `load`, `store` and `sample`, written in
-//!   [`cpu::texture`](crate::cpu::texture) (the conventions) and in `docs/SEMANTICS.md`.
+//!   They are views over host memory: the CPU twin builds them from a
+//!   [`CpuTexture2d`](crate::cpu::texture::CpuTexture2d) and runs the shadow body, so they carry the twin's semantics
+//!   of `load`, `store` and `sample`, written in [`cpu::texture`](crate::cpu::texture) (the conventions) and in
+//!   `docs/SEMANTICS.md`.
 //!
 //! | Kernel parameter | Access | Methods |
 //! | --- | --- | --- |

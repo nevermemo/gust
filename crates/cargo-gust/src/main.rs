@@ -56,9 +56,8 @@
 //!   line and the tag, and cargo does not build (`cargo metadata` runs to read the declarations). The driver also sets
 //!   `GUST_ROUTED_PROFILE` to the profile it resolved the routes for, read from the command line and `GUST_PROFILE`;
 //!   the `#[gpu_module]` expansion of a routed module fails the compilation of its crate when `gust` was built for
-//another
-//!   profile (a target from `build.target` or `CARGO_BUILD_TARGET`, or a custom profile that inherits `release`), so a
-//!   kernel is never routed for the wrong profile. A run that applies no `gust.toml` removes the variable.
+//!   another profile (a target from `build.target` or `CARGO_BUILD_TARGET`, or a custom profile that inherits
+//!   `release`), so a kernel is never routed for the wrong profile. A run that applies no `gust.toml` removes the variable.
 //! - `cargo gust doctor` shows the located Slang and where its licence notices are, the helper (refused when it was
 //!   built against another Slang than the located `slangc`), `spirv-val`, the profile a build here would get and the
 //!   install command.

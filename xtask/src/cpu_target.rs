@@ -28,9 +28,8 @@
 //!   cases, not the kernels of `app` (E-a judges those).
 //! - E-j (m8.r1, D65 to D67): the routed crate `routed` under the strict profile `native`, where an unrouted kernel needs a
 //!   precompiled artifact. With `GUST_ROUTE__routed__physics=cpu` it builds in release with no artifact, runs on
-//!   `CpuDevice`, matches its host loop (its binary also calls a CPU-routed `#[gpu_fn(route = ..)] fn` map, which
-//compiles
-//!   and runs in this non-`cpu` build) and holds none of the [`FORBIDDEN`] strings; without the variable it fails with the
+//!   `CpuDevice`, matches its host loop (its binary also calls a CPU-routed `#[gpu_fn(route = ..)] fn` map,
+//!   which compiles and runs in this non-`cpu` build) and holds none of the [`FORBIDDEN`] strings; without the variable it fails with the
 //!   one E0080 of `e-j-expected.txt`; and in one warm target directory the variable flips set, unset, set, unset, each set
 //!   state building and matching and each unset state failing like the control. Every state is the same command, `cargo
 //!   build --release -p routed --bin routed --message-format json`, so an unset state would reuse the set state's unit

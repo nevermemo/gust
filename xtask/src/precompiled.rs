@@ -51,8 +51,7 @@
 //!   same warning. Each warning is matched as a whole line.
 //! - **E7**: a change of `GUST_EXPORT_DIR`, which the macro tracks through `option_env!`, makes cargo expand the
 //!   `#[gpu_module]` module of `kernels` again (and the macro writes its records), and the same value does not. Then,
-//with
-//!   Slang, `cargo gust build` runs twice on a copy of the fixture whose artifacts were deleted first: run 1 writes them, run 2 (the run on unchanged input) writes nothing, and the output is byte-identical and the
+//!   with Slang, `cargo gust build` runs twice on a copy of the fixture whose artifacts were deleted first: run 1 writes them, run 2 (the run on unchanged input) writes nothing, and the output is byte-identical and the
 //!   tool prints no `pruned` line (R2-3, S3).
 //! - **E8**: distribution (R2-4, R4.6). `cargo package` of `gust-compute-macros`, `gust-compute`, `gust-compute-wgpu` and `kernels` must list
 //!   only allowed files; the four packages are unpacked outside the repository and a consumer with plain registry-style

@@ -2,3 +2,4 @@ code: none
 file: item-gpu-fn-on-mod/src/main.rs
 line: 5
 message: [GUST-E0702] `#[gpu_fn]` goes on a free scalar function
+message: an inline module takes `#[gpu_module]`

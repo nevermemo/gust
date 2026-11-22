@@ -7,8 +7,8 @@ structs with methods, DIFFTEST_FORMAT 8) and m9.d1b (enums and statement `match`
 value-form `match`, integer patterns and tuples, DIFFTEST_FORMAT 10) and m9.d1d (arrays, DIFFTEST_FORMAT 11) and
 m9.d1e (non-capturing closures, DIFFTEST_FORMAT 12) and m9.d2 (traits and generic helpers, DIFFTEST_FORMAT 13) and
 m11.dt2 (scalar math methods and module constants, DIFFTEST_FORMAT 14) and
-m14.rename (the emitted modules say `#[gust::gpu_module]`, DIFFTEST_FORMAT 15). The crate generates integer, boolean and `f32`
-kernels from a seed, and (since format 6) kernels that compute with the `gust::math` vectors and matrices as locals and
+m14.rename (the emitted modules say `#[gust::gpu_module]`, DIFFTEST_FORMAT 15). The crate generates integer, boolean and
+`f32` kernels from a seed, and (since format 6) kernels that compute with the `gust::math` vectors and matrices as locals and
 intermediates (buffers and results stay scalar), and (since format 8) integer kernels that call methods of module
 structs, evaluates them with an independent
 interpreter that tracks the defined domain (and, for floats, an interval of every value a conforming WGSL implementation

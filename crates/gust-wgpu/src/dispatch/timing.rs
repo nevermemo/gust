@@ -28,7 +28,8 @@ pub struct TransferTiming {
 /// Host and device measurements for one synchronous persistent submission.
 ///
 /// ```
-/// use gust::gpu_module; use gust_wgpu::{BufferBinding, BufferDispatch, GpuBufferAccess, HeadlessDevice};
+/// use gust::gpu_module;
+/// use gust_wgpu::{BufferBinding, BufferDispatch, GpuBufferAccess, HeadlessDevice};
 ///
 /// #[gpu_module]
 /// mod double {

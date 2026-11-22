@@ -392,6 +392,7 @@ fn nested_gpu_functions_are_e0716() {
         ("gpu_fn", on_fn),
         ("gust::gpu_fn", on_fn),
         ("gpu_module", on_module),
+        ("gust::gpu_module", on_module),
     ] {
         let source = format!("mod m {{ #[{attribute}] pub fn f(x: f32) -> f32 {{ x }} }}");
         let output = expansion(&source, Profile::Other).to_string();
@@ -495,6 +496,19 @@ fn gpu_module_on_a_function_is_e0702_and_names_gpu_fn() {
     // The function follows the error as written: no second diagnostic.
     assert!(output.contains("pub fn f"), "{output}");
     assert_eq!(output.matches("[GUST-E").count(), 1, "{output}");
+}
+
+#[test]
+fn gpu_module_on_a_function_returns_it_without_kernel_and_variant() {
+    // `#[kernel]` and `#[variant]` are unknown attributes outside a module: left on, they would be a second error.
+    let output = under(
+        crate::Form::Module,
+        "#[kernel] #[variant(subgroups)] pub fn f(x: f32) -> f32 { x }",
+    );
+    assert_eq!(output.matches("[GUST-E").count(), 1, "{output}");
+    assert!(!output.contains("# [kernel]"), "{output}");
+    assert!(!output.contains("variant"), "{output}");
+    assert!(output.contains("pub fn f"), "{output}");
 }
 
 #[test]

@@ -13,8 +13,8 @@ breaks existing code bumps the minor version, and the promise is described in th
   is `GUST-E0702` and the message names the attribute that fits. The generated Slang is unchanged (m14.rename,
   D237, D243).
 - Added `#[pad]` for a struct of a `#[gpu_module]` module that a uniform reaches: `#[gpu_module]` inserts the `f32`
-  padding fields `_pad0`, `_pad1`, ... of its constant-buffer layout and generates `new(<your fields>)`; a misplaced `#[pad]` is the
-  new `GUST-E0219`, and an unmarked struct keeps `GUST-E0209` (m14.pad, D239).
+  padding fields `_pad0`, `_pad1`, ... of its constant-buffer layout and generates `new(<your fields>)`; a misplaced
+  `#[pad]` is the new `GUST-E0219`, and an unmarked struct keeps `GUST-E0209` (m14.pad, D239).
 
 ## 0.2.0
 

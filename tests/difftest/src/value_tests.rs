@@ -137,6 +137,7 @@ fn methods() -> Methods {
         value: u(1),
     };
     Methods {
+        consts: Vec::new(),
         traits: Vec::new(),
         structs: vec![StructDef {
             fields: vec![Ty::U32],
@@ -661,7 +662,7 @@ fn the_emitted_text_of_the_hand_programs_has_the_value_forms() {
 
 #[test]
 fn the_value_space_is_the_last_two_programs_of_the_batch() {
-    assert_eq!(PROGRAMS_PER_SEED, 16);
+    assert_eq!(PROGRAMS_PER_SEED, 17);
     assert_eq!(VALUE_PROGRAMS_PER_SEED, 2);
     for seed in 1..=3 {
         let batch = generate_batch(seed).unwrap();

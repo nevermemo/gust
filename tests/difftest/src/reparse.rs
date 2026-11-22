@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::ast::{BinOp, COMPONENT_LETTERS, Expr, InputBuf, Lane, Stmt, Ty, UnOp};
+use crate::ast::{BinOp, COMPONENT_LETTERS, Expr, InputBuf, Lane, MathFn, Stmt, Ty, UnOp};
 use crate::emit::BUFFER_NAMES;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -101,6 +101,8 @@ struct Parser {
     pos: usize,
     vars: BTreeMap<u32, Ty>,
     inputs: Vec<Ty>,
+    /// The type of each module `const K<n>`, read from the item lines in front of the kernel.
+    consts: Vec<Ty>,
 }
 
 type Res<T> = Result<T, String>;
@@ -252,6 +254,24 @@ impl Parser {
                 .collect();
             if self.eat_punct("(") {
                 e = match (name.as_str(), letters) {
+                    (method, _) if MathFn::ALL.iter().any(|f| f.name() == method) => {
+                        let f = MathFn::ALL
+                            .into_iter()
+                            .find(|f| f.name() == method)
+                            .expect("checked");
+                        let mut args = vec![e];
+                        while self.peek() != Some(&Tok::Punct(")")) {
+                            if args.len() > 1 {
+                                self.expect_punct(",")?;
+                            }
+                            args.push(self.expr(0)?);
+                        }
+                        Expr::Math {
+                            f,
+                            ty: args[0].ty(),
+                            args,
+                        }
+                    }
                     ("dot", _) => {
                         let other = self.expr(0)?;
                         Expr::dot(e, other)
@@ -327,6 +347,13 @@ impl Parser {
                     self.constructor(ty)
                 }
                 _ => {
+                    if let Some(k) = name.strip_prefix('K').and_then(|n| n.parse::<u8>().ok()) {
+                        let ty = *self
+                            .consts
+                            .get(usize::from(k))
+                            .ok_or_else(|| format!("unknown constant {name}"))?;
+                        return Ok(Expr::Const { k, ty });
+                    }
                     if let Some(buf) = BUFFER_NAMES.iter().position(|n| *n == name) {
                         let ty = *self
                             .inputs
@@ -454,6 +481,32 @@ fn aggregate_ty(name: &str) -> Option<Ty> {
     all.into_iter().find(|ty| ty.name() == name)
 }
 
+/// The types of the module constants `const K0: u32 = ..;`, `const K1: i32 = ..;` in the tokens in front of the kernel,
+/// in the order they are declared (which must be `K0`, `K1`, ...).
+fn const_types(toks: &[Tok]) -> Res<Vec<Ty>> {
+    let mut types = Vec::new();
+    for window in toks.windows(4) {
+        if let [
+            Tok::Ident(keyword),
+            Tok::Ident(name),
+            Tok::Punct(":"),
+            Tok::Ident(ty),
+        ] = window
+            && keyword == "const"
+        {
+            if *name != format!("K{}", types.len()) {
+                return Err(format!("constant {name} is out of order"));
+            }
+            types.push(match ty.as_str() {
+                "u32" => Ty::U32,
+                "i32" => Ty::I32,
+                other => return Err(format!("constant of type {other}")),
+            });
+        }
+    }
+    Ok(types)
+}
+
 /// Parses the kernel body of an emitted module back into `(body, result)`; `inputs` supplies the buffer types.
 pub fn reparse(module_text: &str, inputs: &[InputBuf]) -> Res<(Vec<Stmt>, Expr)> {
     let toks = tokenize(module_text)?;
@@ -473,11 +526,13 @@ pub fn reparse(module_text: &str, inputs: &[InputBuf]) -> Res<(Vec<Stmt>, Expr)>
         .windows(guard.len())
         .position(|window| window == guard.as_slice())
         .ok_or("the `if i < out.len()` guard is missing")?;
+    let consts = const_types(&toks[..start])?;
     let mut parser = Parser {
         toks,
         pos: start + guard.len() - 1,
         vars: BTreeMap::new(),
         inputs: inputs.iter().map(|input| input.ty).collect(),
+        consts,
     };
     let mut body = parser.block()?;
     if parser.toks[parser.pos..]

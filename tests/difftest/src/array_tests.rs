@@ -92,6 +92,7 @@ fn digits(id: u32) -> Expr {
 fn methods() -> Methods {
     let this = Place::this(S0);
     Methods {
+        consts: Vec::new(),
         traits: Vec::new(),
         structs: vec![StructDef {
             fields: vec![Ty::U32],

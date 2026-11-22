@@ -56,6 +56,7 @@ fn seed_40_program() -> Program {
         attempt: 5_000_008,
         count: COUNT,
         methods: Methods {
+            consts: Vec::new(),
             traits: Vec::new(),
             structs: vec![StructDef {
                 fields: vec![Ty::U32, Ty::I32],
@@ -150,6 +151,7 @@ fn seed_53_program() -> Program {
         attempt: 6_000_001,
         count: COUNT,
         methods: Methods {
+            consts: Vec::new(),
             traits: Vec::new(),
             structs: Vec::new(),
             fns: Vec::new(),

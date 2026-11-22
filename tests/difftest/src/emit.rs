@@ -214,7 +214,10 @@ fn is_atom(expr: &Expr) -> bool {
         | Expr::Gid
         | Expr::Len(_)
         | Expr::Input { .. }
-        | Expr::Variant { .. } => true,
+        | Expr::Variant { .. }
+        | Expr::Const { .. } => true,
+        // A method call is a postfix (its receiver is parenthesised when it is a literal, see `emit_expr`).
+        Expr::Math { .. } => true,
         // A constructor is a call and a component, swizzle, `dot` or `transpose` a postfix: both bind tighter than any
         // operator, so they are operands as they stand.
         Expr::Make { .. }
@@ -271,6 +274,16 @@ pub fn emit_expr(m: &Methods, expr: &Expr) -> String {
             format!("{} {} {}", operand(m, l), op.symbol(), operand(m, r))
         }
         Expr::Cast { to, e } => format!("{} as {}", operand(m, e), to.name()),
+        Expr::Const { k, .. } => format!("K{k}"),
+        Expr::Math { f, args, .. } => {
+            // A literal receiver is parenthesised: `-1.5f32.abs()` would read back as the literal `-1.5f32` and a call.
+            let receiver = match &args[0] {
+                lit @ Expr::Lit(..) => format!("({})", emit_expr(m, lit)),
+                other => operand(m, other),
+            };
+            let rest: Vec<String> = args[1..].iter().map(|e| emit_expr(m, e)).collect();
+            format!("{receiver}.{}({})", f.name(), rest.join(", "))
+        }
         Expr::EnumAs { to, e } => format!("{} as {}", operand(m, e), to.name()),
         Expr::Variant { e, v } => format!("E{e}::V{v}"),
         Expr::Make { ty, rows, args } => {
@@ -715,6 +728,17 @@ fn emit_traits(m: &Methods, out: &mut String) {
 fn emit_methods(program: &Program, out: &mut String) {
     let methods = &program.methods;
     let m = methods;
+    for (k, def) in methods.consts.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "{INDENT}const K{k}: {} = {};",
+            def.ty.name(),
+            emit_expr(m, &def.init)
+        );
+    }
+    if !methods.consts.is_empty() {
+        out.push('\n');
+    }
     for (j, def) in methods.enums.iter().enumerate() {
         let _ = writeln!(out, "{INDENT}#[derive(PartialEq, Eq)]");
         if def.repr == Ty::I32 {
@@ -1215,9 +1239,9 @@ pub mod s9_a4 {
             let batch = generate_batch(seed).unwrap();
             for program in &batch.programs {
                 program.check().unwrap();
-                // The reparser reads the scalar and vector subsets; a method program is checked by the CPU twin
+                // The reparser reads the scalar, vector and math subsets; a method program is checked by the CPU twin
                 // against the interpreter instead (the independent reading of its parenthesisation).
-                if !program.methods.is_empty() || program.has_array() {
+                if (!program.methods.is_empty() && program.methods.consts.is_empty()) || program.has_array() {
                     continue;
                 }
                 let text = emit_module(program);

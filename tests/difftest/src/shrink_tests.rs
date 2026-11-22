@@ -138,10 +138,10 @@ fn a_build_failure_and_a_timeout_never_count_as_reproducing() {
 }
 
 #[test]
-fn the_target_is_a_seed_and_an_index_below_sixteen() {
+fn the_target_is_a_seed_and_an_index_below_seventeen() {
     assert_eq!(parse_target("3:11").unwrap(), (3, 11));
     assert_eq!(parse_target("0:0").unwrap(), (0, 0));
-    for bad in ["", "3", "3:", ":3", "3:16", "a:1", "1:-1", "1:2:3"] {
+    for bad in ["", "3", "3:", ":3", "3:17", "a:1", "1:-1", "1:2:3"] {
         assert!(parse_target(bad).is_err(), "{bad:?}");
     }
 }

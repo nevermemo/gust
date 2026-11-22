@@ -10,8 +10,8 @@ use crate::ast::{
 };
 use crate::emit::emit_module;
 use crate::generator::{
-    ARRAY_END, CLOSURE_PROGRAMS_PER_SEED, ENUM_ATTEMPT_BASE, ENUM_END, ENUM_PROGRAMS_PER_SEED,
-    METHOD_ATTEMPT_BASE, METHOD_END, PROGRAMS_PER_SEED, SCALAR_PROGRAMS_PER_SEED, Space,
+    ARRAY_END, CLOSURE_END, ENUM_ATTEMPT_BASE, ENUM_END, ENUM_PROGRAMS_PER_SEED,
+    METHOD_ATTEMPT_BASE, METHOD_END, PROGRAMS_PER_SEED, SCALAR_PROGRAMS_PER_SEED, Space, TRAIT_END,
     VALUE_ATTEMPT_BASE, VALUE_END, VECTOR_END, generate_batch, generate_batch_in, space_of_attempt,
 };
 use crate::interp::{Mutant, env_mutant, run, run_covered, run_mutant, static_violation};
@@ -79,6 +79,7 @@ fn enums() -> Vec<EnumDef> {
 fn methods() -> Methods {
     let this = Place::this(S0);
     Methods {
+        consts: Vec::new(),
         traits: Vec::new(),
         structs: vec![StructDef {
             fields: vec![Ty::U32],
@@ -475,10 +476,12 @@ fn the_enum_space_is_selected_by_its_attempt_numbers_and_the_batch_cut_is_two_th
                 Space::Value
             } else if k < ARRAY_END {
                 Space::Array
-            } else if k < ARRAY_END + CLOSURE_PROGRAMS_PER_SEED {
+            } else if k < CLOSURE_END {
                 Space::Closure
-            } else {
+            } else if k < TRAIT_END {
                 Space::Trait
+            } else {
+                Space::Math
             };
             assert_eq!(space, expected, "seed {seed} program {k}");
         }

@@ -2,7 +2,7 @@
 //!
 //! The harness is `difftest-run`; this command does not reimplement any of it. It runs the binary for the requested
 //! seeds, reads the `report.json` it wrote, and fails unless the report says what was asked for: the mode, the seeds,
-//! `programs_executed` equal to `16 x seeds`, no mismatch, and (on the GPU tier) an adapter. On the GPU tier it also
+//! `programs_executed` equal to `17 x seeds`, no mismatch, and (on the GPU tier) an adapter. On the GPU tier it also
 //! runs the `short_circuit` test of the harness crate with `--ignored`, the one test no other gate runs.
 //!
 //! The GPU tier ends with a second batch of the same seeds under `GUST_PROFILE=dev+subgroups` (M8, slice m8.e): the
@@ -262,7 +262,7 @@ fn route_log_problems(what: &str, log: &Path, expected: Option<&ExpectedPrograms
 }
 
 /// Programs the generator keeps per seed (`PROGRAMS_PER_SEED` of the harness crate; the report must say so).
-pub(crate) const PROGRAMS_PER_SEED: u64 = 16;
+pub(crate) const PROGRAMS_PER_SEED: u64 = 17;
 
 /// The corpus of `tests/difftest/seeds.txt`. A test requires this to be the first column of that file.
 pub(crate) const DEFAULT_SEEDS: &str = "1-8";
@@ -1130,7 +1130,7 @@ fn shapes_problems(report: &Report, options: &Options) -> Vec<String> {
 }
 
 /// Everything wrong with `report` for a run that asked for `options`; empty when the report is a pass. The count rule
-/// is the point: `programs_executed` must equal `16 x seeds`, so a harness that silently ran fewer programs fails here
+/// is the point: `programs_executed` must equal `17 x seeds`, so a harness that silently ran fewer programs fails here
 /// whatever it says about `passed`.
 pub(crate) fn report_problems(report: &Report, options: &Options) -> Vec<String> {
     let mut problems = Vec::new();

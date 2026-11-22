@@ -1,384 +1,1548 @@
 {
   "tool": "difftest-run",
-  "format": 3,
+  "format": 14,
   "mode": "gpu",
+  "profile": "dev",
   "passed": true,
   "seeds": [1, 2],
-  "programs_requested": 32,
-  "programs_executed": 32,
-  "adapter": "NVIDIA GeForce RTX 5090 | DiscreteGpu | Vulkan | NVIDIA 610.88",
+  "programs_requested": 34,
+  "programs_executed": 34,
+  "adapter": "AMD Radeon(TM) 890M Graphics | IntegratedGpu | Vulkan | AMD proprietary driver 26.11.2 (LLPC)",
+  "capabilities_in_every_result": [],
+  "capabilities_in_any_result": [],
   "per_seed": [
     {
       "seed": 1,
-      "programs": 16,
-      "attempts": 67,
-      "discarded": 51
+      "programs": 17,
+      "attempts": 80,
+      "discarded": 63
     },
     {
       "seed": 2,
-      "programs": 16,
-      "attempts": 51,
-      "discarded": 35
+      "programs": 17,
+      "attempts": 105,
+      "discarded": 88
     }
   ],
   "discards": {
-    "total": 86,
+    "total": 151,
     "by_class": {
-      "domain": 69,
-      "comparison-overlap": 2,
-      "unboundable": 9,
-      "float-construct-not-in-v1": 0,
-      "no-input-read": 6
+      "domain": 115,
+      "comparison-overlap": 1,
+      "unboundable": 5,
+      "float-construct-not-in-v1": 1,
+      "no-input-read": 3,
+      "no-aggregate": 3,
+      "no-call": 16,
+      "no-match": 4,
+      "no-value": 0,
+      "no-closure": 0,
+      "no-trait": 1,
+      "no-math": 2
     },
     "by_reason": {
-      "comparison-overlap": 2,
+      "comparison-overlap": 1,
       "division-by-zero": 4,
-      "float-domain": 21,
-      "index": 1,
-      "min-over-minus-one": 1,
-      "no-input-read": 6,
-      "overflow": 26,
-      "static": 16,
-      "unboundable": 9
+      "float-construct-not-in-v1": 1,
+      "float-domain": 2,
+      "index": 6,
+      "no-aggregate": 3,
+      "no-call": 16,
+      "no-input-read": 3,
+      "no-match": 4,
+      "no-math": 2,
+      "no-trait": 1,
+      "overflow": 57,
+      "shift-amount": 4,
+      "static": 42,
+      "unboundable": 5
+    }
+  },
+  "shapes": {
+    "requested": ["grid"],
+    "float_pixel_vs_grid": {
+      "programs_compared": 0,
+      "programs_with_difference": 0,
+      "elements_differing": 0,
+      "max_ulp": 0,
+      "first": null
+    },
+    "programs_by_shape": {
+      "grid": 34,
+      "pixel": 0
+    },
+    "grid_only": {
+      "total": 0,
+      "by_reason": {},
+      "programs": []
     }
   },
   "mismatch_count": 0,
   "mismatches": [],
   "coverage": {
-    "programs": 32,
+    "programs": 34,
     "operators": [
       {
-        "operator": "!= bool",
-        "programs_in_text": 1,
-        "programs_executing": 1,
-        "evaluations": 63
+        "operator": "!= E0",
+        "programs_in_text": 5,
+        "occurrences_in_text": 6,
+        "programs_executing": 2,
+        "evaluations": 238
       },
       {
-        "operator": "!= f32",
-        "programs_in_text": 1,
-        "programs_executing": 1,
-        "evaluations": 65
+        "operator": "!= E1",
+        "programs_in_text": 3,
+        "occurrences_in_text": 3,
+        "programs_executing": 2,
+        "evaluations": 258
+      },
+      {
+        "operator": "!= bool",
+        "programs_in_text": 2,
+        "occurrences_in_text": 3,
+        "programs_executing": 2,
+        "evaluations": 66
       },
       {
         "operator": "!= i32",
-        "programs_in_text": 5,
-        "programs_executing": 4,
-        "evaluations": 308
+        "programs_in_text": 3,
+        "occurrences_in_text": 11,
+        "programs_executing": 2,
+        "evaluations": 1799
       },
       {
         "operator": "!= u32",
         "programs_in_text": 7,
+        "occurrences_in_text": 14,
         "programs_executing": 6,
-        "evaluations": 714
+        "evaluations": 2292
       },
       {
         "operator": "!bool",
-        "programs_in_text": 1,
-        "programs_executing": 1,
-        "evaluations": 1
+        "programs_in_text": 6,
+        "occurrences_in_text": 7,
+        "programs_executing": 5,
+        "evaluations": 690
       },
       {
         "operator": "!i32",
-        "programs_in_text": 4,
-        "programs_executing": 4,
-        "evaluations": 2698
+        "programs_in_text": 7,
+        "occurrences_in_text": 9,
+        "programs_executing": 6,
+        "evaluations": 3868
       },
       {
         "operator": "!u32",
-        "programs_in_text": 4,
-        "programs_executing": 4,
-        "evaluations": 4035
+        "programs_in_text": 6,
+        "occurrences_in_text": 7,
+        "programs_executing": 2,
+        "evaluations": 1285
       },
       {
         "operator": "% i32",
-        "programs_in_text": 9,
-        "programs_executing": 8,
-        "evaluations": 2407
+        "programs_in_text": 16,
+        "occurrences_in_text": 26,
+        "programs_executing": 11,
+        "evaluations": 10624
       },
       {
         "operator": "% u32",
-        "programs_in_text": 14,
-        "programs_executing": 13,
-        "evaluations": 9464
+        "programs_in_text": 25,
+        "occurrences_in_text": 55,
+        "programs_executing": 21,
+        "evaluations": 10812
       },
       {
         "operator": "& i32",
-        "programs_in_text": 17,
-        "programs_executing": 17,
-        "evaluations": 23770
+        "programs_in_text": 29,
+        "occurrences_in_text": 141,
+        "programs_executing": 27,
+        "evaluations": 51457
       },
       {
         "operator": "& u32",
-        "programs_in_text": 22,
-        "programs_executing": 21,
-        "evaluations": 32691
+        "programs_in_text": 31,
+        "occurrences_in_text": 259,
+        "programs_executing": 31,
+        "evaluations": 142488
       },
       {
         "operator": "&& bool",
-        "programs_in_text": 8,
-        "programs_executing": 8,
-        "evaluations": 3495
+        "programs_in_text": 10,
+        "occurrences_in_text": 28,
+        "programs_executing": 7,
+        "evaluations": 7724
+      },
+      {
+        "operator": "* Mat4 Vec4",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 32
       },
       {
         "operator": "* f32",
-        "programs_in_text": 12,
-        "programs_executing": 11,
-        "evaluations": 4716
+        "programs_in_text": 7,
+        "occurrences_in_text": 12,
+        "programs_executing": 6,
+        "evaluations": 784
+      },
+      {
+        "operator": "* f32 Vec2",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 252
       },
       {
         "operator": "* i32",
-        "programs_in_text": 7,
-        "programs_executing": 6,
-        "evaluations": 11221
+        "programs_in_text": 15,
+        "occurrences_in_text": 58,
+        "programs_executing": 12,
+        "evaluations": 21088
       },
       {
         "operator": "* u32",
-        "programs_in_text": 9,
-        "programs_executing": 8,
-        "evaluations": 6488
+        "programs_in_text": 20,
+        "occurrences_in_text": 81,
+        "programs_executing": 13,
+        "evaluations": 71248
+      },
+      {
+        "operator": "+ Vec2 Vec2",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 63
+      },
+      {
+        "operator": "+ Vec4 Vec4",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 65
       },
       {
         "operator": "+ f32",
-        "programs_in_text": 16,
-        "programs_executing": 16,
-        "evaluations": 11458
+        "programs_in_text": 9,
+        "occurrences_in_text": 20,
+        "programs_executing": 9,
+        "evaluations": 6892
       },
       {
         "operator": "+ i32",
-        "programs_in_text": 8,
-        "programs_executing": 8,
-        "evaluations": 526
+        "programs_in_text": 25,
+        "occurrences_in_text": 64,
+        "programs_executing": 21,
+        "evaluations": 28238
       },
       {
         "operator": "+ u32",
-        "programs_in_text": 13,
-        "programs_executing": 13,
-        "evaluations": 6036
+        "programs_in_text": 25,
+        "occurrences_in_text": 98,
+        "programs_executing": 21,
+        "evaluations": 39294
       },
       {
         "operator": "-",
-        "programs_in_text": 5,
-        "programs_executing": 5,
-        "evaluations": 3035
+        "programs_in_text": 6,
+        "occurrences_in_text": 6,
+        "programs_executing": 2,
+        "evaluations": 4034
       },
       {
         "operator": "- f32",
-        "programs_in_text": 11,
-        "programs_executing": 10,
-        "evaluations": 4573
+        "programs_in_text": 8,
+        "occurrences_in_text": 12,
+        "programs_executing": 7,
+        "evaluations": 1307
       },
       {
         "operator": "- i32",
-        "programs_in_text": 14,
-        "programs_executing": 13,
-        "evaluations": 7929
+        "programs_in_text": 18,
+        "occurrences_in_text": 26,
+        "programs_executing": 10,
+        "evaluations": 5186
       },
       {
         "operator": "- u32",
-        "programs_in_text": 11,
-        "programs_executing": 11,
-        "evaluations": 11315
+        "programs_in_text": 24,
+        "occurrences_in_text": 58,
+        "programs_executing": 14,
+        "evaluations": 17574
+      },
+      {
+        "operator": "-Vec4",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 65
       },
       {
         "operator": "-f32",
-        "programs_in_text": 4,
-        "programs_executing": 4,
-        "evaluations": 202
+        "programs_in_text": 2,
+        "occurrences_in_text": 2,
+        "programs_executing": 1,
+        "evaluations": 108
       },
       {
-        "operator": "/ f32",
-        "programs_in_text": 8,
-        "programs_executing": 8,
-        "evaluations": 7375
-      },
-      {
-        "operator": "/ i32",
-        "programs_in_text": 8,
-        "programs_executing": 7,
-        "evaluations": 518
-      },
-      {
-        "operator": "/ u32",
-        "programs_in_text": 8,
-        "programs_executing": 7,
-        "evaluations": 1988
-      },
-      {
-        "operator": "< f32",
+        "operator": ".abs f32",
         "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 65
+      },
+      {
+        "operator": ".ceil f32",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
         "programs_executing": 0,
         "evaluations": 0
       },
       {
+        "operator": ".clamp f32",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": ".floor f32",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 1
+      },
+      {
+        "operator": ".max f32",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 65
+      },
+      {
+        "operator": ".mul_add f32",
+        "programs_in_text": 2,
+        "occurrences_in_text": 3,
+        "programs_executing": 1,
+        "evaluations": 126
+      },
+      {
+        "operator": ".rem_euclid i32",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 1
+      },
+      {
+        "operator": ".rem_euclid u32",
+        "programs_in_text": 2,
+        "occurrences_in_text": 2,
+        "programs_executing": 1,
+        "evaluations": 1
+      },
+      {
+        "operator": "/ Vec2 f32",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 252
+      },
+      {
+        "operator": "/ f32",
+        "programs_in_text": 5,
+        "occurrences_in_text": 7,
+        "programs_executing": 5,
+        "evaluations": 333
+      },
+      {
+        "operator": "/ i32",
+        "programs_in_text": 12,
+        "occurrences_in_text": 18,
+        "programs_executing": 8,
+        "evaluations": 1851
+      },
+      {
+        "operator": "/ u32",
+        "programs_in_text": 15,
+        "occurrences_in_text": 27,
+        "programs_executing": 6,
+        "evaluations": 2996
+      },
+      {
+        "operator": "< f32",
+        "programs_in_text": 3,
+        "occurrences_in_text": 4,
+        "programs_executing": 3,
+        "evaluations": 227
+      },
+      {
         "operator": "< i32",
         "programs_in_text": 1,
+        "occurrences_in_text": 1,
         "programs_executing": 1,
         "evaluations": 2649
       },
       {
         "operator": "< u32",
         "programs_in_text": 4,
+        "occurrences_in_text": 4,
         "programs_executing": 4,
-        "evaluations": 3711
+        "evaluations": 3923
       },
       {
         "operator": "<< i32",
-        "programs_in_text": 8,
-        "programs_executing": 8,
-        "evaluations": 970
+        "programs_in_text": 10,
+        "occurrences_in_text": 15,
+        "programs_executing": 7,
+        "evaluations": 639
       },
       {
         "operator": "<< u32",
-        "programs_in_text": 3,
-        "programs_executing": 3,
-        "evaluations": 1543
-      },
-      {
-        "operator": "<= f32",
-        "programs_in_text": 2,
-        "programs_executing": 2,
-        "evaluations": 151
+        "programs_in_text": 11,
+        "occurrences_in_text": 17,
+        "programs_executing": 9,
+        "evaluations": 5451
       },
       {
         "operator": "<= i32",
-        "programs_in_text": 1,
-        "programs_executing": 1,
-        "evaluations": 64
+        "programs_in_text": 5,
+        "occurrences_in_text": 5,
+        "programs_executing": 5,
+        "evaluations": 389
       },
       {
         "operator": "<= u32",
-        "programs_in_text": 4,
-        "programs_executing": 4,
-        "evaluations": 3581
-      },
-      {
-        "operator": "== f32",
         "programs_in_text": 2,
-        "programs_executing": 2,
-        "evaluations": 126
-      },
-      {
-        "operator": "== i32",
-        "programs_in_text": 2,
-        "programs_executing": 2,
-        "evaluations": 70
-      },
-      {
-        "operator": "== u32",
-        "programs_in_text": 3,
-        "programs_executing": 3,
-        "evaluations": 137
-      },
-      {
-        "operator": "> f32",
-        "programs_in_text": 2,
-        "programs_executing": 2,
-        "evaluations": 126
-      },
-      {
-        "operator": ">= f32",
-        "programs_in_text": 1,
+        "occurrences_in_text": 2,
         "programs_executing": 1,
         "evaluations": 1
       },
       {
-        "operator": ">= i32",
-        "programs_in_text": 1,
+        "operator": "== E0",
+        "programs_in_text": 9,
+        "occurrences_in_text": 11,
+        "programs_executing": 6,
+        "evaluations": 6343
+      },
+      {
+        "operator": "== E1",
+        "programs_in_text": 2,
+        "occurrences_in_text": 3,
         "programs_executing": 0,
         "evaluations": 0
       },
       {
+        "operator": "== i32",
+        "programs_in_text": 5,
+        "occurrences_in_text": 7,
+        "programs_executing": 2,
+        "evaluations": 1607
+      },
+      {
+        "operator": "== u32",
+        "programs_in_text": 4,
+        "occurrences_in_text": 4,
+        "programs_executing": 3,
+        "evaluations": 516
+      },
+      {
+        "operator": "> i32",
+        "programs_in_text": 2,
+        "occurrences_in_text": 2,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "> u32",
+        "programs_in_text": 5,
+        "occurrences_in_text": 5,
+        "programs_executing": 3,
+        "evaluations": 515
+      },
+      {
+        "operator": ">= i32",
+        "programs_in_text": 3,
+        "occurrences_in_text": 4,
+        "programs_executing": 1,
+        "evaluations": 257
+      },
+      {
+        "operator": ">= u32",
+        "programs_in_text": 3,
+        "occurrences_in_text": 5,
+        "programs_executing": 3,
+        "evaluations": 385
+      },
+      {
         "operator": ">> i32",
-        "programs_in_text": 9,
-        "programs_executing": 9,
-        "evaluations": 3055
+        "programs_in_text": 14,
+        "occurrences_in_text": 23,
+        "programs_executing": 10,
+        "evaluations": 9462
       },
       {
         "operator": ">> u32",
-        "programs_in_text": 7,
-        "programs_executing": 7,
-        "evaluations": 4101
+        "programs_in_text": 13,
+        "occurrences_in_text": 27,
+        "programs_executing": 8,
+        "evaluations": 2434
       },
       {
         "operator": "^ i32",
-        "programs_in_text": 12,
-        "programs_executing": 12,
-        "evaluations": 7439
+        "programs_in_text": 20,
+        "occurrences_in_text": 114,
+        "programs_executing": 16,
+        "evaluations": 64023
       },
       {
         "operator": "^ u32",
-        "programs_in_text": 9,
+        "programs_in_text": 22,
+        "occurrences_in_text": 200,
+        "programs_executing": 18,
+        "evaluations": 73456
+      },
+      {
+        "operator": "array argument",
+        "programs_in_text": 3,
+        "occurrences_in_text": 5,
+        "programs_executing": 3,
+        "evaluations": 364
+      },
+      {
+        "operator": "array copy",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 64
+      },
+      {
+        "operator": "array element compound set",
+        "programs_in_text": 7,
+        "occurrences_in_text": 18,
+        "programs_executing": 6,
+        "evaluations": 4926
+      },
+      {
+        "operator": "array element method call",
+        "programs_in_text": 4,
+        "occurrences_in_text": 6,
+        "programs_executing": 4,
+        "evaluations": 575
+      },
+      {
+        "operator": "array element read",
+        "programs_in_text": 8,
+        "occurrences_in_text": 89,
         "programs_executing": 8,
-        "evaluations": 7946
+        "evaluations": 24769
+      },
+      {
+        "operator": "array element set",
+        "programs_in_text": 5,
+        "occurrences_in_text": 6,
+        "programs_executing": 4,
+        "evaluations": 687
+      },
+      {
+        "operator": "array len",
+        "programs_in_text": 5,
+        "occurrences_in_text": 5,
+        "programs_executing": 3,
+        "evaluations": 449
+      },
+      {
+        "operator": "array literal",
+        "programs_in_text": 7,
+        "occurrences_in_text": 16,
+        "programs_executing": 7,
+        "evaluations": 5532
+      },
+      {
+        "operator": "array output store",
+        "programs_in_text": 4,
+        "occurrences_in_text": 4,
+        "programs_executing": 4,
+        "evaluations": 512
+      },
+      {
+        "operator": "array repeat",
+        "programs_in_text": 4,
+        "occurrences_in_text": 5,
+        "programs_executing": 4,
+        "evaluations": 963
       },
       {
         "operator": "as f32",
-        "programs_in_text": 10,
-        "programs_executing": 9,
-        "evaluations": 7532
+        "programs_in_text": 6,
+        "occurrences_in_text": 8,
+        "programs_executing": 6,
+        "evaluations": 589
       },
       {
         "operator": "as i32",
-        "programs_in_text": 10,
-        "programs_executing": 10,
-        "evaluations": 3167
+        "programs_in_text": 23,
+        "occurrences_in_text": 84,
+        "programs_executing": 19,
+        "evaluations": 32182
       },
       {
         "operator": "as u32",
-        "programs_in_text": 14,
-        "programs_executing": 14,
-        "evaluations": 11570
+        "programs_in_text": 17,
+        "occurrences_in_text": 87,
+        "programs_executing": 15,
+        "evaluations": 33320
+      },
+      {
+        "operator": "call &mut self",
+        "programs_in_text": 21,
+        "occurrences_in_text": 92,
+        "programs_executing": 19,
+        "evaluations": 36788
+      },
+      {
+        "operator": "call &self",
+        "programs_in_text": 7,
+        "occurrences_in_text": 14,
+        "programs_executing": 6,
+        "evaluations": 25467
+      },
+      {
+        "operator": "call assoc",
+        "programs_in_text": 7,
+        "occurrences_in_text": 21,
+        "programs_executing": 6,
+        "evaluations": 11169
+      },
+      {
+        "operator": "call helper",
+        "programs_in_text": 9,
+        "occurrences_in_text": 45,
+        "programs_executing": 9,
+        "evaluations": 15019
+      },
+      {
+        "operator": "call self",
+        "programs_in_text": 7,
+        "occurrences_in_text": 30,
+        "programs_executing": 7,
+        "evaluations": 8600
+      },
+      {
+        "operator": "closure body calls a helper",
+        "programs_in_text": 2,
+        "occurrences_in_text": 2,
+        "programs_executing": 1,
+        "evaluations": 238
+      },
+      {
+        "operator": "closure body calls a method",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 238
+      },
+      {
+        "operator": "closure bound in a helper",
+        "programs_in_text": 4,
+        "occurrences_in_text": 11,
+        "programs_executing": 3,
+        "evaluations": 10040
+      },
+      {
+        "operator": "closure bound in a method",
+        "programs_in_text": 4,
+        "occurrences_in_text": 6,
+        "programs_executing": 3,
+        "evaluations": 13559
+      },
+      {
+        "operator": "closure bound in the kernel",
+        "programs_in_text": 4,
+        "occurrences_in_text": 13,
+        "programs_executing": 4,
+        "evaluations": 13319
+      },
+      {
+        "operator": "closure call",
+        "programs_in_text": 4,
+        "occurrences_in_text": 31,
+        "programs_executing": 4,
+        "evaluations": 34619
+      },
+      {
+        "operator": "closure let",
+        "programs_in_text": 4,
+        "occurrences_in_text": 30,
+        "programs_executing": 4,
+        "evaluations": 36918
+      },
+      {
+        "operator": "closure method call on a struct parameter",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "closure returns an array",
+        "programs_in_text": 2,
+        "occurrences_in_text": 2,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "closure takes a mut array",
+        "programs_in_text": 3,
+        "occurrences_in_text": 5,
+        "programs_executing": 1,
+        "evaluations": 514
+      },
+      {
+        "operator": "closure takes a mut struct",
+        "programs_in_text": 4,
+        "occurrences_in_text": 8,
+        "programs_executing": 3,
+        "evaluations": 5318
+      },
+      {
+        "operator": "comp IVec4",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 520
+      },
+      {
+        "operator": "comp UVec4",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 504
+      },
+      {
+        "operator": "comp Vec2",
+        "programs_in_text": 2,
+        "occurrences_in_text": 3,
+        "programs_executing": 2,
+        "evaluations": 191
+      },
+      {
+        "operator": "const i32",
+        "programs_in_text": 2,
+        "occurrences_in_text": 9,
+        "programs_executing": 2,
+        "evaluations": 795
+      },
+      {
+        "operator": "const u32",
+        "programs_in_text": 3,
+        "occurrences_in_text": 4,
+        "programs_executing": 3,
+        "evaluations": 194
+      },
+      {
+        "operator": "dot Vec2",
+        "programs_in_text": 3,
+        "occurrences_in_text": 3,
+        "programs_executing": 3,
+        "evaluations": 381
+      },
+      {
+        "operator": "enum as i32",
+        "programs_in_text": 7,
+        "occurrences_in_text": 24,
+        "programs_executing": 7,
+        "evaluations": 23293
+      },
+      {
+        "operator": "enum as u32",
+        "programs_in_text": 11,
+        "occurrences_in_text": 36,
+        "programs_executing": 8,
+        "evaluations": 3841
       },
       {
         "operator": "for",
+        "programs_in_text": 19,
+        "occurrences_in_text": 29,
+        "programs_executing": 19,
+        "evaluations": 6134
+      },
+      {
+        "operator": "from_cols Mat2",
+        "programs_in_text": 2,
+        "occurrences_in_text": 2,
+        "programs_executing": 2,
+        "evaluations": 422
+      },
+      {
+        "operator": "from_cols Mat4",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 32
+      },
+      {
+        "operator": "from_rows Mat4",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 32
+      },
+      {
+        "operator": "generic call",
+        "programs_in_text": 4,
+        "occurrences_in_text": 13,
+        "programs_executing": 4,
+        "evaluations": 1477
+      },
+      {
+        "operator": "generic call in a generic body",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "generic call returning T",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "generic call with a two-trait bound",
+        "programs_in_text": 2,
+        "occurrences_in_text": 7,
+        "programs_executing": 2,
+        "evaluations": 517
+      },
+      {
+        "operator": "generic call with a where clause",
+        "programs_in_text": 2,
+        "occurrences_in_text": 6,
+        "programs_executing": 2,
+        "evaluations": 191
+      },
+      {
+        "operator": "generic call with two type parameters",
+        "programs_in_text": 2,
+        "occurrences_in_text": 5,
+        "programs_executing": 2,
+        "evaluations": 703
+      },
+      {
+        "operator": "generic method call",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "match",
+        "programs_in_text": 19,
+        "occurrences_in_text": 42,
+        "programs_executing": 15,
+        "evaluations": 19712
+      },
+      {
+        "operator": "match arm assigns",
+        "programs_in_text": 13,
+        "occurrences_in_text": 15,
+        "programs_executing": 7,
+        "evaluations": 1539
+      },
+      {
+        "operator": "match arm calls",
+        "programs_in_text": 9,
+        "occurrences_in_text": 13,
+        "programs_executing": 7,
+        "evaluations": 4729
+      },
+      {
+        "operator": "match arm ends in return",
+        "programs_in_text": 5,
+        "occurrences_in_text": 5,
+        "programs_executing": 3,
+        "evaluations": 1071
+      },
+      {
+        "operator": "match arm return executed",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 2,
+        "evaluations": 2696
+      },
+      {
+        "operator": "match grouped arm",
         "programs_in_text": 16,
+        "occurrences_in_text": 32,
+        "programs_executing": 11,
+        "evaluations": 18617
+      },
+      {
+        "operator": "match in a for body",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "match integer group arm",
+        "programs_in_text": 2,
+        "occurrences_in_text": 8,
+        "programs_executing": 2,
+        "evaluations": 4113
+      },
+      {
+        "operator": "match integer patterns",
+        "programs_in_text": 4,
+        "occurrences_in_text": 14,
+        "programs_executing": 4,
+        "evaluations": 5204
+      },
+      {
+        "operator": "match nested in an arm",
+        "programs_in_text": 2,
+        "occurrences_in_text": 3,
+        "programs_executing": 1,
+        "evaluations": 257
+      },
+      {
+        "operator": "match value (typed let)",
+        "programs_in_text": 6,
+        "occurrences_in_text": 28,
+        "programs_executing": 4,
+        "evaluations": 19405
+      },
+      {
+        "operator": "match value arm block with statements",
+        "programs_in_text": 4,
+        "occurrences_in_text": 15,
+        "programs_executing": 4,
+        "evaluations": 16064
+      },
+      {
+        "operator": "match value arm ends in return",
+        "programs_in_text": 2,
+        "occurrences_in_text": 4,
+        "programs_executing": 1,
+        "evaluations": 2570
+      },
+      {
+        "operator": "match value arm is a nested value match",
+        "programs_in_text": 2,
+        "occurrences_in_text": 2,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "match with _",
+        "programs_in_text": 11,
+        "occurrences_in_text": 19,
+        "programs_executing": 8,
+        "evaluations": 13320
+      },
+      {
+        "operator": "match without _ (the default rule)",
+        "programs_in_text": 15,
+        "occurrences_in_text": 23,
+        "programs_executing": 9,
+        "evaluations": 6392
+      },
+      {
+        "operator": "new Vec2",
+        "programs_in_text": 3,
+        "occurrences_in_text": 8,
+        "programs_executing": 3,
+        "evaluations": 1132
+      },
+      {
+        "operator": "new Vec4",
+        "programs_in_text": 3,
+        "occurrences_in_text": 7,
+        "programs_executing": 3,
+        "evaluations": 288
+      },
+      {
+        "operator": "return",
+        "programs_in_text": 7,
+        "occurrences_in_text": 18,
+        "programs_executing": 3,
+        "evaluations": 2699
+      },
+      {
+        "operator": "set %=",
+        "programs_in_text": 6,
+        "occurrences_in_text": 8,
+        "programs_executing": 3,
+        "evaluations": 384
+      },
+      {
+        "operator": "set &=",
+        "programs_in_text": 10,
+        "occurrences_in_text": 11,
+        "programs_executing": 4,
+        "evaluations": 769
+      },
+      {
+        "operator": "set *=",
+        "programs_in_text": 2,
+        "occurrences_in_text": 2,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "set +=",
+        "programs_in_text": 12,
+        "occurrences_in_text": 20,
+        "programs_executing": 6,
+        "evaluations": 2037
+      },
+      {
+        "operator": "set -=",
+        "programs_in_text": 3,
+        "occurrences_in_text": 4,
+        "programs_executing": 3,
+        "evaluations": 3983
+      },
+      {
+        "operator": "set /=",
+        "programs_in_text": 3,
+        "occurrences_in_text": 4,
+        "programs_executing": 2,
+        "evaluations": 189
+      },
+      {
+        "operator": "set <<=",
+        "programs_in_text": 8,
+        "occurrences_in_text": 9,
+        "programs_executing": 5,
+        "evaluations": 6027
+      },
+      {
+        "operator": "set =",
+        "programs_in_text": 20,
+        "occurrences_in_text": 58,
+        "programs_executing": 18,
+        "evaluations": 26852
+      },
+      {
+        "operator": "set >>=",
+        "programs_in_text": 8,
+        "occurrences_in_text": 11,
+        "programs_executing": 3,
+        "evaluations": 641
+      },
+      {
+        "operator": "set ^=",
+        "programs_in_text": 12,
+        "occurrences_in_text": 16,
+        "programs_executing": 9,
+        "evaluations": 13650
+      },
+      {
+        "operator": "set |=",
+        "programs_in_text": 6,
+        "occurrences_in_text": 6,
+        "programs_executing": 3,
+        "evaluations": 4548
+      },
+      {
+        "operator": "shape &mut self call right of &&/||",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 63
+      },
+      {
+        "operator": "shape &mut self through a type parameter",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape < before the last argument of a function",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape < before the last argument of a method",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape < before the last tuple element",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape array element set with a &mut self call on the array in the value",
+        "programs_in_text": 1,
+        "occurrences_in_text": 2,
+        "programs_executing": 1,
+        "evaluations": 128
+      },
+      {
+        "operator": "shape array literal of &mut self calls on one root",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 3905
+      },
+      {
+        "operator": "shape array output store with a &mut self call in the value",
+        "programs_in_text": 3,
+        "occurrences_in_text": 3,
+        "programs_executing": 3,
+        "evaluations": 449
+      },
+      {
+        "operator": "shape array reads indexed by &mut self calls on one root",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 257
+      },
+      {
+        "operator": "shape array repeat of a &mut self call",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 257
+      },
+      {
+        "operator": "shape by-value call with &mut self call on its root in its arguments",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape call through a type parameter, arguments change the enclosing method's self",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape closure arguments built from calls on one root",
+        "programs_in_text": 2,
+        "occurrences_in_text": 2,
+        "programs_executing": 2,
+        "evaluations": 385
+      },
+      {
+        "operator": "shape closure call in a compound set value on the place's root",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 3905
+      },
+      {
+        "operator": "shape closure call in an array literal beside a call on its root",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape closure call in an indexed set value on the array's root",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape closure call in the output store's value",
+        "programs_in_text": 2,
+        "occurrences_in_text": 2,
+        "programs_executing": 2,
+        "evaluations": 385
+      },
+      {
+        "operator": "shape closure called twice with a side effect in an argument",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 3905
+      },
+      {
+        "operator": "shape closure mutates its parameter, caller variable passed",
+        "programs_in_text": 3,
+        "occurrences_in_text": 4,
+        "programs_executing": 3,
+        "evaluations": 4290
+      },
+      {
+        "operator": "shape compound set of a tuple element field with a &mut self call on that element",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape destructuring of a &mut self call",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape enum ==/!= of two calls on one root",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape enum argument built from a &mut self call",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 64
+      },
+      {
+        "operator": "shape enum arguments built from calls on one root",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 64
+      },
+      {
+        "operator": "shape expr &mut self call",
+        "programs_in_text": 18,
+        "occurrences_in_text": 59,
         "programs_executing": 16,
-        "evaluations": 4408
+        "evaluations": 22033
+      },
+      {
+        "operator": "shape f().k of a &mut self call",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape generic call arguments built from calls on one root",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 257
+      },
+      {
+        "operator": "shape generic call, by-value T whose source a later argument mutates",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape match scrutinee &mut self call on a root an arm uses",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape read and &mut self call on one root",
+        "programs_in_text": 4,
+        "occurrences_in_text": 4,
+        "programs_executing": 3,
+        "evaluations": 771
+      },
+      {
+        "operator": "shape same-root set &=",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape same-root set +=",
+        "programs_in_text": 4,
+        "occurrences_in_text": 6,
+        "programs_executing": 2,
+        "evaluations": 443
+      },
+      {
+        "operator": "shape same-root set /=",
+        "programs_in_text": 1,
+        "occurrences_in_text": 2,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape same-root set <<=",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 1
+      },
+      {
+        "operator": "shape same-root set =",
+        "programs_in_text": 4,
+        "occurrences_in_text": 4,
+        "programs_executing": 2,
+        "evaluations": 191
+      },
+      {
+        "operator": "shape same-root set >>=",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape same-root set |=",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 3905
+      },
+      {
+        "operator": "shape stmt &mut self call",
+        "programs_in_text": 15,
+        "occurrences_in_text": 33,
+        "programs_executing": 11,
+        "evaluations": 14755
+      },
+      {
+        "operator": "shape trait call arguments built from calls on one root",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape trait call, by-value self whose source an argument mutates",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape tuple literal with a &mut self call and another element using its root",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "shape value match scrutinee &mut self call on a root an arm uses",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 257
+      },
+      {
+        "operator": "splat IVec4",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 520
+      },
+      {
+        "operator": "splat UVec2",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 54
+      },
+      {
+        "operator": "splat UVec4",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 504
+      },
+      {
+        "operator": "splat Vec2",
+        "programs_in_text": 3,
+        "occurrences_in_text": 5,
+        "programs_executing": 3,
+        "evaluations": 665
+      },
+      {
+        "operator": "splat Vec4",
+        "programs_in_text": 1,
+        "occurrences_in_text": 3,
+        "programs_executing": 1,
+        "evaluations": 96
+      },
+      {
+        "operator": "struct literal",
+        "programs_in_text": 22,
+        "occurrences_in_text": 122,
+        "programs_executing": 22,
+        "evaluations": 47965
+      },
+      {
+        "operator": "swizzle IVec4->4",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 520
+      },
+      {
+        "operator": "swizzle Vec4->2",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 63
+      },
+      {
+        "operator": "trait call",
+        "programs_in_text": 4,
+        "occurrences_in_text": 24,
+        "programs_executing": 4,
+        "evaluations": 3153
+      },
+      {
+        "operator": "trait call on an enum",
+        "programs_in_text": 3,
+        "occurrences_in_text": 4,
+        "programs_executing": 3,
+        "evaluations": 772
+      },
+      {
+        "operator": "trait call returning Self",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 63
+      },
+      {
+        "operator": "trait call through a type parameter",
+        "programs_in_text": 3,
+        "occurrences_in_text": 11,
+        "programs_executing": 3,
+        "evaluations": 1802
+      },
+      {
+        "operator": "trait path call",
+        "programs_in_text": 2,
+        "occurrences_in_text": 3,
+        "programs_executing": 2,
+        "evaluations": 65
+      },
+      {
+        "operator": "trait path call, qualified",
+        "programs_in_text": 3,
+        "occurrences_in_text": 3,
+        "programs_executing": 2,
+        "evaluations": 514
+      },
+      {
+        "operator": "tuple argument",
+        "programs_in_text": 1,
+        "occurrences_in_text": 12,
+        "programs_executing": 1,
+        "evaluations": 3084
+      },
+      {
+        "operator": "tuple destructuring",
+        "programs_in_text": 3,
+        "occurrences_in_text": 16,
+        "programs_executing": 3,
+        "evaluations": 25832
+      },
+      {
+        "operator": "tuple destructuring annotated",
+        "programs_in_text": 3,
+        "occurrences_in_text": 11,
+        "programs_executing": 3,
+        "evaluations": 17807
+      },
+      {
+        "operator": "tuple element compound set",
+        "programs_in_text": 0,
+        "occurrences_in_text": 0,
+        "programs_executing": 0,
+        "evaluations": 0
+      },
+      {
+        "operator": "tuple element read",
+        "programs_in_text": 2,
+        "occurrences_in_text": 6,
+        "programs_executing": 1,
+        "evaluations": 126
+      },
+      {
+        "operator": "tuple element set",
+        "programs_in_text": 1,
+        "occurrences_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 257
+      },
+      {
+        "operator": "tuple field of a call",
+        "programs_in_text": 1,
+        "occurrences_in_text": 3,
+        "programs_executing": 1,
+        "evaluations": 1028
+      },
+      {
+        "operator": "tuple literal",
+        "programs_in_text": 4,
+        "occurrences_in_text": 37,
+        "programs_executing": 4,
+        "evaluations": 35204
       },
       {
         "operator": "| i32",
-        "programs_in_text": 10,
-        "programs_executing": 10,
-        "evaluations": 599
+        "programs_in_text": 20,
+        "occurrences_in_text": 44,
+        "programs_executing": 15,
+        "evaluations": 11288
       },
       {
         "operator": "| u32",
-        "programs_in_text": 10,
-        "programs_executing": 9,
-        "evaluations": 5060
+        "programs_in_text": 24,
+        "occurrences_in_text": 60,
+        "programs_executing": 17,
+        "evaluations": 22096
       },
       {
         "operator": "|| bool",
-        "programs_in_text": 4,
-        "programs_executing": 3,
-        "evaluations": 3650
+        "programs_in_text": 10,
+        "occurrences_in_text": 15,
+        "programs_executing": 5,
+        "evaluations": 1738
       }
     ],
-    "never_executed": ["< f32", ">= i32"],
+    "never_executed": [".ceil f32", ".clamp f32", "== E1", "> i32", "closure returns an array", "match value arm is a nested value match", "set *=", "shape same-root set &=", "shape same-root set /=", "shape same-root set >>=", "shape trait call arguments built from calls on one root"],
     "if_statements": {
-      "in_text": 16,
+      "in_text": 47,
       "constant_condition": 0,
-      "evaluated": 14,
-      "then_taken": 12,
-      "else_taken": 11,
-      "both_sides": 9
+      "evaluated": 29,
+      "then_taken": 19,
+      "else_taken": 18,
+      "both_sides": 8
     },
     "logical_operators": {
-      "right_operand_evaluated": 4379,
-      "right_operand_skipped": 2766
+      "right_operand_evaluated": 4691,
+      "right_operand_skipped": 4771
     }
   },
   "timing": {
-    "generation_ms": 16.1586,
-    "interpreter_ms": 10.8476,
-    "cargo_build_s": 7.7095857,
-    "cargo_run_s": 15.9770028,
-    "twin_ms_total": 2.4663,
-    "twin_ms_max": 0.33,
-    "gpu_first_dispatch_ms_total": 12246.9695,
-    "gpu_first_dispatch_ms_mean": 382.717796875,
-    "gpu_first_dispatch_ms_max": 548.9842,
-    "gpu_warm_dispatch_ms_total": 38.4793,
-    "gpu_warm_dispatch_ms_max": 1.7132
+    "generation_ms": 887.5701000000001,
+    "interpreter_ms": 570.3488,
+    "cargo_build_s": 11.7153539,
+    "cargo_run_s": 19.9584033,
+    "twin_ms_total": 3.6665,
+    "twin_ms_max": 0.5999,
+    "gpu_first_dispatch_ms_total": 15224.244,
+    "gpu_first_dispatch_ms_mean": 447.7718823529412,
+    "gpu_first_dispatch_ms_max": 721.892,
+    "gpu_warm_dispatch_ms_total": 43.9925,
+    "gpu_warm_dispatch_ms_max": 1.8807
   }
 }

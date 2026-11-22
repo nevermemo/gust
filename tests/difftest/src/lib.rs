@@ -25,6 +25,8 @@ pub mod harness;
 pub mod interp;
 pub mod json;
 #[cfg(test)]
+mod math_tests;
+#[cfg(test)]
 mod method_tests;
 pub mod prng;
 pub mod reduce;

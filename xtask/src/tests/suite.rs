@@ -1162,7 +1162,7 @@ fn the_tiers_wire_the_difftest_batch_in() {
     let options = Options::parse_with(&owned(args), 1).unwrap();
     assert_eq!(
         (options.mode, options.expected_programs()),
-        (Mode::CpuOnly, 64)
+        (Mode::CpuOnly, 68)
     );
     assert!(!steps(options.mode).contains(&DifftestStep::ShortCircuitGpu));
 
@@ -1191,7 +1191,7 @@ fn the_tiers_wire_the_difftest_batch_in() {
     let options = Options::parse_with(&[], 1).unwrap();
     assert_eq!(
         (options.mode, options.expected_programs()),
-        (Mode::Gpu, 128)
+        (Mode::Gpu, 136)
     );
     assert!(steps(options.mode).contains(&DifftestStep::ShortCircuitGpu));
 

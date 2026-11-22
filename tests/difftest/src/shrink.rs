@@ -177,7 +177,10 @@ pub fn parse_target(text: &str) -> Result<(u64, usize), String> {
         .parse::<usize>()
         .map_err(|e| format!("index {index:?}: {e}"))?;
     if index >= crate::generator::PROGRAMS_PER_SEED {
-        return Err(format!("index {index} is not below 16"));
+        return Err(format!(
+            "index {index} is not below {}",
+            crate::generator::PROGRAMS_PER_SEED
+        ));
     }
     Ok((seed, index))
 }

@@ -30,7 +30,7 @@ fn the_default_is_the_whole_corpus_on_the_adapter() {
     assert_eq!(options.mode, Mode::Gpu);
     assert_eq!(options.report, None);
     assert!(!options.random);
-    assert_eq!(options.expected_programs(), 128);
+    assert_eq!(options.expected_programs(), 136);
 }
 
 #[test]
@@ -55,10 +55,10 @@ fn the_unit_batch_is_four_seeds_cpu_only_and_the_adapter_batch_is_eight() {
     let unit = options(&["--cpu-only", "--seeds", "1-4"]);
     assert_eq!(unit.seeds, [1, 2, 3, 4]);
     assert_eq!(unit.mode, Mode::CpuOnly);
-    assert_eq!(unit.expected_programs(), 64);
+    assert_eq!(unit.expected_programs(), 68);
     let per_pull_request = options(&["--seeds", "1-2"]);
     assert_eq!(per_pull_request.mode, Mode::Gpu);
-    assert_eq!(per_pull_request.expected_programs(), 32);
+    assert_eq!(per_pull_request.expected_programs(), 34);
 }
 
 #[test]
@@ -91,7 +91,7 @@ fn random_seeds_are_distinct_sorted_reproducible_and_clear_of_the_corpus() {
     let parsed = Options::parse_with(&owned(&["--seeds", "random:5"]), 42).unwrap();
     assert!(parsed.random);
     assert_eq!(parsed.seeds, drawn);
-    assert_eq!(parsed.expected_programs(), 80);
+    assert_eq!(parsed.expected_programs(), 85);
     // The 64 allowed seeds are 64 different numbers even when the generator is asked for all of them.
     assert_eq!(random_seeds("64", 0).unwrap().len(), 64);
     for bad in ["0", "65", "-1", "x", "", "2.5"] {
@@ -267,13 +267,13 @@ fn a_report_is_read_by_its_fields() {
     assert_eq!(report.seeds, [1, 2]);
     assert_eq!(
         (report.programs_requested, report.programs_executed),
-        (32, 32)
+        (34, 34)
     );
     assert_eq!(
         report.adapter.as_deref(),
         Some("NVIDIA GeForce RTX 5090, DiscreteGpu, Vulkan, 610.88")
     );
-    assert_eq!(report.per_seed, [(1, 16, 40, 24), (2, 16, 40, 24)]);
+    assert_eq!(report.per_seed, [(1, 17, 40, 24), (2, 17, 40, 24)]);
     assert_eq!(report.discards_total, 48);
     assert_eq!(report.discards_by_class.len(), 5);
     assert_eq!(report.mismatch_count, 0);
@@ -293,8 +293,8 @@ fn a_report_that_cannot_be_read_proves_nothing() {
         "[]".to_owned(),
         report.replace("\"difftest-run\"", "\"other\""),
         report.replace("\"programs_executed\"", "\"programs_done\""),
-        report.replace("\"programs_executed\":16", "\"programs_executed\":\"16\""),
-        report.replace("\"programs_executed\":16", "\"programs_executed\":16.5"),
+        report.replace("\"programs_executed\":17", "\"programs_executed\":\"17\""),
+        report.replace("\"programs_executed\":17", "\"programs_executed\":17.5"),
         report.replace("\"passed\":true", "\"passed\":\"yes\""),
         report.replace("\"adapter\":\"NVIDIA", "\"adapter\":7,\"x\":\"NVIDIA"),
         report.replace("\"timing\"", "\"timings\""),
@@ -325,11 +325,11 @@ fn a_report_that_matches_the_request_passes() {
         let text = judgement.summary.join("\n");
         assert!(text.contains(&format!("mode {mode}")), "{text}");
         assert!(
-            text.contains(&format!("programs_executed {}", 16 * seeds.len())),
+            text.contains(&format!("programs_executed {}", 17 * seeds.len())),
             "{text}"
         );
         assert!(
-            text.contains("seed 1: 16 programs from 40 attempts (24 discarded)"),
+            text.contains("seed 1: 17 programs from 40 attempts (24 discarded)"),
             "{text}"
         );
         assert!(text.contains("cargo run 23.0 s"), "{text}");
@@ -353,7 +353,7 @@ fn one_program_fewer_fails_and_names_the_count() {
     assert!(
         found
             .iter()
-            .any(|p| p == "programs_executed is 31, expected 16 x 2 seeds = 32"),
+            .any(|p| p == "programs_executed is 31, expected 17 x 2 seeds = 34"),
         "{found:?}"
     );
     // Even a report that claims a pass and names one short seed is caught per seed.
@@ -362,7 +362,7 @@ fn one_program_fewer_fails_and_names_the_count() {
     assert!(
         found
             .iter()
-            .any(|p| p == "seed 1: 15 programs, expected 16"),
+            .any(|p| p == "seed 1: 15 programs, expected 17"),
         "{found:?}"
     );
     assert!(
@@ -373,7 +373,7 @@ fn one_program_fewer_fails_and_names_the_count() {
     let more = report_json(
         "gpu",
         &[1, 2],
-        33,
+        35,
         PROGRAMS_PER_SEED,
         Some("lavapipe"),
         &[],
@@ -382,11 +382,11 @@ fn one_program_fewer_fails_and_names_the_count() {
     assert!(
         problems(&options, Some(0), Ok(more))
             .iter()
-            .any(|p| p.contains("programs_executed is 33, expected 16 x 2 seeds = 32"))
+            .any(|p| p.contains("programs_executed is 35, expected 17 x 2 seeds = 34"))
     );
     // The requested count is checked too: a harness that planned fewer than asked.
     let planned =
-        good("gpu", &[1, 2]).replace("\"programs_requested\":32", "\"programs_requested\":16");
+        good("gpu", &[1, 2]).replace("\"programs_requested\":34", "\"programs_requested\":16");
     assert!(
         problems(&options, Some(0), Ok(planned))
             .iter()
@@ -394,16 +394,16 @@ fn one_program_fewer_fails_and_names_the_count() {
     );
     // And the per-seed table has to add up to the executed count.
     let table = good("gpu", &[1, 2]).replace(
-        "\"programs\":16,\"attempts\":40,\"discarded\":24}]",
+        "\"programs\":17,\"attempts\":40,\"discarded\":24}]",
         "\"programs\":9,\"attempts\":40,\"discarded\":24}]",
     );
     assert!(
         problems(&options, Some(0), Ok(table))
             .iter()
-            .any(|p| p.contains("per_seed holds 25 programs but programs_executed is 32")),
+            .any(|p| p.contains("per_seed holds 26 programs but programs_executed is 34")),
     );
     // And it has to name the seeds that ran, one entry each: the counts alone add up in all of these.
-    let first = "{\"seed\":1,\"programs\":16,\"attempts\":40,\"discarded\":24}";
+    let first = "{\"seed\":1,\"programs\":17,\"attempts\":40,\"discarded\":24}";
     let second = first.replace("\"seed\":1", "\"seed\":2");
     let table = format!("\"per_seed\":[{first},{second}]");
     assert!(good("gpu", &[1, 2]).contains(&table));
@@ -433,7 +433,7 @@ fn one_mismatch_fails_and_names_the_seed() {
     let report = report_json(
         "cpu-only",
         &[1, 2, 3, 4],
-        64,
+        68,
         PROGRAMS_PER_SEED,
         None,
         &[(3, "twin-vs-interpreter")],
@@ -452,8 +452,8 @@ fn one_mismatch_fails_and_names_the_seed() {
     let report = report_json(
         "gpu",
         &[1],
-        16,
-        16,
+        17,
+        17,
         Some("a"),
         &[(1, "gpu-vs-interpreter"), (1, "gpu-vs-twin")],
         true,
@@ -514,12 +514,12 @@ fn the_report_must_be_for_the_mode_the_seeds_and_the_adapter_that_were_asked_for
         "{found:?}"
     );
     // A gpu report without an adapter, or with an empty name, is not GPU evidence.
-    let no_adapter = report_json("gpu", &[1, 2], 32, 16, None, &[], true);
+    let no_adapter = report_json("gpu", &[1, 2], 34, 17, None, &[], true);
     assert_eq!(
         problems(&gpu, Some(0), Ok(no_adapter)),
         ["a gpu report names no adapter"]
     );
-    let empty = report_json("gpu", &[1, 2], 32, 16, Some(" "), &[], true);
+    let empty = report_json("gpu", &[1, 2], 34, 17, Some(" "), &[], true);
     assert_eq!(
         problems(&gpu, Some(0), Ok(empty)),
         ["a gpu report names an empty adapter"]
@@ -655,7 +655,7 @@ fn only_full_and_one_gpu_software_step_ask_for_pixel() {
     let full = Options::parse_with(&with_full_shapes(&[]), 1).unwrap();
     assert!(full.pixel);
     assert_eq!(full.mode, Mode::Gpu);
-    assert_eq!(full.expected_programs(), 128);
+    assert_eq!(full.expected_programs(), 136);
     let named = with_full_shapes(&owned(&["--shapes", "grid"]));
     assert!(!Options::parse_with(&named, 1).unwrap().pixel);
     // The call carries the shapes to the harness, once, before the mode flag.
@@ -786,7 +786,7 @@ fn a_pixel_report_that_matches_the_request_passes_and_says_what_stayed_grid_only
     let report = shaped(
         "gpu",
         &[1, 2],
-        29,
+        31,
         &[(
             "GUST-E0726: makes the write to the output .. conditional",
             3,
@@ -801,14 +801,14 @@ fn a_pixel_report_that_matches_the_request_passes_and_says_what_stayed_grid_only
             shapes.pixel_programs,
             shapes.grid_only_total
         ),
-        (32, 29, 3)
+        (34, 31, 3)
     );
     let judgement = judge_batch(&pixel_options(&["--seeds", "1-2"]), Some(0), Ok(report));
     assert!(judgement.problems.is_empty(), "{:?}", judgement.problems);
     let text = judgement.summary.join("\n");
     assert!(
         text.contains(
-            "29 programs ran as pixel and were compared with their grid run, 3 stayed grid-only"
+            "31 programs ran as pixel and were compared with their grid run, 3 stayed grid-only"
         ),
         "{text}"
     );
@@ -842,35 +842,35 @@ fn a_pixel_request_fails_unless_the_report_proves_the_pixel_runs() {
             .any(|p| p.contains("ran shapes [grid], this run asked for [grid,pixel]"))
     );
     // Every program grid-only: nothing was compared.
-    let vacuous = found(shaped("gpu", &[1], 0, &[("GUST-E0723: r", 16)]));
+    let vacuous = found(shaped("gpu", &[1], 0, &[("GUST-E0723: r", 17)]));
     assert_eq!(vacuous.len(), 1, "{vacuous:?}");
     assert!(vacuous[0].contains("no program ran as pixel"));
     // The pixel and grid-only programs must add up to the programs of the run.
     let lost = found(shaped("gpu", &[1], 12, &[("GUST-E0723: r", 3)]));
     assert!(
         lost.iter().any(|p| p.contains(
-            "12 pixel programs and 3 grid-only programs do not add up to the 16 programs"
+            "12 pixel programs and 3 grid-only programs do not add up to the 17 programs"
         )),
         "{lost:?}"
     );
     // The reasons must add up to the grid-only count, and the grid run must cover every program.
-    let reasons = shaped("gpu", &[1], 13, &[("GUST-E0723: r", 3)])
+    let reasons = shaped("gpu", &[1], 14, &[("GUST-E0723: r", 3)])
         .replace("\"GUST-E0723: r\":3", "\"GUST-E0723: r\":2");
     assert!(
         found(reasons)
             .iter()
             .any(|p| p.contains("counts 3 programs but its reasons add up to 2"))
     );
-    let grid_count = shaped("gpu", &[1], 16, &[]).replace("\"grid\":16", "\"grid\":15");
+    let grid_count = shaped("gpu", &[1], 17, &[]).replace("\"grid\":17", "\"grid\":15");
     assert!(
         found(grid_count)
             .iter()
-            .any(|p| p.contains("programs_by_shape.grid is 15, expected 16"))
+            .any(|p| p.contains("programs_by_shape.grid is 15, expected 17"))
     );
     // The f32 observation must be there and make sense; a difference in it is no problem by itself (D128).
     let ask_report = |report: String| problems(&ask, Some(0), Ok(report));
     let missing =
-        shaped("gpu", &[1], 16, &[]).replacen("\"float_pixel_vs_grid\"", "\"unrelated\"", 1);
+        shaped("gpu", &[1], 17, &[]).replacen("\"float_pixel_vs_grid\"", "\"unrelated\"", 1);
     assert!(
         ask_report(missing)
             .iter()
@@ -878,28 +878,28 @@ fn a_pixel_request_fails_unless_the_report_proves_the_pixel_runs() {
         "an observation is required"
     );
     let too_many =
-        shaped("gpu", &[1], 16, &[]).replace("\"programs_compared\":6", "\"programs_compared\":17");
+        shaped("gpu", &[1], 17, &[]).replace("\"programs_compared\":6", "\"programs_compared\":18");
     assert!(
         ask_report(too_many)
             .iter()
             .any(|p| p.contains("float_pixel_vs_grid is inconsistent"))
     );
-    let silent = shaped("gpu", &[1], 16, &[])
+    let silent = shaped("gpu", &[1], 17, &[])
         .replace("\"elements_differing\":3", "\"elements_differing\":0");
     assert!(
         ask_report(silent)
             .iter()
             .any(|p| p.contains("float_pixel_vs_grid is inconsistent"))
     );
-    assert!(ask_report(shaped("gpu", &[1], 16, &[])).is_empty());
+    assert!(ask_report(shaped("gpu", &[1], 17, &[])).is_empty());
     // A grid-only request must not be given a report that ran pixel.
-    let extra = shaped("gpu", &[1], 16, &[]).replace("[\"grid\",\"pixel\"]", "[\"grid\"]");
+    let extra = shaped("gpu", &[1], 17, &[]).replace("[\"grid\",\"pixel\"]", "[\"grid\"]");
     let ask_grid = options(&["--seeds", "1"]);
     let found_grid = problems(&ask_grid, Some(0), Ok(extra));
     assert!(
         found_grid
             .iter()
-            .any(|p| p.contains("a grid-only run reports 16 pixel programs")),
+            .any(|p| p.contains("a grid-only run reports 17 pixel programs")),
         "{found_grid:?}"
     );
 }
@@ -907,7 +907,7 @@ fn a_pixel_request_fails_unless_the_report_proves_the_pixel_runs() {
 #[test]
 fn a_pixel_mismatch_names_its_shape_and_a_grid_one_does_not() {
     let ask = pixel_options(&["--seeds", "1"]);
-    let report = shaped("gpu", &[1], 16, &[]).replace(
+    let report = shaped("gpu", &[1], 17, &[]).replace(
         "\"mismatch_count\":0,\"mismatches\":[]",
         "\"mismatch_count\":1,\"mismatches\":[{\"program\":\"s1_a4\",\"seed\":1,\"index\":3,\"attempt\":4,\
          \"shape\":\"pixel\",\"kind\":\"pixel-vs-grid\",\"elements_differing\":2,\"first_element\":5,\
@@ -927,26 +927,26 @@ fn a_pixel_mismatch_names_its_shape_and_a_grid_one_does_not() {
 const REAL_CPU_ONLY: &str = include_str!("difftest_report_cpu_only.json");
 const REAL_GPU: &str = include_str!("difftest_report_gpu.json");
 
-/// Two reports `difftest-run` wrote (seeds 1 to 4 `--cpu-only`; seeds 1 and 2 on the RTX 5090), with the
-/// pretty-printing and the number formats of the real tool, parse into the fields this command judges and pass its
-/// rules.
+/// Two reports `difftest-run` wrote (seeds 1 to 4 `--cpu-only`; seeds 1 and 2 on the Radeon 890M, format 14), with
+/// the pretty-printing and the number formats of the real tool, parse into the fields this command judges and pass
+/// its rules.
 #[test]
 fn reports_written_by_the_real_harness_parse_and_pass() {
     let cpu = parse_report(REAL_CPU_ONLY).unwrap();
     assert_eq!((cpu.mode.as_str(), cpu.passed), ("cpu-only", true));
     assert_eq!(cpu.seeds, [1, 2, 3, 4]);
-    assert_eq!((cpu.programs_requested, cpu.programs_executed), (64, 64));
+    assert_eq!((cpu.programs_requested, cpu.programs_executed), (68, 68));
     assert_eq!(cpu.adapter, None);
     assert_eq!(
         cpu.per_seed,
         [
-            (1, 16, 67, 51),
-            (2, 16, 51, 35),
-            (3, 16, 63, 47),
-            (4, 16, 102, 86)
+            (1, 17, 80, 63),
+            (2, 17, 105, 88),
+            (3, 17, 68, 51),
+            (4, 17, 173, 156)
         ]
     );
-    assert_eq!(cpu.discards_total, 219);
+    assert_eq!(cpu.discards_total, 358);
     assert_eq!(
         cpu.discards_by_class
             .iter()
@@ -957,7 +957,14 @@ fn reports_written_by_the_real_harness_parse_and_pass() {
             "comparison-overlap",
             "unboundable",
             "float-construct-not-in-v1",
-            "no-input-read"
+            "no-input-read",
+            "no-aggregate",
+            "no-call",
+            "no-match",
+            "no-value",
+            "no-closure",
+            "no-trait",
+            "no-math"
         ]
     );
     assert_eq!(cpu.mismatch_count, 0);
@@ -971,10 +978,12 @@ fn reports_written_by_the_real_harness_parse_and_pass() {
 
     let gpu = parse_report(REAL_GPU).unwrap();
     assert_eq!((gpu.mode.as_str(), gpu.passed), ("gpu", true));
-    assert_eq!((gpu.programs_requested, gpu.programs_executed), (32, 32));
+    assert_eq!((gpu.programs_requested, gpu.programs_executed), (34, 34));
     assert_eq!(
         gpu.adapter.as_deref(),
-        Some("NVIDIA GeForce RTX 5090 | DiscreteGpu | Vulkan | NVIDIA 610.88")
+        Some(
+            "AMD Radeon(TM) 890M Graphics | IntegratedGpu | Vulkan | AMD proprietary driver 26.11.2 (LLPC)"
+        )
     );
     let found = judge_batch(
         &options(&["--seeds", "1-2"]),
@@ -988,7 +997,7 @@ fn reports_written_by_the_real_harness_parse_and_pass() {
         found
             .problems
             .iter()
-            .any(|p| p == "programs_executed is 32, expected 16 x 8 seeds = 128"),
+            .any(|p| p == "programs_executed is 34, expected 17 x 8 seeds = 136"),
         "{:?}",
         found.problems
     );
@@ -1006,8 +1015,8 @@ fn reports_written_by_the_real_harness_parse_and_pass() {
 
 const REAL_PIXEL: &str = include_str!("difftest_report_pixel.json");
 
-/// A report `difftest-run --seeds 1-8 --shapes grid,pixel` wrote on the RTX 5090 (slice mx.p1c, 2026-11-05: 128
-/// programs, every one also ran as a pixel kernel, none stayed grid-only) parses into the shape accounting and passes the
+/// A report `difftest-run --seeds 1-8 --shapes grid,pixel` wrote on the Radeon 890M (slice m11.dt2, format 14: 136
+/// programs, 104 of them ran as pixel kernels and 32 stayed grid-only) parses into the shape accounting and passes the
 /// rules of a pixel request; it fails a grid-only request (the report says pixel) and a pixel request when read as a
 /// report without it.
 #[test]
@@ -1016,7 +1025,7 @@ fn a_report_written_with_the_pixel_shape_parses_and_passes() {
     assert_eq!((report.mode.as_str(), report.passed), ("gpu", true));
     assert_eq!(
         (report.programs_requested, report.programs_executed),
-        (128, 128)
+        (136, 136)
     );
     let found = judge_batch(
         &options(&["--seeds", "1-8", "--shapes", "grid,pixel"]),

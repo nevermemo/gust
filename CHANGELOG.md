@@ -142,6 +142,8 @@ proof.
   and an array, struct or matrix value stay `GUST-E0811`.
 - Example event-drain (m11.events): a bounded GPU-to-host event queue that the host drains late, without
   blocking the frame.
+- The browser page of web-vector-add (m11.web) runs a launch past a lowered workgroup limit from the split
+  artifact, and reports the fallback as `DeviceLimit` with the per-dimension limit; `check-web` checks both.
 - `KernelDescriptor::split` (m11.g4a, D208): every GPU `grid` kernel carries a split variant, compiled only when used,
   with one hidden launch-base uniform that its entry point adds to the invocation id. It is the ground for launches
   past the per-dimension workgroup limit (used by the host since m11.g4b). The kernel's own Slang,

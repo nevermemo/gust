@@ -900,7 +900,7 @@ fn example_manifest() -> String {
         .replace("\r\n", "\n")
 }
 
-const PAGE_LABEL: &str = "nvidia blackwell | selected vector_add.add_pixel=05f35ef1abaf4118:-:0 vector_add.add=52e85c5f03f72272:-:0 double_add.map_kernel=5f5fc9afb786701a:-:0 | subgroups MissingCapability";
+const PAGE_LABEL: &str = "nvidia blackwell | selected vector_add.add_pixel=05f35ef1abaf4118:-:0 vector_add.add=52e85c5f03f72272:-:0 double_add.map_kernel=5f5fc9afb786701a:-:0 | split ran | split fallback DeviceLimit | subgroups MissingCapability";
 
 #[test]
 fn the_page_label_is_split_into_the_adapter_and_the_selected_kernels() {
@@ -919,7 +919,7 @@ fn the_page_label_is_split_into_the_adapter_and_the_selected_kernels() {
     );
     // A named variant keeps its name.
     let (_, named) = split_page_label(
-        "a b | selected m.k=0123456789abcdef:fast:1 | subgroups MissingCapability",
+        "a b | selected m.k=0123456789abcdef:fast:1 | split ran | split fallback DeviceLimit | subgroups MissingCapability",
     )
     .unwrap();
     assert_eq!((named[0].variant.as_str(), named[0].requires), ("fast", 1));
@@ -928,33 +928,52 @@ fn the_page_label_is_split_into_the_adapter_and_the_selected_kernels() {
 #[test]
 fn a_page_label_that_proves_less_is_refused() {
     for (label, needle) in [
-        ("nvidia blackwell", "expected 3"),
+        ("nvidia blackwell", "expected 5"),
         (
             "nvidia blackwell | subgroups MissingCapability",
-            "expected 3",
+            "expected 5",
+        ),
+        // The label of the page before m11.web has no split parts.
+        (
+            "nvidia blackwell | selected m.k=0123456789abcdef:-:0 | subgroups MissingCapability",
+            "expected 5",
+        ),
+        // Only one of the two split parts.
+        (
+            "nvidia blackwell | selected m.k=0123456789abcdef:-:0 | split ran | subgroups MissingCapability",
+            "expected 5",
+        ),
+        // Both split parts, but the fallback part says something else or comes first.
+        (
+            "nvidia blackwell | selected m.k=0123456789abcdef:-:0 | split ran | split fallback ran | subgroups MissingCapability",
+            "does not say `split fallback DeviceLimit`",
         ),
         (
-            "nvidia blackwell | selected m.k=0123456789abcdef:-:0 | subgroups fine",
+            "nvidia blackwell | selected m.k=0123456789abcdef:-:0 | split fallback DeviceLimit | split ran | subgroups MissingCapability",
+            "does not say `split ran`",
+        ),
+        (
+            "nvidia blackwell | selected m.k=0123456789abcdef:-:0 | split ran | split fallback DeviceLimit | subgroups fine",
             "does not say",
         ),
         (
-            "nvidia blackwell | chosen m.k=0123456789abcdef:-:0 | subgroups MissingCapability",
+            "nvidia blackwell | chosen m.k=0123456789abcdef:-:0 | split ran | split fallback DeviceLimit | subgroups MissingCapability",
             "no `selected` part",
         ),
         (
-            "nvidia blackwell | selected | subgroups MissingCapability",
+            "nvidia blackwell | selected | split ran | split fallback DeviceLimit | subgroups MissingCapability",
             "selects no kernel",
         ),
         (
-            "nvidia blackwell | selected m.k=0123456789abcdef:0 | subgroups MissingCapability",
+            "nvidia blackwell | selected m.k=0123456789abcdef:0 | split ran | split fallback DeviceLimit | subgroups MissingCapability",
             "is not `<module>.<kernel>",
         ),
         (
-            "nvidia blackwell | selected m.k=0123456789abcdef:-:many | subgroups MissingCapability",
+            "nvidia blackwell | selected m.k=0123456789abcdef:-:many | split ran | split fallback DeviceLimit | subgroups MissingCapability",
             "is not `<module>.<kernel>",
         ),
         (
-            "nvidia blackwell | selected mk=0123456789abcdef:-:0 | subgroups MissingCapability",
+            "nvidia blackwell | selected mk=0123456789abcdef:-:0 | split ran | split fallback DeviceLimit | subgroups MissingCapability",
             "is not `<module>.<kernel>",
         ),
     ] {
@@ -1040,7 +1059,7 @@ fn a_variant_key_is_judged_by_the_capabilities_the_manifest_lists_for_it() {
         {"key":"bbbbbbbbbbbbbbbb","module":"m","name":"k"}]}"#;
     let selected = |key: &str, variant: &str, requires: usize| {
         split_page_label(&format!(
-            "a b | selected m.k={key}:{variant}:{requires} | subgroups MissingCapability"
+            "a b | selected m.k={key}:{variant}:{requires} | split ran | split fallback DeviceLimit | subgroups MissingCapability"
         ))
         .unwrap()
         .1
@@ -1063,7 +1082,7 @@ fn a_variant_key_is_judged_by_the_capabilities_the_manifest_lists_for_it() {
 fn a_page_that_selects_the_split_key_of_a_kernel_is_refused() {
     let selected = |key: &str| {
         split_page_label(&format!(
-            "a b | selected m.k={key}:-:0 | subgroups MissingCapability"
+            "a b | selected m.k={key}:-:0 | split ran | split fallback DeviceLimit | subgroups MissingCapability"
         ))
         .unwrap()
         .1
@@ -1130,9 +1149,19 @@ fn a_page_with_its_own_closing_part_is_split_and_any_other_closing_part_is_refus
     assert!(
         super::split_page_label(HELLO_LABEL)
             .unwrap_err()
-            .contains("does not say `subgroups MissingCapability`")
+            .contains("expected 5")
     );
     assert!(super::split_label(HELLO_LABEL, "something else").is_err());
+    // A gallery label does not take the split parts of check-web's page either.
+    let with_split = HELLO_LABEL.replace(
+        " | map_async",
+        " | split ran | split fallback DeviceLimit | map_async",
+    );
+    assert!(
+        super::split_label(&with_split, closing)
+            .unwrap_err()
+            .contains("expected 3")
+    );
     // Two parts only (no closing part) is refused too.
     let short = "nvidia blackwell | selected add.map_kernel=193e4e282d7e14bd:-:0";
     assert!(

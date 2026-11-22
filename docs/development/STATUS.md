@@ -816,6 +816,10 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
     - m11.events (`6aa2437`, owner proxy round 11; kept by the owner, D217): example event-drain, a bounded
       GPU-to-host event queue drained late without blocking (a ring of LAG + 1 queues, one non-blocking poll per
       frame); events checked per step as a set against the host, head and overflow exactly. Opus review fixes in.
+    - m11.web (`830ec08`; Chrome run approved by the owner, D218): the browser page of
+      web-vector-add runs a launch past a lowered workgroup limit from the split artifact, and the fallback as
+      `DeviceLimit` naming the per-dimension limit; `check-web` requires both and passed on headless Chrome.
+      Opus review fixes in (the split launch's job is checked; a gallery label with split parts is refused).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

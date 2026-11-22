@@ -1118,9 +1118,12 @@ pub(crate) struct GpuSuitePin {
 ///
 /// Slice m11.psplit-a: 568 over 56 became 569 over 56. One more test in `crates/gust-wgpu/tests/split.rs` (a split
 /// launch runs the variant's own precompiled artifact and equals the unsplit launch), on an existing line.
+///
+/// Slice m12.ifx: 569 over 56 became 571 over 57. The new test file `tests/value_if.rs` holds two tests (a value
+/// `if` on the GPU and in the CPU twin, one branch per element) and adds one `test result:` line. Updated by count.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 569,
-    result_lines: 56,
+    passed: 571,
+    result_lines: 57,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

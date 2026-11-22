@@ -805,6 +805,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       lifecycle every 4th step, amortised over whole rounds), each checked against the host model. Opus review:
       no must-fix; its fixes are in. Small and full runs green on the Radeon 890M; RTX 5090 pending. Measured
       times stay outside the repository.
+    - RTX 5090 back (D215, 2026-11-22): the full Gpu suite on dev `e6322af` on the RTX 5090 counted 569 over 56
+      (the pin), difftest 128 programs with 0 mismatches, and the GPU tests of field-relax, cell-bins,
+      walker-steer, walker-transport and walker-life passed.
+    - m12.ifx (`4372a49`, owner proxy round 12, D216): `if`/`else` as the whole initializer of a `let`, for
+      scalars and non-matrix vectors, lowered to a Slang local assigned in each branch (SEMANTICS section 18).
+      The remaining forms stay GUST-E0811, each with its own message and test. A GPU and CPU twin test shows
+      one branch per element; GPU_SUITE_PIN 571 over 57, confirmed by the full Gpu suite on the merged tree.
+      Opus review: two must-fix (the pin; inference through operators), both fixed with the should-fixes.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

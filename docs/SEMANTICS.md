@@ -2038,3 +2038,45 @@ no committed test reproduces it): slangc accepted the shader (it wrote `_slang_g
 literal), wgpu ran it, and the values read back were bit-equal to the host's (`0x7f800000`, `0xff800000`, `0x7fc00000`,
 `0x7f800000`, `0x00001be0`). The subnormal survived on that adapter; another adapter may flush it, and a NaN payload is
 not promised. Prefer finite normal constants.
+
+## 18. `if`/`else` as the value of a `let` (m12.ifx)
+
+An `if .. { .. } else { .. }` is a value in one place: the whole initializer of a `let`
+(`let w: u32 = if c { 1u32 } else { 2u32 };`). An `else if` chain is accepted, and so is an `if` that is the tail of
+a branch (a nested value). Every branch is a block: its statements are ordinary kernel statements, and its last
+expression, without `;`, is the value (a branch that ends in a `return` gives none). The value is a `bool`, `i32`,
+`u32`, `f32` or a vector (`Vec2`, `Vec3`, `Vec4`, `IVec2`, `IVec4`, `UVec2`, `UVec3`, `UVec4`). The binding may be
+typed or untyped. An untyped binding takes its type from the branch tails: a suffixed integer literal, an `f32`
+literal, a `bool` literal, a comparison or `&&`/`||`, an `as` cast to a scalar, or `Vec2::new(..)`/`Vec2::splat(..)`
+and the other vector constructors. When no tail shows a type (`let w = if c { 1 } else { 2 };`, a call in each
+branch), the `let` is refused with `GUST-E0811`: annotate it. Rust checks that every branch has the same type.
+
+**Lowering.** The value form becomes `T w;` followed by the `if`/`else`, and each branch assigns `w` as its last
+step. The condition is evaluated once, then exactly one branch runs, the statements of that branch before its value,
+as in Rust. Every `else if` is an `if` inside the `else` block. When the `if` names the let's own name (the condition
+or a branch reads an outer local of that name), the branches assign a temporary `__gust_if_<n>_<k>` that `w` takes
+after the `if`, so the `if` never reads the new local. The check is by name over the tokens, so a field `.x` of
+another value counts as a mention of a local `x`; the temporary is then declared too, which changes nothing else. A
+shadow in the same Slang scope as the outer local fails in slangc as for every `let` (section 9): put the shadowing
+`let` in a block of its own. The CPU twin runs the Rust as written, so it has Rust's semantics by construction.
+
+**Refused (`GUST-E0811`).** An `if` as a value anywhere but the whole initializer of a `let`: an argument, an operand,
+the right side of an assignment, a `return` value, a struct field, or one operand of an expression that initializes a
+`let` (`let w: u32 = 1u32 + if c { 1u32 } else { 2u32 };`). An `if` as a value without an `else` (in an `else if`
+chain too) and an `if let` as a value. A value that is an array, a struct, a matrix, a tuple or an `Option`: assign
+those with `if`/`else` statements. The tail `if` of a function that returns a value is the older statement form and is
+unchanged.
+
+**Inference through operators.** An untyped `let` looks through parentheses, unary operators and binary operators in a
+branch tail. A comparison, `&&` and `||` give `bool`; a shift gives the type of its left operand; any other operator
+gives the common type when both operands show the same one, and a vector type when one operand is a vector (so
+`Vec2::new(1.0, 2.0) * 0.5f32` and `0.5f32 * Vec2::new(1.0, 2.0)` are a `Vec2`). A scalar beside an operand that shows
+nothing gives no type, because `v * 0.5f32` is a vector when `v` is one, and a matrix is never inferred: annotate the
+`let` (a matrix value is refused, as above).
+
+**Also refused.** A tuple pattern (`let (a, b) = if ..`): bind one local. A branch whose tail is a block that holds an
+`if` (`{ { if .. } }`), and an annotation spelled with a path (`gust::Vec2`, which is GUST-E0324 as everywhere): write the `if` as the tail of the branch
+itself, and the plain type name. A branch may end in `return`, `break` or `continue`, with or without the `;`; in a value
+`match` arm the same three end the arm without the `break` the `switch` would otherwise get. A same-scope shadow
+(`let x = 1u32; let x = if c { x } else { 2u32 };`) is not refused by the macro: the text declares `x` twice in one
+Slang scope, which slangc refuses (section 9, measured for every `let`; not re-measured for this form).

@@ -135,6 +135,11 @@ proof.
   keep the `Clone`, `Copy` and `GpuPod` impls a successful expansion adds (where no impl was written by hand and every
   field is a known `Copy` type), so host code that uploads one of them no longer adds a misleading E0277 "not a GUST
   GPU POD type" next to the GUST error. `GUST-E0811` now shows a typed binding (`let a: [u32; 3] = [1, 2, 3];`).
+- `if`/`else` as the whole initializer of a `let` (m12.ifx): `let w: u32 = if c { a } else if d { b } else { e };`
+  (typed, or untyped when a branch tail shows the type) lowers to a local declared before the `if` and assigned in
+  each branch, so the condition is evaluated once and exactly one branch runs. Scalar (`bool`, `i32`, `u32`, `f32`)
+  and vector values only; an `if` without `else`, an `if let`, an `if` anywhere but the whole initializer of a `let`,
+  and an array, struct or matrix value stay `GUST-E0811`.
 - `KernelDescriptor::split` (m11.g4a, D208): every GPU `grid` kernel carries a split variant, compiled only when used,
   with one hidden launch-base uniform that its entry point adds to the invocation id. It is the ground for launches
   past the per-dimension workgroup limit (used by the host since m11.g4b). The kernel's own Slang,

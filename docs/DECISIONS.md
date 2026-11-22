@@ -1,6 +1,6 @@
 # Decisions and boundaries
 
-Append-only log. Next id: **D215**. Add a row for every owner decision or durable
+Append-only log. Next id: **D217**. Add a row for every owner decision or durable
 technical decision, with its date and source; supersede an old row with a new one
 instead of editing it. D01–D18 were recorded 2026-09-07 from the owner's GUST handoff,
 earlier reflection deferral, and independent inspection. Chat research is design
@@ -215,6 +215,8 @@ input, not proof of code state.
 | D212 | Working mode for the night of 2026-11-21 (owner, chat: "You have freedom to steer the ship. Don't stop. [...] don't use 5090."): the coordinator steers the design phase alone overnight, with decisions in the owner's stead taken as before, and GPU runs use only the Radeon 890M; RTX 5090 confirmations wait until the owner lifts this. | Amends D207 until the owner lifts it. |
 | D213 | D211 covers `compact` and the `gust-algo` evidence kernel as well as `reduce` and `scan` (owner proxy, 2026-11-21, round-6 plan; for the owner to confirm or veto): they call the same `limits::check`, and a scan that splits under a compaction that refuses the same size would be incoherent. | Extends D211; m11.algolift. |
 | D214 | How D209 is built, for precompiled-only builds (owner proxy, 2026-11-21, D209 design; slice m11.psplit-a): each `grid` kernel body also gets the Slang of its split form, and that text has its own precompiled pair, keyed on it like every artifact. Additive schemas: kernel record schema 5 adds a required `split_of` (the body's key) and manifest schema 4 adds an optional `split_of` on split entries only, so a manifest without a split keeps its bytes and readers of the older schemas are unchanged; a record reader of schemas 1 to 4 refuses `split_of`. A launch past the per-dimension workgroup limit runs the split artifact after the usual identity check; with neither that artifact nor a run-time compiler it is still refused with `DeviceLimit`. A second artifact list per descriptor (A1) was rejected because it breaks the variant link checks. The browser half is a later slice. | Implements D209; amends D208's note. |
+| D215 | The RTX 5090 is back (owner, 2026-11-22, chat: "You can use 5090 now."): GPU gates may run on both adapters again; the overnight 890M-only results get RTX 5090 confirmations. | Lifts D212's RTX 5090 restriction. |
+| D216 | A value `if` in a `let` (owner proxy, 2026-11-22, round 12; slice m12.ifx): `let x = if c { a } else { b };` with else-if chains, for scalars and non-matrix vectors, lowers to a Slang local declared before the `if` and assigned in each branch; an untyped `let` takes its type from a branch tail. An `if` without `else`, `if let`, an `if` that is not the whole initializer, and array, struct, tuple or matrix values stay GUST-E0811. | Narrows the GUST-E0811 refusal; SEMANTICS section 18. |
 
 ## Notes
 

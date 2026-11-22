@@ -906,6 +906,12 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       dependency features (all 7 `build-error:` ones among them) keep their own call. A fixture missing from the
       stream fails, and the shared call's stderr is then reported once. Verdicts unchanged (215 fail, 7 build-fail,
       37 compile of 259); about 500 s to about 70 s on a busy machine. Opus review: merge after fixes; fixed.
+    - m13.exmove (m12 sanity follow-up): budget-kit moved to `bench/budget-kit` (bench workspace, history kept);
+      main.rs (2,983 lines) split into setup, measure, report, the kernel module and one module per W row, moves
+      only; masked before/after output identical on the Radeon 890M. `cargo xtask check-bench --budget-kit` runs
+      `--small` and fails on a non-zero exit, a missing row or probe line, a failed check or no `ok` row; the
+      nightly bench step lints the kit. Host wall-clock figures after the move are not comparable with earlier
+      ones (the bench workspace's release profile: codegen-units 1, thin LTO). Opus review: merge after fixes; fixed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -5,13 +5,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-publish = false
+publish.workspace = true
 
 [dependencies]
-gust.workspace = true
-gust-wgpu = { workspace = true, features = ["slang-runtime"] }
-# The reduction and the scan of the kit (W4, W5): a path dependency, because the library is not a workspace dependency;
-# the run-time compile feature is the one `gust-wgpu` already has here.
+gust = { package = "gust-compute", path = "../../crates/gust" }
+gust-wgpu = { package = "gust-compute-wgpu", path = "../../crates/gust-wgpu", features = ["slang-runtime"] }
+# The reduction and the scan of the kit (W4, W5); the run-time compile feature is the one `gust-wgpu` has here.
 gust-algo = { path = "../../crates/gust-algo", features = ["slang-runtime"] }
 
 [lints]

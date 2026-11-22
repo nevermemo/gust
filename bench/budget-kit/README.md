@@ -21,8 +21,12 @@ written with GUST's public API only.
 ## Run it
 
 ```text
-GUST_PROFILE=dev cargo run --release -p budget-kit -- --out PATH [--small]
+GUST_PROFILE=dev cargo run --release --manifest-path bench/Cargo.toml -p budget-kit -- --out PATH [--small]
 ```
+
+`budget-kit` is a member of the `bench/` workspace (its own lock, release profile and check-cfg), run from the repository
+root as above. `cargo xtask check-bench --budget-kit` runs it with `--small` and fails on a non-zero exit, a missing
+row or probe line, a failed check or a missing `0 row(s) FAILED` summary.
 
 `--out PATH` is required and receives the same text that is printed (there is no default path). `--small` runs only the
 smallest size of each workload. `GUST_PROFILE=dev` is needed because a release build without it is strict and refuses

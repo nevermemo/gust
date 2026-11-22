@@ -5,6 +5,11 @@
 //!   outside the work tree. The run checks every backend's output against the CPU reference on whatever adapter is there
 //!   (lavapipe in CI); it times nothing for publication and is never publishable. The command fails unless the harness
 //!   exits 0, the file says `"functional": true` and `"publishable": false`, no cell failed and at least one check passed.
+//! - `--budget-kit`: builds and runs `bench/budget-kit` with `--small` (a game-shaped design aid, not a benchmark: every
+//!   workload at its smallest size, each checked against the host) on whatever Vulkan adapter is there. A flag of its own
+//!   because the run needs a real GPU and takes minutes, where `--functional` also runs on lavapipe in CI. The command
+//!   fails unless the program exits 0 and its output file has every row, every probe line, no failed check and the
+//!   summary line `0 row(s) FAILED`.
 //! - `--render [--results DIR] [--check] [--docs FILE]`: renders the tables of the docs page from the aggregate files
 //!   `DIR/<adapter-slug>/<commit>-<route>.json` (each with its `.samples.json` beside it) and checks that the page's
 //!   header block is the canonical one and its thresholds block is the harness's. A file is refused unless it says
@@ -63,6 +68,8 @@ const METRICS: [(&str, &str); 4] = [
 #[derive(Debug, PartialEq)]
 struct Options {
     functional: bool,
+    quick: bool,
+    budget_kit: bool,
     render: bool,
     check: bool,
     results: Option<String>,
@@ -73,6 +80,8 @@ impl Options {
     fn parse(args: &[String]) -> Result<Self, String> {
         let mut options = Self {
             functional: false,
+            quick: false,
+            budget_kit: false,
             render: false,
             check: false,
             results: None,
@@ -83,7 +92,8 @@ impl Options {
             match arg.as_str() {
                 "--functional" => options.functional = true,
                 // The functional run is always quick; the flag is accepted so the CI line says what it does.
-                "--quick" => {}
+                "--quick" => options.quick = true,
+                "--budget-kit" => options.budget_kit = true,
                 "--render" => options.render = true,
                 "--check" => options.check = true,
                 "--results" => {
@@ -94,11 +104,19 @@ impl Options {
                 other => return Err(format!("unknown check-bench argument `{other}`")),
             }
         }
-        if options.functional == options.render {
-            return Err("check-bench needs exactly one of --functional and --render".into());
+        if usize::from(options.functional)
+            + usize::from(options.budget_kit)
+            + usize::from(options.render)
+            != 1
+        {
+            return Err(
+                "check-bench needs exactly one of --functional, --budget-kit and --render".into(),
+            );
         }
-        if options.functional
-            && (options.check || options.results.is_some() || options.docs.is_some())
+        if options.quick && !options.functional {
+            return Err("--quick belongs to --functional".into());
+        }
+        if !options.render && (options.check || options.results.is_some() || options.docs.is_some())
         {
             return Err("--check, --results and --docs belong to --render".into());
         }
@@ -111,6 +129,8 @@ pub(crate) fn check_bench(args: &[String]) -> Result<(), String> {
     let root = workspace_root()?;
     if options.functional {
         functional(&root)
+    } else if options.budget_kit {
+        budget_kit(&root)
     } else {
         render(&root, &options, &|file| git_attestation(&root, file))
     }
@@ -159,6 +179,105 @@ fn functional(root: &Path) -> Result<(), String> {
         "check-bench --functional: every correctness check passed on {adapter} (no timing is published)"
     );
     Ok(())
+}
+
+// ---- --budget-kit ----
+
+/// The table rows `budget-kit --small` prints, by the label of their first column, in the program's order.
+const BUDGET_KIT_ROWS: [&str; 13] = [
+    "W1 copy",
+    "W2 field diffusion",
+    "W3 particle step",
+    "W5 reduction (f32 sum)",
+    "W4 spatial binning (count + scan)",
+    "W4 spatial binning (count + scan + scatter)",
+    "W6 readback delay",
+    "W7 composite step",
+    "W8 full step",
+    "W8a no bins",
+    "W8b bins 256x256",
+    "W8c fused step, count and deposit",
+    "W8d lifecycle every 4th step",
+];
+/// The lines after the table that must be there: the two probe lines (a refused or a split launch both print one) and
+/// the variant text.
+const BUDGET_KIT_LINES: [&str; 3] = ["G4: probe", "G4 remedy:", "Variant text:"];
+/// The last line of a run that checked everything.
+const BUDGET_KIT_SUMMARY: &str = "0 row(s) FAILED";
+
+fn budget_kit(root: &Path) -> Result<(), String> {
+    let out_dir = std::env::temp_dir().join(format!("gust-check-bench-kit-{}", std::process::id()));
+    fs::create_dir_all(&out_dir).map_err(|error| format!("{}: {error}", out_dir.display()))?;
+    let out = out_dir.join("budget-kit.txt");
+    let status = workspace_command("cargo")
+        .args([
+            "run",
+            "--release",
+            "--locked",
+            "--manifest-path",
+            "bench/Cargo.toml",
+            "-p",
+            "budget-kit",
+            "--",
+            "--small",
+            "--out",
+        ])
+        .arg(&out)
+        .current_dir(root)
+        .status()
+        .map_err(|error| format!("could not launch cargo: {error}"))?;
+    let text = fs::read_to_string(&out).unwrap_or_default();
+    let result = budget_kit_verdict(status.success(), &exit_code(status), &text);
+    let _ = fs::remove_dir_all(&out_dir);
+    let rows = result?;
+    println!(
+        "check-bench --budget-kit: budget-kit --small exited 0 and all {rows} rows and probe lines are in its output"
+    );
+    Ok(())
+}
+
+/// The verdict of a `budget-kit --small` run: the number of rows when the program exited 0 and its output has every
+/// row of [`BUDGET_KIT_ROWS`] with a check of `ok` (or `skipped`, where the device cannot hold the buffer), every line
+/// of [`BUDGET_KIT_LINES`] without a failure, and [`BUDGET_KIT_SUMMARY`]; else the reason it is not.
+fn budget_kit_verdict(exited_zero: bool, code: &str, text: &str) -> Result<usize, String> {
+    if !exited_zero {
+        return Err(format!("budget-kit --small failed (exit code {code})"));
+    }
+    let mut oks = 0;
+    for label in BUDGET_KIT_ROWS {
+        let row = text.lines().find(|line| {
+            let mut cells = line.split('|').map(str::trim);
+            cells.next() == Some("") && cells.next() == Some(label)
+        });
+        let Some(row) = row else {
+            return Err(format!("the output has no row `{label}`"));
+        };
+        match row.split('|').nth(7).map(str::trim) {
+            Some("ok") => oks += 1,
+            Some("skipped") => {}
+            other => {
+                return Err(format!(
+                    "row `{label}`: its check is {}, not ok",
+                    other.unwrap_or("missing")
+                ));
+            }
+        }
+    }
+    for prefix in BUDGET_KIT_LINES {
+        let Some(line) = text.lines().find(|line| line.starts_with(prefix)) else {
+            return Err(format!("the output has no `{prefix}` line"));
+        };
+        if line.contains("FAILED") {
+            return Err(format!("`{prefix}` line: {line}"));
+        }
+    }
+    if !text.lines().any(|line| line == BUDGET_KIT_SUMMARY) {
+        return Err(format!("the output has no `{BUDGET_KIT_SUMMARY}` line"));
+    }
+    if oks == 0 {
+        return Err("every row was skipped: no row ran and passed its check".into());
+    }
+    Ok(BUDGET_KIT_ROWS.len())
 }
 
 /// Reads the results file of a functional run: the adapter's name when the run is what it claims, else the reason not.

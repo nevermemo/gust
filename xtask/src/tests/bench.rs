@@ -4,9 +4,10 @@ use std::{
 };
 
 use super::{
-    ATTESTATION, DOCS_PAGE, HEADER, JUDGE_SOURCE, MIRROR_DIR, MIRROR_PREFIX, Options, RESULTS_DIR,
-    block_of, check_mirrors, functional_verdict, load_results, render, render_tables,
-    replace_block, sample_limits, slugify, thresholds_block,
+    ATTESTATION, BUDGET_KIT_ROWS, BUDGET_KIT_SUMMARY, DOCS_PAGE, HEADER, JUDGE_SOURCE, MIRROR_DIR,
+    MIRROR_PREFIX, Options, RESULTS_DIR, block_of, budget_kit_verdict, check_mirrors,
+    functional_verdict, load_results, render, render_tables, replace_block, sample_limits, slugify,
+    thresholds_block,
 };
 use crate::workspace::workspace_root;
 
@@ -85,6 +86,10 @@ fn options_need_exactly_one_mode() {
             .functional
     );
     assert!(Options::parse(&args(&["--functional", "--check"])).is_err());
+    assert!(Options::parse(&args(&["--budget-kit", "--functional"])).is_err());
+    assert!(Options::parse(&args(&["--budget-kit", "--render"])).is_err());
+    assert!(Options::parse(&args(&["--budget-kit", "--check"])).is_err());
+    assert!(Options::parse(&args(&["--budget-kit"])).unwrap().budget_kit);
     let options = Options::parse(&args(&["--render", "--check", "--results", "d"])).unwrap();
     assert!(options.render && options.check);
     assert_eq!(options.results.as_deref(), Some("d"));
@@ -700,5 +705,119 @@ fn a_spirv_file_of_functional_or_unpublishable_runs_is_refused() {
         let error = load_results(&dir.join("results"), &attested).unwrap_err();
         assert!(error.contains(reason), "{reason}: {error}");
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+/// What `budget-kit --small` prints when everything passes, built from the expected rows.
+fn budget_kit_output() -> String {
+    let mut text = String::from(
+        "budget-kit (small)\n| workload | size | method | ms | GB/s | steps | check | note |\n",
+    );
+    for label in BUDGET_KIT_ROWS {
+        text.push_str(&format!(
+            "| {label} | 1 | gpu timestamps | 0.1000 | 1.0 | 1.0 | ok | n |\n"
+        ));
+    }
+    text.push_str("\nG4: probe, a linear launch succeeded and matched the host exactly\n");
+    text.push_str("G4 remedy: ok, all values exact\n");
+    text.push_str("Variant text: 17 kernels\n\n");
+    text.push_str(&format!("{BUDGET_KIT_SUMMARY}\n"));
+    text
+}
+
+#[test]
+fn a_budget_kit_run_passes_only_with_every_row_and_a_zero_exit() {
+    let good = budget_kit_output();
+    assert_eq!(
+        budget_kit_verdict(true, "0", &good),
+        Ok(BUDGET_KIT_ROWS.len())
+    );
+    // A non-zero exit fails, whatever the file says.
+    let error = budget_kit_verdict(false, "1", &good).unwrap_err();
+    assert_eq!(error, "budget-kit --small failed (exit code 1)");
+    // A missing row fails, and the message names it.
+    let missing = good.replace("| W8c fused step, count and deposit |", "| W8c other |");
+    assert_eq!(
+        budget_kit_verdict(true, "0", &missing).unwrap_err(),
+        "the output has no row `W8c fused step, count and deposit`"
+    );
+    // An empty file (the program wrote nothing) fails on the first row.
+    assert_eq!(
+        budget_kit_verdict(true, "0", "").unwrap_err(),
+        "the output has no row `W1 copy`"
+    );
+}
+
+#[test]
+fn a_budget_kit_row_or_probe_that_failed_its_check_fails_the_run() {
+    let good = budget_kit_output();
+    let failed = good.replace(
+        "| W2 field diffusion | 1 | gpu timestamps | 0.1000 | 1.0 | 1.0 | ok |",
+        "| W2 field diffusion | 1 | n/a | n/a | n/a | n/a | FAILED |",
+    );
+    assert_eq!(
+        budget_kit_verdict(true, "0", &failed).unwrap_err(),
+        "row `W2 field diffusion`: its check is FAILED, not ok"
+    );
+    let skipped = good.replace(
+        "| W1 copy | 1 | gpu timestamps | 0.1000 | 1.0 | 1.0 | ok |",
+        "| W1 copy | 1 | n/a | n/a | n/a | n/a | skipped |",
+    );
+    assert!(budget_kit_verdict(true, "0", &skipped).is_ok());
+    let probe = good.replace("G4 remedy: ok,", "G4 remedy: FAILED,");
+    assert!(
+        budget_kit_verdict(true, "0", &probe)
+            .unwrap_err()
+            .starts_with("`G4 remedy:` line")
+    );
+    let no_probe = good.replace("G4: probe", "G4 note");
+    assert_eq!(
+        budget_kit_verdict(true, "0", &no_probe).unwrap_err(),
+        "the output has no `G4: probe` line"
+    );
+    let no_summary = good.replace(BUDGET_KIT_SUMMARY, "2 row(s) FAILED");
+    assert_eq!(
+        budget_kit_verdict(true, "0", &no_summary).unwrap_err(),
+        "the output has no `0 row(s) FAILED` line"
+    );
+}
+
+#[test]
+fn budget_kit_refuses_flags_it_would_ignore() {
+    let error = Options::parse(&args(&["--budget-kit", "--quick"])).unwrap_err();
+    assert_eq!(error, "--quick belongs to --functional");
+    assert!(Options::parse(&args(&["--render", "--quick"])).is_err());
+}
+
+#[test]
+fn a_budget_kit_run_where_every_row_was_skipped_fails() {
+    let mut text = budget_kit_output();
+    for label in BUDGET_KIT_ROWS {
+        text = text.replace(
+            &format!("| {label} | 1 | gpu timestamps | 0.1000 | 1.0 | 1.0 | ok |"),
+            &format!("| {label} | 1 | n/a | n/a | n/a | n/a | skipped |"),
+        );
+    }
+    assert_eq!(
+        budget_kit_verdict(true, "0", &text).unwrap_err(),
+        "every row was skipped: no row ran and passed its check"
+    );
+}
+
+#[test]
+fn every_expected_budget_kit_row_is_a_label_in_the_program() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../bench/budget-kit/src");
+    let mut source = String::new();
+    for entry in fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            source.push_str(&fs::read_to_string(&path).unwrap());
+        }
+    }
+    for label in BUDGET_KIT_ROWS {
+        assert!(
+            source.contains(&format!("\"{label}\"")),
+            "no string literal `{label}` in bench/budget-kit/src"
+        );
     }
 }

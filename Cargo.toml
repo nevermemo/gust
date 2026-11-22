@@ -8,7 +8,6 @@ members = [
     "examples/atomic-counter",
     "examples/cell-bins",
     "examples/buffer-handoff",
-    "examples/budget-kit",
     "examples/component-pool",
     "examples/field-relax",
     "examples/hash-rng",

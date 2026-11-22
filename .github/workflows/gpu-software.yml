@@ -357,12 +357,16 @@ jobs:
         # `run --functional --quick` on whatever adapter is there and fails unless every correctness check passed. It
         # times nothing for publication. The bench's target directory is kept outside the workspace. It builds a
         # second workspace, so it is a nightly list step (the budget rule above), and it carries `!cancelled() &&`
-        # like the nightly steps after the differential test.
+        # like the nightly steps after the differential test. The root fmt and clippy do not compile `bench/budget-kit`
+        # (a member of this second workspace), so the step also checks its format and lints it; nothing in
+        # `check-bench` does that.
         if: ${{ !cancelled() && env.GPU_SOFTWARE_NIGHTLY == 'true' }}
         env:
           BENCH_TARGET: ${{ runner.temp }}/bench-target
         run: |
           CARGO_TARGET_DIR="$BENCH_TARGET" cargo --locked xtask check-bench --functional --quick
+          cargo fmt --manifest-path bench/Cargo.toml -p budget-kit -- --check
+          CARGO_TARGET_DIR="$BENCH_TARGET" GUST_PROFILE=dev cargo clippy --locked --manifest-path bench/Cargo.toml -p budget-kit -- -D warnings
       - name: Collect the evidence
         if: always()
         run: |

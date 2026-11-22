@@ -172,6 +172,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "budget-kit"
+version = "0.1.0"
+dependencies = [
+ "gust-algo",
+ "gust-compute",
+ "gust-compute-wgpu",
+]
+
+[[package]]
 name = "buildid"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

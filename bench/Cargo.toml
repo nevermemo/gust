@@ -1,7 +1,7 @@
 # Benchmark harness for GUST (M10 spike B1). A nested workspace of its own, outside the main workspace graph, so the
 # comparators never enter the root Cargo.lock, the MSRV checks, `check-arch` or `check-full`.
 [workspace]
-members = ["gust-bench", "gust-bench-pre"]
+members = ["gust-bench", "gust-bench-pre", "budget-kit"]
 resolver = "3"
 
 [workspace.package]

@@ -936,6 +936,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       the padded Rust structs, values built with `new` read back on the GPU and the CPU twin). Generated
       Slang for unmarked modules is unchanged. Gpu suite 578 over 60 on the Radeon 890M (lane) and the
       RTX 5090 (merge gate). Opus review: merge after fixes; fixed.
+    - m13.splitr: the `gust` crate's `reflect/mod.rs` (5,147 lines) is split by concern, moves only: a 72-line
+      `mod.rs` (module docs, `mod` lines, re-exports) and `error`, `model`, `compile`, `read`, `check`, `pod`
+      and `json` modules, with the tests under `tests/` by schema (largest file 652 lines). Public paths are
+      unchanged through re-exports; 21 items became `pub(super)`. Unit tests 355 and doctests 203 (1 ignored)
+      before and after; a token comparison finds every original item exactly once. Opus review: merge.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -689,3 +689,401 @@ fn every_collision_entry_is_renamed_as_a_const_name() {
     }
     assert!(renamed > 20, "only {renamed} entries were tried");
 }
+
+// Slice m12.carr: array constants `const NAME: [T; N] = [..];`.
+
+#[test]
+fn an_array_const_of_each_type_is_one_static_const_line_in_every_kernel() {
+    let source = module(
+        "const N: u32 = 3;
+    pub const WEIGHTS: [u32; 4] = [1, 2, 3, 4];
+    /// Documented, with a lint level.
+    #[allow(dead_code)]
+    const OFFSETS: [i32; 3] = [-1, 0, 1];
+    pub(crate) const SCALES: [f32; 2] = [0.5, -2.0];
+    const FLAGS: [bool; 3] = [true, false, true];
+    const WIDE: [uint; 2] = [4294967295, 7u32];
+    const M: u32 = N + 1;",
+        "out[id.x] = WEIGHTS[(id.x % 4u32) as usize];",
+        "out[id.x] = WEIGHTS[0] + N + M;",
+    );
+    let lines = "static const uint N = 3;\n\
+                 static const uint WEIGHTS[4] = { 1, 2, 3, 4 };\n\
+                 static const int OFFSETS[3] = { -1, 0, 1 };\n\
+                 static const float SCALES[2] = { 0.5, -2.0 };\n\
+                 static const bool FLAGS[3] = { true, false, true };\n\
+                 static const uint WIDE[2] = { uint(4294967295), uint(7) };\n\
+                 static const uint M = (N + uint(1));\n\n";
+    let texts = accepted(&source);
+    assert_eq!(texts.len(), 2);
+    for (name, text) in &texts {
+        let expected = format!("{HEADER}{lines}");
+        assert!(
+            text.starts_with(&expected),
+            "kernel {name}:\n{text}\nstarts with\n{expected}"
+        );
+    }
+    assert!(
+        texts[0]
+            .1
+            .contains("out[id.x] = WEIGHTS[uint(((id.x % uint(4))))];"),
+        "{}",
+        texts[0].1
+    );
+    assert!(texts[1].1.contains("WEIGHTS[0]"), "{}", texts[1].1);
+}
+
+#[test]
+fn an_element_is_an_expression_of_the_scalar_form() {
+    let source = module(
+        "const BASE: u32 = 6;
+    const BELOW: i32 = -3;
+    const HALF: f32 = 0.5;
+    const ROW: [u32; 4] = [BASE, BASE + 1, (BASE * 2) % 5, !BASE];
+    const SIGNED: [i32; 3] = [BELOW, -BELOW, (BELOW + 1) * 2];
+    const REAL: [f32; 2] = [HALF, -(HALF + 1.0)];
+    const BITS: [bool; 2] = [!true, true && false];
+    const FILL: [i32; 3] = [-1; 3];
+    const ONE: [u32; 1] = [9];",
+        "out[id.x] = ROW[0];",
+        "out[id.x] = ONE[0];",
+    );
+    let lines = "static const uint BASE = 6;\n\
+                 static const int BELOW = -3;\n\
+                 static const float HALF = 0.5;\n\
+                 static const uint ROW[4] = { BASE, (BASE + uint(1)), ((BASE * uint(2)) % uint(5)), (~BASE) };\n\
+                 static const int SIGNED[3] = { BELOW, (-BELOW), ((BELOW + 1) * 2) };\n\
+                 static const float REAL[2] = { HALF, (-(HALF + 1.0)) };\n\
+                 static const bool BITS[2] = { (!true), (true && false) };\n\
+                 static const int FILL[3] = { -1, -1, -1 };\n\
+                 static const uint ONE[1] = { 9 };\n\n";
+    // The `!` of a `u32` and of a `bool` brings its helper lines first; the constants follow as one block.
+    for (_, text) in accepted(&source) {
+        assert!(text.contains(&format!("\n{lines}")), "{text}");
+    }
+}
+
+#[test]
+fn the_longest_array_const_has_256_elements() {
+    let table = (0..256)
+        .map(|k| k.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = module(
+        &format!("const T: [u32; 256] = [{table}];"),
+        "out[id.x] = T[(id.x % 256u32) as usize];",
+        "out[id.x] = T.len() as u32;",
+    );
+    for (_, text) in accepted(&source) {
+        assert!(
+            text.contains(&format!("static const uint T[256] = {{ {table} }};\n")),
+            "{text}"
+        );
+    }
+    let source = module(
+        "const T: [u32; 256] = [7; 256];",
+        "out[id.x] = T[0];",
+        "out[id.x] = T[255];",
+    );
+    let texts = accepted(&source);
+    assert!(
+        texts[0]
+            .1
+            .contains(&format!("{{ {}7 }};", "7, ".repeat(255)))
+    );
+}
+
+#[test]
+fn an_array_const_is_read_by_index_and_by_len_in_a_kernel_a_helper_a_method_and_a_closure() {
+    let source = module(
+        "const T: [u32; 4] = [1, 2, 3, 4];
+    pub struct S { pub a: u32 }
+    impl S { pub fn pick(&self, k: u32) -> u32 { T[k as usize] + self.a } }
+    fn at(k: u32) -> u32 { T[(k % T.len() as u32) as usize] }",
+        "let s = S { a: 1u32 };
+    let f = |k: u32| -> u32 { T[k as usize] };
+    out[id.x] = at(id.x) + s.pick(id.x % 4u32) + f(2u32) + T.len() as u32 + T[T.len() - 1] + T[1 + 2];",
+        "out[id.x] = T[(T[0] + id.x) as usize % T.len()];",
+    );
+    for (_, text) in accepted(&source) {
+        assert!(text.contains("T[uint(k)]"), "{text}");
+        assert!(text.contains("T[uint((__gust_rem(k, uint(4))))]"), "{text}");
+    }
+    // `.len()` is the constant `N`, as for a local array.
+    let first = &accepted(&source)[0].1;
+    assert!(
+        first.contains("+ uint(4)) + T[(4 - 1)]) + T[(1 + 2)])"),
+        "{first}"
+    );
+}
+
+/// The index guard of the SPIR-V route reads an array constant as it reads a typed local: a dynamic index is clamped to
+/// the last element, a literal is not (D172).
+#[test]
+fn a_dynamic_index_of_an_array_const_is_clamped_with_the_guards_on_as_for_a_local_array() {
+    use crate::slang::guards::Forced;
+    let source = module(
+        "const T: [u32; 4] = [1, 2, 3, 4];",
+        "out[id.x] = T[id.x as usize] + T[2] + T[3 - 1];",
+        "let a: [u32; 4] = [1, 2, 3, 4]; out[id.x] = a[id.x as usize];",
+    );
+    {
+        let _on = Forced::new(true);
+        let texts = accepted(&source);
+        let first = &texts[0].1;
+        assert!(first.contains("T[min(uint(uint(id.x)), 3u)]"), "{first}");
+        assert!(first.contains("T[2]"), "{first}");
+        // The local array of the second kernel is clamped the same way.
+        assert!(
+            texts[1].1.contains("a[min(uint(uint(id.x)), 3u)]"),
+            "{}",
+            texts[1].1
+        );
+    }
+    let _off = Forced::new(false);
+    let texts = accepted(&source);
+    assert!(texts[0].1.contains("T[uint(id.x)]"), "{}", texts[0].1);
+    assert!(!texts[0].1.contains("min("), "{}", texts[0].1);
+}
+
+#[test]
+fn an_array_const_named_like_a_collision_entry_is_renamed_at_the_declaration_and_the_use() {
+    let source = module(
+        "#[allow(non_upper_case_globals)]
+    const min: [u32; 2] = [3, 4];",
+        "out[id.x] = min[1] + min.len() as u32;",
+        "out[id.x] = min[0];",
+    );
+    let texts = accepted(&source);
+    for (_, text) in &texts {
+        assert!(
+            text.contains("\nstatic const uint __gust_r_min[2] = { 3, 4 };\n"),
+            "{text}"
+        );
+        assert!(!text.contains(" min["), "{text}");
+    }
+    assert!(
+        texts[0]
+            .1
+            .contains("out[id.x] = (__gust_r_min[1] + uint(2));"),
+        "{}",
+        texts[0].1
+    );
+    assert!(texts[1].1.contains("out[id.x] = __gust_r_min[0];"));
+}
+
+#[test]
+fn a_whole_array_use_of_an_array_const_is_e0127() {
+    for (items, body, fragment) in [
+        (
+            "",
+            "let a: [u32; 4] = T; out[id.x] = a[0];",
+            "a whole-array use",
+        ),
+        ("", "let a = T; out[id.x] = a[0];", "a whole-array use"),
+        (
+            "fn f(t: [u32; 4]) -> u32 { t[0] }",
+            "out[id.x] = f(T);",
+            "a whole-array use",
+        ),
+        (
+            "fn g() -> [u32; 4] { T }",
+            "out[id.x] = g()[0];",
+            "a whole-array use",
+        ),
+        (
+            "fn g() -> [u32; 4] { return T; }",
+            "out[id.x] = g()[0];",
+            "a whole-array use",
+        ),
+        ("", "if T == T { out[id.x] = 1; }", "a whole-array use"),
+        ("", "for k in T { out[id.x] = k; }", "a whole-array use"),
+        (
+            "",
+            "out[id.x] = T.iter().count() as u32;",
+            "a whole-array use",
+        ),
+    ] {
+        let items = format!("const T: [u32; 4] = [1, 2, 3, 4]; {items}");
+        let source = module(&items, body, "out[id.x] = id.x;");
+        refused(&source, Code::ConstForm);
+        let message = lower(&source).expect_err(&source).to_string();
+        assert!(message.contains(fragment), "{body}: {message}");
+    }
+}
+
+#[test]
+fn a_store_into_an_array_const_is_e0127() {
+    for body in [
+        "T[0] = 5;",
+        "T[id.x as usize] = 5;",
+        "T[1] += 5;",
+        "T[1] <<= 1u32;",
+        "T[(id.x % 4u32) as usize] ^= 1;",
+        "let r = &mut T[0]; out[id.x] = id.x;",
+        "let mut x = 0u32; (T[0], x) = (1u32, 2u32);",
+        "let mut x = 0u32; (x, (T[id.x as usize], x)) = (1u32, (2u32, 3u32));",
+        "let mut x = 0u32; let s: [u32; 2] = [1u32, 2u32]; [T[0], x] = s;",
+    ] {
+        let source = module(
+            "const T: [u32; 4] = [1, 2, 3, 4];",
+            &format!("{body} out[id.x] = id.x;"),
+            "out[id.x] = id.x;",
+        );
+        refused(&source, Code::ConstForm);
+        let message = lower(&source).expect_err(&source).to_string();
+        assert!(message.contains("is read only"), "{body}: {message}");
+    }
+}
+
+#[test]
+fn an_array_const_type_outside_the_four_scalars_is_e0127() {
+    for (ty, init, fragment) in [
+        ("[[u32; 2]; 2]", "[[1, 2], [3, 4]]", "is not nested"),
+        ("[Vec2; 2]", "[Vec2::new(1.0, 2.0); 2]", "holds `u32`"),
+        ("[S; 2]", "[S { a: 1 }; 2]", "holds `u32`"),
+        ("[(u32, u32); 2]", "[(1, 2); 2]", "holds `u32`"),
+        ("[usize; 2]", "[1, 2]", "holds `u32`"),
+        ("[u64; 2]", "[1, 2]", "holds `u32`"),
+        ("[f64; 2]", "[1.0, 2.0]", "holds `u32`"),
+        ("[&'static str; 2]", "[\"a\", \"b\"]", "holds `u32`"),
+        ("[Option<u32>; 2]", "[None; 2]", "holds `u32`"),
+    ] {
+        let source = module(
+            &format!("pub struct S {{ pub a: u32 }} const T: {ty} = {init};"),
+            "out[id.x] = id.x;",
+            "out[id.x] = id.x;",
+        );
+        refused(&source, Code::ConstForm);
+        let message = lower(&source).expect_err(&source).to_string();
+        assert!(message.contains(fragment), "{ty}: {message}");
+    }
+}
+
+#[test]
+fn an_array_const_with_a_bad_length_or_initializer_is_refused_with_its_own_message() {
+    // A length that is no literal, or is zero, keeps GUST-E0216; above 256 is GUST-E0127.
+    for items in [
+        "const N: u32 = 2; const T: [u32; N] = [1, 2];",
+        "const T: [u32; 0] = [];",
+        "const T: [u32; 2 + 1] = [1, 2, 3];",
+    ] {
+        refused(
+            &module(items, "out[id.x] = id.x;", "out[id.x] = id.x;"),
+            Code::ArrayLength,
+        );
+    }
+    for (items, fragment) in [
+        ("const T: [u32; 257] = [0; 257];", "at most 256 elements"),
+        (
+            "const T: [u32; 3] = [1, 2];",
+            "3 elements by its type and 2 in its initializer",
+        ),
+        (
+            "const T: [u32; 2] = [1, 2, 3];",
+            "2 elements by its type and 3 in its initializer",
+        ),
+        ("const T: [u32; 2] = [1; 3];", "the repeat length"),
+        ("const T: [u32; 2] = 5;", "an array literal"),
+        ("const T: [u32; 2] = { [1, 2] };", "an array literal"),
+        // An element of another type than the item's, and a form the scalar rule refuses.
+        ("const T: [u32; 2] = [1, 2.5];", "a literal in a `u32`"),
+        ("const T: [u32; 2] = [1, -1];", "this unary operator"),
+        ("const T: [u32; 2] = [1, 2u32 as u32];", "an `as` cast"),
+        ("const T: [i32; 2] = [1, 2u32];", "a literal in an `i32`"),
+        ("const T: [f32; 2] = [1.0, 1];", "a literal in an `f32`"),
+        ("const T: [bool; 2] = [true, 1 < 2];", "a comparison"),
+        ("const T: [u32; 2] = [1, f(2)];", "a call"),
+        ("const T: [u32; 2] = [1, u32::MAX];", "a path such as"),
+        // An element that is a later constant, an unknown name, or the item itself.
+        (
+            "const T: [u32; 2] = [1, LATER]; const LATER: u32 = 2;",
+            "declare it above",
+        ),
+        (
+            "const T: [u32; 2] = [1, LATER + 1]; const LATER: u32 = 2;",
+            "declared below this item",
+        ),
+        (
+            "const T: [u32; 2] = [1, NOPE];",
+            "is not a `const` of this module",
+        ),
+        ("const T: [u32; 2] = [1, T];", "forward reference"),
+        (
+            "const A: i32 = 1; const T: [u32; 2] = [1, A];",
+            "is an `i32` constant and this item is `u32`",
+        ),
+        // An array constant in a constant expression, of a scalar item or of another array.
+        (
+            "const A: [u32; 2] = [1, 2]; const K: u32 = A;",
+            "is an array constant",
+        ),
+        (
+            "const A: [u32; 2] = [1, 2]; const K: u32 = A[0];",
+            "an element of an array constant",
+        ),
+        (
+            "const A: [u32; 2] = [1, 2]; const K: u32 = A[0] + 1;",
+            "an element of an array constant",
+        ),
+        (
+            "const A: [u32; 2] = [1, 2]; const B: [u32; 2] = [A[0], 2];",
+            "an element of an array constant",
+        ),
+        (
+            "const A: [u32; 2] = [1, 2]; const B: [u32; 2] = [A, 2];",
+            "is an array constant",
+        ),
+        (
+            "const A: [u32; 2] = [1, 2]; const B: [u32; 2] = [1; 2]; const K: u32 = B.len();",
+            "a call",
+        ),
+    ] {
+        let source = module(items, "out[id.x] = id.x;", "out[id.x] = id.x;");
+        refused(&source, Code::ConstForm);
+        let message = lower(&source).expect_err(&source).to_string();
+        assert!(message.contains(fragment), "{items}: {message}");
+    }
+}
+
+#[test]
+fn an_array_const_name_is_judged_like_a_scalar_const_name() {
+    for items in [
+        "const T: [u32; 2] = [1, 2]; pub struct S { pub T: u32 }",
+        "const T: [u32; 2] = [1, 2]; pub struct T { pub a: u32 }",
+        "const None: [u32; 2] = [1, 2];",
+        "const T<const N: usize>: [u32; 2] = [1, 2];",
+        "const _: [u32; 2] = [1, 2];",
+    ] {
+        refused(
+            &module(items, "out[id.x] = id.x;", "out[id.x] = id.x;"),
+            Code::ConstForm,
+        );
+    }
+    refused(
+        &module(
+            "const __gust_t: [u32; 2] = [1, 2];",
+            "out[id.x] = id.x;",
+            "out[id.x] = id.x;",
+        ),
+        Code::ReservedPrefix,
+    );
+    // A binding of the name is refused as for a scalar constant.
+    refused(
+        &module(
+            "const T: [u32; 2] = [1, 2];",
+            "let T = 1u32; out[id.x] = T;",
+            "out[id.x] = id.x;",
+        ),
+        Code::ConstForm,
+    );
+    // An array constant is no array length.
+    refused(
+        &module(
+            "const T: [u32; 2] = [1, 2];",
+            "let a: [u32; T[0]] = [1u32, 2u32]; out[id.x] = a[0];",
+            "out[id.x] = id.x;",
+        ),
+        Code::ArrayLength,
+    );
+}

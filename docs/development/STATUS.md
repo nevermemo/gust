@@ -824,6 +824,10 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       (DIFFTEST_FORMAT 14, 17 programs per seed, 136 at 8 seeds; math programs are grid-only); the soundness test
       checks both forms of `mul_add`. The three recorded reports were regenerated with the real harness at
       17 per seed and keep their pass assertions. Opus review fixes in.
+    - m12.carr (`6776dab`): module-level array constants, read-only, indexed with the local-array rule
+      (SEMANTICS section 17); stores through plain, compound and destructuring assignment and whole-array uses
+      are GUST-E0127. GPU test indices from the element id, buffer data and a loop counter; GPU_SUITE_PIN 574
+      over 58, confirmed by the full Gpu suite on the merged tree. Opus review: merge, two should-fix items fixed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

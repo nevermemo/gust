@@ -88,7 +88,7 @@ pub(crate) const WEB_VECTOR_ADD: Example = Example {
     cleared_env: &[],
 };
 
-const WASM_TARGET: &str = "wasm32-unknown-unknown";
+pub(crate) const WASM_TARGET: &str = "wasm32-unknown-unknown";
 
 /// The profile of the build: strict, so the committed artifact is embedded and Slang never runs (R4.2).
 const WEB_PROFILE: &str = "web";
@@ -985,20 +985,25 @@ fn chrome_version(chrome: &Path) -> Option<String> {
     parse_chrome_version(&String::from_utf8_lossy(&output.stdout))
 }
 
-fn require_wasm_target() -> Result<(), String> {
+/// Whether the `wasm32-unknown-unknown` standard library is installed for the active toolchain; `label` names the
+/// command in the error when `rustc` cannot be run.
+pub(crate) fn wasm_target_installed(label: &str) -> Result<bool, String> {
     let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     let output = Command::new(&rustc)
         .args(["--print", "sysroot"])
         .stdin(Stdio::null())
         .output()
-        .map_err(|error| format!("check-web: could not run rustc: {error}"))?;
+        .map_err(|error| format!("{label}: could not run rustc: {error}"))?;
     let sysroot = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
-    if sysroot
+    Ok(sysroot
         .join("lib")
         .join("rustlib")
         .join(WASM_TARGET)
-        .is_dir()
-    {
+        .is_dir())
+}
+
+fn require_wasm_target() -> Result<(), String> {
+    if wasm_target_installed("check-web")? {
         Ok(())
     } else {
         Err(format!(

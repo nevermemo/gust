@@ -112,6 +112,10 @@ proof.
   (a stated tie rule, and a hash-chosen turn with a set probability), move one wrapping cell and deposit with
   `atomic_add`; a cell kernel then relaxes the field by a shift. All integer: host reference, twin and GPU are
   bit-equal after every step, with a proven `u32` bound. Radeon 890M only; RTX 5090 pending.
+- Example `walker-transport` (m11.transport): one composite step of the three pieces above on one grid (bins of
+  walkers by cell, a walk step with a crowding rule that reads the bin counts, an exact spread of the field and a
+  cleared deposit), 24 steps, all integer: host reference, twin and GPU are bit-equal after every step (field,
+  walkers and bins), with a proven `u32` bound. Radeon 890M only; RTX 5090 pending.
 - `KernelDescriptor::split` (m11.g4a, D208): every GPU `grid` kernel carries a split variant, compiled only when used,
   with one hidden launch-base uniform that its entry point adds to the invocation id. It is the ground for launches
   past the per-dimension workgroup limit (used by the host since m11.g4b). The kernel's own Slang,

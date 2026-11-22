@@ -737,6 +737,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       forms the cexpr test measures; the scan-into test now asserts that a second same-size call takes no new pool
       miss (cell-bins' docs cite it); field-relax's domain test covers both grid sizes; walker-steer's asserts
       `s < 32`; cell-bins passes `side` in a `Uniform` made once. No new test, so the pins stay. Radeon 890M only; RTX 5090 pending.
+    - m11.transport (`19abffc`): the example `walker-transport`, the first composite of this round's pieces: per
+      step the bins of `cell-bins` (copied, integer cells), `walker-steer`'s walk plus a crowding rule (a walker in
+      a cell holding more than `crowd` walkers takes the hash-chosen turn), `field-relax`'s exact spread on
+      `field + deposit`, and a cleared deposit; four dispatches, one `Uniform` written per step. Host reference, twin
+      and GPU bit-equal after every step for six cases (fewer and more walkers than a workgroup, one crowded cell
+      with and without one heading, `crowd = 0`, and a crowd above the walker count that equals a host run without
+      the rule); the contention check rests on a derived bound. Both mutations fail. Opus review fixes: the run
+      command, `crowd < walkers`, the bound's derivation, a zero-cell guard. Helpers are still copied between
+      examples (sharing between modules is an open item). Radeon 890M only; RTX 5090 pending.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

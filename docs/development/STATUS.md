@@ -851,6 +851,12 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       the first round had not compiled (default features, `spirv-route`, wasm32); fixed, and the merge gate now
       also checks the library alone, without default features, with each feature, for wasm32 and the docs build.
       Full Gpu suite on the merged tree (RTX 5090) 576 over 59.
+    - m12.sfix (`66e0300`, the m12 sanity-check fixes): current difftest counts at 17 programs per seed (68, 34,
+      136, 1224) with the grid-only split from the committed report; RTX 5090 records named where STATUS has a
+      run; a store into an array constant through a struct or tuple-struct destructuring assignment is now
+      GUST-E0127 (test with nine cases, failing on the old code); every scalar math method is grid-only under the
+      pixel shape (E0723; `.abs()` tested); SEMANTICS rests the driver-defect argument on D169's trigger; xtask
+      follow-ups; CI workflows also run on pushes to `dev`. Opus review: merge after fixes, fixes in.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

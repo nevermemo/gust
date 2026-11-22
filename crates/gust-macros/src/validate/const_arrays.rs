@@ -130,13 +130,20 @@ impl Uses<'_> {
     }
 
     /// The array constant a place is an element of (`NAME[i]`, `NAME[i].f`), also on the left of a destructuring
-    /// assignment (`(NAME[0], x) = ..`, `[NAME[0], x] = ..`).
+    /// assignment (`(NAME[0], x) = ..`, `[NAME[0], x] = ..`, `S { a: NAME[0] } = ..`, `P(NAME[0], x) = ..`).
     fn root(&self, place: &syn::Expr) -> Option<String> {
         match peel(place) {
             syn::Expr::Index(index) => self.named(&index.expr).or_else(|| self.root(&index.expr)),
             syn::Expr::Field(field) => self.root(&field.base),
             syn::Expr::Tuple(tuple) => tuple.elems.iter().find_map(|element| self.root(element)),
             syn::Expr::Array(array) => array.elems.iter().find_map(|element| self.root(element)),
+            syn::Expr::Struct(literal) => literal
+                .fields
+                .iter()
+                .find_map(|field| self.root(&field.expr)),
+            syn::Expr::Call(call) if matches!(peel(&call.func), syn::Expr::Path(_)) => {
+                call.args.iter().find_map(|argument| self.root(argument))
+            }
             _ => None,
         }
     }

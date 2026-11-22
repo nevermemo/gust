@@ -2,7 +2,7 @@
 
 Walkers on a periodic `SIDE x SIDE` grid that move, lose energy, retire and spawn children, 24 steps, all in integers,
 so the host reference, the CPU twin and the GPU are equal bit for bit after every step (every field of every walker,
-and the number of walkers; on the GPU: Radeon 890M only, RTX 5090 pending). The live walkers stay dense in their
+and the number of walkers; on the GPU: Radeon 890M and RTX 5090). The live walkers stay dense in their
 buffers, so later kernels can launch over `0..n`.
 
 - `act` (one invocation per slot): a live walker turns by a hash-drawn amount, moves one cell, loses one energy, and

@@ -19,7 +19,7 @@ place and writes its index to `order[starts[cell] + place]`).
 
 ## Order contract
 
-The **set** of elements in each cell is exact (on the GPU: Radeon 890M only, RTX 5090 pending). Their **order** inside a cell is **unspecified** on the GPU: it is the
+The **set** of elements in each cell is exact (on the GPU: Radeon 890M and RTX 5090). Their **order** inside a cell is **unspecified** on the GPU: it is the
 order of the atomic adds, which depends on the schedule. Compare per cell as sets (sort the cell's slice first), never
 the raw order. The elements of cell `c` are `order[starts[c] .. starts[c] + counts[c]]`; the slots of `order` from the
 element count on are not written. `Bins::read` returns the three arrays on the host, and `Snapshot::cell(c)` is a
@@ -31,7 +31,7 @@ cell's slice; a program reads the bins through these.
 every cell's set. Cases: no elements, all elements in one cell, elements only on the last row and column (positions
 just below `side`), positions far past the grid (1e10, `f32::MAX`, `+inf`), 100,037 hash-spread elements (the `hash` of `examples/hash-rng`, copied as `examples/mc-histogram`
 does), and a sequence of rebuilds with different positions and counts into the same bins (no stale data). The CPU twin
-runs them in the `twin_*` tests; the GPU test runs the same cases on the device (Radeon 890M only, RTX 5090 pending).
+runs them in the `twin_*` tests; the GPU test runs the same cases on the device (Radeon 890M and RTX 5090).
 
 Run with
 

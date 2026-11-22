@@ -21,7 +21,7 @@ head (the number of events), the overflow (`head - cap`, when positive) and up t
   (the first submit of a kernel may compile its Slang); the only blocking `wait` is at shutdown, for a step still
   undrained after `MAX_FRAMES` frames. It reports how many drains were late and by how many steps, how many
   completed only in the spins after the last frame, and how many steps drained at shutdown (the GPU test requires 0).
-- The GPU run is on the Radeon 890M only; RTX 5090 pending.
+- The GPU run is on the Radeon 890M and the RTX 5090.
 - No host API was added: `submit`, `WgpuJob::status`, `GpuVec::to_vec_async` and `write_uniform` are public.
 
 Run with

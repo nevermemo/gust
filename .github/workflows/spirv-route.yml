@@ -10,7 +10,7 @@ name: spirv-route
 
 on:
   push:
-    branches: [main, "release/*"]
+    branches: [main, dev, "release/*"]
   pull_request:
   workflow_dispatch:
 

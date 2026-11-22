@@ -10,13 +10,13 @@
 # install retries each download five times and the whole install once more after 60 s (the snapshot service has
 # answered 503/504); the pinned snapshot and the identity assertions are unchanged.
 #
-# One job, two lists (plan M5 R1-10). The list of a pull request, a push to main or release/* and a dispatch without
-# `extended` is everything above, plus the differential test on 2 seeds (32 generated programs on three parties: the
+# One job, two lists (plan M5 R1-10). The list of a pull request, a push to main, dev or release/* and a dispatch without
+# `extended` is everything above, plus the differential test on 2 seeds (34 generated programs on three parties: the
 # interpreter, the CPU twin and the lavapipe GPU; R1-13) and the same 2 seeds again with `--shapes grid,pixel` (every
 # program the classifier admits also as a `pixel` kernel, slice mx.z; the nightly list runs it on 2 seeds too). The
 # nightly list (`schedule`, 03:00 UTC, and a dispatch with `extended`, the default) adds the steps marked "nightly list": `cargo xtask check-examples` and the release-profile mismatch ledger
 # (`cargo xtask check-ledger`, guarded as the Full mode is: no ignored test, every ledger test named), and runs the
-# differential test on seeds 1-72 (1152 programs: the reach of the CPU test that proves the generator writes every
+# differential test on seeds 1-72 (1224 programs: the reach of the CPU test that proves the generator writes every
 # aggregate form, DIFFTEST) in place of the 2. Slices that grow the nightly list add
 # steps behind the same condition. Moving a step to the pull request list is deleting its `if:` line, and it is allowed
 # only while the measured warm job time of a pull request stays at five minutes or less (the budget rule; STATUS names
@@ -42,7 +42,7 @@ name: gpu-software
 
 on:
   push:
-    branches: [main, "release/*"]
+    branches: [main, dev, "release/*"]
   pull_request:
   schedule:
     - cron: "0 3 * * *"
@@ -257,11 +257,11 @@ jobs:
       - name: Differential test (2 seeds; all 8 in the nightly list)
         id: difftest
         # `cargo xtask check-difftest` (m5.c2) runs `difftest-run` on lavapipe, reads its report.json, and fails unless
-        # `programs_executed` is 16 times the seeds, nothing disagreed and an adapter is named; it also runs the
+        # `programs_executed` is 17 times the seeds, nothing disagreed and an adapter is named; it also runs the
         # short_circuit GPU test of tests/difftest. Every failure line starts with `check-difftest:` and names the
         # seed (the next step turns those lines into annotations). The report goes straight into the artifact
         # directory, which is uploaded even when this step fails. Same Slang, helper and VK_DRIVER_FILES as the Gpu
-        # suite above. Pull request list: seeds 1-2 (32 programs); nightly list: 1-72 (1152 programs). Measured on this
+        # suite above. Pull request list: seeds 1-2 (34 programs); nightly list: 1-72 (1224 programs). Measured on this
         # job (run 41442659698, seeds 1-8: 45.5 s of `difftest-run` for 128 programs; run 41518009197 at format 6, seeds
         # 1-2: 9.2 s for 32), 72 seeds are expected to take 5 to 7 minutes of the nightly job's 40-minute timeout. The
         # step name is pinned by a test in xtask/src/tests/suite.rs and still says "all 8".

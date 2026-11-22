@@ -324,15 +324,22 @@ describes the intended behaviour and is not evidence.
     input; every output is written on every path (an `if` without `else` counts only under the guard `i < out.len()`);
     there is no `return`; and there is no workgroup memory, barrier, `LocalId`, `GroupId`, atomic, storage or write-only
     texture or explicit `workgroup_size`, and at least one output. A kernel outside those rules is `grid`-only and has
-    no `pixel` contract at all. Every output is bound `Shared`, so its length is `n`. A sampled `Texture2D` and a
+    no `pixel` contract at all. No scalar math method (`abs`, `floor`, `ceil`, `trunc`, `min`, `max`, `clamp`,
+    `mul_add`, `sqrt`, `sin`, `powf`, `fract` and the rest of the dialect's list) has an entry in the classifier's
+    ledger yet, so a kernel that calls one is `grid`-only and a `shape = pixel` pin on it is GUST-E0723 (D94). The
+    classifier test that pins this runs `.abs()`, with the validator out of the way; the other names follow the same
+    rule by the same ledger lookup, not by a test of their own. Every output is bound `Shared`, so its length is `n`. A sampled `Texture2D` and a
     `Sampler` may be read in a fragment; `sample` there has the contract of section 4 and is outside the exact one, as
     on `grid`.
   - *Integer outputs: bit identity.* For `u32` and `i32` outputs (and a `bool` result, which travels as a `u32` word)
     the same body gives the same bits as `grid`, as the twin and as an independent host replay (D62). Measured:
     `tests/pixel.rs` ran `u32` and `i32` at sizes from 0 up to 16 785 409 (the squares up to 4097^2, the row width and
     its neighbours, `8192k + 1` for k up to 1000, 1 000 003) with 0 differing words, and `u32` also at the cap of 2^26;
-    the cross-shape difftest (`check-difftest --shapes grid,pixel`, seeds 1 to 8) ran 128 generated programs as `pixel`
-    and found no integer or boolean bit that differs from `grid` (DIFFTEST, "Shapes"). Integer vector outputs (`IVec2`,
+    the cross-shape difftest (`check-difftest --shapes grid,pixel`, seeds 1 to 8) ran the generated programs as `pixel` (at
+    format 14, 104 of the 136 programs; of the other 32, which stay `grid`-only, the report counts 14 with a construct the
+    classifier has no rule for, 2 with another E0723 reason, 4 with a write at another index (E0725) and 12 with a use
+    of an output (E0728); 16 of the 136 are math programs) and found no integer or boolean
+    bit that differs from `grid` (DIFFTEST, "Shapes"). Integer vector outputs (`IVec2`,
     `UVec4` and so on) are admitted by the classifier and have not been run as `pixel` outputs.
   - *`f32` outputs: the bits may differ from `grid` (D128).* `pixel` keeps section 4's bounds, not `grid`'s bits: a
     device may fuse `a * b + c` and round `x / y` within 2.5 ulp differently in the compute and the fragment stage. So
@@ -2037,7 +2044,7 @@ versions are unmeasured.
 
 Documented difference (D39), finite `f32` constant expressions: rustc evaluates the expression the host and the twin
 read, and slangc evaluates the one the shader reads, so the two are separate evaluations and nothing makes them equal.
-They were equal for the forms the `cexpr` test measures (above; Radeon 890M only, RTX 5090 pending); nothing else
+They were equal for the forms the `cexpr` test measures (above; Radeon 890M and RTX 5090); nothing else
 was measured. Integer and `bool` constants stay one value on every side; an `f32` literal is read by each compiler on
 its own (above), and its values were compared only for the literals of that test.
 
@@ -2066,13 +2073,13 @@ constant `N` as for a local array (`GUST-E0334` where a local's would be). The b
 `spirv-route` feature on, a non-literal index of an array constant is clamped to the last element as a typed local's is,
 and a literal index is not. `GUST-E0127`, each with its own message: a whole-array use (`let a = NAME;`, an argument, a
 returned value, `for x in NAME`, `NAME == NAME`, any method other than `.len()`), a store (`NAME[i] = e;`, `NAME[i] += e;`,
-`&mut NAME[i]`), a nested array, an element that is a vector, a struct, a tuple, a reference or another scalar type
+`&mut NAME[i]`, a place in a destructuring assignment, also inside a struct or tuple-struct pattern), a nested array, an element that is a vector, a struct, a tuple, a reference or another scalar type
 (`usize`, `u64`, `f64`), an element count that differs from `N`, an element that is a constant declared below the item,
 and an array constant (or one of its elements) in the initializer of another constant, scalar or array. The scalar
 rules are unchanged.
 
-The read-only table cannot meet the D168 and D169 driver defect, which needs a store into a function-scope array (section
-7); the emitted text has no function-scope array. This is an argument from the shape of the text, not a measurement:
+The read-only table cannot meet the D168 and D169 driver defect, which needs a dynamic-index store back into an array (the
+trigger of D169; section 7); the emitted text has no store into an array constant, whatever the form of the access. This is an argument from the shape of the text, not a measurement:
 the run on the RTX 5090 (the full Gpu suite on the merged tree of m12.carr) gave the expected values, which fits that
 argument without proving it for every table. Evidence: the macro tests in
 `crates/gust-macros/src/tests/consts.rs` (the exact lines, the guard, every refusal) and `crates/gust-wgpu/tests/const_arrays.rs`, which

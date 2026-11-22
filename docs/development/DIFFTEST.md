@@ -1411,7 +1411,7 @@ Linux (WSL Ubuntu 24.04, the process-group path, run by hand with `cargo test --
 
 `cargo xtask check-difftest` ([VALIDATION](VALIDATION.md), "The differential batch") is how the gates run this crate.
 It runs `difftest-run` (nothing here is reimplemented), reads `report.json` by fields, and fails unless the report has
-the mode and the seeds that were asked for, `programs_executed` equal to `16 x seeds`, no mismatch and, on the GPU
+the mode and the seeds that were asked for, `programs_executed` equal to `17 x seeds`, no mismatch and, on the GPU
 tier, an adapter. Every failure line starts with `check-difftest:` and names the seed. On the GPU tier it also runs
 `cargo test --locked --manifest-path tests/difftest/Cargo.toml --test short_circuit -- --ignored` and requires the GPU
 test to be reported `ok` by name. Both cargo calls get the cargo target directory of the run in `CARGO_TARGET_DIR`, so
@@ -1423,11 +1423,11 @@ rerun a failure with `--seeds <the printed list>`.
 
 | Gate | Command | Seeds | Programs | Parties |
 | --- | --- | --- | --- | --- |
-| Unit suite (local), CI job `difftest` | `check-difftest --cpu-only --seeds 1-4`, after the harness crate's fmt, clippy and tests | 1 to 4 | 64 | interpreter, CPU twin |
-| Gpu suite | `check-difftest` | 1 to 8 | 128 and the `short_circuit` GPU test | interpreter, CPU twin, GPU |
-| `check-full`, last integration check | `check-difftest --seeds 1-8 --shapes grid,pixel` | 1 to 8 | 128 (each also as a `pixel` kernel) and the `short_circuit` GPU test | the same, GPU on the hardware adapter, and the pixel kernel against the grid kernel |
-| `gpu-software`, pull request list | `check-difftest --seeds 1-2` | 1 to 2 | 32 and the `short_circuit` GPU test | the same, GPU on lavapipe |
-| `gpu-software`, nightly list | `check-difftest --seeds 1-72` | 1 to 72 | 1152 and the `short_circuit` GPU test | the same, GPU on lavapipe |
+| Unit suite (local), CI job `difftest` | `check-difftest --cpu-only --seeds 1-4`, after the harness crate's fmt, clippy and tests | 1 to 4 | 68 | interpreter, CPU twin |
+| Gpu suite | `check-difftest` | 1 to 8 | 136 and the `short_circuit` GPU test | interpreter, CPU twin, GPU |
+| `check-full`, last integration check | `check-difftest --seeds 1-8 --shapes grid,pixel` | 1 to 8 | 136 (104 also as a `pixel` kernel, 32 grid-only) and the `short_circuit` GPU test | the same, GPU on the hardware adapter, and the pixel kernel against the grid kernel |
+| `gpu-software`, pull request list | `check-difftest --seeds 1-2` | 1 to 2 | 34 and the `short_circuit` GPU test | the same, GPU on lavapipe |
+| `gpu-software`, nightly list | `check-difftest --seeds 1-72` | 1 to 72 | 1224 and the `short_circuit` GPU test | the same, GPU on lavapipe |
 
 Measured 2026-11-02 on the development PC (RTX 5090, Vulkan, dev profile), the whole command including the harness's
 cargo build and run: the Unit batch (`--cpu-only --seeds 1-4`) takes 88 s cold (the dependency tree of the generated

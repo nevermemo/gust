@@ -305,40 +305,44 @@ pub(crate) fn json_string(value: &str) -> String {
 
 /// The typed accessors of a difftest `report.json`: `field` is the member `key` of an object, and each of the others
 /// reads one type from it. A missing or mistyped member is an error that names `report.json`.
-pub(crate) fn field<'a>(json: &'a Json, key: &str) -> Result<&'a Json, String> {
-    json.get(key)
-        .ok_or_else(|| format!("report.json has no `{key}`"))
-}
+pub(crate) mod report {
+    use super::Json;
 
-pub(crate) fn uint(json: &Json, key: &str) -> Result<u64, String> {
-    match field(json, key)? {
-        Json::Number(text) => text
-            .parse()
-            .map_err(|_| format!("report.json `{key}` is not a whole number: {text}")),
-        _ => Err(format!("report.json `{key}` is not a number")),
+    pub(crate) fn field<'a>(json: &'a Json, key: &str) -> Result<&'a Json, String> {
+        json.get(key)
+            .ok_or_else(|| format!("report.json has no `{key}`"))
     }
-}
 
-pub(crate) fn float(json: &Json, key: &str) -> Result<f64, String> {
-    match field(json, key)? {
-        Json::Number(text) => text
-            .parse()
-            .map_err(|_| format!("report.json `{key}` is not a number: {text}")),
-        _ => Err(format!("report.json `{key}` is not a number")),
+    pub(crate) fn uint(json: &Json, key: &str) -> Result<u64, String> {
+        match field(json, key)? {
+            Json::Number(text) => text
+                .parse()
+                .map_err(|_| format!("report.json `{key}` is not a whole number: {text}")),
+            _ => Err(format!("report.json `{key}` is not a number")),
+        }
     }
-}
 
-pub(crate) fn text(json: &Json, key: &str) -> Result<String, String> {
-    field(json, key)?
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| format!("report.json `{key}` is not a string"))
-}
+    pub(crate) fn float(json: &Json, key: &str) -> Result<f64, String> {
+        match field(json, key)? {
+            Json::Number(text) => text
+                .parse()
+                .map_err(|_| format!("report.json `{key}` is not a number: {text}")),
+            _ => Err(format!("report.json `{key}` is not a number")),
+        }
+    }
 
-pub(crate) fn array<'a>(json: &'a Json, key: &str) -> Result<&'a [Json], String> {
-    field(json, key)?
-        .as_array()
-        .ok_or_else(|| format!("report.json `{key}` is not an array"))
+    pub(crate) fn text(json: &Json, key: &str) -> Result<String, String> {
+        field(json, key)?
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| format!("report.json `{key}` is not a string"))
+    }
+
+    pub(crate) fn array<'a>(json: &'a Json, key: &str) -> Result<&'a [Json], String> {
+        field(json, key)?
+            .as_array()
+            .ok_or_else(|| format!("report.json `{key}` is not an array"))
+    }
 }
 
 #[cfg(test)]

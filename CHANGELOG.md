@@ -128,6 +128,9 @@ proof.
 - budget-kit row W8 (m11.kit4): a whole step (diffuse, step, binning with the scatter, a deposit folded into the
   field, retire, a scan of alive flags, compaction and spawn) as one timed scope, checked against a host model
   including a step where the capacity clamps; the note lists the storage buffers each kernel binds.
+- budget-kit cost split (m11.cost): W8's note gives the GPU time per batch and per kernel, and rows W8a-W8d
+  time the step without bins, with coarser bins, with one fused particle kernel and with the lifecycle every 4th
+  step.
 - One error for a refused `#[gpu]` module (m11.diag): when the macro refuses a module, the structs it hands back
   keep the `Clone`, `Copy` and `GpuPod` impls a successful expansion adds (where no impl was written by hand and every
   field is a known `Copy` type), so host code that uploads one of them no longer adds a misleading E0277 "not a GUST

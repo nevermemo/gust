@@ -12,7 +12,11 @@ written with GUST's public API only.
 | W5 | Reduction | `f32` sum with `gust-algo`, checked against an `f64` reference within the documented bound |
 | W6 | Readback delay | submit a small kernel and wait until its result is on the CPU |
 | W7 | Composite step | one batch per step: diffuse a 1024 x 1024 field, step the particles, clear and count their cells; a sustained run reporting the GPU time's median, p95 and maximum and two host-side costs |
-| W8 | Full step with lifecycle | one step on a 1024 x 1024 field: diffuse, move the particles over the field, bin them (clear, count, scan, scatter), deposit a fixed amount per particle into a `u32` grid with an atomic add and fold the grid into the field, then retire some particles by a hash, spawn a fixed number and keep the live set dense with a scan of alive flags and a compaction; a sustained run as W7, with the storage buffers each kernel binds in the note |
+| W8 | Full step with lifecycle | one step on a 1024 x 1024 field: diffuse, move the particles over the field, bin them (clear, count, scan, scatter), deposit a fixed amount per particle into a `u32` grid with an atomic add and fold the grid into the field, then retire some particles by a hash, spawn a fixed number and keep the live set dense with a scan of alive flags and a compaction; a sustained run as W7, with the storage buffers each kernel binds in the note, the GPU time of each of its four batches and the median of each of its kernels run as one-kernel batches (a separate pass each) |
+| W8a | W8 without bins | W8 with no count, no scan of the counts and no scatter |
+| W8b | W8 with coarse bins | W8 with the bins on a 256 x 256 grid over the same 1024 x 1024 field |
+| W8c | W8 with a fused particle kernel | W8 with the step, the count and the deposit in one particle kernel |
+| W8d | W8 with a sparse lifecycle | W8 with the lifecycle (retire, flag scan, compaction, spawn) on every 4th step; the time is the amortised mean per step |
 
 ## Run it
 
@@ -69,6 +73,13 @@ of the retire and spawn rule. The hash (`lb_mix` and `lb_hash`, used for both th
 `examples/walker-life`, whose retire flags, scan and compaction pattern the step follows. The first step where the
 population is clamped at the capacity is checked too, and the scatter's `order` is poisoned again before each checked
 step.
+
+Slice m11.cost asks where that step spends its time. After the sustained runs the W8 row's note gains two passes of 30
+steps after the warm-up: each of the four batches in a `timed` scope of its own, and each kernel (the scans as one scope
+each) as a one-kernel batch in a scope of its own, with the median of each and its share of the total; the sum of
+one-kernel batches may differ from the fused batches. The rows W8a to W8d run the same sustained run with one change each
+(no bins; the bins on a 256 x 256 grid; the step, the count and the deposit in one kernel; the lifecycle on every 4th
+step, reported as the amortised mean per step over whole rounds of 4 steps) and are checked against the host as W8 is.
 
 After the table the program runs a probe of the linear dispatch limit (gap G4), which is not a workload: a linear
 kernel launch of 65 536 workgroups on x, one above the portable limit of 65 535. It prints one line starting `G4:` with

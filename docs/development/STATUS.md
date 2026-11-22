@@ -799,6 +799,12 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       the capacity clamps and the last; storage buffers per kernel are read from the generated descriptors (at
       most 4). Opus review: no must-fix; its fixes are in. Small and full runs green on the Radeon 890M; RTX 5090
       pending. Measured times stay outside the repository.
+    - m11.cost (`93989e8`, owner proxy round 11): budget-kit W8 is built from a list of parts grouped into
+      batches; its note gains a per-batch and a per-kernel GPU time pass after the sustained runs. New rows W8a
+      (no bins), W8b (bins on 256 x 256), W8c (step, count and deposit fused into one kernel) and W8d (the
+      lifecycle every 4th step, amortised over whole rounds), each checked against the host model. Opus review:
+      no must-fix; its fixes are in. Small and full runs green on the Radeon 890M; RTX 5090 pending. Measured
+      times stay outside the repository.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

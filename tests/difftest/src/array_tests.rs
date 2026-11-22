@@ -11,11 +11,9 @@ use crate::ast::{
     ArrTy, BinOp, Elem, Expr, FnDef, InputBuf, Methods, Place, Program, Recv, Stmt, Store,
     StructDef, Ty, operator_counts,
 };
+use crate::batches::{full_batch, space_batch};
 use crate::emit::emit_module;
-use crate::generator::{
-    ARRAY_ATTEMPT_BASE, ARRAY_END, ARRAY_PROGRAMS_PER_SEED, Space, VALUE_END, generate_batch,
-    generate_batch_in,
-};
+use crate::generator::{ARRAY_ATTEMPT_BASE, ARRAY_END, ARRAY_PROGRAMS_PER_SEED, Space, VALUE_END};
 use crate::interp::{Mutant, env_mutant, run, run_covered, run_mutant};
 
 const S0: Ty = Ty::Struct(0);
@@ -401,7 +399,7 @@ fn the_array_programs_of_the_64_seed_batch_write_and_run_every_form_and_order_sh
     let mut with_form: BTreeMap<String, usize> = BTreeMap::new();
     let mut programs = 0;
     for seed in 1..=64 {
-        for p in &generate_batch(seed).unwrap().programs[VALUE_END..ARRAY_END] {
+        for p in &full_batch(seed).programs[VALUE_END..ARRAY_END] {
             assert!(p.attempt >= ARRAY_ATTEMPT_BASE && p.has_array());
             programs += 1;
             for (name, n) in operator_counts(p) {
@@ -452,11 +450,11 @@ fn the_array_programs_of_the_64_seed_batch_write_and_run_every_form_and_order_sh
 #[test]
 fn a_batch_ends_with_its_array_programs() {
     for seed in 1..=4 {
-        let batch = generate_batch(seed).unwrap();
+        let batch = full_batch(seed);
         for p in &batch.programs[VALUE_END..ARRAY_END] {
             assert!(p.has_array() && p.attempt >= ARRAY_ATTEMPT_BASE);
         }
-        let space = generate_batch_in(Space::Array, seed).unwrap();
+        let space = space_batch(Space::Array, seed);
         assert_eq!(&space.programs[..2], &batch.programs[VALUE_END..ARRAY_END]);
     }
 }
@@ -533,7 +531,7 @@ pub(crate) fn scan_driver_hole(space: Space) -> GuardCounts {
             _ => None,
         };
     for seed in 1..=64 {
-        for p in generate_batch_in(space, seed).unwrap().programs {
+        for p in &space_batch(space, seed).programs {
             let who = format!("seed {seed} attempt {}", p.attempt);
             let mut bodies: Vec<&[Stmt]> = vec![&p.body];
             let fns: Vec<&FnDef> = p.methods.fns.iter().collect();
@@ -619,14 +617,14 @@ fn the_order_mutants_change_generated_programs_and_the_order_shapes_keep_their_m
     let mut space = Vec::new();
     let mut batch = Vec::new();
     for seed in 1..=64 {
-        space.extend(generate_batch_in(Space::Array, seed).unwrap().programs);
+        space.extend(space_batch(Space::Array, seed).programs.iter().cloned());
         batch.extend(
-            generate_batch(seed)
-                .unwrap()
+            full_batch(seed)
                 .programs
-                .into_iter()
+                .iter()
                 .skip(VALUE_END)
-                .take(ARRAY_PROGRAMS_PER_SEED),
+                .take(ARRAY_PROGRAMS_PER_SEED)
+                .cloned(),
         );
     }
     assert_eq!((space.len(), batch.len()), (1024, 128));
@@ -706,7 +704,7 @@ fn the_order_mutants_change_generated_programs_and_the_order_shapes_keep_their_m
     // Seeds 1 to 4 (the G5 run, 64 programs of all spaces; the array shapes also occur in the closure programs): each
     // order shape is written by at least one.
     let first_four: Vec<crate::ast::Program> = (1..=4)
-        .flat_map(|seed| generate_batch(seed).unwrap().programs)
+        .flat_map(|seed| full_batch(seed).programs.iter().cloned())
         .collect();
     for (name, _) in SHAPE_MINIMA {
         let first = first_four

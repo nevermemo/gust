@@ -923,6 +923,12 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       not in the repository): two signals at 2^20 walkers on the Radeon 890M ran 8.06 / 9.00 ms (median / p95)
       against the pre-registered 4.0 / 8.0 ms, so the rule failed; 2^18 fits (2.85 / 3.24 ms); the RTX 5090 ran
       0.39 / 0.66 ms. No threshold reset, no tuning toward one adapter.
+    - m13.dtcache: the difftest trait, closure and array modules take each generated batch from a test-only
+      cache (one generation per (space or full, seed) per test binary, shared read-only). Seeds, ranges,
+      assertions and test counts are unchanged; a hash of the programs at every access (1000 accesses, 256
+      batches) is identical before and after. One before/after pair on a loaded machine: the three modules
+      500 s to 396 s (-21 %); generation dominated their time (summed over threads, so not a wall-clock
+      share). The other modules can reuse the cache in a follow-up. Opus review: merge.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

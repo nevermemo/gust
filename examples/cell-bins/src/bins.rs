@@ -30,7 +30,8 @@
 //! rebuild overwrites all of the counts, the cursors and the starts (and the first `n` slots of the order). The scan
 //! takes its temporaries (one per level of totals) from the device pool: the first rebuild may miss the pool and
 //! allocate them, and a second `exclusive_into` of the same size takes no new device buffer (a test in `gust-algo`
-//! asserts that the pool's miss counter does not move; nothing in this crate measures it).
+//! asserts that the pool's miss counter does not move, at one size, 70,001 elements, on the Radeon 890M only; nothing
+//! in this crate measures it).
 
 #[cfg(any(test, gust_dual))]
 use gust::cpu::{CpuBuffer, CpuDevice, CpuUniform};

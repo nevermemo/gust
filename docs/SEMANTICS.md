@@ -2024,8 +2024,9 @@ versions are unmeasured.
 
 Documented difference (D39), finite `f32` constant expressions: rustc evaluates the expression the host and the twin
 read, and slangc evaluates the one the shader reads, so the two are separate evaluations and nothing makes them equal.
-They were equal for the forms the `cexpr` test measures (above) and for nothing else. Integer and `bool` constants,
-and an `f32` that is one literal, stay one value on every side.
+They were equal for the forms the `cexpr` test measures (above; Radeon 890M only, RTX 5090 pending); nothing else
+was measured. Integer and `bool` constants stay one value on every side; an `f32` literal is read by each compiler on
+its own (above), and its values were compared only for the literals of that test.
 
 Documented difference (D39), non-finite and subnormal `f32` constants: rustc compiles `1.0 / 0.0`, `-1.0 / 0.0`,
 `0.0 / 0.0`, `3.0e38 * 10.0` (infinity) and `1.0e-38 / 1000.0` (subnormal) and the macro accepts them, and nothing

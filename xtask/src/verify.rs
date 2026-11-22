@@ -1135,9 +1135,14 @@ pub(crate) struct GpuSuitePin {
 /// reflection record of three `#[pad]` uniforms against their padded Rust structs, and the structs built with the
 /// generated `new` and read field by field on the GPU and on the CPU twin) and adds one `test result:` line. Updated by
 /// count, then checked by full Gpu suite runs on the Radeon 890M (lane) and the RTX 5090 (merge gate).
+///
+/// Slice g2.insp: 578 over 60 became 591 over 61. The buffer inspector adds five unit tests to the library (layout
+/// decoding, JSON rows, the bit-for-bit diff), one `no_run` doc test, and the new test file `tests/inspect.rs` with
+/// seven GPU tests, which adds one `test result:` line. Updated by count; the merge gate's full Gpu suite on the RTX
+/// 5090 checks it.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 578,
-    result_lines: 60,
+    passed: 591,
+    result_lines: 61,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

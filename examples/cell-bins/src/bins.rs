@@ -9,9 +9,12 @@
 //!    and writes its own index to `order[starts[cell] + place]`.
 //!
 //! A cell is `floor(x) + side * floor(y)` for a position `(x, y)` in `[0, side)` on each axis. A position at or past
-//! `side - 1` on either axis (any finite value, or `+inf`) is put in the last cell of that axis: the value is clamped
-//! in `f32` before the conversion to an integer. A negative or NaN position is the caller's error (a float to
-//! unsigned conversion of it is not defined the same way on every device).
+//! `side - 1` on either axis (any finite value) is put in the last cell of that axis: the value is clamped in `f32`
+//! (a comparison and an assignment) before the conversion to an integer. `+inf` is fed to the same clamp by the test
+//! cases (`far_case`, in `gpu_matches_the_host_reference`) but is not promised: `docs/SEMANTICS.md` 15.7.2 lets a GPU
+//! assume that no infinity is present, so a program that needs it handled should clamp on the host first. A negative
+//! or NaN position is the caller's error (a float to unsigned conversion of it is not defined the same way on every
+//! device).
 //!
 //! # Contract
 //!

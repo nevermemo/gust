@@ -2033,8 +2033,8 @@ its own (above), and its values were compared only for the literals of that test
 
 Documented difference (D39), non-finite and subnormal `f32` constants: rustc compiles `1.0 / 0.0`, `-1.0 / 0.0`,
 `0.0 / 0.0`, `3.0e38 * 10.0` (infinity) and `1.0e-38 / 1000.0` (subnormal) and the macro accepts them, and nothing
-proves the shader reads them as Rust does. Measured once on the Radeon 890M with slangc 2026.22 (a scratch probe, not a
-committed test): slangc accepted the shader (it wrote `_slang_getInfinity` and `_slang_getNan` calls and a subnormal
+proves the shader reads them as Rust does. Measured once on the Radeon 890M with slangc 2026.22 (a scratch probe;
+no committed test reproduces it): slangc accepted the shader (it wrote `_slang_getInfinity` and `_slang_getNan` calls and a subnormal
 literal), wgpu ran it, and the values read back were bit-equal to the host's (`0x7f800000`, `0xff800000`, `0x7fc00000`,
 `0x7f800000`, `0x00001be0`). The subnormal survived on that adapter; another adapter may flush it, and a NaN payload is
 not promised. Prefer finite normal constants.

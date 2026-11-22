@@ -1113,7 +1113,8 @@ pub(crate) struct GpuSuitePin {
 /// and adds one `test result:` line. Updated by count.
 ///
 /// Slice m11.cexpr: 566 over 56 became 568 over 56. Two more tests in `tests/consts.rs` (the Rust values of the
-/// constant expressions, and the expressions on the GPU against them), on an existing `test result:` line.
+/// constant expressions, and the expressions on the GPU against them), on an existing `test result:` line. The full
+/// Gpu suite on dev `085a6e9` on the Radeon 890M matched 568 over 56 (recorded in STATUS, "Round 6 end").
 ///
 /// Slice m11.psplit-a: 568 over 56 became 569 over 56. One more test in `crates/gust-wgpu/tests/split.rs` (a split
 /// launch runs the variant's own precompiled artifact and equals the unsplit launch), on an existing line.

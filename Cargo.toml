@@ -25,6 +25,7 @@ members = [
     "examples/typed-pipeline",
     "examples/vector-add",
     "examples/walker-steer",
+    "examples/walker-transport",
     "examples/web-vector-add",
     "xtask",
 ]

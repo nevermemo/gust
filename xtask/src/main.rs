@@ -22,6 +22,7 @@ mod suite;
 mod test_exact;
 mod time;
 mod ui;
+mod ui_stream;
 mod validation;
 mod verify;
 mod web;

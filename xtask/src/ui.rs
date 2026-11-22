@@ -7,6 +7,7 @@ use std::{
 use crate::{
     json::{self, Json},
     process::{CheckRecord, cargo_program, report_check, set_workspace_profile},
+    ui_stream::{PackageStream, shared_cause, split_by_package, stderr_of},
 };
 
 /// The fixture workspace, relative to the repository root. It has a `[workspace]` of its own
@@ -77,6 +78,8 @@ pub(crate) struct Case {
     /// The `env.txt` of the fixture: variables its `cargo check` runs with, after the workspace profile. Empty
     /// when there is no `env.txt`.
     pub(crate) env: Vec<(String, String)>,
+    /// Whether the fixture's `Cargo.toml` names `features` (see [`manifest_sets_features`]).
+    pub(crate) features: bool,
 }
 
 /// A place in a source file: a span's own, or one of the call sites of its macro expansion.
@@ -118,7 +121,8 @@ pub(crate) struct Diagnostic {
 }
 
 /// `cargo xtask check-ui`: `cargo check` of each fixture crate under `tests/ui/`, compared with
-/// its expectation. Needs cargo only; no slangc and no GPU. Also part of the Unit suite.
+/// its expectation (the plain fixtures in one shared call, see [`shares_call`]). Needs cargo only; no slangc and no
+/// GPU. Also part of the Unit suite.
 pub(crate) fn check_ui(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<(), String> {
     let outcome = run_cases(root, checks);
     report_check(checks, "check-ui", outcome)
@@ -128,7 +132,12 @@ pub(crate) fn check_ui(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<(),
 fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<String>> {
     let cases = discover_cases(&root.join(UI_DIR)).map_err(|error| vec![error])?;
     let mut problems = Vec::new();
-    for case in &cases {
+    let (shared, own): (Vec<&Case>, Vec<&Case>) = cases.iter().partition(|case| shares_call(case));
+    if !shared.is_empty() {
+        let own_names: Vec<&str> = own.iter().map(|case| case.name.as_str()).collect();
+        run_shared(root, &shared, &own_names, checks, &mut problems);
+    }
+    for case in own {
         let args = cargo_args(&case.name);
         let output = case_command(root, &case.name, &case.env).output();
         let output = match output {
@@ -198,10 +207,130 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
         .filter(|case| matches!(case.expectation, Expectation::BuildFails(_)))
         .count();
     let with_env = cases.iter().filter(|case| !case.env.is_empty()).count();
+    let shared = cases.iter().filter(|case| shares_call(case)).count();
+    let own = cases.len() - shared;
     Ok(format!(
-        "UI check passed: {failing} fixture crate(s) failed to compile with exactly the expected rustc error, {refused} failed in the build script of gust with the expected text and {} compiled cleanly (tests/ui, `cargo check --locked --message-format json`; {with_env} with variables of their own from env.txt). The re-export fixture ({REEXPORT_DIR}, `#[gpu(crate = ..)]`) also compiled, with no direct dependency on gust (that step took {reexport_seconds} s). Only the keys of each expected.txt (code, file, line, message and label) are compared, all within the one error of the crate itself (warnings and other crates are ignored, a second error fails) read from cargo's JSON, not the whole rustc output; a `build-error:` text is looked up in cargo's stderr; no slangc and no GPU were involved.\n",
+        "UI check passed: {failing} fixture crate(s) failed to compile with exactly the expected rustc error, {refused} failed in the build script of gust with the expected text and {} compiled cleanly (tests/ui, `cargo check --locked --message-format json`: the {shared} fixtures without env.txt, `build-error:` or `features` in one shared `--keep-going` call split per package, each of the other {own} in a call of its own; {with_env} have variables of their own from env.txt). The re-export fixture ({REEXPORT_DIR}, `#[gpu(crate = ..)]`) also compiled, with no direct dependency on gust (that step took {reexport_seconds} s). Only the keys of each expected.txt (code, file, line, message and label) are compared, all within the one error of the crate itself (warnings and other crates are ignored, a second error fails) read from cargo's JSON, not the whole rustc output; a `build-error:` text is looked up in cargo's stderr; no slangc and no GPU were involved.\n",
         cases.len() - failing - refused
     ))
+}
+
+/// Whether a fixture is checked in the one shared `cargo check` (see [`shared_args`]) instead of a call of its own: it
+/// must compile or fail with a rustc error, and set no variable. An `env.txt` changes the build of `gust` itself (the
+/// profile, the routing), which one call cannot do for several fixtures, and a `build-error:` is looked up in the stderr
+/// of the call, which a shared call does not split per fixture; both keep their own call. So does a fixture whose
+/// manifest names `features` (`features` or `default-features` of a dependency): cargo unifies features across the
+/// packages of one call, and `gust`'s build script reads the feature it would leak into every other fixture.
+pub(crate) fn shares_call(case: &Case) -> bool {
+    case.env.is_empty() && !case.features && !matches!(case.expectation, Expectation::BuildFails(_))
+}
+
+/// Whether a fixture's `Cargo.toml` names `features` on any non-comment line (conservative: a `[features]` table of its
+/// own counts too).
+pub(crate) fn manifest_sets_features(manifest: &str) -> bool {
+    manifest
+        .lines()
+        .any(|line| !line.trim_start().starts_with('#') && line.contains("features"))
+}
+
+/// One `cargo check --keep-going` of the `cases` (all of them satisfy [`shares_call`]), judged per fixture from the
+/// stream split by package. Problems and the call's record are added to `problems` and `checks`.
+fn run_shared(
+    root: &Path,
+    cases: &[&Case],
+    own_call: &[&str],
+    checks: &mut Vec<CheckRecord>,
+    problems: &mut Vec<String>,
+) {
+    let output = shared_command(root, own_call).output();
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => {
+            problems.push(format!(
+                "{UI_DIR}: could not launch the shared cargo check: {error}"
+            ));
+            return;
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let packages = split_by_package(&stdout);
+    let before = problems.len();
+    for case in cases {
+        problems.extend(judge_shared(
+            case,
+            packages.get(&case.name),
+            &stderr_of(&stderr, &case.name),
+        ));
+    }
+    // A fixture that printed nothing may have been stopped by a cause that names no fixture (lock drift, a build
+    // script of `gust`, an error in `gust` or the macro crate): the report carries that cause once.
+    if cases.iter().any(|case| !packages.contains_key(&case.name)) && problems.len() > before {
+        problems.push(shared_cause(&stdout, &stderr));
+    }
+    let rendered = parse_diagnostics(&stdout)
+        .iter()
+        .map(|diagnostic| diagnostic.rendered.as_str())
+        .collect::<String>();
+    checks.push(CheckRecord {
+        program: "cargo".to_owned(),
+        arguments: shared_args(own_call),
+        exit_code: output.status.code(),
+        stdout: rendered,
+        stderr,
+    });
+}
+
+/// The problems of one fixture of a shared call: [`judge`] of what the fixture's own package printed. A fixture whose
+/// package printed no message and no artifact was never checked, which is a problem and never a pass (`stderr` is the
+/// part of cargo's stderr that names it).
+pub(crate) fn judge_shared(
+    case: &Case,
+    package: Option<&PackageStream>,
+    stderr: &str,
+) -> Vec<String> {
+    let Some(package) = package else {
+        return vec![format!(
+            "{}: the shared `cargo check` printed no compiler-message and no compiler-artifact for it, so it was not checked; cargo said:\n{}",
+            case.name,
+            indent(stderr.trim_end())
+        )];
+    };
+    judge(
+        &case.name,
+        &case.name,
+        &case.expectation,
+        package.compiled(),
+        &package.stdout,
+        stderr,
+    )
+}
+
+/// The cargo child that checks the fixtures that [`shares_call`] in one call, under the workspace profile.
+pub(crate) fn shared_command(root: &Path, own_call: &[&str]) -> Command {
+    let mut command = Command::new(cargo_program());
+    command
+        .args(shared_args(own_call))
+        .current_dir(root)
+        .stdin(Stdio::null());
+    set_workspace_profile(&mut command);
+    command
+}
+
+/// The arguments after `cargo` that check the whole fixture workspace except `own_call` (the fixtures that do not
+/// [`shares_call`]) in one call: those of [`cargo_args`] for the workspace, and `--keep-going`, so that a package
+/// that fails does not stop the others from being checked.
+pub(crate) fn shared_args(own_call: &[&str]) -> Vec<String> {
+    let mut args: Vec<String> = ["check", "--locked", "--keep-going", "--color", "never"]
+        .iter()
+        .map(|arg| (*arg).to_owned())
+        .collect();
+    args.extend(["--manifest-path", "tests/ui/Cargo.toml", "--workspace"].map(str::to_owned));
+    for case in own_call {
+        args.extend(["--exclude".to_owned(), (*case).to_owned()]);
+    }
+    args.extend(["--message-format", "json"].map(str::to_owned));
+    args
 }
 
 /// The cargo child that checks one fixture crate. It runs under `GUST_PROFILE=dev` like the other children of a
@@ -328,7 +457,10 @@ pub(crate) fn discover_cases(ui_root: &Path) -> Result<Vec<Case>, String> {
             } else {
                 Vec::new()
             };
+            let manifest = fs::read_to_string(ui_root.join(&name).join("Cargo.toml"))
+                .map_err(|error| format!("{UI_DIR}/{name}/Cargo.toml: {error}"))?;
             Ok(Case {
+                features: manifest_sets_features(&manifest),
                 name,
                 expectation,
                 env,

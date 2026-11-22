@@ -672,58 +672,93 @@ fn check_variant_links(kernels: &[KernelEntry]) -> Result<(), String> {
     Ok(())
 }
 
-/// The links of the `split_of` keys to the entries (schema 4). A split is a second artifact of one body (m11.psplit-a,
-/// D209): `split_of` names an entry of this manifest that has the split's `module`, `name` and `entry_point`, the shape
-/// `grid` (as the split's own), and no `split_of` of its own; no body has two splits; and a split has no `variants`
-/// list (it is not a body; [`check_variant_links`] never lists one either).
+/// What the link rules of a split variant look at: one entry of the manifest or one collected record.
+pub(crate) struct SplitFacts<'a> {
+    pub(crate) key: &'a str,
+    pub(crate) module: &'a str,
+    pub(crate) name: &'a str,
+    pub(crate) entry_point: &'a str,
+    pub(crate) shape: Shape,
+    pub(crate) split_of: Option<&'a str>,
+    /// The length of the `variants` list (a record has none).
+    pub(crate) variants: usize,
+}
+
+impl SplitFacts<'_> {
+    fn qualified_name(&self) -> String {
+        format!("{}::{}", self.module, self.name)
+    }
+}
+
+/// The one statement of the link rules of a split variant (m11.psplit-a, D209), used by the manifest reader
+/// ([`check_split_links`]) and by `cargo gust build` before it writes a manifest (`export::check_splits`), so that the
+/// two cannot drift: `split_of` names an item of `all` with the split's `module`, `name` and `entry_point`; both are of
+/// shape `grid`; the owner is no split itself; no body has two splits; and a split has no `variants` list (it is not a
+/// body; [`check_variant_links`] never lists one either). `None` when `split` is not a split or all rules hold, else
+/// the first rule it breaks, without any position (the caller names where `split` is).
+pub(crate) fn split_link_problem(split: &SplitFacts<'_>, all: &[SplitFacts<'_>]) -> Option<String> {
+    let owner_key = split.split_of?;
+    if split.variants != 0 {
+        return Some(
+            "a split variant (`split_of`) has no `variants` list; it is not a body of the kernel"
+                .to_owned(),
+        );
+    }
+    let Some(owner) = all.iter().find(|item| item.key == owner_key) else {
+        return Some(format!(
+            "`split_of` key {owner_key} names no kernel of this set"
+        ));
+    };
+    if owner.module != split.module
+        || owner.name != split.name
+        || owner.entry_point != split.entry_point
+    {
+        return Some(format!(
+            "`split_of` key {owner_key} is `{}` (entry point `{}`), not of this kernel and entry point `{}`",
+            owner.qualified_name(),
+            owner.entry_point,
+            split.entry_point
+        ));
+    }
+    if owner.shape != Shape::Grid || split.shape != Shape::Grid {
+        return Some(format!(
+            "only a `grid` kernel has a split variant (`split_of` key {owner_key})"
+        ));
+    }
+    if owner.split_of.is_some() {
+        return Some(format!(
+            "`split_of` key {owner_key} is itself a split variant; a split has no split"
+        ));
+    }
+    all.iter()
+        .find(|other| other.key != split.key && other.split_of == split.split_of)
+        .map(|other| {
+            format!(
+                "the body (key {owner_key}) has a second split variant (key {}); a body has one split",
+                other.key
+            )
+        })
+}
+
+/// The links of the `split_of` keys to the entries (schema 4): [`split_link_problem`] for every split entry.
 fn check_split_links(kernels: &[KernelEntry]) -> Result<(), String> {
-    for (index, split) in kernels.iter().enumerate() {
-        let Some(owner_key) = &split.split_of else {
-            continue;
-        };
-        let context = format!("kernels[{index}] (`{}`)", split.qualified_name());
-        if !split.variants.is_empty() {
+    let facts: Vec<SplitFacts<'_>> = kernels
+        .iter()
+        .map(|entry| SplitFacts {
+            key: &entry.key,
+            module: &entry.module,
+            name: &entry.name,
+            entry_point: &entry.entry_point,
+            shape: entry.shape,
+            split_of: entry.split_of.as_deref(),
+            variants: entry.variants.len(),
+        })
+        .collect();
+    for (index, (entry, split)) in kernels.iter().zip(&facts).enumerate() {
+        if let Some(problem) = split_link_problem(split, &facts) {
             return Err(format!(
-                "{context}: a split variant (`split_of`) has no `variants` list; it is not a body of the kernel"
-            ));
-        }
-        let Some((owner_index, owner)) = kernels
-            .iter()
-            .enumerate()
-            .find(|(_, entry)| entry.key == *owner_key)
-        else {
-            return Err(format!(
-                "{context}: `split_of` key {owner_key} is not an entry of this manifest"
-            ));
-        };
-        if owner.module != split.module
-            || owner.name != split.name
-            || owner.entry_point != split.entry_point
-        {
-            return Err(format!(
-                "{context}: `split_of` key {owner_key} is the entry `{}` (entry point `{}`), not of this kernel and entry point `{}`",
-                owner.qualified_name(),
-                owner.entry_point,
-                split.entry_point
-            ));
-        }
-        if owner.shape != Shape::Grid || split.shape != Shape::Grid {
-            return Err(format!(
-                "{context}: only a `grid` kernel has a split variant (`split_of` key {owner_key})"
-            ));
-        }
-        if owner.split_of.is_some() {
-            return Err(format!(
-                "{context}: `split_of` key {owner_key} is itself a split variant; a split has no split"
-            ));
-        }
-        if let Some((other_index, _)) = kernels
-            .iter()
-            .enumerate()
-            .find(|(other_index, other)| *other_index != index && other.split_of == split.split_of)
-        {
-            return Err(format!(
-                "{context}: kernels[{other_index}] is a split of the same body (key {owner_key}) as well; a body has one split (kernels[{owner_index}])"
+                "kernels[{index}] (`{}`): {problem}",
+                entry.qualified_name()
             ));
         }
     }
@@ -1588,14 +1623,14 @@ mod tests {
         manifest.kernels[1].split_of = Some("00000000000000dd".to_owned());
         assert_eq!(
             refusal(&manifest),
-            "kernels[0] (`demo::run`): `split_of` key 00000000000000dd is not an entry of this manifest"
+            "kernels[0] (`demo::run`): `split_of` key 00000000000000dd names no kernel of this set"
         );
         // An owner that is another kernel.
         let mut manifest = split_manifest();
         manifest.kernels[1].split_of = Some(OTHER_KEY.to_owned());
         assert_eq!(
             refusal(&manifest),
-            "kernels[0] (`demo::run`): `split_of` key 00000000000000ff is the entry `demo::other` (entry point `gpu_demo_other`), not of this kernel and entry point `gpu_demo_run`"
+            "kernels[0] (`demo::run`): `split_of` key 00000000000000ff is `demo::other` (entry point `gpu_demo_other`), not of this kernel and entry point `gpu_demo_run`"
         );
         // An owner of the same kernel with another entry point (a variant body).
         let mut manifest = variant_manifest();
@@ -1604,7 +1639,7 @@ mod tests {
         manifest.kernels.push(split);
         assert_eq!(
             refusal(&manifest),
-            "kernels[1] (`demo::run`): `split_of` key 00000000000000aa is the entry `demo::run` (entry point `gpu_demo_run_subgroups`), not of this kernel and entry point `gpu_demo_run`"
+            "kernels[1] (`demo::run`): `split_of` key 00000000000000aa is `demo::run` (entry point `gpu_demo_run_subgroups`), not of this kernel and entry point `gpu_demo_run`"
         );
         // A kernel that is not `grid`.
         let mut manifest = split_manifest();
@@ -1627,7 +1662,7 @@ mod tests {
         manifest.kernels.push(second);
         assert_eq!(
             refusal(&manifest),
-            "kernels[0] (`demo::run`): kernels[1] is a split of the same body (key 0123456789abcdef) as well; a body has one split (kernels[3])"
+            "kernels[0] (`demo::run`): the body (key 0123456789abcdef) has a second split variant (key 00000000000000dd); a body has one split"
         );
         // A split with a `variants` list of its own.
         let mut manifest = split_manifest();

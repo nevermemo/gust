@@ -7,8 +7,20 @@
 
 use std::process::ExitCode;
 
-use gust_wgpu::{Error, GpuBufferAccess, HeadlessDevice};
+use gust::{Access, Extent, KernelDescriptor, LengthRule, Resource};
+use gust_wgpu::{BufferDispatch, Error, GpuBufferAccess, HeadlessDevice};
 use kernels::vector_add;
+
+/// What `cargo xtask check-precompiled` requires before the limit that refused the launch.
+const SPLIT_REFUSED_PREFIX: &str = "split fallback: no split artifact and no run-time compiler, so the launch past the limit is refused with DeviceLimit on ";
+
+/// The split variant of the kernel without its precompiled artifact, and the kernel with that split.
+const SPLIT_WITHOUT_ARTIFACT: KernelDescriptor = match vector_add::add::DESCRIPTOR.split {
+    Some(split) => split.with_artifacts(&[]),
+    None => panic!("the kernel has no split variant"),
+};
+const WITHOUT_SPLIT_ARTIFACT: KernelDescriptor =
+    vector_add::add::DESCRIPTOR.with_split(Some(&SPLIT_WITHOUT_ARTIFACT));
 
 /// More than one workgroup (64) and not a multiple of it, so the kernel's bounds check matters.
 const LENGTH: usize = 1000;
@@ -81,7 +93,7 @@ fn run() -> Result<(), String> {
 
 /// The same launch on a device whose per-dimension workgroup limit is lowered below the launch (D208): the host cuts it
 /// into pieces of the kernel's split variant. This binary has no run-time compiler, so the pieces can only run from the
-/// split's own precompiled artifact (D209); a build that lacks it fails the launch with the no-artifact error.
+/// split's own precompiled artifact (D209); a build that lacks it fails the launch with the `DeviceLimit` refusal.
 fn split_launch(
     device: HeadlessDevice,
     a: &[f32],
@@ -136,6 +148,34 @@ fn split_launch(
     println!(
         "split: a launch past a lowered workgroup limit ran as pieces of the split artifact and equals the host reference for {LENGTH} elements"
     );
+
+    // The fallback: the same launch of the same kernel whose split variant has no precompiled artifact. This binary has
+    // no run-time compiler either, so the host cannot run the pieces and answers with the launch's own refusal (D208).
+    let bindings = [
+        a.bind(Access::ReadOnly, LengthRule::Shared),
+        b.bind(Access::ReadOnly, LengthRule::Shared),
+        out.bind(Access::ReadWrite, LengthRule::Shared),
+    ];
+    let launch = BufferDispatch::new_extent(
+        &WITHOUT_SPLIT_ARTIFACT,
+        Extent::linear(LENGTH as u32),
+        &bindings,
+    );
+    match device.dispatch_batch(&[launch]) {
+        Err(Error::DeviceLimit { limit, .. }) => println!(
+            "{SPLIT_REFUSED_PREFIX}{limit}"
+        ),
+        Err(other) => {
+            return Err(format!(
+                "a split launch without a split artifact or a compiler failed with {other}, not the DeviceLimit refusal"
+            ));
+        }
+        Ok(_) => {
+            return Err(
+                "a split launch without a split artifact or a compiler ran: the pieces came from nowhere".to_owned(),
+            );
+        }
+    }
     Ok(())
 }
 

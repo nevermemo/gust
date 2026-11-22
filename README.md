@@ -543,7 +543,8 @@ The promise covers:
   write-only access, say);
 - the `#[gpu]` language: the set of accepted constructs with their lowering contract ([SEMANTICS](docs/SEMANTICS.md));
 - the commands of `cargo-gust` and the lines they print, which scripts and CI read;
-- the file formats: `gust-artifacts/manifest.json` (schema 4, with `split_of` linking a grid kernel's split artifact to its body), the record files (schema 5) and the reflection records
+- the file formats: `gust-artifacts/manifest.json` (schema 4, with `split_of` linking a grid kernel's split artifact
+  to its body), the record files (schema 5) and the reflection records
   (schemas 1 to 4); a newer release reads every older schema (D82, D89, D91, D139);
 - `gust.toml`, the `[package.metadata.gust]` table and `GUST_PROFILE`'s grammar including the `+capability` suffix;
 - the modules `gust::capability`, `gust::limits`, `gust::target`, `gust::routes` and `gust::routed` (`RoutedDevice`
@@ -860,8 +861,9 @@ and the one-dimensional forms mean `Extent { x: n, y: 1, z: 1 }`. A one-dimensio
 launch of a `grid` kernel is not capped by the device's workgroups per dimension
 (`gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION`, 65 535 on default limits): since m11.g4b the host
 cuts a launch that needs more into pieces, each invocation still running once with the ids of an unsplit
-launch (up to `gust_wgpu::MAX_SPLIT_DISPATCHES` pieces; a staged graph node and a build
-without `slang-runtime` keep the `DeviceLimit`; the host never checks an indirect dispatch's count). On both backends the invocation total, with each axis rounded up to
+launch (up to `gust_wgpu::MAX_SPLIT_DISPATCHES` pieces; a staged graph node keeps the `DeviceLimit`, and so does a
+kernel whose split has neither a precompiled artifact (D209) nor a run-time compiler to build it; the host never
+checks an indirect dispatch's count). On both backends the invocation total, with each axis rounded up to
 whole workgroups, is at most 2^32 (past it is `DeviceLimit` for
 `global_invocation_id`); a zero axis dispatches nothing and returns `Ok(())`.
 Staged graphs stay one-dimensional. Evidence (exists, m7.d): on the RTX 5090 a
@@ -1140,7 +1142,8 @@ pub fn double_subgroups(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mu
   the portable body. The names `vulkan` (the set `subgroups`) and `webgpu` (the empty set) are aliases. Every body is
   validated and lowered in every build, and `cargo gust build` exports the artifact of every body (record schema 4 and
   manifest schema 3, written only for a kernel with a variant or a required capability; a grid kernel's split artifact
-  is record schema 5 and manifest schema 4, with `split_of`; a crate with neither keeps its bytes). The CPU twin and the `cpu` target always use the portable body. The codes are GUST-E0740 to E0744 and E0750
+  is record schema 5 and manifest schema 4, with `split_of`; a crate with neither keeps its bytes). The CPU twin and
+  the `cpu` target always use the portable body. The codes are GUST-E0740 to E0744 and E0750
   ([DIAGNOSTICS](docs/DIAGNOSTICS.md)).
 - A crate's `profiles` list is checked for exhaustiveness: every declared GPU profile needs a body for every kernel
   (GUST-E0744). A kernel that says `cpu = "unsupported"` meets the `cpu` entry of the default list, so a 0.1.0 crate

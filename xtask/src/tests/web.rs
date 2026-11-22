@@ -706,6 +706,23 @@ fn all_five_committed_copies_of_the_precompiled_artifact_are_byte_copies_of_the_
         .filter(|name| name != "manifest.json")
         .collect();
     artifact_files.sort();
+    // The split's key is the `key` of the manifest entry that carries `split_of`; the body's is what `split_of` names.
+    let manifest = fs::read_to_string(source.join("manifest.json")).unwrap();
+    let mut last_key = None;
+    let mut split_key = None;
+    let mut body_key = None;
+    for line in manifest.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("\"key\": \"") {
+            last_key = rest.split('"').next().map(str::to_owned);
+        } else if let Some(rest) = line.strip_prefix("\"split_of\": \"") {
+            body_key = rest.split('"').next().map(str::to_owned);
+            split_key = last_key.clone();
+        }
+    }
+    let (split_key, body_key) = (
+        split_key.expect("the kernels fixture manifest has a split entry"),
+        body_key.expect("the kernels fixture manifest has a split_of"),
+    );
     // The body's pair and its split's pair (D209); every file of both is copied byte for byte below.
     assert_eq!(
         artifact_files.len(),
@@ -723,7 +740,11 @@ fn all_five_committed_copies_of_the_precompiled_artifact_are_byte_copies_of_the_
                 "crates/gust-wgpu/tests/fixtures/precompiled",
             ]
             .contains(&copy);
-            if body_only && !name.starts_with("52e85c5f03f72272") {
+            if body_only && !name.starts_with(&body_key) {
+                assert!(
+                    name.starts_with(&split_key),
+                    "{name} is neither the body's ({body_key}) nor the split's ({split_key}) file"
+                );
                 assert!(
                     !path.exists(),
                     "{copy}/{name}: a body-only fixture holds a split file"

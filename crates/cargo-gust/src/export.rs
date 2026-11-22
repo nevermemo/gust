@@ -17,8 +17,8 @@ use gust::{
 
 use crate::{
     manifest::{
-        FormatEntry, KernelEntry, MANIFEST_FILE, Manifest, VariantEntry, artifact_file,
-        format_name, format_rank, reflection_file,
+        FormatEntry, KernelEntry, MANIFEST_FILE, Manifest, SplitFacts, VariantEntry, artifact_file,
+        format_name, format_rank, reflection_file, split_link_problem,
     },
     record::Record,
     sha256::sha256_hex,
@@ -191,57 +191,28 @@ pub(crate) fn variant_lists(
     Ok(lists)
 }
 
-/// The links of the split records (schema 5) to the bodies in the same collection: `split_of` names a body record with
-/// the split's `module`, `name` and `entry_point` and the shape `grid`; the body is no split, and a body has one split
-/// at most. The manifest reader holds the written entries to the same standard ([`crate::manifest`]); this refuses a
-/// collection that would write a manifest the reader refuses, before any file is compiled.
+/// The links of the split records (schema 5) to the bodies in the same collection, by the rules the manifest reader
+/// holds the written entries to ([`split_link_problem`]); this refuses a collection that would write a manifest the
+/// reader refuses, before any file is compiled.
 pub(crate) fn check_splits(records: &[Record]) -> Result<(), String> {
-    for split in records.iter().filter(|record| record.is_split()) {
-        let Some(owner_key) = &split.split_of else {
-            continue;
-        };
-        let Some(owner) = records.iter().find(|record| record.key == *owner_key) else {
+    let facts: Vec<SplitFacts<'_>> = records
+        .iter()
+        .map(|record| SplitFacts {
+            key: &record.key,
+            module: &record.module,
+            name: &record.name,
+            entry_point: &record.entry_point,
+            shape: record.shape,
+            split_of: record.split_of.as_deref(),
+            variants: 0,
+        })
+        .collect();
+    for (record, split) in records.iter().zip(&facts) {
+        if let Some(problem) = split_link_problem(split, &facts) {
             return Err(format!(
-                "the split variant of `{}` (key {}) names the body {owner_key}, which is not among the collected records; run `cargo gust build` again so that the sources and the records agree",
-                split.body_name(),
-                split.key
-            ));
-        };
-        if owner.is_split() {
-            return Err(format!(
-                "the split variant {} of `{}` names the record {owner_key}, which is a split itself",
-                split.key,
-                split.body_name()
-            ));
-        }
-        if owner.module != split.module
-            || owner.name != split.name
-            || owner.entry_point != split.entry_point
-        {
-            return Err(format!(
-                "the split variant {} of `{}` names the body {owner_key}, which is `{}` with entry point `{}`",
-                split.key,
-                split.body_name(),
-                owner.body_name(),
-                owner.entry_point
-            ));
-        }
-        if owner.shape != gust::Shape::Grid || split.shape != gust::Shape::Grid {
-            return Err(format!(
-                "the split variant {} of `{}` is not of a `grid` kernel",
-                split.key,
-                split.body_name()
-            ));
-        }
-        if let Some(other) = records
-            .iter()
-            .find(|other| other.key != split.key && other.split_of == split.split_of)
-        {
-            return Err(format!(
-                "the body `{}` (key {owner_key}) has two split variants (keys {} and {})",
-                owner.body_name(),
-                split.key,
-                other.key
+                "the split variant {} of `{}`: {problem}; run `cargo gust build` again so that the sources and the records agree",
+                record.key,
+                record.body_name()
             ));
         }
     }
@@ -1093,8 +1064,8 @@ pub(crate) mod tests {
         // The body is not in the collection.
         let error = refused(vec![split.clone()]);
         assert!(
-            error.starts_with("the split variant of `demo::run` (key")
-                && error.contains("which is not among the collected records"),
+            error.starts_with("the split variant ")
+                && error.contains("names no kernel of this set"),
             "{error}"
         );
         // Another kernel's entry point.
@@ -1103,7 +1074,7 @@ pub(crate) mod tests {
         stray.key = crate::record::key_of(&stray.entry_point, &stray.slang);
         let error = refused(vec![owner.clone(), stray]);
         assert!(
-            error.contains("which is `demo::run` with entry point `gpu_demo_run`"),
+            error.contains("is `demo::run` (entry point `gpu_demo_run`)"),
             "{error}"
         );
         // Two splits of one body.
@@ -1111,17 +1082,20 @@ pub(crate) mod tests {
         second.slang.push_str("// again\n");
         second.key = crate::record::key_of(&second.entry_point, &second.slang);
         let error = refused(vec![owner.clone(), split.clone(), second]);
-        assert!(error.contains("has two split variants"), "{error}");
+        assert!(error.contains("has a second split variant"), "{error}");
         // A split of a split.
         let mut grand = split_of(&split);
         grand.split_of = Some(split.key.clone());
         let error = refused(vec![owner.clone(), split.clone(), grand]);
-        assert!(error.contains("which is a split itself"), "{error}");
+        assert!(error.contains("is itself a split variant"), "{error}");
         // A kernel that is not `grid`.
         let mut pixel = split.clone();
         pixel.shape = gust::Shape::Pixel;
         let error = refused(vec![owner, pixel]);
-        assert!(error.contains("is not of a `grid` kernel"), "{error}");
+        assert!(
+            error.contains("only a `grid` kernel has a split variant"),
+            "{error}"
+        );
     }
 }
 

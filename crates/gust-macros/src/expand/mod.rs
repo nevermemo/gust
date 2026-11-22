@@ -667,10 +667,11 @@ fn expand_validated_with(
             other => other,
         };
         // The split variant of a body of a `grid` kernel built for the GPU (m11.g4a): the same Slang with one hidden
-        // uniform. Every such body has one, selected or not, so that export mode writes its record and a later build
-        // that selects another body finds the split artifact of that one (m11.psplit-a, D209); only the selected body's
-        // is embedded. It has a key of its own, from its own text, and the pair under that key is its artifact.
-        let split = if !cpu_target && shape == Shape::Grid {
+        // uniform. In export mode every such body has one, selected or not, so that its record is written and a later
+        // build that selects another body finds the split artifact of that one (m11.psplit-a, D209); outside export
+        // mode only the selected body emits one. Only the selected body's is embedded. It has a key of its own, from
+        // its own text, and the pair under that key is its artifact.
+        let split = if !cpu_target && shape == Shape::Grid && (is_selected || export_mode) {
             let facts = parameter_facts(stage, &function.sig.inputs)?;
             let binding = u32::try_from(facts.iter().filter(|fact| fact.binding.is_some()).count())
                 .expect("a kernel has fewer than 2^32 parameters");
@@ -717,16 +718,12 @@ fn expand_validated_with(
         };
         // The split's artifact is never required: without it the launch keeps its `DeviceLimit` refusal (D208). A half
         // pair is the same error as a body's, and in export mode it counted as absent above.
-        if let (
-            true,
-            false,
-            Some(SplitBody {
-                lookup: split_lookup @ Lookup::Incomplete { .. },
-                ..
-            }),
-        ) = (is_selected, routed_cpu, &split)
+        if is_selected
+            && !routed_cpu
+            && let Some(split) = &split
+            && matches!(split.lookup, Lookup::Incomplete { .. })
         {
-            strict_artifact.extend(artifact_check_items(split_lookup, original_name.span()));
+            strict_artifact.extend(artifact_check_items(&split.lookup, original_name.span()));
         }
         if lookup == Lookup::Present && manifest_span.is_none() {
             manifest_span = Some(original_name.span());

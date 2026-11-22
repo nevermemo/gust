@@ -2360,7 +2360,7 @@ pub(super) mod tests {
         assert!(site.contains("\"schema\": 4,\n") && !site.contains("\"source\""));
     }
 
-    /// Schema 5 (m11.psplit-a, D209) is written only for the split variant of a `grid` body: schema 1's grammar plus
+    /// Schema 5 (m11.psplit-a, D209) is written only for the split variant of a `grid` body: schema 4's grammar plus
     /// `split_of`, the key of the body, after `source` in key order. Every other record is what it was.
     #[test]
     fn a_split_record_is_schema_5_and_names_its_body() {

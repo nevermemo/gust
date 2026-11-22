@@ -12,9 +12,9 @@
 use std::collections::BTreeMap;
 
 use crate::ast::{
-    Arm, BinOp, Elem, EnumDef, Expr, FnDef, GenParam, Imp, InputBuf, Lane, MAX_ENUMS, MAX_FLAT,
-    MAX_TRIPS, MAX_TUPLE_FLAT, MAX_VARIANTS, Methods, Pat, Place, Program, Recv, Root, Stmt,
-    StructDef, TupleTy, Ty, WIDTHS, chain_terms,
+    Arm, BinOp, ConstDef, Elem, EnumDef, Expr, FnDef, GenParam, Imp, InputBuf, Lane, MAX_ENUMS,
+    MAX_FLAT, MAX_TRIPS, MAX_TUPLE_FLAT, MAX_VARIANTS, MathFn, Methods, Pat, Place, Program, Recv,
+    Root, Stmt, StructDef, TupleTy, Ty, WIDTHS, chain_terms,
 };
 use crate::interp;
 mod array_gen;
@@ -79,7 +79,16 @@ use closure_gen::{ArgBias, Cl};
 /// bounds, every parameter bounded by one or two module traits, `Copy` sometimes added) called with at least two
 /// different types. No turbofish, std bound, arithmetic on `T`, generic trait method, recursion, array or
 /// barrier/atomic/subgroup operation is generated. The older spaces decode as in format 12; the batch cut is new.
-pub const DIFFTEST_FORMAT: u32 = 13;
+///
+/// 14: the scalar math methods and module constants (slice m11.dt2): a seed's batch is 17 programs: one float, three
+/// vector, one method, two enum, two value, two array, two closure, two trait and two math programs (the float part
+/// gives up one program). A math program (`Space::Math`, attempts from `MATH_ATTEMPT_BASE`) is a float program (scalars
+/// only) that also writes `a.rem_euclid(b)` on `u32` and `i32`, `a.mul_add(b, c)`, `x.abs()`, `x.floor()`, `x.ceil()`,
+/// `x.trunc()`, `a.min(b)`, `a.max(b)` and `x.clamp(lo, hi)` on `f32`, and one to three module `const` items
+/// (`u32` or `i32`, expressions of literals and earlier constants, D210) that its integer expressions read. The
+/// older spaces decode as in format 13 (a seed's first float, vector, method, enum, value, array, closure and trait
+/// programs are those of format 13); the batch cut is new.
+pub const DIFFTEST_FORMAT: u32 = 14;
 
 /// Which programs the generator writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,6 +123,9 @@ pub enum Space {
     /// The enum space plus module traits and generic helpers (slice m9.d2, format 13). Selected by an attempt number of
     /// `TRAIT_ATTEMPT_BASE` or more.
     Trait,
+    /// The float space (scalars only) plus the scalar math methods and module `const` items (slice m11.dt2, format 14).
+    /// Selected by an attempt number of `MATH_ATTEMPT_BASE` or more.
+    Math,
 }
 
 /// The first attempt number of the vector space. A program is a pure function of `(seed, attempt)`, and the attempt
@@ -124,15 +136,18 @@ pub const VECTOR_ATTEMPT_BASE: u64 = 1_000_000;
 pub const METHOD_ATTEMPT_BASE: u64 = 2_000_000;
 /// In-domain programs of a seed's batch that are scalar (the float space), then vector, then method
 /// (`PROGRAMS_PER_SEED` in all).
-pub const SCALAR_PROGRAMS_PER_SEED: usize = 2;
+pub const SCALAR_PROGRAMS_PER_SEED: usize = 1;
 pub const VECTOR_PROGRAMS_PER_SEED: usize = 3;
 pub const METHOD_PROGRAMS_PER_SEED: usize = 1;
 pub const ENUM_PROGRAMS_PER_SEED: usize = 2;
 pub const ARRAY_PROGRAMS_PER_SEED: usize = 2;
 pub const CLOSURE_PROGRAMS_PER_SEED: usize = 2;
 pub const TRAIT_PROGRAMS_PER_SEED: usize = 2;
+pub const MATH_PROGRAMS_PER_SEED: usize = 2;
 /// The first attempt number of the trait space (above every closure attempt a seed can make).
 pub const TRAIT_ATTEMPT_BASE: u64 = 7_000_000;
+/// The first attempt number of the math space (above every trait attempt a seed can make).
+pub const MATH_ATTEMPT_BASE: u64 = 8_000_000;
 pub const VALUE_PROGRAMS_PER_SEED: usize = PROGRAMS_PER_SEED
     - SCALAR_PROGRAMS_PER_SEED
     - VECTOR_PROGRAMS_PER_SEED
@@ -140,7 +155,8 @@ pub const VALUE_PROGRAMS_PER_SEED: usize = PROGRAMS_PER_SEED
     - ENUM_PROGRAMS_PER_SEED
     - ARRAY_PROGRAMS_PER_SEED
     - CLOSURE_PROGRAMS_PER_SEED
-    - TRAIT_PROGRAMS_PER_SEED;
+    - TRAIT_PROGRAMS_PER_SEED
+    - MATH_PROGRAMS_PER_SEED;
 /// The first attempt number of the array space (above every value attempt a seed can make).
 pub const ARRAY_ATTEMPT_BASE: u64 = 5_000_000;
 /// The first attempt number of the closure space (above every array attempt a seed can make).
@@ -155,10 +171,15 @@ pub const METHOD_END: usize = VECTOR_END + METHOD_PROGRAMS_PER_SEED;
 pub const ENUM_END: usize = METHOD_END + ENUM_PROGRAMS_PER_SEED;
 pub const VALUE_END: usize = ENUM_END + VALUE_PROGRAMS_PER_SEED;
 pub const ARRAY_END: usize = VALUE_END + ARRAY_PROGRAMS_PER_SEED;
+/// Where the closure programs end and the trait programs begin, where those end and the math programs begin.
+pub const CLOSURE_END: usize = ARRAY_END + CLOSURE_PROGRAMS_PER_SEED;
+pub const TRAIT_END: usize = CLOSURE_END + TRAIT_PROGRAMS_PER_SEED;
 
 /// The space whose decoder reads the program of this attempt number.
 pub fn space_of_attempt(attempt: u64) -> Space {
-    if attempt >= TRAIT_ATTEMPT_BASE {
+    if attempt >= MATH_ATTEMPT_BASE {
+        Space::Math
+    } else if attempt >= TRAIT_ATTEMPT_BASE {
         Space::Trait
     } else if attempt >= CLOSURE_ATTEMPT_BASE {
         Space::Closure
@@ -179,7 +200,10 @@ pub fn space_of_attempt(attempt: u64) -> Space {
 /// Bytes of the stream one program may consume; the decoder reads zeros beyond.
 pub const BYTES_PER_PROGRAM: usize = 4096;
 /// In-domain programs per seed (R1-13).
-pub const PROGRAMS_PER_SEED: usize = 16;
+pub const PROGRAMS_PER_SEED: usize = 17;
+/// In-domain programs of a seed in one space (`generate_batch_in`): the batch size of formats 5 to 13, which the pins of
+/// the older spaces hash.
+pub const SPACE_PROGRAMS_PER_SEED: usize = 16;
 /// Attempts per seed before `generate_batch` gives up (the discard rate is far below this limit).
 pub const MAX_ATTEMPTS: u64 = 100_000;
 /// Expression depth limit (root = 6).
@@ -286,6 +310,9 @@ struct Gen<'a> {
     cur_gens: Vec<GenParam>,
     /// The (generic function, type) instantiations drawn so far: a call prefers a type not yet used.
     inst_used: Vec<(usize, Ty)>,
+    /// The math space (format 14, implies `floats`, not `vectors` or `methods`): the scalar math methods and module
+    /// constants. Every draw they add sits behind this flag.
+    math: bool,
 }
 
 /// The signature a struct impl of a trait method is drawn with (format 13).
@@ -476,6 +503,13 @@ impl Gen<'_> {
             if ty == Ty::U32 && kernel { 5 } else { 0 },
             if ty == Ty::U32 && kernel { 3 } else { 0 },
         ];
+        // 5 in the math space: a module constant of this type.
+        let consts: Vec<u8> = (0..self.table.consts.len() as u8)
+            .filter(|&k| self.table.consts[usize::from(k)].ty == ty)
+            .collect();
+        if self.math {
+            weights.push(if consts.is_empty() { 0 } else { 16 });
+        }
         // 5: a field of a struct local or of `self` (the method space only).
         let fields = if self.methods {
             self.scalar_places(ty)
@@ -486,6 +520,10 @@ impl Gen<'_> {
             weights.push(if fields.is_empty() { 0 } else { 45 });
         }
         match self.b.weighted(&weights) {
+            5 if self.math => Expr::Const {
+                k: consts[self.b.below(consts.len() as u32) as usize],
+                ty,
+            },
             5 => {
                 let (place, _) = fields[self.b.below(fields.len() as u32) as usize].clone();
                 Expr::Read { place, ty }
@@ -643,6 +681,10 @@ impl Gen<'_> {
         if self.vectors {
             weights.push(8);
         }
+        // 14 in the math space (which has no vectors): `a.rem_euclid(b)`.
+        if self.math {
+            weights.push(10);
+        }
         match self.b.weighted(&weights) {
             0 => self.arithmetic(BinOp::Add, ty, depth),
             1 => self.arithmetic(BinOp::Sub, ty, depth),
@@ -690,7 +732,94 @@ impl Gen<'_> {
                 Expr::cast(ty, self.expr(other, d))
             }
             13 => Expr::cast(ty, self.expr(Ty::F32, d)),
+            14 if self.math => {
+                let l = self.expr(ty, d);
+                let r = self.divisor(ty, d);
+                Expr::Math {
+                    f: MathFn::RemEuclid,
+                    ty,
+                    args: vec![l, r],
+                }
+            }
             _ => self.agg_readout(ty, d),
+        }
+    }
+
+    /// The module constants of a math program (format 14, D210): one to three `u32` or `i32` items, each an expression
+    /// of literals and the items before it. Rust refuses a constant that overflows, divides by zero or shifts by 32 or
+    /// more, so a draw that does not evaluate (`interp::const_value`) is tried again and, failing that, written as a
+    /// literal.
+    fn gen_consts(&mut self) {
+        for k in 0..1 + self.b.below(3) as usize {
+            let ty = self.int_ty();
+            let mut init = None;
+            for _ in 0..3 {
+                let candidate = self.const_term(ty, k, 2);
+                self.table.consts.push(ConstDef {
+                    ty,
+                    init: candidate.clone(),
+                });
+                let valid = interp::const_value(&self.table, k).is_ok();
+                self.table.consts.pop();
+                if valid {
+                    init = Some(candidate);
+                    break;
+                }
+            }
+            let init = init.unwrap_or_else(|| self.literal(ty));
+            self.table.consts.push(ConstDef { ty, init });
+        }
+    }
+
+    /// An expression of the initializer of constant `K<k>` of type `ty`: literals, the constants of that type below it,
+    /// and the operators of D210 (a shift amount is a `u32` literal or a `u32` constant).
+    fn const_term(&mut self, ty: Ty, k: usize, depth: u32) -> Expr {
+        let below = |g: &Self, ty: Ty| -> Vec<u8> {
+            (0..k as u8)
+                .filter(|&j| g.table.consts[usize::from(j)].ty == ty)
+                .collect()
+        };
+        if depth == 0 || self.b.chance(30) {
+            let same = below(self, ty);
+            if !same.is_empty() && self.b.chance(50) {
+                let j = same[self.b.below(same.len() as u32) as usize];
+                return Expr::Const { k: j, ty };
+            }
+            return self.literal(ty);
+        }
+        let d = depth - 1;
+        match self.b.weighted(&[14, 10, 12, 8, 8, 6, 6, 6, 8, 8, 7, 7]) {
+            kind @ 0..=7 => {
+                let op = [
+                    BinOp::Add,
+                    BinOp::Sub,
+                    BinOp::Mul,
+                    BinOp::Div,
+                    BinOp::Rem,
+                    BinOp::BitAnd,
+                    BinOp::BitOr,
+                    BinOp::BitXor,
+                ][kind];
+                let l = self.const_term(ty, k, d);
+                let r = self.const_term(ty, k, d);
+                Expr::bin(op, l, r)
+            }
+            kind @ (8 | 9) => {
+                let op = if kind == 8 { BinOp::Shl } else { BinOp::Shr };
+                let l = self.const_term(ty, k, d);
+                let amounts = below(self, Ty::U32);
+                let r = if !amounts.is_empty() && self.b.chance(40) {
+                    Expr::Const {
+                        k: amounts[self.b.below(amounts.len() as u32) as usize],
+                        ty: Ty::U32,
+                    }
+                } else {
+                    Expr::u32(self.b.below(32))
+                };
+                Expr::bin(op, l, r)
+            }
+            10 if ty == Ty::I32 => Expr::negated(self.const_term(ty, k, d)),
+            _ => Expr::inverted(self.const_term(ty, k, d)),
         }
     }
 
@@ -699,10 +828,14 @@ impl Gen<'_> {
     fn float_expr(&mut self, d: u32) -> Expr {
         let weights: &[u32] = if self.vectors {
             &[16, 10, 14, 8, 6, 8, 14]
+        } else if self.math {
+            // 6 is the vector readout (never drawn here), 7 a math method.
+            &[16, 10, 14, 8, 6, 8, 0, 34]
         } else {
             &[16, 10, 14, 8, 6, 8]
         };
         match self.b.weighted(weights) {
+            7 => self.float_math(d),
             kind @ (0 | 1) => {
                 let op = if kind == 0 { BinOp::Add } else { BinOp::Sub };
                 let l = self.expr(Ty::F32, d);
@@ -733,6 +866,38 @@ impl Gen<'_> {
                 };
                 Expr::cast(Ty::F32, e)
             }
+        }
+    }
+
+    /// A scalar math method on `f32` (format 14): `a.mul_add(b, c)`, `x.abs()`, `x.floor()`, `x.ceil()`, `x.trunc()`,
+    /// `a.min(b)`, `a.max(b)` or `x.clamp(lo, hi)`. A clamp mostly takes literal bounds with `lo < hi`, because the
+    /// interval bounds need `lo <= hi` on every party (anything else is discarded as `comparison-overlap`).
+    fn float_math(&mut self, d: u32) -> Expr {
+        const LOWS: [f32; 6] = [-8.0, -2.0, -1.0, -0.5, 0.0, 0.25];
+        const HIGHS: [f32; 6] = [0.5, 1.0, 2.0, 4.0, 16.0, 1000.0];
+        let f = [
+            MathFn::MulAdd,
+            MathFn::Abs,
+            MathFn::Floor,
+            MathFn::Ceil,
+            MathFn::Trunc,
+            MathFn::Min,
+            MathFn::Max,
+            MathFn::Clamp,
+        ][self.b.weighted(&[22, 12, 10, 10, 8, 12, 12, 14])];
+        let mut args = vec![self.expr(Ty::F32, d)];
+        if f == MathFn::Clamp && self.b.chance(70) {
+            args.push(Expr::f32(LOWS[self.b.below(LOWS.len() as u32) as usize]));
+            args.push(Expr::f32(HIGHS[self.b.below(HIGHS.len() as u32) as usize]));
+        } else {
+            for _ in 1..f.arity() {
+                args.push(self.expr(Ty::F32, d));
+            }
+        }
+        Expr::Math {
+            f,
+            ty: Ty::F32,
+            args,
         }
     }
 
@@ -1466,7 +1631,7 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
             data: bytes,
             pos: 0,
         },
-        floats: matches!(space, Space::Float | Space::Vector),
+        floats: matches!(space, Space::Float | Space::Vector | Space::Math),
         vectors: space == Space::Vector,
         inputs: Vec::new(),
         data: Vec::new(),
@@ -1504,6 +1669,7 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         traits: space == Space::Trait,
         cur_gens: Vec::new(),
         inst_used: Vec::new(),
+        math: space == Space::Math,
     };
     let count = match g.b.below(6) {
         k @ 0..=4 => COUNTS[k as usize],
@@ -1532,6 +1698,10 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         g.inputs.push(ty);
         g.data.push(data.clone());
         inputs.push(InputBuf { ty, data });
+    }
+    // The math space draws its module constants before the kernel, which reads them.
+    if g.math {
+        g.gen_consts();
     }
     // The method space draws its structs and functions first; the kernel starts with one or two struct locals.
     let mut body = Vec::new();
@@ -1965,6 +2135,9 @@ pub struct Batch {
     /// Of `attempts`, the attempts of the trait part, and of `discarded`, the discards of the trait part.
     pub trait_attempts: u64,
     pub trait_discarded: BTreeMap<&'static str, u32>,
+    /// Of `attempts`, the attempts of the math part, and of `discarded`, the discards of the math part.
+    pub math_attempts: u64,
+    pub math_discarded: BTreeMap<&'static str, u32>,
 }
 
 impl Batch {
@@ -2001,13 +2174,14 @@ pub fn generate_batch(seed: u64) -> Result<Batch, String> {
     fill(&mut batch, Space::Array, ARRAY_PROGRAMS_PER_SEED)?;
     fill(&mut batch, Space::Closure, CLOSURE_PROGRAMS_PER_SEED)?;
     fill(&mut batch, Space::Trait, TRAIT_PROGRAMS_PER_SEED)?;
+    fill(&mut batch, Space::Math, MATH_PROGRAMS_PER_SEED)?;
     Ok(batch)
 }
 
-/// Generates the `PROGRAMS_PER_SEED` in-domain programs of `seed` all in `space`, in attempt order.
+/// Generates the `SPACE_PROGRAMS_PER_SEED` in-domain programs of `seed` all in `space`, in attempt order.
 pub fn generate_batch_in(space: Space, seed: u64) -> Result<Batch, String> {
     let mut batch = empty_batch(seed);
-    fill(&mut batch, space, PROGRAMS_PER_SEED)?;
+    fill(&mut batch, space, SPACE_PROGRAMS_PER_SEED)?;
     Ok(batch)
 }
 
@@ -2031,6 +2205,8 @@ fn empty_batch(seed: u64) -> Batch {
         closure_discarded: BTreeMap::new(),
         trait_attempts: 0,
         trait_discarded: BTreeMap::new(),
+        math_attempts: 0,
+        math_discarded: BTreeMap::new(),
     }
 }
 
@@ -2044,6 +2220,7 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
         Space::Array => ARRAY_ATTEMPT_BASE,
         Space::Closure => CLOSURE_ATTEMPT_BASE,
         Space::Trait => TRAIT_ATTEMPT_BASE,
+        Space::Math => MATH_ATTEMPT_BASE,
         _ => 0,
     };
     let target = batch.programs.len() + want;
@@ -2056,6 +2233,7 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
         batch.array_attempts += u64::from(space == Space::Array);
         batch.closure_attempts += u64::from(space == Space::Closure);
         batch.trait_attempts += u64::from(space == Space::Trait);
+        batch.math_attempts += u64::from(space == Space::Math);
         let program = generate_attempt_in(space, batch.seed, attempt);
         // A vector program that came out scalar tests nothing new, nor does a method program that calls nothing, nor
         // an enum program without a `match`.
@@ -2073,6 +2251,8 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
             Some("no-closure")
         } else if space == Space::Trait && !program.has_trait_forms() {
             Some("no-trait")
+        } else if space == Space::Math && !program.has_math_forms() {
+            Some("no-math")
         } else if matches!(space, Space::Array | Space::Closure) && !program.has_array() {
             Some("no-array")
         } else if space == Space::Trait && !program.has_match() {
@@ -2104,6 +2284,9 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
                 }
                 if space == Space::Trait {
                     *batch.trait_discarded.entry(reason).or_default() += 1;
+                }
+                if space == Space::Math {
+                    *batch.math_discarded.entry(reason).or_default() += 1;
                 }
                 if space == Space::Value {
                     *batch.value_discarded.entry(reason).or_default() += 1;
@@ -4096,7 +4279,7 @@ mod tests {
             content(&generate_attempt(1, 0)),
             content(&generate_attempt(1, 1))
         );
-        // All 16 programs of a batch differ from each other.
+        // All 17 programs of a batch differ from each other.
         let distinct: BTreeSet<String> = one
             .programs
             .iter()
@@ -4168,7 +4351,7 @@ mod tests {
     }
 
     #[test]
-    fn a_batch_holds_sixteen_in_domain_programs_and_counts_its_discards() {
+    fn a_batch_holds_seventeen_in_domain_programs_and_counts_its_discards() {
         for seed in 1..=8 {
             let batch = generate_batch(seed).unwrap();
             assert_eq!(batch.programs.len(), PROGRAMS_PER_SEED);

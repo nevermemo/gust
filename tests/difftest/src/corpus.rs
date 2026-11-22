@@ -82,9 +82,9 @@ mod tests {
     use super::*;
     use crate::generator::{
         ARRAY_ATTEMPT_BASE, ARRAY_END, CLOSURE_ATTEMPT_BASE, ENUM_ATTEMPT_BASE, ENUM_END,
-        METHOD_ATTEMPT_BASE, METHOD_END, PROGRAMS_PER_SEED, SCALAR_PROGRAMS_PER_SEED, Space,
-        TRAIT_ATTEMPT_BASE, TRAIT_PROGRAMS_PER_SEED, VALUE_ATTEMPT_BASE, VALUE_END,
-        VECTOR_ATTEMPT_BASE, VECTOR_END, generate_batch_in,
+        MATH_ATTEMPT_BASE, METHOD_ATTEMPT_BASE, METHOD_END, PROGRAMS_PER_SEED,
+        SCALAR_PROGRAMS_PER_SEED, Space, TRAIT_ATTEMPT_BASE, TRAIT_END, TRAIT_PROGRAMS_PER_SEED,
+        VALUE_ATTEMPT_BASE, VALUE_END, VECTOR_ATTEMPT_BASE, VECTOR_END, generate_batch_in,
     };
 
     #[test]
@@ -262,11 +262,12 @@ mod tests {
         assert_eq!(hashes, pinned, "closure");
     }
 
-    /// A batch is the first five programs of the float space, four of the vector space, one of the method space, two of
-    /// the enum space, two of the value space and two of the array space (format 11): the scalar decoding of every seed is what
-    /// format 5 wrote, and so is the vector decoding of format 6; only the cut of the batch is new.
+    /// A batch is the first program of the float space, three of the vector space, one of the method space, two of the
+    /// enum space, two of the value space, two of the array space, two of the closure space, two of the trait space and
+    /// two of the math space (formats 11 to 14): the scalar decoding of every seed is what format 5 wrote, and so is the
+    /// vector decoding of format 6; only the cut of the batch is new.
     #[test]
-    fn a_batch_is_three_float_four_vector_one_method_one_enum_one_value_two_array_two_closure_and_two_trait_programs()
+    fn a_batch_is_one_float_three_vector_one_method_two_enum_two_value_two_array_two_closure_two_trait_and_two_math_programs()
      {
         for seed in 1..=8 {
             let batch = generate_batch(seed).unwrap();
@@ -297,7 +298,7 @@ mod tests {
                     "seed {seed} program {k}"
                 );
             }
-            for program in &batch.programs[VECTOR_END..] {
+            for program in &batch.programs[VECTOR_END..TRAIT_END] {
                 assert!(program.attempt >= METHOD_ATTEMPT_BASE, "seed {seed}");
                 assert!(
                     program.has_call() && !program.methods.is_empty(),
@@ -327,11 +328,15 @@ mod tests {
                     program.attempt
                 );
             }
-            let last = &batch.programs[PROGRAMS_PER_SEED - TRAIT_PROGRAMS_PER_SEED..];
+            let last = &batch.programs[TRAIT_END - TRAIT_PROGRAMS_PER_SEED..TRAIT_END];
             assert_eq!(last.len(), 2);
             for program in last {
                 assert!(program.attempt >= TRAIT_ATTEMPT_BASE, "seed {seed}");
                 assert!(program.methods.has_traits() && program.has_trait_forms());
+            }
+            for program in &batch.programs[TRAIT_END..] {
+                assert!(program.attempt >= MATH_ATTEMPT_BASE, "seed {seed}");
+                assert!(program.has_math_forms(), "seed {seed}");
             }
         }
     }
@@ -350,7 +355,7 @@ mod tests {
                         .iter()
                         .all(|p| p.attempt >= TRAIT_ATTEMPT_BASE && p.has_trait_forms())
                 );
-                (seed, batch_hash(&batch.programs))
+                (seed, batch_hash_as_format(&batch.programs, 13))
             })
             .collect();
         let pinned: Vec<(u64, u64)> = vec![

@@ -60,7 +60,7 @@ fn generated_crates_pass_cargo_check_with_the_template_lockfile() {
     for seed in 1..=8 {
         programs.extend(generate_batch(seed).unwrap().programs);
     }
-    assert_eq!(programs.len(), 128);
+    assert_eq!(programs.len(), 136);
     write_crate(&dir, &package_name("ok").unwrap(), &programs, &repo_root()).unwrap();
     let (ok, output) = cargo_check(&dir);
     assert!(ok, "cargo check failed:\n{}", tail(&output));
@@ -191,6 +191,24 @@ fn trait_programs_compile_through_the_macro_without_a_gust_diagnostic() {
 }
 
 #[test]
+fn math_programs_compile_through_the_macro_without_a_gust_diagnostic() {
+    // Format 14 (m11.dt2): the generator never writes a module constant or a math method the macro refuses (D210 const
+    // expressions, `rem_euclid`, `mul_add`, `abs`, `floor`, `ceil`, `trunc`, `min`, `max`, `clamp`). The math space of
+    // seeds 1 to 12 (16 programs each, 192 in all) goes through `#[gust::gpu]` and rustc.
+    let dir = work_dir().join("roundtrip-math");
+    let mut programs = Vec::new();
+    for seed in 1..=12 {
+        programs.extend(generate_batch_in(Space::Math, seed).unwrap().programs);
+    }
+    assert_eq!(programs.len(), 192);
+    assert!(programs.iter().all(|p| p.has_math_forms()));
+    write_crate(&dir, &package_name("math").unwrap(), &programs, &repo_root()).unwrap();
+    let (ok, output) = cargo_check(&dir);
+    assert!(!output.contains("[GUST-E"), "{}", tail(&output));
+    assert!(ok, "cargo check failed:\n{}", tail(&output));
+}
+
+#[test]
 fn value_programs_compile_through_the_macro_without_a_gust_diagnostic() {
     // Format 10 (m9.d1c): the generator never writes a tuple or value-`match` form the macro refuses (E0212, E0213,
     // E0319, E0326, E0419, E0515, E0521, E0810, ...). The value space of seeds 1 to 12 (16 programs each, 192 in all)
@@ -216,14 +234,14 @@ fn value_programs_compile_through_the_macro_without_a_gust_diagnostic() {
 
 #[test]
 fn run_crates_pass_cargo_check_with_their_test_module() {
-    // The crate that `difftest-run` builds: the 128 kernels of seeds 1 to 8 plus the generated test module (the twin
+    // The crate that `difftest-run` builds: the 136 kernels of seeds 1 to 8 plus the generated test module (the twin
     // dispatches, the GPU path, the result files) must type-check against the repository's `gust` and `gust-wgpu`.
     let dir = work_dir().join("roundtrip-run");
     let mut plan = Vec::new();
     for seed in 1..=8 {
         plan.extend(plan_seed(seed).unwrap());
     }
-    assert_eq!(plan.len(), 128);
+    assert_eq!(plan.len(), 136);
     let package = package_name("run-roundtrip").unwrap();
     write_run_crate(&dir, &package, &plan, &repo_root()).unwrap();
     let (ok, output) = cargo_check_with(&dir, &["--tests"]);
@@ -286,9 +304,10 @@ fn run_crates_with_a_pixel_kernel_per_module_pass_cargo_check_with_their_test_mo
     }
     // An array program with an output store (`out[idx] op= result`) is `grid`-only: the pixel classifier refuses a
     // compound use of an output (GUST-E0728). The harness sets such a module aside on its first build; this test builds
-    // the modules that take a `k_px`.
-    plan.retain(|planned| planned.program.store.is_none());
-    assert!(plan.len() >= 100, "{}", plan.len());
+    // the modules that take a `k_px`. The math programs take none either: the pixel classifier has no rule for
+    // the math methods yet (GUST-E0723, D94), so they run `grid`-only.
+    plan.retain(|planned| planned.program.store.is_none() && !planned.program.has_math_forms());
+    assert!(plan.len() >= 90, "{}", plan.len());
     let package = package_name("run-roundtrip-pixel").unwrap();
     let shapes = ShapePlan::new(&[Shape::Grid, Shape::Pixel]);
     write_run_crate_in(&dir, &package, &plan, &repo_root(), &shapes).unwrap();
@@ -308,8 +327,9 @@ fn a_return_in_one_pixel_kernel_is_one_refusal_that_the_harness_parses() {
     // `k_px` builds, which is what the harness's one rebuild does.
     let dir = work_dir().join("roundtrip-run-pixel-mutant");
     let mut plan = plan_seed(1).unwrap();
-    // The modules with an output store take no `k_px` (GUST-E0728): they would add refusals to the one under test.
-    plan.retain(|planned| planned.program.store.is_none());
+    // The modules with an output store take no `k_px` (GUST-E0728), nor do the math programs (GUST-E0723): they would
+    // add refusals to the one under test.
+    plan.retain(|planned| planned.program.store.is_none() && !planned.program.has_math_forms());
     let package = package_name("run-roundtrip-pixel-mutant").unwrap();
     let mut shapes = ShapePlan::new(&[Shape::Grid, Shape::Pixel]);
     write_run_crate_in(&dir, &package, &plan, &repo_root(), &shapes).unwrap();

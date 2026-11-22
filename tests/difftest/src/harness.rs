@@ -1251,7 +1251,7 @@ mod tests {
         // No results were read, so a report cannot pass.
         assert!(!outcome.passed);
         let report = &outcome.report;
-        assert_eq!(report.get("programs_requested").unwrap().as_u64(), Some(32));
+        assert_eq!(report.get("programs_requested").unwrap().as_u64(), Some(34));
         assert_eq!(report.get("programs_executed").unwrap().as_u64(), Some(0));
         let discards = report.get("discards").unwrap();
         let by_reason = discards.get("by_reason").unwrap();
@@ -1296,7 +1296,7 @@ mod tests {
             .collect();
         let refs: Vec<&Program> = programs.iter().collect();
         let coverage = coverage_json(&refs).unwrap();
-        assert_eq!(coverage.get("programs").unwrap().as_u64(), Some(32));
+        assert_eq!(coverage.get("programs").unwrap().as_u64(), Some(34));
         let ifs = coverage.get("if_statements").unwrap();
         let get = |k: &str| ifs.get(k).unwrap().as_u64().unwrap();
         assert!(get("in_text") >= get("evaluated"));
@@ -1489,8 +1489,8 @@ mod tests {
             .collect();
         assert_eq!(requested, ["grid", "pixel"]);
         let by_shape = section.get("programs_by_shape").unwrap();
-        assert_eq!(by_shape.get("grid").unwrap().as_u64(), Some(16));
-        assert_eq!(by_shape.get("pixel").unwrap().as_u64(), Some(13));
+        assert_eq!(by_shape.get("grid").unwrap().as_u64(), Some(17));
+        assert_eq!(by_shape.get("pixel").unwrap().as_u64(), Some(14));
         let only = section.get("grid_only").unwrap();
         assert_eq!(only.get("total").unwrap().as_u64(), Some(3));
         let by_reason = only.get("by_reason").unwrap();

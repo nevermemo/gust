@@ -820,6 +820,10 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       web-vector-add runs a launch past a lowered workgroup limit from the split artifact, and the fallback as
       `DeviceLimit` naming the per-dimension limit; `check-web` requires both and passed on headless Chrome.
       Opus review fixes in (the split launch's job is checked; a gallery label with split parts is refused).
+    - m11.dt2 (`559cf9c`): the difftest generator gains scalar math methods and module constants
+      (DIFFTEST_FORMAT 14, 17 programs per seed, 136 at 8 seeds; math programs are grid-only); the soundness test
+      checks both forms of `mul_add`. The three recorded reports were regenerated with the real harness at
+      17 per seed and keep their pass assertions. Opus review fixes in.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

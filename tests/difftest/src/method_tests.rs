@@ -47,6 +47,7 @@ fn call(f: usize, recv: Place, args: Vec<Expr>) -> Expr {
 fn methods() -> Methods {
     let this = Place::this(S0);
     Methods {
+        consts: Vec::new(),
         traits: Vec::new(),
         structs: vec![
             StructDef {

@@ -15,7 +15,7 @@ use crate::runsrc::Planned;
 /// The four discard classes of R1-4 and the generator's two extra reasons, in report order. The `domain` class is the
 /// integer labels (`overflow`, `division-by-zero`, `min-over-minus-one`, `shift-amount`, `index`) plus `float-domain`
 /// plus `static`.
-pub const CLASSES: [&str; 11] = [
+pub const CLASSES: [&str; 12] = [
     "domain",
     "comparison-overlap",
     "unboundable",
@@ -27,6 +27,7 @@ pub const CLASSES: [&str; 11] = [
     "no-value",
     "no-closure",
     "no-trait",
+    "no-math",
 ];
 
 /// The class of a discard reason (a `Violation::label`, `static`, `no-input-read`, `no-aggregate` or `no-call`).
@@ -44,6 +45,7 @@ pub fn discard_class(reason: &str) -> &'static str {
         "no-value" => "no-value",
         "no-closure" => "no-closure",
         "no-trait" => "no-trait",
+        "no-math" => "no-math",
         // A label this table does not know is a new violation: it must be classified here on purpose.
         other => panic!("discard reason {other:?} has no class"),
     }
@@ -649,6 +651,7 @@ mod tests {
             "no-value",
             "no-closure",
             "no-trait",
+            "no-math",
         ] {
             assert!(CLASSES.contains(&discard_class(reason)));
         }

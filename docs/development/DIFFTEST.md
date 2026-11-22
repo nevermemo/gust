@@ -5,7 +5,8 @@ runner `difftest-run`), m5.c1c (the shrinker), m6.d (vectors and matrices, DIFFT
 file carries the build's capabilities, DIFFTEST_FORMAT 7; the program space is the one of format 6) and m9.d1a (module
 structs with methods, DIFFTEST_FORMAT 8) and m9.d1b (enums and statement `match`, DIFFTEST_FORMAT 9) and m9.d1c (the
 value-form `match`, integer patterns and tuples, DIFFTEST_FORMAT 10) and m9.d1d (arrays, DIFFTEST_FORMAT 11) and
-m9.d1e (non-capturing closures, DIFFTEST_FORMAT 12) and m9.d2 (traits and generic helpers, DIFFTEST_FORMAT 13). The crate generates integer, boolean and `f32`
+m9.d1e (non-capturing closures, DIFFTEST_FORMAT 12) and m9.d2 (traits and generic helpers, DIFFTEST_FORMAT 13) and
+m11.dt2 (scalar math methods and module constants, DIFFTEST_FORMAT 14). The crate generates integer, boolean and `f32`
 kernels from a seed, and (since format 6) kernels that compute with the `gust::math` vectors and matrices as locals and
 intermediates (buffers and results stay scalar), and (since format 8) integer kernels that call methods of module
 structs, evaluates them with an independent
@@ -872,7 +873,7 @@ method space until it has two more, then attempts 3 000 000, ... of the enum spa
 `Batch.method_attempts` and `Batch.method_discarded` count the second and third walks apart, and `difftest-gen stats
 SEEDS` prints them). Before format 8 it kept ten float and six vector programs, before format 6 sixteen float programs.
 
-`seeds.txt` pins seeds 1 to 8 (R1-13: 8 seeds, 16 programs each, 128 programs): per line `seed programs discarded
+`seeds.txt` pins seeds 1 to 8 (R1-13: 8 seeds, 17 programs each, 136 programs): per line `seed programs discarded
 reason=count... hash=`, where the hash is FNV-1a 64 of the emitted `src/lib.rs` followed by the input data of every
 program (type name, length and the 32-bit patterns, little endian), because the data is not part of the emitted text.
 The test `corpus::tests::the_committed_corpus_is_what_the_generator_decodes_today` regenerates the file and fails on
@@ -1065,8 +1066,8 @@ lockfile, a result file missing or malformed). `difftest-run` has no random-seed
 
 What a run does:
 
-1. For every seed, `generate_batch` and the interpreter produce the planned programs (16 per seed) and their expected
-   outputs; the number of programs must equal 16 times the number of seeds.
+1. For every seed, `generate_batch` and the interpreter produce the planned programs (17 per seed) and their expected
+   outputs; the number of programs must equal 17 times the number of seeds.
 2. It writes the run crate `<target>/difftest/run-<hash>/`: `Cargo.toml` (package `difftest-case-run-<hash>`, see the
    template lockfile above), the template `Cargo.lock`, `src/lib.rs` (the kernels of `emit_crate_source`, byte for byte,
    then a `#[cfg(test)] mod difftest_run` with one runner per program) and `data/<module>.txt` (the element count, the
@@ -1181,7 +1182,7 @@ report: 0 of the 36 `f32` programs differ in a bit between the shapes (0 element
 
 ### report.json
 
-Keys: `tool`, `format`, `mode` (`gpu` or `cpu-only`), `passed`, `seeds`, `programs_requested` (16 per seed),
+Keys: `tool`, `format`, `mode` (`gpu` or `cpu-only`), `passed`, `seeds`, `programs_requested` (17 per seed),
 `programs_executed` (the result files whose runner finished; equal to `programs_requested` on a pass), `adapter`
 (`null` for cpu-only; otherwise name, type, backend and driver of the adapter wgpu chose), `per_seed` (`programs`,
 `attempts`, `discarded`), `discards`, `mismatch_count`, `mismatches`, `coverage` and `timing` (generation, interpreter,
@@ -1672,3 +1673,30 @@ Each mutant also changes generated batch programs (`the_trait_mutants_change_gen
 `corpus` (the format 13 pin; `seeds.txt` regenerated), `roundtrip` (`trait_programs_compile_through_the_macro_without_a_gust_diagnostic`:
 seeds 1 to 12, 192 programs, `cargo check`, generic methods included), `classify` (`no-trait` is a discard class), `xtask`
 (`is_shape_row` takes the `trait ` and `generic ` rows).
+
+## Math methods and module constants (format 14, slice m11.dt2)
+
+`DIFFTEST_FORMAT` is 14. A batch is 17 programs per seed: one float, three vector, one method, two enum, two value, two
+array, two closure, two trait and two math programs (`PROGRAMS_PER_SEED` of the generator, `PROGRAMS_PER_SEED` of
+`xtask/src/difftest.rs`, and the report's `17 x seeds` check agree). The math space (`Space::Math`, attempts from
+8 000 000) is the scalar float space plus `a.rem_euclid(b)` on `u32` and `i32`, `a.mul_add(b, c)`, `x.abs()`,
+`x.floor()`, `x.ceil()`, `x.trunc()`, `a.min(b)`, `a.max(b)` and `x.clamp(lo, hi)` on `f32`, and one to three module
+`const` items (`u32` or `i32`; literals, earlier constants, unary `-` and `!`, and the binary integer operators; no
+cast, D210) that its integer expressions read. Older spaces decode as in format 13; the two math slots are new and the
+float part of a batch gives up one program for them (two value programs, as before format 14, stay).
+
+- **Domain.** `rem_euclid` leaves the domain on a zero divisor and on `i32::MIN` by `-1`. A constant whose initializer
+  overflows, divides by zero or shifts by 32 or more is not generated (Rust refuses the item), and a use of a constant
+  folds to its value in the static check, so a shift by `K0` of 33 in a branch no element runs is discarded as a literal
+  would be. `clamp` needs `lo <= hi` on every party (`comparison-overlap` otherwise).
+- **Float bounds.** `abs`, `floor`, `ceil`, `trunc`, `min`, `max` and `clamp` are exact and monotone, so their interval
+  is the image of the operand intervals; `mul_add` is the product's interval plus a rounding, which holds the fused and
+  the unfused result. The soundness test (`soundness.rs`) generates `mul_add` and checks both forms against the
+  interval.
+- **Minima.** The value programs are two per seed again, so the value minima of the compound field set are back to 6
+  programs and 3 changed by the place-first mutant (`MIN_FIELD_SET_PROGRAMS`, `MIN_FIELD_SET_CHANGED`).
+- **Shapes.** The math programs are `grid`-only under `--shapes grid,pixel`: the pixel classifier has no rule for the
+  new methods (GUST-E0723, no ledger entries), so the pixel round-trip test keeps its floor of 90 pixel programs
+  without them.
+- **Not generated (scout notes).** `sqrt`, `round` and the other inexact float methods, the old value of `atomic_add`
+  bound by `let`, and integer `min`, `max`, `clamp` and `abs` are not in the generator.

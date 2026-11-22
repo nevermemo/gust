@@ -537,6 +537,78 @@ pub enum Expr {
     /// call (format 13). `call` is the `Expr::Call` of the method, whose receiver is the first argument; the semantics are
     /// those of `s.t0m1(a)`.
     PathCall { form: PathForm, call: Box<Expr> },
+    /// `a.rem_euclid(b)`, `a.mul_add(b, c)`, `x.floor()`, ...: a method of the scalar math set (format 14, slice
+    /// m11.dt2). `args[0]` is the receiver, the rest are the arguments in written order; `ty` is the result type.
+    Math { f: MathFn, ty: Ty, args: Vec<Expr> },
+    /// `K0`: the module `const` item `consts[k]` of the program, a `u32` or `i32` (format 14, slice m11.dt2).
+    Const { k: u8, ty: Ty },
+}
+
+/// The scalar math methods that format 14 generates (slice m11.dt2). The receiver is the first argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum MathFn {
+    /// `a.rem_euclid(b)` on `u32` and `i32`.
+    RemEuclid,
+    /// `a.mul_add(b, c)` on `f32`.
+    MulAdd,
+    /// `x.abs()`, `x.floor()`, `x.ceil()`, `x.trunc()` on `f32`.
+    Abs,
+    Floor,
+    Ceil,
+    Trunc,
+    /// `a.min(b)`, `a.max(b)` on `f32`.
+    Min,
+    Max,
+    /// `x.clamp(lo, hi)` on `f32`.
+    Clamp,
+}
+
+impl MathFn {
+    pub const ALL: [MathFn; 9] = [
+        MathFn::RemEuclid,
+        MathFn::MulAdd,
+        MathFn::Abs,
+        MathFn::Floor,
+        MathFn::Ceil,
+        MathFn::Trunc,
+        MathFn::Min,
+        MathFn::Max,
+        MathFn::Clamp,
+    ];
+
+    /// The method name as written.
+    pub fn name(self) -> &'static str {
+        match self {
+            MathFn::RemEuclid => "rem_euclid",
+            MathFn::MulAdd => "mul_add",
+            MathFn::Abs => "abs",
+            MathFn::Floor => "floor",
+            MathFn::Ceil => "ceil",
+            MathFn::Trunc => "trunc",
+            MathFn::Min => "min",
+            MathFn::Max => "max",
+            MathFn::Clamp => "clamp",
+        }
+    }
+
+    /// The number of operands, the receiver included.
+    pub fn arity(self) -> usize {
+        match self {
+            MathFn::Abs | MathFn::Floor | MathFn::Ceil | MathFn::Trunc => 1,
+            MathFn::RemEuclid | MathFn::Min | MathFn::Max => 2,
+            MathFn::MulAdd | MathFn::Clamp => 3,
+        }
+    }
+
+    /// Whether the method is on `f32` (`rem_euclid` is on the integers).
+    pub fn is_float(self) -> bool {
+        self != MathFn::RemEuclid
+    }
+
+    /// The counted name of a use, the same string in `operator_counts` and in the interpreter's coverage.
+    pub fn counted_name(self, ty: Ty) -> String {
+        format!(".{} {}", self.name(), ty.name())
+    }
 }
 
 /// How a path call names the trait (format 13).
@@ -686,11 +758,26 @@ pub struct Methods {
     pub enums: Vec<EnumDef>,
     /// The traits of a trait program (format 13); empty for every other space.
     pub traits: Vec<TraitDef>,
+    /// The module `const` items of a math program (format 14); empty for every other space. Item `k` is `K<k>`, and its
+    /// initializer holds only literals and the items below it.
+    pub consts: Vec<ConstDef>,
+}
+
+/// A module `const K<k>: ty = init;` (format 14, slice m11.dt2, D210): `ty` is `u32` or `i32`, and `init` is an
+/// expression of literals, earlier constants, the unary `-` and `!` and the binary integer operators (no cast, no
+/// call).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConstDef {
+    pub ty: Ty,
+    pub init: Expr,
 }
 
 impl Methods {
     pub fn is_empty(&self) -> bool {
-        self.structs.is_empty() && self.fns.is_empty() && self.enums.is_empty()
+        self.structs.is_empty()
+            && self.fns.is_empty()
+            && self.enums.is_empty()
+            && self.consts.is_empty()
     }
 
     /// The function that implements trait method `m` of trait `tr` for `ty`, if there is one.
@@ -2191,6 +2278,8 @@ impl Expr {
                 *ty
             }
             Expr::Read { ty, .. }
+            | Expr::Math { ty, .. }
+            | Expr::Const { ty, .. }
             | Expr::Call { ty, .. }
             | Expr::ClosureCall { ty, .. }
             | Expr::StructLit { ty, .. }
@@ -2273,7 +2362,13 @@ impl Expr {
     pub fn for_each_child(&self, f: &mut dyn FnMut(&Expr)) {
         match self {
             Expr::PathCall { call, .. } => f(call),
-            Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) | Expr::Variant { .. } => {}
+            Expr::Lit(..)
+            | Expr::Var(..)
+            | Expr::Gid
+            | Expr::Len(_)
+            | Expr::Variant { .. }
+            | Expr::Const { .. } => {}
+            Expr::Math { args, .. } => args.iter().for_each(f),
             Expr::Input { index, .. } => f(index),
             Expr::Un { e, .. }
             | Expr::Cast { e, .. }
@@ -2311,7 +2406,13 @@ impl Expr {
     pub fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Expr)) {
         match self {
             Expr::PathCall { call, .. } => f(call),
-            Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) | Expr::Variant { .. } => {}
+            Expr::Lit(..)
+            | Expr::Var(..)
+            | Expr::Gid
+            | Expr::Len(_)
+            | Expr::Variant { .. }
+            | Expr::Const { .. } => {}
+            Expr::Math { args, .. } => args.iter_mut().for_each(f),
             Expr::Input { index, .. } => f(index),
             Expr::Un { e, .. }
             | Expr::Cast { e, .. }
@@ -2604,6 +2705,26 @@ impl Program {
         ran(TRAIT_CALL) && ran(GENERIC_CALL) && coverage.two_instantiations()
     }
 
+    /// Whether the program, when it runs, executes a math method and reads a module constant (a math program without
+    /// both tests nothing new). A program outside the domain passes: its discard reason is the domain one.
+    pub fn has_math_forms(&self) -> bool {
+        let Ok((_, coverage)) = crate::interp::run_covered(self) else {
+            return true;
+        };
+        let ran = |prefix: &str| {
+            coverage
+                .operators
+                .keys()
+                .any(|name| name.starts_with(prefix))
+        };
+        let math_method = MathFn::ALL.iter().any(|f| {
+            [Ty::U32, Ty::I32, Ty::F32]
+                .iter()
+                .any(|ty| ran(&f.counted_name(*ty)))
+        });
+        math_method && ran("const ")
+    }
+
     /// Whether the program binds a closure and calls one (a closure program without both tests nothing new).
     pub fn has_closure(&self) -> bool {
         let mut bound = false;
@@ -2769,6 +2890,60 @@ impl Program {
 }
 
 impl Methods {
+    /// Whether `e`, the initializer of `K<k>`, is a constant expression of D210 over the type of the item: literals,
+    /// the constants below `k`, unary `-` (`i32`) and `!`, and the integer binary operators; a shift amount is a `u32`.
+    fn const_init(&self, k: usize, e: &Expr) -> Result<(), String> {
+        let ty = self.consts[k].ty;
+        match e {
+            Expr::Lit(lit, bits) if *lit == ty && (ty == Ty::U32 || *bits as i32 != i32::MIN) => {
+                Ok(())
+            }
+            Expr::Const { k: j, ty: used }
+                if usize::from(*j) < k && *used == self.consts[usize::from(*j)].ty =>
+            {
+                Ok(())
+            }
+            Expr::Un {
+                op,
+                ty: t,
+                e: inner,
+            } if *t == ty => match (op, ty) {
+                (UnOp::Neg, Ty::U32) => Err(format!("K{k}: `-` on a u32")),
+                (UnOp::Neg, _) if matches!(**inner, Expr::Lit(..)) => {
+                    Err(format!("K{k}: a negated literal is not folded"))
+                }
+                _ => self.const_init(k, inner),
+            },
+            Expr::Bin { op, ty: t, l, r }
+                if *t == ty && !op.is_comparison() && !op.is_logical() =>
+            {
+                if op.is_shift() && r.ty() != Ty::U32 {
+                    return Err(format!("K{k}: a shift amount that is not a u32"));
+                }
+                self.const_init(k, l)?;
+                if op.is_shift() {
+                    match &**r {
+                        Expr::Lit(Ty::U32, _) | Expr::Const { ty: Ty::U32, .. } => {}
+                        _ => {
+                            return Err(format!(
+                                "K{k}: a shift amount that is no literal or constant"
+                            ));
+                        }
+                    }
+                    if let Expr::Const { k: j, .. } = &**r
+                        && usize::from(*j) >= k
+                    {
+                        return Err(format!("K{k}: a constant below it"));
+                    }
+                    Ok(())
+                } else {
+                    self.const_init(k, r)
+                }
+            }
+            other => Err(format!("K{k}: {other:?} is not a constant expression")),
+        }
+    }
+
     /// An array type of a parameter, a result or a local: 1 to `MAX_ARRAY` elements of an element that exists, at most
     /// `MAX_ARRAY_FLAT` scalars in all.
     pub fn check_array(&self, a: ArrTy) -> Result<(), String> {
@@ -2817,6 +2992,16 @@ impl Methods {
     /// The structural rules of the tables: struct fields refer to earlier structs, sizes are bounded, every function has
     /// a consistent receiver and return type, and calls only go downwards (checked with the bodies).
     pub fn check_tables(&self) -> Result<(), String> {
+        for (k, def) in self.consts.iter().enumerate() {
+            if !matches!(def.ty, Ty::U32 | Ty::I32) || def.init.ty() != def.ty {
+                return Err(format!("K{k} is not an integer of its own type"));
+            }
+            self.const_init(k, &def.init)?;
+            // Rust refuses a constant whose evaluation overflows, divides by zero or shifts by 32 or more.
+            if let Err(violation) = crate::interp::const_value(self, k) {
+                return Err(format!("K{k} does not evaluate: {}", violation.label()));
+            }
+        }
         if self.structs.len() > MAX_STRUCTS {
             return Err(format!("{} structs", self.structs.len()));
         }
@@ -3960,6 +4145,29 @@ impl Check<'_> {
                 Some(ret) if ret == *ty => Ok(()),
                 _ => Err(format!("a call of m{f} has the wrong type")),
             },
+            Expr::Const { k, ty } => match self.methods.consts.get(usize::from(*k)) {
+                Some(def) if def.ty == *ty => Ok(()),
+                Some(_) => Err(format!("K{k} used at the wrong type")),
+                None => Err(format!("K{k} does not exist")),
+            },
+            Expr::Math { f, ty, args } => {
+                for arg in args {
+                    self.expr(arg)?;
+                }
+                let operand = if f.is_float() { Ty::F32 } else { *ty };
+                if *ty != operand || (!f.is_float() && !ty.is_int()) {
+                    return Err(format!("`{}` on {}", f.name(), ty.name()));
+                }
+                if args.len() != f.arity() || args.iter().any(|arg| arg.ty() != operand) {
+                    return Err(format!(
+                        "`{}` needs {} operands of {}",
+                        f.name(),
+                        f.arity(),
+                        operand.name()
+                    ));
+                }
+                Ok(())
+            }
             Expr::PathCall { call, .. } => {
                 let Expr::Call {
                     f,
@@ -4216,6 +4424,8 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
     fn expr(methods: &Methods, e: &Expr, counts: &mut BTreeMap<String, usize>) {
         let name = match e {
             Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) | Expr::Input { .. } => None,
+            Expr::Const { ty, .. } => Some(format!("const {}", ty.name())),
+            Expr::Math { f, ty, .. } => Some(f.counted_name(*ty)),
             Expr::Read { place, .. } => place.root_ty.is_tuple().then(|| TUPLE_READ.to_owned()),
             Expr::Tuple { .. } | Expr::TupleField { .. } => None,
             Expr::Un { op, ty, .. } => Some(match op {

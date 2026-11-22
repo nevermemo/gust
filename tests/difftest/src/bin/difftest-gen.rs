@@ -87,6 +87,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 add("array-attempts".into(), batch.array_attempts);
                 add("closure-attempts".into(), batch.closure_attempts);
                 add("trait-attempts".into(), batch.trait_attempts);
+                add("math-attempts".into(), batch.math_attempts);
                 for (reason, n) in &batch.discarded {
                     add(format!("discard {reason}"), u64::from(*n));
                 }
@@ -111,6 +112,9 @@ fn run(args: &[String]) -> Result<(), String> {
                 for (reason, n) in &batch.trait_discarded {
                     add(format!("trait-discard {reason}"), u64::from(*n));
                 }
+                for (reason, n) in &batch.math_discarded {
+                    add(format!("math-discard {reason}"), u64::from(*n));
+                }
                 let traits = batch
                     .programs
                     .iter()
@@ -132,9 +136,15 @@ fn run(args: &[String]) -> Result<(), String> {
                 let methods = batch
                     .programs
                     .iter()
-                    .filter(|p| !p.methods.is_empty())
+                    .filter(|p| !p.methods.is_empty() && p.methods.consts.is_empty())
                     .count();
                 add("method-programs".into(), methods as u64);
+                let math = batch
+                    .programs
+                    .iter()
+                    .filter(|p| !p.methods.consts.is_empty())
+                    .count();
+                add("math-programs".into(), math as u64);
                 let aggregate = batch.programs.iter().filter(|p| p.has_aggregate()).count();
                 add("programs-with-an-aggregate".into(), aggregate as u64);
                 for program in &batch.programs {

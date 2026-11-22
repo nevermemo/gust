@@ -8,6 +8,7 @@
 //!   implementation may reassociate through variables (15.7.5);
 //! - every maximal `+`/`-` chain is flattened and its terms are added in a random order (the regrouping of 15.7.5);
 //!   a term that is a product is sometimes fused with the addition (`fma`, one rounding);
+//! - a `mul_add` is sometimes fused (one rounding) and sometimes a rounded product plus a rounded sum;
 //! - every rounded result is moved to a neighbouring `f32` at random ("either neighbour", SEMANTICS.md:190), a
 //!   quotient by up to two (2.5 ULP, SEMANTICS.md:192);
 //! - and a second model evaluates in `f64`, with the chains in another order.
@@ -16,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::ast::{BinOp, Expr, InputBuf, Program, Stmt, Ty, UnOp};
+use crate::ast::{BinOp, Expr, InputBuf, MathFn, Program, Stmt, Ty, UnOp};
 use crate::interp::{Violation, run_full};
 use crate::prng::Prng;
 
@@ -88,6 +89,11 @@ fn unroll(program: &Program) -> Expr {
                 r: Box::new(subst(r, env)),
             },
             Expr::Cast { to, e } => Expr::cast(*to, subst(e, env)),
+            Expr::Math { f, ty, args } => Expr::Math {
+                f: *f,
+                ty: *ty,
+                args: args.iter().map(|arg| subst(arg, env)).collect(),
+            },
             _ => panic!("the soundness programs are scalar: {e:?}"),
         }
     }
@@ -260,6 +266,22 @@ fn gpu_model(e: &Expr, program: &Program, element: u32, rng: &mut Prng) -> f32 {
             let b = gpu_model(r, program, element, rng);
             within_two_and_a_half_ulp(f64::from(a) / f64::from(b), rng)
         }
+        Expr::Math {
+            f: MathFn::MulAdd,
+            args,
+            ..
+        } => {
+            let a = f64::from(gpu_model(&args[0], program, element, rng));
+            let b = f64::from(gpu_model(&args[1], program, element, rng));
+            let c = f64::from(gpu_model(&args[2], program, element, rng));
+            // Fused (one rounding) or unfused (the product rounded, then the sum): both are conforming (15.7.5).
+            if rng.below(2) == 0 {
+                either_neighbour(a.mul_add(b, c), rng)
+            } else {
+                let product = f64::from(either_neighbour(a * b, rng));
+                either_neighbour(product + c, rng)
+            }
+        }
         other => panic!("not in the soundness subset: {other:?}"),
     }
 }
@@ -301,6 +323,15 @@ fn exact_model(e: &Expr, program: &Program, element: u32, rng: &mut Prng) -> f64
             r,
             ..
         } => exact_model(l, program, element, rng) / exact_model(r, program, element, rng),
+        Expr::Math {
+            f: MathFn::MulAdd,
+            args,
+            ..
+        } => {
+            let a = exact_model(&args[0], program, element, rng);
+            let b = exact_model(&args[1], program, element, rng);
+            a.mul_add(b, exact_model(&args[2], program, element, rng))
+        }
         other => panic!("not in the soundness subset: {other:?}"),
     }
 }
@@ -409,7 +440,7 @@ impl Builder<'_> {
         if depth == 0 || self.rng.below(5) == 0 {
             return self.leaf();
         }
-        match self.rng.below(10) {
+        match self.rng.below(12) {
             0..=2 => Expr::bin(BinOp::Add, self.expr(depth - 1), self.expr(depth - 1)),
             3 | 4 => Expr::bin(BinOp::Sub, self.expr(depth - 1), self.expr(depth - 1)),
             5..=7 => Expr::bin(BinOp::Mul, self.expr(depth - 1), self.expr(depth - 1)),
@@ -428,6 +459,15 @@ impl Builder<'_> {
                 };
                 Expr::bin(BinOp::Div, self.expr(depth - 1), divisor)
             }
+            9 | 10 => Expr::Math {
+                f: MathFn::MulAdd,
+                ty: Ty::F32,
+                args: vec![
+                    self.expr(depth - 1),
+                    self.expr(depth - 1),
+                    self.expr(depth - 1),
+                ],
+            },
             _ => Expr::negated(self.expr(depth - 1)),
         }
     }
@@ -513,7 +553,7 @@ fn random_program(rng: &mut Prng, seed: u64) -> Program {
 #[test]
 fn the_interval_contains_the_twin_and_adversarial_gpu_evaluations_of_random_programs() {
     let mut rng = Prng::new(0x5EED_F10A7);
-    let (mut accepted, mut attempts, mut with_loop, mut with_div) = (0, 0, 0, 0);
+    let (mut accepted, mut attempts, mut with_loop, mut with_div, mut with_fma) = (0, 0, 0, 0, 0);
     while attempts < 6000 {
         attempts += 1;
         let program = random_program(&mut rng, attempts);
@@ -524,15 +564,17 @@ fn the_interval_contains_the_twin_and_adversarial_gpu_evaluations_of_random_prog
         if check_against_models(&program, &mut rng, 12) {
             accepted += 1;
             with_loop += usize::from(program.body.iter().any(|s| matches!(s, Stmt::For { .. })));
-            let mut divides = false;
+            let (mut divides, mut fuses) = (false, false);
             crate::ast::visit_exprs(&program, &mut |e| {
                 divides |= matches!(e, Expr::Bin { op: BinOp::Div, .. });
+                fuses |= matches!(e, Expr::Math { .. });
             });
             with_div += usize::from(divides);
+            with_fma += usize::from(fuses);
         }
     }
     eprintln!(
-        "soundness: {accepted} of {attempts} random programs accepted ({with_loop} with a loop, {with_div} with a division)"
+        "soundness: {accepted} of {attempts} random programs accepted ({with_loop} with a loop, {with_div} with a division, {with_fma} with a mul_add)"
     );
     // The test must see a real number of programs, with loops and divisions, not discard its way to a pass.
     assert!(accepted >= 400, "only {accepted} of {attempts} accepted");
@@ -543,6 +585,10 @@ fn the_interval_contains_the_twin_and_adversarial_gpu_evaluations_of_random_prog
     assert!(
         with_div >= 40,
         "{with_div} accepted programs with a division"
+    );
+    assert!(
+        with_fma >= 40,
+        "{with_fma} accepted programs with a mul_add"
     );
 }
 

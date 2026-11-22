@@ -152,6 +152,7 @@ fn methods() -> Methods {
     );
     gmix.gens[0].bounds = vec![1];
     Methods {
+        consts: Vec::new(),
         structs: vec![one_field(), one_field(), one_field()],
         enums: Vec::new(),
         traits: vec![tr0, tr1],
@@ -381,7 +382,8 @@ fn the_batch_holds_the_first_two_programs_of_the_trait_space() {
     for seed in 1..=2 {
         let batch = crate::generator::generate_batch(seed).unwrap();
         let space = generate_batch_in(Space::Trait, seed).unwrap();
-        let tail = &batch.programs[batch.programs.len() - TRAIT_PROGRAMS_PER_SEED..];
+        let tail = &batch.programs
+            [crate::generator::TRAIT_END - TRAIT_PROGRAMS_PER_SEED..crate::generator::TRAIT_END];
         assert_eq!(
             tail,
             &space.programs[..TRAIT_PROGRAMS_PER_SEED],

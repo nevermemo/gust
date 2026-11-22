@@ -16,13 +16,13 @@ use std::collections::{BTreeMap, HashMap};
 use crate::agg::{self, Agg, Scalar};
 use crate::ast::{
     ASSIGN_COMP, Arm, BinOp, CLOSURE_BODY_HELPER, CLOSURE_BODY_METHOD, CLOSURE_PARAM_METHOD,
-    ClosureDef, Elem, Expr, MATCH_ARM_RETURN_RUN, Pat, PathForm, Place, Program, Recv, Root,
-    SHAPE_EXPR_CALL, SHAPE_STMT_CALL, STRUCT_LIT, Stmt, TRAIT_PATH_CALL, TRAIT_PATH_QUALIFIED,
-    TUPLE_READ, Ty, UnOp, array_call_names, array_expr_names, array_set_names, array_store_names,
-    bin_shape, call_arg_names, call_name, call_shape, closure_call_names, closure_let_names,
-    closure_set_names, destruct_names, enum_as_name, enum_call_shapes, match_names, match_shape,
-    set_name, set_shape, trait_call_names, tuple_field_names, tuple_lit_names, tuple_set_names,
-    value_match_names,
+    ClosureDef, Elem, Expr, MATCH_ARM_RETURN_RUN, MathFn, Methods, Pat, PathForm, Place, Program,
+    Recv, Root, SHAPE_EXPR_CALL, SHAPE_STMT_CALL, STRUCT_LIT, Stmt, TRAIT_PATH_CALL,
+    TRAIT_PATH_QUALIFIED, TUPLE_READ, Ty, UnOp, array_call_names, array_expr_names,
+    array_set_names, array_store_names, bin_shape, call_arg_names, call_name, call_shape,
+    closure_call_names, closure_let_names, closure_set_names, destruct_names, enum_as_name,
+    enum_call_shapes, match_names, match_shape, set_name, set_shape, trait_call_names,
+    tuple_field_names, tuple_lit_names, tuple_set_names, value_match_names,
 };
 use crate::float::{self, Fl};
 
@@ -149,6 +149,38 @@ pub fn unary(op: UnOp, ty: Ty, e: u32) -> Result<u32, Violation> {
     }
 }
 
+/// `l.rem_euclid(r)` for operands of type `ty` (`u32` or `i32`), as 32-bit patterns. Rust panics on a zero divisor and
+/// on `i32::MIN.rem_euclid(-1)`, so those are the violations of `/` and `%` (D38).
+pub fn rem_euclid(ty: Ty, l: u32, r: u32) -> Result<u32, Violation> {
+    if r == 0 {
+        return Err(Violation::DivisionByZero);
+    }
+    if ty == Ty::I32 {
+        let (a, b) = (l as i32, r as i32);
+        if a == i32::MIN && b == -1 {
+            return Err(Violation::MinOverMinusOne);
+        }
+        Ok(a.rem_euclid(b) as u32)
+    } else {
+        Ok(l.rem_euclid(r))
+    }
+}
+
+/// The value of module constant `K<k>` of `methods`: its initializer evaluated with the checked operations of Rust,
+/// which refuses a constant that overflows, divides by zero or shifts by 32 or more (rustc evaluates the item).
+pub fn const_value(methods: &Methods, k: usize) -> Result<u32, Violation> {
+    fn value(methods: &Methods, e: &Expr) -> Result<u32, Violation> {
+        match e {
+            Expr::Lit(_, bits) => Ok(*bits),
+            Expr::Const { k, .. } => const_value(methods, usize::from(*k)),
+            Expr::Un { op, ty, e } => unary(*op, *ty, value(methods, e)?),
+            Expr::Bin { op, ty, l, r } => binary(*op, *ty, value(methods, l)?, value(methods, r)?),
+            other => unreachable!("a constant initializer holds {other:?}"),
+        }
+    }
+    value(methods, &methods.consts[k].init)
+}
+
 /// A value of the machine: an integer or `bool` pattern, an `f32` with its reference value and its interval, or a
 /// vector or matrix of such components (`agg.rs`).
 // A `Val` is copied by value on every read of a variable: boxing the aggregate would allocate per vector operation.
@@ -235,6 +267,65 @@ pub(crate) fn float_binary(op: BinOp, a: (f32, Fl), b: (f32, Fl)) -> Result<Scal
         BinOp::Mul => (a.0 * b.0, fa.times(fb)),
         BinOp::Div => (a.0 / b.0, fa.over(fb)?),
         other => unreachable!("float operator {}", other.symbol()),
+    };
+    match checked_value(reference, in_domain(fl)?) {
+        Val::F(reference, fl) => Ok(Scalar::F(reference, fl)),
+        _ => unreachable!("a checked float value is a float"),
+    }
+}
+
+/// `f32` math method `f` of the operands `a` (the receiver first): the reference value is the `std` call, and the
+/// interval holds every value the GPU may return. `min`, `max`, `abs`, `floor`, `ceil`, `trunc` and `clamp` are exact
+/// and monotone (or `abs`, which folds the interval), so their interval is the image of the operand intervals;
+/// `mul_add` is the product's interval plus a rounding, which holds both the fused and the unfused result (15.7.5).
+/// `clamp` needs `lo <= hi` on every party, else `ComparisonOverlap` (Rust panics, WGSL leaves it unspecified).
+pub(crate) fn float_math(f: MathFn, a: &[(f32, Fl)]) -> Result<Scalar, Violation> {
+    let span = |k: usize| a[k].1.interval();
+    let (reference, fl) = match f {
+        MathFn::MulAdd => {
+            let product = in_domain(a[0].1.times(a[1].1))?;
+            (a[0].0.mul_add(a[1].0, a[2].0), product.plus(a[2].1))
+        }
+        MathFn::Abs => {
+            let (lo, hi) = span(0);
+            let low = if lo <= 0.0 && hi >= 0.0 {
+                0.0
+            } else {
+                lo.abs().min(hi.abs())
+            };
+            (a[0].0.abs(), Fl::finished(low, lo.abs().max(hi.abs())))
+        }
+        MathFn::Floor => {
+            let (lo, hi) = span(0);
+            (a[0].0.floor(), Fl::finished(lo.floor(), hi.floor()))
+        }
+        MathFn::Ceil => {
+            let (lo, hi) = span(0);
+            (a[0].0.ceil(), Fl::finished(lo.ceil(), hi.ceil()))
+        }
+        MathFn::Trunc => {
+            let (lo, hi) = span(0);
+            (a[0].0.trunc(), Fl::finished(lo.trunc(), hi.trunc()))
+        }
+        MathFn::Min => {
+            let ((al, ah), (bl, bh)) = (span(0), span(1));
+            (a[0].0.min(a[1].0), Fl::finished(al.min(bl), ah.min(bh)))
+        }
+        MathFn::Max => {
+            let ((al, ah), (bl, bh)) = (span(0), span(1));
+            (a[0].0.max(a[1].0), Fl::finished(al.max(bl), ah.max(bh)))
+        }
+        MathFn::Clamp => {
+            let ((xl, xh), (ll, lh), (hl, hh)) = (span(0), span(1), span(2));
+            if lh > hl {
+                return Err(Violation::ComparisonOverlap);
+            }
+            (
+                a[0].0.clamp(a[1].0, a[2].0),
+                Fl::finished(xl.max(ll).min(hl), xh.max(lh).min(hh)),
+            )
+        }
+        MathFn::RemEuclid => unreachable!("`rem_euclid` of floats is not generated"),
     };
     match checked_value(reference, in_domain(fl)?) {
         Val::F(reference, fl) => Ok(Scalar::F(reference, fl)),
@@ -731,6 +822,27 @@ impl Machine<'_> {
             Expr::Variant { e, v } => Ok(Val::I(
                 self.program.methods.enums[usize::from(*e)].variants[usize::from(*v)].0,
             )),
+            Expr::Const { k, ty } => {
+                if self.coverage.is_some() {
+                    self.count_name(&format!("const {}", ty.name()));
+                }
+                Ok(Val::I(const_value(&self.program.methods, usize::from(*k))?))
+            }
+            Expr::Math { f, ty, args } => {
+                if self.coverage.is_some() {
+                    self.count_name(&f.counted_name(*ty));
+                }
+                // The receiver and the arguments run left to right, each completely.
+                let mut values = Vec::with_capacity(args.len());
+                for arg in args {
+                    values.push(self.expr(arg)?);
+                }
+                if *f == MathFn::RemEuclid {
+                    return Ok(Val::I(rem_euclid(*ty, values[0].int(), values[1].int())?));
+                }
+                let operands: Vec<(f32, Fl)> = values.into_iter().map(Val::float).collect();
+                float_math(*f, &operands).map(Val::from)
+            }
             Expr::EnumAs { to, e } => {
                 self.count_name(&enum_as_name(*to));
                 // The discriminant bits are already the repr value (an `i32` repr holds its two's complement).
@@ -1853,11 +1965,30 @@ fn float_constant(value: f32) -> Result<Option<Const>, Violation> {
 /// since DIFFTEST_FORMAT 5: the macro lowers such a `/` and `%` to `__gust_div` and `__gust_rem` (slice m6.dv, D74),
 /// which slangc compiles.
 pub fn static_violation(program: &Program) -> Option<Violation> {
-    fn fold(e: &Expr) -> Result<Option<Const>, Violation> {
+    fn fold(methods: &Methods, e: &Expr) -> Result<Option<Const>, Violation> {
         match e {
             Expr::Lit(Ty::F32, bits) => float_constant(f32::from_bits(*bits)),
             Expr::Lit(_, bits) => Ok(Some(Const::I(*bits))),
             Expr::Var(..) | Expr::Gid | Expr::Len(_) | Expr::Variant { .. } => Ok(None),
+            // A module constant folds to its value (an initializer that overflows is a violation), so a shift by `K0`
+            // of 32 or more counts like the literal.
+            Expr::Const { k, .. } => {
+                const_value(methods, usize::from(*k)).map(|v| Some(Const::I(v)))
+            }
+            Expr::Math {
+                f: MathFn::RemEuclid,
+                ty,
+                args,
+            } => match (fold(methods, &args[0])?, fold(methods, &args[1])?) {
+                (_, Some(Const::I(0))) => Err(Violation::DivisionByZero),
+                (Some(l), Some(r)) => rem_euclid(*ty, l.int(), r.int()).map(|v| Some(Const::I(v))),
+                _ => Ok(None),
+            },
+            // The float methods fold their operands (each is checked as a node of its own) and stay open.
+            Expr::Math { args, .. } => args
+                .iter()
+                .try_for_each(|arg| fold(methods, arg).map(|_| ()))
+                .map(|()| None),
             // A field, a call or a struct literal is open; its operands are folded as nodes of their own.
             Expr::Read { .. }
             | Expr::Call { .. }
@@ -1869,20 +2000,20 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
             | Expr::ArrayLit { .. }
             | Expr::Repeat { .. }
             | Expr::ArrLen { .. } => Ok(None),
-            Expr::Input { index, .. } => fold(index).map(|_| None),
+            Expr::Input { index, .. } => fold(methods, index).map(|_| None),
             Expr::Un {
                 op: UnOp::Neg,
                 ty: Ty::F32,
                 e,
-            } => fold(e)?
+            } => fold(methods, e)?
                 .map(|v| float_constant(-v.float()))
                 .transpose()
                 .map(Option::flatten),
-            Expr::Un { op, ty, e } => fold(e)?
+            Expr::Un { op, ty, e } => fold(methods, e)?
                 .map(|v| unary(*op, *ty, v.int()).map(Const::I))
                 .transpose(),
             Expr::Bin { op, ty, l, r } if *ty == Ty::F32 => {
-                let (left, right) = (fold(l)?, fold(r)?);
+                let (left, right) = (fold(methods, l)?, fold(methods, r)?);
                 if *op == BinOp::Div && right.is_some_and(|v| v.float() == 0.0) {
                     return Err(Violation::DivisionByZero);
                 }
@@ -1906,7 +2037,7 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
                 float_constant(value)
             }
             Expr::Bin { op, ty, l, r } => {
-                let (left, right) = (fold(l)?, fold(r)?);
+                let (left, right) = (fold(methods, l)?, fold(methods, r)?);
                 match (op, right) {
                     (BinOp::Div | BinOp::Rem, Some(Const::I(0))) => {
                         return Err(Violation::DivisionByZero);
@@ -1927,7 +2058,7 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
                 let mut parts = Vec::with_capacity(ty.lanes());
                 let mut closed = true;
                 for arg in args {
-                    match fold(arg)? {
+                    match fold(methods, arg)? {
                         Some(Const::A(agg)) => parts.extend_from_slice(agg.lanes()),
                         Some(scalar) => parts.push(scalar.scalar()),
                         None => closed = false,
@@ -1945,18 +2076,18 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
                 Ok(Some(Const::A(Agg::new(&parts))))
             }
             Expr::Splat { ty, e } => {
-                Ok(fold(e)?.map(|value| Const::A(Agg::new(&vec![value.scalar(); ty.lanes()]))))
+                Ok(fold(methods, e)?.map(|value| Const::A(Agg::new(&vec![value.scalar(); ty.lanes()]))))
             }
             Expr::Comp { e, index } => {
-                Ok(fold(e)?.map(|value| Const::of(value.agg().c[usize::from(*index)])))
+                Ok(fold(methods, e)?.map(|value| Const::of(value.agg().c[usize::from(*index)])))
             }
-            Expr::Swizzle { e, lanes } => Ok(fold(e)?.map(|value| {
+            Expr::Swizzle { e, lanes } => Ok(fold(methods, e)?.map(|value| {
                 let agg = value.agg();
                 let picked: Vec<Scalar> = lanes.iter().map(|&k| agg.c[usize::from(k)]).collect();
                 Const::A(Agg::new(&picked))
             })),
             Expr::Dot { l, r } => {
-                let (left, right) = (fold(l)?, fold(r)?);
+                let (left, right) = (fold(methods, l)?, fold(methods, r)?);
                 let (Some(a), Some(b)) = (left, right) else {
                     return Ok(None);
                 };
@@ -1967,14 +2098,14 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
                 let Ty::Mat(n) = e.ty() else {
                     unreachable!("transpose of a non-matrix")
                 };
-                Ok(fold(e)?.map(|value| {
+                Ok(fold(methods, e)?.map(|value| {
                     Const::A(Agg::new(&agg::transpose(
                         usize::from(n),
                         value.agg().lanes(),
                     )))
                 }))
             }
-            Expr::AggNeg { e } => match fold(e)? {
+            Expr::AggNeg { e } => match fold(methods, e)? {
                 Some(value) => Ok(Some(Const::A(agg::negate(
                     e.ty().scalar(),
                     value.agg().lanes(),
@@ -1983,7 +2114,7 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
             },
             Expr::AggBin { op, ty, l, r } => {
                 let types = (l.ty(), r.ty());
-                let (left, right) = (fold(l)?, fold(r)?);
+                let (left, right) = (fold(methods, l)?, fold(methods, r)?);
                 if matches!(op, BinOp::Div | BinOp::Rem)
                     && right.is_some_and(|divisor| {
                         divisor.lanes().lanes().iter().any(|part| match *part {
@@ -2006,10 +2137,10 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
                     b.lanes(),
                 )?)))
             }
-            Expr::EnumAs { e, .. } => fold(e).map(|_| None),
+            Expr::EnumAs { e, .. } => fold(methods, e).map(|_| None),
             Expr::Cast { to, e } => {
                 let from = e.ty();
-                let Some(value) = fold(e)? else {
+                let Some(value) = fold(methods, e)? else {
                     return Ok(None);
                 };
                 match (from, *to) {
@@ -2051,7 +2182,7 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
     // Every node folds its own subtree: quadratic in depth, but programs are small.
     crate::ast::visit_exprs(program, &mut |e| {
         if found.is_none() {
-            found = fold(e).err();
+            found = fold(&program.methods, e).err();
         }
     });
     // Format 10 (m9.d1c): the right-hand side of a compound assignment is the operand of an implicit shift, division or
@@ -2061,7 +2192,8 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
     if found.is_none() {
         fn sets(
             stmts: &[Stmt],
-            fold: fn(&Expr) -> Result<Option<Const>, Violation>,
+            methods: &Methods,
+            fold: fn(&Methods, &Expr) -> Result<Option<Const>, Violation>,
         ) -> Option<Violation> {
             for stmt in stmts {
                 let violation = match stmt {
@@ -2069,7 +2201,7 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
                         op: Some(op),
                         value,
                         ..
-                    } => match (op, fold(value)) {
+                    } => match (op, fold(methods, value)) {
                         (BinOp::Shl | BinOp::Shr, Ok(Some(Const::I(amount)))) if amount >= 32 => {
                             Some(Violation::ShiftAmount)
                         }
@@ -2078,13 +2210,15 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
                         }
                         _ => None,
                     },
-                    Stmt::If { then, els, .. } => sets(then, fold).or_else(|| sets(els, fold)),
-                    Stmt::For { body, .. } => sets(body, fold),
-                    Stmt::LetClosure { def } => sets(&def.body, fold),
+                    Stmt::If { then, els, .. } => {
+                        sets(then, methods, fold).or_else(|| sets(els, methods, fold))
+                    }
+                    Stmt::For { body, .. } => sets(body, methods, fold),
+                    Stmt::LetClosure { def } => sets(&def.body, methods, fold),
                     Stmt::Match { arms, .. }
                     | Stmt::LetMatch { arms, .. }
                     | Stmt::TailMatch { arms, .. } => {
-                        arms.iter().find_map(|arm| sets(&arm.body, fold))
+                        arms.iter().find_map(|arm| sets(&arm.body, methods, fold))
                     }
                     _ => None,
                 };
@@ -2094,12 +2228,12 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
             }
             None
         }
-        found = sets(&program.body, fold).or_else(|| {
+        found = sets(&program.body, &program.methods, fold).or_else(|| {
             program
                 .methods
                 .fns
                 .iter()
-                .find_map(|def| sets(&def.body, fold))
+                .find_map(|def| sets(&def.body, &program.methods, fold))
         });
     }
     found

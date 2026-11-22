@@ -1,0 +1,18 @@
+[package]
+name = "walker-life"
+description = "Walkers that retire and spawn, kept dense in their buffers by an exclusive scan, exact on host, CPU twin and GPU"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+gust.workspace = true
+gust-wgpu = { workspace = true, features = ["slang-runtime"] }
+# The scan of the counts, `scan::exclusive_into`. A path dependency, because the library is not a workspace
+# dependency; the run-time compile feature is the one `gust-wgpu` already has here.
+gust-algo = { path = "../../crates/gust-algo", features = ["slang-runtime"] }
+
+[lints]
+workspace = true

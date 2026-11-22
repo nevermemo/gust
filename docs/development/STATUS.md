@@ -741,8 +741,10 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
     - m11.transport (`19abffc`): the example `walker-transport`, the first composite of this round's pieces: per
       step the bins of `cell-bins` (copied, integer cells), `walker-steer`'s walk plus a crowding rule (a walker in
       a cell holding more than `crowd` walkers takes the hash-chosen turn), `field-relax`'s exact spread on
-      `field + deposit`, and a cleared deposit; four dispatches, one `Uniform` written per step. Host reference, twin
-      and GPU bit-equal after every step for six cases (fewer and more walkers than a workgroup, one crowded cell
+      `field + deposit`, and a cleared deposit; four stages (the bins stage dispatches clear, count, scan and
+      scatter), one `Uniform` written per step. Host reference, twin and GPU bit-equal after every step (the bins'
+      walkers grouped by cell equal per cell as sets after sorting, since the raw order is unspecified on the GPU)
+      for six cases (fewer and more walkers than a workgroup, one crowded cell
       with and without one heading, `crowd = 0`, and a crowd above the walker count that equals a host run without
       the rule); the contention check rests on a derived bound. Both mutations fail. Opus review fixes: the run
       command, `crowd < walkers`, the bound's derivation, a zero-cell guard. Helpers are still copied between
@@ -770,6 +772,18 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       (`LimitsPolicy` raises only buffer size, binding size and workgroups per dimension), not the adapter's; the
       example packs two bits into one `flags` buffer. Raising that limit is an open design item. Radeon 890M only;
       RTX 5090 pending.
+    - Round 8 end (dev `f5e7446`, 2026-11-22): the full Gpu suite on the Radeon 890M (AMD driver 26.11.2, LLPC)
+      passed in 620 s: `GPU_SUITE_PIN` 569 over 56 (set by m11.psplit-a), 63 pinned `gust-algo` adapter tests, the
+      difftest batches. The RTX 5090 half is pending.
+    - m11.r8fix (`d3183dd`): the rounds 7-8 sanity fixes (Fable and Codex, both "proceed with fixes"). `check-web`
+      no longer counts manifest entries with `split_of` as bodies a page may select: a report naming a split key
+      is refused (`a_page_that_selects_the_split_key_of_a_kernel_is_refused`). The refused-module recovery gives
+      a struct with a hand-written `Drop` no `Copy` derive and no stand-in, carries a struct's `cfg` and
+      `cfg_attr` to its stand-ins (a derive inside `cfg_attr` counts), and on refused `#[gpu(..)]` arguments
+      names the facade the expansion would (`crate = ..`); three `gust-macros` regression tests. The example
+      READMEs' GPU claims say "Radeon 890M only; RTX 5090 pending"; walker-transport's bins are equal per cell as
+      sets, in four stages; walker-life and its entry above put the read-back after `compact`. No GPU test added,
+      so the pins stay.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

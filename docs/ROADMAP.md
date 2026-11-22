@@ -83,7 +83,7 @@ deterministic hash generator shared by CPU and GPU, the old value of `atomic_add
 limit split by the host (D208; precompiled-only builds run them from a precompiled split artifact, D214, and
 browser builds get them before the design phase is called done, D209). `gust-algo` drops the workgroup half of
 its launch pre-check (D211). The budget-kit example measures game-shaped workloads on both development GPUs.
-Done in rounds 5 and 6 (2026-11-21): the round-5 and round-6 sanity fixes, D210, D211, D209 for precompiled-only
+Done on 2026-11-21 and 22: the round-5 and round-6 sanity fixes, D210, D211, D209 for precompiled-only
 builds (D214), and neutral examples for the engine pieces a large agent simulation needs: grid fields with
 diffusion and decay (`field-relax`), binning by cell (`cell-bins`) and per-agent update steps (`walker-steer`).
 A composite of them runs too (`walker-transport`), and so do walkers that retire and spawn, kept dense by a scan

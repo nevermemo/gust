@@ -1057,6 +1057,41 @@ fn a_variant_key_is_judged_by_the_capabilities_the_manifest_lists_for_it() {
     assert!(!selected_key_problems(&selected("aaaaaaaaaaaaaaaa", "-", 0), "{").is_empty());
 }
 
+/// A kernel's split (schema 4, an entry with `split_of`) is a key the manifest knows but not a body a page may select:
+/// a report that names it is refused, whether or not the kernel has a `variants` list.
+#[test]
+fn a_page_that_selects_the_split_key_of_a_kernel_is_refused() {
+    let selected = |key: &str| {
+        split_page_label(&format!(
+            "a b | selected m.k={key}:-:0 | subgroups MissingCapability"
+        ))
+        .unwrap()
+        .1
+    };
+    let plain = r#"{"kernels":[
+        {"key":"aaaaaaaaaaaaaaaa","module":"m","name":"k"},
+        {"key":"cccccccccccccccc","module":"m","name":"k","split_of":"aaaaaaaaaaaaaaaa"}]}"#;
+    assert!(selected_key_problems(&selected("aaaaaaaaaaaaaaaa"), plain).is_empty());
+    let problems = selected_key_problems(&selected("cccccccccccccccc"), plain);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("is the kernel's split, not a body"),
+        "{problems:?}"
+    );
+    let with_variants = r#"{"kernels":[
+        {"key":"aaaaaaaaaaaaaaaa","module":"m","name":"k","variants":[
+            {"key":"aaaaaaaaaaaaaaaa","requires":[],"variant":""}]},
+        {"key":"cccccccccccccccc","module":"m","name":"k","split_of":"aaaaaaaaaaaaaaaa"}]}"#;
+    assert!(selected_key_problems(&selected("aaaaaaaaaaaaaaaa"), with_variants).is_empty());
+    let problems = selected_key_problems(&selected("cccccccccccccccc"), with_variants);
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("is the kernel's split, not a body")),
+        "{problems:?}"
+    );
+}
+
 // ---- a second page through the same runner (m10.g9) ----
 
 const HELLO_LABEL: &str = "nvidia blackwell | selected add.map_kernel=193e4e282d7e14bd:-:0 | map_async exact against the host reference";

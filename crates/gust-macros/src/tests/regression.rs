@@ -2140,6 +2140,164 @@ fn rejected_module_keeps_the_pod_impls_of_its_structs() {
     assert!(derived("Wrapper").is_empty());
 }
 
+/// The attributes (as text) of the struct `name` of a recovered module.
+fn struct_attributes(content: &[syn::Item], name: &str) -> Vec<String> {
+    content
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Struct(item) if item.ident == name => Some(
+                item.attrs
+                    .iter()
+                    .map(|attribute| quote::ToTokens::to_token_stream(attribute).to_string())
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap()
+}
+
+/// The `GpuPod` impls of a recovered module: the self type and the attributes, as text.
+fn pod_stand_ins(content: &[syn::Item]) -> Vec<(String, Vec<String>)> {
+    content
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Impl(item)
+                if item.trait_.as_ref().is_some_and(|(_, path, _)| {
+                    path.segments
+                        .last()
+                        .is_some_and(|last| last.ident == "GpuPod")
+                }) =>
+            {
+                Some((
+                    quote::ToTokens::to_token_stream(&*item.self_ty).to_string(),
+                    item.attrs
+                        .iter()
+                        .map(|attribute| quote::ToTokens::to_token_stream(attribute).to_string())
+                        .collect(),
+                ))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+const REFUSED_KERNEL: &str = "#[kernel] pub fn run(id: SV_DispatchThreadID) { \
+    let value: Result<uint, uint> = Ok(1u32); let x = value.unwrap(); }";
+
+/// A struct with a hand-written `Drop` impl cannot be `Copy` (E0184), so the recovery gives it no `Copy` derive and no
+/// `GpuPod` stand-in, and a struct that holds it gets neither: the derive would add a second error.
+#[test]
+fn a_refused_module_gives_a_struct_with_a_drop_impl_no_copy_derive_and_no_stand_in() {
+    let item: proc_macro2::TokenStream = format!(
+        "mod demo {{ \
+            pub struct Guard {{ pub a: uint }} \
+            impl Drop for Guard {{ fn drop(&mut self) {{}} }} \
+            pub struct Holds {{ pub guard: Guard }} \
+            pub struct Plain {{ pub a: uint }} \
+            {REFUSED_KERNEL} }}"
+    )
+    .parse()
+    .unwrap();
+    let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
+    assert_leading_compile_error(&items, None);
+    let content = &recovered_module(&items).content.as_ref().unwrap().1;
+    assert!(struct_attributes(content, "Guard").is_empty());
+    assert!(struct_attributes(content, "Holds").is_empty());
+    assert_eq!(
+        struct_attributes(content, "Plain"),
+        ["# [derive (Clone)]", "# [derive (Copy)]"]
+    );
+    let stand_ins: Vec<String> = pod_stand_ins(content)
+        .into_iter()
+        .map(|(target, _)| target)
+        .collect();
+    assert_eq!(stand_ins, ["Plain"]);
+}
+
+/// The `GpuPod` stand-in of a struct carries the struct's `cfg` conditions (a struct compiled out has no impl to
+/// name it), and a derive inside a `cfg_attr` counts as the derive: no second one is added.
+#[test]
+fn the_stand_in_of_a_cfg_struct_carries_its_cfg_and_a_cfg_attr_derive_counts() {
+    let item: proc_macro2::TokenStream = format!(
+        "mod demo {{ \
+            #[cfg(feature = \"extra\")] pub struct Gated {{ pub a: uint }} \
+            #[cfg_attr(feature = \"extra\", derive(Clone, Copy))] pub struct Wrapped {{ pub a: uint }} \
+            #[cfg_attr(unix, cfg(not(windows)))] pub struct Nested {{ pub a: uint }} \
+            #[cfg_attr(unix, derive(Debug))] pub struct Other {{ pub a: uint }} \
+            {REFUSED_KERNEL} }}"
+    )
+    .parse()
+    .unwrap();
+    let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
+    assert_leading_compile_error(&items, None);
+    let content = &recovered_module(&items).content.as_ref().unwrap().1;
+    // The derives stay on the struct, so they are as conditional as the struct is.
+    assert_eq!(
+        struct_attributes(content, "Gated"),
+        [
+            "# [cfg (feature = \"extra\")]",
+            "# [derive (Clone)]",
+            "# [derive (Copy)]"
+        ]
+    );
+    // `Clone` and `Copy` are there already, under the `cfg_attr`.
+    assert_eq!(
+        struct_attributes(content, "Wrapped"),
+        ["# [cfg_attr (feature = \"extra\" , derive (Clone , Copy))]"]
+    );
+    // A `cfg_attr` with another attribute does not count.
+    assert_eq!(struct_attributes(content, "Other").len(), 3);
+    let stand_ins = pod_stand_ins(content);
+    let attributes_of = |name: &str| {
+        stand_ins
+            .iter()
+            .find(|(target, _)| target == name)
+            .unwrap_or_else(|| panic!("{name}: {stand_ins:?}"))
+            .1
+            .clone()
+    };
+    assert_eq!(attributes_of("Gated"), ["# [cfg (feature = \"extra\")]"]);
+    assert!(attributes_of("Wrapped").is_empty());
+    assert_eq!(
+        attributes_of("Nested"),
+        ["# [cfg_attr (unix , cfg (not (windows)))]"]
+    );
+    assert!(attributes_of("Other").is_empty());
+}
+
+/// When the arguments of `#[gpu(..)]` are refused as a whole, the recovered code names the facade as the expansion
+/// would: a well-formed `crate = <path>` among them forwards the prelude import and the stand-ins to it, and with
+/// none they keep `::gust::`.
+#[test]
+fn recovery_after_refused_arguments_uses_the_facade_path_the_expansion_would() {
+    let module = "mod demo { pub struct Params { pub a: uint } }";
+    let run = |attribute: &str| {
+        let items = output_items(crate::gpu_impl(
+            attribute.parse().unwrap(),
+            module.parse().unwrap(),
+        ));
+        assert_leading_compile_error(&items, Some(Code::GpuArguments));
+        recovered_module(&items).content.clone().unwrap().1
+    };
+    let content = run("route = 3, crate = ::inner::gust");
+    let prelude: syn::Item = syn::parse_quote!(
+        use ::inner::gust::prelude::*;
+    );
+    assert_eq!(content[0], prelude);
+    let stand_in = quote::ToTokens::to_token_stream(content.last().unwrap()).to_string();
+    assert!(
+        stand_in.contains(":: inner :: gust :: GpuPod")
+            && stand_in.contains(":: inner :: gust :: TypeLayout"),
+        "{stand_in}"
+    );
+    let default_prelude: syn::Item = syn::parse_quote!(
+        use ::gust::prelude::*;
+    );
+    assert_eq!(run("route = 3")[0], default_prelude);
+    // A `crate` argument that is itself refused forwards nothing.
+    assert_eq!(run("route = 3, crate = inner::gust")[0], default_prelude);
+}
+
 /// The example the message of GUST-E0811 gives for an untyped array `let` is accepted as written.
 #[test]
 fn the_array_example_of_the_untyped_let_message_is_accepted() {

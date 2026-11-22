@@ -6,8 +6,9 @@ use std::{
 };
 
 use crate::{
-    process::{CheckRecord, require_command, run_checked},
-    validation::{json_string, sha256_hex},
+    json::json_string,
+    process::{CheckRecord, require_command, run_capture, run_checked},
+    validation::sha256_hex,
     workspace::cargo_target_dir,
 };
 
@@ -175,10 +176,7 @@ fn combined_output(check: &CheckRecord) -> String {
 
 /// A tool's version text, read without echoing it (`spirv-val --version` lists every target).
 fn tool_version(program: &str, flag: &str) -> Result<String, String> {
-    let output = Command::new(program)
-        .arg(flag)
-        .output()
-        .map_err(|error| format!("could not launch {program}: {error}"))?;
+    let output = run_capture(Command::new(program).arg(flag), program)?;
     if !output.status.success() {
         return Err(format!(
             "could not read the {program} version: `{program} {flag}` failed (exit {})",

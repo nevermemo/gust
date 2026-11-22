@@ -80,7 +80,10 @@ use std::{
 use crate::{
     checks::{RUSTFLAGS_VARIABLES, dual_target_dir, precompiled_dual_steps, run_dual_step},
     json::{self, Json},
-    process::{PROFILE_VARIABLE, exit_code, set_workspace_profile},
+    process::{
+        PROFILE_VARIABLE, exit_code, set_workspace_profile, slangc_cannot_be_found,
+        untar_crate_command,
+    },
     release::{PackageSpec, WorkDir, package_files, package_problems},
     ui::{Expectation, judge, parse_expectation, parse_expected},
     workspace::{cargo_target_dir, workspace_root},
@@ -246,54 +249,6 @@ pub(crate) fn slang_free_problems(
         problems.push(format!("{PROFILE_VARIABLE} is not {STRICT_PROFILE}"));
     }
     problems
-}
-
-/// Whether the shell of the platform finds `slangc` with the `PATH` of `environment`: `Ok(())` when it does not, an
-/// error when it does or when the lookup itself fails. The lookup is `where slangc` under `cmd` on Windows and
-/// `command -v slangc` under `/bin/sh` elsewhere. It runs through a shell because `Command::new("slangc")` is no test:
-/// on Windows std falls back to the parent's `PATH` after the one it was given, so it would find the tool that the
-/// stripping removed from the child. The shell is named by an absolute path on Unix: the probe runs under
-/// `env_clear`, so a bare `sh` would be looked up in the stripped `PATH` (without one, libc falls back to a default
-/// search path), which makes the lookup of the shell depend on the very variable under test; a program name that
-/// contains `/` is never searched for.
-fn slangc_cannot_be_found(environment: &[(OsString, OsString)]) -> Result<(), String> {
-    let mut probe = if cfg!(windows) {
-        let mut probe = Command::new("cmd");
-        probe.args(["/d", "/c", "where", "slangc"]);
-        probe
-    } else {
-        let mut probe = Command::new("/bin/sh");
-        probe.args(["-c", "command -v slangc"]);
-        probe
-    };
-    probe
-        .env_clear()
-        .envs(environment.iter().map(|(name, value)| (name, value)))
-        .stdin(Stdio::null());
-    let output = probe
-        .output()
-        .map_err(|error| format!("could not run the lookup of `slangc`: {error}"))?;
-    let code = output.status.code();
-    // `where` answers 1 when it finds nothing and 2 for an error; `command -v` answers non-zero when it finds nothing.
-    let absent = if cfg!(windows) {
-        code == Some(1)
-    } else {
-        !output.status.success()
-    };
-    if absent {
-        return Ok(());
-    }
-    if output.status.success() {
-        return Err(format!(
-            "`slangc` is found with the stripped environment: {}",
-            String::from_utf8_lossy(&output.stdout).trim()
-        ));
-    }
-    Err(format!(
-        "the lookup of `slangc` failed (exit {}): {}",
-        exit_code(output.status),
-        String::from_utf8_lossy(&output.stderr).trim()
-    ))
 }
 
 /// What the fixture's children share.
@@ -2811,13 +2766,7 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
         .join(&file);
         fs::copy(&from, crates.join(&file))
             .map_err(|error| format!("check-precompiled E8: {}: {error}", fixture.shown(&from)))?;
-        // `tar` runs in the unpacked directory and reads the archive by a relative path: a drive letter in an
-        // argument would be read as a host name by some tars.
-        let mut tar = Command::new("tar");
-        tar.current_dir(&unpacked)
-            .args(["-xzf", &format!("../crates/{file}")])
-            .stdin(Stdio::null());
-        let output = tar
+        let output = untar_crate_command(&unpacked, &file)
             .output()
             .map_err(|error| format!("check-precompiled E8: could not run tar: {error}"))?;
         require_success("E8", &format!("tar -xzf {file}"), &output)?;

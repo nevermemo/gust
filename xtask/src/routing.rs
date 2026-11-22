@@ -35,7 +35,10 @@ use std::{
 
 use crate::{
     json::{self, Json},
-    process::{PROFILE_VARIABLE, exit_code, set_workspace_profile, without_colors},
+    process::{
+        PROFILE_VARIABLE, cargo_program, exit_code, run_capture, set_workspace_profile,
+        without_colors,
+    },
     workspace::{cargo_target_dir, workspace_root},
 };
 
@@ -411,10 +414,7 @@ impl Done {
 }
 
 fn exec(mut command: Command, label: &str) -> Result<Done, String> {
-    let output = command
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| format!("could not launch {label}: {error}"))?;
+    let output = run_capture(command.stdin(Stdio::null()), label)?;
     Ok(Done {
         success: output.status.success(),
         code: exit_code(output.status),
@@ -945,7 +945,7 @@ fn build_driver(root: &Path, cargo: &OsString, target: &Path) -> Result<PathBuf,
 }
 
 fn prepare(root: &Path) -> Result<Check, String> {
-    let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let cargo = cargo_program();
     let target = root.join(cargo_target_dir(root));
     let driver = build_driver(root, &cargo, &target)?;
     let scratch = target.join("routing-scratch");

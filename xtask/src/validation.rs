@@ -4,7 +4,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use crate::{process::CheckRecord, time::now_utc, verify::VerifyMode};
+use crate::{json::json_string, process::CheckRecord, time::now_utc, verify::VerifyMode};
 
 pub(crate) struct ArtifactRecord {
     pub(crate) file: String,
@@ -457,23 +457,6 @@ fn skipped_names(text: &str) -> Option<Vec<String>> {
 /// The `device_type` of the adapter record for a software Vulkan driver such as lavapipe: the `Debug` name of
 /// wgpu's `DeviceType::Cpu`. Evidence from such an adapter is `Gpu (software)`, never hardware evidence (D52).
 const SOFTWARE_DEVICE_TYPE: &str = "Cpu";
-
-pub(crate) fn json_string(value: &str) -> String {
-    let mut out = String::from("\"");
-    for character in value.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c < ' ' => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
 
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let digest = sha256(bytes);

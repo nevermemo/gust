@@ -1,6 +1,4 @@
 use std::{
-    env,
-    ffi::OsString,
     fs,
     path::Path,
     process::{Command, Stdio},
@@ -8,7 +6,7 @@ use std::{
 
 use crate::{
     json::{self, Json},
-    process::{CheckRecord, report_check},
+    process::{CheckRecord, cargo_program, report_check, run_capture},
     validation::sha256_hex,
 };
 
@@ -342,11 +340,12 @@ pub(crate) fn compiler_tag_problems(path: &str, text: &str, pin: &str) -> Vec<St
 }
 
 fn tracked_files(root: &Path) -> Result<Vec<String>, String> {
-    let output = Command::new("git")
-        .args(["ls-files", "-z"])
-        .current_dir(root)
-        .output()
-        .map_err(|error| format!("could not launch git: {error}"))?;
+    let output = run_capture(
+        Command::new("git")
+            .args(["ls-files", "-z"])
+            .current_dir(root),
+        "git",
+    )?;
     if !output.status.success() {
         return Err(format!(
             "git ls-files failed: {}",
@@ -736,7 +735,7 @@ fn release_metadata_problems(root: &Path) -> (usize, Vec<String>) {
 
 /// `cargo metadata --format-version 1 --locked --no-deps` in `root`.
 fn read_metadata(root: &Path) -> Result<String, String> {
-    let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let cargo = cargo_program();
     let output = Command::new(&cargo)
         .args(["metadata", "--format-version", "1", "--locked", "--no-deps"])
         .current_dir(root)

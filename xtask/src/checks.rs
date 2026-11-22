@@ -9,18 +9,19 @@ use std::{
 };
 
 use crate::{
+    json::json_string,
     precompiled::PRECOMPILED_DIR,
     process::{
-        PROFILE_VARIABLE, command_exists, exit_code, print_command, require_command, run_checked,
-        run_counted, run_counted_captured, run_direct, run_direct_args, set_workspace_profile,
-        without_colors, workspace_command,
+        PROFILE_VARIABLE, cargo_program, command_exists, exit_code, print_command, require_command,
+        run_checked, run_counted, run_counted_captured, run_direct, run_direct_args,
+        set_workspace_profile, without_colors, workspace_command,
     },
     shader::{
         ExportOptions, clear_exports, compare_manifests, doctor_smoke, export_golden_spirv,
         hash_manifest,
     },
     ui::{Expectation, judge, parse_expected},
-    validation::{compact_validation_summary, json_string},
+    validation::compact_validation_summary,
     verify::{VerifyMode, prepare_helper, verify},
     workspace::{
         EXAMPLES, NO_EXPORT_EXAMPLES, cargo_target_dir, changed_paths, workspace_root,
@@ -2056,7 +2057,7 @@ pub(crate) fn tests_not_ok<'a>(stdout: &str, tests: &[&'a str]) -> Vec<&'a str> 
 }
 
 pub(crate) fn dual_command(root: &Path, step: &DualStep) -> Command {
-    let mut command = Command::new(env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")));
+    let mut command = Command::new(cargo_program());
     command
         .args(&step.args)
         .current_dir(root)

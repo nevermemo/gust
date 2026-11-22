@@ -1,8 +1,8 @@
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     io::{self, BufRead, BufReader, Write},
     path::Path,
-    process::{Command, Stdio},
+    process::{Command, Output, Stdio},
     sync::Once,
 };
 
@@ -93,6 +93,25 @@ pub(crate) fn workspace_command(program: impl AsRef<OsStr>) -> Command {
     command
 }
 
+/// Runs `command` to completion and captures its output. When it cannot be started the error is
+/// `could not launch {program}: {error}`, where `program` is the name shown (not always the command's own program).
+pub(crate) fn run_capture(command: &mut Command, program: &str) -> Result<Output, String> {
+    command
+        .output()
+        .map_err(|error| format!("could not launch {program}: {error}"))
+}
+
+/// `tar -xzf ../crates/{file}` run in `directory`: unpacks a packaged `.crate` that sits in the sibling `crates`
+/// folder. `tar` runs in the unpacked directory and reads the archive by a relative path: a drive letter in an
+/// argument would be read as a host name by some tars.
+pub(crate) fn untar_crate_command(directory: &Path, file: &str) -> Command {
+    let mut tar = Command::new("tar");
+    tar.current_dir(directory)
+        .args(["-xzf", &format!("../crates/{file}")])
+        .stdin(Stdio::null());
+    tar
+}
+
 pub(crate) struct CheckRecord {
     pub(crate) program: String,
     pub(crate) arguments: Vec<String>,
@@ -107,11 +126,10 @@ pub(crate) fn run_checked(
     program: &str,
     args: &[&str],
 ) -> Result<(), String> {
-    let output = workspace_command(program)
-        .args(args)
-        .current_dir(root)
-        .output()
-        .map_err(|error| format!("could not launch {program}: {error}"))?;
+    let output = run_capture(
+        workspace_command(program).args(args).current_dir(root),
+        program,
+    )?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     print!("{stdout}");
@@ -176,11 +194,7 @@ pub(crate) fn run_direct_args(root: &Path, program: &str, args: &[String]) -> Re
 }
 
 pub(crate) fn print_command(root: &Path, program: &str, args: &[&str]) -> Result<(), String> {
-    let output = Command::new(program)
-        .args(args)
-        .current_dir(root)
-        .output()
-        .map_err(|error| format!("could not launch {program}: {error}"))?;
+    let output = run_capture(Command::new(program).args(args).current_dir(root), program)?;
     print!("{}", String::from_utf8_lossy(&output.stdout));
     eprint!("{}", String::from_utf8_lossy(&output.stderr));
     if output.status.success() {
@@ -212,6 +226,59 @@ pub(crate) fn command_exists(program: &str) -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok()
+}
+
+/// `$CARGO` when set (it is under `cargo xtask`), else `cargo`.
+pub(crate) fn cargo_program() -> OsString {
+    std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
+}
+
+/// Whether the shell of the platform finds `slangc` with the `PATH` of `environment`: `Ok(())` when it does not, an
+/// error when it does or when the lookup itself fails. The lookup is `where slangc` under `cmd` on Windows and
+/// `command -v slangc` under `/bin/sh` elsewhere. It runs through a shell because `Command::new("slangc")` is no test:
+/// on Windows std falls back to the parent's `PATH` after the one it was given, so it would find the tool that the
+/// stripping removed from the child. The shell is named by an absolute path on Unix: the probe runs under
+/// `env_clear`, so a bare `sh` would be looked up in the stripped `PATH` (without one, libc falls back to a default
+/// search path), which makes the lookup of the shell depend on the very variable under test; a program name that
+/// contains `/` is never searched for.
+pub(crate) fn slangc_cannot_be_found(environment: &[(OsString, OsString)]) -> Result<(), String> {
+    let mut probe = if cfg!(windows) {
+        let mut probe = Command::new("cmd");
+        probe.args(["/d", "/c", "where", "slangc"]);
+        probe
+    } else {
+        let mut probe = Command::new("/bin/sh");
+        probe.args(["-c", "command -v slangc"]);
+        probe
+    };
+    probe
+        .env_clear()
+        .envs(environment.iter().map(|(name, value)| (name, value)))
+        .stdin(Stdio::null());
+    let output = probe
+        .output()
+        .map_err(|error| format!("could not run the lookup of `slangc`: {error}"))?;
+    let code = output.status.code();
+    // `where` answers 1 when it finds nothing and 2 for an error; `command -v` answers non-zero when it finds nothing.
+    let absent = if cfg!(windows) {
+        code == Some(1)
+    } else {
+        !output.status.success()
+    };
+    if absent {
+        return Ok(());
+    }
+    if output.status.success() {
+        return Err(format!(
+            "`slangc` is found with the stripped environment: {}",
+            String::from_utf8_lossy(&output.stdout).trim()
+        ));
+    }
+    Err(format!(
+        "the lookup of `slangc` failed (exit {}): {}",
+        exit_code(output.status),
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
 }
 
 /// Prints the outcome of an in-process check and records it like a command run, so lint-style

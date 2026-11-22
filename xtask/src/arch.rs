@@ -1,13 +1,11 @@
 use std::{
-    env,
-    ffi::OsString,
     path::Path,
     process::{Command, Stdio},
 };
 
 use crate::{
     json::{self, Json},
-    process::{CheckRecord, report_check},
+    process::{CheckRecord, cargo_program, report_check},
     workspace::{project_files, read_text},
 };
 
@@ -175,7 +173,7 @@ pub(crate) struct Package {
 /// `[dependencies.name]` forms need no reader of ours, and a manifest cargo rejects (such as an
 /// inherited dependency without a root entry) is reported here with cargo's own message.
 fn read_metadata(root: &Path) -> Result<String, String> {
-    let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let cargo = cargo_program();
     let output = Command::new(&cargo)
         .args(["metadata", "--format-version", "1", "--locked", "--no-deps"])
         .current_dir(root)

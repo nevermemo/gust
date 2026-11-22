@@ -1,14 +1,12 @@
 use std::{
-    env,
-    ffi::OsString,
-    fs,
+    env, fs,
     path::Path,
     process::{Command, Stdio},
 };
 
 use crate::{
     json::{self, Json},
-    process::{CheckRecord, report_check, set_workspace_profile},
+    process::{CheckRecord, cargo_program, report_check, set_workspace_profile},
 };
 
 /// The fixture workspace, relative to the repository root. It has a `[workspace]` of its own
@@ -211,7 +209,7 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
 /// `env.txt` (`fixture_env`) are set after that, so a fixture that is about a profile can name `GUST_PROFILE`
 /// itself, and only that fixture does.
 pub(crate) fn case_command(root: &Path, case: &str, fixture_env: &[(String, String)]) -> Command {
-    let mut command = Command::new(env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")));
+    let mut command = Command::new(cargo_program());
     command
         .args(cargo_args(case))
         .current_dir(root)
@@ -225,7 +223,7 @@ pub(crate) fn case_command(root: &Path, case: &str, fixture_env: &[(String, Stri
 
 /// The cargo child that checks the re-export fixture (see [`REEXPORT_DIR`]), under the same profile as the cases.
 pub(crate) fn reexport_command(root: &Path) -> Command {
-    let mut command = Command::new(env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")));
+    let mut command = Command::new(cargo_program());
     command.args(reexport_args());
     if let Some(directory) = reexport_target_dir(env::var_os("CARGO_TARGET_DIR").as_deref()) {
         command.arg("--target-dir").arg(directory);

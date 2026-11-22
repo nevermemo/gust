@@ -136,12 +136,8 @@ fn mul_add_is_fused_and_its_interval_holds_the_unfused_result_too() {
     let fused = a.mul_add(a, c);
     let unfused = a * a + c;
     assert_ne!(fused, unfused);
-    let (reference, (lo, hi)) = float_result(math(
-        MathFn::MulAdd,
-        Ty::F32,
-        vec![f(a), f(a), f(c)],
-    ))
-    .unwrap();
+    let (reference, (lo, hi)) =
+        float_result(math(MathFn::MulAdd, Ty::F32, vec![f(a), f(a), f(c)])).unwrap();
     assert_eq!(reference.to_bits(), fused.to_bits());
     assert!(lo <= f64::from(unfused) && f64::from(unfused) <= hi);
     assert!(lo <= f64::from(fused) && f64::from(fused) <= hi);
@@ -514,7 +510,11 @@ fn the_batch_math_programs_of_seeds_1_to_8_execute_every_math_method() {
     }
     assert_eq!(programs, 8 * MATH_PROGRAMS_PER_SEED);
     for (f, n) in MathFn::ALL.iter().zip(executed) {
-        assert!(n > 0, "`{}` never executes in the batch ({executed:?})", f.name());
+        assert!(
+            n > 0,
+            "`{}` never executes in the batch ({executed:?})",
+            f.name()
+        );
     }
 }
 

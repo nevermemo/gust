@@ -2075,9 +2075,8 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
                 }
                 Ok(Some(Const::A(Agg::new(&parts))))
             }
-            Expr::Splat { ty, e } => {
-                Ok(fold(methods, e)?.map(|value| Const::A(Agg::new(&vec![value.scalar(); ty.lanes()]))))
-            }
+            Expr::Splat { ty, e } => Ok(fold(methods, e)?
+                .map(|value| Const::A(Agg::new(&vec![value.scalar(); ty.lanes()])))),
             Expr::Comp { e, index } => {
                 Ok(fold(methods, e)?.map(|value| Const::of(value.agg().c[usize::from(*index)])))
             }

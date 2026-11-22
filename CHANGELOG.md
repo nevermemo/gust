@@ -7,10 +7,12 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## 0.2.0
 
-0.2.0 will be the first public release of GUST (D177). It is not published yet: the release waits for the owner's
-review of the whole project (milestone M11; D189, D198). A 0.1.0 was prepared on the branch `release/0.1` and was never
-published: it has no tag and is not on crates.io, so there is nothing to upgrade from, and a reader who meets 0.2.0 on
-crates.io can skip "Changed, and may break code written for the unpublished 0.1.0 line" and "Compatibility with the
+Nothing here has been published, and no release is planned yet: D226 abandoned the 0.1 and 0.2 plans, and releases
+wait for maturity (the hold of D189 and D199 stays). Older sentences below that say 0.2.0 will be the first public
+release, or wait for it to reach crates.io, record the plan of their time and are superseded by D226.
+A 0.1.0 was prepared on the branch `release/0.1` and was never
+published: it has no tag and is not on crates.io, so there is nothing to upgrade from, and a reader of a future first
+release can skip "Changed, and may break code written for the unpublished 0.1.0 line" and "Compatibility with the
 unpublished 0.1.0 line" below. Those two parts are kept for this repository's own fixtures and for anyone who built
 from `release/0.1`. This list describes `main` as of the M10 close: what the milestones M8, M9 and M10 merged. No
 release commit exists yet, and the semver report below will be rerun on the commit that is published.

@@ -202,7 +202,13 @@ fn math_programs_compile_through_the_macro_without_a_gust_diagnostic() {
     }
     assert_eq!(programs.len(), 192);
     assert!(programs.iter().all(|p| p.has_math_forms()));
-    write_crate(&dir, &package_name("math").unwrap(), &programs, &repo_root()).unwrap();
+    write_crate(
+        &dir,
+        &package_name("math").unwrap(),
+        &programs,
+        &repo_root(),
+    )
+    .unwrap();
     let (ok, output) = cargo_check(&dir);
     assert!(!output.contains("[GUST-E"), "{}", tail(&output));
     assert!(ok, "cargo check failed:\n{}", tail(&output));

@@ -869,7 +869,8 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       bullet per feature with its rules kept, launch limits are section 5a, sections 9-18 share one shape, and dated
       run records moved word for word to `docs/development/VALIDATION.md` appendix A1-A8. Every code, D id and
       anchor kept; the stale GUST-E0813 statement on arrays now matches the code. The 1,500-line target was not met
-      (2,150 lines): the section 1 rules exist nowhere else, so the diet moves to a later slice. Opus review: merge
+      (2,150 lines, and SEMANTICS started at 2,134, so its line count rose while its bytes fell): the section 1 rules
+      exist nowhere else, so the diet moves to a later slice. Opus review: merge
       after fixes; fixed.
     - m13.exgpu (`cc284e5`, m12 sanity follow-up): every example's ignored GPU tests are pinned by name (69 in 21
       packages, subgroup-reduce included); check-examples and check-full fail on a missing, failed or still-ignored
@@ -898,14 +899,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       fixes; fixed.
     - m13.t1b (tidy round): the macro crate's Slang emitter `slang/mod.rs` (4,197 lines) is split by concern into
       15 submodules (kernel, statements, expressions, value_if, declarations, calls, control, arrays, types,
-      closures, helpers, operators, usage, lowering, records); mod.rs keeps 152 lines. Moves only: 108 private items
+      closures, helpers, operators, usage, lowering, records); mod.rs keeps 169 lines. Moves only: 108 private items
       became `pub(super)`, nothing wider; emitted Slang for 379 modules and 444 kernels is byte-identical with the
       guards off and on. Doc pointers follow. Opus review: merge after fixes (pointers); fixed.
     - m13.uifast (build-time spike m13.btime, R5): `cargo xtask check-ui` judges the 229 plain fixtures from one
       shared `cargo check --workspace --keep-going` call split per package; the 30 fixtures with `env.txt` or
       dependency features (all 7 `build-error:` ones among them) keep their own call. A fixture missing from the
       stream fails, and the shared call's stderr is then reported once. Verdicts unchanged (215 fail, 7 build-fail,
-      37 compile of 259); about 500 s to about 70 s on a busy machine. Opus review: merge after fixes; fixed.
+      37 compile of 259); about 500 s to about 70 s on a busy machine (a coordinator-side measurement of the spike
+      m13.btime, not kept in the repository). Opus review: merge after fixes; fixed.
     - m13.exmove (m12 sanity follow-up): budget-kit moved to `bench/budget-kit` (bench workspace, history kept);
       main.rs (2,983 lines) split into setup, measure, report, the kernel module and one module per W row, moves
       only; masked before/after output identical on the Radeon 890M. `cargo xtask check-bench --budget-kit` runs
@@ -916,13 +918,23 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       "line-tables-only"`, backtraces keep file:line) and the Windows MSVC target links with the toolchain's
       `rust-lld`; the spike measured the incremental macro-edit and runtime-edit gates 25-31 % faster. The variant
       with full debug info for workspace crates saved 19.8 %, under the pre-registered 20 %, so the fallback was
-      taken. The release and bench profiles are unchanged, but every Windows MSVC build of the checkout
+      taken (both figures are coordinator-side measurements of the spike m13.btime, not kept in the repository).
+      The release and bench profiles are unchanged, but every Windows MSVC build of the checkout
       (release and `bench/` included) links with `rust-lld`; Linux and wasm32 builds are unchanged.
       Coordinator review (config only).
+    - m13.rulings (`db3a60b`): the owner's rulings of 2026-11-22 recorded as D221 to D238 in DECISIONS, and ROADMAP's
+      next steps follow them. Records only (DECISIONS and ROADMAP).
+    - m13.sortres: work area only.
+    - m13.fixtures: closed; done by m13.dedup-tests (above), which holds the shared test fixtures.
     - m13.trail2rec (D4): `bench/README.md` records the walker step of a game prototype test (a local spike, code
       not in the repository): two signals at 2^20 walkers on the Radeon 890M ran 8.06 / 9.00 ms (median / p95)
       against the pre-registered 4.0 / 8.0 ms, so the rule failed; 2^18 fits (2.85 / 3.24 ms); the RTX 5090 ran
       0.39 / 0.66 ms. No threshold reset, no tuning toward one adapter.
+    - m13.sfix2 (the M13 sanity checks' remaining fixes): `check-cfg` is a step of `check-fast` and `check-full`, right
+      after the format check (the full mode with `--require-wasm`; the fast mode's closing line names wasm32 builds
+      it skipped) and gains `gust-algo` without `slang-runtime`; AGENTS lists `check-cfg`,
+      `check-bench --budget-kit` and `check-examples --gpu`; VALIDATION names `CARGO_PROFILE_DEV_DEBUG=full`; the
+      records above gained the lines and corrections the reviews asked for; CHANGELOG and ROADMAP follow D226 and D227.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -3,8 +3,8 @@
 //!
 //! A workspace build unifies features: the self dev-dependencies and `gust-algo` switch `slang-runtime` on for both
 //! crates, and nothing in the workspace switches `spirv-route` on, so the default build, the `spirv-route` builds and
-//! the browser build of the runtime are compiled by no workspace-wide build and no local merge gate (CI's wasm32
-//! clippy and the precompiled job build some of them). `cargo clippy ... -- -D warnings` also fails on
+//! the browser build of the runtime are compiled by no workspace-wide build (CI's wasm32 clippy and the precompiled job
+//! build some of them); `check-fast` and `check-full` run this check. `cargo clippy ... -- -D warnings` also fails on
 //! an unused import, which is the usual error of a build that a feature or a target gates off.
 
 use std::{
@@ -43,6 +43,12 @@ pub(crate) const COMBOS: &[Combo] = &[
         name: "gust-compute: spirv-route",
         wasm: false,
         args: &["-p", "gust-compute", "--lib", "--features", "spirv-route"],
+    },
+    // `gust-algo` forwards `slang-runtime`; its own dev-dependency switches the feature on for builds with tests only.
+    Combo {
+        name: "gust-algo: no features",
+        wasm: false,
+        args: &["-p", "gust-algo", "--lib"],
     },
     Combo {
         name: "gust-compute-wgpu: no features",
@@ -188,18 +194,38 @@ pub(crate) fn check_cfg(args: &[String]) -> Result<(), String> {
         [flag] if flag == REQUIRE_WASM => true,
         _ => return Err(format!("check-cfg takes no argument or {REQUIRE_WASM}")),
     };
-    let root = workspace_root()?;
+    let report = check_cfg_report(&workspace_root()?, require_wasm)?;
+    println!("{}", report.line);
+    Ok(())
+}
+
+/// What a whole run did: the closing line, and the names of the runs that were skipped (not passed).
+pub(crate) struct Report {
+    pub(crate) line: String,
+    pub(crate) skipped: Vec<&'static str>,
+}
+
+/// The whole check, as the `check-fast` and `check-full` modes run it (m13.sfix2), in the repository `root`. It prints
+/// each run's progress but not the closing line (the caller prints or records it). With `require_wasm` a missing wasm32
+/// standard library is an error, as in CI; without it the wasm32 runs are skipped and named in the report.
+pub(crate) fn check_cfg_report(root: &Path, require_wasm: bool) -> Result<Report, String> {
     let installed = wasm_target_installed("check-cfg")?;
     let started = Instant::now();
     let outcomes = run_combos(COMBOS, installed, require_wasm, &mut |combo| {
         let step = Instant::now();
         println!("check-cfg: {}", combo.name);
-        let result = lint(&root, combo);
+        let result = lint(root, combo);
         println!("check-cfg: {} took {:.0?}", combo.name, step.elapsed());
         result
     })?;
-    println!("{} ({:.0?})", summary(&outcomes), started.elapsed());
-    Ok(())
+    Ok(Report {
+        line: format!("{} ({:.0?})", summary(&outcomes), started.elapsed()),
+        skipped: outcomes
+            .iter()
+            .filter(|(_, outcome)| *outcome == Outcome::Skipped)
+            .map(|(name, _)| *name)
+            .collect(),
+    })
 }
 
 /// The cargo child of `combo`: the same cargo program for every run, with the workspace profile (`GUST_PROFILE=dev`)

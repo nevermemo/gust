@@ -694,3 +694,57 @@ they have no software pin yet, so a lavapipe run compares them with the hardware
 differ, and nothing fails except the KM-13 bound. Both are unspecified, measured observations of one driver version
 each, not requirements, and the Rust and twin columns are unchanged.
 
+## Appendix: DIAGNOSTICS run records (m13.docs1b)
+
+The evidence that `docs/DIAGNOSTICS.md` used to carry inline, moved word for word; each entry there points here.
+
+### B1. A foldable zero divisor in code that never runs (E0317 and the Slang section)
+
+**Retired limitation: slangc refused a zero divisor that it could fold, in code that never
+runs** (found by the differential test, slice m5.c2; cured by slice m6.dv, D74). slangc
+2026.20 evaluates an integer `/` or `%` at compile time when it can fold the divisor to a
+constant, and it rejects a zero with `error[E30002]: divide by zero`, in a branch that no
+invocation takes as well (the counter of an unrolled `for` at its first iteration, a
+product with a zero factor such as `i * 0`, the difference `i - i`, wrapping arithmetic,
+a condition on known values). The smallest reproducer is
+`for i in 0u32..4u32 { if !true { let r = i % i; } }`, which used to be refused at the `%`.
+The macro now lowers every `/` and `%` whose divisor is not a literal to the call
+`__gust_div(a, b)` or `__gust_rem(a, b)` (`/=` and `%=` to `__gust_div_assign` and
+`__gust_rem_assign`, with the place `inout`), a helper whose body is the plain operator and
+which slangc does not fold; the reproducer and the other shapes compile on WGSL and on
+SPIR-V (the Slangc-tier test `every_division_shape_slangc_folded_compiles_on_each_target`),
+and the differential generator no longer refuses them (DIFFTEST_FORMAT 5,
+[DIFFTEST](DIFFTEST.md)). A divisor that is zero at run time keeps the results
+of D39 and KM-01 to KM-03 in [SEMANTICS](../SEMANTICS.md); that was measured with divisors read
+from a buffer. A closed zero that is live (`let zero = 0u32; 5 / zero`) goes through the helper and
+compiles, but no test executes it, and the differential generator discards it. What stays: a literal zero divisor
+is GUST's own error [GUST-E0317](../DIAGNOSTICS.md#gust-e0317-division-by-a-literal-zero), and slangc's behaviour for a zero divisor on the SPIR-V
+route is undefined in Slang and was not executed (the WGSL route, which the GPU tests run,
+is defined by WGSL).
+
+### B2. Integer `.dot` (E0305)
+
+Integer `.dot` (slice m6.m2): Slang's `dot` on an integer vector is `OpSDot` or `OpUDot` in SPIR-V, which needs
+`Capability DotProduct`, and naga's SPIR-V reader refuses it (`UnsupportedCapability(DotProduct)`; measured on
+slangc 2026.20). The macro sees no types (the invocation id is a `UVec3` and `id.xy()` a `UVec2`, neither named by a
+token), so a module that contains a `dot` lowers every `.dot(v)` to the overloaded helper `__gust_dot(a, b)`. Its
+integer overloads are the sum of the component products in written order, and its float overloads call Slang's `dot`
+(the SPIR-V of a float-only module is byte-identical, and the WGSL calls a helper whose body is the plain `dot`). The
+SPIR-V needs no capability beyond `Shader`: it passes naga's reader with empty capabilities and `spirv-val`. A module
+without a `dot` keeps its text unchanged.
+
+### B3. Order of evaluation of a `&mut self` call (E0421)
+
+The three bullets of the entry that carried measurements, as they were written there:
+
+- the start or the end of a `for` range: the emitted Slang loop evaluates the end bound before the start bound (spike M9.s0 P9, measured on the WGSL and the SPIR-V target), where Rust evaluates the start first (`for i in c.n..c.next()`); a call of a closure in a bound is refused too (slice m9.c: a closure cannot change anything, but the bound is evaluated once by the loop and the rule is kept conservative; `for i in 0u32..f(n)`, fixture `tests/ui/for-bound-closure`).
+- anywhere in the place (the assignee) of `=` or of a compound assignment: Rust evaluates the assigned value before the place, Slang evaluates a call inside the place first (`out[c.next()] = c.next()` writes another element, `out[d.bump()] = d.n` stores the new value; review m9.a2).
+- an indexed place whose index reads a root that a `&mut self` call in the assigned value changes, for `=` and every compound assignment: `a[s.n as usize] = s.bump()` on an array local, `out[c.n] = c.next()` and `out[c.n] += c.next()` on a storage buffer, `wg[w.n] = w.bump()` on workgroup memory. Rust evaluates the value first and the index after it; slangc 2026.21 evaluates the index first (2026.20 called first, so the order of Slang changed between the two versions, and GUST refuses the form instead of relying on either; slice m9.r1, fix round 1). Before this the storage forms were accepted and gave another element than the CPU twin on the GPU with the pinned Slang.
+
+### B4. Lanes per subgroup by adapter (E0751)
+
+The lane count of a subgroup is a property of the pipeline (32 on the RTX 5090, 64 on the Radeon 890M, 8 on lavapipe, 4 on WARP in the certified runs), so no workgroup size is correct for every device, but a multiple of 64 is a whole number of subgroups on each of them: an invocation count that is not leaves a part-filled subgroup whose operations combine fewer invocations than the kernel counts on.
+
+### B5. Comparison of arrays that slangc refuses (E0811)
+
+A comparison where only one side resolves to an array, or where an array field has such a name (`a.x == b.x`), is therefore not refused by the macro and reaches slangc, which refuses every one of them (`E39999`, no overload of the operator for arrays; measured by review m9.r2a on `float[4] ==`, `float4[2] !=`, `Pt[2] ==`, `int[3] <` and `float[4] >=`, on the WGSL and SPIR-V targets). The refusal is loud, never a wrong comparison.

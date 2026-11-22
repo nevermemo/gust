@@ -878,6 +878,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       visitors; 508 lines removed, 315 added. Emitted Slang and line tables byte-identical for 379 modules (444
       kernels, texture and pixel kernels included) with the SPIR-V route's guards off and on. Opus review: merge.
       Full Gpu suite on the merged tree (RTX 5090) at the pins.
+    - m13.docs1b (D227 document diet, second part): DIAGNOSTICS entries share one shape, slice attributions go
+      (decision ids stay), the accepted methods are listed once (GUST-E0305), and evidence moved word for word to
+      `docs/development/VALIDATION.md` appendix B1-B5. Stale facts fixed against the code (GUST-E0723, GUST-E0746,
+      GUST-E0326, D81). Every heading, code and id kept. Size 184,782 to 176,298 bytes: the quarter cut was not met
+      because the rest is rules, so the diet goes to the owner as a choice. Opus review: merge after fixes; fixed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

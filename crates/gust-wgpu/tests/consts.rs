@@ -12,8 +12,10 @@
 //! Slice m11.cexpr (D210) adds the module `cexpr`: constants that are expressions of literals and earlier constants,
 //! read back by one kernel and compared with the values the host reads from the same Rust items (rustc computed those).
 
+mod common;
+
 use gust::{Independent, cpu::CpuDevice};
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
 #[gust::gpu]
 mod shared {
@@ -166,8 +168,7 @@ fn two_kernels_and_a_helper_read_the_same_module_constants_on_the_gpu_and_the_tw
     let src = sources();
     let want = expected(&src);
 
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let info = device.adapter_info();
     eprintln!("adapter: {} backend: {:?}", info.name, info.backend);
 
@@ -267,8 +268,7 @@ fn extreme_literals_a_struct_method_and_a_closure_read_constants_on_the_gpu_and_
     assert_eq!(shared::LOW, i32::MIN);
     assert_eq!(shared::LOW_SUFFIXED, i32::MIN);
 
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let info = device.adapter_info();
     eprintln!("adapter: {} backend: {:?}", info.name, info.backend);
     let source = device.create_typed_buffer("extras src", &src, GpuBufferAccess::ReadOnly);
@@ -542,8 +542,7 @@ fn the_expression_constants_hold_the_values_rustc_computes() {
 fn expression_constants_read_the_same_values_on_the_gpu_and_the_twin() {
     let want = expr_expected();
 
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let info = device.adapter_info();
     eprintln!("adapter: {} backend: {:?}", info.name, info.backend);
 

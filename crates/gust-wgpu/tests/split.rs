@@ -14,6 +14,10 @@
 
 #![cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]
 
+mod common;
+
+use common::{assert_cold, device, ulp};
+
 use gust::{
     Access, Extent, GpuPod, Independent, KernelDescriptor, LengthRule, ParameterKind, Resource,
     ScalarKind, StructFieldLayout, TypeLayout, cpu::CpuDevice,
@@ -263,10 +267,6 @@ unsafe impl GpuPod for LaunchBase {
         ];
         TypeLayout::structure("__GustLaunchBase", 16, 16, FIELDS)
     };
-}
-
-fn device() -> HeadlessDevice {
-    HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip")
 }
 
 /// `device` with every compute-workgroup dimension limited to `workgroups` (`tests/limits.rs` does the same).
@@ -933,15 +933,6 @@ fn cube_by_hand(device: &HeadlessDevice, w: u32, h: u32, d: u32, limit: u32) -> 
     outputs(device, &hits, &groups, &locals)
 }
 
-fn assert_cold(device: &HeadlessDevice) {
-    let stats = device.pipeline_cache_stats();
-    assert_eq!(
-        (stats.entries, stats.misses, stats.hits),
-        (0, 0, 0),
-        "a refusal must come before compilation and the cache lookup"
-    );
-}
-
 /// (f) The host's split equals the hand split, the host reference and the CPU twin on x alone, y alone, z alone and all
 /// three at once. Limit 4, workgroup 4 x 4 x 4, extent 20 x 20 x 20: 5 workgroups per axis, 2 pieces per axis, 8 pieces.
 /// The z axis of a launch has never run on a GPU before this test.
@@ -1155,7 +1146,7 @@ fn a_launch_of_more_than_the_most_pieces_is_refused_before_compiling() {
             gust_wgpu::MAX_SPLIT_DISPATCHES as u64
         )
     );
-    assert_cold(&lowered);
+    assert_cold(&lowered, "a refusal");
     // 4096 pieces is the most that runs.
     let ok = lowered_ok_edge();
     assert_eq!(ok, line_expected(8 * 4096, 8 * 4096));
@@ -1181,7 +1172,7 @@ fn a_variant_over_the_uniform_limit_keeps_the_plain_refusal() {
         limit_of(&refused),
         ("max_compute_workgroups_per_dimension", 13, 4)
     );
-    assert_cold(&lowered);
+    assert_cold(&lowered, "a refusal");
 }
 
 /// (l) The invocation cap comes before the pieces: past 2^32 the launch is refused as `global_invocation_id`, on the
@@ -1192,7 +1183,7 @@ fn an_extent_over_the_invocation_cap_is_refused_as_global_invocation_id_on_both(
     let extent = Extent::new(u32::MAX, 2, 1);
     let wanted = ("global_invocation_id", 1u64 << 33, 1u64 << 32);
     assert_eq!(limit_of(&refused_line(&lowered, extent)), wanted);
-    assert_cold(&lowered);
+    assert_cold(&lowered, "a refusal");
     let cpu = CpuDevice::new();
     let count = cpu
         .uniform(Count {
@@ -1306,7 +1297,7 @@ fn a_hidden_uniform_over_the_uniform_binding_limit_keeps_the_plain_refusal() {
         limit_of(&refused),
         ("max_compute_workgroups_per_dimension", 13, 4)
     );
-    assert_cold(&refusing);
+    assert_cold(&refusing, "a refusal");
 
     // The control: 16 bytes is exactly enough, so the same launch is split and every element runs.
     let accepting = with_uniform_limit(16);
@@ -1319,13 +1310,6 @@ fn a_hidden_uniform_over_the_uniform_binding_limit_keeps_the_plain_refusal() {
         1,
         "only the variant is compiled"
     );
-}
-
-/// The unit in the last place of a normal `f32` (the same as `tests/math3.rs`).
-fn ulp(x: f32) -> f64 {
-    let magnitude = x.abs().max(f32::MIN_POSITIVE);
-    let exponent = ((magnitude.to_bits() >> 23) & 0xff) as i32 - 127;
-    2f64.powi(exponent - 23)
 }
 
 /// The spacing of the float bounds: at the larger of the exact and the actual result (the same as `tests/math3.rs`).
@@ -1527,7 +1511,7 @@ fn a_staged_graph_node_past_the_workgroup_limit_is_refused_not_split() {
         limit_of(&refused),
         ("max_compute_workgroups_per_dimension", 13, 4)
     );
-    assert_cold(&lowered);
+    assert_cold(&lowered, "a refusal");
     assert_eq!(
         outputs(&lowered, &hits, &groups, &locals),
         Outputs {
@@ -1658,5 +1642,5 @@ fn a_split_launch_runs_the_variants_own_artifact_and_equals_the_unsplit_launch()
         error.to_string().contains("artifact hash"),
         "the artifact was verified and refused: {error}"
     );
-    assert_cold(&fresh_device);
+    assert_cold(&fresh_device, "a refusal");
 }

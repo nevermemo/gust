@@ -1,7 +1,9 @@
 include!("../../../tests/fixtures/numeric.rs");
 
+mod common;
+
 use gust::cpu::CpuDevice;
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
 /// Independent host reference. This is ordinary Rust, not execution of a shader
 /// shadow body: it states the portable numeric semantics the GPU must match.
@@ -39,8 +41,7 @@ fn wrapping_reference(a: i32, b: u32) -> (u32, i32) {
 
 #[test]
 fn numeric_semantics_and_struct_construction_execute_on_gpu() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     for count in [1, 63, 64, 65, 257] {
         let a: Vec<i32> = (0..count)
             .map(|i| {
@@ -257,8 +258,7 @@ fn typed_locals_match_host_rust_at_the_signed_edge() {
         -9,
         9,
     ];
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     for count in [1usize, 14, 64, 65, 100] {
         let y: Vec<u32> = (0..count).map(|i| divisors[i % 14]).collect();
         let s: Vec<i32> = (0..count).map(|i| signed[(i * 5) % 14]).collect();

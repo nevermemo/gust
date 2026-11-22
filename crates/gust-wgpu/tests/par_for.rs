@@ -9,7 +9,7 @@
 
 #![cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]
 
-use std::sync::Arc;
+mod common;
 
 use gust::cpu;
 use gust_wgpu::{DeviceHandle, GpuVec, HeadlessDevice};
@@ -30,9 +30,7 @@ mod on_twin {
 const UNWRITTEN: u32 = 0xDEAD_BEEF;
 
 fn handle() -> DeviceHandle {
-    Arc::new(
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip"),
-    )
+    common::device_handle()
 }
 
 /// The device of each backend, as the fixture's functions take it.

@@ -10,6 +10,8 @@
 //! unless `GUST_REQUIRE_SPIRV_ROUTE=1` is set, which turns a fall back to WGSL into a failure (CI sets it).
 #![cfg(feature = "spirv-route")]
 
+mod common;
+
 use gust::{
     Access, GpuPod, Kernel, KernelDescriptor, ParameterDescriptor, ParameterKind, ResourceBinding,
     ResourceLayout,
@@ -17,10 +19,7 @@ use gust::{
 use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice, Route};
 
 fn device() -> HeadlessDevice {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
-    eprintln!("spirv_route adapter: {}", device.adapter_info().name);
-    device
+    common::device_logged("spirv_route")
 }
 
 /// The environment variable that makes a software adapter hold the route to the hardware rule: with

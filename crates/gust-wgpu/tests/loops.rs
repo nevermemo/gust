@@ -1,7 +1,9 @@
 include!("../../../tests/fixtures/loops.rs");
 
+mod common;
+
 use gust::cpu::CpuDevice;
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
 /// Independent host reference for the `loops` fixture. Closed forms are used where
 /// they exist so the reference does not mirror the kernel's loop structure.
@@ -38,8 +40,7 @@ fn reference(x: u32, window: (u32, u32), input: &[u32]) -> Expected {
 
 #[test]
 fn bounded_loops_execute_on_gpu() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     eprintln!("loops adapter: {:?}", device.adapter_info());
     for count in [1, 63, 64, 65, 257] {
         let input: Vec<u32> = (0..count).map(|i| ((i * 37 + 11) % 200) as u32).collect();

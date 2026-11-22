@@ -9,6 +9,10 @@
 
 include!("../../../tests/fixtures/pixel.rs");
 
+mod common;
+
+use common::{assert_cold, device};
+
 use gust::{Extent, Independent, PIXEL_MAX_ELEMENTS, Shape, cpu::CpuDevice};
 // The names below are the compatibility path, which these tests exercise until 1.0.
 #[allow(deprecated)]
@@ -36,10 +40,6 @@ mod indirect {
     }
 }
 
-fn device() -> HeadlessDevice {
-    HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip")
-}
-
 fn shade() -> &'static gust::KernelDescriptor {
     let shade = &pixel::MODULE_DESCRIPTOR.kernels[0];
     assert_eq!(shade.name, "shade");
@@ -54,15 +54,6 @@ fn buffers(device: &HeadlessDevice, n: usize) -> (GpuBuffer<f32>, GpuBuffer<f32>
         device.create_typed_buffer("scaled", &vec![0.0; n], GpuBufferAccess::ReadWrite),
         device.create_typed_buffer("flags", &vec![0u32; n], GpuBufferAccess::ReadWrite),
     )
-}
-
-fn assert_cold(device: &HeadlessDevice) {
-    let stats = device.pipeline_cache_stats();
-    assert_eq!(
-        (stats.entries, stats.misses, stats.hits),
-        (0, 0, 0),
-        "the refusal must precede compilation and the cache lookup"
-    );
 }
 
 /// The `ShapeUnsupported` of a `pixel` kernel with `reason` containing `needle`.
@@ -132,7 +123,7 @@ fn a_call_beyond_the_cap_is_the_named_device_limit() {
             }
             other => panic!("expected the cap DeviceLimit, got {other:?}"),
         }
-        assert_cold(device);
+        assert_cold(device, "the refusal");
     };
     assert_cap(&device);
     // A storage binding below the bytes of the buffers would refuse the call too, but the cap is decided first.
@@ -166,11 +157,11 @@ fn a_lowered_texture_dimension_refuses_the_attachment() {
         }
         other => panic!("expected the texture-dimension DeviceLimit, got {other:?}"),
     }
-    assert_cold(&device);
+    assert_cold(&device, "the refusal");
     // An empty call is not checked, as for a grid call.
     let (input, scaled, flags) = buffers(&device, 0);
     pixel::shade::dispatch(&device, 0, &input, &scaled, &flags).unwrap();
-    assert_cold(&device);
+    assert_cold(&device, "the refusal");
 }
 
 /// A read-write output bound `Independent` is `ShapeIndependentOutput`, on the GPU and on the twin; an independent
@@ -202,7 +193,7 @@ fn an_independent_output_is_refused_on_the_gpu_and_on_the_twin() {
         Error::ShapeIndependentOutput { parameter, .. } => assert_eq!(parameter, "flags"),
         other => panic!("expected ShapeIndependentOutput, got {other:?}"),
     }
-    assert_cold(&device);
+    assert_cold(&device, "the refusal");
 
     let cpu = CpuDevice::new();
     let (cpu_input, cpu_scaled, cpu_flags) = (
@@ -241,7 +232,7 @@ fn a_pixel_call_over_an_extent_is_refused() {
             .expect_err("a pixel call is one-dimensional");
         assert_unsupported(&error, "one-dimensional");
     }
-    assert_cold(&device);
+    assert_cold(&device, "the refusal");
     // A graph node over an extent is the same refusal (not the graph's `Error::Extent`), before any pipeline.
     let mut graph = StagedGraph::new();
     graph.dispatch(
@@ -253,7 +244,7 @@ fn a_pixel_call_over_an_extent_is_refused() {
         .err()
         .expect("a pixel node is one-dimensional");
     assert_unsupported(&error, "one-dimensional");
-    assert_cold(&device);
+    assert_cold(&device, "the refusal");
     // The same buffers as one dimension of 8 are a call.
     device
         .dispatch_batch(&[BufferDispatch::new(shade(), 8, &bindings)])
@@ -281,7 +272,7 @@ fn an_indirect_launch_is_refused_before_anything_else() {
         .err()
         .expect("a pixel kernel has no indirect launch");
     assert_unsupported(&error, "indirect");
-    assert_cold(&device);
+    assert_cold(&device, "the refusal");
 
     let call = pixel::shade::call(4, &input, &scaled, &flags);
     let mut typed = StagedGraph::new();
@@ -291,7 +282,7 @@ fn an_indirect_launch_is_refused_before_anything_else() {
         .err()
         .expect("a pixel kernel has no indirect launch");
     assert_unsupported(&error, "indirect");
-    assert_cold(&device);
+    assert_cold(&device, "the refusal");
 }
 
 /// The one-shot v1 functions run compute passes: a `pixel` kernel is refused by both, before any buffer is touched.
@@ -326,7 +317,7 @@ fn the_one_shot_functions_refuse_a_pixel_kernel() {
         )
         .expect_err("dispatch_u32 runs compute passes");
     assert_unsupported(&error, "one-shot");
-    assert_cold(&device);
+    assert_cold(&device, "the refusal");
 }
 
 /// The generated host snippet is a compute host; no pixel snippet exists in MX.

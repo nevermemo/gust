@@ -1,12 +1,13 @@
 include!("../../../tests/fixtures/semantics.rs");
 
+mod common;
+
 use gust::cpu::CpuDevice;
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
 #[test]
 fn translated_semantics_execute_on_gpu() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     for count in [1, 63, 64, 65, 257] {
         let values: Vec<f32> = (0..count).map(|i| (i % 7) as f32 - 3.0).collect();
         let input =

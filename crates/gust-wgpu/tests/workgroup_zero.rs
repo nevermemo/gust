@@ -6,13 +6,12 @@
 //! are in the emitted Slang, and the probes also assert that the kernels took the SPIR-V route (a software adapter
 //! may take either, as long as the record says why, unless `GUST_REQUIRE_SPIRV_ROUTE=1` is set).
 
+mod common;
+
 use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
 
 fn device() -> HeadlessDevice {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
-    eprintln!("workgroup_zero adapter: {}", device.adapter_info().name);
-    device
+    common::device_logged("workgroup_zero")
 }
 
 /// With the feature on, the kernel `qualified` took the SPIR-V route on a hardware adapter. Without it, nothing: the

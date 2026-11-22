@@ -1,8 +1,10 @@
 include!("../../../tests/fixtures/methods_mut.rs");
 
+mod common;
+
 use gust::Run;
 use gust::cpu::CpuDevice;
-use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::GpuBufferAccess;
 
 // Expected values, written by hand from the fixture's rules (not computed by a function that mirrors the kernel).
 //
@@ -31,8 +33,7 @@ const NESTED: [u32; 5] = [8, 10, 12, 14, 16];
 
 #[test]
 fn mutating_methods_execute_on_gpu_and_on_the_cpu_twin() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     eprintln!("methods_mut adapter: {:?}", device.adapter_info());
     for count in [1, 63, 64, 65, 257] {
         let input: Vec<u32> = (0..count).map(|i| (i % 5) as u32 * 2).collect();
@@ -235,8 +236,7 @@ mod keep_calls {
 
 #[test]
 fn keep_helper_lists_execute_on_gpu_and_on_the_cpu_twin() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     for count in [1, 8, 65] {
         let input: Vec<u32> = (0..count).map(|i| (i % 8) as u32).collect();
         let input_buf = device.create_typed_buffer("keep input", &input, GpuBufferAccess::ReadOnly);
@@ -350,8 +350,7 @@ mod keep_methods {
 
 #[test]
 fn keep_helper_method_calls_execute_on_gpu_and_on_the_cpu_twin() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     for count in [1, 8, 65] {
         let input: Vec<u32> = (0..count).map(|i| (i % 8) as u32).collect();
         let input_buf =

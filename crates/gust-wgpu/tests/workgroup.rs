@@ -4,9 +4,11 @@
 
 include!("../../../tests/fixtures/workgroup.rs");
 
+mod common;
+
 use std::{fs, process::Command};
 
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
 /// Invocations per workgroup of both kernels.
 const GROUP: usize = 256;
@@ -31,8 +33,7 @@ fn block_sums(input: &[f32]) -> Vec<f32> {
 
 #[test]
 fn block_reduce_matches_the_host_sum() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     eprintln!("workgroup adapter: {:?}", device.adapter_info());
     // One element, one short of a group, a group, one past it, and a count with a one-element last group that needs
     // 257 workgroups.
@@ -78,8 +79,7 @@ fn block_reduce_matches_the_host_sum() {
 
 #[test]
 fn local_and_group_ids_are_the_dispatch_id_modulo_and_over_the_group_size() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     for count in [1usize, 255, 256, 257, 1000, 65_537] {
         let locals = device.create_typed_buffer(
             "workgroup locals",
@@ -120,8 +120,7 @@ fn local_and_group_ids_are_the_dispatch_id_modulo_and_over_the_group_size() {
 
 #[test]
 fn the_kernel_with_ids_only_keeps_its_cpu_twin_and_agrees_with_the_gpu() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let count = 700usize;
     let locals = device.create_typed_buffer(
         "twin locals",

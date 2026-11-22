@@ -25,6 +25,10 @@
 //!
 //! The inputs stay inside the domain each bound states; NaN, infinity and subnormal inputs are not fed.
 
+mod common;
+
+use common::{device_reported as device, ulp};
+
 use gust::cpu::CpuDevice;
 use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
 
@@ -86,14 +90,6 @@ mod math3 {
 
 const COUNT: usize = 5000;
 
-fn device() -> HeadlessDevice {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
-    let info = device.adapter_info();
-    println!("adapter: {} backend: {:?}", info.name, info.backend);
-    device
-}
-
 /// A deterministic stream of 32-bit values (xorshift32), so the inputs are the same on every adapter.
 struct Stream(u32);
 
@@ -125,13 +121,6 @@ impl Stream {
         let value = mantissa * 2f32.powi(exponent);
         if self.next() & 1 == 0 { value } else { -value }
     }
-}
-
-/// The unit in the last place of a normal `f32`.
-fn ulp(x: f32) -> f64 {
-    let magnitude = x.abs().max(f32::MIN_POSITIVE);
-    let exponent = ((magnitude.to_bits() >> 23) & 0xff) as i32 - 127;
-    2f64.powi(exponent - 23)
 }
 
 /// The spacing used by the float bounds: at the larger of the exact and the actual result.

@@ -114,27 +114,16 @@ mod loop_exits {
     }
 }
 
+mod common;
+
+use common::spirv_route_taken;
+
 use gust::Run;
 use gust::cpu::CpuDevice;
 use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 
 // The iteration at which the exit is due, per invocation (Rust's value is n == t).
 const LOOP_T: [u32; 6] = [100, 127, 128, 129, 200, 250];
-
-/// Whether every kernel this device built so far took the SPIR-V route. `false` without the feature.
-#[cfg(feature = "spirv-route")]
-fn spirv_route_taken(device: &HeadlessDevice) -> bool {
-    let events = device.route_events();
-    !events.is_empty()
-        && events
-            .iter()
-            .all(|event| event.route == gust_wgpu::Route::Spirv)
-}
-
-#[cfg(not(feature = "spirv-route"))]
-fn spirv_route_taken(_device: &HeadlessDevice) -> bool {
-    false
-}
 
 struct Inputs {
     starts: Vec<f32>,
@@ -166,8 +155,7 @@ fn inputs() -> Inputs {
 }
 
 fn open(form: &str) -> (HeadlessDevice, String) {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let info = device.adapter_info();
     let adapter = format!(
         "{} (vendor {:#06x}, driver {:?} {:?}, {:?})",

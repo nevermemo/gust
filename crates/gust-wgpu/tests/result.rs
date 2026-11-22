@@ -1,9 +1,11 @@
 include!("../../../tests/fixtures/result.rs");
 
+mod common;
+
 use std::{fs, process::Command};
 
 use gust::cpu::CpuDevice;
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
 #[allow(clippy::unnecessary_literal_unwrap)]
 #[gust::gpu]
@@ -47,8 +49,7 @@ fn reference(value: u32) -> (u32, u32) {
 
 #[test]
 fn result_lowering_executes_on_gpu() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     eprintln!("result adapter: {:?}", device.adapter_info());
     for count in [1, 63, 64, 65, 257] {
         for (label, start) in [("ok", 0u32), ("err", 97u32)] {

@@ -4,6 +4,8 @@
 //! The tests assert relations (the adapter policy grants what the adapter offers, the default policy grants wgpu's
 //! defaults), not the numbers of one GPU.
 
+mod common;
+
 use gust::capability::Capability;
 use gust_wgpu::{
     AdapterChoice, DeviceOptions, Error, FeaturesPolicy, HeadlessDevice, LimitsPolicy,
@@ -182,7 +184,7 @@ fn the_default_options_ask_for_the_adapters_limits_on_native() {
     assert_eq!(defaults.features, FeaturesPolicy::Adapter);
     // `HeadlessDevice::new` is unchanged: wgpu's default limits, and no optional feature. It requests the capabilities
     // of the build, as the default options do (m8.w2; `tests/capabilities.rs` pins that under both profiles).
-    let plain = HeadlessDevice::new().expect("a Vulkan adapter");
+    let plain = common::device();
     assert_eq!(plain.limits(), &wgpu::Limits::default());
     assert!(!plain.float32_filterable());
     assert_eq!(plain.capabilities(), gust::capability::enabled());

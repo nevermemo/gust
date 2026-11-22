@@ -1,7 +1,9 @@
 include!("../../../tests/fixtures/atomics.rs");
 
+mod common;
+
 use gust::{Independent, cpu::CpuDevice};
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
 const INVOCATIONS: u32 = 257;
 
@@ -58,8 +60,7 @@ fn check_signed_cas(actual: &[i32]) {
 /// The final value must equal exactly 257, matching an independent host reference, on the GPU and on the CPU twin.
 #[test]
 fn atomic_add_contention_produces_exact_sum() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     eprintln!("atomics adapter: {:?}", device.adapter_info());
     let counter =
         device.create_typed_buffer("atomics counter", &[0u32; 1], GpuBufferAccess::ReadWrite);
@@ -89,8 +90,7 @@ fn atomic_add_contention_produces_exact_sum() {
 /// Initial value is 1000; the minimum of {0..256} is 0.
 #[test]
 fn atomic_min_produces_minimum() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let counter =
         device.create_typed_buffer("atomics min", &[1000u32; 1], GpuBufferAccess::ReadWrite);
     device
@@ -118,8 +118,7 @@ fn atomic_min_produces_minimum() {
 /// Initial value is 0; the maximum of {0..256} is 256.
 #[test]
 fn atomic_max_produces_maximum() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let counter = device.create_typed_buffer("atomics max", &[0u32; 1], GpuBufferAccess::ReadWrite);
     device
         .dispatch_buffers(
@@ -149,8 +148,7 @@ fn atomic_max_produces_maximum() {
 /// (docs/SEMANTICS.md, section 6 and KM-09), not an expectation of the GPU, and the two are not compared.
 #[test]
 fn atomic_exchange_produces_valid_value() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let counter = device.create_typed_buffer(
         "atomics exchange",
         &[9999u32; 1],
@@ -190,8 +188,7 @@ fn atomic_exchange_produces_valid_value() {
 /// the guard against a no-op twin, and a GPU run that leaves the sentinel prints a NOTE.
 #[test]
 fn atomic_compare_exchange_contention_changes_the_initial_value() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let counter = device.create_typed_buffer(
         "atomics cas",
         &[CAS_SENTINEL; 1],
@@ -227,8 +224,7 @@ fn atomic_compare_exchange_contention_changes_the_initial_value() {
 
 #[test]
 fn atomic_compare_exchange_has_deterministic_success_and_failure_cases() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let cpu = CpuDevice::new();
 
     // The success case succeeds on the twin by definition. On the GPU the weak compare-exchange may fail spuriously
@@ -277,8 +273,7 @@ fn atomic_compare_exchange_has_deterministic_success_and_failure_cases() {
 
 #[test]
 fn signed_atomic_add_exchange_and_compare_exchange_execute() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let counter =
         device.create_typed_buffer("signed atomics", &[-7i32; 1], GpuBufferAccess::ReadWrite);
     let binding = [BufferBinding::read_write(&counter).independent_length()];

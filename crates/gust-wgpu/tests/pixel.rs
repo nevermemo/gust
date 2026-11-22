@@ -23,6 +23,10 @@
 
 include!("../../../tests/fixtures/pixel.rs");
 
+mod common;
+
+use common::{device, is_cpu_adapter};
+
 use std::thread;
 
 use gust::{
@@ -320,10 +324,6 @@ fn host_h_v4(v: Vec4, i: u32) -> Vec4 {
 
 // ---- helpers ----
 
-fn device() -> HeadlessDevice {
-    HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip")
-}
-
 /// A device with the adapter's own limits: the 2^26 case needs a 256 MiB storage binding (wgpu's default is 128 MiB)
 /// and the larger squares of the wide element types need more than the default as well.
 fn wide_device() -> HeadlessDevice {
@@ -340,10 +340,6 @@ fn grid_extent(n: u32) -> Extent {
 
 /// The most elements a `Cpu` adapter (a software rasteriser) is asked to draw: its cost is the CPU's, not a bug's.
 const CPU_ADAPTER_MAX_ELEMENTS: u32 = 1_000_003;
-
-fn is_cpu_adapter(device: &HeadlessDevice) -> bool {
-    device.adapter_info().device_type == wgpu::DeviceType::Cpu
-}
 
 /// The sizes of the identity test, ascending and without repeats: X-S1's 17 squares, 64^3 + 1, 0, 1, 63, 65, the row
 /// width and its neighbours, `8192k + 1` for k in 1, 2, 7 and 1000, two rows and a bit, and 1 000 003.

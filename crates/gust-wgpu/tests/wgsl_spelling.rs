@@ -12,8 +12,10 @@
 // The kernels state their operands on purpose and keep the plain `return` form the subset accepts.
 #![allow(clippy::needless_return, clippy::unnecessary_cast)]
 
+mod common;
+
 use gust::cpu::CpuDevice;
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
 #[gust::gpu]
 mod wgsl_tmpl {
@@ -130,8 +132,7 @@ fn input(values: &[u32]) -> Vec<u32> {
 #[test]
 fn comparison_arguments_do_not_form_wgsl_template_lists() {
     let input_data = input(&[4, 0, -3i32 as u32]);
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let a = device.create_typed_buffer("tmpl input", &input_data, GpuBufferAccess::ReadOnly);
     let out =
         device.create_typed_buffer("tmpl out", &vec![0u32; COUNT], GpuBufferAccess::ReadWrite);
@@ -163,8 +164,7 @@ fn comparison_arguments_do_not_form_wgsl_template_lists() {
 #[test]
 fn large_unsuffixed_literals_are_u32_on_gpu() {
     let input_data = input(&[1_000_000_000, u32::MAX, 5, 5]);
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let a = device.create_typed_buffer("lit input", &input_data, GpuBufferAccess::ReadOnly);
     let out = device.create_typed_buffer("lit out", &vec![0u32; COUNT], GpuBufferAccess::ReadWrite);
     device

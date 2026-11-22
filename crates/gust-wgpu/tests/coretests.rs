@@ -18,6 +18,8 @@
 
 include!("../../../tests/fixtures/coretests.rs");
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
@@ -868,8 +870,7 @@ fn print_adapter(device: &HeadlessDevice) {
 
 #[test]
 fn scalar_coretests_run_on_the_gpu_and_the_twin_against_the_literals() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     print_adapter(&device);
 
     let gpu = run_gpu(&device);

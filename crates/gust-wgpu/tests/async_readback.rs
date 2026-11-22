@@ -20,11 +20,12 @@
 
 #![cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]
 
+mod common;
+
+use common::{device, drive_counted};
+
 use std::{
-    future::Future,
-    pin::pin,
     sync::mpsc,
-    task::{Context, Poll, Waker},
     thread,
     time::{Duration, Instant},
 };
@@ -78,10 +79,6 @@ void async_readback_slow(uint3 id : SV_DispatchThreadID)
 "#,
 );
 
-fn device() -> HeadlessDevice {
-    HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip")
-}
-
 /// The host statement of the kernel's loop body (wrapping u32 arithmetic).
 fn step(x: u32) -> u32 {
     let x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -97,27 +94,6 @@ fn expected() -> Vec<u32> {
         .into_iter()
         .map(|seed| (0..STEPS).fold(seed, |x, _| step(x)))
         .collect()
-}
-
-/// Poll `future` every millisecond until it is ready, returning its output and how often it was polled. Each poll of
-/// a `read_*_async` future polls the device once; the deadline turns a future that never completes into a failure.
-fn drive<F: Future>(future: F) -> (F::Output, u32) {
-    // A waker that does nothing: this executor does not wait for wakes.
-    let mut context = Context::from_waker(Waker::noop());
-    let mut future = pin!(future);
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let mut polls = 0;
-    loop {
-        polls += 1;
-        if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
-            return (output, polls);
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the readback future was still pending after {polls} polls"
-        );
-        thread::sleep(Duration::from_millis(1));
-    }
 }
 
 /// Run `work` on a thread and fail, instead of hanging, when it does not finish in time.
@@ -140,7 +116,7 @@ fn an_async_readback_returns_the_uploaded_values() {
     let device = device();
     let values: Vec<f32> = (0..COUNT).map(|index| index as f32 + 0.5).collect();
     let buffer = device.create_typed_buffer("values", &values, GpuBufferAccess::ReadWrite);
-    let (read, polls) = drive(device.read_typed_buffer_async(&buffer));
+    let (read, polls) = drive_counted(device.read_typed_buffer_async(&buffer));
     assert_eq!(read.unwrap(), values);
     assert!(polls >= 1);
     assert_eq!(device.read_typed_buffer(&buffer).unwrap(), values);
@@ -150,17 +126,17 @@ fn an_async_readback_returns_the_uploaded_values() {
 fn async_readback_validates_before_waiting() {
     let device = device();
     let empty = device.create_typed_buffer::<f32>("empty", &[], GpuBufferAccess::ReadWrite);
-    let (read, polls) = drive(device.read_typed_buffer_async(&empty));
+    let (read, polls) = drive_counted(device.read_typed_buffer_async(&empty));
     assert_eq!(read.unwrap(), Vec::<f32>::new());
     assert_eq!(polls, 1, "an empty buffer has nothing to wait for");
 
     let read_only = device.create_typed_buffer("input", &[1.0f32], GpuBufferAccess::ReadOnly);
-    let (read, _) = drive(device.read_typed_buffer_async(&read_only));
+    let (read, _) = drive_counted(device.read_typed_buffer_async(&read_only));
     assert!(matches!(read, Err(Error::PersistentBufferNotReadable)));
 
     let other = HeadlessDevice::new().unwrap();
     let foreign = other.create_typed_buffer("foreign", &[1.0f32], GpuBufferAccess::ReadWrite);
-    let (read, _) = drive(device.read_typed_buffer_async(&foreign));
+    let (read, _) = drive_counted(device.read_typed_buffer_async(&foreign));
     assert!(matches!(read, Err(Error::ForeignPersistentBuffer)));
 }
 
@@ -197,7 +173,7 @@ fn an_async_readback_queued_behind_a_busy_kernel_waits_for_the_mapping() {
             .unwrap();
         assert_eq!(format!("{job:?}"), "WgpuJob { submitted: true, .. }");
         let started = Instant::now();
-        let (read, polls) = drive(device.read_typed_buffer_async(&buffer));
+        let (read, polls) = drive_counted(device.read_typed_buffer_async(&buffer));
         eprintln!(
             "async readback behind the slow kernel: {polls} polls, {:?}",
             started.elapsed()

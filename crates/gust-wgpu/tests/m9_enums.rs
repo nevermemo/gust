@@ -1,8 +1,10 @@
 include!("../../../tests/fixtures/enums.rs");
 
+mod common;
+
 use gust::Run;
 use gust::cpu::CpuDevice;
-use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::GpuBufferAccess;
 
 // Expected values, written by hand from the fixture's rules (not computed by a function that mirrors the kernel).
 //
@@ -48,8 +50,7 @@ const METHOD_SUM: [u32; 5] = [6, 9, 10, 11, 16];
 
 #[test]
 fn enums_and_matches_execute_on_gpu_and_on_the_cpu_twin() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     eprintln!("enums adapter: {:?}", device.adapter_info());
     for count in [1, 63, 64, 65, 257] {
         let input: Vec<u32> = (0..count).map(|i| (i % 5) as u32).collect();

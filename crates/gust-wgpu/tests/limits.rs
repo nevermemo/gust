@@ -8,6 +8,10 @@
 //! The kernels are hand-written descriptors; their Slang `numthreads` matches the
 //! descriptor, so the only failure a test can see is the limit.
 
+mod common;
+
+use common::{assert_cold, device};
+
 use gust::{
     Access, Extent, GpuPod, KernelDescriptor, ParameterDescriptor, ParameterKind, ResourceBinding,
     ResourceLayout, TypeLayout,
@@ -101,25 +105,12 @@ fn kernel_sized(element: Element, size: [u32; 3], count: usize) -> KernelDescrip
     )
 }
 
-fn device() -> HeadlessDevice {
-    HeadlessDevice::new().expect("Vulkan adapter required")
-}
-
 fn lowered(device: HeadlessDevice, change: impl FnOnce(&mut wgpu::Limits)) -> HeadlessDevice {
     let mut limits = device.limits().clone();
     change(&mut limits);
     device
         .with_limits(limits)
         .expect("lowering limits is allowed")
-}
-
-fn assert_cold(device: &HeadlessDevice) {
-    let stats = device.pipeline_cache_stats();
-    assert_eq!(
-        (stats.entries, stats.misses, stats.hits),
-        (0, 0, 0),
-        "a limit error must precede compilation and the cache lookup"
-    );
 }
 
 #[track_caller]
@@ -317,7 +308,7 @@ fn workgroup_width_above_the_limit_is_an_error_before_compilation() {
         u64::from(maximum) + 1,
         u64::from(maximum),
     );
-    assert_cold(&device);
+    assert_cold(&device, "a limit error");
     assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
 }
 
@@ -335,7 +326,7 @@ fn invocations_per_workgroup_above_the_limit_is_an_error_before_compilation() {
         )
         .expect_err("64 invocations exceed the lowered limit of 32");
     assert_limit(error, "max_compute_invocations_per_workgroup", 64, 32);
-    assert_cold(&device);
+    assert_cold(&device, "a limit error");
     assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
 }
 
@@ -362,7 +353,7 @@ fn storage_buffers_above_the_limit_are_an_error_before_compilation() {
         u64::from(maximum) + 1,
         u64::from(maximum),
     );
-    assert_cold(&device);
+    assert_cold(&device, "a limit error");
     for buffer in &buffers {
         assert_eq!(device.read_typed_buffer(buffer).unwrap(), [3.0]);
     }
@@ -412,7 +403,7 @@ fn an_empty_dispatch_is_not_limit_checked() {
             &[BufferBinding::read_write(&output)],
         )
         .expect("a dispatch of zero elements does no GPU work, so no limit applies");
-    assert_cold(&device);
+    assert_cold(&device, "a limit error");
 }
 
 /// `(maximum workgroups, over-limit element count, exact-limit element count)` for a
@@ -443,7 +434,7 @@ fn workgroup_count_through_dispatch_buffers() {
         u64::from(maximum) + 1,
         u64::from(maximum),
     );
-    assert_cold(&device);
+    assert_cold(&device, "a limit error");
     assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
 
     device
@@ -470,7 +461,7 @@ fn workgroup_count_through_dispatch_f32() {
         u64::from(maximum) + 1,
         u64::from(maximum),
     );
-    assert_cold(&device);
+    assert_cold(&device, "a limit error");
 
     let output = device
         .dispatch_f32(
@@ -502,7 +493,7 @@ fn workgroup_count_through_dispatch_u32() {
         u64::from(maximum) + 1,
         u64::from(maximum),
     );
-    assert_cold(&device);
+    assert_cold(&device, "a limit error");
 
     let output = device
         .dispatch_u32(
@@ -545,7 +536,7 @@ fn workgroup_count_through_a_one_node_graph() {
         u64::from(maximum) + 1,
         u64::from(maximum),
     );
-    assert_cold(&device);
+    assert_cold(&device, "a limit error");
     assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
 
     let mut graph = StagedGraph::new();
@@ -570,7 +561,7 @@ fn binding_size_through_dispatch_buffers() {
         .dispatch_buffers(&descriptor, 5, &[BufferBinding::read_write(&too_big)])
         .expect_err("20 bytes exceed the 16-byte binding limit");
     assert_limit(error, "max_storage_buffer_binding_size", 20, 16);
-    assert_cold(&device);
+    assert_cold(&device, "a limit error");
     assert_eq!(device.read_typed_buffer(&too_big).unwrap(), [3_u32; 5]);
 
     let fits = device.create_typed_buffer("fits", &[3_u32; 4], GpuBufferAccess::ReadWrite);
@@ -590,7 +581,7 @@ fn binding_size_through_dispatch_f32() {
         .dispatch_f32(&descriptor, 5, &[F32Binding::ReadWrite(&[3.0; 5])])
         .expect_err("20 bytes exceed the 16-byte binding limit");
     assert_limit(error, "max_storage_buffer_binding_size", 20, 16);
-    assert_cold(&device);
+    assert_cold(&device, "a limit error");
 
     let output = device
         .dispatch_f32(&descriptor, 4, &[F32Binding::ReadWrite(&[3.0; 4])])
@@ -608,7 +599,7 @@ fn binding_size_through_dispatch_u32() {
         .dispatch_u32(&descriptor, 5, &[U32Binding::ReadWrite(&[3; 5])])
         .expect_err("20 bytes exceed the 16-byte binding limit");
     assert_limit(error, "max_storage_buffer_binding_size", 20, 16);
-    assert_cold(&device);
+    assert_cold(&device, "a limit error");
 
     let output = device
         .dispatch_u32(&descriptor, 4, &[U32Binding::ReadWrite(&[3; 4])])
@@ -862,7 +853,7 @@ fn workgroup_size_y_and_z_above_the_limit_are_errors_before_compilation() {
             )
             .expect_err("a workgroup deeper than the device allows must fail");
         assert_limit(error, name, u64::from(maximum) + 1, u64::from(maximum));
-        assert_cold(&device);
+        assert_cold(&device, "a limit error");
         assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0], "{name}");
     }
 }
@@ -931,7 +922,7 @@ fn the_workgroup_counts_of_every_axis_are_checked_against_the_per_dimension_limi
         let error = dispatch_extent(&device, &descriptor, extent, &bindings)
             .expect_err("four workgroups along an axis exceed the lowered limit of three");
         assert_limit(error, limit, 4, 3);
-        assert_cold(&device);
+        assert_cold(&device, "a limit error");
         assert_eq!(
             device.read_typed_buffer(&output).unwrap(),
             [3.0],
@@ -968,7 +959,7 @@ fn an_extent_with_a_zero_dimension_is_ok_and_not_limit_checked() {
         dispatch_extent(&device, &descriptor, extent, &bindings)
             .unwrap_or_else(|error| panic!("{extent:?} is empty and must be Ok: {error:?}"));
     }
-    assert_cold(&device);
+    assert_cold(&device, "a limit error");
     assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
     // The same kernel over one invocation is the error the empty launches did not report.
     let error = dispatch_extent(&device, &descriptor, Extent::new(1, 1, 1), &bindings).unwrap_err();
@@ -991,7 +982,7 @@ fn an_extent_product_beyond_a_u64_is_an_extent_error_before_compilation() {
         Err(Error::Extent { extent, .. }) => assert_eq!(extent, [u64::from(u32::MAX); 3]),
         other => panic!("expected Error::Extent, got {other:?}"),
     }
-    assert_cold(&device);
+    assert_cold(&device, "a limit error");
     assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
 }
 
@@ -1018,7 +1009,7 @@ fn a_staged_graph_refuses_a_dispatch_with_a_y_or_z_extent() {
                 other.err()
             ),
         }
-        assert_cold(&device);
+        assert_cold(&device, "a limit error");
         assert_eq!(device.read_typed_buffer(&output).unwrap(), [3.0]);
     }
     // A linear extent is the one-dimensional dispatch it always was.

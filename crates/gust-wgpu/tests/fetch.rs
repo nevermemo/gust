@@ -11,8 +11,10 @@
 
 include!("../../../tests/fixtures/fetch.rs");
 
+mod common;
+
 use gust::{Independent, cpu::CpuDevice};
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
 const ITEMS: u32 = 4099;
 const CELLS: u32 = 61;
@@ -92,7 +94,7 @@ fn $name() {
     );
 
     let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+        common::device();
     let info = device.adapter_info();
     eprintln!("adapter: {} backend: {:?}", info.name, info.backend);
 
@@ -167,8 +169,7 @@ fn signed_atomic_add_old_values_are_a_set_of_prefix_sums() {
     const START: i32 = -300;
     let expected: Vec<i32> = (0..N as i32).map(|k| START + 3 * k).collect();
 
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let info = device.adapter_info();
     eprintln!("adapter: {} backend: {:?}", info.name, info.backend);
     let cell = device.create_typed_buffer("fetch cell", &[START], GpuBufferAccess::ReadWrite);
@@ -226,8 +227,7 @@ fn unsigned_atomic_add_old_values_wrap_modulo_2_pow_32() {
         "the case must cross zero"
     );
 
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     let info = device.adapter_info();
     eprintln!("adapter: {} backend: {:?}", info.name, info.backend);
     let cell = device.create_typed_buffer("fetch wrap cell", &[START], GpuBufferAccess::ReadWrite);

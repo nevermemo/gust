@@ -3,10 +3,12 @@
 
 include!("../../../tests/fixtures/arrays_storage.rs");
 
+mod common;
+
 use gust::Run;
 use gust::cpu::CpuDevice;
 use gust::math::{Mat2, Mat4, Vec2, Vec4};
-use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::GpuBufferAccess;
 
 // Expected values, written by hand from the fixture's rules (not computed by a function that mirrors the kernel).
 // Element i of every buffer is built from v = i % 5, so each table repeats every five rows.
@@ -50,8 +52,7 @@ fn show<T: std::fmt::Debug>(value: &T) -> String {
 
 #[test]
 fn arrays_in_structs_and_storage_run_on_the_gpu_and_the_cpu_twin() {
-    let device =
-        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let device = common::device();
     eprintln!("arrays_storage adapter: {:?}", device.adapter_info());
     for count in [1usize, 63, 64, 65, 257] {
         let cpu = CpuDevice::new();

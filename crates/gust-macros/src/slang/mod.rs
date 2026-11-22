@@ -7,6 +7,7 @@ use crate::{
     diagnostics::{self, Code},
     expand::KernelOptions,
     math_types,
+    names::{peel_expr, peel_type},
     profile::{Builtin, DerivedId, GRID, KernelFacts, StageProfile},
 };
 
@@ -262,12 +263,7 @@ fn closure_call_target(call: &syn::ExprCall) -> Option<String> {
 /// The length of an array type or repeat expression: an integer literal greater than zero, unsuffixed or `usize`
 /// (slice m9.r1, GUST-E0216 for anything else).
 pub(crate) fn array_length_literal(len: &syn::Expr) -> Option<u32> {
-    let mut len = len;
-    while let syn::Expr::Paren(syn::ExprParen { expr, .. })
-    | syn::Expr::Group(syn::ExprGroup { expr, .. }) = len
-    {
-        len = expr;
-    }
+    let len = peel_expr(len);
     let syn::Expr::Lit(syn::ExprLit {
         lit: syn::Lit::Int(value),
         ..
@@ -282,15 +278,6 @@ pub(crate) fn array_length_literal(len: &syn::Expr) -> Option<u32> {
         .base10_parse::<u32>()
         .ok()
         .filter(|length| *length > 0)
-}
-
-/// `ty` without the parentheses and invisible groups around it.
-fn unparenthesized_type(ty: &syn::Type) -> &syn::Type {
-    match ty {
-        syn::Type::Paren(inner) => unparenthesized_type(&inner.elem),
-        syn::Type::Group(inner) => unparenthesized_type(&inner.elem),
-        other => other,
-    }
 }
 
 /// The names of a function that hold an array, with its length: `Some(n)` for a name every binding of which is
@@ -330,7 +317,7 @@ pub(crate) fn array_lengths(
             let syn::Pat::Ident(name) = typed.pat.as_ref() else {
                 return None;
             };
-            let syn::Type::Array(array) = unparenthesized_type(&typed.ty) else {
+            let syn::Type::Array(array) = peel_type(&typed.ty) else {
                 return None;
             };
             Some((&name.ident, array_length_literal(&array.len)?))
@@ -393,7 +380,7 @@ pub(crate) fn array_lengths(
             parameter_flavor(&argument.ty),
             ParameterFlavor::StorageRead | ParameterFlavor::StorageReadWrite
         ) && let Ok(element) = wrapper_element_type(&argument.ty)
-            && let syn::Type::Array(array) = unparenthesized_type(element)
+            && let syn::Type::Array(array) = peel_type(element)
             && let Some(length) = array_length_literal(&array.len)
         {
             arrays.insert(format!("{}[]", name.ident.unraw()), Some(length));
@@ -424,12 +411,12 @@ pub(crate) fn array_field_lengths(
             let Some(name) = &field.ident else {
                 continue;
             };
-            let length = match unparenthesized_type(&field.ty) {
+            let length = match peel_type(&field.ty) {
                 syn::Type::Array(array) => array_length_literal(&array.len),
                 _ => None,
             };
             let key = name.unraw().to_string();
-            if matches!(unparenthesized_type(&field.ty), syn::Type::Array(_)) {
+            if matches!(peel_type(&field.ty), syn::Type::Array(_)) {
                 with_array.insert(key.clone());
             }
             match (lengths.get(&key).copied(), length) {
@@ -456,7 +443,7 @@ pub(crate) fn array_place_length(
     locals: &std::collections::HashMap<String, Option<u32>>,
     fields: &std::collections::HashMap<String, Option<u32>>,
 ) -> Option<Option<u32>> {
-    match unparenthesized_expr(place) {
+    match peel_expr(place) {
         syn::Expr::Path(path) if path.qself.is_none() => {
             let name = path.path.get_ident()?.unraw().to_string();
             locals.get(&name).copied()
@@ -466,7 +453,7 @@ pub(crate) fn array_place_length(
             syn::Member::Unnamed(_) => None,
         },
         syn::Expr::Index(index) => {
-            let syn::Expr::Path(path) = unparenthesized_expr(&index.expr) else {
+            let syn::Expr::Path(path) = peel_expr(&index.expr) else {
                 return None;
             };
             let name = path.path.get_ident()?.unraw().to_string();
@@ -631,10 +618,8 @@ fn dot_overload_text() -> String {
 /// `place = __gust_mul(place, value)` evaluates it twice. A `Group` is the invisible parentheses of a `macro_rules!`
 /// `$p:expr`.
 pub(crate) fn is_pure_place(place: &syn::Expr) -> bool {
-    match place {
+    match peel_expr(place) {
         syn::Expr::Path(_) | syn::Expr::Lit(_) => true,
-        syn::Expr::Paren(paren) => is_pure_place(&paren.expr),
-        syn::Expr::Group(group) => is_pure_place(&group.expr),
         syn::Expr::Field(field) => is_pure_place(&field.base),
         syn::Expr::Index(index) => is_pure_place(&index.expr) && is_pure_place(&index.index),
         syn::Expr::Unary(unary) => is_pure_place(&unary.expr),
@@ -882,9 +867,9 @@ pub(crate) fn emit_kernel_in(
 
     // Slang overload resolution distinguishes Rust's boolean and bitwise `!`.
     // Forwarding `!` verbatim would silently turn integer complement into a test.
-    let mut not = NotUsage(false);
-    not.visit_item_mod(module);
-    if not.0 {
+    let used = Usage::of_module(module);
+    let in_kernel = Usage::of_function(kernel);
+    if used.not {
         writeln!(output, "bool __gust_not(bool value) {{ return !value; }}").unwrap();
         writeln!(output, "int __gust_not(int value) {{ return ~value; }}").unwrap();
         writeln!(output, "uint __gust_not(uint value) {{ return ~value; }}\n").unwrap();
@@ -893,9 +878,7 @@ pub(crate) fn emit_kernel_in(
     // Rust `^` is logical xor on `bool` and bitwise xor on integers, but WGSL defines `^` only on integers, so a
     // `bool ^` forwarded verbatim fails at shader creation. Overload resolution picks the right body for each use.
     // The `_assign` forms take the place by `inout`, so `place ^= value` evaluates the place once.
-    let mut xor = XorUsage(false);
-    xor.visit_item_mod(module);
-    if xor.0 {
+    if used.xor {
         writeln!(
             output,
             "bool __gust_xor(bool a, bool b) {{ return a != b; }}"
@@ -934,15 +917,11 @@ pub(crate) fn emit_kernel_in(
 
     // The subgroup operations that need a helper (M8, D140): overloads by operand type for the bitwise reductions, the
     // inclusive scans and the count. Only the kernel is scanned: a helper function holds none (GUST-E0745).
-    let mut subgroups = SubgroupUsage::default();
-    subgroups.visit_item_fn(kernel);
-    output.push_str(&subgroup_helper_text(&subgroups.0));
+    output.push_str(&subgroup_helper_text(&in_kernel.subgroups));
 
     // Rust `Option<T>` lowers to Slang's `Optional<T>`. Generic helpers let the
     // payload type be inferred at each use instead of requiring annotations.
-    let mut option = OptionUsage(false);
-    option.visit_item_mod(module);
-    if option.0 {
+    if used.option {
         writeln!(
             output,
             "Optional<T> __gust_some<T>(T value) {{ return value; }}"
@@ -955,9 +934,7 @@ pub(crate) fn emit_kernel_in(
         .unwrap();
     }
 
-    let mut result = ResultUsage(false);
-    result.visit_item_mod(module);
-    if result.0 {
+    if used.result {
         writeln!(output, "struct __GustResult<T> {{ bool isOk; T value; }}").unwrap();
         writeln!(
             output,
@@ -991,16 +968,14 @@ pub(crate) fn emit_kernel_in(
 
     // slangc folds integer `/` and `%` and refuses a divisor that folds to zero, even in dead code (D74), so every `/`
     // and `%` with a divisor that is not a literal is a call to `__gust_div` or `__gust_rem` (see `div_table`).
-    let mut division = DivisionUsage::default();
-    division.visit_item_mod(module);
-    if division.div {
+    if used.div {
         output.push_str(&div_table::module_overload_text(
             "div",
             "/",
             div_table::DIV_ROWS,
         ));
     }
-    if division.rem {
+    if used.rem {
         output.push_str(&div_table::module_overload_text(
             "rem",
             "%",
@@ -1008,9 +983,7 @@ pub(crate) fn emit_kernel_in(
         ));
     }
 
-    let mut fract = FractUsage(false);
-    fract.visit_item_mod(module);
-    if fract.0 {
+    if used.fract {
         writeln!(
             output,
             "float {FRACT_HELPER}(float x) {{ return x - trunc(x); }}\n"
@@ -1019,23 +992,21 @@ pub(crate) fn emit_kernel_in(
     }
 
     // The helpers of `round`, `signum` and `rem_euclid` (slice m11.math2), each defined only in a module that calls it.
-    // `__gust_rem_euclid` calls `__gust_rem`, which `DivisionUsage` has made the module define above.
-    let mut helpers = MathHelperUsage::default();
-    helpers.visit_item_mod(module);
-    if helpers.round {
+    // `__gust_rem_euclid` calls `__gust_rem`, which `Usage::rem` has made the module define above.
+    if used.round {
         output.push_str(ROUND_HELPER_TEXT);
     }
-    if helpers.signum {
+    if used.signum {
         output.push_str(SIGNUM_HELPER_TEXT);
     }
-    if helpers.rem_euclid {
+    if used.rem_euclid {
         output.push_str(REM_EUCLID_HELPER_TEXT);
     }
     // The helpers of `hypot` and the integer `pow` (slice m11.math3), defined only in a module that calls them.
-    if helpers.hypot {
+    if used.hypot {
         output.push_str(HYPOT_HELPER_TEXT);
     }
-    if helpers.pow {
+    if used.pow {
         output.push_str(POW_HELPER_TEXT);
     }
 
@@ -1043,11 +1014,6 @@ pub(crate) fn emit_kernel_in(
     if lowering.dot {
         output.push_str(&dot_overload_text());
     }
-
-    // Buffers used with atomic operations need `Atomic<T>` element types in Slang
-    // so WGSL emits `array<atomic<T>>` storage.
-    let mut atomic = AtomicUsage(std::collections::HashSet::new());
-    atomic.visit_item_fn(kernel);
 
     // The module-level constants (slice m11.g3): plain scalars, so before everything that could read one.
     consts::emit_consts(&mut output, items)?;
@@ -1125,7 +1091,9 @@ pub(crate) fn emit_kernel_in(
                 } else {
                     "RWStructuredBuffer"
                 };
-                let element_type = if atomic.0.contains(&name) {
+                // Buffers used with atomic operations need `Atomic<T>` element types in Slang so WGSL emits
+                // `array<atomic<T>>` storage.
+                let element_type = if in_kernel.atomic_buffers.contains(&name) {
                     format!("Atomic<{}>", emit_type(element)?)
                 } else {
                     // A buffer of arrays is `StructuredBuffer<T[N]>` (slice m9.r2a); the validator checked the length
@@ -1481,7 +1449,7 @@ fn emit_value_match(
     let declared = emit_ident(name);
     let ty = match annotation {
         Some(ty) => {
-            if matches!(unparenthesized_type(ty), syn::Type::Array(_)) {
+            if matches!(peel_type(ty), syn::Type::Array(_)) {
                 return Err(diagnostics::error(
                     Code::UnsupportedExpression,
                     expression,
@@ -1577,7 +1545,7 @@ fn check_value_if(expression: &syn::ExprIf) -> syn::Result<()> {
 
 /// The Slang type of an annotated `if` value: a scalar or a vector, nothing else.
 fn value_if_type(ty: &syn::Type) -> syn::Result<String> {
-    let plain = match unparenthesized_type(ty) {
+    let plain = match peel_type(ty) {
         syn::Type::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => path
             .path
             .segments
@@ -1631,9 +1599,7 @@ fn type_of_block_tail(block: &syn::Block) -> Option<String> {
 
 /// The Slang type a tail expression shows by itself, if it does (see [`type_of_if_tails`]).
 fn type_of_tail(tail: &syn::Expr) -> Option<String> {
-    match tail {
-        syn::Expr::Paren(inner) => type_of_tail(&inner.expr),
-        syn::Expr::Group(inner) => type_of_tail(&inner.expr),
+    match peel_expr(tail) {
         syn::Expr::If(nested) => type_of_if_tails(nested),
         syn::Expr::Match(nested) if crate::validate::is_switch_match(nested) => {
             type_of_match_arms(nested)
@@ -1924,7 +1890,7 @@ fn emit_struct(
     for field in &fields.named {
         let name = emit_ident(field.ident.as_ref().expect("named field"));
         // A stored array is `T name[N];` in Slang (slice m9.r2a); the validator checked the length and the element.
-        if let syn::Type::Array(array) = unparenthesized_type(&field.ty) {
+        if let syn::Type::Array(array) = peel_type(&field.ty) {
             let length = array_length_literal(&array.len).ok_or_else(|| {
                 diagnostics::error(
                     Code::ArrayLength,
@@ -2221,14 +2187,7 @@ fn emit_statement(
         syn::Stmt::Local(local) if tuple_pattern(&local.pat).is_some() => {
             let (tuple, annotation) = tuple_pattern(&local.pat).expect("guarded by the match arm");
             // The validator looks through parentheses around the annotation (`((u32, f32))`), so does the emission.
-            fn unparenthesized(ty: &syn::Type) -> &syn::Type {
-                match ty {
-                    syn::Type::Paren(inner) => unparenthesized(&inner.elem),
-                    syn::Type::Group(inner) => unparenthesized(&inner.elem),
-                    other => other,
-                }
-            }
-            let annotation = annotation.map(unparenthesized);
+            let annotation = annotation.map(peel_type);
             let initial = local.init.as_ref().ok_or_else(|| {
                 diagnostics::error(
                     Code::LetNeedsInitializer,
@@ -2236,7 +2195,7 @@ fn emit_statement(
                     "Slang let bindings require an initializer",
                 )
             })?;
-            if matches!(unparenthesized_expr(&initial.expr), syn::Expr::If(_)) {
+            if matches!(peel_expr(&initial.expr), syn::Expr::If(_)) {
                 return Err(diagnostics::error(
                     Code::UnsupportedExpression,
                     &initial.expr,
@@ -2297,12 +2256,7 @@ fn emit_statement(
                 )
             })?;
             // The value form (slice m9.e2): `T x;` and a `switch` that assigns it.
-            let mut value = initial.expr.as_ref();
-            while let syn::Expr::Paren(syn::ExprParen { expr, .. })
-            | syn::Expr::Group(syn::ExprGroup { expr, .. }) = value
-            {
-                value = expr;
-            }
+            let value = peel_expr(&initial.expr);
             // The value form of `if`/`else` (slice m12.ifx): `T x;` and an `if` that assigns it in each branch.
             if let syn::Expr::If(expression) = value {
                 return emit_value_if(
@@ -2317,7 +2271,7 @@ fn emit_statement(
             }
             // Arrays (slice m9.r1). Slang cannot infer the type of `{ .. }`, so the `let` is typed.
             let array_annotation = annotation
-                .map(unparenthesized_type)
+                .map(peel_type)
                 .filter(|ty| matches!(ty, syn::Type::Array(_)));
             if matches!(value, syn::Expr::Array(_) | syn::Expr::Repeat(_)) {
                 let Some(array_type) = array_annotation else {
@@ -2437,9 +2391,9 @@ fn emit_statement(
             }
             // `a = [e; N];` (slice m9.r1): the operand is evaluated once, before the place is written.
             syn::Expr::Assign(assign)
-                if matches!(unparenthesized_expr(&assign.right), syn::Expr::Repeat(_)) =>
+                if matches!(peel_expr(&assign.right), syn::Expr::Repeat(_)) =>
             {
-                let syn::Expr::Repeat(repeat) = unparenthesized_expr(&assign.right) else {
+                let syn::Expr::Repeat(repeat) = peel_expr(&assign.right) else {
                     unreachable!("guarded by the match arm");
                 };
                 emit_repeat(
@@ -2454,12 +2408,12 @@ fn emit_statement(
             }
             // `return [e; N];` and a repeat as the tail value of a function.
             syn::Expr::Return(ret)
-                if ret.expr.as_deref().is_some_and(|value| {
-                    matches!(unparenthesized_expr(value), syn::Expr::Repeat(_))
-                }) =>
+                if ret
+                    .expr
+                    .as_deref()
+                    .is_some_and(|value| matches!(peel_expr(value), syn::Expr::Repeat(_))) =>
             {
-                let Some(syn::Expr::Repeat(repeat)) = ret.expr.as_deref().map(unparenthesized_expr)
-                else {
+                let Some(syn::Expr::Repeat(repeat)) = ret.expr.as_deref().map(peel_expr) else {
                     unreachable!("guarded by the match arm");
                 };
                 emit_repeat(output, indent, index, repeat, &RepeatTarget::Return)?;
@@ -2817,8 +2771,8 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
                     | syn::BinOp::Le(_)
                     | syn::BinOp::Gt(_)
                     | syn::BinOp::Ge(_)
-            ) && comparison_array_operand(unparenthesized_expr(&binary.left))
-                && comparison_array_operand(unparenthesized_expr(&binary.right)) =>
+            ) && comparison_array_operand(peel_expr(&binary.left))
+                && comparison_array_operand(peel_expr(&binary.right)) =>
         {
             return Err(diagnostics::error(
                 Code::UnsupportedExpression,
@@ -3381,36 +3335,120 @@ const HYPOT_HELPER_TEXT: &str = "float __gust_hypot(float x, float y) { float m 
 /// overloads are selected by the base (the exponent is always `uint(e)`).
 const POW_HELPER_TEXT: &str = "uint __gust_pow(uint b, uint e) { uint r = 1u; for (int i = 0; i < 32 && e != 0u; i++) { if ((e & 1u) != 0u) { r = r * b; } e = e >> 1u; if (e != 0u) { b = b * b; } } return r; }\nint __gust_pow(int b, uint e) { int r = 1; for (int i = 0; i < 32 && e != 0u; i++) { if ((e & 1u) != 0u) { r = r * b; } e = e >> 1u; if (e != 0u) { b = b * b; } } return r; }\n\n";
 
-/// Which of the helpers of slices m11.math2 and m11.math3 the module needs.
+/// What a module (or one function of it) uses, found by one walk: each helper of the emitted Slang is defined only
+/// where something calls it, and the buffers of atomic calls take `Atomic<T>` element types. The module is scanned for
+/// everything but the subgroup operations and the atomic buffers, which only the kernel is scanned for (a helper
+/// function holds no subgroup operation, GUST-E0745).
 #[derive(Default)]
-struct MathHelperUsage {
+struct Usage {
+    /// A unary `!`: Slang overloads Rust's boolean and bitwise `!` (`__gust_not`).
+    not: bool,
+    /// A `^` or `^=` (`__gust_xor`).
+    xor: bool,
+    /// A `.fract()`.
+    fract: bool,
+    /// Any Option feature; both generic helpers are then emitted.
+    option: bool,
+    /// Any Result feature.
+    result: bool,
+    /// The division helpers: `div` (for `/` and `/=`) and `rem` (for `%` and `%=`, and for `a.rem_euclid(b)`, which is
+    /// built on `__gust_rem`, slice m11.math2).
+    div: bool,
+    rem: bool,
+    /// The helpers of `round`, `signum` and `rem_euclid` (slice m11.math2), `hypot` and the integer `pow` (m11.math3).
     round: bool,
     signum: bool,
     rem_euclid: bool,
     hypot: bool,
     pow: bool,
+    /// The subgroup operations called, for the helpers [`subgroup_helper_text`] defines.
+    subgroups: std::collections::BTreeSet<&'static str>,
+    /// The buffers referenced by atomic calls.
+    atomic_buffers: std::collections::HashSet<String>,
 }
 
-impl<'ast> Visit<'ast> for MathHelperUsage {
+impl Usage {
+    fn of_module(module: &syn::ItemMod) -> Self {
+        let mut usage = Self::default();
+        usage.visit_item_mod(module);
+        usage
+    }
+
+    fn of_function(function: &syn::ItemFn) -> Self {
+        let mut usage = Self::default();
+        usage.visit_item_fn(function);
+        usage
+    }
+}
+
+impl<'ast> Visit<'ast> for Usage {
+    fn visit_expr_unary(&mut self, expression: &'ast syn::ExprUnary) {
+        self.not |= matches!(expression.op, syn::UnOp::Not(_));
+        syn::visit::visit_expr_unary(self, expression);
+    }
+
+    fn visit_expr_binary(&mut self, expression: &'ast syn::ExprBinary) {
+        self.xor |= matches!(
+            expression.op,
+            syn::BinOp::BitXor(_) | syn::BinOp::BitXorAssign(_)
+        );
+        match division_helper(expression) {
+            Some(("div", _)) => self.div = true,
+            Some(_) => self.rem = true,
+            None => {}
+        }
+        syn::visit::visit_expr_binary(self, expression);
+    }
+
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        self.option |= is_some_constructor(call);
+        self.result |= is_result_constructor(call);
+        if let Some(name) = crate::validate::subgroup_operation(call) {
+            self.subgroups.insert(name);
+        }
+        if is_atomic_call(call)
+            && let syn::Expr::Reference(reference) = &call.args[0]
+            && let syn::Expr::Index(index) = reference.expr.as_ref()
+            && let syn::Expr::Path(path) = index.expr.as_ref()
+            && let Some(segment) = path.path.segments.first()
+        {
+            self.atomic_buffers.insert(emit_ident(&segment.ident));
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
         let name = crate::names::name_of(&call.method);
         let arity = call.args.len();
         self.round |= name == "round" && arity == 0;
         self.signum |= name == "signum" && arity == 0;
         self.rem_euclid |= name == "rem_euclid" && arity == 1;
+        self.rem |= name == "rem_euclid" && arity == 1;
         self.hypot |= name == "hypot" && arity == 1;
         self.pow |= name == "pow" && arity == 1;
+        self.fract |= name == "fract" && arity == 0;
+        self.option |= matches!(name.as_str(), "is_some" | "is_none");
+        self.result |= matches!(name.as_str(), "is_ok" | "is_err");
         syn::visit::visit_expr_method_call(self, call);
     }
-}
 
-/// Whether the module calls `.fract()`, so the helper is defined only when used.
-struct FractUsage(bool);
+    fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
+        if let Some(segment) = ty.path.segments.last() {
+            self.option |= crate::names::ident_is(&segment.ident, "Option");
+            self.result |= crate::names::ident_is(&segment.ident, "Result");
+        }
+        syn::visit::visit_type_path(self, ty);
+    }
 
-impl<'ast> Visit<'ast> for FractUsage {
-    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        self.0 |= crate::names::ident_is(&call.method, "fract") && call.args.is_empty();
-        syn::visit::visit_expr_method_call(self, call);
+    fn visit_expr_let(&mut self, expression: &'ast syn::ExprLet) {
+        self.option |= crate::validate::option_pattern(&expression.pat).is_some();
+        self.result |= crate::validate::result_pattern(&expression.pat).is_some();
+        syn::visit::visit_expr_let(self, expression);
+    }
+
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        self.option |= crate::names::path_is(&path.path, "None");
+        syn::visit::visit_expr_path(self, path);
     }
 }
 
@@ -3467,9 +3505,7 @@ const KEEP_HELPER: &str = "__gust_keep";
 /// `g(c && a < b, d > e)` come out safe, but by slangc's choice and not by the rule, so the right operand of `&&`
 /// and `||` counts as well. Only `<` opens a candidate, so only `<` needs the helper.
 fn is_less_than(expression: &syn::Expr) -> bool {
-    match expression {
-        syn::Expr::Paren(paren) => is_less_than(&paren.expr),
-        syn::Expr::Group(group) => is_less_than(&group.expr),
+    match peel_expr(expression) {
         syn::Expr::Binary(binary) => match binary.op {
             syn::BinOp::Lt(_) => true,
             syn::BinOp::And(_) | syn::BinOp::Or(_) => is_less_than(&binary.right),
@@ -3532,15 +3568,6 @@ fn emit_list_of<'a>(
         .collect()
 }
 
-struct NotUsage(bool);
-
-impl<'ast> Visit<'ast> for NotUsage {
-    fn visit_expr_unary(&mut self, expression: &'ast syn::ExprUnary) {
-        self.0 |= matches!(expression.op, syn::UnOp::Not(_));
-        syn::visit::visit_expr_unary(self, expression);
-    }
-}
-
 /// The Slang of a subgroup operation (M8, D140). The macro sees no types, so an operation that Slang's own intrinsics
 /// overload by operand type is the intrinsic (`WaveActiveSum(x)` is `uint`, `int` or `float` by `x`), and an operation
 /// that needs a different form per type, or an operand twice, is a call of a helper that
@@ -3594,24 +3621,9 @@ const SUBGROUP_COUNT: &str = "__gust_subgroup_count";
 
 /// Whether `expression` is an integer literal, through parentheses.
 fn is_integer_literal(expression: &syn::Expr) -> bool {
-    match expression {
+    match peel_expr(expression) {
         syn::Expr::Lit(literal) => matches!(literal.lit, syn::Lit::Int(_)),
-        syn::Expr::Paren(paren) => is_integer_literal(&paren.expr),
-        syn::Expr::Group(group) => is_integer_literal(&group.expr),
         _ => false,
-    }
-}
-
-/// The subgroup operations a function calls, for the helpers [`subgroup_helper_text`] defines.
-#[derive(Default)]
-struct SubgroupUsage(std::collections::BTreeSet<&'static str>);
-
-impl<'ast> Visit<'ast> for SubgroupUsage {
-    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-        if let Some(name) = crate::validate::subgroup_operation(call) {
-            self.0.insert(name);
-        }
-        syn::visit::visit_expr_call(self, call);
     }
 }
 
@@ -3678,10 +3690,8 @@ fn subgroup_helper_text(used: &std::collections::BTreeSet<&'static str>) -> Stri
 
 /// Whether an expression is a literal operand, possibly negated or parenthesised (`2`, `-1`, `(2.0)`).
 fn is_literal_operand(expression: &syn::Expr) -> bool {
-    match expression {
+    match peel_expr(expression) {
         syn::Expr::Lit(_) => true,
-        syn::Expr::Paren(paren) => is_literal_operand(&paren.expr),
-        syn::Expr::Group(group) => is_literal_operand(&group.expr),
         syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
             is_literal_operand(&unary.expr)
         }
@@ -3704,43 +3714,6 @@ fn division_helper(binary: &syn::ExprBinary) -> Option<(&'static str, bool)> {
     // `%` becomes `OpSRem`, which is poison for negative operands on Vulkan (naga writes `a - d * (a / d)`).
     (!is_literal_operand(&binary.right) || (guards::enabled() && helper.0 == "rem"))
         .then_some(helper)
-}
-
-/// Which division helpers the module needs: `div` (for `/` and `/=`) and `rem` (for `%` and `%=`).
-#[derive(Default)]
-struct DivisionUsage {
-    div: bool,
-    rem: bool,
-}
-
-impl<'ast> Visit<'ast> for DivisionUsage {
-    // `a.rem_euclid(b)` (slice m11.math2) is built on `__gust_rem`, so a module that calls it defines that helper.
-    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        self.rem |= crate::names::ident_is(&call.method, "rem_euclid") && call.args.len() == 1;
-        syn::visit::visit_expr_method_call(self, call);
-    }
-
-    fn visit_expr_binary(&mut self, expression: &'ast syn::ExprBinary) {
-        match division_helper(expression) {
-            Some(("div", _)) => self.div = true,
-            Some(_) => self.rem = true,
-            None => {}
-        }
-        syn::visit::visit_expr_binary(self, expression);
-    }
-}
-
-/// Whether the module uses `^` or `^=`, so the `__gust_xor` helpers are emitted only when needed.
-struct XorUsage(bool);
-
-impl<'ast> Visit<'ast> for XorUsage {
-    fn visit_expr_binary(&mut self, expression: &'ast syn::ExprBinary) {
-        self.0 |= matches!(
-            expression.op,
-            syn::BinOp::BitXor(_) | syn::BinOp::BitXorAssign(_)
-        );
-        syn::visit::visit_expr_binary(self, expression);
-    }
 }
 
 fn is_some_constructor(call: &syn::ExprCall) -> bool {
@@ -3797,91 +3770,6 @@ fn atomic_slang_method(op_name: &str) -> Option<&'static str> {
         "atomic_exchange" => Some("exchange"),
         "atomic_compare_exchange" => Some("compareExchange"),
         _ => None,
-    }
-}
-
-/// Buffers referenced by atomic calls need `Atomic<T>` element types.
-struct AtomicUsage(std::collections::HashSet<String>);
-
-impl<'ast> Visit<'ast> for AtomicUsage {
-    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-        if is_atomic_call(call)
-            && let syn::Expr::Reference(reference) = &call.args[0]
-            && let syn::Expr::Index(index) = reference.expr.as_ref()
-            && let syn::Expr::Path(path) = index.expr.as_ref()
-            && let Some(segment) = path.path.segments.first()
-        {
-            self.0.insert(emit_ident(&segment.ident));
-        }
-        syn::visit::visit_expr_call(self, call);
-    }
-}
-
-/// Any Option feature in the module; both generic helpers are then emitted.
-struct OptionUsage(bool);
-
-impl<'ast> Visit<'ast> for OptionUsage {
-    fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
-        self.0 |= ty
-            .path
-            .segments
-            .last()
-            .is_some_and(|segment| crate::names::ident_is(&segment.ident, "Option"));
-        syn::visit::visit_type_path(self, ty);
-    }
-
-    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-        self.0 |= is_some_constructor(call);
-        syn::visit::visit_expr_call(self, call);
-    }
-
-    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        self.0 |= matches!(
-            crate::names::name_of(&call.method).as_str(),
-            "is_some" | "is_none"
-        );
-        syn::visit::visit_expr_method_call(self, call);
-    }
-
-    fn visit_expr_let(&mut self, expression: &'ast syn::ExprLet) {
-        self.0 |= crate::validate::option_pattern(&expression.pat).is_some();
-        syn::visit::visit_expr_let(self, expression);
-    }
-
-    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
-        self.0 |= crate::names::path_is(&path.path, "None");
-        syn::visit::visit_expr_path(self, path);
-    }
-}
-
-struct ResultUsage(bool);
-
-impl<'ast> Visit<'ast> for ResultUsage {
-    fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
-        self.0 |= ty
-            .path
-            .segments
-            .last()
-            .is_some_and(|segment| crate::names::ident_is(&segment.ident, "Result"));
-        syn::visit::visit_type_path(self, ty);
-    }
-
-    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-        self.0 |= is_result_constructor(call);
-        syn::visit::visit_expr_call(self, call);
-    }
-
-    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        self.0 |= matches!(
-            crate::names::name_of(&call.method).as_str(),
-            "is_ok" | "is_err"
-        );
-        syn::visit::visit_expr_method_call(self, call);
-    }
-
-    fn visit_expr_let(&mut self, expression: &'ast syn::ExprLet) {
-        self.0 |= crate::validate::result_pattern(&expression.pat).is_some();
-        syn::visit::visit_expr_let(self, expression);
     }
 }
 
@@ -4007,18 +3895,9 @@ fn emit_type(ty: &syn::Type) -> syn::Result<String> {
     Ok(format!("{name}<{}>", parameters.join(", ")))
 }
 
-/// `expression` without the parentheses and invisible groups around it.
-fn unparenthesized_expr(expression: &syn::Expr) -> &syn::Expr {
-    match expression {
-        syn::Expr::Paren(inner) => unparenthesized_expr(&inner.expr),
-        syn::Expr::Group(inner) => unparenthesized_expr(&inner.expr),
-        other => other,
-    }
-}
-
 /// Whether `ty` is the path `usize`.
 fn is_usize_type(ty: &syn::Type) -> bool {
-    matches!(unparenthesized_type(ty), syn::Type::Path(path)
+    matches!(peel_type(ty), syn::Type::Path(path)
         if path.qself.is_none() && crate::names::path_is(&path.path, "usize"))
 }
 
@@ -4026,7 +3905,7 @@ fn is_usize_type(ty: &syn::Type) -> bool {
 /// field, a buffer or uniform element and the payload of an `Option` or `Result` still go through [`emit_type`], which
 /// has no array arm, so an array there is refused exactly as before (GUST-E0813).
 fn emit_value_type(ty: &syn::Type) -> syn::Result<String> {
-    let syn::Type::Array(array) = unparenthesized_type(ty) else {
+    let syn::Type::Array(array) = peel_type(ty) else {
         return emit_type(ty);
     };
     let length = array_length_literal(&array.len).ok_or_else(|| {
@@ -4044,13 +3923,10 @@ fn emit_value_type(ty: &syn::Type) -> syn::Result<String> {
 /// when it is a literal, so it cannot let a literal nested somewhere else through.
 fn emit_value_expression(expression: &syn::Expr) -> syn::Result<String> {
     ARRAY_LITERAL_OK.with(|flag| {
-        flag.set(matches!(
-            unparenthesized_expr(expression),
-            syn::Expr::Array(_)
-        ));
+        flag.set(matches!(peel_expr(expression), syn::Expr::Array(_)));
     });
     // A parenthesized literal is emitted without the parentheses: `({ .. })` is not an initializer list to slangc.
-    let inner = unparenthesized_expr(expression);
+    let inner = peel_expr(expression);
     let text = emit_expression(if matches!(inner, syn::Expr::Array(_)) {
         inner
     } else {
@@ -4098,7 +3974,7 @@ fn emit_repeat(
     let counter = format!("__gust_fill_{index}");
     // The element type is written when the `let` names it; `var` otherwise (Slang converts on the assignment).
     let element_type = match target {
-        RepeatTarget::Let { array_type, .. } => match unparenthesized_type(array_type) {
+        RepeatTarget::Let { array_type, .. } => match peel_type(array_type) {
             syn::Type::Array(array) => emit_type(&array.elem)?,
             _ => "var".to_owned(),
         },

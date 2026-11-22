@@ -54,6 +54,29 @@ pub(crate) fn spelling(name: &str) -> String {
     }
 }
 
+/// `expression` without the parentheses and invisible groups (a `macro_rules!` `$e:expr`) around it. The one peel
+/// of the validator and the emitter: a rule that looks through parentheses must look through groups as well.
+pub(crate) fn peel_expr(mut expression: &syn::Expr) -> &syn::Expr {
+    loop {
+        match expression {
+            syn::Expr::Paren(paren) => expression = &paren.expr,
+            syn::Expr::Group(group) => expression = &group.expr,
+            other => return other,
+        }
+    }
+}
+
+/// `ty` without the parentheses and invisible groups around it.
+pub(crate) fn peel_type(mut ty: &syn::Type) -> &syn::Type {
+    loop {
+        match ty {
+            syn::Type::Paren(paren) => ty = &paren.elem,
+            syn::Type::Group(group) => ty = &group.elem,
+            other => return other,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::spelling;

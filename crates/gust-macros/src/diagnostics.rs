@@ -551,6 +551,41 @@ pub(crate) fn meta_error(
     meta.error(format!("[{}] {message}", code.text()))
 }
 
+/// The errors a pass collects while it goes on past the first one, in the order they were found (`syn::Error::combine`
+/// keeps insertion order, so the report reads like the source).
+#[derive(Default)]
+pub(crate) struct Collector {
+    error: Option<syn::Error>,
+}
+
+impl Collector {
+    /// Adds `error` after the ones already collected.
+    pub(crate) fn push(&mut self, error: syn::Error) {
+        if let Some(existing) = &mut self.error {
+            existing.combine(error);
+        } else {
+            self.error = Some(error);
+        }
+    }
+
+    /// Adds [`error`]`(code, node, message)`.
+    pub(crate) fn reject(&mut self, code: Code, node: impl ToTokens, message: impl Display) {
+        self.push(error(code, node, message));
+    }
+
+    /// How many errors were collected (an error that combines several counts each).
+    pub(crate) fn count(&self) -> usize {
+        self.error
+            .as_ref()
+            .map_or(0, |error| error.into_iter().count())
+    }
+
+    /// `Ok` when nothing was collected, else every collected error as one.
+    pub(crate) fn finish(self) -> syn::Result<()> {
+        self.error.map_or(Ok(()), Err)
+    }
+}
+
 /// A `syn` parse error given `code`, keeping every combined error and its span.
 ///
 /// For failures `syn` reports itself (an unparsable attribute argument list, for

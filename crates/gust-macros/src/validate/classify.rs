@@ -53,6 +53,7 @@ use syn::visit::{self, Visit};
 use super::barrier::{is_barrier_call, subgroup_operation};
 use super::{atomic_buffer_names, atomic_operation_name};
 use crate::diagnostics::{self, Code};
+use crate::names::peel_expr;
 use crate::profile::StageProfile;
 use crate::slang::{ParameterFlavor, local_binding, parameter_flavor_in, wrapper_element_type};
 
@@ -611,31 +612,20 @@ fn takes_element(element: &syn::Type) -> bool {
 // Expression helpers.
 // ---------------------------------------------------------------------------------------------------------------
 
-/// `expression` without the parentheses and groups around it.
-fn peel(mut expression: &syn::Expr) -> &syn::Expr {
-    loop {
-        match expression {
-            syn::Expr::Paren(paren) => expression = &paren.expr,
-            syn::Expr::Group(group) => expression = &group.expr,
-            other => return other,
-        }
-    }
-}
-
 /// Whether `expression` is the plain name `name`.
 fn is_name(expression: &syn::Expr, name: &str) -> bool {
-    matches!(peel(expression), syn::Expr::Path(path) if path.qself.is_none() && crate::names::path_is(&path.path, name))
+    matches!(peel_expr(expression), syn::Expr::Path(path) if path.qself.is_none() && crate::names::path_is(&path.path, name))
 }
 
 /// Whether `expression` is `id.x` or `id.global_id().x` for the invocation parameter `id`.
 fn is_direct_own(expression: &syn::Expr, id: &str) -> bool {
-    let syn::Expr::Field(field) = peel(expression) else {
+    let syn::Expr::Field(field) = peel_expr(expression) else {
         return false;
     };
     if !matches!(&field.member, syn::Member::Named(member) if crate::names::ident_is(member, "x")) {
         return false;
     }
-    match peel(&field.base) {
+    match peel_expr(&field.base) {
         syn::Expr::Path(path) => path.qself.is_none() && crate::names::path_is(&path.path, id),
         syn::Expr::MethodCall(call) => {
             crate::names::ident_is(&call.method, "global_id")
@@ -649,7 +639,7 @@ fn is_direct_own(expression: &syn::Expr, id: &str) -> bool {
 
 /// The name an expression is rooted in through field accesses and indexing: `id` for `id.x`.
 fn root_name(expression: &syn::Expr) -> Option<String> {
-    match peel(expression) {
+    match peel_expr(expression) {
         syn::Expr::Path(path) if path.qself.is_none() => {
             path.path.get_ident().map(|ident| ident.unraw().to_string())
         }
@@ -820,14 +810,14 @@ impl<'a> OutputScan<'a> {
     }
 
     fn target<'ast>(&self, expression: &'ast syn::Expr) -> Target<'ast> {
-        match peel(expression) {
+        match peel_expr(expression) {
             syn::Expr::Index(index) if is_name(&index.expr, self.name) => {
                 Target::Element(&index.index)
             }
             syn::Expr::Field(field) => {
-                let mut base = peel(&field.base);
+                let mut base = peel_expr(&field.base);
                 while let syn::Expr::Field(inner) = base {
-                    base = peel(&inner.base);
+                    base = peel_expr(&inner.base);
                 }
                 match base {
                     syn::Expr::Index(index) if is_name(&index.expr, self.name) => {
@@ -944,7 +934,7 @@ impl Definite<'_> {
     }
 
     fn expression(&self, expression: &syn::Expr) -> bool {
-        match peel(expression) {
+        match peel_expr(expression) {
             syn::Expr::Block(block) => self.block(&block.block),
             syn::Expr::Assign(assignment) => {
                 self.is_own_write(&assignment.left) || self.expression(&assignment.right)
@@ -962,14 +952,14 @@ impl Definite<'_> {
 
     /// `output[own]`, as an assignment target.
     fn is_own_write(&self, target: &syn::Expr) -> bool {
-        matches!(peel(target), syn::Expr::Index(index)
+        matches!(peel_expr(target), syn::Expr::Index(index)
             if is_name(&index.expr, self.output) && self.own.is(&index.index))
     }
 
     /// Whether `condition` is always true for a live pixel: every conjunct compares the own index with the length of
     /// an output.
     fn transparent(&self, condition: &syn::Expr) -> bool {
-        match peel(condition) {
+        match peel_expr(condition) {
             syn::Expr::Binary(binary) => match binary.op {
                 syn::BinOp::And(_) => {
                     self.transparent(&binary.left) && self.transparent(&binary.right)
@@ -987,10 +977,10 @@ impl Definite<'_> {
     }
 
     fn is_output_length(&self, expression: &syn::Expr) -> bool {
-        matches!(peel(expression), syn::Expr::MethodCall(call)
+        matches!(peel_expr(expression), syn::Expr::MethodCall(call)
             if crate::names::ident_is(&call.method, "len")
                 && call.args.is_empty()
-                && matches!(peel(&call.receiver), syn::Expr::Path(path)
+                && matches!(peel_expr(&call.receiver), syn::Expr::Path(path)
                     if path.qself.is_none()
                         && path.path.get_ident().is_some_and(|name| self.outputs.contains(&name.unraw().to_string()))))
     }
@@ -1009,7 +999,7 @@ impl Definite<'_> {
     }
 
     fn blame(&self, expression: &syn::Expr) -> Option<TokenStream> {
-        match peel(expression) {
+        match peel_expr(expression) {
             syn::Expr::Block(block) => self.blame_block(&block.block),
             syn::Expr::If(branch) => {
                 let writes = self.writes_in_block(&branch.then_branch)
@@ -1053,7 +1043,7 @@ impl Definite<'_> {
 
     /// The first conjunct of `condition` that is not a transparent guard.
     fn opaque_conjunct(&self, condition: &syn::Expr) -> Option<TokenStream> {
-        match peel(condition) {
+        match peel_expr(condition) {
             syn::Expr::Binary(binary) if matches!(binary.op, syn::BinOp::And(_)) => self
                 .opaque_conjunct(&binary.left)
                 .or_else(|| self.opaque_conjunct(&binary.right)),

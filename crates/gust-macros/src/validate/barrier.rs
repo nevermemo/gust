@@ -26,6 +26,7 @@ use syn::visit::{self, Visit};
 
 use crate::diagnostics::{self, Code};
 use crate::math_types;
+use crate::names::peel_expr;
 
 /// The most workgroup memory a kernel may declare, in bytes. The WebGPU default limit is 16384.
 pub(crate) const WORKGROUP_MEMORY_LIMIT: u64 = 16 * 1024;
@@ -251,9 +252,7 @@ impl<'ast> Visit<'ast> for Finder {
 /// (which skip their right operand), and the arguments of a subgroup operation. An index, a method call, a field,
 /// a call of a helper, an `if` or a `match` end the walk: a subgroup operation under them stays unapproved.
 fn approve_value(expression: &syn::Expr, approved: &mut HashSet<usize>) {
-    match expression {
-        syn::Expr::Paren(paren) => approve_value(&paren.expr, approved),
-        syn::Expr::Group(group) => approve_value(&group.expr, approved),
+    match peel_expr(expression) {
         syn::Expr::Cast(cast) => approve_value(&cast.expr, approved),
         syn::Expr::Unary(unary) => approve_value(&unary.expr, approved),
         syn::Expr::Binary(binary)
@@ -376,10 +375,10 @@ pub(crate) fn check(
         closure,
         forbid_return: is_barrier_kernel,
         loops: Vec::new(),
-        error: None,
+        errors: diagnostics::Collector::default(),
     };
     pass.visit_item_fn(function);
-    pass.error.map_or(Ok(()), Err)
+    pass.errors.finish()
 }
 
 struct Pass {
@@ -397,27 +396,18 @@ struct Pass {
     forbid_return: bool,
     /// For each enclosing `for` loop, whether it holds a barrier.
     loops: Vec<bool>,
-    error: Option<syn::Error>,
+    errors: diagnostics::Collector,
 }
 
 impl Pass {
-    fn reject(&mut self, code: Code, node: impl quote::ToTokens, message: &str) {
-        let error = diagnostics::error(code, node, message);
-        if let Some(existing) = &mut self.error {
-            existing.combine(error);
-        } else {
-            self.error = Some(error);
-        }
-    }
-
     fn jump(&mut self, node: impl quote::ToTokens, name: &str, label: Option<&syn::Lifetime>) {
         // A labelled jump can leave an outer loop that holds a barrier, whatever the innermost loop holds. Loop labels
         // are GUST-E0403 in every kernel today; this keeps rule 2 true if a later slice admits them.
         if self.forbid_return && label.is_some() {
-            self.reject(
+            self.errors.reject(
                 Code::JumpInBarrierLoop,
                 node,
-                &format!(
+                format!(
                     "a labelled `{name}` in a kernel with workgroup memory or a barrier can skip the barriers of \
                      an outer loop that the other invocations wait at; run the loops to their ends and guard the \
                      work with `if`{}",
@@ -425,10 +415,10 @@ impl Pass {
                 ),
             );
         } else if self.loops.last() == Some(&true) {
-            self.reject(
+            self.errors.reject(
                 Code::JumpInBarrierLoop,
                 node,
-                &format!(
+                format!(
                     "`{name}` in a loop that holds a `workgroup_barrier()` lets some invocations skip a barrier \
                      the others wait at; run the loop to its end and guard the work inside it with `if`{}",
                     self.subgroup_note
@@ -452,7 +442,7 @@ impl<'ast> Visit<'ast> for Pass {
                 "`workgroup_barrier()` is allowed only in a kernel: a helper or a method may be called under a condition, so \
                  not every invocation would reach the barrier; call the barrier from the kernel body"
             };
-            self.reject(Code::BarrierPosition, call, message);
+            self.errors.reject(Code::BarrierPosition, call, message);
         }
         if let Some(name) = subgroup_operation(call) {
             if !self.subgroups_allowed {
@@ -470,15 +460,15 @@ impl<'ast> Visit<'ast> for Pass {
                          invocation of the subgroup would reach it; call it from the kernel body"
                     )
                 };
-                self.reject(Code::SubgroupNotAllowed, call, &message);
+                self.errors.reject(Code::SubgroupNotAllowed, call, &message);
             } else if !self
                 .approved_subgroups
                 .contains(&(std::ptr::from_ref(call) as usize))
             {
-                self.reject(
+                self.errors.reject(
                     Code::SubgroupPosition,
                     call,
-                    &format!(
+                    format!(
                         "`{name}` is allowed only as the whole value of a `let` or an assignment, or as an operand of \
                          arithmetic or a comparison there (not under `&&` or `||`), at the top level of the kernel \
                          body or of a top-level `for a..b` loop with two literal bounds: every invocation of the \
@@ -496,7 +486,7 @@ impl<'ast> Visit<'ast> for Pass {
 
     fn visit_expr_return(&mut self, expression: &'ast syn::ExprReturn) {
         if self.forbid_return {
-            self.reject(
+            self.errors.reject(
                 Code::ReturnInBarrierKernel,
                 expression,
                 &if self.subgroup_note.is_empty() {
@@ -536,7 +526,7 @@ impl<'ast> Visit<'ast> for Pass {
         // `?` is an early exit like `return`. It is GUST-E0311 in every function today; this keeps rule 3 true if a
         // later slice admits it.
         if self.forbid_return {
-            self.reject(
+            self.errors.reject(
                 Code::ReturnInBarrierKernel,
                 expression,
                 &if self.subgroup_note.is_empty() {

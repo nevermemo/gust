@@ -2,6 +2,9 @@
 
 ## Active: roadmap M11 (2026-11-17; M10 closed, D185; M11 is the owner's joint review, D198)
 
+Since 2026-11-22 (D226) everything is prerelease and no 0.1 or 0.2 release line is maintained; the dated records below
+that mention those lines are history. The `semver` CI job is retired until the first release (RELEASE.md).
+
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
 2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done; M0.15
 (the CI `unit` job is a required check on `main`) followed on 2026-11-01. M1 (diagnostics) closed on
@@ -887,6 +890,12 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       feature set and for wasm32 (eight single-package clippy builds), which no workspace build or local merge gate
       compiled; each of m13.split-rt's three broken cfg builds is caught, one shown by a negative test. CI runs it in
       the wasm job. Opus review: merge, with small fixes done.
+    - m13.prerel (D226): nothing assumes a 0.1 or 0.2 release line. RELEASE.md opens with the prerelease state
+      (hold D189/D199 stays; `release/0.1` still exists, its removal is the owner's), keeps the procedure for the
+      first release and marks the 0.1/0.2 plans superseded. The `semver` CI job is retired with a comment in its
+      place; a suite test pins the retirement and the first-release checklist restores both. Group (a) lines in
+      README, ROADMAP, HANDOFF, NEXT_TASKS changed; history and manifests (0.2.0) kept. Opus review: merge after
+      fixes; fixed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

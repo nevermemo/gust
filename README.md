@@ -5,10 +5,11 @@ a GPU-centric ECS game engine. **Today it is a working experimental Rust → Sla
 compute subsystem**. There is no ECS,
 renderer, rustc semantic integration, or execution-graph compiler yet.
 
-> **Version.** This tree is 0.2.0, the planned first public release (D177). **No usable version is published yet:**
-> the four package names on crates.io hold only empty 0.0.0 placeholders (D48), and the release waits for the
-> owner's review of the whole project (milestone M11, D189, D198). A 0.1.0 was prepared on the branch
-> `release/0.1`; it was not published and will not be, and that branch has no tag.
+> **Version.** GUST is prerelease and no release line is maintained: the 0.1 and 0.2 plans are abandoned and a first
+> release waits for maturity (D226). The manifests say 0.2.0 as a version number only. **No usable version is
+> published:** the four package names on crates.io hold only empty 0.0.0 placeholders (D48), and the release hold
+> stays (D189, D199). A 0.1.0 was prepared on the branch `release/0.1`; it was not published and has no tag, and the
+> owner decides whether the branch is removed.
 
 Rust supplies the higher-level language and checking environment; Slang owns GPU
 code generation; GUST will connect intentional CPU and GPU execution. We preserve
@@ -54,7 +55,7 @@ a strict profile needs neither Slang nor the helper, D45):
 
 - The stable Rust toolchain: 1.90 or newer (the `msrv` CI job type-checks the workspace on 1.90.0);
   this checkout's checks ran on stable 1.98.0 (see "Minimum Rust")
-- Outside this checkout, once 0.2.0 is on crates.io (it is not yet), `cargo install cargo-gust --locked --version
+- Outside this checkout, once a release is on crates.io (none is, D226), `cargo install cargo-gust --locked --version
   "~0.2"` installs the `cargo gust` tool; it works without `GUST_PROFILE` ("Install from crates.io" has the whole
   setup for a crate of your own)
 - `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.22 (`cargo gust slang install` installs it, and
@@ -246,17 +247,17 @@ devices.
 ## Install from crates.io
 
 > **No usable version yet.** No version of the four packages below is usable: the names on crates.io hold only empty
-> 0.0.0 placeholders (D48), which a bare `cargo add` would fetch. The 0.2.0 release candidate is built and gated,
-> and the release waits for the owner's review of the whole project (milestone M11, D189, D198), so the `0.2`
-> requirements and `cargo install` commands in this section resolve nothing until then. This section is the recipe
-> for the day 0.2.0 is published; to try GUST before that, build from this repository (the programs in `gallery/`
+> 0.0.0 placeholders (D48), which a bare `cargo add` would fetch. GUST is prerelease and releases wait for maturity
+> (D226; the hold of D189 and D199 stays), so the `0.2` requirements and `cargo install` commands in this section
+> resolve nothing until a first release. This section is the recipe for the day a first release is published; to try
+> GUST before that, build from this repository (the programs in `gallery/`
 > use path dependencies on it).
 
 The two code blocks below are the recipe that `cargo xtask check-release` builds word for word from the packaged
 crates.
 
-GUST will be released as four packages that always share one version (0.2.0 will be the first release; a 0.1.0 was
-never published, D177):
+GUST will be released as four packages that always share one version (the first release waits for maturity, D226; a
+0.1.0 was never published):
 
 | Package | Library name | What it is |
 | --- | --- | --- |
@@ -525,8 +526,9 @@ case is `Cpu` evidence.
 
 ## Stability
 
-GUST is an experimental compiler, and 0.2.0 will be its first public release (D177; it is not published yet, and a
-0.1.0 was prepared and never published). This is the promise it will carry. It follows SemVer for 0.x (D111): a change
+GUST is an experimental compiler and prerelease: no release line is maintained, and a first public release waits for
+maturity (D226; nothing is published, and a 0.1.0 was prepared and never published). This is the promise it will
+carry. It follows SemVer for 0.x (D111): a change
 that breaks existing code bumps the minor version (0.2 to 0.3), and a patch release only adds or fixes: a construct may
 be added to the `#[gpu]` language in a patch and is refused only in a minor. The four packages are released together at
 one version and depend on each other with exact versions, so upgrade them together. Each release is described in
@@ -592,14 +594,14 @@ phone, may show a difference the tests have not seen ([Shapes](#shapes-grid-and-
 ### Code built against `release/0.1`
 
 This section is for code built against the branch `release/0.1` or this repository's earlier history. It is not an
-upgrade guide for registry users: 0.1.0 was never published (D177), so 0.2.0 will be the first version on crates.io
-and there is nothing to upgrade from there. Against `release/0.1`, 0.2.0 has seven listed breaks, B1 to B7. B1 to B4
+upgrade guide for registry users: 0.1.0 was never published, and no release line is maintained (D226), so there is
+nothing to upgrade from on crates.io. Against `release/0.1`, 0.2.0 has seven listed breaks, B1 to B7. B1 to B4
 came with M8 and M9: B1, in two parts (the descriptor constructor and setters, and the `GpuKernel` bound), which is the
 last one of its kind; B2, reserved subgroup function names; B3, recursion refused; and B4, more renamed names. The API
 audit of m10.api1 added B5 to B7 (record structs and `Route` marked `#[non_exhaustive]`, three more structs likewise,
 and two items hidden from the docs). The [CHANGELOG](CHANGELOG.md) lists all seven with their
 migrations. The rest of M8 and M9 only adds (the CHANGELOG has the full
-list; the `semver` CI job covers the public API against that branch).
+list; the `semver` CI job that covered the public API against that branch is retired, D226).
 
 - **B1, part 1: `KernelDescriptor` is `#[non_exhaustive]`.** A struct literal, or a struct update from a base value, no
   longer compiles outside `gust-compute`, because the descriptor gained `variant`, `requires` and `target`. Build one
@@ -651,8 +653,8 @@ says so.
 
 ## Authoring model
 
-The preferred source vocabulary deliberately resembles Slang (the snippet needs `cargo add gust-compute`, once 0.2.0 is
-published; the library is named `gust`):
+The preferred source vocabulary deliberately resembles Slang (the snippet needs `cargo add gust-compute`, once a release
+is published; the library is named `gust`):
 
 ```rust
 use gust::gpu;
@@ -1014,7 +1016,7 @@ not apply to it, and the kernel that writes the arguments must clamp. See the co
 
 `#[gpu]` on a free function of scalars (or vectors) generates the kernel, the buffers, the bounds handling and the
 dispatch of an element-wise call (D60). The function stays an ordinary Rust function; its module of the same name
-holds the calls (this snippet needs `cargo add gust-compute` too, once 0.2.0 is published):
+holds the calls (this snippet needs `cargo add gust-compute` too, once a release is published):
 
 ```rust
 use gust::{gpu, map::Broadcast};

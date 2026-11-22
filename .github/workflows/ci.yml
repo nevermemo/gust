@@ -374,6 +374,9 @@ jobs:
     # stays local Gpu evidence. Whether a software adapter (SwiftShader) can earn `Gpu (software)` on a hosted runner is
     # slice S4 of the plan, deferred (D69).
     # The MSRV job does not build the wasm32-only dependencies, so nothing checks them against the minimum Rust version.
+    # The job also runs `cargo xtask check-cfg --require-wasm` (m13.gates-rt): the native feature sets of `gust` and
+    # `gust-wgpu` one at a time (no features, `slang-runtime`, `spirv-route`), which a workspace build never compiles alone,
+    # and the wasm32 builds above again with `spirv-route`.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -387,6 +390,10 @@ jobs:
         env:
           GUST_PROFILE: web
         run: cargo clippy --locked --target wasm32-unknown-unknown -p gust-compute -p gust-compute-wgpu -p web-vector-add -- -D warnings
+      - name: Lint the runtime per feature set and for wasm32 (check-cfg)
+        # The runtime crates one feature set at a time (a workspace build unifies features and compiles none of these alone),
+        # then wasm32 with the spirv-route feature; `--require-wasm` fails the step if the target is missing instead of skipping.
+        run: cargo --locked xtask check-cfg --require-wasm
       - name: Clippy on wasm32 for the gallery page (web-hello, strict web profile)
         # The gallery is a workspace of its own, so it is named by its manifest. The page's `browser` module exists on wasm32 only.
         env:

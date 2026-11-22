@@ -883,6 +883,10 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       `docs/development/VALIDATION.md` appendix B1-B5. Stale facts fixed against the code (GUST-E0723, GUST-E0746,
       GUST-E0326, D81). Every heading, code and id kept. Size 184,782 to 176,298 bytes: the quarter cut was not met
       because the rest is rules, so the diet goes to the owner as a choice. Opus review: merge after fixes; fixed.
+    - m13.gates-rt (m12 sanity follow-up): `cargo xtask check-cfg [--require-wasm]` lints the runtime crates per
+      feature set and for wasm32 (eight single-package clippy builds), which no workspace build or local merge gate
+      compiled; each of m13.split-rt's three broken cfg builds is caught, one shown by a negative test. CI runs it in
+      the wasm job. Opus review: merge, with small fixes done.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

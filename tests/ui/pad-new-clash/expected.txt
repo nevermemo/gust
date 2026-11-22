@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: pad-new-clash/src/main.rs
+line: 11
+message: [GUST-E0219] `#[pad]` on `Params` generates `Params::new`

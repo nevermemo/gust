@@ -5,6 +5,12 @@ All notable changes to the published packages `gust-compute`, `gust-compute-macr
 breaks existing code bumps the minor version, and the promise is described in the
 [README](README.md#stability).
 
+## Unreleased
+
+- Added `#[pad]` for a struct of a `#[gpu]` module that a uniform reaches: `#[gpu]` inserts the `f32` padding fields
+  `_pad0`, `_pad1`, ... of its constant-buffer layout and generates `new(<your fields>)`; a misplaced `#[pad]` is the
+  new `GUST-E0219`, and an unmarked struct keeps `GUST-E0209` (m14.pad, D239).
+
 ## 0.2.0
 
 0.2.0 will be the first public release of GUST (D177). It is not published yet: the release waits for the owner's

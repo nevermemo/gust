@@ -792,9 +792,14 @@ pub(crate) fn validate_module_in(
     // The shape of the uniform parameters and of the structs they reach comes before the padding checks: a `Mat2` in
     // a uniform struct is E0205 whatever else is wrong with its layout.
     crate::uniform::check_parameters(stage, items)?;
+    let reached = crate::uniform::reach(stage, items)?.uniform;
     for item in items {
         if let syn::Item::Struct(item) = item {
-            check_padding(item, &structs)?;
+            check_padding(
+                item,
+                &structs,
+                reached.contains(&item.ident.unraw().to_string()),
+            )?;
         }
     }
     crate::uniform::check_padding(stage, items)?;
@@ -871,7 +876,14 @@ fn struct_layout(
 fn check_padding(
     item: &syn::ItemStruct,
     structs: &HashMap<String, &syn::ItemStruct>,
+    uniform_reached: bool,
 ) -> syn::Result<()> {
+    // A struct a uniform reaches may be marked `#[pad]` (m14.pad, D239), which fills the gap and the tail.
+    let hint = if uniform_reached {
+        ", or mark the struct `#[pad]` and GUST inserts the padding"
+    } else {
+        ""
+    };
     let syn::Fields::Named(fields) = &item.fields else {
         return Ok(());
     };
@@ -892,7 +904,7 @@ fn check_padding(
                 Code::ImplicitPadding,
                 field,
                 format!(
-                    "field `{name}` of `{}` would sit at offset {offset}, {} bytes after the previous field ends at {end}: GPU structs may not contain implicit padding; order the fields by decreasing alignment, or fill the gap with an explicit field",
+                    "field `{name}` of `{}` would sit at offset {offset}, {} bytes after the previous field ends at {end}: GPU structs may not contain implicit padding; order the fields by decreasing alignment, or fill the gap with an explicit field{hint}",
                     item.ident,
                     offset - end,
                 ),
@@ -905,7 +917,7 @@ fn check_padding(
             Code::ImplicitPadding,
             &item.ident,
             format!(
-                "`{}` ends at byte {end} but its size is {size}: GPU structs may not contain implicit tail padding; add explicit fields up to a multiple of the largest field alignment",
+                "`{}` ends at byte {end} but its size is {size}: GPU structs may not contain implicit tail padding; add explicit fields up to a multiple of the largest field alignment{hint}",
                 item.ident,
             ),
         ));

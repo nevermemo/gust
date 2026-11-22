@@ -333,10 +333,11 @@ fn is_kernel(attributes: &[syn::Attribute]) -> bool {
         .any(|attribute| attribute.path().is_ident("kernel"))
 }
 
-/// Removes `#[kernel]` from the attribute lists of the items reachable from `items`
-/// (the macro strips it from the functions of a successful expansion; unprocessed it is
-/// an unknown attribute). A walk with `syn::visit_mut` would also reach functions nested
-/// in bodies, but it needs a `syn` feature the workspace does not enable.
+/// Removes `#[kernel]` and `#[pad]` from the attribute lists of the items reachable from `items`
+/// (the macro strips them from the items of a successful expansion; unprocessed they are
+/// unknown attributes: a module that misuses `#[pad]` goes back with it dropped, one that does
+/// not has been padded already, see `expand::pad::recover`). A walk with `syn::visit_mut` would also reach
+/// functions nested in bodies, but it needs a `syn` feature the workspace does not enable.
 fn strip_kernel_attributes(items: &mut [syn::Item]) {
     for item in items {
         match item {
@@ -378,5 +379,7 @@ fn strip_kernel_attributes(items: &mut [syn::Item]) {
 }
 
 fn strip_from(attributes: &mut Vec<syn::Attribute>) {
-    attributes.retain(|attribute| !attribute.path().is_ident("kernel"));
+    attributes.retain(|attribute| {
+        !attribute.path().is_ident("kernel") && !attribute.path().is_ident("pad")
+    });
 }

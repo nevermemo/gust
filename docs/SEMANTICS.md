@@ -173,8 +173,11 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
   host text): scalars, 2- and 4-wide vectors, 4x4 matrices and structs of them rounded up to 16 bytes. `T` must also
   be padding-free, because the upload copies the bytes of the Rust value and padding is uninitialised: `create_uniform`
   and `CpuDevice::uniform` refuse a padded `T` with a message that names the fix, explicit padding fields, and the twin
-  also refuses a uniform parameter whose rule is not `Std140V1`. The macro refuses at compile time a struct whose
-  constant-buffer layout has a gap before a field or a tail (GUST-E0209), naming the explicit padding fields to write.
+  also refuses a uniform parameter whose rule is not `Std140V1`. GUST inserts padding only into a struct marked
+  `#[pad]` (D239): `#[gpu]` adds private `f32` fields `_pad0`, `_pad1`, ... for every gap and for the tail of the
+  constant-buffer layout, and a Rust-only `const fn new(<the fields you wrote>)` that sets them to `0.0`; the `_padN`
+  names appear in the reflection record. Anywhere else a gap before a field or a tail is still GUST-E0209, naming the
+  explicit padding fields to write or the attribute; a misplaced `#[pad]` is GUST-E0219.
   A value is replaced by `HeadlessDevice::write_uniform` (`Queue::write_buffer`: after every earlier submission, before
   the next, so all dispatches of one later submission see the last value) or, ordered among the dispatches of one
   submission, by the copy node `StagedGraph::write_uniform` (a write of the uniform for the derived edges and the

@@ -8,7 +8,8 @@
 //! or a binary fraction and every operation is a product or a sum of such values, so each result is exactly
 //! representable and the comparisons are exact (no tolerance is involved).
 //!
-//! GUST never inserts padding, so a uniform struct spells out what the constant-buffer layout needs: `Gain` is one
+//! GUST inserts padding only into a struct marked `#[pad]` (`tests/uniform_pad.rs`), and none here is, so a uniform
+//! struct spells out what the constant-buffer layout needs: `Gain` is one
 //! `f32` followed by three explicit padding fields (a struct holding only one `f32` is GUST-E0209), and `Tint`, `Xform`
 //! are one-field structs of a `Vec4` and a `Mat4` (a bare `Uniform<Vec4>` is GUST-E0206).
 

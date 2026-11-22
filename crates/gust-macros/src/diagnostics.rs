@@ -171,6 +171,9 @@ codes! {
     /// `dyn Trait`, `impl Trait`, or a trait of the module used as the type of a local, a field, a parameter or a
     /// result: traits are static dispatch only.
     TraitTypeUse = 218 => "GUST-E0218";
+    /// A misplaced or malformed `#[pad]`: arguments on it, a non-struct or a struct without named fields under it, a
+    /// struct no uniform reaches, or a `new` of the user's in the module (the padding constructor has that name).
+    PadMisuse = 219 => "GUST-E0219";
 
     // E03xx: expressions and calls.
     /// A CPU-only library or type name.
@@ -1394,6 +1397,7 @@ mod tests {
             || file.ends_with("src/tests/subgroup.rs")
             || file.ends_with("src/tests/routes.rs")
             || file.ends_with("src/tests/consts.rs")
+            || file.ends_with("src/tests/pad.rs")
             || file.ends_with("src/validate/mod.rs")
             || file.ends_with("src/validate/limits.rs")
             || file.ends_with("src/validate/classify/tests.rs")

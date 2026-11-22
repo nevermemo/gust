@@ -665,7 +665,8 @@ named-field structs therefore receive `repr(C)`, `Clone`, `Copy`, and a generate
   alignment implies, but a `GpuPod` type is only the padding-free subset, so no uninitialised byte is uploaded.
 - `Std140V1` (M6) for `Uniform<T>` and `ConstantBuffer<T>`: `StorageV2` with structs rounded up to a multiple of 16 and
   no 2x2 matrix. The macro marks a struct a uniform reaches `#[repr(C, align(16))]` and const-asserts the offsets;
-  padding is explicit, written by the user as fields (E0208, E0209), and the same struct cannot also be a storage
+  GUST inserts padding only into a struct marked `#[pad]` (D239); anywhere else it is explicit, written by the user as
+  fields (E0208, E0209), and the same struct cannot also be a storage
   element (E0207).
 
 3-wide vectors and `Mat3` are locals, helper parameters and results only: no buffer element, storage field or uniform

@@ -29,15 +29,25 @@
 //! The bins' own buffers (the counts, the cursors, the starts and the order) are made once, by [`Bins::new`], and every
 //! rebuild overwrites all of the counts, the cursors and the starts (and the first `n` slots of the order). The scan
 //! takes its temporaries (one per level of totals) from the device pool: the first rebuild may miss the pool and
-//! allocate them, and from the second rebuild on they are reused.
+//! allocate them, and a second `exclusive_into` of the same size takes no new device buffer (a test in `gust-algo`
+//! asserts that the pool's miss counter does not move; nothing in this crate measures it).
 
 #[cfg(any(test, gust_dual))]
-use gust::cpu::{CpuBuffer, CpuDevice};
+use gust::cpu::{CpuBuffer, CpuDevice, CpuUniform};
 use gust::{Independent, gpu};
-use gust_wgpu::{DeviceHandle, GpuVec, HeadlessDevice};
+use gust_wgpu::{DeviceHandle, GpuUniform, GpuVec, HeadlessDevice};
 
 #[gpu]
 mod binning {
+    /// The grid's side, then three pad fields: a uniform is `Std140V1`, a struct is rounded up to 16 bytes and may
+    /// have no padding, so one `u32` is written with three explicit pad fields.
+    pub struct Params {
+        pub side: u32,
+        pub pad0: u32,
+        pub pad1: u32,
+        pub pad2: u32,
+    }
+
     /// The cell index of the position `(x, y)` on a grid of `side` cells per side: `floor(x) + side * floor(y)`, each
     /// axis clamped to the last cell in `f32`, before the conversion (which is not defined for 2^32 or more, or
     /// infinity). `side` is at least 1 and at most 65535 (its square fits in `u32`, and it is exact in `f32`).
@@ -68,18 +78,18 @@ mod binning {
         }
     }
 
-    /// Adds one to the count of the cell of every element. `params[0]` is the side.
+    /// Adds one to the count of the cell of every element.
     #[kernel(workgroup_size(256, 1, 1))]
     pub fn count(
         id: SV_DispatchThreadID,
-        params: StructuredBuffer<uint>, // side; bound with `Independent`
+        p: Uniform<Params>,
         xs: StructuredBuffer<float>,
         ys: StructuredBuffer<float>,
         mut counts: RWStructuredBuffer<uint>,
     ) {
         let i = id.x;
         if i < xs.len() {
-            atomic_add(&mut counts[cell(xs[i], ys[i], params[0u32])], 1u32);
+            atomic_add(&mut counts[cell(xs[i], ys[i], p.side)], 1u32);
         }
     }
 
@@ -88,7 +98,7 @@ mod binning {
     #[kernel(workgroup_size(256, 1, 1))]
     pub fn scatter(
         id: SV_DispatchThreadID,
-        params: StructuredBuffer<uint>, // side; bound with `Independent`
+        p: Uniform<Params>,
         xs: StructuredBuffer<float>,
         ys: StructuredBuffer<float>,
         starts: StructuredBuffer<uint>,
@@ -97,7 +107,7 @@ mod binning {
     ) {
         let i = id.x;
         if i < xs.len() {
-            let c = cell(xs[i], ys[i], params[0u32]);
+            let c = cell(xs[i], ys[i], p.side);
             let old = atomic_add(&mut cursor[c], 1u32);
             order[starts[c] + old] = i;
         }
@@ -115,6 +125,16 @@ fn grid_cells(side: u32) -> Result<u32, Error> {
         .ok_or_else(|| "the grid has more than u32::MAX cells".into())
 }
 
+/// The parameter struct of the kernels for a grid of `side` cells per side.
+const fn params(side: u32) -> binning::Params {
+    binning::Params {
+        side,
+        pad0: 0,
+        pad1: 0,
+        pad2: 0,
+    }
+}
+
 /// The checks of one rebuild, shared by the device bins and the twin: equal lengths, at most `capacity`.
 fn check_elements(xs: usize, ys: usize, capacity: usize) -> Result<(), Error> {
     if xs != ys {
@@ -129,7 +149,7 @@ fn check_elements(xs: usize, ys: usize, capacity: usize) -> Result<(), Error> {
 /// The bins on a device: the buffers are made once and rebuilt in place. See the module documentation for the contract.
 pub struct Bins {
     handle: DeviceHandle,
-    params: GpuVec<u32>,
+    params: GpuUniform<binning::Params>,
     counts: GpuVec<u32>,
     starts: GpuVec<u32>,
     cursor: GpuVec<u32>,
@@ -142,7 +162,7 @@ impl Bins {
         let cells = grid_cells(side)?;
         Ok(Self {
             handle: DeviceHandle::clone(handle),
-            params: GpuVec::from_slice_on(handle, &[side])?,
+            params: handle.create_uniform("cell-bins params", &params(side))?,
             counts: GpuVec::zeroed_on(handle, cells)?,
             starts: GpuVec::zeroed_on(handle, cells)?,
             cursor: GpuVec::zeroed_on(handle, cells)?,
@@ -169,7 +189,7 @@ impl Bins {
         binning::count::dispatch(
             device,
             xs.len(),
-            Independent(&self.params),
+            &self.params,
             xs,
             ys,
             Independent(&self.counts),
@@ -178,7 +198,7 @@ impl Bins {
         binning::scatter::dispatch(
             device,
             xs.len(),
-            Independent(&self.params),
+            &self.params,
             xs,
             ys,
             Independent(&self.starts),
@@ -223,7 +243,7 @@ impl Snapshot {
 pub struct TwinBins {
     device: CpuDevice,
     side: u32,
-    params: CpuBuffer<u32>,
+    params: CpuUniform<binning::Params>,
     counts: CpuBuffer<u32>,
     starts: CpuBuffer<u32>,
     cursor: CpuBuffer<u32>,
@@ -237,7 +257,7 @@ impl TwinBins {
         let device = CpuDevice::new();
         let cells = vec![0u32; grid_cells(side)? as usize];
         Ok(Self {
-            params: device.buffer(&[side]),
+            params: device.uniform(params(side))?,
             counts: device.buffer(&cells),
             starts: device.buffer(&cells),
             cursor: device.buffer(&cells),
@@ -256,7 +276,7 @@ impl TwinBins {
         binning::count::dispatch(
             &self.device,
             n,
-            Independent(&self.params),
+            &self.params,
             xs,
             ys,
             Independent(&self.counts),
@@ -275,7 +295,7 @@ impl TwinBins {
         binning::scatter::dispatch(
             &self.device,
             n,
-            Independent(&self.params),
+            &self.params,
             xs,
             ys,
             Independent(&self.starts),

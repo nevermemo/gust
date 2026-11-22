@@ -29,8 +29,9 @@
 //! Claim: if every cell is at most `M = A * W * 2^s` before a step, it is at most `M` after it, for any number of
 //! steps. A cell `f` becomes `f - floor(f / 2^s) + d` with `d <= A * W`; `floor(f / 2^s) > f / 2^s - 1`, so the new
 //! value is below `f (1 - 2^-s) + 1 + A * W <= M - A * W + 1 + A * W = M + 1`, hence at most `M`. The documented
-//! range is `A * W * 2^s < 2^32` with a starting field at most `M`, and `field_bound` is that `M`; the tests assert it
-//! for their inputs and that no cell of the reference ever exceeds it. The subtraction never underflows (`f >> s <= f`)
+//! range is `A * W * 2^s < 2^32` and `s < 32` (a larger shift amount is out of range in the kernel, KM-04) with a
+//! starting field at most `M`, and `field_bound` is that `M`; the tests assert both for their inputs and that no cell
+//! of the reference ever exceeds it. The subtraction never underflows (`f >> s <= f`)
 //! and the deposit buffer holds at most `A * W` per cell, itself below `2^32`.
 //!
 //! # Why two modules
@@ -556,6 +557,7 @@ mod tests {
     fn the_inputs_stay_inside_the_derivation_domain() {
         for (side, cases) in [(small::SIDE, small_cases()), (big::SIDE, big_cases())] {
             for case in cases {
+                assert!(case.shift < 32, "{}: shift {}", case.name, case.shift);
                 let bound = field_bound(&case);
                 assert!(bound < 1 << 32, "{}: {bound}", case.name);
                 let trace = reference_trace(side, &case);

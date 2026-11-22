@@ -6,7 +6,9 @@ counts, `gust_algo::scan::exclusive_into` into a buffer kept across steps), a cu
 `Bins::new(handle, side, capacity)` makes them once; `Bins::rebuild(&xs, &ys)` rebuilds the bins from the positions
 (each in `[0, side)`, or past it: a position at or past `side - 1` goes to the last cell of its axis, also `+inf`; cell =
 `floor(x) + side * floor(y)`) into the same buffers. The bins' own buffers are made once; the scan's temporaries come from
-the device pool, so the first rebuild may allocate them and later ones reuse them. `new` rejects `side == 0` and a grid of
+the device pool: the first rebuild may allocate them, and a second `exclusive_into` of the same size takes no new device
+buffer (the pool's miss counter does not move; a test in `gust-algo` asserts this for `exclusive_into`, and nothing in
+this crate measures it). `new` rejects `side == 0` and a grid of
 more than `u32::MAX` cells.
 
 Four device steps per rebuild: `clear` (counts and cursors to zero), `count` (an `atomic_add` per element on its cell),

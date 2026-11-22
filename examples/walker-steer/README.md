@@ -16,5 +16,12 @@ bit for bit after every step (field and walkers).
 - Cases cover fewer and more walkers than one workgroup, all walkers in one cell with one heading (every walker adds to
   one deposit cell), and `prob = 0` and `prob = 2^16`. A failure names the first differing walker or cell.
 
-Run with `cargo run --release -p walker-steer`; the CPU tests run with `cargo test -p walker-steer`, and the GPU tests
-with `cargo test -p walker-steer -- --include-ignored --nocapture`.
+Run with
+
+```text
+GUST_PROFILE=dev cargo run --release -p walker-steer
+```
+
+(`GUST_PROFILE=dev` is needed because a plain release build is strict and refuses run-time Slang, which this crate
+turns on; see "Build profiles" in the top-level README). The CPU tests run with `cargo test -p walker-steer`, and the
+GPU tests with `cargo test -p walker-steer -- --include-ignored --nocapture`.

@@ -16,5 +16,12 @@ Three scalar fields and an exact integer channel relaxing on one periodic `SIDE 
 - The float bound is derived in the module documentation of `src/app.rs` ("The float bound"): a per-step bound and a
   bound after `S` steps, both asserted for every cell of every field; the worst observed error is printed.
 
-Run with `cargo run --release -p field-relax`; the CPU tests run with `cargo test -p field-relax`, and the GPU tests
-with `cargo test -p field-relax -- --include-ignored --nocapture`.
+Run with
+
+```text
+GUST_PROFILE=dev cargo run --release -p field-relax
+```
+
+(`GUST_PROFILE=dev` is needed because a plain release build is strict and refuses run-time Slang, which this crate
+turns on; see "Build profiles" in the top-level README). The CPU tests run with `cargo test -p field-relax`, and the
+GPU tests with `cargo test -p field-relax -- --include-ignored --nocapture`.

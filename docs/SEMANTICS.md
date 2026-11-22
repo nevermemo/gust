@@ -986,12 +986,12 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   count (read in `check_indirect_launch` and `prepare_indirect` in `crates/gust-wgpu/src/lib.rs`; m11.r5fix), and
   no test here launches a split-capable kernel indirectly.
 - **The portable floor (opt-in, m8.f, D143).** A crate that sets `limits = "portable"` in `[package.metadata.gust]` has every
-  `#[kernel]` body checked when it compiles against `gust::limits::PORTABLE`, the WebGPU defaults: a workgroup of at most
+  `#[kernel]` body, and the kernel of each `#[gpu]` function and `par_for!` call (m11.floor), checked when it compiles against `gust::limits::PORTABLE`, the WebGPU defaults: a workgroup of at most
   256 x 256 x 64 and 256 invocations, 8 storage buffers, 12 uniform buffers, 16 sampled textures, 4 storage textures,
   16 samplers and 16384 bytes of workgroup memory per kernel. A kernel over one limit is GUST-E0746 (which stands where
   E0718 would for such a crate). Without the setting nothing is checked at compile time and the launch checks above stay
   the only ones. The check counts what a kernel's source decides; the limits that depend on a launch (binding and buffer
-  sizes, workgroups per dimension) are not in the table, and neither the `#[gpu]` function nor `par_for!` is checked. No
+  sizes, workgroups per dimension) are not in the table. No
   GUST device opens with more than these values for the limits in the table (`gust-compute-wgpu` asserts it), so a kernel
   over the floor already fails at launch with `DeviceLimit`; the floor moves that failure to the build. **The floor does
   not settle D84's two meanings of "default"**: those are about `max_buffer_size`, `max_storage_buffer_binding_size` and

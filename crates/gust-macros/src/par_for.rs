@@ -1016,6 +1016,14 @@ impl Plan {
         let hash = self.lowered_hash()?;
         let name = format_ident!("{}_{}", PLACEHOLDER, hash);
         let module = self.module(&name, &FINAL);
+        // The portable floor (m11.floor): the kernel's parameters are the classified bindings, so the buffers and the
+        // extent record are counted from the generated module.
+        crate::validate::limits::check_generated(
+            &module,
+            environment.manifest_dir.as_deref(),
+            &proc_macro2::Ident::new("par_for", Span::call_site()),
+            "par_for!",
+        )?;
         let host = self.host_items();
         let expanded = expand_validated(
             module,

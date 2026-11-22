@@ -784,6 +784,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       READMEs' GPU claims say "Radeon 890M only; RTX 5090 pending"; walker-transport's bins are equal per cell as
       sets, in four stages; walker-life and its entry above put the read-back after `compact`. No GPU test added,
       so the pins stay.
+    - m11.floor (`34a93ff`, owner proxy round 9): the portable floor (GUST-E0746, crates that set
+      `limits = "portable"`) covers the kernel of a `#[gpu]` function (checked before the route is resolved) and
+      of a `par_for!` call (reported at the call as kernel `par_for!`), not only `#[kernel]` items; crates without
+      the setting are unchanged. Five unit tests in `validate/limits.rs` (over and at the floor per form, none
+      without the setting, a `par_for!` workgroup size over the floor) and two `tests/ui` fixtures
+      (`limits-map-storage-buffers`, `limits-par-for-storage-buffers`; 259 pinned). Opus review: no must-fix; its
+      fixes are in. No device or `LimitsPolicy` change: raising GUST's storage buffer limit of 8 per stage stays an
+      open owner item.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

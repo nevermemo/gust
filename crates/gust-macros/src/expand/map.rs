@@ -145,6 +145,16 @@ pub(crate) fn expand_map_in_routed(
 ) -> syn::Result<TokenStream> {
     let signature = check_signature(&function)?;
     validate(&function)?;
+    let (module, host) = build(&function, &signature, profile);
+    // The portable floor (m11.floor): the generated kernel binds one storage buffer per parameter and one for the
+    // result. Checked before the route is resolved and whatever it says, as for a written kernel (m8.r1); the kernel
+    // item does not depend on the profile, only the module's documentation does.
+    crate::validate::limits::check_generated(
+        &module,
+        environment.manifest_dir.as_deref(),
+        &function.sig,
+        &format!("{}::{KERNEL}", function.sig.ident.unraw()),
+    )?;
     let built_for = if request.tag.is_some() {
         let declarations = crate::manifest::read_dir(environment.manifest_dir.as_deref())
             .map_err(|error| {
@@ -160,7 +170,11 @@ pub(crate) fn expand_map_in_routed(
     } else {
         profile
     };
-    let (module, host) = build(&function, &signature, built_for);
+    let (module, host) = if built_for == profile {
+        (module, host)
+    } else {
+        build(&function, &signature, built_for)
+    };
     let expanded = expand_validated_routed(
         module,
         environment,

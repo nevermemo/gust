@@ -122,6 +122,9 @@ proof.
   buffers by an exclusive scan of per-walker counts and a compaction kernel (no atomic append, so the order of
   spawned walkers does not depend on scheduling; the population is clamped at the capacity by slot). Host
   reference, twin and GPU are bit-equal after every step. Radeon 890M only; RTX 5090 pending.
+- The portable floor covers every kernel form (m11.floor): a crate with `limits = "portable"` now gets GUST-E0746
+  for the kernel of a `#[gpu]` function and of a `par_for!` call too, not only for `#[kernel]` items of a `#[gpu]`
+  module. Crates without the setting are unchanged.
 - One error for a refused `#[gpu]` module (m11.diag): when the macro refuses a module, the structs it hands back
   keep the `Clone`, `Copy` and `GpuPod` impls a successful expansion adds (where no impl was written by hand and every
   field is a known `Copy` type), so host code that uploads one of them no longer adds a misleading E0277 "not a GUST

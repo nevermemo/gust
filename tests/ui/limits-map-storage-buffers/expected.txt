@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see workgroup-over-16kib/expected.txt).
+# GUST-E0746 is a macro error, so `code: none`; it is spanned over the function's signature.
+code: none
+file: limits-map-storage-buffers/src/main.rs
+line: 6
+message: [GUST-E0746] kernel `many::map_kernel` is over the portable floor: its storage buffer count is 9, over `max_storage_buffers_per_shader_stage` = 8

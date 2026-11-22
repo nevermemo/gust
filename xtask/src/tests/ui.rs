@@ -1655,6 +1655,14 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             "limits-invocations",
             "max_compute_invocations_per_workgroup",
         ),
+        (
+            "limits-map-storage-buffers",
+            "max_storage_buffers_per_shader_stage",
+        ),
+        (
+            "limits-par-for-storage-buffers",
+            "max_storage_buffers_per_shader_stage",
+        ),
         ("limits-samplers", "max_samplers_per_shader_stage"),
         (
             "limits-sampled-textures",
@@ -1820,7 +1828,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 257] = [
+const PINNED_FIXTURES: [&str; 259] = [
     "array-barrier",
     "array-buffer-len",
     "array-const-len",
@@ -1890,7 +1898,9 @@ const PINNED_FIXTURES: [&str; 257] = [
     "layout-outside-field",
     "limits-at-floor",
     "limits-invocations",
+    "limits-map-storage-buffers",
     "limits-not-portable",
+    "limits-par-for-storage-buffers",
     "limits-sampled-textures",
     "limits-samplers",
     "limits-storage-buffers",

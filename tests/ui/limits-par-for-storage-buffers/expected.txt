@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see workgroup-over-16kib/expected.txt).
+# GUST-E0746 is a macro error, so `code: none`; it is spanned over the `par_for!` call.
+code: none
+file: limits-par-for-storage-buffers/src/main.rs
+line: 17
+message: [GUST-E0746] kernel `par_for!` is over the portable floor: its storage buffer count is 9, over `max_storage_buffers_per_shader_stage` = 8

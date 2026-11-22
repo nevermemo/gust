@@ -768,7 +768,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "limits-map-storage-buffers"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "limits-not-portable"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "limits-par-for-storage-buffers"
 version = "0.0.0"
 dependencies = [
  "gust-compute",

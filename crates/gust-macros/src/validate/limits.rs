@@ -7,18 +7,29 @@
 //! pins it to the list of values that `gust`'s own test and `gust-compute-wgpu`'s equality test (against
 //! `wgpu::Limits::default()` and the limits of an opened device) also pin.
 //!
-//! The check runs BEFORE the validator ([`check_declared`], one call in `expand_in`). The validator reports the workgroup
+//! Three entry points reach it (m11.floor): the `#[kernel]` items of a `#[gpu]` module ([`check_declared`] in
+//! `expand_in`), the kernel that a `#[gpu] fn` element-wise map generates ([`check_generated`], reported at the
+//! function's signature) and the kernel that `par_for!` generates (`check_generated` on the module it builds, after
+//! its bindings are classified, so the buffers and the uniform record are the generated parameters; reported at the
+//! call). A generated kernel is counted like a written one: a map binds one storage buffer per parameter and
+//! one for the result at `workgroup_size(256, 1, 1)`; `par_for!` binds one storage buffer per slice or `GpuVec` binding
+//! and one uniform buffer for the extent record, at the workgroup size of the call.
+//!
+//! In `expand_in` the check runs BEFORE the validator. The validator reports the workgroup
 //! memory limit as GUST-E0718, and the floor's limit for it is the same 16 KiB, so for a portable crate E0746 has to be
 //! reached first: that is how E0718 is folded into E0746. A crate without the setting never reaches this code, and E0718
 //! stays what it was. Reading the manifest here, instead of taking the declarations the expansion reads after the
 //! validator, is what makes that order possible; a malformed table is left to the expansion's own read (GUST-E0753).
+//! The two generated forms run after their validator, which is harmless: a generated kernel cannot hold workgroup
+//! memory, so there is no E0718 to fold.
 //!
 //! What it does not count, because it cannot: a `Workgroup` array whose length is not an integer literal or whose element
-//! type the macro cannot size contributes 0 bytes (as in E0718); a kernel attribute that does not parse is skipped here and
-//! reported by the validator; and the other entry points of the macro, `#[gpu] fn` maps and `par_for!`, do not pass
-//! through this check.
+//! type the macro cannot size contributes 0 bytes (as in E0718); and a kernel attribute that does not parse is skipped
+//! here and reported by the validator.
 
 use std::path::Path;
+
+use quote::ToTokens;
 
 use crate::diagnostics::{self, Code};
 use crate::expand::kernel_attribute_facts;
@@ -122,16 +133,36 @@ pub(crate) fn check_declared(
     module: &syn::ItemMod,
     manifest_dir: Option<&Path>,
 ) -> syn::Result<()> {
+    check(module, declared(manifest_dir), None)
+}
+
+/// [`check_declared`] for a kernel a macro generates (a `#[gpu] fn` map, `par_for!`): a violation is reported at `at`,
+/// the user's own tokens, and names the kernel `label`, because the generated kernel's signature has no source of its
+/// own.
+pub(crate) fn check_generated(
+    module: &syn::ItemMod,
+    manifest_dir: Option<&Path>,
+    at: &dyn ToTokens,
+    label: &str,
+) -> syn::Result<()> {
+    check(module, declared(manifest_dir), Some((at, label)))
+}
+
+/// The `limits` the crate declares: `None` for no directory, no `Cargo.toml`, no key and a refused manifest.
+fn declared(manifest_dir: Option<&Path>) -> Option<Limits> {
     match manifest::read_dir(manifest_dir) {
-        Ok(Some(declarations)) => check(module, declarations.limits),
-        Ok(None) | Err(_) => Ok(()),
+        Ok(Some(declarations)) => declarations.limits,
+        Ok(None) | Err(_) => None,
     }
 }
 
+/// Where and under what name a violation of a generated kernel is reported.
+type Site<'a> = Option<(&'a dyn ToTokens, &'a str)>;
+
 /// Checks the kernels of `module` against the floor when `limits` is the portable one. Every `#[kernel]` function is a
 /// body here, a variant's included (the variants have been lowered to kernels). The first violation, in the order of
-/// [`FLOOR`], is GUST-E0746 at the kernel's signature.
-pub(crate) fn check(module: &syn::ItemMod, limits: Option<Limits>) -> syn::Result<()> {
+/// [`FLOOR`], is GUST-E0746 at the kernel's signature, or at `site` when there is one.
+fn check(module: &syn::ItemMod, limits: Option<Limits>, site: Site<'_>) -> syn::Result<()> {
     match limits {
         Some(Limits::Portable) => {}
         None => return Ok(()),
@@ -141,13 +172,13 @@ pub(crate) fn check(module: &syn::ItemMod, limits: Option<Limits>) -> syn::Resul
     };
     for item in items {
         if let syn::Item::Fn(function) = item {
-            check_kernel(function)?;
+            check_kernel(function, site)?;
         }
     }
     Ok(())
 }
 
-fn check_kernel(function: &syn::ItemFn) -> syn::Result<()> {
+fn check_kernel(function: &syn::ItemFn, site: Site<'_>) -> syn::Result<()> {
     // An attribute the validator will refuse is its own error; a function without `#[kernel]` is a helper.
     let Ok(Some((options, _, facts))) = kernel_attribute_facts(&GRID, function) else {
         return Ok(());
@@ -158,18 +189,27 @@ fn check_kernel(function: &syn::ItemFn) -> syn::Result<()> {
         .is_some_and(|pin| pin.shape == Shape::Pixel);
     let stage: &dyn StageProfile = if pixel { &PIXEL } else { &GRID };
     let measured = measure(stage, function, options.workgroup_size, pixel);
+    let (at, name) = site.map_or_else(
+        || {
+            (
+                &function.sig as &dyn ToTokens,
+                function.sig.ident.to_string(),
+            )
+        },
+        |(at, label)| (at, label.to_owned()),
+    );
     for (limit, value) in FLOOR.iter().zip(measured) {
         let Some(value) = value else { continue };
         if value > limit.max {
             return Err(diagnostics::error(
                 Code::PortableFloor,
-                &function.sig,
+                at,
                 format!(
                     "kernel `{}` is over the portable floor: its {} is {value}{unit}, over `{}` = {}{unit} (the crate sets \
                      `limits = \"portable\"` in `[package.metadata.gust]`, which keeps every kernel within WebGPU's \
                      default limits, `gust::limits::PORTABLE`); lower it, or remove the setting if the crate only \
                      targets devices with higher limits",
-                    function.sig.ident,
+                    name,
                     limit.what,
                     limit.name,
                     limit.max,
@@ -309,7 +349,7 @@ mod tests {
     }
 
     fn portable(module: &syn::ItemMod) -> syn::Result<()> {
-        check(module, Some(Limits::Portable))
+        check(module, Some(Limits::Portable), None)
     }
 
     #[track_caller]
@@ -488,7 +528,7 @@ mod tests {
             samplers: 17,
             memory: 5000,
         };
-        check(&shape.module(""), None).unwrap();
+        check(&shape.module(""), None, None).unwrap();
     }
 
     #[test]
@@ -744,7 +784,7 @@ mod tests {
             .collect();
         assert_eq!(bodies.len(), 2, "the kernel and its variant");
         for body in bodies {
-            let error = check_kernel(body).unwrap_err();
+            let error = check_kernel(body, None).unwrap_err();
             assert_code(&error, Code::PortableFloor);
             assert!(
                 error
@@ -763,5 +803,119 @@ mod tests {
         )
         .unwrap_err();
         assert_code(&error, Code::PortableFloor);
+    }
+
+    /// A `#[gpu] fn` with `count` parameters of `f32`: the generated map kernel binds `count + 1` storage buffers.
+    fn map_function(count: usize) -> syn::ItemFn {
+        let parameters: Vec<String> = (0..count).map(|index| format!("p{index}: f32")).collect();
+        crate::diagnostics::testing::parse_str(&format!(
+            "pub fn many({}) -> f32 {{ p0 }}",
+            parameters.join(", ")
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_map_over_the_floor_is_e0746_at_the_function_and_one_at_the_floor_compiles() {
+        let portable_crate = Crate::new("map-portable", Some(PORTABLE_MANIFEST));
+        // 8 parameters and the result: 9 storage buffers.
+        let error =
+            crate::expand::expand_map_with_directories(map_function(8), Some(&portable_crate.0))
+                .unwrap_err();
+        assert_code(&error, Code::PortableFloor);
+        let message = error.to_string();
+        assert!(
+            message.starts_with(
+                "[GUST-E0746] kernel `many::map_kernel` is over the portable floor: its storage buffer count is 9, over \
+                 `max_storage_buffers_per_shader_stage` = 8 "
+            ),
+            "{message}"
+        );
+        // 7 parameters and the result: 8, exactly the floor.
+        crate::expand::expand_map_with_directories(map_function(7), Some(&portable_crate.0))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_map_of_a_crate_without_the_setting_is_not_checked() {
+        let plain = Crate::new("map-plain", Some(PLAIN_MANIFEST));
+        crate::expand::expand_map_with_directories(map_function(8), Some(&plain.0)).unwrap();
+        crate::expand::expand_map_with_directories(map_function(8), None).unwrap();
+    }
+
+    /// A `par_for!` call with `reads` slice bindings and one `&mut` output: `reads + 1` storage buffers and the extent
+    /// record's uniform.
+    fn par_for_call(reads: usize, clause: &str) -> proc_macro2::TokenStream {
+        let mut bindings: Vec<String> = (0..reads)
+            .map(|index| format!("b{index}: &[f32]"))
+            .collect();
+        bindings.push("out: &mut [f32]".to_owned());
+        format!(
+            "{clause}i in 0..4u32, [{}] {{ out[i] = b0[i]; }}",
+            bindings.join(", ")
+        )
+        .parse()
+        .unwrap()
+    }
+
+    fn expand_par_for(
+        reads: usize,
+        clause: &str,
+        manifest_dir: Option<&std::path::Path>,
+    ) -> syn::Result<proc_macro2::TokenStream> {
+        let environment = crate::expand::Environment {
+            manifest_dir: manifest_dir.map(std::path::Path::to_path_buf),
+            export_dir: None,
+            package: Some("demo".to_owned()),
+            reported_file: None,
+        };
+        crate::par_for::expand_input(
+            par_for_call(reads, clause),
+            &environment,
+            crate::expand::Profile::Other,
+            1,
+            &mut crate::par_for::Form::default(),
+        )
+    }
+
+    #[test]
+    fn a_par_for_over_the_floor_is_e0746_and_one_at_the_floor_compiles() {
+        let portable_crate = Crate::new("par-for-portable", Some(PORTABLE_MANIFEST));
+        // 8 slices and the output: 9 storage buffers.
+        let error = expand_par_for(8, "", Some(&portable_crate.0)).unwrap_err();
+        assert_code(&error, Code::PortableFloor);
+        let message = error.to_string();
+        assert!(
+            message.starts_with(
+                "[GUST-E0746] kernel `par_for!` is over the portable floor: its storage buffer count is 9, over \
+                 `max_storage_buffers_per_shader_stage` = 8 "
+            ),
+            "{message}"
+        );
+        // 7 slices and the output: 8, exactly the floor.
+        expand_par_for(7, "", Some(&portable_crate.0)).unwrap();
+    }
+
+    #[test]
+    fn a_par_for_workgroup_size_over_the_floor_is_e0746() {
+        let portable_crate = Crate::new("par-for-workgroup", Some(PORTABLE_MANIFEST));
+        let error =
+            expand_par_for(1, "workgroup_size(512, 1, 1); ", Some(&portable_crate.0)).unwrap_err();
+        assert_code(&error, Code::PortableFloor);
+        let message = error.to_string();
+        assert!(
+            message.contains(
+                "its workgroup size along x is 512, over `max_compute_workgroup_size_x` = 256 "
+            ),
+            "{message}"
+        );
+        expand_par_for(1, "workgroup_size(256, 1, 1); ", Some(&portable_crate.0)).unwrap();
+    }
+
+    #[test]
+    fn a_par_for_of_a_crate_without_the_setting_is_not_checked() {
+        let plain = Crate::new("par-for-plain", Some(PLAIN_MANIFEST));
+        expand_par_for(8, "", Some(&plain.0)).unwrap();
+        expand_par_for(8, "", None).unwrap();
     }
 }

@@ -559,7 +559,7 @@ fn an_unannotated_unsuffixed_integer_literal_let_is_e0326() {
         Code::UnsupportedExpression,
     );
     assert_rejected(
-        &kernel_with_body("let y = match id.x { _ => 1 };"),
+        &kernel_with_body("let y = match id.x { 0 => 1, _ => 1 };"),
         Code::ValueMatchForm,
     );
     // One error per such `let`, in source order; the annotated one between them is fine.
@@ -7305,20 +7305,27 @@ fn integer_literal_patterns_become_case_labels_in_both_forms() {
 }
 
 #[test]
-fn a_match_that_gives_a_value_outside_a_typed_let_is_gust_e0419() {
+fn a_match_that_gives_a_value_outside_a_let_or_without_a_visible_type_is_gust_e0419() {
     for body in [
-        // An untyped `let`, an argument, an operand, an assigned value, a returned value, a bound.
-        "let x = match id.x { 0 => 1u32, _ => 2u32 }; out[id.x] = x;",
+        // An untyped `let` whose arms show no type (unsuffixed literals, calls, a struct literal), an argument, an
+        // operand, an assigned value, a returned value, a bound. An untyped `let` whose arms show a type is accepted
+        // (slice m13.matchu, `value_match_untyped.rs`).
+        "let x = match id.x { 0 => 1, _ => 2 }; out[id.x] = x as u32;",
+        "let x = match id.x { 0 => f(1u32), _ => f(2u32) }; out[id.x] = x;",
+        "let p = match id.x { 0 => P { a: 1u32 }, _ => P { a: 2u32 } }; out[id.x] = p.a;",
         "out[id.x] = match id.x { 0 => 1u32, _ => 2u32 };",
         "let x: u32 = f(match id.x { 0 => 1u32, _ => 2u32 }); out[id.x] = x;",
         "let x: u32 = 1u32 + match id.x { 0 => 1u32, _ => 2u32 }; out[id.x] = x;",
         "let mut x = 0u32; x = match id.x { 0 => 1u32, _ => 2u32 }; out[id.x] = x;",
         "for i in 0u32..match id.x { 0 => 1u32, _ => 2u32 } { out[i] = i; }",
-        "let m = Mode::A; let x = match m { Mode::A => 1u32, _ => 2u32 }; out[id.x] = x;",
+        "let m = Mode::A; let x = match m { Mode::A => 1, _ => 2 }; out[id.x] = x as u32;",
         "let x: u32 = (match id.x { 0 => 1u32, _ => 2u32 }) + 1u32; out[id.x] = x;",
     ] {
         assert_rejected(
-            &with_mode("fn f(v: u32) -> u32 { v }", body),
+            &with_mode(
+                "pub struct P { pub a: u32 } fn f(v: u32) -> u32 { v }",
+                body,
+            ),
             Code::ValueMatchForm,
         );
     }

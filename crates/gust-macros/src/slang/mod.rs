@@ -1467,21 +1467,32 @@ fn emit_value_match(
     output: &mut String,
     table: &mut LineTable,
     name: &syn::Ident,
-    ty: &syn::Type,
+    annotation: Option<&syn::Type>,
     expression: &syn::ExprMatch,
     indent: usize,
     index: usize,
 ) -> syn::Result<()> {
     let padding = "    ".repeat(indent);
     let declared = emit_ident(name);
-    if matches!(unparenthesized_type(ty), syn::Type::Array(_)) {
-        return Err(diagnostics::error(
-            Code::UnsupportedExpression,
-            expression,
-            "a `match` does not give an array value (arrays are built by a literal or a repeat, or returned by a helper): use `if`/`else` statements that assign the elements, or a helper that returns the array",
-        ));
-    }
-    let ty = emit_type(ty)?;
+    let ty = match annotation {
+        Some(ty) => {
+            if matches!(unparenthesized_type(ty), syn::Type::Array(_)) {
+                return Err(diagnostics::error(
+                    Code::UnsupportedExpression,
+                    expression,
+                    "a `match` does not give an array value (arrays are built by a literal or a repeat, or returned by a helper): use `if`/`else` statements that assign the elements, or a helper that returns the array",
+                ));
+            }
+            emit_type(ty)?
+        }
+        None => type_of_match_arms(expression).ok_or_else(|| {
+            diagnostics::error(
+                Code::ValueMatchForm,
+                expression,
+                "a `match` that gives a value needs a typed `let` when no arm shows its type (`let x: u32 = match e { .. };`); an arm shows it by ending in a suffixed literal (`1u32`, `2.0f32`), a `bool`, a comparison, an `as` cast or a vector constructor",
+            )
+        })?,
+    };
     let target = if mentions_ident(expression.to_token_stream(), &name.unraw().to_string()) {
         format!("__gust_match_{indent}_{index}")
     } else {
@@ -1587,20 +1598,30 @@ fn value_if_type(ty: &syn::Type) -> syn::Result<String> {
 }
 
 /// The Slang type the tails of an `if` chain show, when one of them shows it: a suffixed integer or `f32` literal, a
-/// `bool`, a comparison, an `as` cast to a scalar, or the constructor of a vector.
+/// `bool`, a comparison, an `as` cast to a scalar, or the constructor of a vector. A `match` value (slice m13.matchu)
+/// takes its type from its arms by the same rule ([`type_of_match_arms`]); a branch or arm that ends in `return`,
+/// `break` or `continue` shows nothing.
 fn type_of_if_tails(expression: &syn::ExprIf) -> Option<String> {
-    let in_block = |block: &syn::Block| match block.stmts.last() {
-        Some(syn::Stmt::Expr(tail, None)) => type_of_tail(tail),
-        _ => None,
-    };
-    in_block(&expression.then_branch).or_else(|| match &expression.else_branch {
-        Some((_, other)) => match other.as_ref() {
-            syn::Expr::If(nested) => type_of_if_tails(nested),
-            syn::Expr::Block(block) => in_block(&block.block),
-            _ => None,
-        },
+    type_of_block_tail(&expression.then_branch).or_else(|| match &expression.else_branch {
+        Some((_, other)) => type_of_tail(other),
         None => None,
     })
+}
+
+/// The type the arms of a value `match` show: the first arm that shows one.
+fn type_of_match_arms(expression: &syn::ExprMatch) -> Option<String> {
+    expression
+        .arms
+        .iter()
+        .find_map(|arm| type_of_tail(&arm.body))
+}
+
+/// The type the value of a block shows: its last statement, an expression without `;`.
+fn type_of_block_tail(block: &syn::Block) -> Option<String> {
+    match block.stmts.last() {
+        Some(syn::Stmt::Expr(tail, None)) => type_of_tail(tail),
+        _ => None,
+    }
 }
 
 /// The Slang type a tail expression shows by itself, if it does (see [`type_of_if_tails`]).
@@ -1609,6 +1630,10 @@ fn type_of_tail(tail: &syn::Expr) -> Option<String> {
         syn::Expr::Paren(inner) => type_of_tail(&inner.expr),
         syn::Expr::Group(inner) => type_of_tail(&inner.expr),
         syn::Expr::If(nested) => type_of_if_tails(nested),
+        syn::Expr::Match(nested) if crate::validate::is_switch_match(nested) => {
+            type_of_match_arms(nested)
+        }
+        syn::Expr::Block(block) if block.label.is_none() => type_of_block_tail(&block.block),
         syn::Expr::Lit(literal) => match &literal.lit {
             syn::Lit::Int(value) => match value.suffix() {
                 "u32" => Some("uint".to_owned()),
@@ -2334,18 +2359,11 @@ fn emit_statement(
             if let syn::Expr::Match(expression) = value
                 && crate::validate::is_switch_match(expression)
             {
-                let ty = annotation.ok_or_else(|| {
-                    diagnostics::error(
-                        Code::ValueMatchForm,
-                        expression,
-                        "a `match` that gives a value needs a typed `let`",
-                    )
-                })?;
                 return emit_value_match(
                     output,
                     table,
                     &pattern.ident,
-                    ty,
+                    annotation,
                     expression,
                     indent,
                     index,

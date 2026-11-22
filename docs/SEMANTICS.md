@@ -1514,10 +1514,17 @@ A `match` is a Slang `switch`. This section states what is accepted, what each f
 and what is refused on purpose.
 
 **Two forms.** The statement form (`match e { 0 => { .. } 1 | 2 => { .. } _ => { .. } }`) has a block for each arm. The
-value form is accepted in one place only, the initializer of a `let` with a type:
+value form is accepted in one place only, the initializer of a `let`:
 `let x: T = match e { 0 => 1u32, _ => { let t = e + 1u32; t * 2u32 } };`. An arm is an expression, or a block that ends
-in an expression or in a `return`, or a nested value `match`; the result may be a struct. A `match` that gives a value
-in any other position is `GUST-E0419`: an untyped `let`, an argument, an operand, the value of an assignment, a
+in an expression or in a `return`, or a nested value `match`; the result may be a struct. **Untyped (m13.matchu).**
+The `let` may leave out the type when an arm shows it, by the rule of an untyped value `if` (section 18): the first arm
+whose tail shows a type gives it (a suffixed integer or `f32` literal, a `bool`, a comparison, an `as` cast, a vector
+constructor), a block arm by its tail, a nested value `match` or `if` by its own arms, through operators only when both
+sides agree or one is a vector; an arm that ends in `return`, `break` or `continue` shows nothing. The result is a
+`bool`, `i32`, `u32`, `f32` or a vector; a struct result, whose literal shows no type by this rule, needs the typed
+form. When no arm shows a type (`let x = match e { 0 => 1, _ => 2 };`, a call in each arm, a struct literal) the `let`
+is `GUST-E0419`: write `let x: T = match e { .. };`. The lowering is the typed one. A `match` that gives a value in any
+other position is `GUST-E0419`: an argument, an operand, the value of an assignment, a
 `return`, a bound, a condition, and the tail of a function with a result type
 (`fn f(v: u32) -> u32 { match v { 0 => 1u32, _ => 2u32 } }`; write `let r: u32 = match v { .. }; r`). A tail `match`
 whose arms `return`, or whose arms are unit blocks, is the statement form and stays accepted.

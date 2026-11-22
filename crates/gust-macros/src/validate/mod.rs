@@ -6676,18 +6676,8 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             .as_ref()
             .and_then(|initial| switch_match_of(&initial.expr))
         {
-            // The value form (slice m9.e2): the initializer of a typed `let`, and of nothing else.
-            if !matches!(local.pat, syn::Pat::Type(_)) {
-                self.reject(
-                    Code::ValueMatchForm,
-                    value_match,
-                    "a `match` that gives a value needs a typed `let`, because the Slang local is declared before its `switch` assigns it: `let x: u32 = match e { E::A => 1u32, _ => 2u32 };`",
-                );
-                if let Ok((binding, _)) = crate::slang::local_binding(&local.pat) {
-                    self.enum_values.remove(&binding.ident.unraw().to_string());
-                }
-                return;
-            }
+            // The value form (slices m9.e2 and m13.matchu): the initializer of a `let`, and of nothing else. Whether
+            // an untyped `let` has a type its arms show is decided where the type is inferred, when Slang is emitted.
             self.visit_pat(&local.pat);
             self.check_switch_match(value_match, MatchForm::Value);
         } else if let Some(call) = local

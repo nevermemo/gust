@@ -1121,9 +1121,13 @@ pub(crate) struct GpuSuitePin {
 ///
 /// Slice m12.ifx: 569 over 56 became 571 over 57. The new test file `tests/value_if.rs` holds two tests (a value
 /// `if` on the GPU and in the CPU twin, one branch per element) and adds one `test result:` line. Updated by count.
+///
+/// Slice m13.matchu: 571 over 57 became 573 over 58. The new test file `tests/value_match_untyped.rs` holds two tests
+/// (the host expectation, and an untyped value `match` on the GPU and in the CPU twin) and adds one `test result:`
+/// line. Updated by count, not from a full Gpu suite run.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 571,
-    result_lines: 57,
+    passed: 573,
+    result_lines: 58,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

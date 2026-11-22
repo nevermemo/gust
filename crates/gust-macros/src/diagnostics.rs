@@ -1,4 +1,4 @@
-//! Stable diagnostic codes for every rejection `#[gpu_module]` reports.
+//! Stable diagnostic codes for every rejection `#[gpu_module]` and `#[gpu_fn]` report.
 //!
 //! `syn::Error` carries only a message, so the code is part of the message text:
 //! `[GUST-E0401] <message>`. rustc shows it as `error: [GUST-E0401] <message>`, which
@@ -386,8 +386,8 @@ codes! {
     ExportWriteFailed = 712 => "GUST-E0712";
     /// Export mode with a `CARGO_PKG_NAME` that cannot name the record directory.
     ExportPackageName = 713 => "GUST-E0713";
-    /// `#[gpu_fn]` on a function that is not a map function: no parameter, a return type or a parameter type that is not
-    /// a buffer element, or a `#[kernel]` on it.
+    /// `#[gpu_fn]` on a function that is not a map function: no parameter, a return type or a parameter type that is
+    /// not a buffer element, or a `#[kernel]` on it.
     MapSignature = 714 => "GUST-E0714";
     /// A map function whose name, or one of whose parameters' names, collides with a name the generated module
     /// defines.
@@ -449,8 +449,8 @@ codes! {
 
     // E0740 to E0750: variants (M8, D139).
     /// A malformed or misplaced `#[variant]`: not `of = <kernel>` with an optional `requires(..)`, on something that is
-    /// not a function of a `#[gpu_module]` module, on a `#[kernel]`, setting an option of the kernel, or with a signature
-    /// that is not its kernel's.
+    /// not a function of a `#[gpu_module]` module, on a `#[kernel]`, setting an option of the kernel, or with a
+    /// signature that is not its kernel's.
     VariantAttribute = 740 => "GUST-E0740";
     /// An unknown capability or alias in a `requires(..)`.
     UnknownCapability = 741 => "GUST-E0741";
@@ -486,7 +486,8 @@ codes! {
 
     // E0753: the crate's declarations in its manifest (M8, D138).
     // E0737 to E0739 and E0752 are not assigned (docs/DIAGNOSTICS.md).
-    /// A malformed `[package.metadata.gust]` table in the `Cargo.toml` of the crate that holds the `#[gpu_module]` module, the `#[gpu_fn]` function or the `par_for!` call.
+    /// A malformed `[package.metadata.gust]` table in the `Cargo.toml` of the crate that holds the `#[gpu_module]`
+    /// module, the `#[gpu_fn]` function or the `par_for!` call.
     GustMetadata = 753 => "GUST-E0753";
 
     // E08xx: rejections only the emitter makes, after validation passed.
@@ -1578,8 +1579,9 @@ mod tests {
     }
 
     const REACHED: &str = "Reached through `#[gpu_module]`";
-    /// The map-only codes (the signature and the name of a `#[gpu_fn]` function) say this instead (D237).
     const REACHED_MAP: &str = "Reached through `#[gpu_fn]`";
+    /// The map-only codes (the signature and the name of a `#[gpu_fn]` function): only they say `REACHED_MAP` (D237).
+    const MAP_ONLY: [&str; 2] = ["GUST-E0714", "GUST-E0715"];
     const NOT_REACHED: &str = "Unreachable through `#[gpu_module]`";
 
     fn doc_text() -> String {
@@ -1596,7 +1598,10 @@ mod tests {
         let mut problems = Vec::new();
         for section in sections {
             let body = section.body.join("\n");
-            let reached = body.matches(REACHED).count() + body.matches(REACHED_MAP).count();
+            let map_only = MAP_ONLY.contains(&section.code.as_str());
+            let reached = body
+                .matches(if map_only { REACHED_MAP } else { REACHED })
+                .count();
             let not_reached = body.matches(NOT_REACHED).count();
             if reached + not_reached != 1 {
                 problems.push(format!(

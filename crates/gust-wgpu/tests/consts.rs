@@ -1,5 +1,5 @@
-//! A module-level `const` shared by the kernels of a `#[gpu_module]` module, on the GPU and on the CPU twin (slice m11.g3,
-//! D205; Gpu tier).
+//! A module-level `const` shared by the kernels of a `#[gpu_module]` module, on the GPU and on the CPU twin (slice
+//! m11.g3, D205; Gpu tier).
 //!
 //! The module below holds four `pub const` items (a `u32`, a negative `i32`, an `f32` and a `bool`, plus a `u32` that is
 //! the largest value) read by a helper and by two kernels. The macro lowers each to one `static const` line in the text

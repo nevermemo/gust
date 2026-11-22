@@ -1,5 +1,5 @@
-//! The kernel records the `#[gpu_module]` macro writes in export mode (D46), and the `KernelDescriptor` the tool rebuilds
-//! from them.
+//! The kernel records the `#[gpu_module]` macro writes in export mode (D46), and the `KernelDescriptor` the tool
+//! rebuilds from them.
 //!
 //! For every kernel the macro writes `<key>.slang` (the clean Slang text, exact bytes) and `<key>.kernel.json`
 //! (schema 1, schema 2 for a `par_for!` call, or schema 3 for a kernel whose shape is not `grid`) under
@@ -31,11 +31,11 @@
 //! descriptor it builds has the origin of the first.
 //!
 //! Schema 3 (mx.k, D89) is schema 2's grammar plus an optional `shape` (`grid` or `pixel`; absent means `grid`), and
-//! the macro writes it only for a kernel whose shape is not `grid`: a `grid` kernel keeps schema 1 (a `#[gpu_module]` module
-//! or function) or schema 2 (a `par_for!` call), byte for byte. `source` is optional in schema 3: a record that has one
-//! is read like schema 1, one that has none like schema 2, with its call sites in sidecars. The number moves so that a
-//! reader of schemas 1 and 2 refuses a non-grid record instead of reading it as `grid`; this reader also refuses a
-//! `shape` in a record that says schema 1 or 2.
+//! the macro writes it only for a kernel whose shape is not `grid`: a `grid` kernel keeps schema 1 (a `#[gpu_module]`
+//! module or function) or schema 2 (a `par_for!` call), byte for byte. `source` is optional in schema 3: a record that
+//! has one is read like schema 1, one that has none like schema 2, with its call sites in sidecars. The number moves so
+//! that a reader of schemas 1 and 2 refuses a non-grid record instead of reading it as `grid`; this reader also refuses
+//! a `shape` in a record that says schema 1 or 2.
 //!
 //! Schema 4 (M8, D139) is schema 3's grammar plus two required keys, `requires` (an array of capability names, in the
 //! order of `gust::capability::Capability::ALL`, none twice, none unknown to this tool; a record that spells them in

@@ -1,7 +1,7 @@
 //! `cargo xtask check-precompiled [--check-only] [--work-dir PATH]`: the evidence that a production-shaped consumer of
 //! precompiled kernels needs no Slang (D45, D46). The fixture is `tests/precompiled`, a workspace of its own like
-//! `tests/dual`: the `kernels` crate holds one `#[gpu_module]` vector-add and its committed `gust-artifacts/` (written by
-//! `cargo gust build`), and `app` dispatches it through `gust-wgpu` with `default-features = false` and checks the
+//! `tests/dual`: the `kernels` crate holds one `#[gpu_module]` vector-add and its committed `gust-artifacts/` (written
+//! by `cargo gust build`), and `app` dispatches it through `gust-wgpu` with `default-features = false` and checks the
 //! result.
 //!
 //! Every cargo child runs under `GUST_PROFILE=native`, the strict profile, set explicitly (R4.2), except the control
@@ -50,7 +50,8 @@
 //!   (`cargo-warning:` in the expectation) but that still unifies the feature, so the release build is `dev` with the
 //!   same warning. Each warning is matched as a whole line.
 //! - **E7**: a change of `GUST_EXPORT_DIR`, which the macro tracks through `option_env!`, makes cargo expand the
-//!   `#[gpu_module]` module of `kernels` again (and the macro writes its records), and the same value does not. Then, with
+//!   `#[gpu_module]` module of `kernels` again (and the macro writes its records), and the same value does not. Then,
+//with
 //!   Slang, `cargo gust build` runs twice on a copy of the fixture whose artifacts were deleted first: run 1 writes them, run 2 (the run on unchanged input) writes nothing, and the output is byte-identical and the
 //!   tool prints no `pruned` line (R2-3, S3).
 //! - **E8**: distribution (R2-4, R4.6). `cargo package` of `gust-compute-macros`, `gust-compute`, `gust-compute-wgpu` and `kernels` must list

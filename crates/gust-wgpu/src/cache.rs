@@ -8,8 +8,7 @@ use gust::{Artifact, Format, KernelDescriptor, Shape, capability::Capability};
 /// dispatch of a kernel compiles it (a miss); the next dispatch of the same kernel finds it (a hit):
 ///
 /// ```
-/// use gust::gpu_module;
-/// use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
+/// use gust::gpu_module; use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 ///
 /// #[gpu_module]
 /// mod double {

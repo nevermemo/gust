@@ -91,17 +91,17 @@
 //! # The CPU runtime: the `cpu` target and the twin
 //!
 //! [`cpu`] runs a kernel's Rust shadow body on the CPU (`CpuDevice`, `CpuBuffer`). It is the runtime of the `cpu`
-//! target (D21, D51) and the engine of the CPU twin (D22). The per-kernel impl of the typed calls that the `#[gpu_module]`
-//! macro emits for it is the twin under `cfg(test)` of the crate that defines the kernel or under `--cfg gust_dual`,
-//! unless the kernel has `#[kernel(cpu = "unsupported")]`; under `GUST_PROFILE=cpu` the macro emits the same impl in
-//! every build and that build is the `cpu` target (see "Build profiles"). Nothing of it is re-exported at the crate
-//! root, except the hidden macro behind `cpu::overflow_checks!`.
+//! target (D21, D51) and the engine of the CPU twin (D22). The per-kernel impl of the typed calls that the
+//! `#[gpu_module]` macro emits for it is the twin under `cfg(test)` of the crate that defines the kernel or under
+//! `--cfg gust_dual`, unless the kernel has `#[kernel(cpu = "unsupported")]`; under `GUST_PROFILE=cpu` the macro emits
+//! the same impl in every build and that build is the `cpu` target (see "Build profiles"). Nothing of it is re-exported
+//! at the crate root, except the hidden macro behind `cpu::overflow_checks!`.
 //!
 //! # Build profiles
 //!
 //! The environment variable `GUST_PROFILE` chooses the profile of a build (D44): `dev`, `native`, `web` or `cpu`.
 //! `gust`'s build script reads it; any other value, including an empty one, fails the build and names the four.
-//! `native` and `web` are strict: every `#[gpu_module]` kernel must have a precompiled artifact (see [`artifact`]), or the
+//! `native` and `web` are strict: every GUST kernel must have a precompiled artifact (see [`artifact`]), or the
 //! build fails with a compile error at the kernel, and the `slang-runtime` feature is refused, so the build contains
 //! no run-time Slang compiler. `dev` has neither rule. `profile::NAME` is the effective profile (support surface, see below).
 //!
@@ -113,8 +113,8 @@
 //!
 //! A crate that must run on every WebGPU device sets `limits = "portable"` in its `[package.metadata.gust]` table (M8):
 //! the macro then refuses a `#[kernel]` of a `#[gpu_module]` module that is over [`limits::PORTABLE`] (GUST-E0746). The
-//! `#[gpu_fn]` element-wise map and `par_for!` are not checked, nor are the limits that depend on the launch (the runtime
-//! checks those). The setting is off by default.
+//! `#[gpu_fn]` element-wise map and `par_for!` are not checked, nor are the limits that depend on the launch (the
+//! runtime checks those). The setting is off by default.
 //!
 //! `cpu` is the production CPU target (D21): the `#[gpu_module]` macro emits the kernel's `Run` impl for
 //! [`cpu::CpuDevice`] in every build, without the test and `gust_dual` gate, uses no
@@ -130,7 +130,7 @@
 //! `PROFILE=release`, the profile is `web` for `wasm32` and `native` for every other target, and the build prints
 //! `warning: gust-compute@<version>: gust: release build without GUST_PROFILE treated as native` (or `web`; cargo shows a build
 //! script's warning only for path and workspace packages, or with `-vv`, so a registry or git dependency stays
-//! silent). So `cargo build --release` of any crate with `#[gpu_module]` kernels needs artifacts and no bridge, except where
+//! silent). So `cargo build --release` of any crate with GUST kernels needs artifacts and no bridge, except where
 //! the internal `cargo-gust-bridge` feature (D108) is in the graph (the `cargo-gust` install, a workspace that has
 //! `cargo-gust` as a member, or a mistaken `cargo-gust` dependency): there the profile is `dev`, with a warning that
 //! only path and workspace builds show. A release build that wants the bridge, such as
@@ -147,11 +147,11 @@
 //!
 //! # Stability
 //!
-//! `gust-compute` is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version (`0.1` to `0.2`), and a
-//! patch release (`0.1.0` to `0.1.1`) only adds or fixes. The four crates of a release (this crate, the `#[gpu_module]` macro
-//! crate, the wgpu backend and `cargo-gust`) share one version and depend on each other with exact (`=`) pins, because
-//! the macro emits items that only the same release of this crate has: take them at the same version, and a minor bump
-//! of one is a minor bump of all.
+//! `gust-compute` is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version (`0.1` to `0.2`),
+//! and a patch release (`0.1.0` to `0.1.1`) only adds or fixes. The four crates of a release (this crate, the
+//! `#[gpu_module]` macro crate, the wgpu backend and `cargo-gust`) share one version and depend on each other with
+//! exact (`=`) pins, because the macro emits items that only the same release of this crate has: take them at the same
+//! version, and a minor bump of one is a minor bump of all.
 //!
 //! What a minor bump may change: any item of this crate that is not marked as support surface, including a function's
 //! signature, the fields of the layout types (a hand-written literal then needs the new field; `KernelDescriptor` is

@@ -136,9 +136,9 @@ pub(crate) fn check_declared(
     check(module, declared(manifest_dir), None)
 }
 
-/// [`check_declared`] for a kernel a macro generates (a `#[gpu_fn] fn` map, `par_for!`): a violation is reported at `at`,
-/// the user's own tokens, and names the kernel `label`, because the generated kernel's signature has no source of its
-/// own.
+/// [`check_declared`] for a kernel a macro generates (a `#[gpu_fn] fn` map, `par_for!`): a violation is reported at
+/// `at`, the user's own tokens, and names the kernel `label`, because the generated kernel's signature has no source of
+/// its own.
 pub(crate) fn check_generated(
     module: &syn::ItemMod,
     manifest_dir: Option<&Path>,

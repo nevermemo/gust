@@ -5,8 +5,8 @@ use crate::target::Target;
 
 /// Marker implemented by the zero-sized host handle generated for each kernel.
 ///
-/// The handle is the type that carries the kernel's name inside its `#[gpu_module]` module, so generic code can take a kernel
-/// by type:
+/// The handle is the type that carries the kernel's name inside its `#[gpu_module]` module, so generic code can take a
+/// kernel by type:
 ///
 /// ```
 /// use gust::{Kernel, gpu_module};
@@ -67,8 +67,8 @@ impl ModuleDescriptor {
 }
 
 /// Everything the host knows about one kernel: where it lives, its Slang source, its workgroup size, its parameters,
-/// its shape, its capabilities, its target and its precompiled artifacts. The `#[gpu_module]` macro builds one per `#[kernel]`
-/// function.
+/// its shape, its capabilities, its target and its precompiled artifacts. The `#[gpu_module]` macro builds one per
+/// `#[kernel]` function.
 ///
 /// API change (0.2.0, M8): the struct is `#[non_exhaustive]`, so a later field is not a breaking change again, and a
 /// literal is no longer possible outside this crate. Build one with [`KernelDescriptor::new`] and the `with_*`
@@ -188,9 +188,9 @@ const LAUNCH_BASE_LAYOUT: crate::TypeLayout = {
     crate::TypeLayout::structure("__GustLaunchBase", 16, 16, FIELDS)
 };
 
-/// The `#[gpu_module]` macro's way to build a [`KernelDescriptor`] with named fields (support surface, hidden): it calls
-/// [`KernelDescriptor::__gust_descriptor`], so a field added to the struct is a compile error in the expansion until
-/// the macro sets it, and the names keep adjacent string arguments from being swapped.
+/// The `#[gpu_module]` macro's way to build a [`KernelDescriptor`] with named fields (support surface, hidden): it
+/// calls [`KernelDescriptor::__gust_descriptor`], so a field added to the struct is a compile error in the expansion
+/// until the macro sets it, and the names keep adjacent string arguments from being swapped.
 ///
 /// Every slice and the origin is first bound to a constant of its own. The descriptor is built by a function call, and
 /// the `'static` borrow of an argument is promoted only when the whole array is a constant expression, which the layout
@@ -523,8 +523,8 @@ impl KernelDescriptor {
         self
     }
 
-    /// The parameter descriptor of the hidden uniform of a split variant, at `binding` of group 0. The `#[gpu_module]` macro
-    /// calls this; support surface, not covered by the stability promise.
+    /// The parameter descriptor of the hidden uniform of a split variant, at `binding` of group 0. The `#[gpu_module]`
+    /// macro calls this; support surface, not covered by the stability promise.
     #[doc(hidden)]
     pub const fn __gust_launch_base_parameter(binding: u32) -> ParameterDescriptor {
         ParameterDescriptor {
@@ -537,8 +537,8 @@ impl KernelDescriptor {
         }
     }
 
-    /// The constructor the `#[gpu_module]` macro calls: every field at once, so that a field added later is a compile error
-    /// in the macro's output until the macro sets it. Support surface: not covered by the stability promise.
+    /// The constructor the `#[gpu_module]` macro calls: every field at once, so that a field added later is a compile
+    /// error in the macro's output until the macro sets it. Support surface: not covered by the stability promise.
     #[doc(hidden)]
     #[allow(clippy::too_many_arguments)]
     pub const fn __gust_descriptor(
@@ -671,9 +671,9 @@ pub struct ResourceBinding {
 /// API change (mx.t1): the enum is `#[non_exhaustive]` and has two new variants, [`Texture`](Self::Texture) and
 /// [`Sampler`](Self::Sampler). A `match` outside this crate must add a wildcard arm. Constructing a variant is
 /// unchanged. Inside the workspace every such `match` already had one (`gust-compute-wgpu`'s `validate_kernel` and
-/// `gust-compute`'s own `reflect`), so none of them changed, and both refuse the two new kinds. The `#[gpu_module]` macro
-/// produces both kinds since mx.t3 (a `Texture2D<T>`, `StorageTexture2D<F>`, `WriteTexture2D<F>` or `Sampler` kernel
-/// parameter), and `cargo-gust`'s record reader and the macro's artifact writer know the names `texture` and
+/// `gust-compute`'s own `reflect`), so none of them changed, and both refuse the two new kinds. The `#[gpu_module]`
+/// macro produces both kinds since mx.t3 (a `Texture2D<T>`, `StorageTexture2D<F>`, `WriteTexture2D<F>` or `Sampler`
+/// kernel parameter), and `cargo-gust`'s record reader and the macro's artifact writer know the names `texture` and
 /// `sampler`.
 ///
 /// ```

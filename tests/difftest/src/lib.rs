@@ -2,11 +2,11 @@
 //! m6.d added the vector and matrix programs).
 //!
 //! `generator` turns a seed into scalar and vector programs (`ast`), `interp` evaluates them with domain tracking (the
-//! independent host reference; `agg` holds its vector and matrix arithmetic), `emit` writes them as a `#[gust::gpu_module]`
-//! kernel crate, and `corpus` pins what the committed seeds
-//! decode to. `runsrc` adds the test module that runs a batch on the CPU twin and the GPU, `harness` runs the batch
-//! with cargo, and the report is written by `harness`. `reduce` shrinks a failing program and `shrink` drives it with
-//! cargo (`difftest-run --shrink`). See `docs/development/DIFFTEST.md`.
+//! independent host reference; `agg` holds its vector and matrix arithmetic), `emit` writes them as a
+//! `#[gust::gpu_module]` kernel crate, and `corpus` pins what the committed seeds decode to. `runsrc` adds the test
+//! module that runs a batch on the CPU twin and the GPU, `harness` runs the batch with cargo, and the report is written
+//! by `harness`. `reduce` shrinks a failing program and `shrink` drives it with cargo (`difftest-run --shrink`). See
+//! `docs/development/DIFFTEST.md`.
 
 pub mod agg;
 #[cfg(test)]

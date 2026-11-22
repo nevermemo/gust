@@ -18,8 +18,7 @@ use std::marker::PhantomData;
 /// copy in the command stream.
 ///
 /// ```
-/// use gust::gpu_module;
-/// use gust_wgpu::{GpuBufferAccess, GpuUniform, HeadlessDevice};
+/// use gust::gpu_module; use gust_wgpu::{GpuBufferAccess, GpuUniform, HeadlessDevice};
 ///
 /// #[gpu_module]
 /// mod scale {

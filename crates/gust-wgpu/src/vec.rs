@@ -33,8 +33,7 @@ use crate::{
 /// the `GpuVec` dropped may run after the pool has cleared or reused the buffer. Submit them before the drop.
 ///
 /// ```
-/// use gust::gpu_module;
-/// use gust_wgpu::GpuVec;
+/// use gust::gpu_module; use gust_wgpu::GpuVec;
 ///
 /// #[gpu_module]
 /// mod ops {

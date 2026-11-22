@@ -2,10 +2,10 @@
 //!
 //! The fixtures `tests/fixtures/uniforms.rs` (a `Uniform<Frame>` with a `Mat4`, `Vec4`s, a nested struct and `Vec2`
 //! fields, and two `Vec4` buffers) and `tests/fixtures/vectors.rs` (buffers of `Vec4`, `UVec2`, `IVec4`, `UVec4`,
-//! `Vec2`, a struct with `Vec2` fields and a scalar one) are compiled by `#[gust::gpu_module]` here, and the records the macro
-//! wrote for them (`testdata/uniform/<key>.kernel.json`, `cargo gust build` on a crate with the same modules) are read
-//! by the tool's own reader. The WGSL and the reflection JSON are what the native helper wrote for them, so the
-//! cross-check that runs here is gust's own and no helper is needed.
+//! `Vec2`, a struct with `Vec2` fields and a scalar one) are compiled by `#[gust::gpu_module]` here, and the records
+//! the macro wrote for them (`testdata/uniform/<key>.kernel.json`, `cargo gust build` on a crate with the same modules)
+//! are read by the tool's own reader. The WGSL and the reflection JSON are what the native helper wrote for them, so
+//! the cross-check that runs here is gust's own and no helper is needed.
 
 use gust::{ResourceLayout, ShaderLayoutRules, artifact::verify_artifact};
 

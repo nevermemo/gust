@@ -20,8 +20,7 @@ pub(crate) static NEXT_DEVICE_ID: AtomicU64 = AtomicU64::new(1);
 /// Open one, create buffers on it, run a kernel and read the result back:
 ///
 /// ```
-/// use gust::gpu_module;
-/// use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
+/// use gust::gpu_module; use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 ///
 /// #[gpu_module]
 /// mod double {

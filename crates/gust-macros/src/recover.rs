@@ -1,4 +1,4 @@
-//! Error recovery for `#[gpu_module]`: the original tokens beside `compile_error!`.
+//! Error recovery for `#[gpu_module]` and `#[gpu_fn]`: the original tokens beside `compile_error!`.
 //!
 //! When the macro rejects its input it used to return only the error. Returning the
 //! user's code as well keeps the module's items present, so an editor (rust-analyzer

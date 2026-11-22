@@ -1,5 +1,5 @@
-//! The CPU runtime: it runs a `#[gpu_module]` kernel's Rust shadow body on the CPU. It is the runtime of the `cpu` target
-//! (D21, D51) and the engine of the CPU twin (D22).
+//! The CPU runtime: it runs a `#[gpu_module]` kernel's Rust shadow body on the CPU. It is the runtime of the `cpu`
+//! target (D21, D51) and the engine of the CPU twin (D22).
 //!
 //! For each kernel with a typed call the macro emits an `impl Run<Kernel, N> for CpuDevice` that calls the shadow body
 //! once per invocation, and two kinds of build contain it:

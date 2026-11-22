@@ -72,8 +72,8 @@ fn generated_crates_pass_cargo_check_with_the_template_lockfile() {
 #[test]
 fn method_programs_compile_through_the_macro_without_a_gust_diagnostic() {
     // Format 8 (m9.d1a): the generator never writes a form the macro refuses (E0421, E0116, E0333, E0120, E0328, ...).
-    // The method space of seeds 1 to 12 (16 programs each, 192 in all) goes through `#[gust::gpu_module]` and rustc; a refused
-    // form fails the check with a `[GUST-E` diagnostic, and a borrow conflict with rustc's own error.
+    // The method space of seeds 1 to 12 (16 programs each, 192 in all) goes through `#[gust::gpu_module]` and rustc; a
+    // refused form fails the check with a `[GUST-E` diagnostic, and a borrow conflict with rustc's own error.
     let dir = work_dir().join("roundtrip-methods");
     let mut programs = Vec::new();
     for seed in 1..=12 {

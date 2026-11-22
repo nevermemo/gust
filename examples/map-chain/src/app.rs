@@ -52,8 +52,8 @@ use gust::{
 use gust_wgpu::{DeviceHandle, GpuVec, HeadlessDevice, default_device};
 
 // The plain Rust function behind each `#[gpu_fn]` stays callable (D60), but this program calls only the generated maps,
-// so the lint is silenced here.
-// Step 1: an affine map. Both constants are broadcast scalars (a one-element buffer, read at index 0).
+// so the lint is silenced here. Step 1: an affine map. Both constants are broadcast scalars (a one-element buffer, read
+// at index 0).
 #[allow(dead_code)]
 #[gpu_fn]
 pub fn rescale(x: f32, gain: f32, offset: f32) -> f32 {

@@ -1,7 +1,7 @@
 #[gust::gpu_module]
 mod sentinel {
-    // Slice m9.sen (D168, D169; docs/DECISIONS.md): the NVIDIA array defect, as `#[gpu_module]` kernels. The shapes follow
-    // the shrunk programs of the two investigations that D168 and D169 record, so GUST's own emission is what
+    // Slice m9.sen (D168, D169; docs/DECISIONS.md): the NVIDIA array defect, as `#[gpu_module]` kernels. The shapes
+    // follow the shrunk programs of the two investigations that D168 and D169 record, so GUST's own emission is what
     // reaches the driver.
 
     // D168's struct: its integer field holds 0, a value the compiler can prove unchanged.

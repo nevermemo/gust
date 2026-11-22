@@ -3,9 +3,9 @@
 //! (m11.psplit-a, D209).
 //!
 //! The manifest is the tool-owned index of a kernel crate's committed artifacts. It is required once a crate uses
-//! artifacts: `cargo gust init` creates an empty one, the `#[gpu_module]` macro includes it so that cargo re-expands the
-//! crate when it changes, and `cargo gust build` rewrites it last. It holds no timestamp and no path, only file names,
-//! so the same sources and the same Slang give the same bytes (S3).
+//! artifacts: `cargo gust init` creates an empty one, the `#[gpu_module]` macro includes it so that cargo re-expands
+//! the crate when it changes, and `cargo gust build` rewrites it last. It holds no timestamp and no path, only file
+//! names, so the same sources and the same Slang give the same bytes (S3).
 //!
 //! ```json
 //! {

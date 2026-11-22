@@ -44,8 +44,8 @@
 //!
 //! # Why two modules
 //!
-//! `SIDE` is a module constant, so one `#[gpu_module]` module has one grid size. The macro below writes the module and the
-//! host code that drives it once per size: `big` (128, the run of `main` and the GPU tests) and, under `cfg(test)`,
+//! `SIDE` is a module constant, so one `#[gpu_module]` module has one grid size. The macro below writes the module and
+//! the host code that drives it once per size: `big` (128, the run of `main` and the GPU tests) and, under `cfg(test)`,
 //! `small` (16).
 
 #[cfg(any(test, gust_dual))]

@@ -504,8 +504,8 @@ fn a_std140_valid_difference_from_the_macro_is_now_caught_at_export() {
             stored.name
         );
         // D17 still holds at run time for exactly that case (`export_unchecked`): a program that loads the artifact
-        // checks it against the macro's own Std140V1 descriptor, a real `#[gpu_module]` kernel descriptor, and refuses it by
-        // the field name.
+        // checks it against the macro's own Std140V1 descriptor, a real `#[gpu_module]` kernel descriptor, and refuses
+        // it by the field name.
         let error = verify_artifact(
             stored.kernel,
             &Artifact::new(Format::Wgsl, stored.key, stored.wgsl, leak_str(&renamed)),

@@ -383,17 +383,28 @@ fn names_the_module_defines_are_e0715() {
 
 #[test]
 fn nested_gpu_functions_are_e0716() {
-    for attribute in ["gpu_fn", "gust::gpu_fn", "gpu_module"] {
+    let on_fn = "`#[gpu_fn]` on a function goes on a free function outside any `#[gpu_module]` module: \
+                 a module already is GPU code, and its functions are helpers or `#[kernel]`s";
+    let on_module = "`#[gpu_module]` goes on a module, not on a function: a map function takes \
+                     `#[gpu_fn]` and goes outside any `#[gpu_module]` module, because a module \
+                     already is GPU code and its functions are helpers or `#[kernel]`s";
+    for (attribute, message) in [
+        ("gpu_fn", on_fn),
+        ("gust::gpu_fn", on_fn),
+        ("gpu_module", on_module),
+    ] {
         let source = format!("mod m {{ #[{attribute}] pub fn f(x: f32) -> f32 {{ x }} }}");
         let output = expansion(&source, Profile::Other).to_string();
         assert!(output.starts_with(":: core :: compile_error !"), "{output}");
         assert_rendered_code(&output, Code::NestedGpuFunction);
+        assert!(output.contains(message), "{attribute}: {output}");
     }
 }
 
 #[test]
 fn a_rejected_module_returns_without_the_nested_attribute() {
-    // Left on, the inner `#[gust::gpu_module]` would expand by itself in the user's crate and add errors that only follow.
+    // Left on, the inner `#[gust::gpu_module]` would expand by itself in the user's crate and add errors that only
+    // follow.
     let source =
         "mod m { #[gust::gpu_fn] pub fn f(x: f32) -> f32 { x } pub fn g(x: f32) -> f32 { x } }";
     let output = expansion(source, Profile::Other).to_string();

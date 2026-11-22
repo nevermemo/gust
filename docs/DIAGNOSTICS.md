@@ -1,6 +1,6 @@
 # GUST diagnostic codes
 
-Every rejection `#[gpu_module]` reports starts with a stable code:
+Every rejection `#[gpu_module]` or `#[gpu_fn]` reports starts with a stable code:
 
 ```text
 error: [GUST-E0401] `loop` is not supported: its trip count is not fixed at entry, ...
@@ -16,7 +16,7 @@ Decision: D31.
 
 This page is not part of the published packages. If you installed GUST from crates.io, read it on GitHub
 (<https://github.com/nevermemo/gust/blob/main/docs/DIAGNOSTICS.md>) and search it for the code in your error. The
-codes come from the `#[gpu_module]` macro of the package `gust-compute-macros`, which you get by adding `gust-compute` (see
+codes come from the `#[gpu_module]` and `#[gpu_fn]` macros of the package `gust-compute-macros`, which you get by adding `gust-compute` (see
 "Install from crates.io" in the [README](../README.md)).
 
 The promise starts with the first crates.io release, 0.2.0 (D33, D177). Until then a code may still be
@@ -1352,10 +1352,9 @@ Decision: D02, D65, D48.
 ### GUST-E0702 item does not fit the attribute, or does not parse as an item
 
 `#[gpu_module]` goes on an inline module whose body parses as Rust, and `#[gpu_fn]` on a free scalar function (the
-
 map calls of D60, GUST-E0714). The message after the code is `syn`'s own parse error when the
 tokens are not an item.
-Reached through `#[gpu_module]`.
+Reached through `#[gpu_module]` and `#[gpu_fn]`.
 Rejected: `#[gpu_module] struct S;`, `#[gpu_module] const X: u32 = 1;`, `#[gpu_module] use ..;`, `#[gpu_module] fn f() {}` (the message names `#[gpu_fn]`), `#[gpu_fn] mod m {}` (the message names `#[gpu_module]`), `#[gpu_fn] struct S;`, a module with a syntax
 error inside, or tokens that do not parse as an item.
 Write instead: put the item inside `#[gpu_module] mod shaders { ... }` and fix the syntax error, or use the attribute that fits the item.
@@ -1486,9 +1485,9 @@ Decision: D60.
 
 ### GUST-E0716 `#[gpu_fn]` function inside a `#[gpu_module]` module
 
-`#[gpu_fn]` on a function generates a module beside the function, and a `#[gpu_module]` module has no place for one: its functions are kernels and helpers.
+`#[gpu_fn]` on a function generates a module beside the function, and a `#[gpu_module]` module has no place for one: its functions are kernels and helpers. `#[gpu_module]` itself written on a function inside a module is this error too (the message says it goes on a module, and a map function takes `#[gpu_fn]` outside any module).
 Reached through `#[gpu_module]`.
-Rejected: `#[gpu_module] mod m { #[gpu_fn] pub fn f(x: f32) -> f32 { x } }`, also spelled `#[gust::gpu_module]`.
+Rejected: `#[gpu_module] mod m { #[gpu_fn] pub fn f(x: f32) -> f32 { x } }`, also spelled `#[gust::gpu_module]`, and `#[gpu_module] mod m { #[gpu_module] pub fn f(x: f32) -> f32 { x } }`.
 Write instead: put the function outside the module (a map function is plain Rust that the generated kernel calls), or drop the inner attribute and use it as a helper.
 Decision: D60.
 

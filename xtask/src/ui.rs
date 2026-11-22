@@ -14,9 +14,9 @@ use crate::{
 /// and is not a member of the root workspace, so `cargo test --workspace` never builds it.
 pub(crate) const UI_DIR: &str = "tests/ui";
 
-/// The two-crate fixture of the facade-path option (`#[gpu_module(crate = ..)]`, audit S6, D48), relative to the repository
-/// root: a workspace of its own (`inner` re-exports `gust`; `outer` does not depend on it), whose package `outer` must
-/// compile. It is no case of `tests/ui` because it has two crates and no expected error.
+/// The two-crate fixture of the facade-path option (`#[gpu_module(crate = ..)]`, audit S6, D48), relative to the
+/// repository root: a workspace of its own (`inner` re-exports `gust`; `outer` does not depend on it), whose package
+/// `outer` must compile. It is no case of `tests/ui` because it has two crates and no expected error.
 pub(crate) const REEXPORT_DIR: &str = "tests/reexport";
 
 /// The package of [`REEXPORT_DIR`] that `cargo check` builds.

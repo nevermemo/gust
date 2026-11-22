@@ -18,10 +18,10 @@
 //!
 //! # How it stays static and layered
 //!
-//! - The kernel names its target in the type system through [`Routed::Side`] ([`OnCpu`] or [`OnGpu`]). The `#[gpu_module]`
-//!   macro emits one `impl Routed` line per kernel next to the `GpuKernel` marker; a hand-written kernel writes it
-//!   itself. One associated type, not two marker bounds, because two blanket impls bounded on two different markers
-//!   overlap in rustc's coherence check (E0119). Nothing is looked up at run time.
+//! - The kernel names its target in the type system through [`Routed::Side`] ([`OnCpu`] or [`OnGpu`]). The
+//!   `#[gpu_module]` macro emits one `impl Routed` line per kernel next to the `GpuKernel` marker; a hand-written
+//!   kernel writes it itself. One associated type, not two marker bounds, because two blanket impls bounded on two
+//!   different markers overlap in rustc's coherence check (E0119). Nothing is looked up at run time.
 //! - `gust` does not depend on the GPU runtime: [`GpuBackend`] is the small surface the handle needs of a GPU device,
 //!   and `gust-wgpu` implements it for `HeadlessDevice`. [`NoGpu`] is the backend of a build without one. The selection
 //!   of a side is static; the buffers are moved between sides through one `&dyn` per bound buffer, which is not part of

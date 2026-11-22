@@ -1,6 +1,7 @@
 // Declares `cfg(gust_cpu_profile)`, set when this crate is built for the production CPU target (`GUST_PROFILE=cpu`).
-// The map functions of `src/map_case.rs` exist only then: under any other profile the host functions that `#[gpu_module]`
-// generates for a function (`map`, `map_gpu`, ..) name `gust-wgpu`, which this crate does not depend on.
+// The map functions of `src/map_case.rs` exist only then: under any other profile the host functions that
+// `#[gpu_module]` generates for a function (`map`, `map_gpu`, ..) name `gust-wgpu`, which this crate does not depend
+// on.
 
 fn main() {
     println!("cargo:rerun-if-env-changed=GUST_PROFILE");

@@ -730,13 +730,18 @@ pub(crate) fn validate_module_in(
                     .iter()
                     .find_map(|attribute| Some((attribute, gpu_attribute_name(attribute)?)))
                 {
+                    let message = if name == "gpu_module" {
+                        "`#[gpu_module]` goes on a module, not on a function: a map function takes \
+                         `#[gpu_fn]` and goes outside any `#[gpu_module]` module, because a module already is GPU code \
+                         and its functions are helpers or `#[kernel]`s"
+                    } else {
+                        "`#[gpu_fn]` on a function goes on a free function outside any `#[gpu_module]` module: \
+                         a module already is GPU code, and its functions are helpers or `#[kernel]`s"
+                    };
                     return Err(diagnostics::error(
                         Code::NestedGpuFunction,
                         attribute,
-                        format!(
-                            "`#[{name}]` on a function goes on a free function outside any `#[gpu_module]` module: a \
-                             module already is GPU code, and its functions are helpers or `#[kernel]`s"
-                        ),
+                        message,
                     ));
                 }
                 // A generic helper (slice m9.g2); a generic kernel is refused by `validate_function` (GUST-E0114).

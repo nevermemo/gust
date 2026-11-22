@@ -1,9 +1,9 @@
 //! The procedural macros of GUST: `#[gpu_module]`, `#[gpu_fn]` and `par_for!`.
 //!
-//! Use them through `gust` (`gust::gpu_module`, `gust::gpu_fn`, `gust::par_for!`), which re-exports them and owns the types they emit; this
-//! crate is not meant to be depended on directly. `#[gpu_module]` and `#[gpu_fn]` validate a small Rust subset and translate it directly
-//! from the `syn` syntax tree to Slang; every rejection carries a stable diagnostic code (`GUST-E....`, see
-//! `docs/DIAGNOSTICS.md`).
+//! Use them through `gust` (`gust::gpu_module`, `gust::gpu_fn`, `gust::par_for!`), which re-exports them and owns the
+//! types they emit; this crate is not meant to be depended on directly. `#[gpu_module]` and `#[gpu_fn]` validate a
+//! small Rust subset and translate it directly from the `syn` syntax tree to Slang; every rejection carries a stable
+//! diagnostic code (`GUST-E....`, see `docs/DIAGNOSTICS.md`).
 //!
 //! # Generated items and `missing_docs`
 //!
@@ -16,8 +16,8 @@
 //! The crate is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version, a patch release only
 //! adds or fixes. The four crates of a release (`gust`, this crate, the wgpu backend and `cargo-gust`) share one
 //! version and depend on each other with exact (`=`) pins, because the macros emit items that only the same release of
-//! `gust` has. What a minor bump may change: the Slang that `#[gpu_module]` emits, the diagnostics' wording (their codes
-//! are stable, see `docs/DIAGNOSTICS.md`), and the accepted subset of Rust, which may grow.
+//! `gust` has. What a minor bump may change: the Slang that `#[gpu_module]` emits, the diagnostics' wording (their
+//! codes are stable, see `docs/DIAGNOSTICS.md`), and the accepted subset of Rust, which may grow.
 //!
 //! # Support surface
 //!
@@ -201,7 +201,8 @@ impl Form {
 /// A third clause, `crate(<path>);`, goes with the others (before the loop, each at most
 /// once) and names where `gust` is for a crate that reaches it through another crate (`crate(::inner::gust);`, as
 /// `#[gpu_module(crate = ..)]` does); the path starts with `::` or `crate::`. It rewrites each `::gust::` of the
-/// expansion that begins a path (the rule of `#[gpu_module(crate = ..)]`), in your body too. The expansion names `::gust_wgpu` literally, so a call still needs a direct dependency
+/// expansion that begins a path (the rule of `#[gpu_module(crate = ..)]`), in your body too. The expansion names
+/// `::gust_wgpu` literally, so a call still needs a direct dependency
 /// on `gust-compute-wgpu`. The clause is the grammar's own: `crate` followed by `(` cannot begin a loop pattern.
 ///
 /// ```text
@@ -238,8 +239,8 @@ pub(crate) fn gpu_impl(
     gpu_impl_with(attribute, item, expand::Profile::Other)
 }
 
-/// [`gpu_entry`] on `proc_macro2` tokens, so it can be tested outside a proc-macro context. The form is the one that fits `item`; a test of the
-/// refusal of the wrong attribute calls [`gpu_impl_routed`] with the form it wants.
+/// [`gpu_entry`] on `proc_macro2` tokens, so it can be tested outside a proc-macro context. The form is the one that
+/// fits `item`; a test of the refusal of the wrong attribute calls [`gpu_impl_routed`] with the form it wants.
 ///
 /// Every failure returns the `compile_error!` followed by the user's own code (see
 /// [`recover`]), so rustc and editors still resolve the module's items and the one real
@@ -257,8 +258,8 @@ pub(crate) fn gpu_impl_with(
 }
 
 /// [`gpu_impl_with`] with the place the route variables are read from (the process for the macro, M8, D66). The
-/// arguments `#[gpu_module]` takes are `route = "<tag>"` and `crate = <path>` (audit S6); anything else is GUST-E0701. With a
-/// `crate` the whole output, errors and the user's own code beside them included, goes through
+/// arguments `#[gpu_module]` and `#[gpu_fn]` take are `route = "<tag>"` and `crate = <path>` (audit S6); anything else
+/// is GUST-E0701. With a `crate` the whole output, errors and the user's own code beside them included, goes through
 /// [`forward::forward_crate`].
 pub(crate) fn gpu_impl_routed(
     form: Form,
@@ -333,7 +334,16 @@ fn expand_item(
             }
         }
         // The other attribute's item: a module under `#[gpu_fn]` goes back as written, with the nested attributes
-        // dropped as for any rejected module.
+        // dropped as for any rejected module. A function under `#[gpu_module]` goes back without `#[kernel]` and
+        // `#[variant]`: they are unknown attributes outside a module, and so a second error, to rustc.
+        Ok(syn::Item::Fn(mut function)) => {
+            let error =
+                diagnostics::error(Code::ItemNotModule, &function, wrong_item_message(form));
+            function.attrs.retain(|attribute| {
+                !attribute.path().is_ident("kernel") && !attribute.path().is_ident("variant")
+            });
+            recover::beside_error(error, &quote::ToTokens::to_token_stream(&function), None)
+        }
         Ok(syn::Item::Mod(module)) => {
             let error = diagnostics::error(Code::ItemNotModule, &module, wrong_item_message(form));
             recover::beside_error(error, item, Some(without_nested_gpu(module)))

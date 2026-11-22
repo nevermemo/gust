@@ -46,7 +46,8 @@ const DIRECTORY: &str = "gust-artifacts";
 /// The manifest of that directory.
 const MANIFEST: &str = "manifest.json";
 
-/// The version of the `kernel.json` layout of a `#[gpu_module]` module or `#[gpu_fn]` function: it carries the kernel's `source`.
+/// The version of the `kernel.json` layout of a `#[gpu_module]` module or `#[gpu_fn]` function: it carries the kernel's
+/// `source`.
 const SCHEMA: u64 = 1;
 
 /// The version of the `kernel.json` layout of a `par_for!` call (R1.1 M5): the same record without `source`, so equal
@@ -54,9 +55,9 @@ const SCHEMA: u64 = 1;
 const SITE_SCHEMA: u64 = 2;
 
 /// The version of the `kernel.json` layout of a kernel whose shape is not `grid` (mx.k, D89): schema 2's grammar
-/// (`source` optional: present for a `#[gpu_module]` module or `#[gpu_fn]` function, absent for a `par_for!` call) plus `shape`. The
-/// number moves so that a reader of schema 1 and 2 refuses the record instead of reading a pixel kernel as `grid`. A
-/// `grid` kernel keeps schema 1 or 2 and has no `shape` key, byte for byte.
+/// (`source` optional: present for a `#[gpu_module]` module or `#[gpu_fn]` function, absent for a `par_for!` call) plus
+/// `shape`. The number moves so that a reader of schema 1 and 2 refuses the record instead of reading a pixel kernel as
+/// `grid`. A `grid` kernel keeps schema 1 or 2 and has no `shape` key, byte for byte.
 const SHAPE_SCHEMA: u64 = 3;
 
 /// The version of the `kernel.json` layout of a body that needs a capability or is a variant (M8, D139): schema 3's

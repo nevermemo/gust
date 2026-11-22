@@ -1,11 +1,10 @@
 //! Backend-neutral typed dispatch surface (roadmap M2, slice m2.a).
 //!
-//! A `#[gpu_module]` kernel handle (a [`Kernel`]) gets generated `call`, `submit` and `dispatch` functions, a kernel with a
-//! `Uniform<T>`/`ConstantBuffer<T>` parameter included (slice m6.u2; the host types for the uniform are here and in
-//! the backends); `call` turns
-//! typed buffer references into a [`Call`]: the kernel, the element count and one erased [`TypedDevice::Binding`] per
-//! storage, uniform or texture parameter (a sampler parameter travels beside them, see [`SamplerArg`]). This module
-//! holds only what that generated code and the backends share:
+//! A `#[gpu_module]` kernel handle (a [`Kernel`]) gets generated `call`, `submit` and `dispatch` functions, a kernel
+//! with a `Uniform<T>`/`ConstantBuffer<T>` parameter included (slice m6.u2; the host types for the uniform are here and
+//! in the backends); `call` turns typed buffer references into a [`Call`]: the kernel, the element count and one erased
+//! [`TypedDevice::Binding`] per storage, uniform or texture parameter (a sampler parameter travels beside them, see
+//! [`SamplerArg`]). This module holds only what that generated code and the backends share:
 //!
 //! - [`TypedDevice`]: extension of [`Device`] that names the erased, `Copy` binding of one device. [`Device`] itself is
 //!   unchanged, so existing backends compile as before.
@@ -51,8 +50,8 @@
 //! The `tests` module exercises this surface with two devices. The recording mock mirrors a GPU backend: one blanket
 //! `Run` impl, it records the call and never runs a kernel body (D21/D22). The CPU side is the real
 //! [`crate::cpu::CpuDevice`] (M3): the tests implement `Run` for it per hand-written test kernel, in the shape the
-//! `#[gpu_module]` macro emits for real kernels (slice m3.c), and run *hand-written test bodies* through the same `Call`.
-//! The CPU backend implements the backend contract above; its binding identity and access are read through
+//! `#[gpu_module]` macro emits for real kernels (slice m3.c), and run *hand-written test bodies* through the same
+//! `Call`. The CPU backend implements the backend contract above; its binding identity and access are read through
 //! `gust::cpu` only (the `CpuBinding` is opaque here), so this module adds no backend-neutral accessor for them.
 
 use core::fmt;

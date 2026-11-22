@@ -6,7 +6,8 @@ file carries the build's capabilities, DIFFTEST_FORMAT 7; the program space is t
 structs with methods, DIFFTEST_FORMAT 8) and m9.d1b (enums and statement `match`, DIFFTEST_FORMAT 9) and m9.d1c (the
 value-form `match`, integer patterns and tuples, DIFFTEST_FORMAT 10) and m9.d1d (arrays, DIFFTEST_FORMAT 11) and
 m9.d1e (non-capturing closures, DIFFTEST_FORMAT 12) and m9.d2 (traits and generic helpers, DIFFTEST_FORMAT 13) and
-m11.dt2 (scalar math methods and module constants, DIFFTEST_FORMAT 14) and m14.rename (the emitted modules say `#[gust::gpu_module]`, DIFFTEST_FORMAT 15). The crate generates integer, boolean and `f32`
+m11.dt2 (scalar math methods and module constants, DIFFTEST_FORMAT 14) and
+m14.rename (the emitted modules say `#[gust::gpu_module]`, DIFFTEST_FORMAT 15). The crate generates integer, boolean and `f32`
 kernels from a seed, and (since format 6) kernels that compute with the `gust::math` vectors and matrices as locals and
 intermediates (buffers and results stay scalar), and (since format 8) integer kernels that call methods of module
 structs, evaluates them with an independent
@@ -1676,7 +1677,7 @@ seeds 1 to 12, 192 programs, `cargo check`, generic methods included), `classify
 
 ## Math methods and module constants (format 14, slice m11.dt2)
 
-`DIFFTEST_FORMAT` is 15: format 15 (m14.rename, D237) changes only the spelling of the attribute in the emitted text, the programs are format 14's, and a pin of an older format is read with the old spelling. A batch is 17 programs per seed: one float, three vector, one method, two enum, two value, two
+`DIFFTEST_FORMAT` is 15 (the programs are format 14's; see "Format 15" below). A batch is 17 programs per seed: one float, three vector, one method, two enum, two value, two
 array, two closure, two trait and two math programs (`PROGRAMS_PER_SEED` of the generator, `PROGRAMS_PER_SEED` of
 `xtask/src/difftest.rs`, and the report's `17 x seeds` check agree). The math space (`Space::Math`, attempts from
 8 000 000) is the scalar float space plus `a.rem_euclid(b)` on `u32` and `i32`, `a.mul_add(b, c)`, `x.abs()`,
@@ -1700,3 +1701,12 @@ float part of a batch gives up one program for them (two value programs, as befo
   without them.
 - **Not generated (scout notes).** `sqrt`, `round` and the other inexact float methods, the old value of `atomic_add`
   bound by `let`, and integer `min`, `max`, `clamp` and `abs` are not in the generator.
+
+## Format 15 (slice m14.rename)
+
+Format 15 (D237, D243) changes only the spelling of the attribute in the emitted text: `#[gust::gpu]` became
+`#[gust::gpu_module]`. The programs are format 14's, every discard count of `seeds.txt` is the same, and only its
+`hash=` column moved. A pin of an older format is read with the old spelling (`batch_hash_as_format` in
+`tests/difftest/src/corpus.rs`), and `a_batch_still_holds_the_format_14_programs_of_every_seed` pins the eight
+format-14 batch hashes of `seeds.txt` that way, so the claim "same programs" is checked for the whole batch, math
+space included.

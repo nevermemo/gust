@@ -30,8 +30,7 @@ use std::time::Duration;
 /// On native, `submit` starts a call and returns the job; `wait` blocks until that submission is done:
 ///
 /// ```
-/// use gust::{JobStatus, gpu_module};
-/// use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
+/// use gust::{JobStatus, gpu_module}; use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 ///
 /// #[gpu_module]
 /// mod double {

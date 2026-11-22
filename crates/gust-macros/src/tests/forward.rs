@@ -1,5 +1,6 @@
-//! The facade path option (audit S6, D48): the forwarder pass, the `#[gpu_module(crate = ..)]` grammar and the `par_for!`
-//! clause. The two-crate fixture that compiles the four forms is `tests/reexport` (run by `cargo xtask check-ui`).
+//! The facade path option (audit S6, D48): the forwarder pass, the `#[gpu_module(crate = ..)]` grammar and the
+//! `par_for!` clause. The two-crate fixture that compiles the four forms is `tests/reexport` (run by `cargo xtask
+//! check-ui`).
 
 use proc_macro2::TokenStream;
 

@@ -1,7 +1,7 @@
-// The element-wise map calls of `#[gust::gpu_fn]` on a function (M7, D60) in the production CPU target: `map` and `map_on`
-// run on `gust::cpu::CpuDevice` with no GPU API, in parallel chunks of the output (slice m7.c, `GUST_CPU_THREADS`), and
-// the CPU-only chunk body `__gust_map_cpu_chunk` runs one range of elements. Built under `GUST_PROFILE=cpu` only (see
-// `build.rs`).
+// The element-wise map calls of `#[gust::gpu_fn]` on a function (M7, D60) in the production CPU target: `map` and
+// `map_on` run on `gust::cpu::CpuDevice` with no GPU API, in parallel chunks of the output (slice m7.c,
+// `GUST_CPU_THREADS`), and the CPU-only chunk body `__gust_map_cpu_chunk` runs one range of elements. Built under
+// `GUST_PROFILE=cpu` only (see `build.rs`).
 
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};

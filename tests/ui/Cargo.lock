@@ -672,6 +672,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "item-gpu-fn-on-mod"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "item-gpu-module-on-fn"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "js-sys"
 version = "0.3.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"

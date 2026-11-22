@@ -1,6 +1,6 @@
 // A storage buffer where the kernel has a sampler is a compile error in the typed call: the sampler parameter is
-// bounded by `SamplerArg`, which a buffer does not implement (nor does a texture). The kernel and its `blur_call`
-// are written by hand, as `#[gpu_module]` cannot declare a sampler parameter before slice mx.t3. expected.txt pins the code
+// bounded by `SamplerArg`, which a buffer does not implement (nor does a texture). The kernel and its `blur_call` are
+// written by hand, as `#[gpu_module]` cannot declare a sampler parameter before slice mx.t3. expected.txt pins the code
 // and the line of the call.
 #![allow(dead_code)]
 

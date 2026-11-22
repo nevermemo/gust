@@ -26,9 +26,10 @@ pub(crate) use map::expand_map_in_routed;
 pub(crate) use map::map_kernel;
 pub(crate) use map::{ElementReject, element_types, expand_map_routed};
 
-/// What names a kernel's export record to the tool that reads it: a `#[gpu_module]` module or `#[gpu_fn]` function is one place in the
-/// source, so its record says where (schema 1, `source`); a `par_for!` call is a body that can stand at any number of
-/// places, so its record says nothing of them (schema 2) and each place writes its own sidecar (R1.1 M5).
+/// What names a kernel's export record to the tool that reads it: a `#[gpu_module]` module or `#[gpu_fn]` function is
+/// one place in the source, so its record says where (schema 1, `source`); a `par_for!` call is a body that can stand
+/// at any number of places, so its record says nothing of them (schema 2) and each place writes its own sidecar (R1.1
+/// M5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Identity {
     /// A `#[gpu_module]` module or `#[gpu_fn]` function: schema 1, the record holds the kernel's `source`.
@@ -303,8 +304,9 @@ pub(crate) fn expand_with_directories(
     expand_in(module, &environment, Profile::Other)
 }
 
-/// [`expand_with_directories`] for a `#[gpu_fn]` function (an element-wise map): the same environment, so that the tests
-/// of the manifest can drive the map path, which reads the crate's manifest too (GUST-E0753 at the function's name).
+/// [`expand_with_directories`] for a `#[gpu_fn]` function (an element-wise map): the same environment, so that the
+/// tests of the manifest can drive the map path, which reads the crate's manifest too (GUST-E0753 at the function's
+/// name).
 #[cfg(test)]
 pub(crate) fn expand_map_with_directories(
     function: syn::ItemFn,
@@ -1269,7 +1271,7 @@ pub(crate) mod routing {
         pub span: Span,
     }
 
-    /// What `#[gpu_module(..)]` says: the route tag and the facade path, each of them optional.
+    /// What `#[gpu_module(..)]` or `#[gpu_fn(..)]` says: the route tag and the facade path, each of them optional.
     pub(crate) struct Attribute {
         /// `route = "<tag>"`.
         pub tag: Option<Tag>,
@@ -1277,8 +1279,8 @@ pub(crate) mod routing {
         pub krate: Option<syn::Path>,
     }
 
-    /// The arguments `#[gpu_module]` takes: `route = "<tag>"` and `crate = <path>`, in either order, each at most once, with
-    /// an optional trailing comma.
+    /// The arguments `#[gpu_module]` takes: `route = "<tag>"` and `crate = <path>`, in either order, each at most once,
+    /// with an optional trailing comma.
     struct Arguments(Attribute);
 
     const ARGUMENTS_TEXT: &str = "`#[gpu_module]` and `#[gpu_fn]` take `route = \"<tag>\"` and `crate = <path>` (for example `crate = ::inner::gust`), \

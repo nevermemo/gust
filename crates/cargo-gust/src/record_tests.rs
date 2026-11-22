@@ -862,8 +862,8 @@ fn a_record_with_a_texture_and_a_sampler_reads_and_rebuilds_the_descriptor() {
         out.layout.as_ref().unwrap().rules,
         ShaderLayoutRules::TextureV1(written)
     );
-    // The descriptor carries the same facts a `#[gpu_module]` module's own descriptor carries (`ResourceLayout::texture_v1`
-    // over the texel type), and the sampler has no layout.
+    // The descriptor carries the same facts a `#[gpu_module]` module's own descriptor carries
+    // (`ResourceLayout::texture_v1` over the texel type), and the sampler has no layout.
     let descriptor = record.descriptor();
     let rebuilt: Vec<_> = descriptor
         .parameters

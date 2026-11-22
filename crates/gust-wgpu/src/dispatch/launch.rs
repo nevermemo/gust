@@ -185,14 +185,14 @@ pub(crate) fn split_pieces(
     Ok(pieces)
 }
 
-/// Whether `variant` is the split variant the `#[gpu_module]` macro makes for `kernel`: the same kernel (module, name, entry
-/// point, shape, workgroup size, `requires`, target), the kernel's parameters and then one more, the hidden launch-base
-/// uniform at a binding past every binding of the kernel, no split of its own, and no artifact or WGSL artifacts only
-/// (a precompiled variant is the same kernel text under a key of its own, D209; an artifact of another format is not
-/// one this host runs). `KernelDescriptor::with_split` is public for the macro only; this check keeps a hand-set `split`
-/// that is not shaped like the macro's from being run. It cannot read the Slang: the run-time compiler's reflection, or
-/// the verification of the artifact (`verify_artifact`, which holds the stored reflection to the variant's parameters),
-/// is what a text that lacks the uniform fails against when the variant is compiled.
+/// Whether `variant` is the split variant the `#[gpu_module]` macro makes for `kernel`: the same kernel (module, name,
+/// entry point, shape, workgroup size, `requires`, target), the kernel's parameters and then one more, the hidden
+/// launch-base uniform at a binding past every binding of the kernel, no split of its own, and no artifact or WGSL
+/// artifacts only (a precompiled variant is the same kernel text under a key of its own, D209; an artifact of another
+/// format is not one this host runs). `KernelDescriptor::with_split` is public for the macro only; this check keeps a
+/// hand-set `split` that is not shaped like the macro's from being run. It cannot read the Slang: the run-time
+/// compiler's reflection, or the verification of the artifact (`verify_artifact`, which holds the stored reflection to
+/// the variant's parameters), is what a text that lacks the uniform fails against when the variant is compiled.
 pub(crate) fn split_variant_matches(kernel: &KernelDescriptor, variant: &KernelDescriptor) -> bool {
     let Some((hidden, own)) = variant.parameters.split_last() else {
         return false;

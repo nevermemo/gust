@@ -117,10 +117,10 @@ program with the same features.
 
 Build profiles (D44, D51): the environment variable `GUST_PROFILE` is `dev`, `native`, `web` or `cpu`, and `gust`'s
 build script reads it (any other value, including an empty one, fails the build). `native` and `web` are strict: every
-`#[gpu_module]` kernel must have a precompiled artifact, or the build fails with a compile error at the kernel, and the
+GUST kernel must have a precompiled artifact, or the build fails with a compile error at the kernel, and the
 `slang-runtime` feature is refused, so the build holds no run-time Slang bridge (wgpu and the driver still compile the
 shipped WGSL or SPIR-V when the pipeline is created). `dev` has neither rule. A release build is strict even without the
-variable: with `GUST_PROFILE` unset, `cargo build --release` of a crate with `#[gpu_module]` kernels is treated as `web` for
+variable: with `GUST_PROFILE` unset, `cargo build --release` of a crate with GUST kernels is treated as `web` for
 `wasm32` and `native` for every other target, and prints
 `warning: gust-compute@<version>: gust: release build without GUST_PROFILE treated as native` (or `web`; cargo shows a
 build script's warning only for path and workspace packages, or with `-vv`). The one exception is the internal
@@ -381,7 +381,7 @@ cargo build --release
 ./target/release/hello-gust       # target\release\hello-gust.exe on Windows
 ```
 
-A release build with `GUST_PROFILE` unset is the strict `native` profile (`web` on wasm32): every `#[gpu_module]` kernel needs
+A release build with `GUST_PROFILE` unset is the strict `native` profile (`web` on wasm32): every GUST kernel needs
 its artifact, and the binary holds no Slang bridge (the build profiles are described under "Try it"; unless
 `cargo-gust` is listed as a dependency, which cargo flags as invalid: that build is `dev`, D117). Commit
 `gust-artifacts/`; `cargo gust check` fails when it no longer matches the sources. The first `cargo gust build` of a

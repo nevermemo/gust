@@ -55,10 +55,10 @@
 //!
 //! # Stability
 //!
-//! This crate is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version (`0.1` to `0.2`),
-//! and a patch release (`0.1.0` to `0.1.1`) only adds or fixes. The four crates of a release (`gust-compute`, the `#[gpu_module]`
-//! macro crate, this crate and `cargo-gust`) share one version and depend on each other with exact (`=`) pins: take
-//! them at the same version, and a minor bump of one is a minor bump of all.
+//! This crate is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version (`0.1` to `0.2`), and
+//! a patch release (`0.1.0` to `0.1.1`) only adds or fixes. The four crates of a release (`gust-compute`, the
+//! `#[gpu_module]` macro crate, this crate and `cargo-gust`) share one version and depend on each other with exact
+//! (`=`) pins: take them at the same version, and a minor bump of one is a minor bump of all.
 //!
 //! What a minor bump may change: any public item that is not support surface, including a function's signature and
 //! the public fields of the plain record types (`BufferDispatch`, `DeviceOptions` and the like).

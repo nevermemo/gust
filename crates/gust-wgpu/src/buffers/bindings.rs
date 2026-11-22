@@ -8,8 +8,7 @@ use gust::{Access, BindingKind, GpuPod};
 ///
 /// ```
 /// # #![allow(deprecated)]
-/// use gust::gpu_module;
-/// use gust_wgpu::{F32BufferBinding, GpuBufferAccess, HeadlessDevice};
+/// use gust::gpu_module; use gust_wgpu::{F32BufferBinding, GpuBufferAccess, HeadlessDevice};
 ///
 /// #[gpu_module]
 /// mod vector_add {
@@ -73,8 +72,7 @@ impl<'a> F32BufferBinding<'a> {
 /// A small settings buffer, which has its own length, opts out of the length rule with `independent_length`:
 ///
 /// ```
-/// use gust::gpu_module;
-/// use gust_wgpu::{BufferBinding, BufferDispatch, GpuBufferAccess, HeadlessDevice};
+/// use gust::gpu_module; use gust_wgpu::{BufferBinding, BufferDispatch, GpuBufferAccess, HeadlessDevice};
 ///
 /// #[gpu_module]
 /// mod scale {

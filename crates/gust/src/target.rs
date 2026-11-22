@@ -1,9 +1,9 @@
 //! The target a kernel is built for (D21, D65, D137).
 //!
-//! A kernel is built for one target in one build: the GPU, or the CPU (D51). `KernelDescriptor::target` records
-//! which. The `#[gpu_module]` macro decides it per module at expansion, from the build profile and the module's route tag
-//! (M8, slice m8.r1, D137): a module routed to the CPU, and every module under `GUST_PROFILE=cpu`, is [`Target::Cpu`]
-//! and has no [`GpuKernel`] impl; any other is [`Target::Gpu`].
+//! A kernel is built for one target in one build: the GPU, or the CPU (D51). `KernelDescriptor::target` records which.
+//! The `#[gpu_module]` macro decides it per module at expansion, from the build profile and the module's route tag (M8,
+//! slice m8.r1, D137): a module routed to the CPU, and every module under `GUST_PROFILE=cpu`, is [`Target::Cpu`] and
+//! has no [`GpuKernel`] impl; any other is [`Target::Gpu`].
 
 use crate::Kernel;
 

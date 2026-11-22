@@ -13,8 +13,7 @@ use gust::{Extent, KernelDescriptor};
 /// [`Error::Extent`] when the graph runs), and reads `element_count`.
 ///
 /// ```
-/// use gust::{Extent, gpu_module};
-/// use gust_wgpu::{BufferBinding, BufferDispatch, GpuBufferAccess, HeadlessDevice};
+/// use gust::{Extent, gpu_module}; use gust_wgpu::{BufferBinding, BufferDispatch, GpuBufferAccess, HeadlessDevice};
 ///
 /// #[gpu_module]
 /// mod double {
@@ -128,8 +127,7 @@ impl<'a> BufferDispatch<'a> {
 ///
 /// ```
 /// # #![allow(deprecated)]
-/// use gust::gpu_module;
-/// use gust_wgpu::{F32BufferBinding, F32BufferDispatch, GpuBufferAccess, HeadlessDevice};
+/// use gust::gpu_module; use gust_wgpu::{F32BufferBinding, F32BufferDispatch, GpuBufferAccess, HeadlessDevice};
 ///
 /// #[gpu_module]
 /// mod double {

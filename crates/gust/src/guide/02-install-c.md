@@ -20,6 +20,6 @@ cargo gust build -p hello-gust    # compiles the kernels with Slang, verifies th
 cargo build --release
 ```
 
-A release build with `GUST_PROFILE` unset is the strict `native` profile: every `#[gpu_module]` kernel needs its artifact,
+A release build with `GUST_PROFILE` unset is the strict `native` profile: every GUST kernel needs its artifact,
 and the binary holds no Slang bridge. Commit `gust-artifacts/`; `cargo gust check` fails when it no longer matches the
 sources.

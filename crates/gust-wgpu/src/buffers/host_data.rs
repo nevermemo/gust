@@ -10,8 +10,7 @@ use gust::Access;
 ///
 /// ```
 /// # #![allow(deprecated)]
-/// use gust::gpu_module;
-/// use gust_wgpu::{F32Binding, HeadlessDevice};
+/// use gust::gpu_module; use gust_wgpu::{F32Binding, HeadlessDevice};
 ///
 /// #[gpu_module]
 /// mod vector_add {
@@ -78,8 +77,7 @@ impl<'a> F32Binding<'a> {
 ///
 /// ```
 /// # #![allow(deprecated)]
-/// use gust::gpu_module;
-/// use gust_wgpu::{HeadlessDevice, U32Binding};
+/// use gust::gpu_module; use gust_wgpu::{HeadlessDevice, U32Binding};
 ///
 /// #[gpu_module]
 /// mod counting {

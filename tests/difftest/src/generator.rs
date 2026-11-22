@@ -567,8 +567,8 @@ impl Gen<'_> {
                 Expr::bin(BinOp::BitOr, e, Expr::Lit(ty, 1))
             }
             2 => match self.expr(ty, depth) {
-                // A literal zero divisor is rejected by the `#[gpu_module]` validator (`DivisionByLiteralZero`) even in a
-                // branch no input reaches, so it is never emitted.
+                // A literal zero divisor is rejected by the `#[gpu_module]` validator (`DivisionByLiteralZero`) even in
+                // a branch no input reaches, so it is never emitted.
                 Expr::Lit(_, 0) => Expr::Lit(ty, 1),
                 other => other,
             },

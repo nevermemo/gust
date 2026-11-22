@@ -59,9 +59,10 @@ use wgpu::naga::{
 };
 
 // The Rust sources of the goldens. Each is included into a module of its own (the test files that run them define one
-// module per file); `KERNELS` is the descriptor list of the fixture's `#[gpu_module]` module. The two lints are the ones the
-// fixtures trip on as Rust: `coretests.rs` compares against the type's minimum on purpose (its test file allows the
-// same lint), and `vectors.rs` writes `w = w * s` on purpose (its golden pins that spelling beside `w *= v`).
+// module per file); `KERNELS` is the descriptor list of the fixture's `#[gpu_module]` module. The two lints are the
+// ones the fixtures trip on as Rust: `coretests.rs` compares against the type's minimum on purpose (its test file
+// allows the same lint), and `vectors.rs` writes `w = w * s` on purpose (its golden pins that spelling beside `w *=
+// v`).
 macro_rules! fixture {
     ($name:ident, $module:ident, $path:literal) => {
         #[allow(clippy::absurd_extreme_comparisons, clippy::assign_op_pattern)]

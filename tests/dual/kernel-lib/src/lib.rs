@@ -1,6 +1,6 @@
-// The kernel crate of the cross-crate fixture. The `#[gust::gpu_module]` module is in the vector-add shape. The CPU twin
-// of `add` is emitted into THIS crate under `cfg(any(test, gust_dual))` (D26), so a dependent crate can run it only
-// when `kernel-lib` itself is compiled with `--cfg gust_dual`: its own `cfg(test)` does not reach a dependency.
+// The kernel crate of the cross-crate fixture. The `#[gust::gpu_module]` module is in the vector-add shape. The CPU
+// twin of `add` is emitted into THIS crate under `cfg(any(test, gust_dual))` (D26), so a dependent crate can run it
+// only when `kernel-lib` itself is compiled with `--cfg gust_dual`: its own `cfg(test)` does not reach a dependency.
 
 #[gust::gpu_module]
 pub mod kernels {

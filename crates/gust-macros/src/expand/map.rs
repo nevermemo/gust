@@ -20,12 +20,12 @@
 //!
 //! The generator does not emit a second pipeline. It builds the module above as syntax (the user's function validated
 //! as a helper of a module, the kernel written in the dialect around it) and hands it to the expansion that every
-//! `#[gpu_module]` module goes through, so the Slang, the descriptor, the typed calls, the CPU `Run` impl and the artifact
-//! handling are the ones of any kernel, and `extra` carries the host functions. The kernel is the grid-stride form of
-//! spike m7.s1: every buffer is bound `Independent`, the element count is the output's length, a dispatch has
-//! `min(n, CEILING)` invocations, and each invocation covers `ceil(n / CEILING)` rounds. An input buffer of length 1
-//! is a [`Broadcast`](https://docs.rs/) argument and is read at index 0, so one kernel serves every mix of vectors
-//! and broadcasts.
+//! `#[gpu_module]` module goes through, so the Slang, the descriptor, the typed calls, the CPU `Run` impl and the
+//! artifact handling are the ones of any kernel, and `extra` carries the host functions. The kernel is the grid-stride
+//! form of spike m7.s1: every buffer is bound `Independent`, the element count is the output's length, a dispatch has
+//! `min(n, CEILING)` invocations, and each invocation covers `ceil(n / CEILING)` rounds. An input buffer of length 1 is
+//! a [`Broadcast`](https://docs.rs/) argument and is read at index 0, so one kernel serves every mix of vectors and
+//! broadcasts.
 //!
 //! Profiles. Under `GUST_PROFILE=cpu` the host functions name only `::gust::cpu` (no GPU API), `map_gpu` and
 //! `map_async` are not emitted, and `map_on` and `map_on_async` are concrete over `CpuDevice` and run the CPU-only
@@ -113,8 +113,8 @@ pub(crate) fn map_kernel(function: &syn::ItemFn, profile: Profile) -> syn::Resul
     Ok(MapKernel { module, host })
 }
 
-/// Expands `#[gpu_fn]` on a free function for `profile`: the function as written, then its module. The function may carry
-/// a route (`#[gpu_fn(route = "tag")] fn`, M8, D65 to D67).
+/// Expands `#[gpu_fn]` on a free function for `profile`: the function as written, then its module. The function may
+/// carry a route (`#[gpu_fn(route = "tag")] fn`, M8, D65 to D67).
 pub(crate) fn expand_map_routed(
     function: syn::ItemFn,
     profile: Profile,

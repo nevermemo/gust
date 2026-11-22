@@ -70,10 +70,10 @@
 //!
 //! # Why two modules
 //!
-//! `SIDE` is a module constant, so one `#[gpu_module]` module has one grid size (`MASK = SIDE - 1` and `CELLS = SIDE * SIDE`
-//! are constant expressions of it, D210). The macro below takes the side and writes the module and the
-//! host code that drives it once per size: `big` (512, the run of `main` and the GPU tests) and, under `cfg(test)`,
-//! `small` (32, the unit tests on the twin).
+//! `SIDE` is a module constant, so one `#[gpu_module]` module has one grid size (`MASK = SIDE - 1` and `CELLS = SIDE *
+//! SIDE` are constant expressions of it, D210). The macro below takes the side and writes the module and the host code
+//! that drives it once per size: `big` (512, the run of `main` and the GPU tests) and, under `cfg(test)`, `small` (32,
+//! the unit tests on the twin).
 
 #[cfg(any(test, gust_dual))]
 use gust::cpu::CpuDevice;

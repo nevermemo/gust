@@ -1,6 +1,6 @@
 // A dialect error inside the body of a `par_for!` is reported at the body, with the code of the same error in a
-// `#[gpu_module]` kernel (D33): a `while` loop is GUST-E0402, and the error points at the `while`, not at the call or at the
-// code the macro generates around the body. expected.txt pins the code and the line of the `while`.
+// `#[gpu_module]` kernel (D33): a `while` loop is GUST-E0402, and the error points at the `while`, not at the call or
+// at the code the macro generates around the body. expected.txt pins the code and the line of the `while`.
 
 use gust::cpu::CpuDevice;
 

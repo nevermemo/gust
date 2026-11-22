@@ -1,7 +1,7 @@
 //! `export_unchecked`: storage parameters whose element layout the macro could not write (`layout: null`).
 //!
-//! These tests use the real vector-add artifact and the reflection JSON the native helper wrote for it (gust's
-//! fixture, spike S1) with the descriptor `#[gust::gpu_module]` makes of the same kernel, so the cross-check that runs here is
+//! These tests use the real vector-add artifact and the reflection JSON the native helper wrote for it (gust's fixture,
+//! spike S1) with the descriptor `#[gust::gpu_module]` makes of the same kernel, so the cross-check that runs here is
 //! gust's own and no helper is needed.
 
 use gust::{Access, ParameterKind, ScalarKind, ShaderLayoutRules, artifact::verify_artifact};

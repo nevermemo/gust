@@ -21,7 +21,7 @@ USAGE:
 
 COMMANDS:
     init     create gust-artifacts/manifest.json (an empty manifest) in the crate
-    build    collect the crate's #[gpu_module] kernels, compile them with Slang, verify them (D17) and write gust-artifacts/
+    build    collect the crate's #[gpu_module] and #[gpu_fn] kernels, compile them with Slang, verify them (D17) and write gust-artifacts/
              WGSL is always built; --format spirv adds SPIR-V (checked with spirv-val when it is on PATH)
     check    fail unless gust-artifacts/ is exactly what a build of the current sources gives
              --recompile also recompiles and compares the bytes; --allow-slang-mismatch accepts another Slang build

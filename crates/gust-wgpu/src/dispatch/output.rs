@@ -7,8 +7,7 @@ use crate::{F32Binding, U32Binding};
 ///
 /// ```
 /// # #![allow(deprecated)]
-/// use gust::gpu_module;
-/// use gust_wgpu::{F32Binding, HeadlessDevice};
+/// use gust::gpu_module; use gust_wgpu::{F32Binding, HeadlessDevice};
 ///
 /// #[gpu_module]
 /// mod double {
@@ -45,8 +44,7 @@ pub struct DispatchOutput {
 ///
 /// ```
 /// # #![allow(deprecated)]
-/// use gust::gpu_module;
-/// use gust_wgpu::{HeadlessDevice, U32Binding};
+/// use gust::gpu_module; use gust_wgpu::{HeadlessDevice, U32Binding};
 ///
 /// #[gpu_module]
 /// mod bump {

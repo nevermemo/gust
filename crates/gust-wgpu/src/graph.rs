@@ -228,8 +228,7 @@ fn readback_kind<'a, T: GpuPod>(buffer: &'a GpuBuffer<T>) -> NodeKind<'a> {
 /// and moves only the input and the result across the host boundary:
 ///
 /// ```
-/// use gust::gpu_module;
-/// use gust_wgpu::{GpuBufferAccess, HeadlessDevice, StagedGraph};
+/// use gust::gpu_module; use gust_wgpu::{GpuBufferAccess, HeadlessDevice, StagedGraph};
 ///
 /// #[gpu_module]
 /// mod ops {
@@ -767,8 +766,7 @@ impl HeadlessDevice {
     /// can then fail.
     ///
     /// ```
-    /// use gust::gpu_module;
-    /// use gust_wgpu::{GpuBufferAccess, HeadlessDevice, StagedGraph};
+    /// use gust::gpu_module; use gust_wgpu::{GpuBufferAccess, HeadlessDevice, StagedGraph};
     ///
     /// #[gpu_module]
     /// mod ops {

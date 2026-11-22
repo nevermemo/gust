@@ -210,8 +210,7 @@ pub struct Verified {
 /// An artifact whose stored reflection is not a reflection document is refused before anything else is compared:
 ///
 /// ```
-/// use gust::artifact::{Artifact, Format, verify_artifact};
-/// use gust::gpu_module;
+/// use gust::artifact::{Artifact, Format, verify_artifact}; use gust::gpu_module;
 ///
 /// #[gpu_module]
 /// mod ops {

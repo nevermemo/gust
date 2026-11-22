@@ -1082,7 +1082,7 @@ fn a_variant_key_is_judged_by_the_capabilities_the_manifest_lists_for_it() {
 fn a_page_that_selects_the_split_key_of_a_kernel_is_refused() {
     let selected = |key: &str| {
         split_page_label(&format!(
-            "a b | selected m.k={key}:-:0 | subgroups MissingCapability"
+            "a b | selected m.k={key}:-:0 | split ran | split fallback DeviceLimit | subgroups MissingCapability"
         ))
         .unwrap()
         .1

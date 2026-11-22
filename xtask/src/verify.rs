@@ -16,8 +16,9 @@ use crate::{
     precompiled::check_precompiled_report,
     process::{
         CheckRecord, HELPER_VARIABLE, TestTotals, report_check, repository_helper, require_command,
-        require_tests_ran, run_cargo_test_captured, run_cargo_test_captured_under, run_checked,
-        run_checked_owned, run_direct_args, sum_test_results, without_colors, workspace_command,
+        require_tests_ran, run_capture, run_cargo_test_captured, run_cargo_test_captured_under,
+        run_checked, run_checked_owned, run_direct_args, sum_test_results, without_colors,
+        workspace_command,
     },
     reflect::{BuildOptions, build_slang_reflect},
     release::check_release_report,
@@ -1428,13 +1429,14 @@ pub(crate) fn adapter_line(adapter: &AdapterRecord) -> String {
 /// Runs [`ADAPTER_INFO_ARGS`] and returns [`adapter_line`] of the adapter it names (`HeadlessDevice` picks the first
 /// Vulkan adapter, the one the Gpu suite's tests open). A run that fails or names no adapter is an error.
 pub(crate) fn name_adapter(root: &Path) -> Result<String, String> {
-    let output = workspace_command("cargo")
-        .args(ADAPTER_INFO_ARGS)
-        .current_dir(root)
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::inherit())
-        .output()
-        .map_err(|error| format!("could not launch cargo: {error}"))?;
+    let output = run_capture(
+        workspace_command("cargo")
+            .args(ADAPTER_INFO_ARGS)
+            .current_dir(root)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit()),
+        "cargo",
+    )?;
     if !output.status.success() {
         return Err(format!(
             "cargo {} failed (exit {})",
@@ -1656,14 +1658,15 @@ fn run_strict_build(
     args: &[String],
 ) -> Result<(), String> {
     println!("-- GUST_PROFILE={profile} cargo {}", args.join(" "));
-    let output = Command::new("cargo")
-        .args(args)
-        .current_dir(root)
-        .env("GUST_PROFILE", profile)
-        .env("CARGO_TARGET_DIR", target)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|error| format!("could not launch cargo: {error}"))?;
+    let output = run_capture(
+        Command::new("cargo")
+            .args(args)
+            .current_dir(root)
+            .env("GUST_PROFILE", profile)
+            .env("CARGO_TARGET_DIR", target)
+            .stdin(std::process::Stdio::null()),
+        "cargo",
+    )?;
     if output.status.success() {
         return Ok(());
     }
@@ -1708,14 +1711,15 @@ fn check_strict_subgroups_example(root: &Path) -> Result<String, String> {
         "-- GUST_PROFILE={STRICT_SUBGROUPS_PROFILE} cargo {}",
         args.join(" ")
     );
-    let output = Command::new("cargo")
-        .args(&args)
-        .current_dir(root)
-        .env("GUST_PROFILE", STRICT_SUBGROUPS_PROFILE)
-        .env("CARGO_TARGET_DIR", &target)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|error| format!("could not launch cargo: {error}"))?;
+    let output = run_capture(
+        Command::new("cargo")
+            .args(&args)
+            .current_dir(root)
+            .env("GUST_PROFILE", STRICT_SUBGROUPS_PROFILE)
+            .env("CARGO_TARGET_DIR", &target)
+            .stdin(std::process::Stdio::null()),
+        "cargo",
+    )?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     print!("{stdout}");
     eprint!("{}", String::from_utf8_lossy(&output.stderr));

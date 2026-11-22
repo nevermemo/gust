@@ -4,6 +4,8 @@ use std::{
     process::Command,
 };
 
+use crate::process::run_capture;
+
 pub(crate) const EXAMPLES: &[&str] = &[
     "atomic-counter",
     "vector-add",
@@ -154,11 +156,7 @@ pub(crate) fn changed_paths() -> Result<Vec<String>, String> {
         ["diff", "--name-only", "HEAD"].as_slice(),
         ["ls-files", "--others", "--exclude-standard"].as_slice(),
     ] {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(&root)
-            .output()
-            .map_err(|error| format!("could not launch git: {error}"))?;
+        let output = run_capture(Command::new("git").args(args).current_dir(&root), "git")?;
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).into_owned());
         }
@@ -176,17 +174,18 @@ pub(crate) fn changed_paths() -> Result<Vec<String>, String> {
 /// Repository-relative paths (forward slashes) of the files the next commit would contain:
 /// tracked files plus untracked files that are not ignored, limited to files that exist.
 pub(crate) fn project_files(root: &Path) -> Result<Vec<String>, String> {
-    let output = Command::new("git")
-        .args([
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-        ])
-        .current_dir(root)
-        .output()
-        .map_err(|error| format!("could not launch git: {error}"))?;
+    let output = run_capture(
+        Command::new("git")
+            .args([
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+            ])
+            .current_dir(root),
+        "git",
+    )?;
     if !output.status.success() {
         return Err(format!(
             "git ls-files failed: {}",

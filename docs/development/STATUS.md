@@ -834,6 +834,10 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       are GUST-E0127. GPU test indices from the element id, buffer data and a loop counter; GPU_SUITE_PIN 574
       over 58, confirmed by the full Gpu suite on the merged tree (RTX 5090); the slice's GPU test also ran on the
       Radeon 890M. Opus review: merge, two should-fix items fixed. Decision row D219.
+    - m13.dedup-xtask (`a5c6dbc`, tidy round approved by the owner): xtask's process and JSON helpers get one
+      home each (`process::cargo_program`, `process::run_capture`, one `slangc_cannot_be_found`, JSON accessors
+      in `json.rs`), about 40 lines fewer; behaviour unchanged (xtask tests 672 before and after; Opus review:
+      every changed message compared, merge).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

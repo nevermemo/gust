@@ -42,7 +42,9 @@ use std::{
 
 use crate::{
     precompiled::{StripReport, child_environment, directory_has_slang_tool, slang_free_problems},
-    process::{exit_code, set_workspace_profile, without_colors},
+    process::{
+        exit_code, run_capture, set_workspace_profile, slangc_cannot_be_found, without_colors,
+    },
     web::{Example, Options as WebOptions, evidence_label, run_example},
     workspace::{cargo_target_dir, workspace_root},
 };
@@ -739,51 +741,6 @@ pub(crate) fn slang_home_problem(directory: &Path) -> Option<String> {
     }
 }
 
-/// Whether the shell of the platform finds `slangc` with the `PATH` of `environment`: `Ok(())` when it does not. The
-/// logic of `slangc_cannot_be_found` in `precompiled.rs` (private there, and that file is not this slice's), run
-/// through a shell because `Command::new("slangc")` would fall back to the parent's `PATH` on Windows.
-/// On Unix the shell is `/bin/sh` by absolute path, because std would look up a bare `sh` in the child's own (stripped)
-/// `PATH`.
-fn slangc_cannot_be_found(environment: &[(OsString, OsString)]) -> Result<(), String> {
-    let mut probe = if cfg!(windows) {
-        let mut probe = Command::new("cmd");
-        probe.args(["/d", "/c", "where", "slangc"]);
-        probe
-    } else {
-        let mut probe = Command::new("/bin/sh");
-        probe.args(["-c", "command -v slangc"]);
-        probe
-    };
-    probe
-        .env_clear()
-        .envs(environment.iter().map(|(name, value)| (name, value)))
-        .stdin(Stdio::null());
-    let output = probe
-        .output()
-        .map_err(|error| format!("could not run the lookup of `slangc`: {error}"))?;
-    let code = output.status.code();
-    // `where` answers 1 when it finds nothing and 2 for an error; `command -v` answers non-zero when it finds nothing.
-    let absent = if cfg!(windows) {
-        code == Some(1)
-    } else {
-        !output.status.success()
-    };
-    if absent {
-        return Ok(());
-    }
-    if output.status.success() {
-        return Err(format!(
-            "`slangc` is found with the stripped environment: {}",
-            String::from_utf8_lossy(&output.stdout).trim()
-        ));
-    }
-    Err(format!(
-        "the lookup of `slangc` failed (exit {}): {}",
-        exit_code(output.status),
-        String::from_utf8_lossy(&output.stderr).trim()
-    ))
-}
-
 /// The variables of a child, as `(name, value)` pairs.
 pub(crate) type Environment = [(OsString, OsString)];
 
@@ -867,10 +824,7 @@ fn tail(text: &str, count: usize) -> String {
 
 fn exec(mut command: Command, label: &str) -> Result<Done, String> {
     println!("  $ {label}");
-    let output = command
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| format!("could not launch {label}: {error}"))?;
+    let output = run_capture(command.stdin(Stdio::null()), label)?;
     Ok(Done {
         success: output.status.success(),
         code: exit_code(output.status),

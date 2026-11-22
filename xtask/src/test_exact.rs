@@ -1,4 +1,7 @@
-use crate::{process::workspace_command, workspace::workspace_root};
+use crate::{
+    process::{run_capture, workspace_command},
+    workspace::workspace_root,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct TestExactOptions {
@@ -76,11 +79,10 @@ pub(crate) fn test_exact(options: &TestExactOptions) -> Result<(), String> {
 
     let mut list = options.base_args();
     list.extend(["--".to_owned(), "--list".to_owned()]);
-    let listing = workspace_command("cargo")
-        .args(&list)
-        .current_dir(&root)
-        .output()
-        .map_err(|error| format!("could not launch cargo: {error}"))?;
+    let listing = run_capture(
+        workspace_command("cargo").args(&list).current_dir(&root),
+        "cargo",
+    )?;
     if !listing.status.success() {
         eprint!("{}", String::from_utf8_lossy(&listing.stderr));
         return Err(format!(
@@ -107,11 +109,10 @@ pub(crate) fn test_exact(options: &TestExactOptions) -> Result<(), String> {
         ]
         .map(str::to_owned),
     );
-    let output = workspace_command("cargo")
-        .args(&run)
-        .current_dir(&root)
-        .output()
-        .map_err(|error| format!("could not launch cargo: {error}"))?;
+    let output = run_capture(
+        workspace_command("cargo").args(&run).current_dir(&root),
+        "cargo",
+    )?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     print!("{stdout}");
     eprint!("{}", String::from_utf8_lossy(&output.stderr));

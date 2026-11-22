@@ -46,7 +46,10 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use crate::workspace::{cargo_target_dir, workspace_root};
+use crate::{
+    process::cargo_program,
+    workspace::{cargo_target_dir, workspace_root},
+};
 
 /// The example, relative to the repository root.
 const EXAMPLE_DIR: &str = "examples/web-vector-add";
@@ -721,7 +724,7 @@ pub(crate) fn feature_scope_problems(host_tree: &str, wasm_tree: &str) -> Vec<St
 
 /// `cargo tree --locked --workspace -e features -i wgpu`, for the host or for `target`.
 fn wgpu_feature_tree(root: &Path, target: Option<&str>) -> Result<String, String> {
-    let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let cargo = cargo_program();
     let mut command = Command::new(cargo);
     command
         .args([
@@ -1009,7 +1012,7 @@ fn require_wasm_target() -> Result<(), String> {
 
 fn build_example(root: &Path, example: &Example, target_dir: &Path) -> Result<PathBuf, String> {
     let (package, out_name) = (example.package, example.out_name);
-    let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let cargo = cargo_program();
     let mut build = Command::new(cargo);
     for name in example.cleared_env {
         build.env_remove(name);

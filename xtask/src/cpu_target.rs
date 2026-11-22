@@ -47,7 +47,7 @@ use crate::{
     checks::{DualKind, DualStep, RUSTFLAGS_VARIABLES, dual_command, target_rustflags_variables},
     json::{self, Json},
     precompiled::count_occurrences,
-    process::{PROFILE_VARIABLE, exit_code, without_colors},
+    process::{PROFILE_VARIABLE, exit_code, run_capture, without_colors},
     ui::{Expectation, judge_for, parse_expectation},
     workspace::{cargo_target_dir, workspace_root},
 };
@@ -900,9 +900,7 @@ pub(crate) fn judge_run(
 
 impl Check {
     fn output(&self, id: &'static str, call: &Call) -> Result<Output, String> {
-        call.command(&self.root, id)
-            .output()
-            .map_err(|error| format!("could not launch cargo: {error}"))
+        run_capture(&mut call.command(&self.root, id), "cargo")
     }
 
     /// Runs a call that must succeed.

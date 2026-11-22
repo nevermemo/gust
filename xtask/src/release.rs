@@ -60,7 +60,7 @@ use crate::{
     checks::cargo_home,
     json::{self, Json},
     precompiled::{is_inside, lock_packages, snapshot, unused_patch_lines},
-    process::{PROFILE_VARIABLE, exit_code},
+    process::{PROFILE_VARIABLE, cargo_program, exit_code, untar_crate_command},
     workspace::workspace_root,
 };
 
@@ -1197,11 +1197,6 @@ pub(crate) fn docsrs_runs<'a>(libraries: &[&'a Member]) -> Vec<(Option<String>, 
 // ---------------------------------------------------------------------------------------------------------------
 // The run
 
-/// `$CARGO` when set (it is under `cargo xtask`), else `cargo`.
-fn cargo_program() -> OsString {
-    env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
-}
-
 /// The directory that holds a run's files. It is deleted by [`WorkDir::finish`], whose failure is reported; the drop
 /// is only the fallback for a run that panics. Shared by `check-release` and E8 of `check-precompiled`.
 pub(crate) struct WorkDir {
@@ -1893,13 +1888,7 @@ fn r2_unpacked(run: &Run, publishable: &[&Member]) -> Result<PathBuf, String> {
     let mut problems = Vec::new();
     for member in publishable {
         let file = format!("{}-{}.crate", member.name, member.version);
-        // `tar` runs in the unpacked directory and reads the archive by a relative path: a drive letter in an
-        // argument would be read as a host name by some tars.
-        let mut tar = Command::new("tar");
-        tar.current_dir(&unpacked)
-            .args(["-xzf", &format!("../crates/{file}")])
-            .stdin(Stdio::null());
-        let output = tar
+        let output = untar_crate_command(&unpacked, &file)
             .output()
             .map_err(|error| format!("check-release R2: could not run tar: {error}"))?;
         if !output.status.success() {

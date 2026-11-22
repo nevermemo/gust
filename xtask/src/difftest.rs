@@ -41,7 +41,7 @@ use std::{
 
 use crate::{
     checks::tests_not_ok,
-    json::{self, Json},
+    json::{self, Json, array, field, float, text, uint},
     process::{require_tests_ran, sum_test_results, workspace_command},
     workspace::{cargo_target_dir, workspace_root},
 };
@@ -814,42 +814,6 @@ fn is_shape_row(name: &str) -> bool {
         || name.starts_with("trait ")
         || name.starts_with("generic ")
         || name == "return"
-}
-
-fn field<'a>(json: &'a Json, key: &str) -> Result<&'a Json, String> {
-    json.get(key)
-        .ok_or_else(|| format!("report.json has no `{key}`"))
-}
-
-fn uint(json: &Json, key: &str) -> Result<u64, String> {
-    match field(json, key)? {
-        Json::Number(text) => text
-            .parse()
-            .map_err(|_| format!("report.json `{key}` is not a whole number: {text}")),
-        _ => Err(format!("report.json `{key}` is not a number")),
-    }
-}
-
-fn float(json: &Json, key: &str) -> Result<f64, String> {
-    match field(json, key)? {
-        Json::Number(text) => text
-            .parse()
-            .map_err(|_| format!("report.json `{key}` is not a number: {text}")),
-        _ => Err(format!("report.json `{key}` is not a number")),
-    }
-}
-
-fn text(json: &Json, key: &str) -> Result<String, String> {
-    field(json, key)?
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| format!("report.json `{key}` is not a string"))
-}
-
-fn array<'a>(json: &'a Json, key: &str) -> Result<&'a [Json], String> {
-    field(json, key)?
-        .as_array()
-        .ok_or_else(|| format!("report.json `{key}` is not an array"))
 }
 
 /// Reads the fields of a `report.json`. A missing or mistyped field is an error: a report this function cannot read

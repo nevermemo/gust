@@ -1,6 +1,6 @@
 //! The product table behind `*` and `*=` in a module that names a matrix (slice m6.m2, M6 plan 2.1).
 //!
-//! This file is plain data and string templates. Three things read it: the Slang overload text (`slang/mod.rs`), the
+//! This file is plain data and string templates. Three things read it: the Slang overload text (`slang/kernel.rs`), the
 //! generator of the `Mul` and `MulAssign` impls of `gust::math` (`mul_impls.rs`), and the macro-crate tests, which
 //! check that the `products` golden holds every row (`tests/fixtures/products.rs`, compiled by slangc in
 //! `crates/gust/tests/diagnostics.rs`).

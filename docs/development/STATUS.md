@@ -896,6 +896,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       place; a suite test pins the retirement and the first-release checklist restores both. Group (a) lines in
       README, ROADMAP, HANDOFF, NEXT_TASKS changed; history and manifests (0.2.0) kept. Opus review: merge after
       fixes; fixed.
+    - m13.t1b (tidy round): the macro crate's Slang emitter `slang/mod.rs` (4,197 lines) is split by concern into
+      15 submodules (kernel, statements, expressions, value_if, declarations, calls, control, arrays, types,
+      closures, helpers, operators, usage, lowering, records); mod.rs keeps 152 lines. Moves only: 108 private items
+      became `pub(super)`, nothing wider; emitted Slang for 379 modules and 444 kernels is byte-identical with the
+      guards off and on. Doc pointers follow. Opus review: merge after fixes (pointers); fixed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

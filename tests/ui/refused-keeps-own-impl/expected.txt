@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see math-refused/expected.txt).
+# A macro error is a `compile_error!` and has no rustc code, so `code: none`; the line is the `impl Clone`.
+code: none
+file: refused-keeps-own-impl/src/main.rs
+line: 15
+message: [GUST-E0102] a trait impl is for a trait declared in this `#[gpu]` module

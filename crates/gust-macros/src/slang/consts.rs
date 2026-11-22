@@ -7,9 +7,12 @@
 //! their own compiler and read one value. An item that is one literal (or `-` and one literal) is written exactly as
 //! in slice m11.g3; a larger expression is fully parenthesised, so no precedence rule of Slang is relied on.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use super::{emit_ident, emit_literal, emit_type, integer_literal};
+use syn::ext::IdentExt as _;
+
+use super::{array_length_literal, emit_ident, emit_literal, emit_type, integer_literal};
 use crate::diagnostics::{self, Code};
 use crate::validate::{ConstScalar, const_binary_operator, const_scalar};
 
@@ -21,6 +24,11 @@ pub(crate) fn emit_consts(output: &mut String, items: &[syn::Item]) -> syn::Resu
         let syn::Item::Const(item) = item else {
             continue;
         };
+        if let syn::Type::Array(array) = item.ty.as_ref() {
+            emit_array(output, item, array)?;
+            any = true;
+            continue;
+        }
         let Some(scalar) = const_scalar(&item.ty) else {
             return Err(not_a_constant(item));
         };
@@ -38,6 +46,71 @@ pub(crate) fn emit_consts(output: &mut String, items: &[syn::Item]) -> syn::Resu
         writeln!(output).unwrap();
     }
     Ok(())
+}
+
+/// One `static const <type> <name>[N] = { e0, e1, .. };` line for an array constant (slice m12.carr). Each element is
+/// written as the scalar form writes the whole initializer of an item; a repeat `[e; N]` writes its element `N` times.
+fn emit_array(
+    output: &mut String,
+    item: &syn::ItemConst,
+    array: &syn::TypeArray,
+) -> syn::Result<()> {
+    let (Some(scalar), Some(length)) =
+        (const_scalar(&array.elem), array_length_literal(&array.len))
+    else {
+        return Err(not_a_constant(item));
+    };
+    let elements = match peel(&item.expr) {
+        syn::Expr::Array(list) => list
+            .elems
+            .iter()
+            .map(|element| emit_const_expr(element, scalar, true, item))
+            .collect::<syn::Result<Vec<_>>>()?,
+        syn::Expr::Repeat(repeat) => {
+            vec![emit_const_expr(&repeat.expr, scalar, true, item)?; length as usize]
+        }
+        _ => return Err(not_a_constant(item)),
+    };
+    writeln!(
+        output,
+        "static const {} {}[{length}] = {{ {} }};",
+        emit_type(&array.elem)?,
+        emit_ident(&item.ident),
+        elements.join(", ")
+    )
+    .unwrap();
+    Ok(())
+}
+
+thread_local! {
+    /// The array constants of the module being emitted and their lengths, for `NAME.len()` and the index guard.
+    static CONST_ARRAYS: std::cell::RefCell<HashMap<String, u32>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// Sets the array constants of the module for the emission of its kernels and restores the previous table when dropped.
+pub(super) struct ConstArrayScope(HashMap<String, u32>);
+
+impl ConstArrayScope {
+    pub(super) fn enter(items: &[syn::Item]) -> Self {
+        let next = crate::validate::const_arrays::array_constants(items);
+        Self(CONST_ARRAYS.with(|cell| cell.replace(next)))
+    }
+}
+
+impl Drop for ConstArrayScope {
+    fn drop(&mut self) {
+        CONST_ARRAYS.with(|cell| *cell.borrow_mut() = std::mem::take(&mut self.0));
+    }
+}
+
+/// The length of `place` when it is the bare name of an array constant (it stands where a local array's table says the
+/// same: the index guard of the SPIR-V route and `.len()`).
+pub(super) fn array_length_of(place: &syn::Expr) -> Option<u32> {
+    let syn::Expr::Path(path) = peel(place) else {
+        return None;
+    };
+    let name = path.qself.is_none().then(|| path.path.get_ident())??;
+    CONST_ARRAYS.with(|cell| cell.borrow().get(&name.unraw().to_string()).copied())
 }
 
 /// The Slang text of the expression. `top`: the whole initializer, where one literal and `-` with one literal are
@@ -99,7 +172,7 @@ fn emit_const_expr(
 }
 
 /// The expression under any parentheses.
-fn peel(expr: &syn::Expr) -> &syn::Expr {
+pub(crate) fn peel(expr: &syn::Expr) -> &syn::Expr {
     match expr {
         syn::Expr::Paren(inner) => peel(&inner.expr),
         syn::Expr::Group(inner) => peel(&inner.expr),

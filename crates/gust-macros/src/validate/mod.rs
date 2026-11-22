@@ -12,6 +12,7 @@ use crate::slang::texture;
 mod barrier;
 mod callgraph;
 pub(crate) mod classify;
+pub(crate) mod const_arrays;
 pub(crate) mod generics;
 pub(crate) mod limits;
 pub(crate) mod traits;
@@ -716,6 +717,7 @@ pub(crate) fn validate_module_in(
     // Before the items, so a `match` arm that names a constant is this code and not the `match` rules' (GUST-E0521).
     check_const_patterns(items)?;
     check_const_names(items)?;
+    const_arrays::check_uses(items, &methods.const_arrays)?;
     let const_names: HashSet<String> = items
         .iter()
         .filter_map(|item| match item {
@@ -762,9 +764,13 @@ pub(crate) fn validate_module_in(
             syn::Item::Impl(item) => validate_impl(stage, item, &context)?,
             syn::Item::Trait(item) => validate_trait(stage, item, &context)?,
             syn::Item::Enum(item) => validate_enum(item)?,
-            syn::Item::Const(item) => {
-                validate_const(item, &struct_fields, &const_names, &mut declared_consts)?
-            }
+            syn::Item::Const(item) => validate_const(
+                item,
+                &struct_fields,
+                &const_names,
+                &methods.const_arrays,
+                &mut declared_consts,
+            )?,
             // `syn` keeps a generic `const K<T>: u32 = 1;` as verbatim tokens: a `const` after the visibility.
             syn::Item::Verbatim(tokens)
                 if tokens.clone().into_iter().take(4).any(
@@ -953,6 +959,9 @@ struct MethodTable {
     /// The array fields of the module's structs by field name (slice m9.r2a, see `slang::array_field_lengths`): the
     /// length, or `None` when two structs disagree about the name. For `s.items.len()`.
     array_fields: HashMap<String, Option<u32>>,
+    /// The array constants of the module with their lengths (slice m12.carr): `NAME.len()` and the index guard read
+    /// them as they read a local array.
+    const_arrays: HashMap<String, u32>,
 }
 
 /// What the validator knows of a field-less enum of the module (slice m9.e1, D157).
@@ -1046,6 +1055,7 @@ fn method_table(items: &[syn::Item]) -> MethodTable {
             .iter()
             .any(|item| names_matrix(item.to_token_stream())),
         array_fields: crate::slang::array_field_lengths(items),
+        const_arrays: const_arrays::array_constants(items),
         ..MethodTable::default()
     };
     for item in items {
@@ -1705,6 +1715,7 @@ fn validate_const(
     item: &syn::ItemConst,
     struct_fields: &HashMap<String, HashSet<String>>,
     const_names: &HashSet<String>,
+    array_consts: &HashMap<String, u32>,
     declared: &mut HashMap<String, ConstScalar>,
 ) -> syn::Result<()> {
     // Documentation and lint levels only, as on an `impl`: `#[cfg(..)] const` would let the Slang and the twin disagree
@@ -1751,16 +1762,21 @@ fn validate_const(
             ),
         ));
     }
+    let scope = ConstScope {
+        names: const_names,
+        arrays: array_consts,
+        declared,
+        own: &name,
+    };
+    // An array of the four scalars (slice m12.carr). It joins no scope: a constant expression never names it.
+    if let syn::Type::Array(array) = item.ty.as_ref() {
+        return const_arrays::validate(item, array, &scope);
+    }
     let Some(scalar) = const_scalar(&item.ty) else {
         return Err(const_form(
             &item.ty,
-            "a module `const` has one of the types `u32`, `i32`, `f32` or `bool`: a vector, a struct, an array, a reference and `usize` have no constant lowering here; pass such a value as a uniform or a parameter",
+            "a module `const` has one of the types `u32`, `i32`, `f32` or `bool`, or is an array `[T; N]` of one of them: a vector, a struct, a reference and `usize` have no constant lowering here; pass such a value as a uniform or a parameter",
         ));
-    };
-    let scope = ConstScope {
-        names: const_names,
-        declared,
-        own: &name,
     };
     check_const_expr(&item.expr, scalar, &scope, false)?;
     declared.insert(name, scalar);
@@ -1792,6 +1808,8 @@ pub(crate) fn const_scalar(ty: &syn::Type) -> Option<ConstScalar> {
 /// item (with their types), and the item's own name.
 struct ConstScope<'a> {
     names: &'a HashSet<String>,
+    /// The array constants of the module (slice m12.carr): a constant expression names none of them.
+    arrays: &'a HashMap<String, u32>,
     declared: &'a HashMap<String, ConstScalar>,
     own: &'a str,
 }
@@ -1909,6 +1927,14 @@ fn check_const_expr(
                     ),
                 ));
             }
+            if scope.arrays.contains_key(&name) {
+                return Err(const_form(
+                    expr,
+                    &format!(
+                        "`{name}` is an array constant: a module `const` expression names scalar constants only; write the literal"
+                    ),
+                ));
+            }
             match scope.declared.get(&name) {
                 Some(&declared) if declared == scalar => Ok(()),
                 Some(&declared) => Err(const_form(
@@ -1980,6 +2006,10 @@ fn check_const_expr(
         syn::Expr::Call(_) | syn::Expr::MethodCall(_) | syn::Expr::Macro(_) => Err(const_form(
             expr,
             "a call (a function, a method such as `x.pow(2)`, a macro) is not accepted in a module `const`: write the literal, or an expression of literals and constants declared above",
+        )),
+        syn::Expr::Index(_) => Err(const_form(
+            expr,
+            "an element of an array constant is not read in a module `const` initializer: write the literal",
         )),
         syn::Expr::Block(_)
         | syn::Expr::If(_)
@@ -2852,6 +2882,10 @@ fn validate_function(
     }
     visitor.atomic_buffers = atomic_buffer_names(function);
     visitor.array_lens = crate::slang::array_lengths(&function.sig.inputs, &function.block);
+    // An array constant cannot be shadowed (a binding of its name is GUST-E0127), so its entry never meets a local's.
+    for (name, length) in &methods.const_arrays {
+        visitor.array_lens.insert(name.clone(), Some(*length));
+    }
     for argument in &function.sig.inputs {
         if let syn::FnArg::Typed(argument) = argument
             && let syn::Pat::Ident(name) = argument.pat.as_ref()

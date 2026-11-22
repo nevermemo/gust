@@ -81,6 +81,9 @@ proof.
   earlier consts of the module (`u32` and `i32` arithmetic, bit operators and shifts; `f32` `+ - * /` and negation;
   `bool` `! && ||`). rustc and slangc compile the same expression; nothing is evaluated by the macro. GPU
   checks: Radeon 890M only; RTX 5090 pending.
+- Module-level array constants (m12.carr): `const NAME: [T; N] = [e0, e1, ..];` with `T` one of `u32`, `i32`, `f32`,
+  `bool` and `N` a literal from 1 to 256 lowers to one `static const` array line per kernel and is read as `NAME[i]` or
+  `NAME.len()`; a whole-array use, a store, a nested array and other element types are `GUST-E0127`.
 - Launches past the per-dimension workgroup limit run (m11.g4b, D208): a `grid` launch whose workgroup count on an
   axis exceeds `max_compute_workgroups_per_dimension` is split by the host into pieces (at most
   `MAX_SPLIT_DISPATCHES`, 4096) in one compute pass, and every invocation runs once with the ids of an unsplit

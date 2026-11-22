@@ -520,10 +520,14 @@ impl Drop for FieldScope {
 
 /// The length `place.len()` is, when the tables of the function and of the module name the array `place` holds.
 fn array_place_length_of(place: &syn::Expr) -> Option<u32> {
-    ARRAY_LENGTHS.with(|locals| {
-        ARRAY_FIELDS
-            .with(|fields| array_place_length(place, &locals.borrow(), &fields.borrow()).flatten())
-    })
+    ARRAY_LENGTHS
+        .with(|locals| {
+            ARRAY_FIELDS.with(|fields| {
+                array_place_length(place, &locals.borrow(), &fields.borrow()).flatten()
+            })
+        })
+        // An array constant of the module (slice m12.carr): a local cannot carry its name.
+        .or_else(|| consts::array_length_of(place))
 }
 
 /// Whether a comparison operand is an array (fix round 2 of m9.r2a, R1). A field access named like a vector component or
@@ -864,6 +868,7 @@ pub(crate) fn emit_kernel_in(
     let _scope = LoweringScope::enter(lowering);
     // The array fields of the module's structs, for `s.items.len()` in the kernel, the helpers and the methods.
     let _fields = FieldScope::enter(array_field_lengths(items));
+    let _const_arrays = consts::ConstArrayScope::enter(items);
     // The Slang names of the module's closures (slice m9.c).
     let _closure_names = ClosureNamesScope::enter(closure_names(items));
     let mut output = String::new();

@@ -2039,6 +2039,37 @@ literal), wgpu ran it, and the values read back were bit-equal to the host's (`0
 `0x7f800000`, `0x00001be0`). The subnormal survived on that adapter; another adapter may flush it, and a NaN payload is
 not promised. Prefer finite normal constants.
 
+**Arrays (m12.carr).** `const NAME: [T; N] = [e0, e1, ..];` at module level, `T` one of `u32`, `i32`, `f32`, `bool`
+(or their aliases) and `N` an integer literal from 1 to 256 (a constant or an expression as the length, and zero, keep
+`GUST-E0216`; above 256 is `GUST-E0127`). Each element is an expression the scalar form of the same `T` accepts
+(literals, earlier scalar constants of type `T`, parentheses and the same operators), and the repeat `[e; N]` is
+accepted with the same `N` (it writes `e` `N` times). The macro evaluates nothing here either: the Rust item stays as
+written and the Slang text of every kernel gets one line, `static const uint NAME[N] = { e0, e1, .. };`, next to the
+scalar constants and in source order, each element written as the scalar form writes the whole initializer of an item
+(a literal bare or `uint(..)`, an operator application parenthesised). The name goes through the collision table as a
+scalar constant's does.
+
+A use is `NAME[i]` as a value, with `i` an index expression as for a local array (`i as usize`, a literal, arithmetic
+on `usize` that is a cast or `.len()`), in a kernel, a helper, a method or a closure, and `NAME.len()`, which is the
+constant `N` as for a local array (`GUST-E0334` where a local's would be). The bounds rule is the local array's (section
+11 and 15): an index outside `0..N` panics in the CPU twin and is outside the defined domain on the GPU; with the
+`spirv-route` feature on, a non-literal index of an array constant is clamped to the last element as a typed local's is,
+and a literal index is not. `GUST-E0127`, each with its own message: a whole-array use (`let a = NAME;`, an argument, a
+returned value, `for x in NAME`, `NAME == NAME`, any method other than `.len()`), a store (`NAME[i] = e;`, `NAME[i] += e;`,
+`&mut NAME[i]`), a nested array, an element that is a vector, a struct, a tuple, a reference or another scalar type
+(`usize`, `u64`, `f64`), an element count that differs from `N`, an element that is a constant declared below the item,
+and an array constant (or one of its elements) in the initializer of another constant, scalar or array. The scalar
+rules are unchanged.
+
+The read-only table cannot meet the D168 and D169 driver defect, which needs a store into a function-scope array (section
+7); the emitted text has no function-scope array. This is an argument from the shape of the text, not a measurement:
+the coordinator confirms it on the RTX 5090, and until that run is recorded nothing here claims it. Evidence: the macro tests in
+`crates/gust-macros/src/tests/consts.rs` (the exact lines, the guard, every refusal) and `crates/gust-wgpu/tests/const_arrays.rs`, which
+reads a 16-entry `u32` table, an 8-entry `i32` table and a 4-entry `f32` table at dynamic indices from the element id,
+from buffer data and from a loop counter, and a `u32` table through a helper, a method and a closure, a `bool` table as a
+condition, `.len()` and a repeat-form `i32` table, on the GPU and on the twin, against the values the host computes
+from the same items.
+
 ## 18. `if`/`else` as the value of a `let` (m12.ifx)
 
 An `if .. { .. } else { .. }` is a value in one place: the whole initializer of a `let`

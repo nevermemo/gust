@@ -993,7 +993,7 @@ fn enum_type_name(ty: &syn::Type, enums: &HashMap<String, EnumFacts>) -> Option<
     enums.contains_key(&name).then_some(name)
 }
 
-/// Whether any identifier in `stream` is one of the matrix type names (as `slang::module_lowering` counts them).
+/// Whether any identifier in `stream` is one of the matrix type names (as `slang::lowering::module_lowering` counts them).
 fn names_matrix(stream: proc_macro2::TokenStream) -> bool {
     stream.into_iter().any(|tree| match tree {
         proc_macro2::TokenTree::Ident(ident) => {

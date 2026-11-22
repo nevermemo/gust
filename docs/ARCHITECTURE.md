@@ -61,7 +61,7 @@ no `Vec3`, `IVec3`, `UVec3` or `Mat3`), is a `StorageV1` or `StorageV2` layout o
 alignment, and is never `Std140V1` (a scope choice of D159, E0215); the element rule is a constant evaluated after
 monomorphisation (`cargo build` reports it, `cargo check` may not). The macro emits the layout of an array field and of
 an array buffer element into the export record (the `array` layout kind, m9.pa); an array value in a body is lowered by
-`slang/mod.rs` (`T[N]`, section 11 of SEMANTICS).
+`slang/statements.rs` and `slang/expressions.rs` (lengths and scopes in `slang/arrays.rs`; `T[N]`, section 11 of SEMANTICS).
 
 The current translator emits one self-contained Slang compilation unit per
 kernel. It includes the module's struct declarations, non-kernel helper functions,

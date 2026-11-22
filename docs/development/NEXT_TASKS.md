@@ -144,7 +144,7 @@ test module; do not mix that mechanical move with behavior changes.
   rustc types the local from its later uses. Measured: `let mut d = 7; d /= y` with `y: u32` divides signed, so for
   `y >= 2^31` Rust gives 0 and the GPU gives `0xFFFFFFF9` (found in the m6.dv review; older than m6.dv). Signed
   comparisons (`d < y`), `>>` and casts of such a local very likely go wrong the same way; that part is inferred from
-  the lowering (`slang/mod.rs` emits `var` for every unannotated local), **not measured**. It is a silent
+  the lowering (`slang/statements.rs` emits `var` for every unannotated local), **not measured**. It is a silent
   difference inside D22's domain, not a D39 edge case. The difftest emitter always annotates its `let`s
   (`tests/difftest/src/emit.rs:207`), so no gate sees this class. Decided approach: type the local from its uses
   when they agree, otherwise a compile error asking for a suffix or an annotation; a GPU regression case for

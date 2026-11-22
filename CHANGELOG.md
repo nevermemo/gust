@@ -125,6 +125,9 @@ proof.
 - The portable floor covers every kernel form (m11.floor): a crate with `limits = "portable"` now gets GUST-E0746
   for the kernel of a `#[gpu]` function and of a `par_for!` call too, not only for `#[kernel]` items of a `#[gpu]`
   module. Crates without the setting are unchanged.
+- budget-kit row W8 (m11.kit4): a whole step (diffuse, step, binning with the scatter, a deposit folded into the
+  field, retire, a scan of alive flags, compaction and spawn) as one timed scope, checked against a host model
+  including a step where the capacity clamps; the note lists the storage buffers each kernel binds.
 - One error for a refused `#[gpu]` module (m11.diag): when the macro refuses a module, the structs it hands back
   keep the `Clone`, `Copy` and `GpuPod` impls a successful expansion adds (where no impl was written by hand and every
   field is a known `Copy` type), so host code that uploads one of them no longer adds a misleading E0277 "not a GUST

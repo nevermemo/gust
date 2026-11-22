@@ -12,6 +12,7 @@ written with GUST's public API only.
 | W5 | Reduction | `f32` sum with `gust-algo`, checked against an `f64` reference within the documented bound |
 | W6 | Readback delay | submit a small kernel and wait until its result is on the CPU |
 | W7 | Composite step | one batch per step: diffuse a 1024 x 1024 field, step the particles, clear and count their cells; a sustained run reporting the GPU time's median, p95 and maximum and two host-side costs |
+| W8 | Full step with lifecycle | one step on a 1024 x 1024 field: diffuse, move the particles over the field, bin them (clear, count, scan, scatter), deposit a fixed amount per particle into a `u32` grid with an atomic add and fold the grid into the field, then retire some particles by a hash, spawn a fixed number and keep the live set dense with a scan of alive flags and a compaction; a sustained run as W7, with the storage buffers each kernel binds in the note |
 
 ## Run it
 
@@ -48,6 +49,26 @@ at every call and (b) shows no back-pressure). The two come from two runs of the
 both blocking and not. It is checked after the first step (field against the host's `cpu_diffuse`, particles against
 `cpu_particle` over the GPU's own field, with W2's and W3's tolerances, counts exactly against the host's histogram of
 the GPU's own positions) and again after the runs.
+
+W8 is a sustained run of a whole step, with the same number of counted steps as W7, at a capacity of 2^17 and 2^20
+particles (2^17 only with `--small`). A step is four batches in one `timed` scope: (1) `w2_diffuse` on 1024 x 1024,
+`w3_step` over the diffused field, the clears of the counts, the cursors and the deposit grid, `w4_count`, `w8_deposit`
+(an `atomic_add` of a fixed amount into a `u32` grid), `w8_fold` (the grid into one lane of the field) and `w8_retire`
+(alive flags); (2) the `gust-algo` exclusive scan of the 1024 x 1024 counts; (3) the same scan of the alive flags;
+(4) `w4_scatter`, `w8_compact` (survivors to the slots the scan gives) and `w8_spawn` (a fixed number of new particles
+after the survivors, those past the capacity dropped). The population starts at half the capacity, about one particle in
+sixteen retires per step by a hash of the step and the slot, and the live set stays dense. The live counts come from a
+host model of that rule (an integer function of the step and the slot), not from a readback; a design that reads the
+count back each step pays the W6 delay on top. The row's note gives the GPU time's median, p95 and maximum, three
+host-side costs and the storage buffers each kernel binds, counted from the generated descriptors (the scan's four
+kernels included; GUST opens devices with 8 storage buffers per stage). It is checked after steps 1 and 2 and after the
+runs: the field against the host (diffusion of the GPU's previous field, then the deposit folded in, with W2's
+tolerance), the moved particles as W3, the deposit grid, the counts and their scan exactly, the scatter as sets per cell
+as W4, and the alive flags, their scan, the survivors, the live count and the live set exactly against the host's model
+of the retire and spawn rule. The hash (`lb_mix` and `lb_hash`, used for both the retire draw and the spawn draw) is copied from
+`examples/walker-life`, whose retire flags, scan and compaction pattern the step follows. The first step where the
+population is clamped at the capacity is checked too, and the scatter's `order` is poisoned again before each checked
+step.
 
 After the table the program runs a probe of the linear dispatch limit (gap G4), which is not a workload: a linear
 kernel launch of 65 536 workgroups on x, one above the portable limit of 65 535. It prints one line starting `G4:` with

@@ -792,6 +792,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       (`limits-map-storage-buffers`, `limits-par-for-storage-buffers`; 259 pinned). Opus review: no must-fix; its
       fixes are in. No device or `LimitsPolicy` change: raising GUST's storage buffer limit of 8 per stage stays an
       open owner item.
+    - m11.kit4 (`69b0013`, owner proxy round 10): budget-kit row W8, a whole step in one timed scope of four
+      batches on a 1024 x 1024 field (diffuse, step, bin clear, count, scan and scatter, a deposit into a `u32`
+      grid folded into the field, retire by hash, a scan of alive flags, compaction and spawn) at 2^17 and 2^20
+      particles, 600 sustained steps. Checked exactly against a host model after steps 1 and 2, the first step
+      the capacity clamps and the last; storage buffers per kernel are read from the generated descriptors (at
+      most 4). Opus review: no must-fix; its fixes are in. Small and full runs green on the Radeon 890M; RTX 5090
+      pending. Measured times stay outside the repository.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

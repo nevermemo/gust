@@ -912,6 +912,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       `--small` and fails on a non-zero exit, a missing row or probe line, a failed check or no `ok` row; the
       nightly bench step lints the kit. Host wall-clock figures after the move are not comparable with earlier
       ones (the bench workspace's release profile: codegen-units 1, thin LTO). Opus review: merge after fixes; fixed.
+    - m13.profile (build-time spike m13.btime, R1-R2): dev builds keep line tables only (`[profile.dev] debug =
+      "line-tables-only"`, backtraces keep file:line) and the Windows MSVC target links with the toolchain's
+      `rust-lld`; the spike measured the incremental macro-edit and runtime-edit gates 25-31 % faster. The variant
+      with full debug info for workspace crates saved 19.8 %, under the pre-registered 20 %, so the fallback was
+      taken. Release, bench, Linux and wasm32 builds are unchanged. Coordinator review (config only).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

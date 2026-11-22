@@ -63,3 +63,8 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "vulka
 # it, as `gust` may in its own sources, never warns.
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)', 'cfg(gust_profile, values("dev", "native", "web", "cpu"))'] }
+
+# m13.profile: line tables only (file:line in backtraces stays, variable-level debug info goes) so debug builds link and
+# load faster. Measured with rust-lld below: the incremental macro-edit gate got 25-31 % faster.
+[profile.dev]
+debug = "line-tables-only"

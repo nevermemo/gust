@@ -1,2 +1,6 @@
 [alias]
 xtask = "run --quiet -p xtask --"
+
+# m13.profile: link with the rust-lld that ships with the toolchain (found by name, no path) on Windows MSVC only.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"

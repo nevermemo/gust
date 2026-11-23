@@ -21,6 +21,10 @@ breaks existing code bumps the minor version, and the promise is described in th
   `DefaultDeviceCapability`. The text of `DefaultDeviceOpened` and of the launch refusal of a missing capability changed
   to name `set_default_device` and `adopt`. Radeon 890M only; the RTX 5090 run is pending.
 
+- Added `gpu_task!`, a stage written at the call site and run as a free task: a 1-D, 2-D or in-place stage over host
+  slices and scalars, returned as a `gust::task::Task` with `submit()` (an asynchronous read-back) and `dispatch()`.
+  The example `task-basics` and the diagnostics GUST-E1001, E1002, E1003, E1007 and E1008 go with it (m14.s2a1).
+
 - The pinned Slang is now 2026.22.1 (`cargo gust slang install` fetches it; run `cargo gust build` again for a committed
   artifact set). Two emitted differences: float and signed-integer vector negation is `-a` instead of `0 - a`, and a
   constant out-of-range float-to-integer cast folds at compile time to another value than before (m13.pin2221).

@@ -10,7 +10,7 @@ use std::{
 };
 
 use super::{
-    PRECOMPILED_DIR,
+    Mode, PRECOMPILED_DIR,
     fixture::{Fixture, copy_fixture, require_success},
 };
 use crate::{
@@ -326,8 +326,8 @@ fn build_cargo_gust(fixture: &Fixture) -> Result<PathBuf, String> {
 
 /// E7b: `cargo gust build` twice on a copy of the fixture without its artifacts gives byte-identical output and no prune message.
 /// It needs Slang, so `--check-only` skips it. Returns the summary.
-pub(super) fn e7_build_twice(fixture: &Fixture, check_only: bool) -> Result<String, String> {
-    if check_only {
+pub(super) fn e7_build_twice(fixture: &Fixture, mode: Mode) -> Result<String, String> {
+    if !mode.slang() {
         return Ok("skipped by --check-only (`cargo gust build` needs Slang): the full mode runs it on a machine with Slang".to_owned());
     }
     let tool = build_cargo_gust(fixture)?;

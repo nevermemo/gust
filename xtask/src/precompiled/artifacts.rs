@@ -1,9 +1,9 @@
 //! E3, E4 and E5: the committed artifact changed, deleted, and the fixture built strict and dual together.
 
-use std::fs;
+use std::{fs, path::Path};
 
 use super::{
-    PRECOMPILED_DIR, STRICT_PROFILE,
+    Mode, PRECOMPILED_DIR, STRICT_PROFILE,
     fixture::{Fixture, body_wgsl_artifact, copy_fixture, require_success},
     stripped::VERIFIED_PREFIX,
 };
@@ -20,7 +20,7 @@ pub(super) const E4_EXPECTED: &str = "e4-expected.txt";
 // E3
 
 /// E3: a mutated artifact in a scratch copy gives the identity error at run time. Returns the summary.
-pub(super) fn e3_mutated_artifact(fixture: &Fixture, check_only: bool) -> Result<String, String> {
+pub(super) fn e3_mutated_artifact(fixture: &Fixture, mode: Mode) -> Result<String, String> {
     let scratch = fixture.scratch.join("e3");
     let scratch_target = fixture.scratch_target_dir();
     copy_fixture(fixture, &scratch)?;
@@ -63,12 +63,16 @@ pub(super) fn e3_mutated_artifact(fixture: &Fixture, check_only: bool) -> Result
         &output,
     )?;
 
-    if check_only {
-        return Ok("passed (build only: --check-only skips the run, which needs an adapter): with one operator of the artifact changed, the build succeeded".to_owned());
+    if !mode.runs() {
+        return Ok("passed (build only: this mode skips the run, which needs an adapter): with one operator of the artifact changed, the build succeeded".to_owned());
     }
-    let binary = Fixture::app_binary(&scratch_target);
+    e3_run(fixture, &Fixture::app_binary(&scratch_target))
+}
+
+/// The run half of E3: the mutated `app` built by [`e3_mutated_artifact`] ends with the identity error.
+pub(super) fn e3_run(fixture: &Fixture, binary: &Path) -> Result<String, String> {
     let run = fixture
-        .command(&binary)
+        .command(binary)
         .output()
         .map_err(|error| format!("check-precompiled E3: could not run the mutated app: {error}"))?;
     let stdout = String::from_utf8_lossy(&run.stdout).into_owned();

@@ -1023,6 +1023,18 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       `GUST_OK frames=60` on the 890M. Browser adoption is not claimed (slice 1w). `GPU_SUITE_PIN` 604 over 65.
       RTX 5090: owed (quiet window 2026-11-22, D250): the Gpu suite, the window run, test 5's real pair and
       presentation on DX12. Opus review: merge after fixes; fixed (two rounds).
+    - m14.s2a1 (D244, group 2 step B): a stage, `gpu_task!`, as a free task: a 1-D extent, a 2-D `(w, h)` shape
+      (row-major result) and an in-place `&mut target` form (1-D), with a written capture list of host slices and
+      scalars. It lowers through `par_for!`'s generator (same artifacts, record kind, routing and twin; existing
+      emitted code unchanged). `task.submit()` returns a future of the result on every target, `task.dispatch()`
+      waits on native. New codes E1001 (form), E1002 (a capture the macro cannot see, naming the list entry to
+      write), E1003 (a write to a capture), E1007 (index rank), E1008 (an in-place stage touching its target at
+      another index, including through a rebound index or an alias), each with a ui fixture or macro test.
+      `examples/task-basics` is exact against host code and the twin on the Radeon 890M. Known gap against D251: a
+      submit makes 2 queue submissions (3 on a recycled zeroed output), all made by `gust::task::submit_and_read`,
+      which slice m14.encb replaces with a one-submission path without changing generated code. RTX 5090: owed
+      (quiet window 2026-11-22, D250): task-basics and the Gpu suite. Opus review: merge after fixes; fixed (two
+      rounds).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

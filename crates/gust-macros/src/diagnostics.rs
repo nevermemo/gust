@@ -19,6 +19,7 @@
 //! | E07xx | macro entry and `#[kernel]` options |
 //! | E08xx | emitter-only rejections |
 //! | E09xx | reserved names and shadowing |
+//! | E10xx | stages and batches (`gpu_task!`) |
 //!
 //! Every error the crate creates goes through [`error`] (or [`wrap`] for a `syn` parse
 //! error), and every `syn` parse goes through [`parse2`], [`parse_args_with`] or
@@ -531,6 +532,20 @@ codes! {
     ReservedPrefix = 901 => "GUST-E0901";
     /// A local that shadows a resource or dispatch-thread parameter.
     ShadowedParameter = 902 => "GUST-E0902";
+
+    // E10xx: stages and batches.
+    /// A `gpu_task!` that is not one of its forms: the shape, the closure's arity, a missing `-> T`, a result type on an
+    /// in-place stage.
+    TaskForm = 1001 => "GUST-E1001";
+    /// A `gpu_task!` capture whose element type the macro cannot see (or an in-place target that is not in the list).
+    TaskCapture = 1002 => "GUST-E1002";
+    /// A write to a `gpu_task!` capture, a `&mut` on anything but the target, or a `&mut [T]` host slice other than the
+    /// target.
+    TaskWrite = 1003 => "GUST-E1003";
+    /// An index of the wrong rank for the view in a `gpu_task!`.
+    TaskIndexRank = 1007 => "GUST-E1007";
+    /// A read of an in-place stage's target at any index but the stage's own.
+    TaskInPlaceRead = 1008 => "GUST-E1008";
 }
 
 /// The error for `code` at `span`: the message prefixed with `[GUST-E....]`.
@@ -783,7 +798,7 @@ mod tests {
             assert!(number > previous, "{code:?} is out of order");
             previous = number;
             assert!(
-                (1..=9).contains(&(number / 100)),
+                (1..=10).contains(&(number / 100)),
                 "{code:?}: unknown family"
             );
             assert!(
@@ -1393,6 +1408,7 @@ mod tests {
             || file.ends_with("src/tests/workgroup.rs")
             || file.ends_with("src/tests/grid.rs")
             || file.ends_with("src/tests/par_for.rs")
+            || file.ends_with("src/tests/task.rs")
             || file.ends_with("src/tests/manifest.rs")
             || file.ends_with("src/tests/variant.rs")
             || file.ends_with("src/tests/subgroup.rs")

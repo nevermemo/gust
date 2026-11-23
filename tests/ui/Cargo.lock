@@ -1996,6 +1996,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "task-capture"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "task-form"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "task-in-place-read"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "task-index-rank"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "task-write"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "texture-as-value"
 version = "0.0.0"
 dependencies = [

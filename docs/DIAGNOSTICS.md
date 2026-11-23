@@ -100,6 +100,7 @@ this page and the macro's list of such codes in agreement.
 | E07xx | Macro entry and `#[kernel]` options |
 | E08xx | Emitter-only rejections |
 | E09xx | Reserved names and shadowing |
+| E10xx | Stages and batches (`gpu_task!`) |
 
 ## Slang compiler errors and Rust lines
 
@@ -2000,3 +2001,53 @@ Reached through `#[gpu_module]`.
 Rejected: `let out = 1u32;` when `out` is a buffer parameter, `for id in 0u32..n`.
 Write instead: pick a different local name.
 Decision: D02.
+
+## E10xx: stages and batches
+
+The codes of `gpu_task!`, the stage written at the call site (plan m14.s2, slice s2a1). A stage is lowered through the
+generator of `par_for!`, so a mistake in the body is the code of the dialect (E03xx and the others), not one of these.
+
+### GUST-E1001 `gpu_task!` call that is not one of its forms
+
+A `gpu_task!` call is `gpu_task!([options;] SHAPE, [captures,] |params| [-> T] { body })`. The shape is an extent for a 1-D stage, a `(w, h)` pair for a 2-D one, or `&mut target` (a plain variable) for an in-place stage, which is 1-D only. The closure is not `move` or `async`, takes one plain parameter per axis, names the element type of the result with `-> T` for a free stage and has none for an in-place stage, and its body ends in the result expression of a free stage. A capture list is optional only when there are no captures. A `GpuVec` capture, the hidden `descriptor;` clause and any trailing tokens are refused.
+Reached through `#[gpu_module]`, raised by `gpu_task!` only (the function-like macro that shares the validator of `#[gpu_module]`).
+Rejected: `gpu_task!(n, |i| { i })` (no result type), `gpu_task!(n, [], move |i| -> u32 { 1u32 })`, `gpu_task!((w, h), |x| -> u32 { 1u32 })` (one parameter for two axes), `gpu_task!(&mut d, [d: &mut [f32]], |x, y| { })` (an in-place stage is 1-D), `gpu_task!(n, |i| -> u32 { let x = 1u32; })` (no result expression).
+Fixture: `tests/ui/task-form`.
+Write instead: one of the forms above, for example `gpu_task!(n, [a: &[f32], k: f32], |i| -> f32 { a[i] * k })`.
+Decision: plan m14.s2, slice s2a1.
+
+### GUST-E1002 `gpu_task!` capture the macro cannot type, or a capture missing from the list
+
+Every capture is written in the list with its type, because a macro sees no types: a host slice `&[T]` of a buffer element type, or a scalar of the four types. The target of an in-place stage is a capture too, as `name: &mut [T]`; a target with no entry, or an entry that is not a `&mut` slice, is this error. So is a name that the body uses and that is not a closure parameter, a local of the body or an entry of the list (the kernel sees no variable of the call site, and without the entry the build would stop at rustc's "cannot find value"). The message names the entry to write.
+Reached through `#[gpu_module]`, raised by `gpu_task!` only (the function-like macro that shares the validator of `#[gpu_module]`).
+Rejected: `gpu_task!(&mut data, [], |i| { data[i] = 1u32; })`, `gpu_task!(n, [k: f32], |i| -> f32 { a[i] * k })` (`a` is not in the list), `gpu_task!(n, [a: &[bool]], |i| -> u32 { 1u32 })`, `gpu_task!(n, [a: Vec<f32>], |i| -> f32 { 1.0 })`, `gpu_task!(n, [a: &[u64]], |i| -> u32 { 1u32 })`.
+Fixture: `tests/ui/task-capture`.
+Write instead: the entry with its element type, `data: &mut [u32]`.
+Decision: plan m14.s2, slice s2a1.
+
+### GUST-E1003 write to a capture of a `gpu_task!`
+
+A stage writes only its result buffer (the value of the closure, stored at the invocation's own index) or, in an in-place stage, its own target. Captures are read-only: an assignment or compound assignment to a capture, a `&mut` borrow of anything but the target, and a `&mut [T]` entry that is not the target are this error.
+Reached through `#[gpu_module]`, raised by `gpu_task!` only (the function-like macro that shares the validator of `#[gpu_module]`).
+Rejected: `a[i] = 1u32;` and `a[i] += 1u32;` for a capture `a`, `let r = &mut a[i];`, `gpu_task!(n, [out: &mut [u32]], |i| -> u32 { 1u32 })`.
+Fixture: `tests/ui/task-write`.
+Write instead: return the value as the tail of the closure, or make the buffer the target of an in-place stage with `gpu_task!(&mut data, [data: &mut [T]], |i| { data[i] = ..; })`.
+Decision: plan m14.s2, slice s2a1.
+
+### GUST-E1007 index of the wrong rank in a `gpu_task!`
+
+A host slice, and the target of an in-place stage, are flat views of rank 1: `a[i]`. A tuple index (`a[(x, y)]`) is refused, because a view of rank 2 is a stage's result, which a later slice lets a stage read.
+Reached through `#[gpu_module]`, raised by `gpu_task!` only (the function-like macro that shares the validator of `#[gpu_module]`).
+Rejected: `a[(i, 0u32)]` and `data[(i, 0u32)]`.
+Fixture: `tests/ui/task-index-rank`.
+Write instead: index the slice with one value, computed from the invocation indices, with the width in the capture list (`[a: &[u32], w: u32]` and `a[y * w + x]`).
+Decision: plan m14.s2, slice s2a1.
+
+### GUST-E1008 read or write of an in-place target away from its own index
+
+An in-place stage runs its invocations in no defined order and in parallel, so it may read or write its target only at the invocation's own index (`data[i]` with `i` the closure's parameter): an access to another element races with the write of another invocation. The closure's parameter cannot be bound again in the body (a `let`, a `for` pattern, a closure parameter or a `match` arm named `i`), because the new `i` would hide a shifted index behind the name. A view (the target or a capture slice) cannot be bound to another name either (`let d = data;`, or a `match` or `if let` on it), because an index of the alias would reach the target where the check cannot see it.
+Reached through `#[gpu_module]`, raised by `gpu_task!` only (the function-like macro that shares the validator of `#[gpu_module]`).
+Rejected: `data[i] = data[i + 1u32];`, `data[i + 1u32] = 1.0;`, `data[i] = data[0u32];`, `let i = i + 1u32; data[i] = 0.0;`, `for i in 0..4u32 { data[i] = 0.0; }` and `let d = data; d[i + 1u32] = 0.0;`.
+Fixture: `tests/ui/task-in-place-read`.
+Write instead: read the neighbour from a copy passed as a host-slice capture (`prev: &[T]`), or use two stages; give a new value a name other than the closure's parameter.
+Decision: plan m14.s2, slice s2a1.

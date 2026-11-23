@@ -299,7 +299,8 @@ pub fn capture_uniform<D: CaptureDevice, T: GpuPod>(
     cpu: &CpuDevice,
 ) -> Result<Slot, Error<D::Error>> {
     let BufferCopy { values, .. } = read_buffer::<D, T>(device, binding, parameter)?;
-    // `CaptureDevice::capture_buffer` gives one element for a uniform.
+    // `CaptureDevice::capture_buffer` gives one element for a uniform (its documented contract; an implementation
+    // that breaks it panics here).
     let value = *values
         .first()
         .expect("a uniform binding holds exactly one element");
@@ -420,9 +421,9 @@ impl<K: Kernel> Captured<K> {
         self.slots.iter().find(|slot| slot.name == name)
     }
 
-    /// Run exactly one invocation, `id`, on the twin, over the captured values. Only the buffers that invocation writes
-    /// change; everything else keeps the captured values. A panic in the kernel body unwinds through this call, which
-    /// is where a debugger breaks.
+    /// Run exactly one invocation, `id`, on the twin, over the captured outputs and the current inputs. Only the
+    /// buffers that invocation writes change; everything else keeps its value. A panic in the kernel body unwinds
+    /// through this call, which is where a debugger breaks.
     ///
     /// An id outside the call's extent is [`ReplayError::OutOfExtent`], and nothing runs. The ids of the padding of the
     /// launch (at or past the extent on some axis) are outside it too: only [`run_until`](Self::run_until) (before its
@@ -437,10 +438,11 @@ impl<K: Kernel> Captured<K> {
     }
 
     /// Run the twin's launch from its first invocation up to and including `id`, in the twin's order (ascending, `x`
-    /// fastest, then `y`, then `z`, one at a time), over the captured values. The launch covers every axis rounded up
-    /// to whole workgroups, so the ids before `id` can include padding ids (at or past the extent on some axis); the
-    /// kernel body runs for them as the twin runs it, and a body that does not guard them can write there. With atomics
-    /// or an order-dependent result the outcome is one member of the allowed set, not the history the GPU had.
+    /// fastest, then `y`, then `z`, one at a time), over the captured outputs and the current inputs. The launch covers
+    /// every axis rounded up to whole workgroups, so the ids before `id` can include padding ids (at or past the extent
+    /// on some axis); the kernel body runs for them as the twin runs it, and a body that does not guard them can write
+    /// there. With atomics or an order-dependent result the outcome is one member of the allowed set, not the history
+    /// the GPU had.
     ///
     /// An id outside the call's extent is [`ReplayError::OutOfExtent`], and nothing runs. To run the whole launch, use
     /// [`run_all`](Self::run_all).
@@ -462,9 +464,9 @@ impl<K: Kernel> Captured<K> {
         self.run(&mut ids)
     }
 
-    /// Run the twin's whole launch, padding ids included, over the captured values: exactly what the twin does for the
-    /// call. For a race-free kernel without atomics this equals the GPU's result; with atomics or an order-dependent
-    /// result it is one member of the allowed set, not the history the GPU had.
+    /// Run the twin's whole launch, padding ids included, over the captured outputs and the current inputs: exactly
+    /// what the twin does for the call. For a race-free kernel without atomics this equals the GPU's result; with
+    /// atomics or an order-dependent result it is one member of the allowed set, not the history the GPU had.
     pub fn run_all(&self) -> Result<(), ReplayError> {
         let mut ids = self.launch()?;
         self.run(&mut ids)

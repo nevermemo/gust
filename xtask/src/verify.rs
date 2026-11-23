@@ -1200,7 +1200,7 @@ pub(crate) struct GpuSuitePin {
 /// Radeon 890M (lane); the RTX 5090 run is owed at the merge.
 ///
 /// Slice g2.cap: 618 over 66 became 629 over 67. The capture slice adds `tests/capture.rs` (ten GPU tests, one
-/// `test result:` line) and one more passing test that the full run counts. Checked by a full Gpu suite run on the
+/// `test result:` line) and the `DeviceOptions::with_capture` doc test. Checked by a full Gpu suite run on the
 /// Radeon 890M (lane); the RTX 5090 run is owed at the merge.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
     passed: 629,

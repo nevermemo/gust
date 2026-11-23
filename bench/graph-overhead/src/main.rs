@@ -18,9 +18,10 @@
 
 use std::time::Instant;
 
+use graph_overhead::{median, thread_cpu_ns};
 use gust_wgpu::{GpuBuffer, GpuBufferAccess, HeadlessDevice, StagedGraph};
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod ops {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn step(
@@ -39,56 +40,6 @@ const WARM_UP: usize = 200;
 const RUNS: usize = 3;
 const CALLS_PER_RUN: usize = 2000;
 const ELEMENTS: usize = 128;
-
-#[cfg(windows)]
-fn thread_cpu_ns() -> u64 {
-    #[repr(C)]
-    #[derive(Default)]
-    struct FileTime {
-        low: u32,
-        high: u32,
-    }
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn GetCurrentThread() -> isize;
-        fn GetThreadTimes(
-            thread: isize,
-            created: *mut FileTime,
-            exited: *mut FileTime,
-            kernel: *mut FileTime,
-            user: *mut FileTime,
-        ) -> i32;
-    }
-    let ticks = |time: &FileTime| (u64::from(time.high) << 32 | u64::from(time.low)) * 100;
-    let (mut created, mut exited, mut kernel, mut user) = (
-        FileTime::default(),
-        FileTime::default(),
-        FileTime::default(),
-        FileTime::default(),
-    );
-    // SAFETY: the pseudo handle of the calling thread and four live out-structures of the documented layout.
-    let ok = unsafe {
-        GetThreadTimes(
-            GetCurrentThread(),
-            &raw mut created,
-            &raw mut exited,
-            &raw mut kernel,
-            &raw mut user,
-        )
-    };
-    assert_ne!(ok, 0, "GetThreadTimes failed");
-    ticks(&kernel) + ticks(&user)
-}
-
-#[cfg(not(windows))]
-fn thread_cpu_ns() -> u64 {
-    0
-}
-
-fn median(mut values: [f64; RUNS]) -> f64 {
-    values.sort_by(f64::total_cmp);
-    values[RUNS / 2]
-}
 
 /// Median over the runs of (mean wall us, mean thread CPU us) of one call of `execute`.
 fn measure(mut execute: impl FnMut()) -> (f64, f64) {

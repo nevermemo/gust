@@ -600,7 +600,7 @@ impl Lease {
 
     /// Record that a `map_async` was requested: until [`recycle`](Self::recycle) says otherwise, the buffer must not
     /// go back to the pool.
-    fn mark_mapped(&mut self) {
+    pub(crate) fn mark_mapped(&mut self) {
         self.mapped = true;
     }
 
@@ -611,7 +611,7 @@ impl Lease {
     }
 
     /// Return the buffer to the pool after its mapping finished: unmap it if the mapping succeeded.
-    fn recycle(mut self, unmap: bool) {
+    pub(crate) fn recycle(mut self, unmap: bool) {
         if unmap {
             self.buffer.unmap();
         }
@@ -730,6 +730,24 @@ impl HeadlessDevice {
             requested: bytes,
             maximum: self.limits.max_buffer_size,
         })
+    }
+
+    /// A pooled staging buffer of at least `bytes` bytes with `usage`, for one transfer of a staged graph: not cleared,
+    /// so a recycled one holds its previous contents. The lease puts it back when it drops, unless it was marked
+    /// mapped.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn pooled_staging(
+        &self,
+        label: &str,
+        usage: wgpu::BufferUsages,
+        bytes: u64,
+    ) -> Result<Lease, Error> {
+        let class = self.pooled_class(label, bytes)?;
+        let raw = match self.pool.take(usage, class) {
+            Some(raw) => raw,
+            None => self.allocate(label, class, usage)?,
+        };
+        Ok(self.pool.lease(raw, usage, class))
     }
 
     /// Zero the first `bytes` of `buffer` in a submission of its own. The queue runs submissions in order, so every

@@ -1198,8 +1198,14 @@ pub(crate) struct GpuSuitePin {
 /// Slice m14.encb: 604 over 65 became 618 over 66. The encode slice adds `tests/encode_batch.rs` (thirteen GPU tests,
 /// one `test result:` line) and one doc test (the `encode_batch` example). Checked by a full Gpu suite run on the
 /// Radeon 890M (lane); the RTX 5090 run is owed at the merge.
+///
+/// Slice m14.rtfix1: 618 over 66 became 628 over 66. The graph fixes add five unit tests to the library (the node
+/// set, the hazard history twice, the kept bind group of a node, the groups of two nodes) and five GPU tests to
+/// `tests/graph.rs` (a graph of forty-four nodes, the lowest producer named for a missing edge, an overwrite after
+/// many readers, the pooled staging buffers, a staging buffer larger than its data), on existing lines. Checked by a
+/// full Gpu suite run on the Radeon 890M (lane); the RTX 5090 run is owed at the merge.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 618,
+    passed: 628,
     result_lines: 66,
 };
 

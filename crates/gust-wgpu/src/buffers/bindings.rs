@@ -147,6 +147,24 @@ impl PartialEq for Raw<'_> {
     }
 }
 
+impl Eq for Raw<'_> {}
+
+/// Hashes what [`PartialEq`] compares (the wgpu allocation), so equal identities hash alike.
+impl std::hash::Hash for Raw<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Buffer(buffer) => {
+                0_u8.hash(state);
+                buffer.hash(state);
+            }
+            Self::Texture(texture) => {
+                1_u8.hash(state);
+                texture.hash(state);
+            }
+        }
+    }
+}
+
 impl<'a> BufferBinding<'a> {
     /// Bind `buffer` read-only.
     pub fn read_only<T: GpuPod>(buffer: &'a GpuBuffer<T>) -> Self {
@@ -232,6 +250,7 @@ impl<'a> BufferBinding<'a> {
         }
     }
 
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn byte_len(&self) -> u64 {
         self.len as u64 * u64::from(self.layout.stride)
     }

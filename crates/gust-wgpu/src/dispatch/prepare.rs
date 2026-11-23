@@ -1,11 +1,11 @@
 use crate::texture;
 use crate::texture::TextureCounts;
 use crate::{
-    BufferBinding, BufferDispatch, Error, HeadlessDevice, INVOCATION_CAP_LIMIT, LAUNCH_BASE_BYTES,
-    Launch, LaunchPlan, PreparedDispatch, SplitLaunch, SplitPiece, check_binding_indices,
-    check_binding_size, check_kernel_capabilities, check_kernel_limits, check_kernel_requires,
-    render, split_pieces, split_variant_has_a_shader_source, split_variant_matches,
-    validate_dispatch_extent, validate_kernel, workgroup_counts,
+    BindGroupSlot, BufferBinding, BufferDispatch, Error, HeadlessDevice, INVOCATION_CAP_LIMIT,
+    LAUNCH_BASE_BYTES, Launch, LaunchPlan, PreparedDispatch, SplitLaunch, SplitPiece,
+    check_binding_indices, check_binding_size, check_kernel_capabilities, check_kernel_limits,
+    check_kernel_requires, render, split_pieces, split_variant_has_a_shader_source,
+    split_variant_matches, validate_dispatch_extent, validate_kernel, workgroup_counts,
 };
 use gust::{BindingKind, Extent, KernelDescriptor, ParameterDescriptor, ParameterKind, Shape};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
@@ -14,15 +14,16 @@ impl HeadlessDevice {
     /// The staged graph's preparation (`graph.rs` reads `workgroup_count`, the x count): one-dimensional dispatches
     /// only. A dispatch with a y or z extent other than 1 is refused with [`Error::Extent`] instead of being encoded
     /// as its x count alone, which would silently run a fraction of it.
+    ///
+    /// `slot` is the node's kept bind group ([`BindGroupSlot`]): it is reused when the pipeline entry is the one it
+    /// was built for, and replaced otherwise.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    pub(crate) fn prepare_batch(
+    pub(crate) fn prepare_node(
         &self,
-        dispatches: &[BufferDispatch<'_>],
+        dispatch: &BufferDispatch<'_>,
+        slot: &BindGroupSlot,
     ) -> Result<Vec<PreparedDispatch>, Error> {
-        if let Some(dispatch) = dispatches
-            .iter()
-            .find(|dispatch| dispatch.extent().y != 1 || dispatch.extent().z != 1)
-        {
+        if dispatch.extent().y != 1 || dispatch.extent().z != 1 {
             // A `pixel` kernel has no extent launch at all: the refusal is its own, not the graph's.
             render::check_pixel_extent(dispatch.kernel, dispatch.extent())?;
             return Err(Error::Extent {
@@ -30,7 +31,7 @@ impl HeadlessDevice {
                 reason: "a staged graph runs one-dimensional dispatches only (use dispatch_batch)",
             });
         }
-        self.prepare_dispatches(dispatches, false)
+        self.prepare_dispatches(std::slice::from_ref(dispatch), false, Some(slot))
     }
 
     /// The batch functions' preparation: every dispatch over its whole [`Extent`].
@@ -38,24 +39,28 @@ impl HeadlessDevice {
         &self,
         dispatches: &[BufferDispatch<'_>],
     ) -> Result<Vec<PreparedDispatch>, Error> {
-        self.prepare_dispatches(dispatches, false)
+        self.prepare_dispatches(dispatches, false, None)
     }
 
-    /// Prepare one indirect dispatch: every check of `prepare_batch` except the workgroup count,
+    /// Prepare one indirect dispatch: every check of `prepare_node` except the workgroup count,
     /// which only the GPU reads, from the arguments buffer. `dispatch.extent()` must be a
     /// nonzero placeholder; the prepared `workgroup_count` is meaningless (0) and never encoded.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn prepare_indirect(
         &self,
         dispatch: &BufferDispatch<'_>,
+        slot: &BindGroupSlot,
     ) -> Result<Vec<PreparedDispatch>, Error> {
-        self.prepare_dispatches(std::slice::from_ref(dispatch), true)
+        self.prepare_dispatches(std::slice::from_ref(dispatch), true, Some(slot))
     }
 
+    /// `slot`, given only for one dispatch (a staged graph's node), keeps the bind group of a whole launch from one
+    /// call to the next; split pieces and every other caller build theirs each time.
     fn prepare_dispatches(
         &self,
         dispatches: &[BufferDispatch<'_>],
         indirect: bool,
+        slot: Option<&BindGroupSlot>,
     ) -> Result<Vec<PreparedDispatch>, Error> {
         let validated = dispatches
             .iter()
@@ -119,6 +124,22 @@ impl HeadlessDevice {
                 }
             };
             let cached_kernel = self.cached_kernel(dispatch.kernel, &resources)?;
+            let launch = if dispatch.kernel.shape == Shape::Pixel {
+                Launch::Pixel {
+                    elements: dispatch.extent().x,
+                }
+            } else {
+                Launch::Compute { workgroups }
+            };
+            if let Some(kept) = slot.and_then(|slot| slot.reuse(&cached_kernel)) {
+                prepared.push(PreparedDispatch {
+                    cached_kernel,
+                    bind_group: kept,
+                    launch,
+                    pieces: Vec::new(),
+                });
+                continue;
+            }
             let label = dispatch.kernel.qualified_name().to_string();
             // The bound parameters in declaration order; a sampler parameter takes the next sampler binding and every
             // other one the next resource binding (`validate_dispatch_extent` counted both).
@@ -149,13 +170,9 @@ impl HeadlessDevice {
                 layout: &cached_kernel.bind_group_layout,
                 entries: &bind_group_entries,
             });
-            let launch = if dispatch.kernel.shape == Shape::Pixel {
-                Launch::Pixel {
-                    elements: dispatch.extent().x,
-                }
-            } else {
-                Launch::Compute { workgroups }
-            };
+            if let Some(slot) = slot {
+                slot.keep(&cached_kernel, &bind_group);
+            }
             prepared.push(PreparedDispatch {
                 cached_kernel,
                 bind_group,

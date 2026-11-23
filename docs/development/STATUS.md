@@ -974,6 +974,18 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       review fixes, which changed no emitted code. RTX 5090: owed (quiet window 2026-11-22, D250): check-examples,
       check-web and the Gpu suite on the fixed merge. `GPU_SUITE_PIN` 591 over 61. Opus review: merge after fixes;
       fixed.
+    - m13.pin2221 (D242 group 1, after spike m13.sl221; alone, right after the rename): the Slang pin is 2026.22.1.
+      Every committed set was regenerated with the real 2026.22.1 toolchain (map-chain, web-vector-add,
+      tests/precompiled and its fixture copies, the ten gallery sets, subgroup-reduce, gust-bench-pre, the schema-3
+      dump, and the cargo-gust array, uniform and variant testdata with the gust-wgpu array copies, rebuilt from their
+      modules in scratch crates; the variant manifest keeps its pre-split entries). No golden, `.wgsl`, `.slang` or
+      `.spv` file changed; the reflection records and manifests name the new compiler. SEMANTICS 15.7.2 and 15.7.6
+      and the edge-case ledger record that constant out-of-range float-to-int casts now fold at compile time
+      (neither route saturates like Rust, D39) and that float vector negation yields `-0.0` (inferred from IEEE, not
+      observed on a GPU). The pin-boundary tests gained the old pin as a prefix case. The D46 licence audit of the
+      three release archives passed (LICENSES-SLANG). Gates on the Radeon 890M (lane and merge gate, Reflect and
+      Slangc suites included). RTX 5090: owed (quiet window 2026-11-22, D250): check-full and check-web; the spike
+      ran this compiler's Gpu suite and difftest on the 5090 the same day. Opus review: merge after fixes; fixed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -1769,7 +1769,7 @@ fn true_and_false_captured_by_a_local_silently_change_the_generated_code() {
 
 /// Slice m11.tx: the four texture and sampler type names (`Texture2D`, `RWTexture2D`, `WTexture2D`, `SamplerState`) are
 /// in the table as class-2 entries; the struct position is judged by the class-2 test above. This test measures the two
-/// other things the table needs to say, on slangc 2026.22 (WGSL and SPIR-V agreeing):
+/// other things the table needs to say, on slangc 2026.22.1 (WGSL and SPIR-V agreeing):
 ///
 /// - the global position (a kernel parameter of the name, next to the declaration GUST writes) fails bare, with
 ///   E39999 "expected a generic" for the three texture names and E30060 "expected a type" for `SamplerState`;

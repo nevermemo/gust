@@ -693,12 +693,12 @@ fn a_dependency_table_over_several_lines_is_reported_instead_of_skipped() {
 
 // ---- compiler tags (NEXT_TASKS: every committed tag equals SLANG_PIN) ----
 
-const PIN: &str = "2026.22";
+const PIN: &str = "2026.22.1";
 
 #[test]
 fn a_current_compiler_tag_passes_in_a_reflection_document_and_a_manifest() {
-    let reflection = r#"{"schemaVersion":4,"compiler":"2026.22","target":"wgsl"}"#;
-    let manifest = "{\n  \"schema\": 1,\n  \"slang\": \"2026.22\"\n}\n";
+    let reflection = r#"{"schemaVersion":4,"compiler":"2026.22.1","target":"wgsl"}"#;
+    let manifest = "{\n  \"schema\": 1,\n  \"slang\": \"2026.22.1\"\n}\n";
     assert_eq!(
         compiler_tag_problems("a.wgsl.reflection.json", reflection, PIN),
         Vec::<String>::new()
@@ -720,7 +720,7 @@ fn a_stale_compiler_tag_is_named_with_its_file_and_both_tags() {
             PIN
         ),
         [
-            "examples/x/gust-artifacts/k.wgsl.reflection.json: `compiler` is `2026.21` but SLANG_PIN is `2026.22`; \
+            "examples/x/gust-artifacts/k.wgsl.reflection.json: `compiler` is `2026.21` but SLANG_PIN is `2026.22.1`; \
              regenerate the artifact with the pinned compiler"
         ]
     );
@@ -732,10 +732,18 @@ fn a_stale_compiler_tag_is_named_with_its_file_and_both_tags() {
         "{problems:?}"
     );
     // A tag that only extends the pin is not the pin.
-    let longer = r#"{"compiler":"2026.22.1"}"#;
+    let longer = r#"{"compiler":"2026.22.1.1"}"#;
     assert_eq!(
         compiler_tag_problems("k.reflection.json", longer, PIN).len(),
         1
+    );
+    // The previous pin, a strict prefix of this one, is stale too.
+    let previous = r#"{"compiler":"2026.22"}"#;
+    let problems = compiler_tag_problems("k.reflection.json", previous, PIN);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("`compiler` is `2026.22` but SLANG_PIN is `2026.22.1`"),
+        "{problems:?}"
     );
     // Both fields stale: two problems.
     let both = r#"{"compiler":"old","slang":"old"}"#;
@@ -759,7 +767,7 @@ fn a_null_slang_a_missing_field_and_odd_values_are_judged_as_documented() {
     assert!(
         compiler_tag_problems(
             "k.reflection.json",
-            r#"{"compiler":"2026.22","x":{"compiler":"other"}}"#,
+            r#"{"compiler":"2026.22.1","x":{"compiler":"other"}}"#,
             PIN
         )
         .is_empty()
@@ -833,14 +841,14 @@ fn only_the_reflection_probe_expectations_are_read_line_by_line() {
 #[test]
 fn a_stale_tag_on_any_document_line_of_the_expectations_is_named_with_its_line() {
     // The first document is current, the second (a SPIR-V line, which no other check compares) is stale.
-    let text = expectations("2026.22", "2026.21");
+    let text = expectations("2026.22.1", "2026.21");
     let check = compiler_tag_check(EXPECTATIONS, text.as_bytes(), PIN).unwrap();
     assert_eq!(check.documents, 2);
     assert_eq!(check.problems.len(), 1, "{:?}", check.problems);
     let problem = &check.problems[0];
     assert!(
         problem.starts_with(&format!(
-            "{EXPECTATIONS}:4: `compiler` is `2026.21` but SLANG_PIN is `2026.22`"
+            "{EXPECTATIONS}:4: `compiler` is `2026.21` but SLANG_PIN is `2026.22.1`"
         )),
         "{problem}"
     );
@@ -850,7 +858,7 @@ fn a_stale_tag_on_any_document_line_of_the_expectations_is_named_with_its_line()
     assert_eq!(check.problems.len(), 2);
     assert!(check.problems[0].contains(":2:") && check.problems[1].contains(":4:"));
     // Current tags, header lines and the error line: nothing to report, two documents counted.
-    let text = expectations("2026.22", "2026.22");
+    let text = expectations("2026.22.1", "2026.22.1");
     assert_eq!(
         compiler_tag_check(EXPECTATIONS, text.as_bytes(), PIN),
         Some(TagCheck {
@@ -859,14 +867,14 @@ fn a_stale_tag_on_any_document_line_of_the_expectations_is_named_with_its_line()
         })
     );
     // CRLF line ends (a working tree with autocrlf) do not matter.
-    let crlf = expectations("2026.22", "2026.22").replace('\n', "\r\n");
+    let crlf = expectations("2026.22.1", "2026.22.1").replace('\n', "\r\n");
     let check = compiler_tag_check(EXPECTATIONS, crlf.as_bytes(), PIN).unwrap();
     assert_eq!((check.documents, check.problems.len()), (2, 0));
 }
 
 #[test]
 fn a_broken_document_line_or_a_file_without_one_is_a_problem() {
-    let broken = "== a wgsl compute\n{\"schemaVersion\":3,\"compiler\":\"2026.22\"\n";
+    let broken = "== a wgsl compute\n{\"schemaVersion\":3,\"compiler\":\"2026.22.1\"\n";
     let check = compiler_tag_check(EXPECTATIONS, broken.as_bytes(), PIN).unwrap();
     assert_eq!(check.documents, 1);
     assert!(
@@ -896,8 +904,8 @@ fn a_tagged_file_that_is_not_utf8_text_is_a_problem_not_a_skip() {
         .encode_utf16()
         .flat_map(u16::to_le_bytes)
         .collect();
-    let invalid = b"{\"slang\":\"2026.22\"}\xff".to_vec();
-    let nul = b"{\"slang\":\"2026.22\"}\0".to_vec();
+    let invalid = b"{\"slang\":\"2026.22.1\"}\xff".to_vec();
+    let nul = b"{\"slang\":\"2026.22.1\"}\0".to_vec();
     for path in [
         "gust-artifacts/manifest.json",
         "k.wgsl.reflection.json",
@@ -929,7 +937,7 @@ fn a_tagged_file_that_is_not_utf8_text_is_a_problem_not_a_skip() {
 
 #[test]
 fn a_whole_file_document_counts_once_and_a_file_without_a_tag_is_not_judged() {
-    let manifest = "{\"slang\":\"2026.22\"}";
+    let manifest = "{\"slang\":\"2026.22.1\"}";
     assert_eq!(
         compiler_tag_check("gust-artifacts/manifest.json", manifest.as_bytes(), PIN),
         Some(TagCheck {

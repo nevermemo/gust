@@ -58,7 +58,7 @@ a strict profile needs neither Slang nor the helper, D45):
 - Outside this checkout, once a release is on crates.io (none is, D226), `cargo install cargo-gust --locked --version
   "~0.2"` installs the `cargo gust` tool; it works without `GUST_PROFILE` ("Install from crates.io" has the whole
   setup for a crate of your own)
-- `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.22 (`cargo gust slang install` installs it, and
+- `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.22.1 (`cargo gust slang install` installs it, and
   `cargo gust doctor` names a `slangc` of another version). `cargo gust` finds its managed install itself (in
   `GUST_SLANG_HOME` when set), and so does the run-time bridge, but `cargo xtask` launches plain `slangc`, so put the
   install's `bin` directory first on `PATH`
@@ -279,7 +279,7 @@ Slang, nor the helper, nor `cargo-gust`.
 
 ```sh
 cargo install cargo-gust --locked --version "~0.2"
-cargo gust slang install        # downloads Slang 2026.22, checks its SHA-256, unpacks it into the cargo home
+cargo gust slang install        # downloads Slang 2026.22.1, checks its SHA-256, unpacks it into the cargo home
 cargo gust slang build-helper   # compiles the native reflection helper against that Slang and prints its path
 cargo gust doctor               # names whatever is still missing
 ```
@@ -639,8 +639,8 @@ list; the `semver` CI job that covered the public API against that branch is ret
   carries.
 - **Changed behaviour.** `DeviceOptions::default()` and `HeadlessDevice::new()` now request
   `gust::capability::enabled()`. In a build without a capability that is the empty set, as before; in a `+subgroups`
-  build they open a device with the feature, or fail with `Error::MissingCapability`. The pinned Slang is 2026.22
-  (D150); `cargo gust check` refuses artifacts built with 2026.20 until `cargo gust build` is run again.
+  build they open a device with the feature, or fail with `Error::MissingCapability`. The pinned Slang is 2026.22.1
+  (D150); `cargo gust check` refuses artifacts built with an earlier pin (2026.20, for the 0.1 line) until `cargo gust build` is run again.
 
 ## Minimum Rust
 

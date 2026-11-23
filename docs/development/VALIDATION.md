@@ -54,7 +54,7 @@ line 1243), not in every timed test. So a green run of them proves the GPU time 
 a Gpu label for a timed call names an adapter that has it, and a benchmark or a claim about GPU time on any other
 adapter has no such evidence.
 
-Label format: `done (Gpu: NVIDIA GeForce RTX 5090, Vulkan, slangc 2026.22, <commit>)`. The `Cpu` tier is labelled
+Label format: `done (Gpu: NVIDIA GeForce RTX 5090, Vulkan, slangc 2026.22.1, <commit>)`. The `Cpu` tier is labelled
 `done (Cpu: <commit>)`. It is distinct from Unit, whose twin runs under `cfg(test)` (shadow-semantics evidence), and it
 is never GPU evidence (D42): a CPU result proves nothing about an adapter.
 
@@ -63,7 +63,7 @@ of its own: for integer outputs it is inside D22's exact contract, for `f32` out
 `sample` is a documented SEMANTICS limitation under the Gpu tier, not a tier. A Gpu line for shape work names the shapes
 it executed, so a `grid` run cannot be read as a `pixel` one:
 
-- `done (Gpu: NVIDIA GeForce RTX 5090, Vulkan, slangc 2026.22, <commit>; shapes grid, pixel)`;
+- `done (Gpu: NVIDIA GeForce RTX 5090, Vulkan, slangc 2026.22.1, <commit>; shapes grid, pixel)`;
 - the browser: `Gpu (WebGPU, Chrome <version>, <vendor> <architecture>; shapes grid, pixel)`;
 - software: `Gpu (software: lavapipe <name as wgpu prints it>, Mesa <version>, Vulkan, slangc <version>, <commit>;
   shapes grid, pixel)`.
@@ -165,8 +165,26 @@ reduction did not run, assert the `DeviceLimit` refusal, and run the deepest inp
 STATUS). The v0 against v1 measurement behind `variant::shipped` (interleaved end-to-end runs on the RTX 5090 and the
 Radeon 890M) is not part of the gate; its logs are in the work area and D121 records the outcome.
 
-**The Slang pin (D46, slice m4.r; moved to 2026.21 by D150, slice m8.p, and to 2026.22 by slice m9.p).** `cargo gust` is pinned to the Slang 2026.22
-release, and `VALIDATED_BUILDS` ships empty. 2026.22 was validated on Windows with the release archive itself (spike
+**The Slang pin (D46, slice m4.r; moved to 2026.21 by D150, slice m8.p, to 2026.22 by slice m9.p, and to 2026.22.1 by slice m13.pin2221).** `cargo gust` is pinned to the Slang 2026.22.1
+release, and `VALIDATED_BUILDS` ships empty. 2026.22.1 was validated on Windows with the release archive itself (spike
+SL221, then slice m13.pin2221). The spike compared its emitted text with 2026.22: the WGSL of 189 of the 190 compute and
+fragment entries of the golden sources is byte-identical (every subgroup golden included, so D141's fix-up applies
+unchanged), and the one difference is the `products` golden source (`tests/fixtures/products.slang`), whose Slang does
+not change: what changes is the WGSL slangc emits from it, where vector negation is now `-a` instead of `0 - a`
+(slangc #14403). That WGSL is not committed, so no committed `.wgsl` file and no golden changed in this slice. Constant float-to-integer and float-to-unsigned casts whose operand is out of range now fold at
+compile time to other values than in 2026.22 (slangc #14511; neither route saturates like Rust, a D39 limitation,
+SEMANTICS 15.7.6 and ledger rows KM-05 and KM-06). The Gpu suite and the difftest passed on the RTX 5090 and on the
+Radeon 890M in the spike. In slice m13.pin2221 every committed artifact set was regenerated with the 2026.22.1 slangc and
+helper (`cargo gust build`, including the sets of `cargo-gust`'s testdata, rebuilt from scratch crates that hold their
+modules; the WGSL and reflection files of each are byte-identical to the committed ones, all 24 of them). A 2026.22.1
+build of the variant crate now also writes four split (D209) entries, and the committed variant fixture deliberately
+keeps its schema-3 manifest: its `slang` tag and `reflection_sha256` values were updated, not written by a 2026.22.1
+build. The slice ran the Reflect suite, the Slangc suite (with `CARGO_GUST_HELPER_TESTS` and `CARGO_GUST_VARIANT_GATE`),
+check-artifacts, check-precompiled, check-bench, the Gpu suite and check-difftest, and all of those gates ran on the
+Radeon 890M only: the RTX 5090 run is owed (D250). Only the
+Windows archive of 2026.22.1 has been executed; the Linux and macOS archives are digest and size entries compared with
+GitHub's published values. The three archives were audited again under D46 (`LICENSES-SLANG.md`). The 2026.22 pin
+follows, as written for slice m9.p: 2026.22 was validated on Windows with the release archive itself (spike
 SL22, then slice m9.p): every committed artifact set was re-blessed with that slangc and a helper built against it
 (the WGSL is byte-identical, only the compiler tag and what follows from it changed), the Spirv, Reflect, Slangc and Gpu
 suites ran on the RTX 5090, and D141's fix-up was re-checked on the new WGSL. Only the Windows archive of 2026.22 has
@@ -191,7 +209,7 @@ in `SLANG_PIN` of `crates/gust/src/toolchain.rs` (and, for `verify`, the output 
 such as one built on 2026.13.1, is refused with a message that names both tags. When the variable is unset, the helper
 is built from `SLANG_SDK` or `VULKAN_SDK` as before, and the result must carry the pin as well, so an SDK of another
 version is refused instead of being used silently (a VulkanSDK that ships 2026.13.1 therefore needs `SLANG_SDK` to
-name the managed 2026.22 install). `cargo gust slang build-helper` (which `cargo xtask build-slang-reflect` runs)
+name the managed 2026.22.1 install). `cargo gust slang build-helper` (which `cargo xtask build-slang-reflect` runs)
 keeps a helper only when a build stamp beside it holds the SHA-256 of the packaged C++ source and the helper prints
 the Slang tag of the SDK's own `slangc -version`; no file time plays a part (slice m4.z). Any other helper in the
 output directory is rebuilt, and the build says why. A helper built before the stamp existed is rebuilt once.
@@ -680,7 +698,7 @@ The Slang of the twelve bodies is pinned by
 
 ### A7. Atomics: golden counts of spike SL22 (section 6)
 
-  The returned flag is never part of the contract: the GPU form is statement-only. On the pinned Slang 2026.22, as on
+  The returned flag is never part of the contract: the GPU form is statement-only. On the pinned Slang 2026.22.1 (the WGSL is identical on 2026.22), as on
   2026.21 before it, the `atomics` golden is among the 131 golden entries whose WGSL was identical on the two (spike
   SL22). The count is the `[shader(` lines of the 30 files `tests/fixtures/*.slang` that the spike compared; the
   route-only `*.spirv-route.slang` files of m9.rt2 are not counted. The same count gives 132 in 31 files with the traits

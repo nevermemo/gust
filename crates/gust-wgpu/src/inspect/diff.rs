@@ -62,7 +62,7 @@ impl fmt::Display for Changes {
     }
 }
 
-/// A copy of a buffer's range taken by [`Inspector::snapshot`], to be compared with the buffer later.
+/// A copy of a buffer's range taken by `Inspector::snapshot`, to be compared with the buffer later.
 pub struct Snapshot<'a, T> {
     pub(super) buffer: &'a GpuBuffer<T>,
     pub(super) table: InspectTable,
@@ -92,7 +92,7 @@ impl<T> Snapshot<'_, T> {
         Ok(self.diff(&table))
     }
 
-    /// [`Snapshot::changed`] without blocking.
+    /// `Snapshot::changed` without blocking.
     pub async fn changed_async(&self, device: &HeadlessDevice) -> Result<Changes, InspectError> {
         let table = Inspector::new(device, self.buffer)
             .range(self.range())

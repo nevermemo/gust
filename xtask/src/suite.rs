@@ -235,8 +235,9 @@ const CORE_TOOLCHAIN_TESTS: Step = Step::CountedCargo(&[
     "toolchain",
 ]);
 /// The doc tests of `gust-compute` that need no tool (m10.k2): every one but the twelve whose examples launch slangc or
-/// the native reflection helper (`slang::compile*`, `reflect::compile_reflected*`, `reflect::CompiledReflection`,
-/// `reflect::CleanCompilation`, `reflect::reflect` and `artifact::Verified`), which the `--skip` filters (substrings of
+/// the native reflection helper (`slang::compile*`, `reflect::compile::compile_reflected*`,
+/// `reflect::model::CompiledReflection`, `reflect::compile::CleanCompilation`, `reflect::compile::reflect` and
+/// `artifact::Verified`), which the `--skip` filters (substrings of
 /// the test names, nothing broader) leave out because the `unit` CI job has neither. The `compile_fail` type-safety pins
 /// and the rest stay here, so the required check still guards them. The skipped twelve run in the Slangc tier, in
 /// [`CORE_DOC_TESTS`]. The step names `slang-runtime` (the docs.rs feature) instead of relying on the self
@@ -253,13 +254,13 @@ const CORE_DOC_TESTS_TOOL_FREE: Step = Step::CountedCargo(&[
     "--skip",
     "slang::compile",
     "--skip",
-    "reflect::compile_reflected",
+    "reflect::compile::compile_reflected",
     "--skip",
-    "reflect::CompiledReflection",
+    "reflect::model::CompiledReflection",
     "--skip",
-    "reflect::CleanCompilation",
+    "reflect::compile::CleanCompilation",
     "--skip",
-    "reflect::reflect",
+    "reflect::compile::reflect",
     "--skip",
     "artifact::Verified",
 ]);

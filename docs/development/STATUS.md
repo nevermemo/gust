@@ -1074,6 +1074,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       transfers and every upload use a fresh staging buffer (upload pooling measured no gain and was reverted).
       `GPU_SUITE_PIN` 642 over 67 (Radeon 890M, merge gate). RTX 5090: owed. Opus review: merge after fixes; fixed;
       re-check merge after fixes; fixed.
+    - m14.cifix: dev's GitHub CI, red since 2026-11-22, fixed at the causes. After m13.splitr the tool-free doctest
+      step's `--skip` substrings no longer named the moved reflect items, so CI's helper-less `unit` runner ran six
+      helper doctests; the skips use the post-split paths and a guard test checks that every skip names an item of
+      the crate. Two stable rustdoc links (`release` job R5), thirteen wasm32-unresolved links in gust-wgpu (nightly
+      docs.rs build) and the precompiled fixture's formatting (`precompiled` job) are fixed. CI stopped each job at
+      its first failure, so the later steps of those jobs are proven by the first CI run after the merge. Opus
+      review: merge after fixes; fixed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

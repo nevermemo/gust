@@ -26,7 +26,7 @@ impl HeadlessDevice {
     /// Zero the `clear` buffers, run `dispatches` as one batch and copy `read` into a pooled staging buffer, all in one
     /// command buffer and **one** counted submission ([`gust_submissions`](Self::gust_submissions) rises by 1; by 0
     /// when there is nothing to record: no work, no clear and an empty `read`). The returned [`PendingRead`] is the
-    /// read-back, already requested; await [`finish`](PendingRead::finish) or, on native, [`wait`](PendingRead::wait).
+    /// read-back, already requested; await [`finish`](PendingRead::finish) or, on native, `wait`.
     ///
     /// Compared with `submit_batch` and a read-back this saves a submission, and a third when a recycled output has to
     /// be zeroed first. The batch means what [`submit_batch`](Self::submit_batch) means (validation, one pass per
@@ -214,7 +214,7 @@ impl<T: GpuPod> EncodedRead<T> {
     ///   returns the stale bytes an earlier read-back left in that pooled staging buffer, as if they were the values
     ///   of `read`.
     ///
-    /// A wrong index (another submission's) only changes what [`PendingRead::wait`] waits for.
+    /// A wrong index (another submission's) only changes what `PendingRead::wait` waits for.
     pub fn submitted(self, index: &wgpu::SubmissionIndex) -> PendingRead<T> {
         PendingRead {
             readback: self.staged.start(),

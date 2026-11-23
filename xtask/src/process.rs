@@ -101,6 +101,16 @@ pub(crate) fn run_capture(command: &mut Command, program: &str) -> Result<Output
         .map_err(|error| format!("could not launch {program}: {error}"))
 }
 
+/// [`run_capture`] for a step of a named check: the error is `{context}: could not launch {program}: {error}`, where
+/// `context` is the check (and step) that failed, such as `check-precompiled E2`.
+pub(crate) fn run_capture_in(
+    command: &mut Command,
+    context: &str,
+    program: &str,
+) -> Result<Output, String> {
+    run_capture(command, program).map_err(|error| format!("{context}: {error}"))
+}
+
 pub(crate) struct CheckRecord {
     pub(crate) program: String,
     pub(crate) arguments: Vec<String>,
@@ -531,6 +541,36 @@ mod cargo_test_command_tests {
         assert_eq!(
             profile_of(&workspace_command("cargo")),
             Some(OsString::from("dev"))
+        );
+    }
+}
+
+#[cfg(test)]
+mod run_capture_tests {
+    use std::process::Command;
+
+    use super::{run_capture, run_capture_in};
+
+    const MISSING: &str = "gust-xtask-no-such-program";
+
+    #[test]
+    fn a_program_that_cannot_start_is_named_in_the_launch_error() {
+        let error = run_capture(&mut Command::new(MISSING), "cargo tree").unwrap_err();
+        assert!(
+            error.starts_with("could not launch cargo tree: "),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_context_of_a_step_leads_the_launch_error() {
+        let plain = run_capture(&mut Command::new(MISSING), "cargo").unwrap_err();
+        let error = run_capture_in(&mut Command::new(MISSING), "check-precompiled E2", "cargo")
+            .unwrap_err();
+        assert_eq!(error, format!("check-precompiled E2: {plain}"));
+        assert!(
+            error.starts_with("check-precompiled E2: could not launch cargo: "),
+            "{error}"
         );
     }
 }

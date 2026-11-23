@@ -13,7 +13,7 @@ use crate::{
     precompiled::PRECOMPILED_DIR,
     process::{
         PROFILE_VARIABLE, cargo_program, command_exists, exit_code, print_command, require_command,
-        run_checked, run_counted, run_counted_captured, run_direct, run_direct_args,
+        run_capture, run_checked, run_counted, run_counted_captured, run_direct, run_direct_args,
         set_workspace_profile, without_colors, workspace_command,
     },
     shader::{
@@ -1053,11 +1053,12 @@ pub(crate) fn doctor(args: &[String]) -> Result<(), String> {
 
 pub(crate) fn list_tests() -> Result<(), String> {
     let root = workspace_root()?;
-    let output = workspace_command("cargo")
-        .args(["test", "--workspace", "--", "--list"])
-        .current_dir(&root)
-        .output()
-        .map_err(|error| format!("could not launch cargo test -- --list: {error}"))?;
+    let output = run_capture(
+        workspace_command("cargo")
+            .args(["test", "--workspace", "--", "--list"])
+            .current_dir(&root),
+        "cargo test -- --list",
+    )?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }

@@ -45,7 +45,7 @@ use crate::{
         self, Json,
         report::{array, field, float, text, uint},
     },
-    process::{require_tests_ran, sum_test_results, workspace_command},
+    process::{require_tests_ran, run_capture_in, sum_test_results, workspace_command},
     workspace::{cargo_target_dir, workspace_root},
 };
 
@@ -1613,9 +1613,7 @@ fn run_short_circuit(root: &Path, target: &Path) -> Result<Vec<String>, String> 
     if let Some(log) = &route_log {
         command.env(ROUTE_LOG_VARIABLE, log);
     }
-    let output = command
-        .output()
-        .map_err(|error| format!("check-difftest: could not launch cargo: {error}"))?;
+    let output = run_capture_in(&mut command, "check-difftest", "cargo")?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     print!("{stdout}");
     let mut problems = short_circuit_problems(&args, &stdout);

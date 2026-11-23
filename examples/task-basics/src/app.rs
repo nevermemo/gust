@@ -380,7 +380,8 @@ mod tests {
         let mut made = Vec::new();
         for _ in 0..2 {
             let before = device.gust_submissions();
-            let task = gpu_task!(on(Arc::clone(&device)); n, [a: &[f32], empty: &[f32]], |i| -> f32 { a[i] + empty[0u32] });
+            let task = gpu_task!(on(Arc::clone(&device)); n, [a: &[f32], empty: &[f32]],
+                |i| -> f32 { a[i] + empty[0u32] });
             let Err(error) = task.submit() else {
                 panic!("a task with an empty capture and a non-empty extent is refused");
             };

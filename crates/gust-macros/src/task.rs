@@ -17,9 +17,10 @@
 //!
 //! The diagnostics of the E10xx family that this slice owns are raised here, on the closure's own tokens, before the
 //! generator sees the body: E1001 (not one of the forms), E1002 (a capture whose element type is not visible, or a name
-//! the capture list does not have), E1003 (a write to a capture), E1007 (an index of the wrong rank), E1008 (an in-place
-//! stage reading or writing its target at another index than its own, or binding its own index again). Everything else
-//! about the body is the validator's, with its own codes.
+//! the capture list does not have), E1003 (a write to a capture), E1004 (a `bool` element of a stage of a batch: a
+//! `Stage<bool>` entry or a `bool` result type), E1007 (an index of the wrong rank), E1008 (an in-place stage reading
+//! or writing its target at another index than its own, or binding its own index again). Everything else about the
+//! body is the validator's, with its own codes.
 
 use std::collections::HashSet;
 
@@ -810,10 +811,23 @@ fn is_compound_assignment(op: &syn::BinOp) -> bool {
     )
 }
 
+/// GUST-E1004: a `bool` as the element of a stage of a batch. `what` names the thing that has it.
+fn bool_element(tokens: impl ToTokens, what: &str) -> syn::Error {
+    diagnostics::error(
+        Code::BatchElementBool,
+        tokens,
+        format!(
+            "{what} has `bool` as its element, and a buffer holds a `bool` as a `u32` word: use `u32` (`0` and `1`), \
+             or a `#[repr(u32)]` enum once enum elements are in a batch"
+        ),
+    )
+}
+
 /// What the list's entry `name: ty` is: checked for the forms a stage takes, with the codes of this slice. A capture is
 /// a host slice `&[T]` of a buffer element type, or a scalar `u32`, `i32`, `f32` or `bool`; `&mut [T]` is the in-place
-/// target's entry only.
-fn check_entry(entry: &RawBinding, target: Option<&syn::Ident>) -> syn::Result<()> {
+/// target's entry only. In a stage of a batch (`batch`) a `bool` element is GUST-E1004 where a stand-alone stage has
+/// GUST-E1002.
+fn check_entry(entry: &RawBinding, target: Option<&syn::Ident>, batch: bool) -> syn::Result<()> {
     let name = entry.name.unraw().to_string();
     let write = |element: &str| format!("`{name}: &[{element}]`");
     match &entry.ty {
@@ -833,6 +847,7 @@ fn check_entry(entry: &RawBinding, target: Option<&syn::Ident>) -> syn::Result<(
                 }
                 match element_types(&slice.elem) {
                     Ok(types) if !types.boolean => Ok(()),
+                    Ok(_) if batch => Err(bool_element(&slice.elem, &format!("`{name}`"))),
                     Ok(_) => Err(diagnostics::error(
                         Code::TaskCapture,
                         &slice.elem,
@@ -1051,7 +1066,7 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
     // The list: each entry is a form this slice takes; an in-place target has its `&mut [T]` entry.
     let target_name = target.as_ref().map(|(name, _)| name);
     for entry in &list {
-        check_entry(entry, target_name)?;
+        check_entry(entry, target_name, batch.is_some())?;
     }
     if let Some((name, _)) = &target {
         let entry = list.iter().find(|entry| entry.name.unraw() == name.unraw());
@@ -1127,6 +1142,9 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
     // The generator's input: the list, then the result buffer.
     let mut bindings = list;
     if let Some(ty) = &result {
+        if batch.is_some() && element_types(ty).is_ok_and(|types| types.boolean) {
+            return Err(bool_element(ty, "the result type of a stage"));
+        }
         crate::par_for::element(ty, "the result type of a stage")?;
         bindings.push(RawBinding {
             name: format_ident!("{}", OUT),

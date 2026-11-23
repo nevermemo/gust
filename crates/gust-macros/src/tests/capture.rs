@@ -1,7 +1,7 @@
 //! The generated `capture` of a kernel (g2.cap): its signature, the parameters it copies and how it rebinds them for the
 //! replay, the cases that return an error (no twin, a texture) and the profile that has none.
 
-use crate::expand::Profile;
+use crate::expand::{Environment, Profile, expand_in};
 
 /// A kernel with a struct element, a uniform, a read-only and a read-write buffer, `id` not first.
 const PARTICLES: &str = "mod sim { \
@@ -73,8 +73,8 @@ fn every_resource_is_copied_in_parameter_order_with_the_element_type_written() {
     // Copy: the uniform first (index 0), then the two buffers; each names its parameter for the error messages.
     let copies = [
         ":: gust :: capture :: capture_uniform :: < __GustD , Params > (__gust_device , & __gust_bindings [0usize] , \"params\" , & __gust_cpu ,) ?",
-        ":: gust :: capture :: capture_storage :: < __GustD , Particle > (__gust_device , & __gust_bindings [1usize] , \"input\" , & __gust_cpu ,) ?",
-        ":: gust :: capture :: capture_storage :: < __GustD , Particle > (__gust_device , & __gust_bindings [2usize] , \"out\" , & __gust_cpu ,) ?",
+        ":: gust :: capture :: capture_storage :: < __GustD , Particle > (__gust_device , & __gust_bindings [1usize] , \"input\" , :: gust :: Access :: ReadOnly , & __gust_cpu ,) ?",
+        ":: gust :: capture :: capture_storage :: < __GustD , Particle > (__gust_device , & __gust_bindings [2usize] , \"out\" , :: gust :: Access :: ReadWrite , & __gust_cpu ,) ?",
     ];
     let mut at = 0;
     for copy in copies {
@@ -129,6 +129,46 @@ fn the_replay_runs_the_shadow_body_for_each_id_it_is_given() {
 }
 
 #[test]
+fn the_call_is_checked_by_the_device_before_anything_is_copied() {
+    let item = capture_item(&expansion_text(PARTICLES, Profile::Other), "step");
+    let check = ":: gust :: capture :: Error :: Call) ? ;";
+    let checked = item
+        .find(check)
+        .unwrap_or_else(|| panic!("{check}\n{item}"));
+    assert!(
+        item[..checked].contains("__gust_device . check_call (__gust_call . kernel () , __gust_call . extent () , __gust_call . bindings () ,)"),
+        "{item}"
+    );
+    let first_copy = item.find("capture_uniform :: <").unwrap();
+    assert!(checked < first_copy, "{item}");
+}
+
+/// The text of the loop of a harness: from the destructuring of the bindings to the end of the `for`.
+fn skeleton(item: &str) -> &str {
+    let start = item
+        .find("let [params , input , out] = * __gust_call . bindings () ;")
+        .unwrap_or_else(|| panic!("{item}"));
+    let rest = &item[start..];
+    let for_at = rest.find("for __gust_id in").unwrap();
+    let end = for_at + rest[for_at..].find(") ; }").unwrap() + ") ; }".len();
+    &rest[..end]
+}
+
+#[test]
+fn the_replay_is_the_twins_own_loop_over_the_ids_it_is_given() {
+    // Pins the replay's skeleton (acquisitions, arguments, the shadow-body call) against drift from the twin's
+    // `submit_call`: the same text, but for the ids.
+    let text = expansion_text(PARTICLES, Profile::Other);
+    let twin_start = text.find("impl :: gust :: Run <").expect("the twin");
+    let twin = skeleton(&text[twin_start..]);
+    let item = capture_item(&text, "step");
+    let replay = skeleton(&item);
+    let walk = ":: gust :: cpu :: invocations (__gust_call . kernel () , __gust_call . extent ())";
+    assert!(twin.contains(walk), "{twin}");
+    assert_eq!(twin.replace(walk, "__gust_ids"), replay);
+}
+
+#[test]
 fn a_kernel_without_a_twin_gets_a_capture_that_says_so() {
     let source = "mod vector_add { \
         #[kernel(cpu = \"unsupported\")] \
@@ -150,6 +190,44 @@ fn a_kernel_without_a_twin_gets_a_capture_that_says_so() {
     assert!(!item.contains("capture_storage"), "{item}");
     assert!(!item.contains("__gust_replay"), "{item}");
     assert!(item.contains("no CPU twin"), "{item}");
+}
+
+#[test]
+fn a_kernel_with_no_portable_body_gets_the_no_twin_capture_too() {
+    let source = "mod m { \
+        #[kernel(workgroup_size(256, 1, 1), cpu = \"unsupported\", requires(subgroups))] \
+        pub fn lanes(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { \
+            let i = id.x; if i < out.len() { out[i] = 1u32; } \
+        } \
+    }";
+    // The crate declares only a profile with the capability, so the kernel is accepted; none of its bodies runs without
+    // it, so it has no twin.
+    let directory = std::env::temp_dir().join(format!("gust-g2cap-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n\
+         [package.metadata.gust]\nprofiles = [\"native+subgroups\"]\n",
+    )
+    .unwrap();
+    let environment = Environment {
+        manifest_dir: Some(directory.clone()),
+        export_dir: None,
+        package: Some("demo".to_owned()),
+        reported_file: None,
+    };
+    let profile = Profile::parse("dev+subgroups").expect("a profile");
+    let module = crate::diagnostics::testing::parse_str(source).unwrap();
+    let expanded = expand_in(module, &environment, profile);
+    let _ = std::fs::remove_dir_all(&directory);
+    let text = expanded.unwrap().to_string();
+    let item = capture_item(&text, "lanes");
+    assert!(
+        item.contains(":: gust :: capture :: Error :: NoTwin { kernel : \"lanes\" , }"),
+        "{item}"
+    );
+    assert!(!item.contains("__gust_replay"), "{item}");
 }
 
 #[test]

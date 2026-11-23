@@ -1,8 +1,8 @@
 //! Capture one GPU call and replay it on the CPU twin (stage G2 of the debugging design, slice g2.cap).
 //!
-//! A wrong GPU result can be studied by reading buffers back, but not by stepping through the kernel. Capture copies the
-//! inputs of one call, as they are just before the dispatch, into [`CpuDevice`] buffers; the replay then runs chosen
-//! invocations of the kernel's CPU twin over those copies, where a debugger can break inside the kernel body.
+//! A wrong GPU result can be studied by reading buffers back, but not by stepping through the kernel. Capture copies
+//! the inputs of one call, as they are just before the dispatch, into [`CpuDevice`] buffers; the replay then runs
+//! chosen invocations of the kernel's CPU twin over those copies, where a debugger can break inside the kernel body.
 //!
 //! The typed `capture` function is generated per kernel, under the twin's `cfg` (a test build of the crate that defines
 //! the kernel, or `--cfg gust_dual`), because only the macro knows each parameter's element type:
@@ -10,31 +10,43 @@
 //! ```text
 //! let captured = update::step::capture(&gpu, &call)?;   // before the dispatch
 //! captured.run_element([4711, 0, 0])?;                  // one invocation on the twin
-//! captured.run_until([4711, 0, 0])?;                    // invocations 0 ..= 4711 in the twin's order
+//! captured.run_until([4711, 0, 0])?;                    // the twin's launch up to and including 4711
+//! captured.run_all()?;                                  // the twin's whole launch
 //! let out = captured.buffer::<float>("out").unwrap().read();
 //! ```
 //!
 //! # What a replay is
 //!
-//! A replay reproduces the twin's order, never the GPU's schedule: ascending ids, one at a time, on the captured copies
-//! (never on the GPU buffers). For a race-free kernel without atomics that equals the GPU's result. For a kernel with
-//! atomics, or whose result depends on the order of invocations, it is one member of the allowed set (the section on
-//! unordered results in `docs/SEMANTICS.md`), not the history the GPU had. The twin also has the twin's semantics:
-//! Rust's integer overflow and division rules and its own floating-point rounding, which the GPU can differ from
-//! (documented limitations, D39).
+//! A replay reproduces the twin's order, never the GPU's schedule (the GPU has no order): the twin's launch visits
+//! every invocation of the extent rounded up to whole workgroups, ascending, one at a time, on the captured copies
+//! (never on the GPU buffers). [`Captured::run_all`] is exactly that launch, padding included, so it equals the twin's
+//! own call of the kernel; for a race-free kernel without atomics it also equals the GPU's result. For a kernel with
+//! atomics, or whose result depends on the order of invocations, it is one member of the allowed set
+//! (`docs/SEMANTICS.md`, section 6 and the domain paragraph of section 3), not the history the GPU had. The twin also
+//! has the twin's semantics: Rust's integer overflow and division rules and its own floating-point rounding, which the
+//! GPU can differ from (documented limitations, D39).
 //!
-//! Every run starts from the captured values: the copies are restored first, so running one element twice, or after
-//! `run_until`, gives the same result each time.
+//! The replay runs the twin's body, which for a kernel with variants is the portable variant, not necessarily the body
+//! the GPU ran.
 //!
-//! A kernel with `cpu = "unsupported"` has no twin: its `capture` returns [`Error::NoTwin`]. Textures and samplers are not
-//! captured yet ([`Error::Unsupported`]).
+//! Every run starts from the captured values: the read-write buffers are restored first, so running one element twice,
+//! or after `run_until`, gives the same result each time. Inputs (read-only buffers and uniforms) are not restored, so
+//! an edit of one through [`Captured::buffer`] or [`Captured::uniform`] ("what if this input were different?") stays
+//! for every later run.
+//!
+//! A kernel with `cpu = "unsupported"`, or with no body that runs without a capability, has no twin: its `capture`
+//! returns [`Error::NoTwin`]. Textures and samplers are not captured yet ([`Error::Unsupported`]). A call the GPU would
+//! refuse (the same buffer bound twice with one writer, a binding of another element layout, access or length) is
+//! refused by `capture` with the device's own error ([`Error::Call`]).
 
 use core::any::Any;
 use core::fmt;
 use core::marker::PhantomData;
 
 use crate::cpu::{self, CpuBinding, CpuBuffer, CpuDevice, CpuUniform};
-use crate::{Access, Extent, GpuPod, Kernel, LengthRule, Resource, TypedDevice, UVec3};
+use crate::{
+    Access, Extent, GpuPod, Kernel, KernelDescriptor, LengthRule, Resource, TypedDevice, UVec3,
+};
 
 /// The values of one captured storage buffer or uniform and the length rule it was bound with.
 #[derive(Clone, Debug, PartialEq)]
@@ -50,8 +62,18 @@ pub struct BufferCopy<T> {
 /// `gust_wgpu::HeadlessDevice` implements it; a buffer that cannot be read back is the device's own error, and
 /// [`hint`](Self::hint) says how to fix it.
 pub trait CaptureDevice: TypedDevice {
-    /// Copy what `binding` binds (a storage buffer or a uniform of element type `T`) to the host. The copy sees every
-    /// submission made before it.
+    /// Check the call (`kernel` over `extent` with `bindings`) the way the device checks a dispatch, with the device's
+    /// own validation: the same error the dispatch of this call would give. The generated `capture` calls it first, so
+    /// a call the device refuses is never captured.
+    fn check_call(
+        &self,
+        kernel: &KernelDescriptor,
+        extent: Extent,
+        bindings: &[Self::Binding<'_>],
+    ) -> Result<(), Self::Error>;
+
+    /// Copy what `binding` binds (a storage buffer or a uniform of element type `T`) to the host: a uniform gives one
+    /// element. The binding is never a texture. The copy sees every submission made before it.
     fn capture_buffer<T: GpuPod>(
         &self,
         binding: &Self::Binding<'_>,
@@ -68,7 +90,8 @@ pub trait CaptureDevice: TypedDevice {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error<E> {
-    /// The kernel is `#[kernel(cpu = "unsupported")]`, so there is no twin to replay on.
+    /// The kernel has no twin to replay on: `#[kernel(cpu = "unsupported")]`, or no body that runs without a
+    /// capability.
     NoTwin {
         /// The kernel.
         kernel: &'static str,
@@ -82,6 +105,8 @@ pub enum Error<E> {
         /// What the parameter is.
         what: &'static str,
     },
+    /// The device refused the call itself, with the error a dispatch of it gives (see [`CaptureDevice::check_call`]).
+    Call(E),
     /// The device could not copy a bound buffer.
     Read {
         /// The kernel parameter.
@@ -105,7 +130,8 @@ impl<E: fmt::Display> fmt::Display for Error<E> {
         match self {
             Self::NoTwin { kernel } => write!(
                 formatter,
-                "cannot capture `{kernel}`: no twin (the kernel is `cpu = \"unsupported\"`, so there is no CPU body to replay)"
+                "cannot capture `{kernel}`: no twin (no CPU body to replay: `cpu = \"unsupported\"`, or no \
+                 body that runs without a capability)"
             ),
             Self::Unsupported {
                 kernel,
@@ -115,6 +141,9 @@ impl<E: fmt::Display> fmt::Display for Error<E> {
                 formatter,
                 "cannot capture `{kernel}`: parameter `{parameter}` is {what}, which capture does not support yet"
             ),
+            Self::Call(error) => {
+                write!(formatter, "cannot capture: the call is not valid: {error}")
+            }
             Self::Read {
                 parameter,
                 error,
@@ -134,11 +163,12 @@ impl<E: fmt::Display> fmt::Display for Error<E> {
     }
 }
 
-impl<E: fmt::Debug + fmt::Display> std::error::Error for Error<E> {
+impl<E: std::error::Error + 'static> std::error::Error for Error<E> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Call(error) | Self::Read { error, .. } => Some(error),
             Self::Twin { error, .. } => Some(error),
-            _ => None,
+            Self::NoTwin { .. } | Self::Unsupported { .. } => None,
         }
     }
 }
@@ -188,20 +218,24 @@ impl From<cpu::Error> for ReplayError {
 
 /// The type-erased contents of one slot.
 trait SlotData {
-    /// Put the captured values back into the working copy.
+    /// Put the captured values back into the working copy; a no-op for an input, which a run cannot change.
     fn restore(&self) -> Result<(), cpu::Error>;
     fn as_any(&self) -> &dyn Any;
 }
 
 struct StorageSlot<T: GpuPod> {
     work: CpuBuffer<T>,
-    captured: Vec<T>,
+    /// The values a run restores: kept for a read-write buffer only.
+    captured: Option<Vec<T>>,
     length: LengthRule,
 }
 
 impl<T: GpuPod> SlotData for StorageSlot<T> {
     fn restore(&self) -> Result<(), cpu::Error> {
-        self.work.write(&self.captured)
+        match &self.captured {
+            Some(captured) => self.work.write(captured),
+            None => Ok(()),
+        }
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -211,12 +245,11 @@ impl<T: GpuPod> SlotData for StorageSlot<T> {
 
 struct UniformSlot<T: GpuPod> {
     work: CpuUniform<T>,
-    captured: T,
 }
 
 impl<T: GpuPod> SlotData for UniformSlot<T> {
     fn restore(&self) -> Result<(), cpu::Error> {
-        self.work.write(self.captured)
+        Ok(())
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -231,18 +264,19 @@ pub struct Slot {
     data: Box<dyn SlotData>,
 }
 
-/// The generated replay of one kernel: validate the rebuilt call, acquire the slots and run the twin's body for each id.
-/// Macro support.
+/// The generated replay of one kernel: validate the rebuilt call, acquire the slots and run the twin's body for each
+/// id. Macro support.
 #[doc(hidden)]
 pub type ReplayFn =
     fn(&CpuDevice, Extent, &[Slot], &mut dyn Iterator<Item = UVec3>) -> Result<(), cpu::Error>;
 
-/// Copy the storage buffer `binding` binds into a slot of `cpu`. Macro support.
+/// Copy the storage buffer `binding` (bound with `access`) into a slot of `cpu`. Macro support.
 #[doc(hidden)]
 pub fn capture_storage<D: CaptureDevice, T: GpuPod>(
     device: &D,
     binding: &D::Binding<'_>,
     parameter: &'static str,
+    access: Access,
     cpu: &CpuDevice,
 ) -> Result<Slot, Error<D::Error>> {
     let BufferCopy { values, length } = read_buffer::<D, T>(device, binding, parameter)?;
@@ -250,7 +284,7 @@ pub fn capture_storage<D: CaptureDevice, T: GpuPod>(
         name: parameter,
         data: Box::new(StorageSlot {
             work: cpu.buffer(&values),
-            captured: values,
+            captured: (access == Access::ReadWrite).then_some(values),
             length,
         }),
     })
@@ -265,19 +299,16 @@ pub fn capture_uniform<D: CaptureDevice, T: GpuPod>(
     cpu: &CpuDevice,
 ) -> Result<Slot, Error<D::Error>> {
     let BufferCopy { values, .. } = read_buffer::<D, T>(device, binding, parameter)?;
-    let value = *values.first().ok_or(Error::Twin {
-        parameter,
-        error: cpu::Error::ElementType { parameter },
-    })?;
+    // `CaptureDevice::capture_buffer` gives one element for a uniform.
+    let value = *values
+        .first()
+        .expect("a uniform binding holds exactly one element");
     let work = cpu
         .uniform(value)
         .map_err(|error| Error::Twin { parameter, error })?;
     Ok(Slot {
         name: parameter,
-        data: Box::new(UniformSlot {
-            work,
-            captured: value,
-        }),
+        data: Box::new(UniformSlot { work }),
     })
 }
 
@@ -390,11 +421,12 @@ impl<K: Kernel> Captured<K> {
     }
 
     /// Run exactly one invocation, `id`, on the twin, over the captured values. Only the buffers that invocation writes
-    /// change; everything else keeps the captured values. A panic in the kernel body unwinds through this call, which is
-    /// where a debugger breaks.
+    /// change; everything else keeps the captured values. A panic in the kernel body unwinds through this call, which
+    /// is where a debugger breaks.
     ///
     /// An id outside the call's extent is [`ReplayError::OutOfExtent`], and nothing runs. The ids of the padding of the
-    /// last workgroup (at or past the extent) are outside it too.
+    /// launch (at or past the extent on some axis) are outside it too: only [`run_until`](Self::run_until) (before its
+    /// target) and [`run_all`](Self::run_all) run them.
     pub fn run_element(&self, id: [u32; 3]) -> Result<(), ReplayError> {
         self.check(id)?;
         self.run(&mut core::iter::once(UVec3 {
@@ -404,26 +436,23 @@ impl<K: Kernel> Captured<K> {
         }))
     }
 
-    /// Run the invocations from the first one up to and including `id`, in the twin's order (ascending, `x` fastest,
-    /// then `y`, then `z`, one at a time), over the captured values. The same order, and so for a race-free kernel without
-    /// atomics the same result, as the GPU's whole dispatch when `id` is the last element of the extent (the padding of
-    /// the last workgroup is not replayed). With atomics or an order-dependent result the outcome is one member of the
-    /// allowed set, not the history the GPU had.
+    /// Run the twin's launch from its first invocation up to and including `id`, in the twin's order (ascending, `x`
+    /// fastest, then `y`, then `z`, one at a time), over the captured values. The launch covers every axis rounded up
+    /// to whole workgroups, so the ids before `id` can include padding ids (at or past the extent on some axis); the
+    /// kernel body runs for them as the twin runs it, and a body that does not guard them can write there. With atomics
+    /// or an order-dependent result the outcome is one member of the allowed set, not the history the GPU had.
     ///
-    /// An id outside the call's extent is [`ReplayError::OutOfExtent`], and nothing runs.
+    /// An id outside the call's extent is [`ReplayError::OutOfExtent`], and nothing runs. To run the whole launch, use
+    /// [`run_all`](Self::run_all).
     pub fn run_until(&self, id: [u32; 3]) -> Result<(), ReplayError> {
         self.check(id)?;
-        let size = K::DESCRIPTOR.workgroup_size;
-        if size.contains(&0) {
-            return Err(cpu::Error::UnsupportedWorkgroupSize { size }.into());
-        }
         let target = UVec3 {
             x: id[0],
             y: id[1],
             z: id[2],
         };
         let mut reached = false;
-        let mut ids = cpu::invocations(&K::DESCRIPTOR, self.extent).take_while(|current| {
+        let mut ids = self.launch()?.take_while(|current| {
             if reached {
                 return false;
             }
@@ -431,6 +460,23 @@ impl<K: Kernel> Captured<K> {
             true
         });
         self.run(&mut ids)
+    }
+
+    /// Run the twin's whole launch, padding ids included, over the captured values: exactly what the twin does for the
+    /// call. For a race-free kernel without atomics this equals the GPU's result; with atomics or an order-dependent
+    /// result it is one member of the allowed set, not the history the GPU had.
+    pub fn run_all(&self) -> Result<(), ReplayError> {
+        let mut ids = self.launch()?;
+        self.run(&mut ids)
+    }
+
+    /// The twin's launch: every invocation id of the extent rounded up to whole workgroups.
+    fn launch(&self) -> Result<impl Iterator<Item = UVec3>, ReplayError> {
+        let size = K::DESCRIPTOR.workgroup_size;
+        if size.contains(&0) {
+            return Err(cpu::Error::UnsupportedWorkgroupSize { size }.into());
+        }
+        Ok(cpu::invocations(&K::DESCRIPTOR, self.extent))
     }
 
     fn check(&self, id: [u32; 3]) -> Result<(), ReplayError> {

@@ -235,11 +235,12 @@ pub struct DeviceOptions {
     pub capabilities: &'static [Capability],
     /// Whether the device allocates its buffers so that a debugging capture can copy them (default `false`). A
     /// read-only storage buffer is created without `COPY_SRC`, so it cannot be read back; with this option it gets
-    /// `COPY_SRC`, and a call that binds one can be captured (the generated `capture` of a kernel, which copies a call's
-    /// inputs for replay on the CPU twin). Read-write buffers, `GpuVec`s, pool buffers, indirect buffers and uniforms are
-    /// readable either way. It costs nothing at run time beyond the extra usage flag, but it asks the driver for a buffer
-    /// a read-only binding does not need, so it is off unless you are debugging. It applies to buffers created after the
-    /// device is opened, on a device GUST opens (a device adopted with [`HeadlessDevice::adopt`] has it off).
+    /// `COPY_SRC`, and a call that binds one can be captured (the generated `capture` of a kernel, which copies a
+    /// call's inputs for replay on the CPU twin). Read-write buffers, `GpuVec`s, pool buffers, indirect buffers and
+    /// uniforms are readable either way. It costs nothing at run time beyond the extra usage flag, but it asks the
+    /// driver for a buffer a read-only binding does not need, so it is off unless you are debugging. It applies to
+    /// buffers created after the device is opened, on a device GUST opens (a device adopted with
+    /// [`HeadlessDevice::adopt`] has it off).
     pub capture: bool,
 }
 

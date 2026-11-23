@@ -198,20 +198,27 @@ captured.run_element([1042, 0, 0])?;
 let after = captured.buffer::<Particle>("out").unwrap().read();
 ```
 
-`run_element(id)` runs one invocation and `run_until(id)` runs every invocation up to and including `id`, in the
-twin's order (x fastest, then y, then z). Every run starts from the captured values, so runs do not add up. An id
-outside the launch extent, including the padding of the last workgroup, is an error and runs nothing. Three things to
-know:
+`run_element(id)` runs one invocation, `run_until(id)` runs the twin's launch from its first invocation up to and
+including `id` (x fastest, then y, then z), and `run_all()` runs the whole launch exactly as the twin does. The launch
+covers every axis rounded up to whole workgroups, so `run_until` and `run_all` also run the padding ids, which a kernel
+that does not guard them can write from; `run_element` takes only ids inside the extent. Every run starts from the
+captured values of the read-write buffers, so runs do not add up; inputs (read-only buffers and uniforms) are not
+restored, so you can edit one with `captured.buffer(..).unwrap().write(..)` to ask what a different input would give. An
+id outside the launch extent is an error and runs nothing. A call the device would refuse (for example one buffer bound
+as an input and an output) is refused by `capture` with the same error the dispatch gives. Four things to know:
 
 - **Read-only buffers need an option.** A read-only storage buffer can only be copied if the device was opened with
   `DeviceOptions::default().with_capture(true)`; without it the capture fails with `PersistentBufferNotReadable` and a
   hint that names the option. Read-write buffers, `GpuVec`s, pool buffers and uniforms need nothing.
-- **Not supported yet:** a kernel with a texture or a sampler returns a coded `Unsupported` error, and a kernel with
-  `cpu = "unsupported"` returns `NoTwin`, because there is no twin to replay on.
-- **A replay reproduces the twin's order, not the GPU's schedule.** For a kernel without races and atomics that is the
-  GPU's result, bit for bit inside the defined domain. For a kernel with atomics or an order-dependent result, the replay
-  is one member of the allowed set, not the history the GPU had; a race that corrupted the GPU run does not show up in
-  the replay at all (see the paragraph on races above).
+- **Not supported yet:** a kernel with a texture or a sampler returns an `Unsupported` error, and a kernel with
+  `cpu = "unsupported"` (or none of whose bodies runs without a capability) returns `NoTwin`, because there is no twin
+  to replay on.
+- **The replay runs the twin's body.** For a kernel with variants that is the portable variant, not necessarily the
+  body the GPU ran.
+- **A replay reproduces the twin's order, not the GPU's schedule** (the GPU has none). For a kernel without races and
+  atomics, `run_all` gives the GPU's result, bit for bit inside the defined domain. For a kernel with atomics or an
+  order-dependent result, the replay is one member of the allowed set, not the history the GPU had; a race that
+  corrupted the GPU run does not show up in the replay at all (see the paragraph on races above).
 
 ## Where to go next
 

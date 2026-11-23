@@ -68,7 +68,7 @@ fn capture_device(tag: &str) -> HeadlessDevice {
     let device = HeadlessDevice::with_options(DeviceOptions::default().with_capture(true))
         .expect("Vulkan adapter required; this test must not silently skip");
     eprintln!("{tag} adapter: {}", device.adapter_info().name);
-    assert!(device.captures());
+    assert!(device.capture_enabled());
     device
 }
 
@@ -250,7 +250,7 @@ fn ids_outside_the_extent_are_errors_and_run_nothing() {
 #[test]
 fn a_read_only_input_needs_the_capture_option() {
     let device = common::device_logged("capture hint");
-    assert!(!device.captures());
+    assert!(!device.capture_enabled());
     let params = device
         .create_uniform(
             "params",
@@ -396,4 +396,138 @@ fn a_two_dimensional_replay_follows_the_twins_row_order_and_keeps_an_independent
         captured.buffer::<u32>("size").unwrap().read(),
         [width, height]
     );
+}
+
+#[gust::gpu_module]
+mod pad {
+    /// Marks every element of an independent table the launch reaches, so the padding ids of the last workgroup show.
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn mark(id: SV_DispatchThreadID, mut table: RWStructuredBuffer<uint>) {
+        let i = id.x;
+        if i < table.len() {
+            table[i] = 1u32;
+        }
+    }
+}
+
+#[test]
+fn run_all_is_the_whole_launch_padding_included_and_run_until_stops_at_its_id() {
+    let device = capture_device("capture padding");
+    // A table of 256 and an extent of 100: the launch is 128 invocations, and the guard is the table's length.
+    let table = device.create_typed_buffer("table", &[0u32; 256], GpuBufferAccess::ReadWrite);
+    let call = pad::mark::call(100, Independent(&table));
+    let captured = pad::mark::capture(&device, &call).unwrap();
+    pad::mark::dispatch(&device, 100, Independent(&table)).unwrap();
+    let gpu = device.read_typed_buffer(&table).unwrap();
+    let marked = |values: &[u32]| values.iter().take_while(|value| **value == 1).count();
+    assert_eq!(marked(&gpu), 128, "the GPU's padding invocations write too");
+    assert_eq!(gpu.iter().filter(|value| **value == 1).count(), 128);
+
+    captured.run_all().unwrap();
+    let twin = captured.buffer::<u32>("table").unwrap().read();
+    assert_eq!(twin, gpu, "the whole launch equals the GPU's result");
+
+    // `run_until` stops at its id: ids 0..=99 only.
+    captured.run_until([99, 0, 0]).unwrap();
+    let partial = captured.buffer::<u32>("table").unwrap().read();
+    assert_eq!(marked(&partial), 100);
+    assert_eq!(partial.iter().filter(|value| **value == 1).count(), 100);
+}
+
+#[test]
+fn a_call_the_device_refuses_is_not_captured() {
+    let device = capture_device("capture aliased");
+    let params = device
+        .create_uniform(
+            "params",
+            &sim::Params {
+                dt: DT,
+                gain: GAIN,
+                pad0: 0.0,
+                pad1: 0.0,
+            },
+        )
+        .unwrap();
+    let both = device.create_typed_buffer("both", &input_values(), GpuBufferAccess::ReadWrite);
+    // One buffer as the read-only `input` and the read-write `out`.
+    let call = sim::step::call(N as u32, &params, &both, &both);
+    let dispatched = sim::step::dispatch(&device, N as u32, &params, &both, &both).unwrap_err();
+    assert!(
+        matches!(dispatched, Error::AliasedBinding { .. }),
+        "{dispatched:?}"
+    );
+    match sim::step::capture(&device, &call) {
+        Err(CaptureError::Call(error @ Error::AliasedBinding { .. })) => {
+            assert_eq!(error.to_string(), dispatched.to_string());
+        }
+        other => panic!("expected the dispatch's aliasing error, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_gpu_vec_input_captures_without_the_option_with_its_logical_length() {
+    let handle = common::device_handle();
+    let device = &*handle;
+    eprintln!("capture vec adapter: {}", device.adapter_info().name);
+    assert!(!device.capture_enabled());
+    let params = device
+        .create_uniform(
+            "params",
+            &sim::Params {
+                dt: DT,
+                gain: GAIN,
+                pad0: 0.0,
+                pad1: 0.0,
+            },
+        )
+        .unwrap();
+    let input = gust_wgpu::GpuVec::from_slice_on(&handle, &input_values()).unwrap();
+    let out = device.create_typed_buffer("out", &sentinel_values(), GpuBufferAccess::ReadWrite);
+    let captured =
+        sim::step::capture(device, &sim::step::call(N as u32, &params, &input, &out)).unwrap();
+    let copy = captured.buffer::<sim::Particle>("input").unwrap().read();
+    assert_eq!(
+        copy.len(),
+        N,
+        "the logical length, not the pool's size class"
+    );
+    assert_eq!(bits(&copy), bits(&input_values()));
+    captured.run_all().unwrap();
+    let twin = bits(&captured.buffer::<sim::Particle>("out").unwrap().read());
+    assert_eq!(twin, (0..N).map(expected).collect::<Vec<_>>());
+}
+
+#[test]
+fn an_edited_input_stays_edited_and_the_outputs_are_still_restored() {
+    let device = capture_device("capture edit");
+    let params = device
+        .create_uniform(
+            "params",
+            &sim::Params {
+                dt: DT,
+                gain: GAIN,
+                pad0: 0.0,
+                pad1: 0.0,
+            },
+        )
+        .unwrap();
+    let input = device.create_typed_buffer("input", &input_values(), GpuBufferAccess::ReadOnly);
+    let out = device.create_typed_buffer("out", &sentinel_values(), GpuBufferAccess::ReadWrite);
+    let captured =
+        sim::step::capture(&device, &sim::step::call(N as u32, &params, &input, &out)).unwrap();
+    // "What if this input were different?": the edit survives later runs.
+    let mut changed = input_values();
+    changed[5].pos = 100.0;
+    captured
+        .buffer::<sim::Particle>("input")
+        .unwrap()
+        .write(&changed)
+        .unwrap();
+    captured.run_element([5, 0, 0]).unwrap();
+    let read = || bits(&captured.buffer::<sim::Particle>("out").unwrap().read());
+    assert_eq!(read()[5].0, (100.0 + changed[5].vel * DT).to_bits());
+    // The output is restored: running another element does not keep element 5.
+    captured.run_element([6, 0, 0]).unwrap();
+    assert_eq!(read()[5], bits(&sentinel_values())[5]);
+    assert_eq!(read()[6], expected(6));
 }

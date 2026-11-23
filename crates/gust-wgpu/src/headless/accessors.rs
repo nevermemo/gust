@@ -21,7 +21,7 @@ impl HeadlessDevice {
 
     /// Whether this device creates capture-capable buffers (`DeviceOptions::capture`): read-only storage buffers can be
     /// copied for a debugging capture. A device adopted with [`adopt`](Self::adopt) does not.
-    pub fn captures(&self) -> bool {
+    pub fn capture_enabled(&self) -> bool {
         self.capture
     }
 

@@ -9,6 +9,7 @@ use super::*;
 /// The body of the replay is the twin's own, built from the same acquisitions and arguments (`TwinParts`), once for
 /// each id of an iterator the caller chooses; the twin's `submit_call` itself is left as it is.
 pub(super) fn capture_items(
+    stage: &dyn StageProfile,
     kernel: &syn::Ident,
     typecheck: &syn::Ident,
     parts: &TwinParts<'_>,
@@ -17,7 +18,17 @@ pub(super) fn capture_items(
     if profile.is_cpu() {
         return TokenStream::new();
     }
+    // The replay walks the invocations the way the linear harness does (`gust::capture::Captured` takes
+    // `cpu::invocations`). A harness added to `TwinHarness` makes this `match` fail to compile until the replay learns
+    // it, as the twin's own `match stage.twin()` does, so a new harness is never replayed in the wrong order.
+    match stage.twin() {
+        TwinHarness::Linear => {}
+    }
     let sampled = !parts.sampler_labels.is_empty();
+    // A kernel with samplers and no resource has no typed call (see `typed_call_items`), so nothing can be captured.
+    if sampled && parts.resources.is_empty() {
+        return TokenStream::new();
+    }
     let first_unsupported = parts
         .resources
         .iter()
@@ -67,6 +78,7 @@ pub(super) fn capture_items(
                         __gust_device,
                         &__gust_bindings[#index],
                         #label,
+                        #access,
                         &__gust_cpu,
                     )?
                 });
@@ -100,10 +112,12 @@ pub(super) fn capture_items(
         &format!(
             "Capture the call `__gust_call` of `{kernel}` for replay on its CPU twin: copy every bound buffer and \
              uniform from `__gust_device` as they are now, so call it before the dispatch. The result owns the copies, \
-             and `run_element` and `run_until` run chosen invocations of the twin over them (a debugger can break in \
-             the kernel body there). A replay reproduces the twin's order, not the GPU's schedule: for a race-free \
-             kernel without atomics that equals the GPU's result; with atomics or an order-dependent result it is one \
-             member of the allowed set, not the history the GPU had. A read-only buffer can be captured only on a \
+             and `run_element`, `run_until` and `run_all` run chosen invocations of the twin over them (a debugger can \
+             break in the kernel body there). A call the device would refuse is refused first, with the device's \
+             error. A replay reproduces the twin's order, not the GPU's schedule: for a race-free kernel without \
+             atomics that equals the GPU's result; with atomics or an order-dependent result it is one member of the \
+             allowed set, not the history the GPU had. It runs the twin's body, which for a kernel with variants is \
+             the portable variant, not necessarily the body the GPU ran. A read-only buffer can be captured only on a \
              device opened with capture-capable allocation (`DeviceOptions::with_capture`). Textures and samplers are \
              not supported yet."
         ),
@@ -128,6 +142,14 @@ pub(super) fn capture_items(
                 }
                 ::core::result::Result::Ok(())
             }
+            // The device's own dispatch validation first: a call it would refuse is not captured.
+            __gust_device
+                .check_call(
+                    __gust_call.kernel(),
+                    __gust_call.extent(),
+                    __gust_call.bindings(),
+                )
+                .map_err(::gust::capture::Error::Call)?;
             let __gust_cpu = ::gust::cpu::CpuDevice::new();
             let __gust_bindings = __gust_call.bindings();
             let __gust_slots = ::std::vec![#(#captures),*];
@@ -141,9 +163,9 @@ pub(super) fn capture_items(
     )
 }
 
-/// The `capture` of a kernel with `cpu = "unsupported"`: there is no twin, so it always returns
-/// `gust::capture::Error::NoTwin` (and the call is still type-checked like every other kernel's). Nothing for a kernel
-/// that has no typed call (a plain value parameter, or a sampler without a resource) or under the `cpu` profile.
+/// The `capture` of a kernel with no twin (`cpu = "unsupported"`, or no body that runs without a capability): it always
+/// returns `gust::capture::Error::NoTwin` (and the call is still type-checked like every other kernel's). Nothing for a
+/// kernel that has no typed call (a plain value parameter, or a sampler without a resource) or under the `cpu` profile.
 pub(super) fn no_twin_items(
     stage: &dyn StageProfile,
     kernel: &syn::Ident,
@@ -183,8 +205,8 @@ pub(super) fn no_twin_items(
         resources,
         samplers,
         &format!(
-            "`{kernel}` is `cpu = \"unsupported\"`, so it has no CPU twin to replay on: always returns \
-             `gust::capture::Error::NoTwin`."
+            "`{kernel}` has no CPU twin to replay on (`cpu = \"unsupported\"`, or no body that runs without a \
+             capability): always returns `gust::capture::Error::NoTwin`."
         ),
         quote! {
             let _ = (__gust_device, __gust_call);

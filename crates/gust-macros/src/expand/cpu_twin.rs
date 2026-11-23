@@ -232,6 +232,7 @@ pub(super) fn cpu_twin_items(
         }
     };
     let capture = capture::capture_items(
+        stage,
         kernel,
         typecheck,
         &TwinParts {
@@ -249,8 +250,8 @@ pub(super) fn cpu_twin_items(
     })
 }
 
-/// What `capture` needs of the twin's parameter walk: the same names, acquisitions and arguments the twin's `submit_call`
-/// is built from (so the replay runs the same body in the same way), and what each resource is.
+/// What `capture` needs of the twin's parameter walk: the same names, acquisitions and arguments the twin's
+/// `submit_call` is built from (so the replay runs the same body in the same way), and what each resource is.
 pub(super) struct TwinParts<'a> {
     pub(super) names: &'a [syn::Ident],
     pub(super) acquisitions: &'a [TokenStream],

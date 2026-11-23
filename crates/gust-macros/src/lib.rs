@@ -28,6 +28,7 @@
 
 use proc_macro::TokenStream;
 
+mod batch;
 mod diagnostics;
 mod expand;
 mod forward;
@@ -105,6 +106,9 @@ mod value_match_untyped_tests;
 #[path = "tests/pad.rs"]
 mod pad_tests;
 
+#[cfg(test)]
+#[path = "tests/batch.rs"]
+mod batch_tests;
 #[cfg(test)]
 #[path = "tests/capture.rs"]
 mod capture_tests;
@@ -258,6 +262,30 @@ pub fn gpu_task(input: TokenStream) -> TokenStream {
     let value = std::env::var("GUST_PROFILE").ok();
     let profile = expand::Profile::from_value(value.as_deref());
     task::gpu_task(input.into(), profile).into()
+}
+
+/// A sealed batch of stages written as one block (plan m14.s2, slice s2a2):
+///
+/// ```text
+/// let (mut batch, h) = gust::gpu_batch!("blur", on(&device); in_flight(1); |b| {
+///     let size = b.param::<(u32, u32)>((64, 32));
+///     let pixels = b.input::<f32>(&size);
+///     let twice = gust::gpu_task!(&size, |x, y| -> f32 { pixels[(x, y)] * 2.0 });
+///     (pixels, twice)
+/// })?;
+/// ```
+///
+/// The first part is the batch's name, then the options, each ending in `;`: `on(<device>);` (required: an
+/// `Arc<Device>` or a reference to one), `in_flight(1);` (the only value in this release) and `crate(<path>);`. The
+/// last part is the build block `|b| { .. }`: `b.input::<T>(shape)` is a buffer the frames write, `b.param::<T>(v)` a
+/// scalar they set, and each `gpu_task!` is a stage that reads the handles and parameters the block declared by name
+/// (no capture list for them; a host scalar is still listed). The block's last expression is returned with the
+/// batch: the handles the frames use. The value is a `Result<(gust::batch::Batch<D>, O), gust::batch::Error>`.
+///
+/// The diagnostics of the form itself are GUST-E1005 and GUST-E1006 (`docs/DIAGNOSTICS.md`).
+#[proc_macro]
+pub fn gpu_batch(input: TokenStream) -> TokenStream {
+    batch::gpu_batch(input.into()).into()
 }
 
 /// The `Mul` and `MulAssign` impls of `gust::math`, generated from the product table that also drives the Slang

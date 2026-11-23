@@ -176,6 +176,15 @@ const EXAMPLE_GPU_TESTS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "batch-basics",
+        &[
+            "app::tests::gpu_a_frame_is_one_submission_at_submit_and_none_before",
+            "app::tests::gpu_a_dropped_frame_is_not_submitted_and_the_next_one_is_exact",
+            "app::tests::gpu_and_the_cpu_twin_agree_on_every_output",
+            "app::tests::gpu_matches_the_host",
+        ],
+    ),
+    (
         "subgroup-reduce",
         &["tests::the_selected_body_runs_on_the_adapter"],
     ),

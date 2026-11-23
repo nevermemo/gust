@@ -1105,6 +1105,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       directory per build state: `dual`, `dual-nocfg`, `dual-native`, so no step flips another's cache). Runs-only
       prints any cargo `Compiling` line, so a compile under the GPU lock is visible. check-only about 40-67 s outside
       the lock, runs-only 10-12 s under it. Opus review: merge after fixes; fixed, re-checked (merge).
+    - m14.s2a2 (Breeze): `gpu_batch!("name", on(&device); in_flight(1); |b| { .. })` and `gust::batch`. A batch of
+      stages is validated once and sealed; each stage's pass (pipeline, bind group, workgroup counts) is prepared at
+      seal time, and a frame (`begin`, `write`, `set`, `ticket`, `submit`) encodes the prepared passes and read copies
+      and submits once. Tickets are `Send` on native; `Batch` and `FrameRun` stay on the thread that built them (D257).
+      CPU twin on `CpuDevice`; GUST-E1005/E1006; UI fixtures batch-body, batch-form, batch-scope (pin 280). GPU:
+      batch-basics on the 890M and the RTX 5090 (18 passed each), check-examples --gpu 80 pinned; mutation M3 (no
+      abandon) caught on the GPU and the twin. SB1 host-span ratios (0.74-0.83) are from a fixed-order harness and
+      light 890M kernels may measure the clock state (Breeze); not a speed claim. Opus review: merge after fixes;
+      fixed, re-checked (merge).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

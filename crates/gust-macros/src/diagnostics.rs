@@ -19,7 +19,7 @@
 //! | E07xx | macro entry and `#[kernel]` options |
 //! | E08xx | emitter-only rejections |
 //! | E09xx | reserved names and shadowing |
-//! | E10xx | stages and batches (`gpu_task!`) |
+//! | E10xx | stages and batches (`gpu_task!`, `gpu_batch!`) |
 //!
 //! Every error the crate creates goes through [`error`] (or [`wrap`] for a `syn` parse
 //! error), and every `syn` parse goes through [`parse2`], [`parse_args_with`] or
@@ -542,6 +542,12 @@ codes! {
     /// A write to a `gpu_task!` capture, a `&mut` on anything but the target, or a `&mut [T]` host slice other than the
     /// target.
     TaskWrite = 1003 => "GUST-E1003";
+    /// A `gpu_batch!` that is not one of its forms: `in_flight` above 1, a stage the macro cannot track (inside a host
+    /// closure, or a capture whose type it cannot see), a host-slice capture.
+    BatchForm = 1005 => "GUST-E1005";
+    /// A construct a stage of a batch does not have yet: `.late()`, a `match`, an index of rank 3; and a stage inside an
+    /// `async` block or a loop, which the block would record never or once per turn.
+    BatchBody = 1006 => "GUST-E1006";
     /// An index of the wrong rank for the view in a `gpu_task!`.
     TaskIndexRank = 1007 => "GUST-E1007";
     /// A read of an in-place stage's target at any index but the stage's own.
@@ -1409,6 +1415,7 @@ mod tests {
             || file.ends_with("src/tests/grid.rs")
             || file.ends_with("src/tests/par_for.rs")
             || file.ends_with("src/tests/task.rs")
+            || file.ends_with("src/tests/batch.rs")
             || file.ends_with("src/tests/manifest.rs")
             || file.ends_with("src/tests/variant.rs")
             || file.ends_with("src/tests/subgroup.rs")

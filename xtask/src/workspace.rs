@@ -29,6 +29,7 @@ pub(crate) const EXAMPLES: &[&str] = &[
     "walker-life",
     "event-drain",
     "task-basics",
+    "batch-basics",
 ];
 
 /// Examples that write no artifact: `export-artifacts` does not run them.
@@ -45,6 +46,7 @@ pub(crate) const NO_EXPORT_EXAMPLES: &[&str] = &[
     "walker-life",
     "event-drain",
     "task-basics",
+    "batch-basics",
 ];
 
 pub(crate) const SMOKE_EXAMPLES: &[&str] = &["vector-add", "typed-pipeline"];
@@ -72,6 +74,7 @@ pub(crate) const WORKSPACE_EXCLUDES: &[&str] = &[
     "walker-life",
     "event-drain",
     "task-basics",
+    "batch-basics",
 ];
 
 /// SPIR-V files the examples export to `generated-wgpu/`, one `<module>__<kernel>.spv` per

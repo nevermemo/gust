@@ -267,7 +267,7 @@ test module; do not mix that mechanical move with behavior changes.
   check the cpu-target `par_for` line.
 - Gate honesty (M7 sanity, Fable/Opus): xtask does not assert the cpu-target `par_for` line (m7.p, above); the
   lavapipe schedule skip shows only on stderr, so put it in the gate summary.
-- m7.d follow-ups: staged graphs are 1D only, and graph.rs validates with the x axis before `prepare_batch`, so a
+- m7.d follow-ups: staged graphs are 1D only, and graph.rs validates with the x axis before `prepare_node`, so a
   16x16 dispatch with a shared buffer fails with `BufferLength` and a zero y or z axis is refused rather than `Ok`
   (still open); `Call::element_count()` is the x axis only, a trap for buffer sizing; for m7.g2 the
   twin walks the grid x-fastest, so a 2D workgroup is not contiguous and a lockstep twin must group by workgroup;

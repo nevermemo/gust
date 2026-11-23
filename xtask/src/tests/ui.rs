@@ -1793,6 +1793,9 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
     assert_eq!(
         with_env,
         [
+            "batch-body",
+            "batch-form",
+            "batch-scope",
             "map-bool-for-u32",
             "map-ok",
             "map-struct-bool-field",
@@ -1837,7 +1840,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 277] = [
+const PINNED_FIXTURES: [&str; 280] = [
     "array-barrier",
     "array-buffer-len",
     "array-const-len",
@@ -1868,6 +1871,9 @@ const PINNED_FIXTURES: [&str; 277] = [
     "barrier-in-while",
     "barrier-kernel-no-cpu-strategy",
     "barrier-ok",
+    "batch-body",
+    "batch-form",
+    "batch-scope",
     "break-in-barrier-loop",
     "closure-barrier",
     "closure-move",

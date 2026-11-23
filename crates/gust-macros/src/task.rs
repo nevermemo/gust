@@ -30,6 +30,7 @@ use syn::{
     ext::IdentExt as _,
     parse::{Parse, ParseStream},
     visit::Visit,
+    visit_mut::VisitMut,
 };
 
 use crate::{
@@ -47,16 +48,50 @@ fn form(tokens: impl ToTokens, message: impl std::fmt::Display) -> syn::Error {
     diagnostics::error(Code::TaskForm, tokens, message)
 }
 
+/// The hidden clause `gpu_batch!` puts in front of the stages it rewrites: `batch(<builder>, "<name of the let>");`.
+pub(crate) struct BatchClause {
+    /// The builder of the block (`b` of `|b| { .. }`).
+    pub(crate) builder: syn::Ident,
+    /// The name of the stage's `let`; `None` for a stage that no `let` names.
+    pub(crate) name: Option<String>,
+}
+
 /// The macro input as written: the options, the shape (or the in-place target), the capture list, the closure.
-struct Input {
-    options: Options,
-    shape: syn::Expr,
-    list: Vec<RawBinding>,
-    closure: syn::ExprClosure,
+pub(crate) struct Input {
+    batch: Option<BatchClause>,
+    pub(crate) options: Options,
+    pub(crate) shape: syn::Expr,
+    pub(crate) list: Vec<RawBinding>,
+    pub(crate) closure: syn::ExprClosure,
+}
+
+/// The hidden batch clause, when the input starts with one.
+fn parse_batch_clause(input: ParseStream) -> syn::Result<Option<BatchClause>> {
+    let starts = input
+        .cursor()
+        .ident()
+        .is_some_and(|(keyword, _)| keyword == "batch")
+        && input.peek2(syn::token::Paren);
+    if !starts {
+        return Ok(None);
+    }
+    input.parse::<syn::Ident>()?;
+    let content;
+    syn::parenthesized!(content in input);
+    let builder: syn::Ident = content.parse()?;
+    content.parse::<Token![,]>()?;
+    let name: syn::LitStr = content.parse()?;
+    input.parse::<Token![;]>()?;
+    let name = name.value();
+    Ok(Some(BatchClause {
+        builder,
+        name: (!name.is_empty()).then_some(name),
+    }))
 }
 
 impl Parse for Input {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        let batch = parse_batch_clause(input)?;
         let options = parse_options(input)?;
         let shape: syn::Expr = input.parse()?;
         input.parse::<Token![,]>()?;
@@ -88,6 +123,7 @@ impl Parse for Input {
             ));
         }
         Ok(Self {
+            batch,
             options,
             shape,
             list,
@@ -115,6 +151,34 @@ pub(crate) struct TaskPlan {
     tail: Option<syn::Expr>,
     /// The in-place target: its name in the list and the place it is taken from.
     target: Option<(syn::Ident, syn::Expr)>,
+    /// A stage of a `gpu_batch!`: what its captures are and where it is recorded.
+    batch: Option<BatchStage>,
+}
+
+/// What a stage of a batch captures: handles of the block (flat views of its buffers), parameters, and host scalars.
+struct BatchStage {
+    builder: syn::Ident,
+    name: Option<String>,
+    /// The stage's own buffers in the order of the list: the handles it reads and, last, the in-place target.
+    views: Vec<View>,
+    /// The `Param`s the body reads (`p.get()`): the name, which is also the scalar's name in the kernel.
+    params: Vec<syn::Ident>,
+    /// The host scalars of the list: values taken when the stage is recorded.
+    scalars: Vec<syn::Ident>,
+}
+
+/// A handle of the block that a batch stage reads or writes.
+struct View {
+    name: syn::Ident,
+    /// 1 for a flat view, 2 for a row-major view indexed by a pair.
+    rank: usize,
+    /// The in-place target.
+    target: bool,
+}
+
+/// The name of the kernel scalar that holds the width of the 2-D view `name`.
+fn width_name(name: &syn::Ident) -> syn::Ident {
+    format_ident!("par_for_w_{}", name.unraw())
 }
 
 impl TaskPlan {
@@ -179,6 +243,9 @@ impl TaskPlan {
     /// an empty captured slice on a recycled pool buffer is cleared in its own submission, from generated code,
     /// through `MapArg::bind`.)
     pub(crate) fn host_items(&self, plan: &Plan) -> TokenStream {
+        if self.batch.is_some() {
+            return self.batch_items(plan);
+        }
         let record = format_ident!("{}", "__GustExtent");
         let count = proc_macro2::Literal::usize_unsuffixed(1 + plan.buffers().count());
         let output = self.output_name();
@@ -384,6 +451,9 @@ impl TaskPlan {
     /// The value of the call: the arguments are taken at the call (a slice is borrowed, a scalar copied, the in-place
     /// target reborrowed), and the task that holds them calls the host function when it is submitted.
     pub(crate) fn value(&self, plan: &Plan, module: &syn::Ident) -> TokenStream {
+        if self.batch.is_some() {
+            return self.batch_value(module);
+        }
         let mut lets = TokenStream::new();
         let mut shape_arguments = Vec::new();
         if let Extent::Shape(shape) = &self.extent {
@@ -835,6 +905,7 @@ fn check_entry(entry: &RawBinding, target: Option<&syn::Ident>) -> syn::Result<(
 /// Everything the macro makes of the call, or the first error.
 fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
     let Input {
+        batch,
         options,
         shape,
         list,
@@ -842,6 +913,13 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
     } = input;
     if options.descriptor {
         return Err(form(&shape, "`descriptor;` is not a clause of `gpu_task!`"));
+    }
+    if let (Some(device), Some(_)) = (&options.on, &batch) {
+        return Err(diagnostics::error(
+            Code::BatchForm,
+            device,
+            "a stage of a batch runs on the batch's device: `on(..)` goes on the `gpu_batch!`",
+        ));
     }
     // The closure: no `move`, `async`, `const` or `static`; one or two plain parameters.
     if closure.asyncness.is_some()
@@ -946,7 +1024,7 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
         ));
     };
     let mut stmts = block.block.stmts;
-    let tail = if result.is_some() {
+    let mut tail = if result.is_some() {
         match stmts.pop() {
             Some(syn::Stmt::Expr(expression, None)) => Some(expression),
             _ => {
@@ -959,6 +1037,15 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
         }
     } else {
         None
+    };
+
+    // A stage of a batch: its handles, parameters and the body lowered to what the kernel sees.
+    let (list, batch) = match batch {
+        Some(clause) => {
+            let lowered = lower_batch(clause, list, &mut stmts, &mut tail)?;
+            (lowered.list, Some(lowered.stage))
+        }
+        None => (list, None),
     };
 
     // The list: each entry is a form this slice takes; an in-place target has its `&mut [T]` entry.
@@ -1065,8 +1152,507 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
         stmts,
         tail,
         target,
+        batch,
     });
     Ok(plan)
+}
+
+pub(crate) fn batch_form(tokens: impl ToTokens, message: impl std::fmt::Display) -> syn::Error {
+    diagnostics::error(Code::BatchForm, tokens, message)
+}
+
+/// The `T` of `Name<T>` (or `Name<T, R>`: the rank is the body's to say, not written).
+pub(crate) fn type_argument<'a>(ty: &'a syn::Type, name: &str) -> Option<&'a syn::Type> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let segment = path.path.segments.last()?;
+    if segment.ident != name {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return None;
+    };
+    match arguments.args.first()? {
+        syn::GenericArgument::Type(inner) => Some(inner),
+        _ => None,
+    }
+}
+
+/// Whether `ty` is `u32`, `i32`, `f32` or `bool`.
+pub(crate) fn is_scalar_type(ty: &syn::Type) -> bool {
+    matches!(ty, syn::Type::Path(path) if path.qself.is_none()
+        && path.path.get_ident().is_some_and(|ident| matches!(ident.to_string().as_str(), "u32" | "i32" | "f32" | "bool")))
+}
+
+/// A stage of a batch lowered to what the kernel sees: its list in kernel terms, and what its captures are.
+struct Lowered {
+    list: Vec<RawBinding>,
+    stage: BatchStage,
+}
+
+/// The handles and parameters `gpu_batch!` wrote into a stage's list (`h: Stage<T>`, `p: Param<T>`, `t: &mut
+/// Stage<T>`), and the body lowered: a 2-D view `h[(x, y)]` is a flat `h[y * w + x]` over the width `par_for_w_h` that
+/// the extent record holds, and `p.get()` is the scalar `p`.
+fn lower_batch(
+    clause: BatchClause,
+    list: Vec<RawBinding>,
+    stmts: &mut [syn::Stmt],
+    tail: &mut Option<syn::Expr>,
+) -> syn::Result<Lowered> {
+    let mut entries = Vec::new();
+    let mut views = Vec::new();
+    let mut params = Vec::new();
+    let mut scalars = Vec::new();
+    for entry in list {
+        let RawBinding { name, ty } = entry;
+        if let Some(element) = type_argument(&ty, "Stage") {
+            views.push(View {
+                name: name.clone(),
+                rank: 1,
+                target: false,
+            });
+            let element = element.clone();
+            entries.push(RawBinding {
+                name,
+                ty: syn::parse_quote!(&[#element]),
+            });
+            continue;
+        }
+        if let syn::Type::Reference(reference) = &ty {
+            if let (Some(_), Some(element)) = (
+                reference.mutability,
+                type_argument(&reference.elem, "Stage"),
+            ) {
+                views.push(View {
+                    name: name.clone(),
+                    rank: 1,
+                    target: true,
+                });
+                let element = element.clone();
+                entries.push(RawBinding {
+                    name,
+                    ty: syn::parse_quote!(&mut [#element]),
+                });
+                continue;
+            }
+            if matches!(*reference.elem, syn::Type::Slice(_)) {
+                return Err(batch_form(
+                    &ty,
+                    format!(
+                        "`{}` is a host slice, and a batch captures the handles of its block and scalars: a host slice \
+                         arrives in a later release (s2g); upload it into an `input` and write the input",
+                        name.unraw()
+                    ),
+                ));
+            }
+        }
+        if let Some(element) = type_argument(&ty, "Param") {
+            if !is_scalar_type(element) {
+                return Err(batch_form(
+                    element,
+                    format!(
+                        "`{}` is a parameter a body cannot read: only a `u32`, `i32`, `f32` or `bool` parameter is read \
+                         (a `(u32, u32)` parameter is a shape, which sizes a stage)",
+                        name.unraw()
+                    ),
+                ));
+            }
+            params.push(name.clone());
+            let element = element.clone();
+            entries.push(RawBinding { name, ty: element });
+            continue;
+        }
+        if is_scalar_type(&ty) {
+            scalars.push(name.clone());
+        }
+        entries.push(RawBinding { name, ty });
+    }
+    let mut lowering = Lowering {
+        views: views
+            .iter()
+            .map(|view| (view.name.clone(), view.target, None))
+            .collect(),
+        params: params.clone(),
+        error: None,
+    };
+    for statement in stmts.iter_mut() {
+        lowering.visit_stmt_mut(statement);
+    }
+    if let Some(tail) = tail {
+        lowering.visit_expr_mut(tail);
+    }
+    if let Some(error) = lowering.error {
+        return Err(error);
+    }
+    for (view, (_, _, rank)) in views.iter_mut().zip(&lowering.views) {
+        view.rank = rank.unwrap_or(1);
+        if view.rank == 2 {
+            entries.push(RawBinding {
+                name: width_name(&view.name),
+                ty: syn::parse_quote!(u32),
+            });
+        }
+    }
+    Ok(Lowered {
+        list: entries,
+        stage: BatchStage {
+            builder: clause.builder,
+            name: clause.name,
+            views,
+            params,
+            scalars,
+        },
+    })
+}
+
+/// The body of a batch stage, rewritten in place, and the first rule it breaks.
+struct Lowering {
+    /// Each handle: its name, whether it is the in-place target, and the rank the body indexes it with.
+    views: Vec<(syn::Ident, bool, Option<usize>)>,
+    params: Vec<syn::Ident>,
+    error: Option<syn::Error>,
+}
+
+impl Lowering {
+    fn refuse(&mut self, code: Code, tokens: impl ToTokens, message: impl std::fmt::Display) {
+        if self.error.is_none() {
+            self.error = Some(diagnostics::error(code, tokens, message));
+        }
+    }
+
+    fn slot(&self, expression: &syn::Expr) -> Option<usize> {
+        let mut expression = expression;
+        while let syn::Expr::Paren(paren) = expression {
+            expression = &paren.expr;
+        }
+        let syn::Expr::Path(path) = expression else {
+            return None;
+        };
+        let name = path.path.get_ident().filter(|_| path.qself.is_none())?;
+        self.views
+            .iter()
+            .position(|(view, ..)| view.unraw() == name.unraw())
+    }
+
+    fn is_param(&self, expression: &syn::Expr) -> bool {
+        matches!(expression, syn::Expr::Path(path) if path.qself.is_none()
+            && path.path.get_ident().is_some_and(|name| self.params.iter().any(|param| param.unraw() == name.unraw())))
+    }
+}
+
+impl VisitMut for Lowering {
+    fn visit_expr_mut(&mut self, expression: &mut syn::Expr) {
+        syn::visit_mut::visit_expr_mut(self, expression);
+        let mut replacement = None;
+        match expression {
+            syn::Expr::Index(index) => {
+                if let Some(slot) = self.slot(&index.expr) {
+                    let mut at = &*index.index;
+                    while let syn::Expr::Paren(paren) = at {
+                        at = &paren.expr;
+                    }
+                    let (name, target, seen) = self.views[slot].clone();
+                    let rank = match at {
+                        syn::Expr::Tuple(tuple) => tuple.elems.len(),
+                        _ => 1,
+                    };
+                    if rank == 0 || (rank == 1 && matches!(at, syn::Expr::Tuple(_))) {
+                        self.refuse(
+                            Code::TaskIndexRank,
+                            &index.index,
+                            format!(
+                                "`{}` is indexed with one index, `{0}[i]`, or a pair, `{0}[(x, y)]`",
+                                name.unraw()
+                            ),
+                        );
+                    } else if rank > 2 {
+                        self.refuse(
+                            Code::BatchBody,
+                            &index.index,
+                            format!(
+                                "`{}` is indexed with {rank} indices: a view of rank 3 is not in this release; index it \
+                                 with one index or a pair",
+                                name.unraw()
+                            ),
+                        );
+                    } else if rank == 2 && target {
+                        self.refuse(
+                            Code::TaskIndexRank,
+                            &index.index,
+                            format!(
+                                "`{}` is the in-place target, which is a flat view of rank 1 in this release: index it \
+                                 with its own index",
+                                name.unraw()
+                            ),
+                        );
+                    } else if seen.is_some_and(|seen| seen != rank) {
+                        self.refuse(
+                            Code::TaskIndexRank,
+                            &index.index,
+                            format!(
+                                "`{}` is indexed with one index in one place and with a pair in another: a view has one \
+                                 rank",
+                                name.unraw()
+                            ),
+                        );
+                    } else {
+                        self.views[slot].2 = Some(rank);
+                        if let syn::Expr::Tuple(tuple) = at {
+                            let (x, y) = (&tuple.elems[0], &tuple.elems[1]);
+                            let width = width_name(&name);
+                            let flat: syn::Expr = syn::parse_quote!(((#y) * #width + (#x)));
+                            *index.index = flat;
+                        }
+                    }
+                }
+            }
+            syn::Expr::MethodCall(call) => {
+                if call.method == "late" {
+                    self.refuse(
+                        Code::BatchBody,
+                        &call.method,
+                        "`.late()` (a read of a stage's value that is still being written) is not in this release",
+                    );
+                } else if call.method == "get"
+                    && call.args.is_empty()
+                    && self.is_param(&call.receiver)
+                {
+                    replacement = Some((*call.receiver).clone());
+                }
+            }
+            syn::Expr::Match(matched) => {
+                self.refuse(
+                    Code::BatchBody,
+                    matched.match_token,
+                    "a `match` in a stage of a batch is not in this release (enums arrive with a later slice); use `if`",
+                );
+            }
+            _ => {}
+        }
+        if let Some(replacement) = replacement {
+            *expression = replacement;
+        }
+    }
+}
+
+fn rank_type(rank: usize) -> TokenStream {
+    if rank == 2 {
+        quote!(::gust::batch::D2)
+    } else {
+        quote!(::gust::batch::D1)
+    }
+}
+
+fn scalar_tokens(scalar: Scalar) -> TokenStream {
+    match scalar {
+        Scalar::U32 => quote!(::core::primitive::u32),
+        Scalar::I32 => quote!(::core::primitive::i32),
+        Scalar::F32 => quote!(::core::primitive::f32),
+        Scalar::Bool => quote!(::core::primitive::bool),
+    }
+}
+
+fn binding_of<'a>(plan: &'a Plan, name: &syn::Ident) -> &'a Binding {
+    plan.bindings
+        .iter()
+        .find(|binding| binding.name == *name)
+        .expect("the plan holds every capture")
+}
+
+impl TaskPlan {
+    /// The host function of a stage of a batch, in the module of its kernel: it takes the handles and parameters the
+    /// stage captures, makes the extent record and its uniform, and seals the kernel call into the batch
+    /// (`StageDraft::finish`). The record is made again, from the parameters' values, when a frame sets one of them.
+    fn batch_items(&self, plan: &Plan) -> TokenStream {
+        let batch = self.batch.as_ref().expect("a stage of a batch");
+        let record = format_ident!("{}", "__GustExtent");
+        let count = proc_macro2::Literal::usize_unsuffixed(1 + plan.buffers().count());
+        let output_element = self.output_element(plan);
+        let output_rank = rank_type(self.rank);
+        let out = format_ident!("{}", OUT);
+        let element_of = |name: &syn::Ident| match &binding_of(plan, name).kind {
+            Kind::Slice { element, .. } => element.host.clone(),
+            _ => unreachable!("a handle is a slice binding"),
+        };
+        let scalar_of = |name: &syn::Ident| match binding_of(plan, name).kind {
+            Kind::Scalar(scalar) => scalar,
+            _ => unreachable!("a parameter is a scalar binding"),
+        };
+        let param_id = |name: &syn::Ident| format_ident!("__gust_p_{}", name.unraw());
+
+        let view_parameters = batch.views.iter().map(|view| {
+            let (name, element, rank) = (&view.name, element_of(&view.name), rank_type(view.rank));
+            quote!(#name: &::gust::batch::Stage<#element, #rank>)
+        });
+        let param_parameters = batch.params.iter().map(|name| {
+            let ty = scalar_tokens(scalar_of(name));
+            quote!(#name: &::gust::batch::Param<#ty>)
+        });
+        let scalar_parameters = batch.scalars.iter().map(|name| {
+            let ty = scalar_tokens(scalar_of(name));
+            quote!(#name: #ty)
+        });
+        let bounds = plan.buffers().map(|(_, _, element, _)| {
+            let element = &element.host;
+            quote!(<__GustD as ::gust::map::MapHost>::Buffer<#element>: 'static,)
+        });
+        let locals: Vec<syn::Ident> = (0..plan.buffers().count())
+            .map(|index| format_ident!("__gust_b{}", index))
+            .collect();
+        let acquire = plan
+            .buffers()
+            .zip(&locals)
+            .map(|((name, _, element, _), local)| {
+                let element = &element.host;
+                if *name == out {
+                    quote!(let #local = __gust_draft.output::<#element>();)
+                } else if batch
+                    .views
+                    .iter()
+                    .any(|view| view.name == *name && view.target)
+                {
+                    quote!(let #local = __gust_draft.target(#name);)
+                } else {
+                    quote!(let #local = __gust_draft.view(#name);)
+                }
+            });
+        let param_ids = batch.params.iter().map(|name| {
+            let id = param_id(name);
+            quote!(let #id = __gust_draft.param(#name);)
+        });
+        let width_lets = batch
+            .views
+            .iter()
+            .filter(|view| view.rank == 2)
+            .map(|view| {
+                let (name, width) = (&view.name, width_name(&view.name));
+                quote!(let #width = #name.width();)
+            });
+        let scalar_fields = plan.scalars().map(|(name, scalar)| {
+            let value = if batch.params.contains(name) {
+                let (id, ty) = (param_id(name), scalar_tokens(scalar));
+                quote!(__gust_values.get::<#ty>(#id))
+            } else {
+                // A host scalar, or the width local of a 2-D view: a local of the function with the field's name.
+                quote!(#name)
+            };
+            if scalar == Scalar::Bool {
+                quote!(#name: ::core::primitive::u32::from(#value))
+            } else {
+                quote!(#name: #value)
+            }
+        });
+        let pads = (0..(4 - (3 + plan.scalars().count()) % 4) % 4).map(|index| {
+            let pad = format_ident!("__gust_pad{}", index);
+            quote!(#pad: 0u32)
+        });
+        let resources = locals
+            .iter()
+            .map(|local| quote!(::gust::Independent(&**#local)));
+        let some_locals = locals
+            .iter()
+            .map(|local| quote!(::core::option::Option::Some(#local),));
+
+        quote! {
+            /// Record the stage into the batch being built: seal its kernel call and return the handle of its result.
+            #[doc(hidden)]
+            #[allow(clippy::too_many_arguments)]
+            pub fn __gust_batch<'__gust_b, __GustD>(
+                mut __gust_draft: ::gust::batch::StageDraft<'__gust_b, __GustD>,
+                #(#view_parameters,)*
+                #(#param_parameters,)*
+                #(#scalar_parameters,)*
+            ) -> ::gust::batch::Stage<#output_element, #output_rank>
+            where
+                __GustD: ::gust::batch::BatchDevice + __GustPfHost + ::gust::Run<run, #count>,
+                #(#bounds)*
+            {
+                let __gust_dims = __gust_draft.dims();
+                let (__gust_x, __gust_y) = (__gust_dims[0], __gust_dims[1]);
+                #(#acquire)*
+                #(#param_ids)*
+                #(#width_lets)*
+                if !__gust_draft.ok() {
+                    return __gust_draft.abandon();
+                }
+                let (#(#some_locals)*) = (#(#locals,)*) else {
+                    return __gust_draft.abandon();
+                };
+                let __gust_extent = ::gust::Extent::new(__gust_x, __gust_y, 1u32);
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    if let ::core::result::Result::Err(__gust_error) = __gust_check_cap::<__GustD>(__gust_extent) {
+                        __gust_draft.fail_map(__gust_error);
+                        return __gust_draft.abandon();
+                    }
+                }
+                let __gust_record = move |__gust_values: &::gust::batch::Values| #record {
+                    __gust_ex: __gust_x,
+                    __gust_ey: __gust_y,
+                    __gust_ez: 1u32,
+                    #(#scalar_fields,)*
+                    #(#pads,)*
+                };
+                let __gust_device = __gust_draft.device();
+                // The uniform is shared by the stage and its update; the CPU twin's is single-threaded.
+                #[allow(clippy::arc_with_non_send_sync)]
+                let __gust_uniform = match <__GustD as __GustPfHost>::__gust_uniform(
+                    &*__gust_device,
+                    __gust_record(&__gust_draft.values()),
+                ) {
+                    ::core::result::Result::Ok(uniform) => ::std::sync::Arc::new(uniform),
+                    ::core::result::Result::Err(__gust_error) => {
+                        __gust_draft.fail_map(__gust_error);
+                        return __gust_draft.abandon();
+                    }
+                };
+                let __gust_rewritten = ::std::sync::Arc::clone(&__gust_uniform);
+                __gust_draft.finish::<#output_element, #output_rank, run, _, #count>(
+                    (__gust_uniform, #(#locals,)*),
+                    move |__gust_keep| {
+                        let (__gust_uniform, #(#locals,)*) = __gust_keep;
+                        run::call_extent(__gust_extent, &**__gust_uniform, #(#resources,)*)
+                    },
+                    move |__gust_device, __gust_frame, __gust_values| {
+                        ::gust::batch::BatchDevice::frame_uniform(
+                            __gust_device,
+                            __gust_frame,
+                            &__gust_rewritten,
+                            __gust_record(__gust_values),
+                        )
+                    },
+                )
+            }
+        }
+    }
+
+    /// The value of a stage of a batch: its draft (named by the stage's `let`, sized by its shape) handed to the host
+    /// function with the handles, parameters and scalars it captures.
+    fn batch_value(&self, module: &syn::Ident) -> TokenStream {
+        let batch = self.batch.as_ref().expect("a stage of a batch");
+        let builder = &batch.builder;
+        let name = batch
+            .name
+            .as_ref()
+            .map(|name| quote!(#builder.next_name(#name);));
+        let rank = rank_type(self.rank);
+        let shape = match (&self.extent, &self.target) {
+            (Extent::Shape(shape), _) => quote!(#shape),
+            (Extent::Target, Some((name, _))) => quote!(#name.shape()),
+            (Extent::Target, None) => unreachable!("an in-place stage has its target"),
+        };
+        let views = batch.views.iter().map(|view| &view.name);
+        let params = &batch.params;
+        let scalars = &batch.scalars;
+        quote! {
+            {
+                #name
+                let __gust_draft = #builder.draft::<_, #rank>(&(#shape));
+                #module::__gust_batch(__gust_draft, #(&#views,)* #(&#params,)* #(#scalars,)*)
+            }
+        }
+    }
 }
 
 /// What the macro learned about the call besides its expansion, for the value that follows an error: the type of the
@@ -1075,6 +1661,8 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
 struct Shape {
     krate: Option<syn::Path>,
     done: Option<TokenStream>,
+    /// A stage of a batch: the value after an error is a handle, not a task.
+    batch: bool,
 }
 
 /// `gpu_task!` for the process: the profile and the environment come from the process, the call line from the span of
@@ -1104,6 +1692,9 @@ pub(crate) fn gpu_task_in(
         Err(error) => {
             // The errors, then a task of the type the call would have had, so that one mistake is one error.
             let errors = error.to_compile_error();
+            if shape.batch {
+                return quote!({ #errors ::core::unreachable!() });
+            }
             let done = shape.done.take().unwrap_or_else(|| quote!(()));
             quote!({ #errors ::gust::task::Task::<'_, #done>::new(|| ::core::unreachable!()) })
         }
@@ -1123,6 +1714,7 @@ fn expand_input(
 ) -> syn::Result<TokenStream> {
     let parsed = diagnostics::parse2::<Input>(Code::TaskForm, input)?;
     shape.krate.clone_from(&parsed.options.krate);
+    shape.batch = parsed.batch.is_some();
     if let (syn::ReturnType::Type(_, ty), false) = (
         &parsed.closure.output,
         matches!(&parsed.shape, syn::Expr::Reference(reference) if reference.mutability.is_some()),

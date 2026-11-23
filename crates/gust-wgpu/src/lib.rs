@@ -90,7 +90,6 @@ mod compile;
 mod completion;
 mod device;
 mod dispatch;
-#[cfg(not(target_arch = "wasm32"))]
 mod encode;
 mod error;
 mod generated_host;

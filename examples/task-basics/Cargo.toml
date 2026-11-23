@@ -1,0 +1,15 @@
+[package]
+name = "task-basics"
+description = "gpu_task! as a free task: a 1-D stage, a 2-D stage, an in-place stage and a host-slice capture, run with submit and dispatch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+gust.workspace = true
+gust-wgpu = { workspace = true, features = ["slang-runtime"] }
+
+[lints]
+workspace = true

@@ -5,10 +5,13 @@
 
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
-use crate::{BufferBinding, PassTimestamps, dispatch::PreparedDispatch};
+use crate::BufferBinding;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{PassTimestamps, dispatch::PreparedDispatch};
 
 /// Copy `bytes` into `target` as an encoded buffer copy, so it stays ordered among the passes around it. One staging
 /// buffer is created per upload; it must outlive the submission. An empty upload records nothing and returns `None`.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn encode_upload(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
@@ -30,6 +33,7 @@ pub(crate) fn encode_upload(
 
 /// Copy `source` into a fresh mappable staging buffer of `source.byte_len()` bytes (the logical length, not a pooled
 /// allocation's size). An empty source records nothing and returns `None`.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn encode_readback_copy(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
@@ -50,6 +54,7 @@ pub(crate) fn encode_readback_copy(
 }
 
 /// Record one indirect compute pass for `prepared`, its workgroup counts read from `args` on the GPU.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn encode_indirect_pass(
     encoder: &mut wgpu::CommandEncoder,
     prepared: &PreparedDispatch,

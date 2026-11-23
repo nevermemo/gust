@@ -964,7 +964,7 @@ impl HeadlessDevice {
                 TIMESTAMP_RESULT_BYTES,
             );
         }
-        let submission = self.queue.submit([encoder.finish()]);
+        let submission = self.submit_counted([encoder.finish()]);
         let receivers: Vec<_> = pending
             .iter()
             .map(|readback| {

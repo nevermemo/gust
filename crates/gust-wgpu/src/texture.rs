@@ -715,7 +715,7 @@ impl HeadlessDevice {
                 depth_or_array_layers: 1,
             },
         );
-        self.queue.submit([encoder.finish()]);
+        self.submit_counted([encoder.finish()]);
 
         let mapped = Completion::new();
         let callback = mapped.clone();

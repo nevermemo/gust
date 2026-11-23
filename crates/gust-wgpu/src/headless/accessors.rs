@@ -4,6 +4,7 @@ use crate::{Error, GpuBuffer, HeadlessDevice, PipelineCacheStats};
 use crate::{GpuVec, LimitsPolicy};
 use gust::capability::Capability;
 use std::sync::MutexGuard;
+use std::sync::atomic::Ordering;
 
 impl HeadlessDevice {
     /// The wgpu description of the adapter that the device was opened on.
@@ -74,6 +75,38 @@ impl HeadlessDevice {
     /// Submit commands that use a pooled buffer before its owner drops (see [`GpuBuffer::as_wgpu_buffer`]).
     pub fn wgpu_queue(&self) -> &wgpu::Queue {
         &self.queue
+    }
+
+    /// How many queue submissions GUST itself has made on this device since it was opened or adopted, counting each
+    /// `queue.submit` call once, whatever it carried (a submission of no command buffers counts too).
+    ///
+    /// It counts GUST's own submissions only. On a device shared with a renderer ([`adopt`](Self::adopt)) the
+    /// caller's own submissions, including the ones made with [`wgpu_queue`](Self::wgpu_queue) and the one that
+    /// carries an [`encode_batch`](Self::encode_batch) encoding, are not counted: a frame that records GUST work
+    /// into its own encoder and submits it once leaves this number unchanged. The counter is a diagnostic for
+    /// submission-count budgets and tests; reading it takes no lock and orders nothing.
+    ///
+    /// Calls that submit on their own account, one submission each (a test pins every one named here):
+    /// [`submit_batch`](Self::submit_batch) and the typed `dispatch`/`submit` built on it, which make none for a
+    /// batch with no work; [`dispatch_batch_timed`](Self::dispatch_batch_timed);
+    /// [`write_typed_buffer_timed`](Self::write_typed_buffer_timed); [`read_typed_buffer`](Self::read_typed_buffer)
+    /// and `GpuVec::to_vec`; and a pooled buffer handed out recycled and zeroed (`GpuVec::zeroed_on`, the clear is a
+    /// submission of its own). The other submitting calls of this crate (pool growth, texture and inspect
+    /// read-backs, `execute_graph`) count through the same wrapper. [`submit_batch_read`](Self::submit_batch_read)
+    /// makes one for a batch, its clears and a read-back together; [`encode_batch`](Self::encode_batch) and
+    /// [`encode_batch_read`](Self::encode_batch_read) make none.
+    pub fn gust_submissions(&self) -> u64 {
+        self.submissions.load(Ordering::Relaxed)
+    }
+
+    /// The one place this crate calls `Queue::submit`, so that [`gust_submissions`](Self::gust_submissions) counts
+    /// every submission GUST makes. Never call `self.queue.submit` anywhere else in this crate.
+    pub(crate) fn submit_counted(
+        &self,
+        commands: impl IntoIterator<Item = wgpu::CommandBuffer>,
+    ) -> wgpu::SubmissionIndex {
+        self.submissions.fetch_add(1, Ordering::Relaxed);
+        self.queue.submit(commands)
     }
 
     /// Check launches against `limits` instead of the opened device's, for emulating a

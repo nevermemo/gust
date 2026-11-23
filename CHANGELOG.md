@@ -12,6 +12,12 @@ breaks existing code bumps the minor version, and the promise is described in th
   `run_element(id)` and `run_until(id)`; new `DeviceOptions::capture` / `with_capture` lets read-only buffers be copied.
   A replay reproduces the twin's order, not the GPU's schedule.
 
+- A batch can be recorded into the caller's command encoder (m14.encb, D251). New in `gust-compute-wgpu`:
+  `HeadlessDevice::encode_batch(&mut encoder, &dispatches)` records without submitting and
+  `EncodedJob::submitted(&index)` returns the job after the caller's `queue.submit`; `submit_batch_read` and
+  `encode_batch_read` run a batch and read one buffer back in one submission, with `uncleared_buffer` and `PendingRead`;
+  `gust_submissions()` counts GUST's own submissions. Radeon 890M only; the RTX 5090 run is pending.
+
 - A renderer can share GUST's device (m14.devshare.1, D247, D248). New in `gust-compute-wgpu`:
   `HeadlessDevice::adopt(&adapter, device, queue, capabilities)` wraps a device the caller opened in its own
   `wgpu::Instance`; `DeviceOptions::device_request(&adapter)` returns the `DeviceRequest` (features and limits) that
@@ -19,6 +25,10 @@ breaks existing code bumps the minor version, and the promise is described in th
   device; `gust_wgpu::wgpu` re-exports the wgpu behind the handles. New errors: `MissingFeatures`, `AdapterMismatch` and
   `DefaultDeviceCapability`. The text of `DefaultDeviceOpened` and of the launch refusal of a missing capability changed
   to name `set_default_device` and `adopt`. Radeon 890M only; the RTX 5090 run is pending.
+
+- Added `gpu_task!`, a stage written at the call site and run as a free task: a 1-D, 2-D or in-place stage over host
+  slices and scalars, returned as a `gust::task::Task` with `submit()` (an asynchronous read-back) and `dispatch()`.
+  The example `task-basics` and the diagnostics GUST-E1001, E1002, E1003, E1007 and E1008 go with it (m14.s2a1).
 
 - The pinned Slang is now 2026.22.1 (`cargo gust slang install` fetches it; run `cargo gust build` again for a committed
   artifact set). Two emitted differences: float and signed-integer vector negation is `-a` instead of `0 - a`, and a

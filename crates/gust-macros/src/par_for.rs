@@ -65,6 +65,8 @@ struct Names {
     axes: [&'static str; 3],
     /// The prefix of the padding fields.
     pad: &'static str,
+    /// The result buffer of a `gpu_task!` stage with a result type.
+    out: &'static str,
 }
 
 const FINAL: Names = Names {
@@ -73,6 +75,7 @@ const FINAL: Names = Names {
     record: "__GustExtent",
     axes: ["__gust_ex", "__gust_ey", "__gust_ez"],
     pad: "__gust_pad",
+    out: crate::task::OUT,
 };
 
 const VIEW: Names = Names {
@@ -81,6 +84,7 @@ const VIEW: Names = Names {
     record: "ParForExtent",
     axes: ["par_for_ex", "par_for_ey", "par_for_ez"],
     pad: "par_for_pad",
+    out: "par_for_task_out",
 };
 
 /// The field names of a dispatch id.
@@ -91,16 +95,16 @@ const PLACEHOLDER: &str = "__gust_pf";
 
 /// What the keyword options in front of the loop say.
 #[derive(Default)]
-struct Options {
+pub(crate) struct Options {
     workgroup: Option<[u32; 3]>,
-    on: Option<syn::Expr>,
+    pub(crate) on: Option<syn::Expr>,
     /// The hidden `descriptor;` form, which expands to the kernel's descriptor and launches nothing. It is for the
     /// follow-up that runs the naga gate over `par_for!` kernels (the fixtures are skipped there until then); it is
     /// not public API and has no entry in the documentation of the macro.
-    descriptor: bool,
+    pub(crate) descriptor: bool,
     /// `crate(<path>);`: where `gust` is for a crate that reaches it through another (audit S6). It is applied by
     /// [`par_for_in`] to the whole output, the error value included.
-    krate: Option<syn::Path>,
+    pub(crate) krate: Option<syn::Path>,
 }
 
 /// What [`expand_input`] learned about the call besides its expansion, for the value that follows an error.
@@ -112,18 +116,18 @@ pub(crate) struct Form {
     pub(crate) krate: Option<syn::Path>,
 }
 
-struct RawBinding {
-    name: syn::Ident,
-    ty: syn::Type,
+pub(crate) struct RawBinding {
+    pub(crate) name: syn::Ident,
+    pub(crate) ty: syn::Type,
 }
 
 /// The macro input as written: shape only, no meaning.
-struct Raw {
-    options: Options,
-    pattern: syn::Pat,
-    ranges: syn::Expr,
-    bindings: Vec<RawBinding>,
-    body: syn::Block,
+pub(crate) struct Raw {
+    pub(crate) options: Options,
+    pub(crate) pattern: syn::Pat,
+    pub(crate) ranges: syn::Expr,
+    pub(crate) bindings: Vec<RawBinding>,
+    pub(crate) body: syn::Block,
 }
 
 impl Parse for RawBinding {
@@ -181,7 +185,7 @@ impl Parse for Raw {
 }
 
 /// The keyword clauses in front of the loop.
-fn parse_options(input: ParseStream) -> syn::Result<Options> {
+pub(crate) fn parse_options(input: ParseStream) -> syn::Result<Options> {
     {
         let mut options = Options::default();
         // The keyword options come first, each ended by `;`. A loop pattern is never an identifier followed by `(`
@@ -272,21 +276,21 @@ fn parse_options(input: ParseStream) -> syn::Result<Options> {
 
 /// The element of a buffer binding: its type as the kernel spells it and as host code spells it.
 #[derive(Clone)]
-struct Element {
+pub(crate) struct Element {
     kernel: TokenStream,
-    host: TokenStream,
+    pub(crate) host: TokenStream,
 }
 
 /// A scalar binding: a field of the extent record.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Scalar {
+pub(crate) enum Scalar {
     U32,
     I32,
     F32,
     Bool,
 }
 
-enum Kind {
+pub(crate) enum Kind {
     /// `&[T]` or `&mut [T]`: uploaded for the launch, read back afterwards when mutable.
     Slice {
         mutable: bool,
@@ -300,21 +304,24 @@ enum Kind {
     Scalar(Scalar),
 }
 
-struct Binding {
-    name: syn::Ident,
-    kind: Kind,
+pub(crate) struct Binding {
+    pub(crate) name: syn::Ident,
+    pub(crate) kind: Kind,
 }
 
 /// A `par_for!` call understood.
-struct Plan {
-    options: Options,
+pub(crate) struct Plan {
+    pub(crate) options: Options,
     /// The loop variable of each axis (`None` for `_`); the length is the number of dimensions.
     axes: Vec<Option<syn::Ident>>,
     extents: Vec<syn::Expr>,
     workgroup: [u32; 3],
-    bindings: Vec<Binding>,
+    pub(crate) bindings: Vec<Binding>,
     body: syn::Block,
     profile: Profile,
+    /// What a `gpu_task!` adds to the plan: its body is the task's statements and result, and the host side is the
+    /// task's (`crate::task`). `None` for a `par_for!`.
+    pub(crate) task: Option<crate::task::TaskPlan>,
 }
 
 fn form(tokens: impl quote::ToTokens, message: impl std::fmt::Display) -> syn::Error {
@@ -414,7 +421,7 @@ fn range_ends(ranges: &syn::Expr, dimensions: usize) -> syn::Result<Vec<syn::Exp
 
 /// The element of a buffer binding: `f32`, `i32`, `u32` (or `float`, `int`, `uint`) and the vector and matrix types
 /// that can be buffer elements. `bool` is not one (a buffer holds `u32` words).
-fn element(ty: &syn::Type, what: &str) -> syn::Result<Element> {
+pub(crate) fn element(ty: &syn::Type, what: &str) -> syn::Result<Element> {
     let reject = || {
         binding_error(
             ty,
@@ -524,7 +531,7 @@ fn classify(name: &syn::Ident, ty: &syn::Type, profile: Profile) -> syn::Result<
 const BLOCK_NAMES: [&str; 4] = ["run", "launch", "launch_default", "DESCRIPTOR"];
 
 impl Plan {
-    fn new(raw: Raw, profile: Profile) -> syn::Result<Self> {
+    pub(crate) fn new(raw: Raw, profile: Profile) -> syn::Result<Self> {
         let axes = pattern_axes(&raw.pattern)?;
         let extents = range_ends(&raw.ranges, axes.len())?;
         let mut bindings: Vec<Binding> = Vec::new();
@@ -574,10 +581,16 @@ impl Plan {
             bindings,
             body: raw.body,
             profile,
+            task: None,
         })
     }
 
-    fn scalars(&self) -> impl Iterator<Item = (&syn::Ident, Scalar)> {
+    /// Whether the build is the `cpu` profile.
+    pub(crate) fn is_cpu(&self) -> bool {
+        self.profile == Profile::Cpu
+    }
+
+    pub(crate) fn scalars(&self) -> impl Iterator<Item = (&syn::Ident, Scalar)> {
         self.bindings
             .iter()
             .filter_map(|binding| match binding.kind {
@@ -586,7 +599,7 @@ impl Plan {
             })
     }
 
-    fn buffers(&self) -> impl Iterator<Item = (&syn::Ident, bool, &Element, bool)> {
+    pub(crate) fn buffers(&self) -> impl Iterator<Item = (&syn::Ident, bool, &Element, bool)> {
         self.bindings
             .iter()
             .filter_map(|binding| match &binding.kind {
@@ -596,6 +609,16 @@ impl Plan {
                 }
                 Kind::Scalar(_) => None,
             })
+    }
+
+    /// The name the kernel gives the binding `name` in the module built with `names`: a stage's result buffer is
+    /// named by `names` (the view has a name the validator accepts, the expanded module a reserved one).
+    fn kernel_name(&self, name: &syn::Ident, names: &Names) -> syn::Ident {
+        if self.task.is_some() && name == crate::task::OUT {
+            format_ident!("{}", names.out)
+        } else {
+            name.clone()
+        }
     }
 
     /// The kernel module named `ident`, with the names of `names`.
@@ -621,6 +644,7 @@ impl Plan {
         let pads = (0..(4 - words % 4) % 4).map(|index| format_ident!("{}{}", names.pad, index));
         let parameters = self.buffers().map(|(name, mutable, element, _)| {
             let element = &element.kernel;
+            let name = self.kernel_name(name, names);
             if mutable {
                 quote!(mut #name: RWStructuredBuffer<#element>)
             } else {
@@ -649,7 +673,12 @@ impl Plan {
             }
         });
         let [x, y, z] = self.workgroup.map(Literal::u32_unsuffixed);
-        let statements = &self.body.stmts;
+        let statements: Vec<syn::Stmt> = match &self.task {
+            Some(task) => {
+                task.statements(&gid, &ext, &axis_fields[0], &format_ident!("{}", names.out))
+            }
+            None => self.body.stmts.clone(),
+        };
         let [ex, ey, ez] = &axis_fields[..] else {
             unreachable!("three axes")
         };
@@ -937,6 +966,12 @@ impl Plan {
                 }
             });
         }
+        // A `gpu_task!` has its own host function (it submits and reads back, and runs on every target) in place of
+        // `launch` and `launch_default`; the device side above is the same.
+        if let Some(task) = &self.task {
+            items.extend(task.host_items(self));
+            return items;
+        }
         items.extend(quote! {
             #[doc = #doc_launch]
             #[cfg(not(target_arch = "wasm32"))]
@@ -1007,7 +1042,11 @@ impl Plan {
 
     /// The expansion: the kernel module and either the launch call or, for the hidden `descriptor;` form, the
     /// kernel's descriptor.
-    fn expand(&self, environment: &Environment, call_line: u32) -> syn::Result<TokenStream> {
+    pub(crate) fn expand(
+        &self,
+        environment: &Environment,
+        call_line: u32,
+    ) -> syn::Result<TokenStream> {
         // The body as a kernel of a module with names the validator accepts: a dialect error is reported at the
         // body's own tokens with its code.
         crate::validate::validate_module_in(
@@ -1023,7 +1062,11 @@ impl Plan {
             &module,
             environment.manifest_dir.as_deref(),
             &proc_macro2::Ident::new("par_for", Span::call_site()),
-            "par_for!",
+            if self.task.is_some() {
+                "gpu_task!"
+            } else {
+                "par_for!"
+            },
         )?;
         let host = self.host_items();
         let expanded = expand_validated(
@@ -1034,7 +1077,9 @@ impl Plan {
             &host,
             Identity::Site { call_line },
         )?;
-        let value = if self.options.descriptor {
+        let value = if let Some(task) = &self.task {
+            task.value(self, &name)
+        } else if self.options.descriptor {
             quote!(<#name::run as ::gust::Kernel>::DESCRIPTOR)
         } else {
             let extents = &self.extents;
@@ -1076,7 +1121,7 @@ pub(crate) fn par_for(input: TokenStream, profile: Profile) -> TokenStream {
     par_for_in(input, &Environment::from_process(), profile, call_line)
 }
 
-fn line_of(span: Span) -> Option<u32> {
+pub(crate) fn line_of(span: Span) -> Option<u32> {
     u32::try_from(span.start().line)
         .ok()
         .filter(|&line| line > 0)

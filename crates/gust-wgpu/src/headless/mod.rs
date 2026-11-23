@@ -70,6 +70,9 @@ pub struct HeadlessDevice {
     pub(crate) capture: bool,
     /// Recycles the allocations of [`GpuVec`] and other pooled buffers.
     pub(crate) pool: BufferPool,
+    /// How many queue submissions GUST itself has made on this device (`HeadlessDevice::gust_submissions`). Only
+    /// `HeadlessDevice::submit_counted` adds to it, and every `queue.submit` of this crate goes through that.
+    pub(crate) submissions: AtomicU64,
     /// The route each kernel's pipeline was built from, in build order (`HeadlessDevice::route_events`).
     #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
     pub(crate) route_events: Mutex<Vec<RouteEvent>>,

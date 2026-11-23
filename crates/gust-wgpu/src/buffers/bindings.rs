@@ -232,7 +232,6 @@ impl<'a> BufferBinding<'a> {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn byte_len(&self) -> u64 {
         self.len as u64 * u64::from(self.layout.stride)
     }

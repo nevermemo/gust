@@ -39,6 +39,7 @@ mod par_for;
 mod profile;
 mod recover;
 mod slang;
+mod task;
 mod uniform;
 mod validate;
 
@@ -107,6 +108,8 @@ mod pad_tests;
 #[cfg(test)]
 #[path = "tests/capture.rs"]
 mod capture_tests;
+#[path = "tests/task.rs"]
+mod task_tests;
 
 /// Marks an inline Rust module as GUST GPU code.
 ///
@@ -220,6 +223,38 @@ pub fn par_for(input: TokenStream) -> TokenStream {
     let value = std::env::var("GUST_PROFILE").ok();
     let profile = expand::Profile::from_value(value.as_deref());
     par_for::par_for(input.into(), profile).into()
+}
+
+/// A stage written at the call site, run as a free task (plan m14.s2, slice s2a1):
+///
+/// ```text
+/// let doubled = gust::gpu_task!(n, [a: &[f32]], |i| -> f32 { a[i] * 2.0 }).dispatch()?;      // 1-D
+/// let grid = gust::gpu_task!((w, h), [k: u32], |x, y| -> u32 { y * 100u32 + x + k }).dispatch()?;  // 2-D, row-major
+/// gust::gpu_task!(&mut data, [data: &mut [f32]], |i| { data[i] = data[i] * 0.5; }).dispatch()?;   // in place
+/// ```
+///
+/// The first part is the shape: an extent (anything `TryInto<u32>`) for a 1-D stage, a `(u32, u32)` pair for a 2-D one,
+/// or `&mut target` for an in-place stage (1-D, the length of its target). The bracketed list names every capture with
+/// its type, each taken from the variable of that name at the call: a host slice `&[T]` (a buffer element type of
+/// `par_for!`: `f32`, `i32`, `u32`, `Vec2`, `Vec4`, `IVec2`, `IVec4`, `UVec2`, `UVec4`, `Mat2`, `Mat4`) or a scalar
+/// (`u32`, `i32`, `f32`, `bool`); it is left out when there are none. The closure has an explicit result type, the
+/// element type of the result buffer (the closure's last expression is written to it at the invocation's own index,
+/// row-major for a 2-D stage); an in-place stage has none, and writes its own target (`target[i]`, read only at its own
+/// index). Captures are read-only.
+///
+/// The options of `par_for!` come first, each ending in `;`: `workgroup_size(x, y, z);`, `on(device);` (the device to
+/// run on; without it the call opens the default device) and `crate(<path>);`.
+///
+/// The value is a `gust::task::Task`: `.submit()` starts the work and returns the asynchronous read-back on every
+/// target, `.dispatch()` also waits for it (native targets). The body is the dialect, validated and lowered through the
+/// `par_for!` generator, so the kernel has the artifacts, records, routing and CPU twin of any kernel. The diagnostics
+/// of the call itself are GUST-E1001, E1002, E1003, E1007 and E1008 (`docs/DIAGNOSTICS.md`).
+#[proc_macro]
+pub fn gpu_task(input: TokenStream) -> TokenStream {
+    // The one place that reads the build profile, as for `par_for!`.
+    let value = std::env::var("GUST_PROFILE").ok();
+    let profile = expand::Profile::from_value(value.as_deref());
+    task::gpu_task(input.into(), profile).into()
 }
 
 /// The `Mul` and `MulAssign` impls of `gust::math`, generated from the product table that also drives the Slang

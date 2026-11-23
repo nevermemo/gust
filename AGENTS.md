@@ -182,8 +182,9 @@ tests and the harness crate's checks; the release Slang tests and the mismatch l
 `--include-ignored`, then each example run; the strict subgroups example; the Gpu suite under `dev+subgroups`;
 `check-dual`; every exported and golden SPIR-V validated with `spirv-val`; then `check-precompiled`, the full
 `check-release`, `check-web` and `check-difftest`; and last the GPU part of `check-gallery` (each gallery program on the
-adapter, `web-hello` in Chrome). `--skip-web` leaves out `check-web` and the gallery's browser entry; the skip is
-recorded. Missing tools are blockers, not passes. Baseline versions
+adapter, `web-hello` in Chrome). `--skip-web` leaves out `check-web` and the gallery's browser entry
+(`check-gallery --gpu --skip-web` leaves out the entry alone: no browser evidence, owed to a run without it); the skip
+is recorded. Missing tools are blockers, not passes. Baseline versions
 and actual results belong in `docs/development/STATUS.md`; commands alone are not evidence.
 The command overwrites `.ai/VALIDATION.json` with the latest pass/failure record;
 inspect its timestamp and scope before using it as evidence. That file is local and

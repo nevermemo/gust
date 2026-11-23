@@ -5,11 +5,11 @@ use std::{
 };
 
 use super::{
-    ENTRIES, LISTINGS, Listing, Parts, TWIN_RULES, WEB_HELLO, adapter_name, anchor_names,
-    anchored_region, browser_skipped_line, check_entry_tests, check_listings, folder_holds,
-    lf_line_ends, listing_matches, no_slang_environment, output_has_line, required_files,
-    shared_folder_problems, slang_home_problem, slangc_cannot_be_found, tail, tree_difference,
-    tree_has_slang_runtime, workspace_members,
+    CHECK_FULL_SKIP, CHECK_GALLERY_SKIP, ENTRIES, LISTINGS, Listing, Parts, TWIN_RULES, WEB_HELLO,
+    adapter_name, anchor_names, anchored_region, browser_skipped_line, check_entry_tests,
+    check_listings, folder_holds, lf_line_ends, listing_matches, no_slang_environment,
+    output_has_line, parse_arguments, required_files, shared_folder_problems, slang_home_problem,
+    slangc_cannot_be_found, tail, tree_difference, tree_has_slang_runtime, workspace_members,
 };
 use crate::{
     precompiled::{StripReport, child_environment, directory_has_slang_tool, slang_free_problems},
@@ -965,8 +965,12 @@ fn skip_web_leaves_the_browser_entry_out_prints_it_and_records_it() {
     // The skipped line names the entry and the flag; it is not silent.
     let hello = ENTRIES.iter().find(|entry| entry.browser).unwrap();
     assert_eq!(
-        browser_skipped_line(hello),
-        "web-hello: browser run SKIPPED on request (check-full --skip-web); no evidence for the page in a browser"
+        browser_skipped_line(hello, CHECK_FULL_SKIP),
+        "web-hello: browser run SKIPPED on request (check-full --skip-web); no browser evidence for the page"
+    );
+    assert_eq!(
+        browser_skipped_line(hello, CHECK_GALLERY_SKIP),
+        "web-hello: browser run SKIPPED on request (check-gallery --skip-web); no browser evidence for the page"
     );
     // The gallery step passes the opposite of `skip_web` and records the skip beside `check-web`; without the flag the
     // preflight of the Full run covers the gallery page's tools too.
@@ -982,10 +986,73 @@ fn skip_web_leaves_the_browser_entry_out_prints_it_and_records_it() {
     assert_eq!(GALLERY_BROWSER_SKIP, "check-gallery web-hello browser run");
     let web = repository_file("xtask/src/web.rs");
     assert!(web.contains("for example in [&WEB_VECTOR_ADD, &crate::gallery::WEB_HELLO]"));
-    // Only the gpu part takes the flag, and the flagless check-gallery runs the browser.
+    // Only the gpu part takes the flag; check-full names itself and check-gallery names itself in the printed line.
     let gallery = repository_file("xtask/src/gallery.rs");
-    assert!(gallery.contains("run_parts(&workspace_root()?, parts, true)?;"));
-    assert!(gallery.contains("browser_skipped_line(entry)"));
+    assert!(gallery.contains("browser_skipped_line(entry, skipped_by)"));
+    assert!(
+        gallery.contains("run_parts(&workspace_root()?, parts, browser, CHECK_GALLERY_SKIP)?;")
+    );
+    let report = gallery
+        .split("pub(crate) fn check_gallery_gpu_report(browser: bool)")
+        .nth(1)
+        .expect("check_gallery_gpu_report");
+    assert!(report[..report.find("\n}\n").unwrap()].contains("CHECK_FULL_SKIP"));
+    // The values are pinned: swapping the two would print the wrong command.
+    assert_eq!(CHECK_FULL_SKIP, "check-full --skip-web");
+    assert_eq!(CHECK_GALLERY_SKIP, "check-gallery --skip-web");
+}
+
+#[test]
+fn check_gallery_skip_web_needs_the_gpu_part_and_the_default_runs_the_browser() {
+    // Default: no flag runs all three parts with the browser.
+    assert_eq!(parse_arguments(&[]), Ok((Parts::ALL, true)));
+    assert_eq!(
+        parse_arguments(&args(&["--gpu"])),
+        Ok((Parts::parse(&args(&["--gpu"])).unwrap(), true))
+    );
+    // With the flag: the browser is left out, alone or beside other parts, in any order.
+    let gpu = Parts::parse(&args(&["--gpu"])).unwrap();
+    assert_eq!(
+        parse_arguments(&args(&["--gpu", "--skip-web"])),
+        Ok((gpu, false))
+    );
+    assert_eq!(
+        parse_arguments(&args(&["--skip-web", "--gpu"])),
+        Ok((gpu, false))
+    );
+    assert_eq!(
+        parse_arguments(&args(&["--skip-web"])),
+        Ok((Parts::ALL, false))
+    );
+    assert_eq!(
+        parse_arguments(&args(&["--slang", "--gpu", "--skip-web"])).map(|(_, browser)| browser),
+        Ok(false)
+    );
+    // Without the GPU part the flag is refused, and the message says why.
+    for selected in [
+        &["--slang"][..],
+        &["--no-slang"],
+        &["--slang", "--no-slang"],
+    ] {
+        let mut given = args(selected);
+        given.push("--skip-web".to_owned());
+        let error = parse_arguments(&given).unwrap_err();
+        assert!(
+            error.contains("--skip-web") && error.contains("--gpu"),
+            "{error}"
+        );
+    }
+    // Other bad arguments are still named.
+    assert!(
+        parse_arguments(&args(&["--gpu", "--skip-web", "--bad"]))
+            .unwrap_err()
+            .contains("`--bad`")
+    );
+    // The message of the skip is no pass: it says there is no browser evidence.
+    assert!(
+        browser_skipped_line(ENTRIES.iter().find(|entry| entry.browser).unwrap(), "x")
+            .contains("no browser evidence")
+    );
 }
 
 #[test]

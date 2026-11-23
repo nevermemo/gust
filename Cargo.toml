@@ -69,3 +69,13 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)', 'cfg(gust_pro
 # load faster. Measured with rust-lld below: the incremental macro-edit gate got 25-31 % faster.
 [profile.dev]
 debug = "line-tables-only"
+
+# m14.optlvl: the host-side work of the gust-algo tests (reference sums and fills over 2^24-2^26 elements) runs as
+# debug Rust, which dominates their run time. Optimising only this package roughly halves that run, and every rebuild
+# of its test targets costs only a few seconds more. `gust-compute-wgpu` is left out on purpose: its test targets are
+# many, and rebuilding them optimised costs more than the run time saved. Cargo's dev profile sets `overflow-checks =
+# true` and `debug-assertions = true` as their own settings, and a package override that sets only `opt-level` leaves
+# both on, so `debug_assert!` and integer-overflow panics stay on. (Cargo still prints `unoptimized` in its `Finished`
+# line; it describes the root profile.)
+[profile.dev.package.gust-algo]
+opt-level = 3

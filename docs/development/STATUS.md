@@ -1088,6 +1088,8 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       environment, so a machine with Slang runs them as CI's helper-less unit job does; `check-release --docs-only`
       runs only R5's stable rustdoc pass; the tests/precompiled fixture's fmt and clippy are Unit steps, and the
       tests/difftest format check runs even with `--skip-difftest`. Opus review: merge after fixes; fixed, re-checked.
+    - m14.optlvl (gates): `gust-algo` builds at opt-level 3 in the dev profile, so its CPU-side test loops stop
+      dominating the Unit and Gpu suites. An opt-level change for gust-compute-wgpu is a later spike. Opus review: merge.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

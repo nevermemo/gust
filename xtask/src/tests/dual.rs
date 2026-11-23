@@ -7,8 +7,9 @@ use std::{
 use super::{
     DUAL_DIR, DUAL_RUSTFLAGS, DUAL_TESTS, DualKind, DualMode, DualStep, RUSTFLAGS_VARIABLES,
     dual_command, dual_dir_under, dual_problems, dual_run_steps, dual_steps, dual_steps_for,
-    explain_check, parse_dual_args, parse_twin_match, refuse_preset_rustflags,
-    rustflags_config_files, target_rustflags_variables, tests_not_ok, twin_run_problems,
+    explain_check, parse_dual_args, parse_twin_match, precompiled_dual_steps,
+    refuse_preset_rustflags, rustflags_config_files, target_rustflags_variables, tests_not_ok,
+    twin_run_problems,
 };
 use crate::{
     ui::parse_expected,
@@ -148,6 +149,9 @@ fn the_spawned_child_has_no_rustflags_variable_but_the_cfg_on_the_cfg_steps() {
             ("E3", false),
             ("E4-routed", false),
             ("E4-control", false),
+            ("build-vector-add", true),
+            ("build-polynomial", true),
+            ("build-vector-add-no-cfg", false),
             ("run-vector-add", true),
             ("run-polynomial", true),
             ("run-vector-add-no-cfg", false),
@@ -359,6 +363,18 @@ fn the_argument_lists_are_exactly_these() {
                 "json",
             ]),
         ),
+        (
+            "build-vector-add",
+            owned(&["build", "--locked", "-p", "vector-add"]),
+        ),
+        (
+            "build-polynomial",
+            owned(&["build", "--locked", "-p", "polynomial"]),
+        ),
+        (
+            "build-vector-add-no-cfg",
+            owned(&["build", "--locked", "-p", "vector-add"]),
+        ),
     ];
     let actual: Vec<(&str, Vec<String>)> = dual_steps("TARGET")
         .into_iter()
@@ -443,6 +459,9 @@ fn the_check_only_mode_has_no_example_run_and_the_full_mode_adds_them_last() {
             "E3",
             "E4-routed",
             "E4-control",
+            "build-vector-add",
+            "build-polynomial",
+            "build-vector-add-no-cfg",
         ]
     );
     let mut full = check_only.clone();
@@ -509,10 +528,18 @@ fn the_dual_build_has_its_own_target_directory_under_the_normal_one() {
             continue;
         }
         assert_eq!(pairs.len(), 1, "{}", step.id);
-        assert_eq!(pairs[0][1], "/cache/target/dual", "{}", step.id);
+        assert_eq!(
+            pairs[0][1],
+            format!("/cache/target/dual{}", step.state_suffix()),
+            "{}",
+            step.id
+        );
         // The shown command line names a placeholder, never the directory itself.
         assert!(
-            step.shown().contains("--target-dir <target>/dual"),
+            step.shown().contains(&format!(
+                "--target-dir <target>/dual{}",
+                step.state_suffix()
+            )),
             "{}",
             step.id
         );
@@ -545,6 +572,9 @@ fn the_steps_run_in_the_order_fmt_build_clippy_e1_e2_e3_and_e2_is_judged_by_its_
             "E3",
             "E4-routed",
             "E4-control",
+            "build-vector-add",
+            "build-polynomial",
+            "build-vector-add-no-cfg",
         ]
     );
     assert_eq!(step("fmt").kind, DualKind::Build);
@@ -599,20 +629,131 @@ fn the_steps_run_in_the_order_fmt_build_clippy_e1_e2_e3_and_e2_is_judged_by_its_
 }
 
 #[test]
-fn only_check_only_or_no_argument_is_accepted() {
+fn only_check_only_runs_only_or_no_argument_is_accepted() {
     assert_eq!(parse_dual_args(&[]), Ok(DualMode::Full));
     assert_eq!(
         parse_dual_args(&owned(&["--check-only"])),
         Ok(DualMode::CheckOnly)
     );
+    assert_eq!(
+        parse_dual_args(&owned(&["--runs-only"])),
+        Ok(DualMode::RunsOnly)
+    );
     for bad in [
         owned(&["--check"]),
         owned(&["check-only"]),
         owned(&["--check-only", "--check-only"]),
+        owned(&["--runs-only", "--runs-only"]),
         owned(&["--check-only", "x"]),
     ] {
         assert!(parse_dual_args(&bad).is_err(), "{bad:?}");
     }
+}
+
+#[test]
+fn check_only_together_with_runs_only_is_refused_by_name() {
+    for args in [
+        owned(&["--check-only", "--runs-only"]),
+        owned(&["--runs-only", "--check-only"]),
+    ] {
+        let error = parse_dual_args(&args).unwrap_err();
+        assert!(
+            error.contains("--check-only")
+                && error.contains("--runs-only")
+                && error.contains("exclude"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn runs_only_selects_exactly_the_run_steps_and_both_modes_together_are_the_full_list() {
+    let ids = |mode| -> Vec<&'static str> {
+        dual_steps_for(mode, "TARGET")
+            .iter()
+            .map(|step| step.id)
+            .collect()
+    };
+    assert_eq!(
+        ids(DualMode::RunsOnly),
+        ["run-vector-add", "run-polynomial", "run-vector-add-no-cfg"]
+    );
+    let mut both = ids(DualMode::CheckOnly);
+    both.extend(ids(DualMode::RunsOnly));
+    assert_eq!(both, ids(DualMode::Full));
+    // Whole steps, not only ids: the same states and directories as the full run.
+    let mut whole = dual_steps_for(DualMode::CheckOnly, "TARGET");
+    whole.extend(dual_steps_for(DualMode::RunsOnly, "TARGET"));
+    assert_eq!(whole, dual_steps_for(DualMode::Full, "TARGET"));
+    for step in dual_steps_for(DualMode::RunsOnly, "TARGET") {
+        assert!(matches!(step.kind, DualKind::Runs { .. }), "{}", step.id);
+    }
+}
+
+#[test]
+fn each_run_step_has_a_build_step_in_exactly_its_state_directory_and_flags() {
+    for (build, run) in [
+        ("build-vector-add", "run-vector-add"),
+        ("build-polynomial", "run-polynomial"),
+        ("build-vector-add-no-cfg", "run-vector-add-no-cfg"),
+    ] {
+        let (build, run) = (step(build), step(run));
+        assert_eq!(build.cfg, run.cfg, "{}", build.id);
+        assert_eq!(build.profile, run.profile, "{}", build.id);
+        assert_eq!(build.env(), run.env(), "{}", build.id);
+        // The same arguments but the subcommand.
+        assert_eq!(build.args[0], "build", "{}", build.id);
+        assert_eq!(run.args[0], "run", "{}", run.id);
+        assert_eq!(build.args[1..], run.args[1..], "{}", build.id);
+    }
+}
+
+#[test]
+fn each_state_builds_in_its_own_directory_and_no_two_states_share_one() {
+    let directory = |step: &DualStep| -> Option<String> {
+        let at = step.args.iter().position(|arg| arg == "--target-dir")?;
+        Some(step.args[at + 1].clone())
+    };
+    let mut steps = dual_steps_for(DualMode::Full, "TARGET");
+    steps.extend(precompiled_dual_steps("TARGET"));
+    // (cfg, profile) of a step -> its directory; both must determine each other.
+    let mut states: Vec<((bool, Option<&str>), String)> = Vec::new();
+    for step in &steps {
+        let Some(directory) = directory(step) else {
+            // `fmt` and `E5-tree` build nothing.
+            assert!(matches!(step.id, "fmt" | "E5-tree"), "{}", step.id);
+            continue;
+        };
+        let expected = match (step.cfg, step.profile) {
+            (true, None) => "TARGET",
+            (false, None) => "TARGET-nocfg",
+            (true, Some("native")) => "TARGET-native",
+            other => panic!("{}: unexpected state {other:?}", step.id),
+        };
+        assert_eq!(directory, expected, "{}", step.id);
+        let state = (step.cfg, step.profile);
+        match states.iter().find(|(known, _)| *known == state) {
+            Some((_, known)) => assert_eq!(*known, directory, "{}", step.id),
+            None => {
+                assert!(
+                    states.iter().all(|(_, other)| *other != directory),
+                    "{}: {directory} is shared by two states",
+                    step.id
+                );
+                states.push((state, directory));
+            }
+        }
+    }
+    assert_eq!(states.len(), 3);
+    // The run steps share the states of the check steps, so a `--check-only` run leaves them warm.
+    assert_eq!(
+        step("run-vector-add").state_suffix(),
+        step("build").state_suffix()
+    );
+    assert_eq!(
+        step("run-vector-add-no-cfg").state_suffix(),
+        step("E3").state_suffix()
+    );
 }
 
 #[test]

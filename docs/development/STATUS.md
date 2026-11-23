@@ -1100,6 +1100,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       validated by spirv-val. The builder's last map runs skipped the GPU lock and name no adapter; the merge gate's
       890M Gpu suite is their evidence. Vec4/Mat4 and nested structs follow after s2a2 (D254). Opus review: merge after
       fixes; fixed, re-checked (merge).
+    - m14.dualsplit (gates): `check-dual --runs-only` runs only the example runs that open an adapter, in the target
+      directories `--check-only` leaves warm, which now also builds the run binaries in exactly their states (one
+      directory per build state: `dual`, `dual-nocfg`, `dual-native`, so no step flips another's cache). Runs-only
+      prints any cargo `Compiling` line, so a compile under the GPU lock is visible. check-only about 40-67 s outside
+      the lock, runs-only 10-12 s under it. Opus review: merge after fixes; fixed, re-checked (merge).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

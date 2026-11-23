@@ -1,0 +1,15 @@
+[package]
+name = "graph-overhead"
+description = "The host-side cost of executing an N-node staged graph, per step, on an unchanged graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+gust = { package = "gust-compute", path = "../../crates/gust" }
+gust-wgpu = { package = "gust-compute-wgpu", path = "../../crates/gust-wgpu", features = ["slang-runtime"] }
+
+[lints]
+workspace = true

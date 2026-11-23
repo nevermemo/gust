@@ -1,9 +1,11 @@
 use crate::BufferPool;
 mod accessors;
 mod adapter;
+mod adopt;
 mod open;
 
 pub(crate) use adapter::*;
+pub use adopt::DeviceRequest;
 
 #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
 use crate::RouteEvent;
@@ -15,7 +17,8 @@ use std::sync::atomic::AtomicU64;
 
 pub(crate) static NEXT_DEVICE_ID: AtomicU64 = AtomicU64::new(1);
 
-/// A logical device selected without creating a window or presentation surface.
+/// A logical device selected without creating a window or presentation surface. GUST itself never touches a window,
+/// hence the name; a renderer that presents can still share the device with GUST ([`HeadlessDevice::adopt`]).
 ///
 /// Open one, create buffers on it, run a kernel and read the result back:
 ///

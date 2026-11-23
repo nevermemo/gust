@@ -1084,6 +1084,19 @@ numbers of this page are kept, so this section carries the number 5a.
   with a y or z extent are a follow-up. The host code that `render_wgpu_source` generates takes `element_count: u32`
   for a kernel with a one-dimensional workgroup (no y or z extent can be given to it) and `extent: [u32; 3]` for a
   kernel with a two- or three-dimensional workgroup; it checks no launch limit.
+- **A device shared with a renderer (m14.devshare.1, D247, D248).** `HeadlessDevice::adopt` wraps a device the caller
+  opened, so that a renderer presents from the device GUST runs on. Surface, adapter, device and queue must come from
+  one `wgpu::Instance`: a device from another instance given to `Surface::configure` panics inside wgpu-core, or
+  silently binds the surface to an unrelated device of the surface's own instance, and GUST cannot detect either. A
+  device GUST opened itself lives in a private instance and is never given to a surface. The adopted device keeps the
+  semantics of an opened one, with these differences: its limits are the device's own; an optional feature the caller
+  did not enable degrades (timestamps, coherent storage and `float32-filterable` report false, a linear sampler is
+  `Error::TextureFilter`, the SPIR-V route falls back to WGSL) and a capability whose feature is missing is
+  `Error::MissingFeatures`; GUST's blocking calls wait for every submission on the queue, including the renderer's;
+  an error scope the caller holds on the same thread also catches the errors of GUST's infallible paths; GUST never
+  calls `destroy`. Adopting one device twice makes two GUST devices whose buffers refuse to mix. `set_default_device`
+  makes the shared handle the default device, and refuses one that lacks a capability of the build
+  (`Error::DefaultDeviceCapability`). Evidence: Radeon 890M on Vulkan; the RTX 5090, DX12 and the browser are pending.
 
 ## 6. Atomics
 

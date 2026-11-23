@@ -309,7 +309,7 @@ impl DeviceOptions {
 }
 
 /// The wgpu features a capability needs.
-fn capability_features(capability: Capability) -> wgpu::Features {
+pub(crate) fn capability_features(capability: Capability) -> wgpu::Features {
     match capability {
         Capability::Subgroups => wgpu::Features::SUBGROUP,
         // `Capability` is `#[non_exhaustive]`: a capability this backend does not know has no feature to ask for, and
@@ -719,6 +719,16 @@ mod native_default {
         Ok(())
     }
 
+    pub(super) fn set_device(handle: DeviceHandle) -> Result<(), Error> {
+        let mut device = lock(&DEVICE);
+        if device.is_some() {
+            return Err(Error::DefaultDeviceOpened);
+        }
+        super::check_default_capabilities(&handle)?;
+        *device = Some(handle);
+        Ok(())
+    }
+
     pub(super) fn get() -> Result<DeviceHandle, Error> {
         let mut device = lock(&DEVICE);
         if let Some(device) = &*device {
@@ -750,12 +760,21 @@ mod web_default {
         Ok(())
     }
 
+    pub(super) fn set_device(handle: DeviceHandle) -> Result<(), Error> {
+        if DEVICE.with(|device| device.borrow().is_some()) {
+            return Err(Error::DefaultDeviceOpened);
+        }
+        super::check_default_capabilities(&handle)?;
+        DEVICE.with(|device| *device.borrow_mut() = Some(handle));
+        Ok(())
+    }
+
     pub(super) fn get() -> Result<DeviceHandle, Error> {
         DEVICE
             .with(|device| device.borrow().clone())
             .ok_or_else(|| {
                 Error::NoAdapter(
-                    "the default device is not open; await `default_device_async()` once first"
+                    "the default device is not open; await `default_device_async()` once, or call `set_default_device`, first"
                         .to_owned(),
                 )
             })
@@ -781,7 +800,8 @@ mod web_default {
 }
 
 /// Set the options of the default device. They apply to the first [`default_device`] (or
-/// [`default_device_async`]) of the process; after the device is open this is `Error::DefaultDeviceOpened`.
+/// [`default_device_async`]) of the process; after the device is open this is `Error::DefaultDeviceOpened`, and so it is
+/// after [`set_default_device`]. If [`set_default_device`] follows, the options are never used.
 ///
 /// ```
 /// use gust_wgpu::{DeviceOptions, Error, LimitsPolicy, default_device, set_default_options};
@@ -801,6 +821,66 @@ pub fn set_default_options(options: DeviceOptions) -> Result<(), Error> {
     return native_default::set_options(options);
     #[cfg(target_arch = "wasm32")]
     return web_default::set_options(options);
+}
+
+/// The first capability of `required` that `held` lacks, as the refusal of [`set_default_device`] naming `adapter`.
+fn missing_default_capability(
+    held: &[Capability],
+    required: &[Capability],
+    adapter: &str,
+) -> Result<(), Error> {
+    match required
+        .iter()
+        .find(|capability| !held.contains(capability))
+    {
+        None => Ok(()),
+        Some(&capability) => Err(Error::DefaultDeviceCapability {
+            capability,
+            adapter: adapter.to_owned(),
+        }),
+    }
+}
+
+/// Refuse a default device that lacks a capability this build was compiled for.
+fn check_default_capabilities(device: &HeadlessDevice) -> Result<(), Error> {
+    missing_default_capability(
+        device.capabilities(),
+        gust::capability::enabled(),
+        &device.adapter_info().name,
+    )
+}
+
+/// Make `device` the process's default device, the one `default_device()` returns and the element-wise map calls,
+/// `par_for!` and `GpuVec::from_slice` run on, instead of opening a second device beside the one your renderer
+/// shares with GUST (see [`HeadlessDevice::adopt`]).
+///
+/// | Case | Result |
+/// | --- | --- |
+/// | a default device exists (opened or set) | `Error::DefaultDeviceOpened` |
+/// | [`set_default_options`], then this | accepted; the options are never used |
+/// | this, then [`set_default_options`] | `Error::DefaultDeviceOpened` |
+/// | the device lacks a capability of [`gust::capability::enabled`] | `Error::DefaultDeviceCapability` |
+///
+/// A `+subgroups` build therefore needs a device adopted with `gust::capability::enabled()`: a device adopted with
+/// `&[]` is refused here, because the calls that take no device cannot name another one. On `wasm32`, when a
+/// [`default_device_async`] open is in flight, whichever lands first is kept: a set that lands first wins and the
+/// opened device is dropped, a set that lands second is `Error::DefaultDeviceOpened`.
+///
+/// ```no_run
+/// use gust_wgpu::{DeviceHandle, Error, HeadlessDevice, default_device, set_default_device};
+///
+/// # fn share(device: HeadlessDevice) -> Result<(), Error> {
+/// let handle = DeviceHandle::new(device);
+/// set_default_device(DeviceHandle::clone(&handle))?;
+/// assert_eq!(default_device()?.id(), handle.id());
+/// # Ok(())
+/// # }
+/// ```
+pub fn set_default_device(device: DeviceHandle) -> Result<(), Error> {
+    #[cfg(not(target_arch = "wasm32"))]
+    return native_default::set_device(device);
+    #[cfg(target_arch = "wasm32")]
+    return web_default::set_device(device);
 }
 
 /// The process's default device, opened on the first call from the options of [`set_default_options`] (or
@@ -975,6 +1055,37 @@ mod tests {
         assert_eq!(
             required_capability_features(&[Capability::Subgroups], claims, adapter, false).unwrap(),
             wgpu::Features::SUBGROUP
+        );
+    }
+
+    /// The refusal of `set_default_device` on fake capability lists: it needs no adapter, so it runs everywhere.
+    #[test]
+    fn a_default_device_must_hold_every_capability_the_build_requires() {
+        let adapter = "Fake Adapter";
+        // Nothing required: any device is accepted, with or without capabilities.
+        assert!(missing_default_capability(&[], &[], adapter).is_ok());
+        assert!(missing_default_capability(&[Capability::Subgroups], &[], adapter).is_ok());
+        // The device holds what the build requires.
+        assert!(
+            missing_default_capability(&[Capability::Subgroups], &[Capability::Subgroups], adapter)
+                .is_ok()
+        );
+        // A device adopted with `&[]` under a `+subgroups` build is refused, naming the capability and the adapter.
+        let error = missing_default_capability(&[], &[Capability::Subgroups], adapter)
+            .expect_err("a device without the capability");
+        match &error {
+            Error::DefaultDeviceCapability {
+                capability,
+                adapter: name,
+            } => {
+                assert_eq!(*capability, Capability::Subgroups);
+                assert_eq!(name, adapter);
+            }
+            other => panic!("expected DefaultDeviceCapability, got {other:?}"),
+        }
+        assert_eq!(
+            error.to_string(),
+            "the device given to `set_default_device` (adapter `Fake Adapter`) was not opened or adopted with the `subgroups` capability this build was compiled for; pass `gust::capability::enabled()`"
         );
     }
 

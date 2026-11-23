@@ -436,7 +436,13 @@ hand-outs, the returns and the idle bytes. `DeviceHandle` is the shared handle t
 with `DeviceOptions` (`#[non_exhaustive]`; `DeviceOptions::default()` and `with_backends`, `with_adapter`, `with_limits`
 and `with_features`; `features` asks for `float32-filterable` when the adapter offers it on native and for nothing on
 `wasm32`; slice mx.t2); `set_default_options` applies to the first `default_device()` and is
-`Error::DefaultDeviceOpened` after that.
+`Error::DefaultDeviceOpened` after that. A renderer that presents from the device GUST runs on opens the device itself,
+in its own `wgpu::Instance`, with the features and limits of `DeviceOptions::device_request` (which the open also uses,
+so there is one source of truth; `crates/gust-wgpu/src/headless/adopt.rs`), and hands it over with
+`HeadlessDevice::adopt` (m14.devshare.1, D247, D248). `set_default_device` installs the shared handle as the default
+device (a handle that lacks a capability of the build is `Error::DefaultDeviceCapability`), and `gust_wgpu::wgpu`
+re-exports the wgpu the handles come from. The window example `examples/window-share` is a workspace of its own,
+built only by `cargo xtask check-window-example`.
 
 ### `gust-algo`
 

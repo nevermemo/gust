@@ -132,7 +132,7 @@ use completion::Completion;
 use completion::blocking::block_on_mapping;
 pub use device::{
     AdapterChoice, DeviceHandle, DeviceOptions, FeaturesPolicy, LimitsPolicy, default_device,
-    default_device_async, set_default_options,
+    default_device_async, set_default_device, set_default_options,
 };
 pub use dispatch::*;
 pub use error::Error;
@@ -146,6 +146,9 @@ pub(crate) use readback::*;
 pub use texture::{GpuSampler, GpuSamplerBinding, GpuTexture2d};
 pub(crate) use typed_call::*;
 pub use vec::GpuVec;
+/// The `wgpu` this crate is built against, so that a renderer names the same copy, with the same features, as the
+/// handles it shares with GUST (see [`HeadlessDevice::adopt`]).
+pub use wgpu;
 
 // A build holds one target (D21): this crate is the GPU runtime, so a build under `GUST_PROFILE=cpu` stops here with
 // a compile error (E0080) that names the profile. Under `dev`, `native` and `web` this does nothing.

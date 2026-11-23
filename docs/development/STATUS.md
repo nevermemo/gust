@@ -1010,6 +1010,19 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       files (52 tests before and after). Gates on the Radeon 890M (lane and merge gate, the full check-precompiled,
       check-artifacts, check-gallery and check-difftest included). RTX 5090: owed (quiet window 2026-11-22, D250):
       none beyond the head run. Opus review: merge after fixes; fixed.
+    - m14.devshare1 (D247, D248; group 2, step A): a renderer can share GUST's device. `DeviceOptions::
+      device_request` returns the features and limits GUST would ask for (`DeviceRequest`, the one source the open
+      also uses); `HeadlessDevice::adopt` takes a caller's adapter, device and queue with the capabilities to check
+      (`MissingFeatures`, `AdapterMismatch`, `MissingCapability`; it never changes the caller's device);
+      `set_default_device` installs a device as the default before first use (`DefaultDeviceOpened` after,
+      `DefaultDeviceCapability` for a device that lacks a default capability); `gust_wgpu::wgpu` is re-exported.
+      `examples/window-share` (its own workspace, one wgpu version) presents 60 frames to a window from an adopted
+      device and exits non-zero on a deadline; `cargo xtask check-window-example` builds and lints it and CI runs it.
+      Tests 1-7 of the plan on the Radeon 890M (test 2 a hand-written oracle; the real-pair case of test 5 is opt-in,
+      `GUST_DEVSHARE_REAL_PAIR=1`), and the default-capability refusal under `dev+subgroups`. The window run printed
+      `GUST_OK frames=60` on the 890M. Browser adoption is not claimed (slice 1w). `GPU_SUITE_PIN` 604 over 65.
+      RTX 5090: owed (quiet window 2026-11-22, D250): the Gpu suite, the window run, test 5's real pair and
+      presentation on DX12. Opus review: merge after fixes; fixed (two rounds).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

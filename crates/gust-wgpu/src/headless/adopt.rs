@@ -70,16 +70,17 @@ impl HeadlessDevice {
     /// Not async, and available on `wasm32`. Open the device with the features and limits of
     /// [`DeviceOptions::device_request`], ORed with your own.
     ///
-    /// Refused: an adapter that is not the device's ([`Error::AdapterMismatch`], by comparing
-    /// `device.adapter_info()` with `adapter.get_info()`), and a device that lacks the features a capability needs
-    /// ([`Error::MissingFeatures`]; on `wasm32` any non-empty capability set, as no capability can be requested there).
-    /// A capability with no feature on this backend is [`Error::MissingCapability`] (D142). Nothing else is refused. The limits are the device's own (`device.limits()`; a kernel beyond them is
-    /// [`Error::DeviceLimit`] at launch, and [`with_limits`](Self::with_limits) still lowers them). Optional features
-    /// the device lacks are not errors, and each has a reporting accessor: [`supports_gpu_timestamps`](Self::supports_gpu_timestamps),
-    /// [`supports_coherent_storage`](Self::supports_coherent_storage) and [`float32_filterable`](Self::float32_filterable)
-    /// are false, a linear sampler is [`Error::TextureFilter`], and the SPIR-V route falls back to WGSL. Extra features
-    /// and higher limits on the device are accepted and ignored. The backend is not checked either; adoption has
-    /// evidence on Vulkan only (the browser path is not claimed yet).
+    /// Refused: an adapter that is not the device's ([`Error::AdapterMismatch`], by comparing `device.adapter_info()`
+    /// with `adapter.get_info()`), and a device that lacks the features a capability needs ([`Error::MissingFeatures`];
+    /// on `wasm32` any non-empty capability set, as no capability can be requested there). A capability with no feature
+    /// on this backend is [`Error::MissingCapability`] (D142). Nothing else is refused. The limits are the device's own
+    /// (`device.limits()`; a kernel beyond them is [`Error::DeviceLimit`] at launch, and
+    /// [`with_limits`](Self::with_limits) still lowers them). Optional features the device lacks are not errors, and
+    /// each has a reporting accessor: [`supports_gpu_timestamps`](Self::supports_gpu_timestamps),
+    /// [`supports_coherent_storage`](Self::supports_coherent_storage) and
+    /// [`float32_filterable`](Self::float32_filterable) are false, a linear sampler is [`Error::TextureFilter`], and
+    /// the SPIR-V route falls back to WGSL. Extra features and higher limits on the device are accepted and ignored.
+    /// The backend is not checked either; adoption has evidence on Vulkan only (the browser path is not claimed yet).
     ///
     /// # Sharing a device
     ///

@@ -85,17 +85,14 @@ impl App {
         let request = options
             .device_request(&adapter)
             .map_err(|error| format!("device_request: {error}"))?;
-        let (device, queue) = pollster::block_on(
-            adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("window-share device"),
-                required_features: request.features
-                    | (adapter.features() & wgpu::Features::FLOAT32_BLENDABLE),
-                required_limits: request
-                    .limits
-                    .or_better_values_from(&wgpu::Limits::default()),
-                ..Default::default()
-            }),
-        )
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("window-share device"),
+            required_features: request.features
+                | (adapter.features() & wgpu::Features::FLOAT32_BLENDABLE),
+            // GUST's limits as they are; a renderer with needs of its own would raise them here.
+            required_limits: request.limits,
+            ..Default::default()
+        }))
         .map_err(|error| format!("could not open the device: {error}"))?;
         let gust = HeadlessDevice::adopt(
             &adapter,
@@ -235,6 +232,14 @@ fn pick_adapter(
 }
 
 impl ApplicationHandler for App {
+    /// The deadline holds even if no redraw is ever delivered (a minimized or never-shown window).
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.failure.is_none() && self.frames < FRAMES && self.started.elapsed() > DEADLINE {
+            self.failure = Some(format!("only {} frames in {DEADLINE:?}", self.frames));
+            event_loop.exit();
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.gpu.is_some() {
             return;

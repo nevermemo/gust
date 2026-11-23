@@ -239,7 +239,7 @@ jobs:
 
   window-example:
     # Compile only (m14.devshare.1): `examples/window-share` is a workspace of its own with winit, so no other job
-    # builds it. `check-window-example` formats it and builds it with `--locked`; nothing is run (a window needs a display
+    # builds it. `check-window-example` formats it, builds it with `--locked` and runs clippy; nothing is run (a window needs a display
     # and an adapter; the run is manual and prints `GUST_OK frames=60`). Its kernel needs the pinned Slang at build time,
     # installed as in the `slang` job. Not a required check, and not part of `verify`, `check-fast` or `check-full`.
     runs-on: ubuntu-latest

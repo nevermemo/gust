@@ -306,6 +306,7 @@ fn an_adapter_that_is_not_the_devices_is_an_adapter_mismatch() {
         );
         return;
     }
+    // Enumeration order, not "the 890M, then the 5090": which card is which depends on the machine. The log names both.
     let (first, second) = (adapters[0].clone(), adapters[1].clone());
     println!(
         "real pair: adapter given to adopt: {}, adapter of the device: {}",

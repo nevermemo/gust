@@ -1189,9 +1189,14 @@ pub(crate) struct GpuSuitePin {
 /// decoding, JSON rows, the bit-for-bit diff), one `no_run` doc test, and the new test file `tests/inspect.rs` with
 /// seven GPU tests, which adds one `test result:` line. Updated by count; the merge gate's full Gpu suite on the RTX
 /// 5090 checks it.
+///
+/// Slice m14.devshare.1: 591 over 61 became 604 over 65. The device-sharing slice adds new test files and library
+/// unit tests (the coordinator measured 603 over 64 on the Radeon 890M at lane commit 90aadb2), and its fix round adds
+/// `tests/device_share_default_opened.rs` (one test, one `test result:` line). Checked by a full Gpu suite run on the
+/// Radeon 890M (lane).
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 591,
-    result_lines: 61,
+    passed: 604,
+    result_lines: 65,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu
@@ -1290,7 +1295,11 @@ fn check_pinned_counts(
 /// tests each must pass (m8.w2). The whole suite is pinned by [`GPU_SUITE_PIN`] under `dev` only; a profile run is one
 /// target, so its count is pinned here. Adding or removing a test of a listed target changes its entry in the same commit,
 /// and a target that is not listed cannot be run under a profile.
-pub(crate) const GPU_TARGET_PINS: [(&str, u64); 2] = [("capabilities", 6), ("subgroup", 17)];
+pub(crate) const GPU_TARGET_PINS: [(&str, u64); 3] = [
+    ("capabilities", 6),
+    ("subgroup", 17),
+    ("device_share_default", 1),
+];
 
 /// The cargo call of one gust-wgpu test target ([`GPU_TARGET_PINS`]). `--show-output` makes the harness print the
 /// output of the passing tests too, which is where [`BUILD_CAPABILITIES_TARGET`] reports the capabilities of the build.

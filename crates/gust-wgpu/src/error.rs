@@ -747,12 +747,17 @@ impl fmt::Display for Error {
                 needed_by,
             } => write!(
                 formatter,
-                "the device on `{adapter}` lacks {}, needed by {needed_by}; request the features of `DeviceOptions::device_request` when opening it",
+                "the device on `{adapter}` lacks {}, needed by {needed_by}; {}",
                 features
                     .iter_names()
                     .map(|(name, _)| name)
                     .collect::<Vec<_>>()
                     .join(", "),
+                if cfg!(target_arch = "wasm32") {
+                    "a browser device cannot be asked for these features: adopt with an empty capability set"
+                } else {
+                    "request the features of `DeviceOptions::device_request` when opening it"
+                },
             ),
             Self::AdapterMismatch {
                 adapter,

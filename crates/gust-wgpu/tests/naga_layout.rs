@@ -1012,12 +1012,14 @@ impl Job {
     }
 }
 
-/// Runs every job on up to four threads (each compile is a process of its own in a directory of its own, and the
-/// other test files already compile in parallel), in the order of `jobs`; every failure is reported, not the first.
+/// Runs every job on half the hardware threads, at least four and at most eight (each compile is a process of its own
+/// in a directory of its own; cargo runs the test binaries one after another, and the machine is shared), in the
+/// order of `jobs`; every failure is reported, not the first.
 fn compile_all(jobs: Vec<Job>) -> Vec<Case> {
     let next = std::sync::atomic::AtomicUsize::new(0);
     let done = std::sync::Mutex::new(Vec::new());
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(4));
+    let threads =
+        std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(4, 8).min(n.get()));
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| {

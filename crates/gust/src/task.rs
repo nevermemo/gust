@@ -14,7 +14,7 @@
 //!
 //! # What `submit` costs on the queue
 //!
-//! The generated code builds the kernel's [`Call`](crate::Call) (`run::call_extent`) and nothing else about the
+//! The generated code builds the kernel's [`Call`] (`run::call_extent`) and nothing else about the
 //! submission: [`submit_and_read`] asks the device's `MapHost::start_read` to make the output buffer, run that call
 //! and start the read-back. The default of that method is two device calls (the dispatch, then the read-back copy when
 //! the returned future is first polled); the GPU device overrides it to record the dispatch, the clear of a recycled

@@ -27,8 +27,9 @@
 //! (the bytes between two elements) and `elementType` (any type, an array or a struct included), beside the `size`,
 //! `alignment` and `stride` every type has. The helper writes it only when an array occurs in a buffer element, so every
 //! other document keeps its schema and its bytes, and the reader refuses an `array` in a document of schema 3 or below
-//! with the old message. It is read into [`ReflectedTypeKind::Array`], and a host [`TypeLayoutKind::Array`] is checked
-//! against it (m9.r2b): the count, the element stride and the element type, recursively, beside the size, alignment and
+//! with the old message. It is read into [`ReflectedTypeKind::Array`], and a host
+//! [`TypeLayoutKind::Array`](crate::TypeLayoutKind::Array) is checked against it (m9.r2b): the count, the element
+//! stride and the element type, recursively, beside the size, alignment and
 //! stride of the array itself.
 //!
 //! # Where the CLI gate would sit

@@ -162,9 +162,7 @@ fn split_launch(
         &bindings,
     );
     match device.dispatch_batch(&[launch]) {
-        Err(Error::DeviceLimit { limit, .. }) => println!(
-            "{SPLIT_REFUSED_PREFIX}{limit}"
-        ),
+        Err(Error::DeviceLimit { limit, .. }) => println!("{SPLIT_REFUSED_PREFIX}{limit}"),
         Err(other) => {
             return Err(format!(
                 "a split launch without a split artifact or a compiler failed with {other}, not the DeviceLimit refusal"

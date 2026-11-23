@@ -118,13 +118,13 @@ const UNIT: [Step; 26] = [
         "--skip",
         "slang::compile",
         "--skip",
-        "reflect::compile_reflected",
+        "reflect::compile::compile_reflected",
         "--skip",
-        "reflect::CompiledReflection",
+        "reflect::model::CompiledReflection",
         "--skip",
-        "reflect::CleanCompilation",
+        "reflect::compile::CleanCompilation",
         "--skip",
-        "reflect::reflect",
+        "reflect::compile::reflect",
         "--skip",
         "artifact::Verified",
     ]),
@@ -254,13 +254,13 @@ fn doc_tests_run_where_their_resources_exist() {
         "--skip",
         "slang::compile",
         "--skip",
-        "reflect::compile_reflected",
+        "reflect::compile::compile_reflected",
         "--skip",
-        "reflect::CompiledReflection",
+        "reflect::model::CompiledReflection",
         "--skip",
-        "reflect::CleanCompilation",
+        "reflect::compile::CleanCompilation",
         "--skip",
-        "reflect::reflect",
+        "reflect::compile::reflect",
         "--skip",
         "artifact::Verified",
     ]);
@@ -2043,4 +2043,67 @@ fn gpu_software_runs_the_subgroup_targets_under_the_profile() {
         step_text(&job, "Collect the evidence").contains("gpu-subgroups.log"),
         "the log is kept"
     );
+}
+
+/// Whether `path` (`module::item`) names an item that the file of its module (`<module>.rs` or `<module>/mod.rs` under
+/// `crates/gust/src`) declares as a fn, struct, enum, trait or type with exactly that name.
+fn skip_path_names_an_item(path: &str) -> bool {
+    let (module, item) = path.rsplit_once("::").expect("a path-shaped skip entry");
+    let base = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../crates/gust/src")
+        .join(module.replace("::", "/"));
+    [base.with_extension("rs"), base.join("mod.rs")]
+        .iter()
+        .filter_map(|file| std::fs::read_to_string(file).ok())
+        .any(|text| {
+            ["fn ", "struct ", "enum ", "trait ", "type "]
+                .iter()
+                .any(|kind| {
+                    text.match_indices(&format!("{kind}{item}"))
+                        .any(|(at, found)| {
+                            !text[at + found.len()..]
+                                .starts_with(|next: char| next.is_alphanumeric() || next == '_')
+                        })
+                })
+        })
+}
+
+/// Every `--skip` path of the tool-free doc-test step names an item of `crates/gust` (a stale one skips nothing and
+/// lets a helper-launching doc test run on the `unit` runner, as the m13.splitr module move did). The check is exact
+/// on the item name, and it fails on a step with no `--` or with a different number of entries than `--skip` flags.
+#[test]
+fn doc_test_skip_paths_name_items_of_the_crate() {
+    let Step::CountedCargo(args) = super::CORE_DOC_TESTS_TOOL_FREE else {
+        panic!("CORE_DOC_TESTS_TOOL_FREE is a counted cargo step");
+    };
+    assert!(args.contains(&"--"), "the step passes filters after `--`");
+    let paths: Vec<&str> = args
+        .windows(2)
+        .filter(|pair| pair[0] == "--skip")
+        .map(|pair| pair[1])
+        .collect();
+    assert_eq!(
+        paths.len(),
+        args.iter().filter(|arg| **arg == "--skip").count()
+    );
+    assert_eq!(paths.len(), 6, "the six skip entries of the tool-free step");
+    for path in paths {
+        assert!(
+            skip_path_names_an_item(path),
+            "skip entry `{path}` names no item in crates/gust/src"
+        );
+    }
+    // The pre-split paths, and a prefix of a real name, must be refused by the same check.
+    for stale in [
+        "reflect::compile_reflected",
+        "reflect::CompiledReflection",
+        "reflect::CleanCompilation",
+        "reflect::reflect",
+        "slang::compil",
+    ] {
+        assert!(
+            !skip_path_names_an_item(stale),
+            "`{stale}` must not name an item"
+        );
+    }
 }

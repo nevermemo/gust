@@ -88,8 +88,8 @@ impl HeadlessDevice {
     ///
     /// Calls that submit on their own account, one submission each (a test pins every one named here):
     /// [`submit_batch`](Self::submit_batch) and the typed `dispatch`/`submit` built on it, which make none for a
-    /// batch with no work; [`dispatch_batch_timed`](Self::dispatch_batch_timed);
-    /// [`write_typed_buffer_timed`](Self::write_typed_buffer_timed); [`read_typed_buffer`](Self::read_typed_buffer)
+    /// batch with no work; `dispatch_batch_timed`;
+    /// `write_typed_buffer_timed`; `read_typed_buffer`
     /// and `GpuVec::to_vec`; and a pooled buffer handed out recycled and zeroed (`GpuVec::zeroed_on`, the clear is a
     /// submission of its own). The other submitting calls of this crate (pool growth, texture and inspect
     /// read-backs, `execute_graph`) count through the same wrapper. [`submit_batch_read`](Self::submit_batch_read)

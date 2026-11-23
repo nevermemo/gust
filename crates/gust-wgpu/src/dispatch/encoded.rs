@@ -72,7 +72,7 @@ impl HeadlessDevice {
     /// - **GUST submits on its own account** in these calls, each counted by
     ///   [`gust_submissions`](Self::gust_submissions), which names them: [`submit_batch`](Self::submit_batch) and the
     ///   typed `submit` and `dispatch` built on it, [`submit_batch_read`](Self::submit_batch_read),
-    ///   [`dispatch_batch_timed`](Self::dispatch_batch_timed), every read-back (the inspect read-back included),
+    ///   `dispatch_batch_timed`, every read-back (the inspect read-back included),
     ///   `write_typed_buffer_timed`, the deprecated `dispatch_f32` and `dispatch_u32`, a recycled zeroed buffer (the
     ///   clear), a `GpuPool` growth and `execute_graph`. Each lands after what you submitted before
     ///   it. `encode_batch` and `EncodedJob::submitted` submit nothing.
@@ -87,7 +87,7 @@ impl HeadlessDevice {
     ///
     /// There is no timed form of this call, on purpose: the timestamp profiler's lock is held from the recording to the
     /// read of the result, which cannot span a submission that you make. Use
-    /// [`dispatch_batch_timed`](Self::dispatch_batch_timed) when you need GPU time of a batch; it submits itself.
+    /// `dispatch_batch_timed` when you need GPU time of a batch; it submits itself.
     pub fn encode_batch<'device>(
         &'device self,
         encoder: &mut wgpu::CommandEncoder,

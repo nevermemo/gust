@@ -164,7 +164,7 @@ impl<'a, T> Inspector<'a, T> {
         self.decode(&bytes)
     }
 
-    /// [`Inspector::table`] without blocking: the async readback of `read_typed_buffer_async`, which on native
+    /// `Inspector::table` without blocking: the async readback of `read_typed_buffer_async`, which on native
     /// completes only while something polls the device.
     pub async fn table_async(&self) -> Result<InspectTable, InspectError> {
         let pending = self.start_readback()?;
@@ -178,7 +178,7 @@ impl<'a, T> Inspector<'a, T> {
         self.table().map(|table| InspectStats::of(&table))
     }
 
-    /// [`Inspector::stats`] without blocking.
+    /// `Inspector::stats` without blocking.
     pub async fn stats_async(&self) -> Result<InspectStats, InspectError> {
         self.table_async()
             .await
@@ -195,7 +195,7 @@ impl<'a, T> Inspector<'a, T> {
         })
     }
 
-    /// [`Inspector::snapshot`] without blocking.
+    /// `Inspector::snapshot` without blocking.
     pub async fn snapshot_async(&self) -> Result<Snapshot<'a, T>, InspectError> {
         self.table_async().await.map(|table| Snapshot {
             buffer: self.buffer,
@@ -209,7 +209,7 @@ impl<'a, T> Inspector<'a, T> {
         self.table().map(|table| table.to_json())
     }
 
-    /// [`Inspector::to_json`] without blocking.
+    /// `Inspector::to_json` without blocking.
     pub async fn to_json_async(&self) -> Result<String, InspectError> {
         self.table_async().await.map(|table| table.to_json())
     }

@@ -7,7 +7,7 @@
         {
           "file": "443ab55c412cf3e5.wgsl",
           "format": "wgsl",
-          "reflection_sha256": "fdba862b05c3fa6d6d86519ac721eb55b4159a0136cd9eae1347b3c5cbbad7b9",
+          "reflection_sha256": "69d013d536fc8b264598690480e8f678df0a5f009b6c946322941ea8390e08b7",
           "sha256": "10308234e9752d1b46d8e8ce62ed8bfe6e28e814e967dfd0889176f5bdb2c537"
         }
       ],
@@ -22,7 +22,7 @@
         {
           "file": "449b5edaa482c750.wgsl",
           "format": "wgsl",
-          "reflection_sha256": "4d03d43f29dfa0358ed120424f7ebed822880cb56e666c2b3b900cbfb1e14321",
+          "reflection_sha256": "1839ce6ef290ab862b4665ad7707358f9d60545ec309e0bf747b35ae5119c14e",
           "sha256": "b92c7e3e6f879caa7a6a86c7d26906a6cc2c1e0df64cdfb16231c1f0124d527e"
         }
       ],
@@ -38,7 +38,7 @@
         {
           "file": "7a31d859726fa88f.wgsl",
           "format": "wgsl",
-          "reflection_sha256": "7ae025561d903a99a20d9bd9c8fe0b2c271bb6dc9b91110921dcd1681142f450",
+          "reflection_sha256": "9fa5fe2907041eec7d79c64f63f3d87a56d8515edfdff808abaf5187cf46699b",
           "sha256": "2665aa3e4314197d437f2d2ecd777247326ee416f6a79bf181dd797ffc9643cf"
         }
       ],
@@ -53,7 +53,7 @@
         {
           "file": "e1a6a90357570cc1.wgsl",
           "format": "wgsl",
-          "reflection_sha256": "7491b55e73a9e0bb66c196c4f4268aa4ee4d7705e565317680015bd56f27cbae",
+          "reflection_sha256": "43bae74a2a97b11fdd34f8dc332f638a1789c364cbbd029270970ffd54205e4c",
           "sha256": "122a73fbfd90066e54de0d0d9d230125e12a5c17f0fabf4094b5cb72285a2fd0"
         }
       ],
@@ -69,7 +69,7 @@
         {
           "file": "f456c511b99696af.wgsl",
           "format": "wgsl",
-          "reflection_sha256": "0b7da6abfb747c48b1ae855693f6db07c53b83682a0e12ab220d524946ee8745",
+          "reflection_sha256": "b31f6c3bdf5530d0a2961178033a94e017746c9815dbe1944655f18467988f58",
           "sha256": "49280e467f7929bf88c97623878f1b75932e4f6855eed81ec627a4213b5cdf21"
         }
       ],
@@ -84,7 +84,7 @@
         {
           "file": "fe86c9a1a4c898c0.wgsl",
           "format": "wgsl",
-          "reflection_sha256": "4fe257a2f78852c89c2af7036d034560ed513c0d0a04e50b9517805cacab488e",
+          "reflection_sha256": "11bc785b69f324f285fa540f303226e73d28be554a9ab8a451dd3ce1d462e1a9",
           "sha256": "bcb240f5f68488c59b9cf75ab13c6f62cdb73264d26f3b6398054ab55c674e4d"
         }
       ],
@@ -95,5 +95,5 @@
     }
   ],
   "schema": 4,
-  "slang": "2026.22"
+  "slang": "2026.22.1"
 }

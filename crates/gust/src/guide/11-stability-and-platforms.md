@@ -60,7 +60,7 @@ minimum is outside the promise, and a patch release caps the range when the reso
 
 ## The Slang pin
 
-The version of Slang that GUST drives is pinned (2026.22 in the 0.2 line), and `cargo gust slang install` downloads
+The version of Slang that GUST drives is pinned (2026.22.1 in the 0.2 line), and `cargo gust slang install` downloads
 exactly that version and checks its SHA-256. A new pin is a minor release when it changes the key of a committed
 artifact, and the CHANGELOG entry names the pinned version. In the 0.2 line, `cargo gust check` refuses artifacts
 built with the previous pin (2026.20) until `cargo gust build` is run again.

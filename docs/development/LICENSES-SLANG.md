@@ -1,9 +1,45 @@
-# Slang bundle licences (pinned 2026.22)
+# Slang bundle licences (pinned 2026.22.1)
 
 This file records the audits of the Slang releases that GUST's pinned-Slang manager downloads (D46, M4 slices m4.f and
 m4.r). GUST does not redistribute the bundle: the manager fetches it from Slang's GitHub release into the user's cache,
 keeps the archive layout, and leaves the bundle's own `LICENSE`, `LICENSES/` and `third-party-notices/` beside the
 binaries. `cargo gust slang install` lists them when it finishes, and `cargo gust doctor` points to them.
+
+The 2026.22.1 archives were audited on 2026-11-23 (slice m13.pin2221; every date in this file is UTC), each against the
+2026.22 archive of the same platform. Every archive was downloaded from the official release `v2026.22.1` of
+`shader-slang/slang` (the 2026.22 archives again, for the comparison) and its SHA-256 was compared with both the digest that
+the GitHub release API reports for the asset and the table in `crates/cargo-gust/src/slang.rs` before it was extracted or
+read; all six matched. What was run: file listings of all six archives and their differences; byte comparisons of
+`LICENSE`, `README.md`, `LICENSES/`, `third-party-notices/` and `share/slang/agent-skills/` between the two versions on
+each platform; a string scan for "GNU General Public" and "GNU Lesser" of every regular file in `bin/` and `lib/` of the
+three 2026.22.1 archives (Windows 56 files, Linux 56, macOS 64; no hit in any); and the `mi_malloc` counts of the compiler
+library. Nothing from any archive was run in this audit. Rule (D46): permissive licences are accepted with their notices
+kept; a copyleft or non-commercial component stops the download path for that platform.
+
+| Archive | SHA-256 | Verdict |
+| --- | --- | --- |
+| `slang-2026.22.1-windows-x86_64.zip` | `e72344f7b0323cec8b039c534caaf4680e7ba629489fc796ea4c7f7adb7deb68` | accept |
+| `slang-2026.22.1-linux-x86_64.tar.gz` | `37156099ebaabf62cd92522eba55eb93b8663e65ea3be618ce015d9a8edda6bc` | accept |
+| `slang-2026.22.1-macos-aarch64.tar.gz` | `1d5370a07be409b94685ea4bd84b7bd191313a6b1fae8795f451009bc0dc3fd7` | accept |
+
+## What changed from 2026.22 to 2026.22.1
+
+- `LICENSE`, `README.md`, `LICENSES/` and `third-party-notices/` are byte for byte the 2026.22 ones on all three
+  platforms. `share/slang/agent-skills/` has the same files; its `PROVENANCE.json` differs only in `slangVersion`.
+- The archive listings grow by one line on each platform (Windows 5219 to 5220, Linux 5220 to 5221, macOS 5229 to
+  5230): the documentation file `share/doc/slang/design/source-organization.md`. Nothing was removed, and no executable,
+  library or licence file was added.
+- `mi_malloc` strings, counted as before (`grep -a -o mi_malloc`): Windows `slang-compiler.dll` 14 in both versions
+  (`mi_decl_export` 163 in 2026.22.1), Linux `libslang-compiler.so` 2 and macOS `libslang-compiler.dylib` 2, with six
+  `SLANG_ENABLE_MIMALLOC` occurrences each on Linux and macOS. As in the 2026.22 audit, this is a reading from strings
+  only, and the open item stands: no one has checked the Linux and macOS libraries for linked mimalloc symbols.
+- The 14 listing names that contain "optix" per platform are documentation test sources, as in 2026.22; no `optix.h` is in
+  any listing (from the listings, not from running anything).
+
+Verdict: all three 2026.22.1 archives are accepted under D46 (permissive licences with notices, no copyleft or
+non-commercial component added, and no licence text or notice changed).
+
+## Earlier pin: 2026.22 (audited 2026-11-12, slice m9.p)
 
 The 2026.22 archives were audited on 2026-11-12 (slice m9.p, round 2; every date in this file is UTC), each against the
 2026.21 archive of the same platform, by the method of the 2026.21 audit below. Every archive was downloaded from the

@@ -512,8 +512,8 @@ fn a_cache_that_holds_slang_or_is_missing_is_refused() {
     let parent = environment(&[("PATH", &path)]);
     assert_eq!(slang_home_problem(&root.join("home")), None);
     // A fake cache with an installed Slang in it (`<home>/<version>/bin/slangc`).
-    fs::create_dir_all(root.join("cache/2026.22/bin")).unwrap();
-    write(&root.join("cache/2026.22/bin"), "slangc", "");
+    fs::create_dir_all(root.join("cache/2026.22.1/bin")).unwrap();
+    write(&root.join("cache/2026.22.1/bin"), "slangc", "");
     let problem = slang_home_problem(&root.join("cache")).unwrap();
     assert!(problem.contains("is not empty"), "{problem}");
     let error = no_slang_environment(

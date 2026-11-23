@@ -7,6 +7,9 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- The pinned Slang is now 2026.22.1 (`cargo gust slang install` fetches it; run `cargo gust build` again for a committed
+  artifact set). Two emitted differences: float and signed-integer vector negation is `-a` instead of `0 - a`, and a
+  constant out-of-range float-to-integer cast folds at compile time to another value than before (m13.pin2221).
 - Renamed the attribute: `#[gpu]` on an inline module is now `#[gpu_module]` and `#[gpu]` on a free function (the
   element-wise map) is now `#[gpu_fn]`, with the same arguments (`route`, `crate`) and behaviour. `gust::gpu` is no
   longer exported and there is no alias. `#[gpu_module]` on a function, or `#[gpu_fn]` on a module or any other item,

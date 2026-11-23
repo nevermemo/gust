@@ -5812,7 +5812,7 @@ fn names_in_fn(source: &str, signature: &str) -> Vec<String> {
 
 #[test]
 fn every_method_table_name_has_an_emitter_arm_and_is_in_the_accepted_text() {
-    let validate = include_str!("../validate/mod.rs");
+    let validate = include_str!("../validate/tables.rs");
     let math = include_str!("../math_types.rs");
     let accepted = translate(&kernel_with_body("let y = x.count_zeros();"))
         .unwrap_err()
@@ -10559,7 +10559,7 @@ fn the_constants_round_trip_as_f32() {
 
 #[test]
 fn every_scalar_math_name_has_an_emitter_arm_and_is_in_the_accepted_text() {
-    let validate = include_str!("../validate/mod.rs");
+    let validate = include_str!("../validate/tables.rs");
     let accepted = translate(&kernel_with_body("let y = x.count_zeros();"))
         .unwrap_err()
         .to_string();

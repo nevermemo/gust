@@ -1399,7 +1399,7 @@ mod tests {
             || file.ends_with("src/tests/routes.rs")
             || file.ends_with("src/tests/consts.rs")
             || file.ends_with("src/tests/pad.rs")
-            || file.ends_with("src/validate/mod.rs")
+            || file.ends_with("src/validate/tests.rs")
             || file.ends_with("src/validate/limits.rs")
             || file.ends_with("src/validate/classify/tests.rs")
     }

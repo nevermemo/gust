@@ -65,7 +65,7 @@ const TARGETS: [&str; 2] = ["gpu", "cpu"];
 /// `#[gpu_module]` expansion of a module with a route tag compares it with the profile `gust` was built for and fails
 /// the compilation of that crate when they differ, because the driver reads its command line and `GUST_PROFILE` only,
 /// and the build also sees `build.target`, `CARGO_BUILD_TARGET` and custom profiles. The name is the macro's
-/// (`ROUTED_PROFILE_VARIABLE` in `crates/gust-macros/src/expand/mod.rs`; the macro cannot depend on this tool, so a
+/// (`ROUTED_PROFILE_VARIABLE` in `crates/gust-macros/src/expand/routing.rs`; the macro cannot depend on this tool, so a
 /// test reads the source); it does not start with `GUST_ROUTE__`, so it is neither a route variable nor reported by
 /// [`RoutePlan::notes`].
 pub(crate) const ROUTED_PROFILE_VARIABLE: &str = "GUST_ROUTED_PROFILE";
@@ -2291,12 +2291,12 @@ mod tests {
         // The name is the one the macro reads; the macro cannot depend on this tool, so the source is read.
         assert_eq!(ROUTED_PROFILE_VARIABLE, "GUST_ROUTED_PROFILE");
         let macro_source =
-            include_str!("../../gust-macros/src/expand/mod.rs").replace("\r\n", "\n");
+            include_str!("../../gust-macros/src/expand/routing.rs").replace("\r\n", "\n");
         assert!(
             macro_source.contains(&format!(
                 "pub(crate) const ROUTED_PROFILE_VARIABLE: &str = \"{ROUTED_PROFILE_VARIABLE}\";"
             )),
-            "crates/gust-macros/src/expand/mod.rs reads another variable"
+            "crates/gust-macros/src/expand/routing.rs reads another variable"
         );
         let cargo = OsString::from("cargo");
         let arguments = ["-p".to_owned(), "app".to_owned()];

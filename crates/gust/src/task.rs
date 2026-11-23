@@ -14,38 +14,50 @@
 //!
 //! # What `submit` costs on the queue
 //!
-//! Every runtime call that [`Task::submit`] makes goes through [`submit_and_read`] and nowhere else, so the number of
-//! queue submissions is that one function's business and the generated code does not depend on it. Today it is a
-//! known gap against decision D251 (one command encoder, one `queue.submit` per submit): the dispatch is one
-//! submission, and the read-back copy is a second one that is made when the returned future is first polled. A zeroed
-//! output that the device's buffer pool recycles adds a third, the pool's own clear. So a task makes 2 submissions
-//! with a fresh output and 3 with a recycled one ([`SUBMISSIONS_FRESH_OUTPUT`], [`SUBMISSIONS_RECYCLED_OUTPUT`]); an
-//! in-place task uploads its target (no clear) and makes 2. Slice m14.encb adds an encode-plus-read-back entry point
-//! to the GPU backend, and the swap is a change to [`submit_and_read`] alone.
+//! The generated code builds the kernel's [`Call`](crate::Call) (`run::call_extent`) and nothing else about the
+//! submission: [`submit_and_read`] makes the output buffer, submits that call, and starts the read-back. So the
+//! dispatch and the read-back are made in that one function, and decision D251 (one command encoder, one `queue.submit`
+//! per submit) is a change to it alone. Today it is a known gap against D251, counted from the code paths and not
+//! measured on a queue: the dispatch is one submission (`Run::submit_call`), and the read-back copy is a second one
+//! (`MapHost::readback_async`) that is made when the returned future is first polled. A zeroed output that the
+//! device's buffer pool recycles adds a third, the pool's own clear (`MapHost::zeroed`), which is also made in
+//! [`submit_and_read`]. So a task makes 2 submissions with a fresh output and 3 with a recycled one; an in-place task
+//! uploads its target with `write_buffer` (no clear) and makes 2. The uploads of the captures and the extent record are
+//! made by the generated code and are `write_buffer` calls and buffer creations, not submissions, with one corner: an
+//! empty captured slice on a recycled pool buffer is cleared in a submission of its own.
+//!
+//! The test `a_task_starts_one_dispatch_and_one_read_back` of this file counts the two calls that submit, on a device
+//! that records its calls, through [`submit_and_read`] itself. Slice m14.encb replaces that count by a counter on the
+//! device's queue, asserted on a GPU.
 
 use core::future::Future;
 use core::ops::Deref;
 use core::pin::Pin;
 
 use crate::map::{Error, MapHost};
-use crate::{GpuPod, Kernel, Run};
+use crate::{Call, GpuPod, Kernel, Run};
 
 /// The asynchronous read-back of a task: a future of the task's result, a `Vec<T>` for a task that has a result type and
 /// `()` for an in-place task (its target slice then holds the result). It is the future that `map_async` returns today,
-/// boxed so that it owns the device handle and the output buffer; `Ticket<T>` (slice s2a2) wraps it.
+/// boxed so that it owns the device handle and the output buffer.
 ///
 /// The read-back copy is submitted when the future is first polled. On a native GPU device the future completes only
 /// while something polls it (each poll polls the device once), so a caller without a runtime polls it in a loop;
 /// [`Task::dispatch`] does that.
+///
+/// # What it is and what it holds
+///
+/// - It is not `Send`: it can be polled on the thread that made it only.
+/// - It keeps everything the task's list names (the host slices and the in-place target) borrowed until the read-back
+///   ends, for one lifetime `'t`, although the slices were uploaded when the task was submitted. A read-only slice
+///   can be used again only after the future is ready or dropped.
+/// - Dropping it before the first poll starts no read-back and leaves nothing running on the host. The dispatch was
+///   submitted by [`Task::submit`] and is not undone: on a GPU device it still runs and its result is discarded. An
+///   in-place target is written only when the future resolves, so it is left exactly as it was before the task. The
+///   output buffer is released with the future.
+///
+/// A later slice (the ticket of the batch) may replace this type; it is not a stable surface.
 pub type Pending<'t, O> = Pin<Box<dyn Future<Output = Result<O, Error>> + 't>>;
-
-/// The queue submissions of one [`Task::submit`] whose output is a fresh buffer of the device: the dispatch and the
-/// read-back copy.
-pub const SUBMISSIONS_FRESH_OUTPUT: u32 = 2;
-
-/// The queue submissions of one [`Task::submit`] whose output buffer the device's pool recycled: the pool's clear, the
-/// dispatch and the read-back copy.
-pub const SUBMISSIONS_RECYCLED_OUTPUT: u32 = 3;
 
 /// A stage written at the call site, ready to run once.
 ///
@@ -72,8 +84,8 @@ impl<'t, O> Task<'t, O> {
     /// target.
     ///
     /// **Known gap (decision D251).** This is two queue submissions, the dispatch and the copy, three when the
-    /// device recycles the output buffer ([`SUBMISSIONS_FRESH_OUTPUT`], [`SUBMISSIONS_RECYCLED_OUTPUT`]); the design
-    /// asks for one. All of it goes through [`submit_and_read`], which slice m14.encb changes.
+    /// device recycles the output buffer (see the module's section on the queue); the design asks for one. The
+    /// submissions are made in [`submit_and_read`], which slice m14.encb changes.
     ///
     /// An empty shape runs nothing and returns an empty result.
     ///
@@ -175,28 +187,31 @@ pub trait TaskDevice<K: Kernel, const N: usize>: MapHost + Run<K, N> {}
 
 impl<D: MapHost + Run<K, N>, K: Kernel, const N: usize> TaskDevice<K, N> for D {}
 
-/// The one place where a task reaches the runtime (see the module's section on the queue).
+/// The one place where a task reaches the queue (see the module's section on it).
 ///
-/// It makes the output buffer (`sink`), calls `launch` with the device and that buffer (the generated closure binds
-/// the kernel's resources, submits the dispatch and drops its job), and returns the read-back as a future that owns the
-/// device handle and the buffer. Macro support.
+/// It makes the output buffer (`sink`), asks `build` for the kernel's [`Call`] over the context and that buffer (the
+/// generated closure binds the kernel's resources and does nothing else), submits the call, and returns the read-back
+/// as a future that owns the device handle and the buffer. `context` is whatever the call borrows besides the output
+/// (the extent record and the uploaded captures): it is moved in so that the call can borrow it. Macro support.
 ///
 /// # Errors
 ///
 /// A length above `u32::MAX` is [`Error::TooLong`]; the device's failures are [`Error::Device`] (or the device's
-/// own variant, see [`MapHost::map_error`]); `launch`'s error is returned as it is.
+/// own variant, see [`MapHost::map_error`]).
 #[doc(hidden)]
-pub fn submit_and_read<'t, H, D, T, S>(
+pub fn submit_and_read<'t, H, D, T, S, C, K, const N: usize>(
     device: H,
     sink: S,
-    launch: impl FnOnce(&D, &D::Buffer<T>) -> Result<(), Error>,
+    context: C,
+    build: impl for<'o> FnOnce(&'o C, &'o D::Buffer<T>) -> Call<'o, D, K, N>,
 ) -> Result<Pending<'t, S::Done>, Error>
 where
     H: Deref<Target = D> + 't,
-    D: MapHost + 't,
+    D: TaskDevice<K, N> + 't,
     D::Buffer<T>: 't,
     T: GpuPod + 't,
     S: Sink<'t, T>,
+    K: Kernel,
 {
     let len = u32::try_from(sink.count()).map_err(|_| Error::TooLong { len: sink.count() })?;
     let output = match sink.initial() {
@@ -204,7 +219,12 @@ where
         None => device.zeroed::<T>(len),
     }
     .map_err(D::map_error)?;
-    launch(&device, &output)?;
+    {
+        let call = build(&context, &output);
+        <D as Run<K, N>>::submit_call(&*device, &call)
+            .map(core::mem::drop)
+            .map_err(D::map_error)?;
+    }
     Ok(Box::pin(async move {
         let values = device.readback_async(&output).await.map_err(D::map_error)?;
         Ok(sink.finish(values))
@@ -223,15 +243,39 @@ pub fn nothing_to_run<'t, T: GpuPod, S: Sink<'t, T>>(sink: S) -> Pending<'t, S::
 mod tests {
     use core::cell::RefCell;
     use core::convert::Infallible;
+    use std::rc::Rc;
 
     use crate::cpu::{CpuBinding, CpuBuffer, CpuDevice, CpuJob};
-    use crate::{Access, LengthRule, Resource, kind};
-    use crate::{Device, GpuPod, TypedDevice};
+    use crate::{
+        Access, Arg, Device, KernelDescriptor, LengthRule, ParameterDescriptor, ParameterKind,
+        Resource, TypedDevice, kind,
+    };
 
     use super::*;
 
-    /// A CPU buffer that belongs to the spy.
-    struct SpyBuffer<T: GpuPod>(CpuBuffer<T>);
+    /// A kernel with one storage parameter: all the spy needs of one.
+    struct Probe;
+
+    impl Kernel for Probe {
+        const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new(
+            "m",
+            "probe",
+            "m_probe",
+            [1, 1, 1],
+            &[ParameterDescriptor {
+                name: "out",
+                rust_type: "f32",
+                kind: ParameterKind::Storage,
+                access: Access::ReadWrite,
+                resource_layout: None,
+                binding: None,
+            }],
+            "",
+        );
+    }
+
+    /// A CPU buffer that belongs to the spy, shared so that the spy's dispatch can write it.
+    struct SpyBuffer<T: GpuPod>(Rc<CpuBuffer<T>>);
 
     impl<T: GpuPod> Resource for SpyBuffer<T> {
         type Element = T;
@@ -243,10 +287,13 @@ mod tests {
         }
     }
 
-    /// A CPU device that writes down the calls a task makes on it, in order.
+    /// A CPU device that writes down the calls a task makes on it, in order, and runs a script when it is asked to
+    /// dispatch. A call that submits to a queue is `dispatch` (`Run::submit_call`) and `copy` (`readback_async`).
     struct Spy {
         inner: CpuDevice,
         log: RefCell<Vec<&'static str>>,
+        script: RefCell<Option<Box<dyn FnOnce()>>>,
+        fail: bool,
     }
 
     impl Spy {
@@ -254,11 +301,28 @@ mod tests {
             Self {
                 inner: CpuDevice::new(),
                 log: RefCell::new(Vec::new()),
+                script: RefCell::new(None),
+                fail: false,
             }
         }
 
         fn note(&self, what: &'static str) {
             self.log.borrow_mut().push(what);
+        }
+
+        /// What the next dispatch does to the device's memory.
+        fn on_dispatch(&self, script: impl FnOnce() + 'static) {
+            *self.script.borrow_mut() = Some(Box::new(script));
+        }
+
+        /// The calls made so far that submit to a queue on a GPU device.
+        fn submitting_calls(&self) -> Vec<&'static str> {
+            self.log
+                .borrow()
+                .iter()
+                .copied()
+                .filter(|call| matches!(*call, "dispatch" | "copy"))
+                .collect()
         }
     }
 
@@ -276,17 +340,35 @@ mod tests {
         type Binding<'r> = <CpuDevice as TypedDevice>::Binding<'r>;
     }
 
+    impl Run<Probe, 1> for Spy {
+        fn submit_call(&self, call: &Call<'_, Self, Probe, 1>) -> Result<CpuJob, Self::Error> {
+            self.note("dispatch");
+            assert_eq!(call.kernel().name, "probe");
+            if self.fail {
+                return Err(crate::cpu::Error::Borrowed { parameter: "out" });
+            }
+            if let Some(script) = self.script.borrow_mut().take() {
+                script();
+            }
+            Ok(CpuJob::complete())
+        }
+    }
+
     impl MapHost for Spy {
         type Buffer<T: GpuPod> = SpyBuffer<T>;
 
         fn upload<T: GpuPod>(&self, values: &[T]) -> Result<SpyBuffer<T>, Self::Error> {
             self.note("upload");
-            self.inner.upload(values).map(SpyBuffer)
+            self.inner
+                .upload(values)
+                .map(|buffer| SpyBuffer(Rc::new(buffer)))
         }
 
         fn zeroed<T: GpuPod>(&self, len: u32) -> Result<SpyBuffer<T>, Self::Error> {
             self.note("zeroed");
-            self.inner.zeroed(len).map(SpyBuffer)
+            self.inner
+                .zeroed(len)
+                .map(|buffer| SpyBuffer(Rc::new(buffer)))
         }
 
         fn readback<T: GpuPod>(&self, buffer: &SpyBuffer<T>) -> Result<Vec<T>, Self::Error> {
@@ -303,34 +385,30 @@ mod tests {
         }
     }
 
-    /// Every runtime call of a task goes through `submit_and_read`: with a fresh output the device sees exactly the
-    /// output's creation, the launch (one submission) and the read-back copy (one submission, made when the future is
-    /// polled), which is the documented 2 (3 when the pool recycles the output and clears it itself).
+    /// The call of the probe kernel over `output`, as the generated closure builds one.
+    fn probe_call<'o, T: GpuPod>(len: u32, output: &'o SpyBuffer<T>) -> Call<'o, Spy, Probe, 1> {
+        Call::new(len, [Arg::from(output).bind(Access::ReadWrite)])
+    }
+
+    /// What `submit_and_read` asks of a device for one task, counted on a device that records its calls: the output is
+    /// created, and then exactly one call that submits is made by `submit` (the dispatch) and exactly one by the first
+    /// poll (the read-back copy). On a GPU device `zeroed` adds the pool's clear when it recycles a buffer, which this
+    /// device has no pool for. The count is of calls through `submit_and_read`, not of `queue.submit`.
     #[test]
-    fn a_fresh_output_is_one_dispatch_and_one_copy() {
+    fn a_task_starts_one_dispatch_and_one_read_back() {
         let spy = Spy::new();
-        let launched = RefCell::new(0_u32);
-        let pending = submit_and_read(&spy, Fresh(3), |device: &Spy, output: &SpyBuffer<f32>| {
-            device.note("dispatch");
-            *launched.borrow_mut() += 1;
-            output.0.write(&[1.0, 2.0, 3.0]).map_err(Error::device)
+        let pending = submit_and_read(&spy, Fresh(3), (), |(): &(), output: &SpyBuffer<f32>| {
+            let out = Rc::clone(&output.0);
+            spy.on_dispatch(move || out.write(&[1.0, 2.0, 3.0]).unwrap());
+            probe_call(3, output)
         })
         .unwrap();
         // The dispatch is made before `submit` returns; the copy waits for the first poll.
         assert_eq!(*spy.log.borrow(), ["zeroed", "dispatch"]);
+        assert_eq!(spy.submitting_calls(), ["dispatch"]);
         assert_eq!(block_on(pending).unwrap(), [1.0, 2.0, 3.0]);
         assert_eq!(*spy.log.borrow(), ["zeroed", "dispatch", "copy"]);
-        assert_eq!(*launched.borrow(), 1);
-        // The submissions the device sees: the dispatch and the copy; the pool's clear is the third on a GPU device
-        // when it recycles the output (`zeroed` there), which this device has no pool for.
-        let seen = spy
-            .log
-            .borrow()
-            .iter()
-            .filter(|call| matches!(**call, "dispatch" | "copy"))
-            .count();
-        assert_eq!(u32::try_from(seen).unwrap(), SUBMISSIONS_FRESH_OUTPUT);
-        assert_eq!(SUBMISSIONS_RECYCLED_OUTPUT, SUBMISSIONS_FRESH_OUTPUT + 1);
+        assert_eq!(spy.submitting_calls(), ["dispatch", "copy"]);
     }
 
     #[test]
@@ -340,22 +418,67 @@ mod tests {
         let pending = submit_and_read(
             &spy,
             InPlace(&mut target),
-            |_: &Spy, output: &SpyBuffer<u32>| output.0.write(&[10, 20, 30]).map_err(Error::device),
+            (),
+            |(): &(), output: &SpyBuffer<u32>| {
+                let out = Rc::clone(&output.0);
+                spy.on_dispatch(move || out.write(&[10, 20, 30]).unwrap());
+                probe_call(3, output)
+            },
         )
         .unwrap();
-        assert_eq!(*spy.log.borrow(), ["upload"]);
+        assert_eq!(*spy.log.borrow(), ["upload", "dispatch"]);
         block_on(pending).unwrap();
         assert_eq!(target, [10, 20, 30]);
+        assert_eq!(spy.submitting_calls(), ["dispatch", "copy"]);
+    }
+
+    /// Dropping a `Pending` before its first poll: the dispatch was made, no read-back starts, and the in-place target
+    /// is as it was (it is written when the future resolves).
+    #[test]
+    fn a_pending_dropped_unpolled_leaves_an_in_place_target_unchanged() {
+        let spy = Spy::new();
+        let mut target = [1_u32, 2, 3];
+        let pending = submit_and_read(
+            &spy,
+            InPlace(&mut target),
+            (),
+            |(): &(), output: &SpyBuffer<u32>| {
+                let out = Rc::clone(&output.0);
+                spy.on_dispatch(move || out.write(&[10, 20, 30]).unwrap());
+                probe_call(3, output)
+            },
+        )
+        .unwrap();
+        drop(pending);
+        assert_eq!(target, [1, 2, 3]);
+        assert_eq!(*spy.log.borrow(), ["upload", "dispatch"]);
     }
 
     #[test]
-    fn a_launch_error_is_returned_and_nothing_is_read() {
+    fn a_context_is_borrowed_by_the_call_and_given_back_by_reference() {
         let spy = Spy::new();
-        let result = submit_and_read(&spy, Fresh(2), |_: &Spy, _: &SpyBuffer<u32>| {
-            Err(Error::Empty)
+        let pending = submit_and_read(
+            &spy,
+            Fresh(2),
+            7_u32,
+            |seven: &u32, output: &SpyBuffer<u32>| {
+                assert_eq!(*seven, 7);
+                probe_call(2, output)
+            },
+        )
+        .unwrap();
+        assert_eq!(block_on(pending).unwrap(), [0, 0]);
+    }
+
+    #[test]
+    fn a_dispatch_error_is_returned_and_nothing_is_read() {
+        let mut spy = Spy::new();
+        spy.fail = true;
+        let result = submit_and_read(&spy, Fresh(2), (), |(): &(), output: &SpyBuffer<u32>| {
+            probe_call(2, output)
         });
-        assert!(matches!(result, Err(Error::Empty)));
-        assert_eq!(*spy.log.borrow(), ["zeroed"]);
+        assert!(matches!(result, Err(Error::Device(_))));
+        assert_eq!(*spy.log.borrow(), ["zeroed", "dispatch"]);
     }
 
     #[test]

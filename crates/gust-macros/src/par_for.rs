@@ -65,6 +65,8 @@ struct Names {
     axes: [&'static str; 3],
     /// The prefix of the padding fields.
     pad: &'static str,
+    /// The result buffer of a `gpu_task!` stage with a result type.
+    out: &'static str,
 }
 
 const FINAL: Names = Names {
@@ -73,6 +75,7 @@ const FINAL: Names = Names {
     record: "__GustExtent",
     axes: ["__gust_ex", "__gust_ey", "__gust_ez"],
     pad: "__gust_pad",
+    out: crate::task::OUT,
 };
 
 const VIEW: Names = Names {
@@ -81,6 +84,7 @@ const VIEW: Names = Names {
     record: "ParForExtent",
     axes: ["par_for_ex", "par_for_ey", "par_for_ez"],
     pad: "par_for_pad",
+    out: "par_for_task_out",
 };
 
 /// The field names of a dispatch id.
@@ -92,7 +96,7 @@ const PLACEHOLDER: &str = "__gust_pf";
 /// What the keyword options in front of the loop say.
 #[derive(Default)]
 pub(crate) struct Options {
-    pub(crate) workgroup: Option<[u32; 3]>,
+    workgroup: Option<[u32; 3]>,
     pub(crate) on: Option<syn::Expr>,
     /// The hidden `descriptor;` form, which expands to the kernel's descriptor and launches nothing. It is for the
     /// follow-up that runs the naga gate over `par_for!` kernels (the fixtures are skipped there until then); it is
@@ -273,7 +277,7 @@ pub(crate) fn parse_options(input: ParseStream) -> syn::Result<Options> {
 /// The element of a buffer binding: its type as the kernel spells it and as host code spells it.
 #[derive(Clone)]
 pub(crate) struct Element {
-    pub(crate) kernel: TokenStream,
+    kernel: TokenStream,
     pub(crate) host: TokenStream,
 }
 
@@ -309,7 +313,7 @@ pub(crate) struct Binding {
 pub(crate) struct Plan {
     pub(crate) options: Options,
     /// The loop variable of each axis (`None` for `_`); the length is the number of dimensions.
-    pub(crate) axes: Vec<Option<syn::Ident>>,
+    axes: Vec<Option<syn::Ident>>,
     extents: Vec<syn::Expr>,
     workgroup: [u32; 3],
     pub(crate) bindings: Vec<Binding>,
@@ -324,10 +328,7 @@ fn form(tokens: impl quote::ToTokens, message: impl std::fmt::Display) -> syn::E
     diagnostics::error(Code::ParForForm, tokens, message)
 }
 
-pub(crate) fn binding_error(
-    tokens: impl quote::ToTokens,
-    message: impl std::fmt::Display,
-) -> syn::Error {
+fn binding_error(tokens: impl quote::ToTokens, message: impl std::fmt::Display) -> syn::Error {
     diagnostics::error(Code::ParForBinding, tokens, message)
 }
 
@@ -467,7 +468,7 @@ fn gpu_vec_element(path: &syn::TypePath) -> Option<&syn::Type> {
     }
 }
 
-pub(crate) fn classify(name: &syn::Ident, ty: &syn::Type, profile: Profile) -> syn::Result<Kind> {
+fn classify(name: &syn::Ident, ty: &syn::Type, profile: Profile) -> syn::Result<Kind> {
     let what = format!("the binding `{}`", name.unraw());
     let unsupported = || {
         binding_error(
@@ -610,6 +611,16 @@ impl Plan {
             })
     }
 
+    /// The name the kernel gives the binding `name` in the module built with `names`: a stage's result buffer is
+    /// named by `names` (the view has a name the validator accepts, the expanded module a reserved one).
+    fn kernel_name(&self, name: &syn::Ident, names: &Names) -> syn::Ident {
+        if self.task.is_some() && name == crate::task::OUT {
+            format_ident!("{}", names.out)
+        } else {
+            name.clone()
+        }
+    }
+
     /// The kernel module named `ident`, with the names of `names`.
     fn module(&self, ident: &syn::Ident, names: &Names) -> syn::ItemMod {
         let gid = format_ident!("{}", names.gid);
@@ -633,6 +644,7 @@ impl Plan {
         let pads = (0..(4 - words % 4) % 4).map(|index| format_ident!("{}{}", names.pad, index));
         let parameters = self.buffers().map(|(name, mutable, element, _)| {
             let element = &element.kernel;
+            let name = self.kernel_name(name, names);
             if mutable {
                 quote!(mut #name: RWStructuredBuffer<#element>)
             } else {
@@ -662,7 +674,9 @@ impl Plan {
         });
         let [x, y, z] = self.workgroup.map(Literal::u32_unsuffixed);
         let statements: Vec<syn::Stmt> = match &self.task {
-            Some(task) => task.statements(&gid, &ext, &axis_fields[0]),
+            Some(task) => {
+                task.statements(&gid, &ext, &axis_fields[0], &format_ident!("{}", names.out))
+            }
             None => self.body.stmts.clone(),
         };
         let [ex, ey, ez] = &axis_fields[..] else {

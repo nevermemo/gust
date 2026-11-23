@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! gust::gpu_task!(n, [a: &[f32], k: f32], |i| -> f32 { a[i] * k })           // 1-D, a result of type f32
-//! gust::gpu_task!((w, h), [a: &[u32]], |x, y| -> u32 { a[x + y * w] })        // 2-D, the shape is a (u32, u32)
+//! gust::gpu_task!((w, h), [a: &[u32]], |x, y| -> u32 { a[x] + y })           // 2-D, the shape is a (u32, u32)
 //! gust::gpu_task!(&mut data, [data: &mut [f32]], |i| { data[i] = data[i] * 0.5; })  // in place, no result type
 //! ```
 //!
@@ -16,9 +16,12 @@
 //! the content hash of the lowered body, and the export record is the `par_for!` one (no new kind).
 //!
 //! The diagnostics of the E10xx family that this slice owns are raised here, on the closure's own tokens, before the
-//! generator sees the body: E1001 (not one of the forms), E1002 (a capture whose element type is not visible), E1003
-//! (a write to a capture), E1007 (an index of the wrong rank), E1008 (an in-place stage reading its target at another
-//! index than its own). Everything else about the body is the validator's, with its own codes.
+//! generator sees the body: E1001 (not one of the forms), E1002 (a capture whose element type is not visible, or a name
+//! the capture list does not have), E1003 (a write to a capture), E1007 (an index of the wrong rank), E1008 (an in-place
+//! stage reading or writing its target at another index than its own, or binding its own index again). Everything else
+//! about the body is the validator's, with its own codes.
+
+use std::collections::HashSet;
 
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote};
@@ -35,8 +38,10 @@ use crate::{
     par_for::{Binding, Kind, Options, Plan, Raw, RawBinding, Scalar, parse_options},
 };
 
-/// The name of the result buffer of a stage that has a result type: an ordinary binding of the generated kernel.
-const OUT: &str = "task_out";
+/// The name of the result buffer of a stage that has a result type: an ordinary binding of the plan, under a reserved
+/// `__gust_` name that no capture can have (the validated view of the kernel gives it a name of its own, see
+/// `par_for::Names`).
+pub(crate) const OUT: &str = "__gust_task_out";
 
 fn form(tokens: impl ToTokens, message: impl std::fmt::Display) -> syn::Error {
     diagnostics::error(Code::TaskForm, tokens, message)
@@ -114,17 +119,17 @@ pub(crate) struct TaskPlan {
 
 impl TaskPlan {
     /// The statements of the kernel body: the closure's own, then (a free stage) the write of its result at the
-    /// invocation's own index. `gid`, `ext` and `width` are the names the module being built gives the dispatch id, the
-    /// extent record and its first extent.
+    /// invocation's own index. `gid`, `ext`, `width` and `out` are the names the module being built gives the dispatch
+    /// id, the extent record, its first extent and the result buffer.
     pub(crate) fn statements(
         &self,
         gid: &syn::Ident,
         ext: &syn::Ident,
         width: &syn::Ident,
+        out: &syn::Ident,
     ) -> Vec<syn::Stmt> {
         let mut statements = self.stmts.clone();
         if let Some(tail) = &self.tail {
-            let out = format_ident!("{}", OUT);
             let index = if self.rank == 1 {
                 quote!(#gid.x)
             } else {
@@ -168,8 +173,9 @@ impl TaskPlan {
         }
     }
 
-    /// The host function inside the generated module: it uploads the inputs, records the extent, and hands the launch
-    /// and the read-back to `gust::task::submit_and_read`, which is the only place a task reaches the runtime.
+    /// The host function inside the generated module: it uploads the inputs, records the extent, and hands the closure
+    /// that builds the kernel's `Call` to `gust::task::submit_and_read`, which makes the output buffer and every queue
+    /// submission of the task (the dispatch and the read-back).
     pub(crate) fn host_items(&self, plan: &Plan) -> TokenStream {
         let record = format_ident!("{}", "__GustExtent");
         let count = proc_macro2::Literal::usize_unsuffixed(1 + plan.buffers().count());
@@ -259,6 +265,13 @@ impl TaskPlan {
         let bound: Vec<syn::Ident> = (0..plan.buffers().count())
             .map(|index| format_ident!("__gust_b{}", index))
             .collect();
+        // The uploaded captures (every buffer but the output), in the order of the kernel's parameters.
+        let inputs: Vec<syn::Ident> = plan
+            .buffers()
+            .zip(&bound)
+            .filter(|((name, ..), _)| **name != output)
+            .map(|(_, local)| local.clone())
+            .collect();
         let binds = plan
             .buffers()
             .zip(&bound)
@@ -274,8 +287,9 @@ impl TaskPlan {
             if *name == output {
                 quote!(::gust::Independent(__gust_out))
             } else {
+                // `local` is the reference the call's context gives back: the uploaded capture, borrowed.
                 quote! {
-                    ::gust::Independent(::gust::map::resource::<#element, __GustD, &[#element]>(&#local))
+                    ::gust::Independent(::gust::map::resource::<#element, __GustD, &[#element]>(#local))
                 }
             }
         });
@@ -355,10 +369,10 @@ impl TaskPlan {
                 ::gust::task::submit_and_read(
                     __gust_device,
                     #sink,
-                    |__gust_d: &__GustD, __gust_out: &<__GustD as ::gust::map::MapHost>::Buffer<#output_element>| {
-                        run::submit_extent(__gust_d, __gust_extent, &__gust_uniform, #(#resources,)*)
-                            .map(::core::mem::drop)
-                            .map_err(<__GustD as ::gust::map::MapHost>::map_error)
+                    (__gust_uniform, (#(#inputs,)*)),
+                    |__gust_context, __gust_out: &<__GustD as ::gust::map::MapHost>::Buffer<#output_element>| {
+                        let (__gust_uniform, (#(#inputs,)*)) = __gust_context;
+                        run::call_extent(__gust_extent, __gust_uniform, #(#resources,)*)
                     },
                 )
             }
@@ -461,6 +475,33 @@ fn is_name(expression: &syn::Expr, name: &syn::Ident) -> bool {
     }
 }
 
+/// The names that the body itself binds: a `let`, a `for`, a closure parameter and a `match` arm (a pattern), and the
+/// items declared in it. Every scope counts as one, so a name is "unknown" only when nothing in the body ever binds it.
+#[derive(Default)]
+struct Bound(HashSet<String>);
+
+impl<'ast> Visit<'ast> for Bound {
+    fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+        self.0.insert(pattern.ident.unraw().to_string());
+        syn::visit::visit_pat_ident(self, pattern);
+    }
+
+    fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+        self.0.insert(item.ident.unraw().to_string());
+        syn::visit::visit_item_const(self, item);
+    }
+
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        self.0.insert(item.ident.unraw().to_string());
+        syn::visit::visit_item_static(self, item);
+    }
+
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        self.0.insert(item.sig.ident.unraw().to_string());
+        syn::visit::visit_item_fn(self, item);
+    }
+}
+
 /// Reads the closure's tokens for the rules of the E10xx family; the first rule broken is the error.
 struct Rules<'a> {
     /// The names of the captures, read-only (host slices and scalars).
@@ -471,6 +512,9 @@ struct Rules<'a> {
     target: Option<&'a syn::Ident>,
     /// The closure's own index of an in-place stage.
     own: Option<&'a syn::Ident>,
+    /// The names a value path of the body may have: the closure's parameters, the list's entries and every name that a
+    /// pattern or an item of the body binds.
+    known: &'a HashSet<String>,
     error: Option<syn::Error>,
 }
 
@@ -496,6 +540,29 @@ impl Rules<'_> {
         self.views.iter().any(|view| view.unraw() == name.unraw())
     }
 
+    /// A value path of the body. A single name that is not a parameter, a capture or a local is a capture the list does
+    /// not have: the kernel sees nothing of the call site, so the entry is the only way to name it.
+    fn used(&mut self, path: &syn::ExprPath) {
+        let Some(ident) = path.path.get_ident().filter(|_| path.qself.is_none()) else {
+            return;
+        };
+        let name = ident.unraw().to_string();
+        if self.known.contains(&name)
+            || matches!(name.as_str(), "self" | "Self" | "super" | "crate")
+        {
+            return;
+        }
+        self.refuse(
+            Code::TaskCapture,
+            ident,
+            format!(
+                "`{name}` is used in the body, but a stage sees only its parameters and the entries of its capture \
+                 list: write the entry, `{name}: &[f32]` for a host slice or `{name}: f32` for a scalar (with the \
+                 type of `{name}`: `u32`, `i32`, `f32` or `bool`, or the element type of the slice)"
+            ),
+        );
+    }
+
     /// An assignment (or a compound one) to `place`.
     fn written(&mut self, place: &syn::Expr) {
         if let Some(name) = root_name(place).filter(|name| self.is_capture(name)) {
@@ -513,8 +580,33 @@ impl Rules<'_> {
 }
 
 impl<'ast> Visit<'ast> for Rules<'_> {
+    fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+        if let Some(own) = self.own.filter(|own| own.unraw() == pattern.ident.unraw()) {
+            self.refuse(
+                Code::TaskInPlaceRead,
+                &pattern.ident,
+                format!(
+                    "an in-place stage's own index `{0}` is not bound again in its body (a `let`, a `for`, a closure \
+                     parameter or a `match` arm named `{0}`): a read or a write of its target at a shifted index \
+                     would hide behind the name, so the GPU and the CPU twin would differ; give the new value another \
+                     name and index the target with `{0}`",
+                    own.unraw()
+                ),
+            );
+        }
+        syn::visit::visit_pat_ident(self, pattern);
+    }
+
     fn visit_expr(&mut self, expression: &'ast syn::Expr) {
         match expression {
+            // The callee of a call is a function of the dialect, not a value: only its arguments are names used.
+            syn::Expr::Call(call) if matches!(&*call.func, syn::Expr::Path(_)) => {
+                for argument in &call.args {
+                    self.visit_expr(argument);
+                }
+                return;
+            }
+            syn::Expr::Path(path) => self.used(path),
             syn::Expr::Assign(assign) => self.written(&assign.left),
             syn::Expr::Binary(binary) if is_compound_assignment(&binary.op) => {
                 self.written(&binary.left);
@@ -553,7 +645,7 @@ impl<'ast> Visit<'ast> for Rules<'_> {
                             Code::TaskInPlaceRead,
                             &index.index,
                             format!(
-                                "an in-place stage reads its target `{0}` only at its own index (`{0}[{1}]`): \
+                                "an in-place stage reads or writes its target `{0}` only at its own index (`{0}[{1}]`): \
                                  another element may be mid-write on the GPU while the CPU twin reads a settled \
                                  value, so the two would differ; read a neighbour from a second buffer",
                                 name.unraw(),
@@ -851,11 +943,25 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
         (Some(_), syn::Pat::Ident(ident)) => Some(&ident.ident),
         _ => None,
     };
+    let mut known = Bound::default();
+    for statement in &stmts {
+        known.visit_stmt(statement);
+    }
+    if let Some(tail) = &tail {
+        known.visit_expr(tail);
+    }
+    let mut known = known.0;
+    known.extend(list.iter().map(|entry| entry.name.unraw().to_string()));
+    known.extend(parameters.iter().filter_map(|axis| match axis {
+        syn::Pat::Ident(ident) => Some(ident.ident.unraw().to_string()),
+        _ => None,
+    }));
     let mut rules = Rules {
         captures: &captures,
         views: &views,
         target: target_name,
         own,
+        known: &known,
         error: None,
     };
     for statement in &stmts {

@@ -2016,11 +2016,11 @@ Fixture: `tests/ui/task-form`.
 Write instead: one of the forms above, for example `gpu_task!(n, [a: &[f32], k: f32], |i| -> f32 { a[i] * k })`.
 Decision: plan m14.s2, slice s2a1.
 
-### GUST-E1002 `gpu_task!` capture the macro cannot type
+### GUST-E1002 `gpu_task!` capture the macro cannot type, or a capture missing from the list
 
-Every capture is written in the list with its type, because a macro sees no types: a host slice `&[T]` of a buffer element type, or a scalar of the four types. The target of an in-place stage is a capture too, as `name: &mut [T]`; a target with no entry, or an entry that is not a `&mut` slice, is this error, and the message names the entry to write.
+Every capture is written in the list with its type, because a macro sees no types: a host slice `&[T]` of a buffer element type, or a scalar of the four types. The target of an in-place stage is a capture too, as `name: &mut [T]`; a target with no entry, or an entry that is not a `&mut` slice, is this error. So is a name that the body uses and that is not a closure parameter, a local of the body or an entry of the list (the kernel sees no variable of the call site, and without the entry the build would stop at rustc's "cannot find value"). The message names the entry to write.
 Reached through `#[gpu_module]`, raised by `gpu_task!` only (the function-like macro that shares the validator of `#[gpu_module]`).
-Rejected: `gpu_task!(&mut data, [], |i| { data[i] = 1u32; })`, `gpu_task!(n, [a: &[bool]], |i| -> u32 { 1u32 })`, `gpu_task!(n, [a: Vec<f32>], |i| -> f32 { 1.0 })`, `gpu_task!(n, [a: &[u64]], |i| -> u32 { 1u32 })`.
+Rejected: `gpu_task!(&mut data, [], |i| { data[i] = 1u32; })`, `gpu_task!(n, [k: f32], |i| -> f32 { a[i] * k })` (`a` is not in the list), `gpu_task!(n, [a: &[bool]], |i| -> u32 { 1u32 })`, `gpu_task!(n, [a: Vec<f32>], |i| -> f32 { 1.0 })`, `gpu_task!(n, [a: &[u64]], |i| -> u32 { 1u32 })`.
 Fixture: `tests/ui/task-capture`.
 Write instead: the entry with its element type, `data: &mut [u32]`.
 Decision: plan m14.s2, slice s2a1.
@@ -2043,11 +2043,11 @@ Fixture: `tests/ui/task-index-rank`.
 Write instead: index the slice with one value, computed from the invocation indices (`a[y * w + x]`).
 Decision: plan m14.s2, slice s2a1.
 
-### GUST-E1008 read of an in-place target away from its own index
+### GUST-E1008 read or write of an in-place target away from its own index
 
-An in-place stage runs its invocations in no defined order and in parallel, so it may read its target only at the invocation's own index (`data[i]` with `i` the closure's parameter): a read of another element races with the write of another invocation.
+An in-place stage runs its invocations in no defined order and in parallel, so it may read or write its target only at the invocation's own index (`data[i]` with `i` the closure's parameter): an access to another element races with the write of another invocation. The closure's parameter cannot be bound again in the body (a `let`, a `for` pattern, a closure parameter or a `match` arm named `i`), because the new `i` would hide a shifted index behind the name.
 Reached through `#[gpu_module]`, raised by `gpu_task!` only (the function-like macro that shares the validator of `#[gpu_module]`).
-Rejected: `data[i] = data[i + 1u32];` and `data[i] = data[0u32];`.
+Rejected: `data[i] = data[i + 1u32];`, `data[i + 1u32] = 1.0;`, `data[i] = data[0u32];`, `let i = i + 1u32; data[i] = 0.0;` and `for i in 0..4u32 { data[i] = 0.0; }`.
 Fixture: `tests/ui/task-in-place-read`.
-Write instead: read the neighbour from a copy passed as a host-slice capture (`prev: &[T]`), or use two stages.
+Write instead: read the neighbour from a copy passed as a host-slice capture (`prev: &[T]`), or use two stages; give a new value a name other than the closure's parameter.
 Decision: plan m14.s2, slice s2a1.

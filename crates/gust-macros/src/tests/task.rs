@@ -126,11 +126,11 @@ fn a_1d_stage_writes_its_tail_to_the_result_buffer_at_its_own_index() {
     // The kernel is `par_for!`'s: the extent record, the guard, the captures, then the result buffer last.
     assert!(slang.contains("struct __GustExtent"), "{slang}");
     assert!(
-        slang.contains("RWStructuredBuffer<float> task_out"),
+        slang.contains("RWStructuredBuffer<float> __gust_task_out"),
         "{slang}"
     );
     assert!(
-        slang.contains("task_out[__gust_gid.x] = (a[i] * k);"),
+        slang.contains("__gust_task_out[__gust_gid.x] = (a[i] * k);"),
         "{slang}"
     );
     let order = |needle: &str| {
@@ -138,7 +138,9 @@ fn a_1d_stage_writes_its_tail_to_the_result_buffer_at_its_own_index() {
             .find(needle)
             .unwrap_or_else(|| panic!("{needle} in {slang}"))
     };
-    assert!(order("StructuredBuffer<float> a") < order("RWStructuredBuffer<float> task_out"));
+    assert!(
+        order("StructuredBuffer<float> a") < order("RWStructuredBuffer<float> __gust_task_out")
+    );
 }
 
 #[test]
@@ -147,7 +149,7 @@ fn a_2d_stage_is_a_2d_launch_and_writes_row_major() {
     assert!(slang.contains("[numthreads(16, 16, 1)]"), "{slang}");
     assert!(
         slang.contains(
-            "task_out[((__gust_gid.y * __gust_ext.__gust_ex) + __gust_gid.x)] = (a[x] + y);"
+            "__gust_task_out[((__gust_gid.y * __gust_ext.__gust_ex) + __gust_gid.x)] = (a[x] + y);"
         ),
         "{slang}"
     );
@@ -209,19 +211,48 @@ fn bodies_that_lower_differently_get_different_module_names() {
 // ---- the host side ----
 
 #[test]
-fn the_host_function_submits_through_the_one_runtime_entry_point() {
+fn the_host_function_builds_the_call_and_submits_through_the_one_runtime_entry_point() {
     let scratch = Scratch::new("host");
     let text = expand(FREE_1D, &scratch, 1, Profile::Other);
-    // Every runtime call goes through `submit_and_read`; the generated code names neither the read-back nor a wait.
+    // The closure builds the `Call` and `submit_and_read` makes every submission: the host function names neither
+    // a submission (`submit_extent`, `submit_call`, `dispatch_extent`; the kernel's module defines them, the host
+    // function must not call them), nor the read-back, nor a wait.
+    let host = &text[text.find("fn __gust_task").expect(&text)..];
     assert!(
-        text.contains(":: gust :: task :: submit_and_read"),
-        "{text}"
+        host.contains(":: gust :: task :: submit_and_read"),
+        "{host}"
     );
-    assert!(!text.contains("readback"), "{text}");
-    assert!(!text.contains("to_vec_async"), "{text}");
+    assert!(host.contains("run :: call_extent"), "{host}");
+    for submission in [
+        "submit_extent",
+        "submit_call",
+        "dispatch_extent",
+        "dispatch_call",
+        "readback",
+        "to_vec_async",
+    ] {
+        assert!(!host.contains(submission), "{submission} in {host}");
+    }
     // A task runs on `wasm32` too: it has no `compile_error!` behind that target, unlike `par_for!`.
     assert!(!text.contains("blocks until the device is done"), "{text}");
     assert!(text.contains(":: gust :: task :: Task :: new"), "{text}");
+}
+
+/// The result buffer has a reserved name no capture can have, so a capture called `task_out` is an ordinary one.
+#[test]
+fn a_capture_named_task_out_does_not_collide_with_the_result_buffer() {
+    let slang = slang_of(
+        "n, [task_out: &[f32]], |i| -> f32 { task_out[i] }",
+        Profile::Other,
+    );
+    assert!(
+        slang.contains("StructuredBuffer<float> task_out"),
+        "{slang}"
+    );
+    assert!(
+        slang.contains("RWStructuredBuffer<float> __gust_task_out"),
+        "{slang}"
+    );
 }
 
 #[test]
@@ -314,6 +345,18 @@ fn a_capture_whose_element_type_the_macro_cannot_see_is_e1002_and_names_the_entr
         ("n, [a: &[bool]], |i| -> u32 { 1u32 }", "`a: &[u32]`"),
         ("n, [a: f64], |i| -> f32 { 1.0 }", "`a: &[f32]`"),
         ("n, [a: Vec<u32>], |i| -> f32 { 1.0 }", "`a: &[f32]`"),
+        // a name of the body that the list does not have: the entry to write is named, for a slice and a scalar
+        ("n, |i| -> f32 { a[i] }", "`a: &[f32]`"),
+        ("n, [k: f32], |i| -> f32 { a[i] * k }", "`a: &[f32]`"),
+        (
+            "n, [a: &[f32]], |i| -> f32 { a[i] * scale }",
+            "`scale: f32`",
+        ),
+        ("n, |i| -> u32 { n }", "`n: f32`"),
+        (
+            "&mut data, [data: &mut [f32]], |i| { data[i] = data[i] * k; }",
+            "`k: f32`",
+        ),
         // an in-place target with no entry, and one whose entry is read-only
         ("&mut data, |i| { data[i] = 1.0; }", "`data: &mut [f32]`"),
         (
@@ -325,6 +368,21 @@ fn a_capture_whose_element_type_the_macro_cannot_see_is_e1002_and_names_the_entr
         let scratch = Scratch::new("entry");
         let text = expand(input, &scratch, 1, Profile::Other);
         assert!(text.contains(entry), "{entry} not in {text}");
+    }
+}
+
+/// Names bound in the body, parameters, list entries and callees are not missing entries.
+#[test]
+fn names_the_body_binds_are_not_missing_list_entries() {
+    let scratch = Scratch::new("bound");
+    for input in [
+        "n, [a: &[f32], k: f32], |i| -> f32 { let v = a[i]; let w = v * k; w + v }",
+        "n, [a: &[f32]], |i| -> f32 { let mut s = 0.0; for j in 0u32..4u32 { s = s + a[j]; } s }",
+        "(w, h), [a: &[u32]], |x, y| -> u32 { a[x] + y }",
+        "n, [a: &[u32], k: u32], |_| -> u32 { k }",
+    ] {
+        let text = expand(input, &scratch, 1, Profile::Other);
+        assert!(!failed(&text), "{input}\n{text}");
     }
 }
 
@@ -380,6 +438,13 @@ fn a_read_of_the_in_place_target_at_another_index_is_e1008() {
         "&mut data, [data: &mut [f32]], |i| { data[i + 1u32] = 1.0; }",
         "&mut data, [data: &mut [f32]], |i| { data[0u32] = data[i]; }",
         "&mut data, [data: &mut [f32], p: &[u32]], |i| { data[i] = data[p[i]]; }",
+        // the own index bound again: a `let`, a `for`, a closure parameter and a `match` arm of that name hide a shifted
+        // index (read or write) behind it, so the two would differ
+        "&mut data, [data: &mut [f32]], |i| { let i = i + 1u32; data[i] = data[i] * 0.5; }",
+        "&mut data, [data: &mut [f32]], |i| { for i in 0u32..4u32 { data[i] = 0.0; } }",
+        "&mut data, [data: &mut [f32]], |i| { let f = |i| i + 1u32; data[f(i)] = 0.0; }",
+        "&mut data, [data: &mut [f32]], |i| { match i + 1u32 { i => { data[i] = 0.0; } } }",
+        "&mut data, [data: &mut [f32]], |i| { let (i, _) = (i + 1u32, 0u32); data[i] = 0.0; }",
     ] {
         rejected(input, Code::TaskInPlaceRead);
     }
@@ -392,6 +457,16 @@ fn a_read_of_the_in_place_target_at_another_index_is_e1008() {
         Profile::Other,
     );
     assert!(!failed(&text), "{text}");
+    // Another name for the closure's parameter is the same stage, and a new value under another name is not a
+    // rebinding of the index.
+    for input in [
+        "&mut data, [data: &mut [f32]], |k| { data[k] = data[k] * 0.5; }",
+        "&mut data, [data: &mut [f32]], |i| { let j = i + 1u32; data[i] = data[i] + 1.0; }",
+        "&mut data, [data: &mut [f32]], |i| { for step in 0u32..4u32 { data[i] = data[i] + 1.0; } }",
+    ] {
+        let text = expand(input, &scratch, 1, Profile::Other);
+        assert!(!failed(&text), "{input}\n{text}");
+    }
 }
 
 #[test]

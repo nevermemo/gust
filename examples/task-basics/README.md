@@ -13,5 +13,9 @@ All four run on the CPU twin (the tests) and on the GPU (`cargo run -p task-basi
 written from the rules (every value is exact in `f32`).
 
 Queue cost: today a `submit()` makes two queue submissions with a fresh output and three when the pool recycles a zeroed
-output (the pool clears it itself). That is a known gap against D251; the one-submission entry point is runtime work
-for slice m14.encb, and `gust::task::submit_and_read` is the one place that changes.
+output (the pool clears it itself). That is a known gap against D251, counted from the code paths of
+`gust::task::submit_and_read` and not measured on a queue. The generated code only builds the kernel's `Call`; the
+dispatch, the read-back and the output buffer are made in `submit_and_read`, so the one-submission entry point of slice
+m14.encb changes `crates/gust/src/task.rs` alone. (The uploads of the captures are `write_buffer` calls, not
+submissions; an empty captured slice on a recycled pool buffer is the one corner that is cleared in a submission of its
+own.)

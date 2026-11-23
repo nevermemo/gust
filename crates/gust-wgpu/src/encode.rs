@@ -1,6 +1,7 @@
 //! Command encoding shared by the staged graph: the ordered upload copy, the readback staging copy and the indirect
-//! dispatch pass. Each helper records into a caller's encoder and returns what the caller must keep alive until the
-//! submission has finished. Moved unchanged out of `graph.rs`; no pooling and no merging of passes happens here.
+//! dispatch pass. Each helper records into a caller's encoder and never submits. An upload's staging buffer must stay
+//! alive until the submission has finished, a readback's until it has been mapped. Moved unchanged out of `graph.rs`;
+//! no pooling and no merging of passes happens here.
 
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
@@ -27,7 +28,8 @@ pub(crate) fn encode_upload(
     Some(staging)
 }
 
-/// Copy `source` into a fresh mappable staging buffer. An empty source records nothing and returns `None`.
+/// Copy `source` into a fresh mappable staging buffer of `source.byte_len()` bytes (the logical length, not a pooled
+/// allocation's size). An empty source records nothing and returns `None`.
 pub(crate) fn encode_readback_copy(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,

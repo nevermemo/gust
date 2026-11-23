@@ -535,17 +535,18 @@ fn names_between(source: &str, anchor: &str, end: &str) -> Vec<String> {
 
 #[test]
 fn the_ledger_lists_exactly_the_built_in_methods_of_the_dialect() {
-    let validate = include_str!("../../mod.rs");
+    let visitor = include_str!("../../visit_impl.rs");
+    let tables = include_str!("../../tables.rs");
     let math = include_str!("../../../math_types.rs");
     let texture = include_str!("../../../slang/texture.rs");
     let mut dialect: Vec<String> = Vec::new();
     dialect.extend(names_between(
-        validate,
+        visitor,
         "let in_dialect = matches!(",
         ") || wrapping_arity",
     ));
     dialect.extend(names_between(
-        validate,
+        tables,
         "pub(crate) fn wrapping_arity",
         "_ =>",
     ));
@@ -809,9 +810,9 @@ fn neutral_callee_forms_keep_pixel_and_the_inspected_ones_are_excluded_by_their_
 
 #[test]
 fn the_callee_entries_name_the_atomics_and_the_math_constructors_the_validator_has() {
-    let validate = include_str!("../../mod.rs");
+    let rules = include_str!("../../expr_rules.rs");
     let math = include_str!("../../../math_types.rs");
-    let mut atomics = names_between(validate, "fn atomic_operation_name", "_ =>");
+    let mut atomics = names_between(rules, "fn atomic_operation_name", "_ =>");
     atomics.sort_unstable();
     atomics.dedup();
     let mut members = names_between(math, "let members:", ".iter()");

@@ -94,7 +94,7 @@ row width exists twice, `ROW_WIDTH` in `gust-macros` and `gust::PIXEL_ROW_WIDTH`
 depend on `gust`; a `gust` test compares the emitted text with the constant.
 
 Which shapes a kernel can take is the classifier's job, a separate module (`validate/classify.rs`, mx.c, D94). It lives
-under `validate/` but runs in the expansion (`expand/mod.rs`), for every kernel and before the profile is chosen, on the
+under `validate/` but runs in the expansion (`expand/module.rs`), for every kernel and before the profile is chosen, on the
 signature and the body by conservative syntactic rules, gives the descriptor's `compatible_shapes`, and checks the
 `#[kernel(shape = ..)]` pin against them. Anything it does not recognise is `grid`-only with the span of the construct
 named, so a wrong guess costs a pin error and never a wrong shader. It does not read the map generator's `own_index`

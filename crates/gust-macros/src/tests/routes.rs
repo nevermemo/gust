@@ -132,7 +132,7 @@ fn the_golden_table_and_the_functions_are_the_ones_in_gust_row_for_row() {
     let rows = golden_rows(theirs);
     assert!(rows.len() >= 10, "{rows:?}");
     assert_eq!(golden_rows(mine), rows);
-    let routing_source = include_str!("../expand/mod.rs");
+    let routing_source = include_str!("../expand/routing.rs");
     for name in ["variable_name", "is_valid_tag"] {
         let copy = function_text(routing_source, name);
         assert!(copy.len() > 100, "{copy}");

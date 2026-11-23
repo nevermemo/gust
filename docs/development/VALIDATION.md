@@ -393,7 +393,7 @@ The remaining proofs of the row, all run on 2026-11-08:
   adding up to 4511, each equal to the host model, and `OK body=subgroups`. `check-examples` runs it. The program also
   requires the lane counts it saw to lie inside the range the device reports. Not run on the Radeon 890M. The portable
   body's committed artifact is not read by a strict `native+subgroups` build (a build looks only at the artifact of
-  the body it selects, `crates/gust-macros/src/expand/mod.rs`), and `check-artifacts` does not cover example artifacts,
+  the body it selects, `crates/gust-macros/src/expand/module.rs`), and `check-artifacts` does not cover example artifacts,
   so nothing in these gates compares that file with its source.
 - **Web.** `check-web` now requires the page label to name the selected kernel keys and checks each against
   `examples/web-vector-add/gust-artifacts/manifest.json`, and the page asserts that a device requested with

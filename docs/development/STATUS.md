@@ -993,6 +993,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       on. Gates on the Radeon 890M (lane and merge gate: the Gpu suite, check-examples and check-bench). RTX 5090:
       owed (quiet window 2026-11-22, D250): the Gpu suite. `GPU_SUITE_PIN` 591 over 61. Opus review: merge; nits
       fixed.
+    - m13.splitm (D242 group 1, step A): the macros' `validate/mod.rs` (6,936 lines) and `expand/mod.rs` (5,822
+      lines) are split into modules by concern, moves only: 14 validator modules and 11 expansion modules with their
+      tests beside them; moved items became `pub(super)`, nothing wider. Tests that read source text by path follow
+      the new files. Three files stay over 700 lines because moves alone cannot cut them (one `impl Visit`, one
+      659-line function, one former inline module). Emitted Slang compared byte-identical before and after over
+      5,406 macro-test emissions and 1,331 workspace emissions (builder hook, reverted); the review verified the
+      moves statically (removed and added lines balance; 1,258 tests before and after). Gates on the Radeon 890M
+      (lane and merge gate, check-artifacts, check-difftest, check-gallery and the Gpu suite included). RTX 5090:
+      owed (quiet window 2026-11-22, D250): the Gpu suite. Opus review: merge; comment pointers fixed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

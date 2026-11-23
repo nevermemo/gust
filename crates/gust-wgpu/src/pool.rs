@@ -379,6 +379,9 @@ pub struct PoolStats {
     pub evicted: u64,
     /// Buffers dropped on return because a mapping was still pending or active: a mapped buffer is never reused.
     pub discarded_mapped: u64,
+    /// Buffers dropped on return because a command buffer you submit still holds a copy into them (a dropped
+    /// `EncodedRead`, see `encode_batch_read`): never reused.
+    pub retired: u64,
     /// Idle buffers now.
     pub free_buffers: usize,
     /// Bytes held by the idle buffers now.
@@ -458,7 +461,11 @@ impl PoolShared {
 ///   is cleared with `CommandEncoder::clear_buffer` in a submission of its own (queue order puts it before every later
 ///   one), a fresh one is zero by wgpu's guarantee. Buffers filled from a slice are written over their whole logical
 ///   range.
-/// * A buffer with a mapping pending or active is never put back, so it can never be handed out while mapped.
+/// * An uncleared hand-out (`HeadlessDevice::uncleared_buffer`) is not zeroed by the pool: a recycled one holds what its
+///   previous user left until the call that takes it in its `clear` list zeroes it.
+/// * A buffer with a mapping pending or active is never put back, so it can never be handed out while mapped. A
+///   staging buffer that a recorded command still copies into, whose `EncodedRead` was dropped, is retired in the same
+///   way (`PoolStats::retired`).
 ///
 /// [`HeadlessDevice::buffer_pool`] is the pool of a device. `clear` drops the idle buffers, and `set_max_bytes`
 /// changes the idle cap:
@@ -559,6 +566,7 @@ impl BufferPool {
             usage: usage.bits(),
             class,
             mapped: false,
+            retired: false,
             pool: Arc::clone(&self.shared),
         }
     }
@@ -574,12 +582,14 @@ impl std::fmt::Debug for BufferPool {
 }
 
 /// The right to an allocation of a [`BufferPool`]: dropping it puts the allocation back, unless a mapping may still
-/// be pending or active (`mapped`), in which case the buffer is dropped instead.
+/// be pending or active (`mapped`) or a recorded command still writes it (`retired`), in which case the buffer is
+/// dropped instead.
 pub(crate) struct Lease {
     buffer: wgpu::Buffer,
     usage: u32,
     class: u64,
     mapped: bool,
+    retired: bool,
     pool: Arc<PoolShared>,
 }
 
@@ -592,6 +602,12 @@ impl Lease {
     /// go back to the pool.
     fn mark_mapped(&mut self) {
         self.mapped = true;
+    }
+
+    /// Never put the buffer back: a command recorded into an encoder of the caller's still uses it, and nothing says
+    /// when that command runs. Dropping the lease counts it as retired.
+    fn retire(mut self) {
+        self.retired = true;
     }
 
     /// Return the buffer to the pool after its mapping finished: unmap it if the mapping succeeded.
@@ -607,6 +623,10 @@ impl Drop for Lease {
     fn drop(&mut self) {
         let mut state = self.pool.lock();
         state.stats.outstanding -= 1;
+        if self.retired {
+            state.stats.retired += 1;
+            return;
+        }
         if self.mapped {
             state.stats.discarded_mapped += 1;
             return;
@@ -634,8 +654,8 @@ pub(crate) enum Fill<'a, T> {
     Zeroed,
     /// Holding these values, written over the whole logical range.
     Values(&'a [T]),
-    /// Not cleared: a fresh allocation reads as zero, a recycled one holds its previous contents, and the caller clears it
-    /// inside a command buffer of its own (`HeadlessDevice::uncleared_buffer`).
+    /// Not cleared: a fresh allocation reads as zero, a recycled one holds its previous contents, and the caller
+    /// clears it inside a command buffer of its own (`HeadlessDevice::uncleared_buffer`).
     Uncleared,
 }
 
@@ -730,7 +750,7 @@ impl HeadlessDevice {
         &self,
         buffer: &GpuBuffer<T>,
     ) -> Result<PooledReadback<T>, Error> {
-        let staged = self.stage_pooled_readback(buffer)?;
+        let mut staged = self.stage_pooled_readback(buffer)?;
         if !staged.is_empty() {
             let mut encoder = self
                 .device
@@ -757,6 +777,7 @@ impl HeadlessDevice {
         if buffer.is_empty() {
             return Ok(StagedReadback {
                 lease: None,
+                recorded: false,
                 bytes: 0,
                 marker: PhantomData,
             });
@@ -771,10 +792,12 @@ impl HeadlessDevice {
         };
         Ok(StagedReadback {
             lease: Some(self.pool.lease(raw, usage, class)),
+            recorded: false,
             bytes,
             marker: PhantomData,
         })
     }
+
     /// Read `buffer` back through a pooled staging buffer, blocking until the copy completes. Native only.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn read_pooled<T: GpuPod>(&self, buffer: &GpuBuffer<T>) -> Result<Vec<T>, Error> {
@@ -821,12 +844,15 @@ pub(crate) struct PooledReadback<T> {
     marker: PhantomData<fn() -> T>,
 }
 
-/// A pooled readback whose staging buffer is taken but whose copy is not yet recorded or submitted
+/// A pooled readback whose staging buffer is taken but whose copy is not yet submitted
 /// ([`HeadlessDevice::stage_pooled_readback`]). Dropping it before [`start`](Self::start) gives the staging buffer back
-/// to the pool, which is safe: no mapping was requested.
+/// to the pool when no copy was recorded (no mapping was requested, so that is safe) and retires it when
+/// [`encode_copy`](Self::encode_copy) recorded one: a command buffer GUST does not control may still write the buffer.
 pub(crate) struct StagedReadback<T> {
     /// `None` for an empty buffer, which has no copy and no mapping.
     lease: Option<Lease>,
+    /// A copy into the staging buffer was recorded.
+    recorded: bool,
     bytes: u64,
     marker: PhantomData<fn() -> T>,
 }
@@ -838,9 +864,14 @@ impl<T: GpuPod> StagedReadback<T> {
     }
 
     /// Record the copy of `source` into the staging buffer. `source` must be the buffer this was staged for.
-    pub(crate) fn encode_copy(&self, encoder: &mut wgpu::CommandEncoder, source: &GpuBuffer<T>) {
+    pub(crate) fn encode_copy(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &GpuBuffer<T>,
+    ) {
         if let Some(lease) = &self.lease {
             encoder.copy_buffer_to_buffer(&source.raw, 0, lease.buffer(), 0, self.bytes);
+            self.recorded = true;
         }
     }
 
@@ -849,8 +880,8 @@ impl<T: GpuPod> StagedReadback<T> {
     /// fired, whether or not it is awaited.
     // The slot is shared with the mapping callback; on wasm32 that stays on one thread (wgpu is not `Send` there).
     #[allow(clippy::arc_with_non_send_sync)]
-    pub(crate) fn start(self) -> PooledReadback<T> {
-        let Some(mut lease) = self.lease else {
+    pub(crate) fn start(mut self) -> PooledReadback<T> {
+        let Some(mut lease) = self.lease.take() else {
             return PooledReadback {
                 slot: Arc::new(Mutex::new(Slot::default())),
                 mapped: None,
@@ -892,6 +923,16 @@ impl<T: GpuPod> StagedReadback<T> {
             mapped: Some(completion),
             bytes,
             marker: PhantomData,
+        }
+    }
+}
+
+impl<T> Drop for StagedReadback<T> {
+    fn drop(&mut self) {
+        if self.recorded
+            && let Some(lease) = self.lease.take()
+        {
+            lease.retire();
         }
     }
 }

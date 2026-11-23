@@ -258,11 +258,12 @@ fn the_counter_counts_gust_submissions_only() {
     drop(zeroed);
 }
 
-/// The wrapper is the only `queue.submit` of the crate: a site that bypasses it would make the counter wrong.
+/// The wrapper is the only submit call of the crate (any receiver, any path): a site that bypasses it would make the
+/// counter wrong.
 #[test]
 fn no_source_file_submits_except_through_the_counting_wrapper() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let needle = ["queue", ".submit", "("].concat();
+    let needles = [[".sub", "mit("].concat(), ["::sub", "mit("].concat()];
     let mut sites = Vec::new();
     let mut folders = vec![root];
     while let Some(folder) = folders.pop() {
@@ -272,9 +273,16 @@ fn no_source_file_submits_except_through_the_counting_wrapper() {
                 folders.push(path);
             } else if path.extension().is_some_and(|extension| extension == "rs") {
                 let text = std::fs::read_to_string(&path).unwrap();
-                // rustfmt may break the chain across lines.
-                let squeezed: String = text.split_whitespace().collect();
-                for _ in squeezed.matches(needle.as_str()) {
+                // Comment lines (doc examples) are not submissions; rustfmt may break a call chain across lines.
+                let code: String = text
+                    .lines()
+                    .filter(|line| !line.trim_start().starts_with("//"))
+                    .collect();
+                let squeezed: String = code.split_whitespace().collect();
+                for _ in needles
+                    .iter()
+                    .flat_map(|needle| squeezed.matches(needle.as_str()))
+                {
                     sites.push(path.file_name().unwrap().to_string_lossy().into_owned());
                 }
             }
@@ -283,7 +291,7 @@ fn no_source_file_submits_except_through_the_counting_wrapper() {
     assert_eq!(
         sites,
         ["accessors.rs"],
-        "every queue submission of gust-wgpu goes through `HeadlessDevice::submit_counted`, which is in accessors.rs"
+        "every `.submit(` call of gust-wgpu goes through `HeadlessDevice::submit_counted`, which is in accessors.rs"
     );
 }
 
@@ -552,4 +560,77 @@ fn submit_batch_read_refuses_a_buffer_of_another_device_before_recording() {
         "got {refused:?}"
     );
     assert_eq!(device.gust_submissions(), before);
+}
+
+/// A dropped `EncodedRead` retires its staging buffer: the caller's encoder still copies into it, so it must not go
+/// back to the pool. The encoder still submits, and the next read-back of the same class is a pool miss, not a hit
+/// on the retired buffer.
+#[test]
+fn a_dropped_encoded_read_retires_its_staging_buffer() {
+    let device = device_logged("encode_batch dropped read");
+    let input = ramp(N);
+    let source = buffer(&device, "source", &input);
+    let before = device.buffer_pool_stats();
+
+    let mut encoder = new_encoder(&device);
+    let encoded = device
+        .encode_batch_read(&mut encoder, &[], &[], &source)
+        .unwrap();
+    drop(encoded);
+    let after_drop = device.buffer_pool_stats();
+    assert_eq!(
+        after_drop.retired,
+        before.retired + 1,
+        "the buffer is retired"
+    );
+    assert_eq!(after_drop.returned, before.returned, "and not returned");
+    assert_eq!(after_drop.free_buffers, 0, "so it is not idle");
+    assert_eq!(
+        after_drop.outstanding, before.outstanding,
+        "and not outstanding"
+    );
+
+    // The commands that still copy into the retired buffer run without a validation error.
+    device.wgpu_queue().submit([encoder.finish()]);
+    device
+        .wgpu_device()
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+
+    // The same class again is a fresh allocation: the retired buffer is not in the pool.
+    let values = device
+        .submit_batch_read(&[], &[], &source)
+        .unwrap()
+        .wait(&device)
+        .unwrap();
+    assert_eq!(values, input);
+    let end = device.buffer_pool_stats();
+    assert_eq!(end.misses, after_drop.misses + 1, "a miss");
+    assert_eq!(end.hits, after_drop.hits, "not a hit");
+}
+
+/// `PendingRead::finish` and `wait` refuse a device other than the one that made the read-back.
+#[test]
+fn a_pending_read_refuses_another_device() {
+    let device = device_logged("encode_batch pending read");
+    let other = device_logged("encode_batch other device");
+    let source = buffer(&device, "source", &ramp(N));
+
+    let pending = device.submit_batch_read(&[], &[], &source).unwrap();
+    let refused = pending.wait(&other);
+    assert!(
+        matches!(refused, Err(Error::ForeignPersistentBuffer)),
+        "got {refused:?}"
+    );
+
+    let pending = device.submit_batch_read(&[], &[], &source).unwrap();
+    let refused = drive(pending.finish(&other));
+    assert!(
+        matches!(refused, Err(Error::ForeignPersistentBuffer)),
+        "got {refused:?}"
+    );
+
+    // The right device still reads it.
+    let pending = device.submit_batch_read(&[], &[], &source).unwrap();
+    assert_eq!(pending.wait(&device).unwrap(), ramp(N));
 }

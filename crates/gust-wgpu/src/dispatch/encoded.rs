@@ -72,9 +72,14 @@ impl HeadlessDevice {
     /// - **GUST submits on its own account** in these calls, each counted by
     ///   [`gust_submissions`](Self::gust_submissions), which names them: [`submit_batch`](Self::submit_batch) and the
     ///   typed `submit` and `dispatch` built on it, [`submit_batch_read`](Self::submit_batch_read),
-    ///   [`dispatch_batch_timed`](Self::dispatch_batch_timed), every read-back, `write_typed_buffer_timed`, a recycled
-    ///   zeroed buffer (the clear), a `GpuPool` growth and `execute_graph`. Each lands after what you submitted before
+    ///   [`dispatch_batch_timed`](Self::dispatch_batch_timed), every read-back (the inspect read-back included),
+    ///   `write_typed_buffer_timed`, the deprecated `dispatch_f32` and `dispatch_u32`, a recycled zeroed buffer (the
+    ///   clear), a `GpuPool` growth and `execute_graph`. Each lands after what you submitted before
     ///   it. `encode_batch` and `EncodedJob::submitted` submit nothing.
+    /// - **Keep the buffers alive until your `queue.submit`.** The encoding does not hold the buffers it binds, nor
+    ///   the `read` and `clear` buffers of [`encode_batch_read`](Self::encode_batch_read). A pooled buffer you drop
+    ///   before your submission can be handed out again and written (`queue.write_buffer` lands before the
+    ///   submission), and the batch then overwrites that data.
     /// - **GUST cannot check that `encoder` belongs to this device.** Like the one-instance rule of
     ///   [`adopt`](Self::adopt), an encoder made on another device, or on another instance, is the caller's to
     ///   avoid: wgpu reports it at `finish` or `submit`, far from this call, or panics. The resources must be this
@@ -93,7 +98,8 @@ impl HeadlessDevice {
         Ok(self.encoded_job(!prepared.is_empty()))
     }
 
-    /// The one place a batch's passes are recorded: `encode_batch`, `submit_batch` and the read-back forms all end here.
+    /// The one place a batch's passes are recorded: `encode_batch`, `submit_batch` and the read-back forms all end
+    /// here.
     pub(crate) fn record_prepared(
         &self,
         encoder: &mut wgpu::CommandEncoder,

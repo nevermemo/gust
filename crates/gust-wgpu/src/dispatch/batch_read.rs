@@ -34,14 +34,14 @@ impl HeadlessDevice {
     /// after the last, in the order of recording.
     ///
     /// `clear` holds buffer bindings of this device whose buffers were created read-write (the access of the binding
-    /// is not read): each is zeroed over its logical length. A read-only buffer or a buffer of another device is refused ([`Error::PersistentBufferAccess`], [`Error::ForeignPersistentBuffer`])
-    /// before anything is recorded. `read` must be readable ([`Error::PersistentBufferNotReadable`] otherwise) and of
-    /// this device; an empty `read` has an empty result and no copy.
+    /// is not read): each is zeroed over its logical length. A read-only buffer or a buffer of another device is
+    /// refused ([`Error::PersistentBufferAccess`], [`Error::ForeignPersistentBuffer`]) before anything is recorded.
+    /// `read` must be readable ([`Error::PersistentBufferNotReadable`] otherwise) and of this device; an empty `read`
+    /// has an empty result and no copy.
     ///
     /// Every fallible step happens before the first command is recorded, so an `Err` submits nothing and leaves
-    /// [`gust_submissions`](Self::gust_submissions) as it was, with one exception: the attachment of a `pixel` call
-    /// ([`Error::OutOfMemory`]) is made while recording, and then nothing has been submitted either (the encoder is
-    /// this call's own and is dropped).
+    /// [`gust_submissions`](Self::gust_submissions) as it was, including the attachment of a `pixel` call
+    /// ([`Error::OutOfMemory`]), which is made while recording: the encoder is this call's own and is dropped.
     pub fn submit_batch_read<T: GpuPod>(
         &self,
         dispatches: &[BufferDispatch<'_>],
@@ -50,11 +50,12 @@ impl HeadlessDevice {
     ) -> Result<PendingRead<T>, Error> {
         self.check_clear(clear)?;
         let prepared = self.prepare_extent_batch(dispatches)?;
-        let staged = self.stage_pooled_readback(read)?;
+        let mut staged = self.stage_pooled_readback(read)?;
         if prepared.is_empty() && clear.is_empty() && staged.is_empty() {
             return Ok(PendingRead {
                 readback: staged.start(),
                 submission: None,
+                device_id: self.id,
             });
         }
         let mut encoder = self
@@ -62,11 +63,12 @@ impl HeadlessDevice {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("GUST batch read encoder"),
             });
-        self.record_read(&mut encoder, &prepared, clear, &staged, read)?;
+        self.record_read(&mut encoder, &prepared, clear, &mut staged, read)?;
         let submission = self.submit_counted([encoder.finish()]);
         Ok(PendingRead {
             readback: staged.start(),
             submission: Some(submission),
+            device_id: self.id,
         })
     }
 
@@ -75,8 +77,10 @@ impl HeadlessDevice {
     /// After your `queue.submit`, call [`EncodedRead::submitted`] with its index to request the read-back.
     ///
     /// The fallible steps, the exception for a `pixel` attachment (discard the encoder on that error) and the ordering
-    /// rules are those of [`encode_batch`](Self::encode_batch). Dropping the [`EncodedRead`] without `submitted` makes
-    /// no read-back; the commands you submitted still ran.
+    /// rules (including keeping `read`, `clear` and every bound buffer alive until your submission) are those of
+    /// [`encode_batch`](Self::encode_batch). Dropping the [`EncodedRead`] without `submitted` makes no read-back; the
+    /// commands you submit still run, and the staging buffer, which your encoder still copies into, is retired from
+    /// the pool instead of being returned to it ([`PoolStats::retired`](crate::PoolStats::retired)).
     pub fn encode_batch_read<T: GpuPod>(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -86,9 +90,12 @@ impl HeadlessDevice {
     ) -> Result<EncodedRead<T>, Error> {
         self.check_clear(clear)?;
         let prepared = self.prepare_extent_batch(dispatches)?;
-        let staged = self.stage_pooled_readback(read)?;
-        self.record_read(encoder, &prepared, clear, &staged, read)?;
-        Ok(EncodedRead { staged })
+        let mut staged = self.stage_pooled_readback(read)?;
+        self.record_read(encoder, &prepared, clear, &mut staged, read)?;
+        Ok(EncodedRead {
+            staged,
+            device_id: self.id,
+        })
     }
 
     /// Refuse a `clear` binding that is not a read-write buffer of this device, before anything is recorded.
@@ -117,7 +124,7 @@ impl HeadlessDevice {
         encoder: &mut wgpu::CommandEncoder,
         prepared: &[PreparedDispatch],
         clear: &[BufferBinding<'_>],
-        staged: &StagedReadback<T>,
+        staged: &mut StagedReadback<T>,
         read: &GpuBuffer<T>,
     ) -> Result<(), Error> {
         for binding in clear {
@@ -132,23 +139,47 @@ impl HeadlessDevice {
 /// A read-back whose copy was recorded and submitted and whose mapping was requested, by
 /// [`HeadlessDevice::submit_batch_read`] or [`EncodedRead::submitted`]. It owns its staging buffer until the mapping's
 /// callback has fired; dropping it early hands the buffer back to the pool then, and discards the values.
+///
+/// `finish` and `wait` take the device that made it and refuse another ([`Error::ForeignPersistentBuffer`]), as every
+/// call that takes a buffer does; the device is a parameter, not a borrow, so a `PendingRead` can outlive a frame.
+#[must_use = "dropping a `PendingRead` discards the values; await `finish` or call `wait`"]
 pub struct PendingRead<T> {
     readback: PooledReadback<T>,
     /// The submission that carries the copy, when one was made: what [`wait`](Self::wait) waits for.
     submission: Option<wgpu::SubmissionIndex>,
+    /// The id of the device that made it.
+    device_id: u64,
 }
 
 impl<T: GpuPod> PendingRead<T> {
+    fn check_device(&self, device: &HeadlessDevice) -> Result<(), Error> {
+        if self.device_id == device.id {
+            Ok(())
+        } else {
+            Err(Error::ForeignPersistentBuffer)
+        }
+    }
+
     /// Await the copied values: each poll of the future polls the device once, so a caller that cannot block drives it
     /// from its own loop, and on `wasm32` the browser's event loop drives it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ForeignPersistentBuffer`] when `device` is not the device that made this read-back.
     pub async fn finish(self, device: &HeadlessDevice) -> Result<Vec<T>, Error> {
+        self.check_device(device)?;
         self.readback.finish(&device.device).await
     }
 
     /// Block until the copied values are ready. Native only. It waits for the submission that carries the copy, not
     /// for later work of yours on the queue, then for the mapping.
     #[cfg(not(target_arch = "wasm32"))]
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ForeignPersistentBuffer`] when `device` is not the device that made this read-back.
     pub fn wait(self, device: &HeadlessDevice) -> Result<Vec<T>, Error> {
+        self.check_device(device)?;
         if let Some(submission) = self.submission.clone() {
             device.wait_for_submission(submission)?;
         }
@@ -170,16 +201,25 @@ impl<T> std::fmt::Debug for PendingRead<T> {
 #[must_use = "call `submitted` with the index of the submission that carries the encoder"]
 pub struct EncodedRead<T> {
     staged: StagedReadback<T>,
+    device_id: u64,
 }
 
 impl<T: GpuPod> EncodedRead<T> {
-    /// Request the read-back, after `index` of the `queue.submit` that carried the encoder. Call it after the
-    /// submission, not before: a buffer with a mapping pending cannot be used by a submission. The index is not
-    /// checked; a wrong one only changes what [`PendingRead::wait`] waits for.
+    /// Request the read-back, after `index` of the `queue.submit` that carried the encoder. The mapping is requested
+    /// at once and the index is not checked, which has two consequences, neither detected:
+    ///
+    /// - Called **before** your `queue.submit`, the staging buffer has a mapping pending when your submission uses it,
+    ///   and wgpu rejects your submission (on native, a panic from the queue's error handler).
+    /// - Called when the encoder is **never submitted**, the mapping resolves at the next poll and the read-back
+    ///   returns the stale bytes an earlier read-back left in that pooled staging buffer, as if they were the values
+    ///   of `read`.
+    ///
+    /// A wrong index (another submission's) only changes what [`PendingRead::wait`] waits for.
     pub fn submitted(self, index: &wgpu::SubmissionIndex) -> PendingRead<T> {
         PendingRead {
             readback: self.staged.start(),
             submission: Some(index.clone()),
+            device_id: self.device_id,
         }
     }
 }

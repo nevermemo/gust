@@ -1195,11 +1195,11 @@ pub(crate) struct GpuSuitePin {
 /// `tests/device_share_default_opened.rs` (one test, one `test result:` line). Checked by a full Gpu suite run on the
 /// Radeon 890M (lane).
 ///
-/// Slice m14.encb: 604 over 65 became 616 over 66. The encode slice adds `tests/encode_batch.rs` (eleven GPU tests,
+/// Slice m14.encb: 604 over 65 became 618 over 66. The encode slice adds `tests/encode_batch.rs` (thirteen GPU tests,
 /// one `test result:` line) and one doc test (the `encode_batch` example). Checked by a full Gpu suite run on the
 /// Radeon 890M (lane); the RTX 5090 run is owed at the merge.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 616,
+    passed: 618,
     result_lines: 66,
 };
 

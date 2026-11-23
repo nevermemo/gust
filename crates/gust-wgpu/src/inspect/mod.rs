@@ -256,7 +256,7 @@ impl<'a, T> Inspector<'a, T> {
             label: Some("GUST inspect readback encoder"),
         });
         encoder.copy_buffer_to_buffer(&self.buffer.raw, offset, &staging, 0, size);
-        self.device.queue.submit([encoder.finish()]);
+        self.device.submit_counted([encoder.finish()]);
         let mapped = Completion::new();
         let callback = mapped.clone();
         staging.map_async(wgpu::MapMode::Read, .., move |result| {

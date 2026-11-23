@@ -121,7 +121,7 @@ impl HeadlessDevice {
                 label: Some("GUST persistent buffer readback encoder"),
             });
         encoder.copy_buffer_to_buffer(&buffer.raw, 0, &readback, 0, byte_size);
-        self.queue.submit([encoder.finish()]);
+        self.submit_counted([encoder.finish()]);
 
         let mapped = Completion::new();
         let callback = mapped.clone();

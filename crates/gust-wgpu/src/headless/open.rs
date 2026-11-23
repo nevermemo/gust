@@ -8,7 +8,7 @@ use crate::{
 use crate::{AdapterChoice, BufferPool, FeaturesPolicy, LimitsPolicy, device};
 use gust::capability::Capability;
 use std::sync::Mutex;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 impl HeadlessDevice {
     /// Select a high-performance Vulkan adapter and open a logical device.
@@ -131,6 +131,7 @@ impl HeadlessDevice {
             capabilities,
             subgroup_sizes,
             pool: BufferPool::new(),
+            submissions: AtomicU64::new(0),
             #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
             route_events: Mutex::new(Vec::new()),
         }

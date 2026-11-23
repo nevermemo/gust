@@ -1035,6 +1035,17 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       which slice m14.encb replaces with a one-submission path without changing generated code. RTX 5090: owed
       (quiet window 2026-11-22, D250): task-basics and the Gpu suite. Opus review: merge after fixes; fixed (two
       rounds).
+    - m14.encb (D251, group 2 step B): GUST batches recorded into a caller's command encoder.
+      `HeadlessDevice::encode_batch` records and never submits (fallible work before the first pass, except a
+      `pixel` attachment: discard the encoder on `Err`); `EncodedJob::submitted(&index)` gives the `WgpuJob`;
+      `submit_batch` uses the same path. `submit_batch_read` / `encode_batch_read` put dispatch, clear and a
+      read-back copy in one submission (3 before); a dropped `EncodedRead` retires its staging buffer.
+      `gust_submissions()` counts every GUST `queue.submit` (one wrapper, a source-scan test). Ordering rules in
+      the guide ("Batches in your own encoder"). Measured on the Radeon 890M (median of 400 frames, 2^12
+      elements): encode form 0.0095 ms over one raw submission. `GPU_SUITE_PIN` 618 over 66. Not yet done:
+      `gust::task::submit_and_read` still makes 2-3 submissions; its switch to `submit_batch_read` is the next
+      slice. RTX 5090: owed (quiet window 2026-11-22, D250): encode_batch tests and the Gpu suite. Opus review:
+      merge after fixes; fixed; re-read MERGE.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

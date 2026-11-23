@@ -5,6 +5,43 @@ Floating-point results of a GPU kernel are within the bounds of section 4 of
 CPU: a device may fuse a multiply and an add. G4 avoids the question by choosing powers of two and small integers, so
 every value is exact; a program with arbitrary floats should compare with a tolerance, as G2's tests do.
 
+## Batches in your own encoder
+
+A program that records its own passes on a shared device (`HeadlessDevice::adopt`) should not pay a queue submission for
+every GUST batch: each extra submission costs host time every frame. `device.encode_batch(&mut encoder, &dispatches)`
+records a batch into the encoder you pass and never submits it, so a frame can be GUST batch, your own pass, GUST batch,
+one `finish` and one `queue.submit`. `EncodedJob::submitted(&index)` takes the index that `queue.submit` returned and
+gives back the same `WgpuJob` that `submit_batch` returns, which you wait on or poll. `submit_batch` is those steps with
+an encoder of its own. `device.submit_batch_read(&dispatches, &clear, &buffer)` is the one-submission form of a dispatch
+followed by a read-back (it also zeroes the buffers in `clear`, which saves the separate submission that a recycled
+zeroed output otherwise costs, provided the output comes from `uncleared_buffer`: `GpuVec::zeroed_on` still clears in a
+submission of its own); `encode_batch_read` is its encode form. `device.gust_submissions()` counts the submissions GUST
+itself makes, so a test can state a budget; on a shared device your own submissions are not in it.
+
+The rules are those of one wgpu queue, which GUST does not change:
+
+- Submissions run as if in submission order, so a later submission sees the writes of an earlier one with no barrier of
+  yours; that is an order, not completion. Inside one encoder the order is the order of recording.
+- `queue.write_buffer` lands before the next submission, so a write you queue after recording a batch and before your
+  `queue.submit` is seen by that batch.
+- Completion callbacks and mappings fire when the device is polled (by a blocking GUST call, by your poll, or by wgpu
+  itself, possibly inside `queue.submit`); a mapping on a buffer the encoding writes is requested after your submission.
+- GUST submits on its own account in `submit_batch`, `submit_batch_read`, `dispatch_batch_timed`, the read-backs
+  (including the inspect read-back), `write_typed_buffer_timed`, the deprecated `dispatch_f32` and `dispatch_u32`, a
+  recycled zeroed buffer's clear, pool growth and `execute_graph`; `encode_batch` and `EncodedJob::submitted` submit
+  nothing. There is no timed `encode_batch`: the timestamp profiler's lock would have to be held across your submission.
+- GUST cannot check that your encoder belongs to the GUST device (the one-instance rule of `adopt`), and it does not
+  detect a wrong or early submission index: the job then waits for the submission you named.
+- Keep every buffer the batch binds, and the `read` and `clear` buffers of the read forms, alive until your
+  `queue.submit`: a pooled buffer dropped earlier can be handed out again and written before your submission runs.
+- `EncodedRead::submitted` requests the read-back at once, so call it after your `queue.submit`. Called early, your
+  submission is rejected (a buffer with a mapping pending); called with no submission behind it, the read-back returns
+  stale bytes of an earlier read-back and nothing detects it. Drop an `EncodedRead` and its staging buffer is retired
+  (never reused), because your encoder still copies into it. `PendingRead::finish` and `wait` refuse a device other
+  than the one that made it (`Error::ForeignPersistentBuffer`).
+- An error from `encode_batch` leaves your encoder as it was, except for the attachment of a `pixel` call (out of
+  memory), after which you discard the encoder.
+
 ## Staged graphs
 
 `StagedGraph` is a graph of uploads, dispatches and read-backs, for programs that mix them. A node is an

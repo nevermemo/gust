@@ -38,6 +38,10 @@
 //! - **R8**: `cargo publish --dry-run --locked` in the one-call form that mr.m0 P2 found to work, into the same
 //!   target directory as R1 (the work directory's; same packaged source, so the reuse is sound).
 //!
+//! `--docs-only` runs R5's stable rustdoc pass alone, with R5's own judge: no packaging, no registry, no work
+//! directory, no nightly (the local form of what CI's `release` job checks about rustdoc on stable). It combines
+//! with no other flag.
+//!
 //! `--check-only` skips what needs Slang or an adapter: the runs of the dev build and the release build, and `cargo
 //! gust build` (the release build needs its artifacts). Everything else runs, and needs the crates.io registry. The
 //! work directory defaults to a new directory under the cargo target directory (under the temporary directory when
@@ -231,6 +235,8 @@ pub(crate) struct Options {
     pub(crate) check_only: bool,
     /// `--work-dir DIR`: where R1 to R8 unpack and build; a directory that does not exist yet or is empty.
     pub(crate) work_dir: Option<PathBuf>,
+    /// `--docs-only`: only R5's stable rustdoc pass with R5's own judge. No packaging, no registry, no work directory.
+    pub(crate) docs_only: bool,
 }
 
 /// The options of `check-release`.
@@ -249,6 +255,12 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Options, String> {
                 }
                 options.check_only = true;
             }
+            "--docs-only" => {
+                if inline.is_some() {
+                    return Err("`--docs-only` takes no value".into());
+                }
+                options.docs_only = true;
+            }
             "--work-dir" => {
                 let value = match inline {
                     Some(value) => value,
@@ -266,10 +278,16 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             _ => {
                 return Err(format!(
-                    "check-release takes only `--check-only` and `--work-dir DIR`, not `{argument}`"
+                    "check-release takes only `--check-only`, `--work-dir DIR` and `--docs-only`, not `{argument}`"
                 ));
             }
         }
+    }
+    if options.docs_only && (options.check_only || options.work_dir.is_some()) {
+        return Err(
+            "`--docs-only` runs R5's stable rustdoc pass alone (no packaging, no work directory) and cannot be combined with `--check-only` or `--work-dir`"
+                .into(),
+        );
     }
     Ok(options)
 }
@@ -1654,7 +1672,7 @@ fn problems_to_error(step: &str, problems: &[String]) -> Result<(), String> {
     ))
 }
 
-/// `cargo xtask check-release [--check-only] [--work-dir DIR]`.
+/// `cargo xtask check-release [--check-only] [--work-dir DIR]`, or `cargo xtask check-release --docs-only`.
 pub(crate) fn check_release(args: &[String]) -> Result<(), String> {
     println!("{}", check_release_report(args)?);
     Ok(())
@@ -1694,6 +1712,18 @@ pub(crate) fn check_release_report(args: &[String]) -> Result<String, String> {
         .iter()
         .filter(|member| member.publishable)
         .collect();
+
+    if options.docs_only {
+        // R5's stable pass only: the work directory and the helper stay unused.
+        let run = Run {
+            root: &root,
+            cargo,
+            work: &root,
+            check_only: true,
+            helper: None,
+        };
+        return r5_docs_only(&run, &publishable);
+    }
 
     // R3 and R4 read the metadata only.
     problems_to_error("R3/R4 (metadata)", &metadata_problems(&metadata.members))?;
@@ -2026,8 +2056,22 @@ fn r5_plan(run: &Run, publishable: &[&Member]) -> NightlyPlan {
     r5_nightly_plan(run.check_only, &listing, &installed, &wanted)
 }
 
-/// R5: rustdoc.
-fn r5_docs(run: &Run, publishable: &[&Member], plan: &NightlyPlan) -> Result<String, String> {
+/// R5's stable pass: `cargo doc --no-deps` of every library, judged by [`doc_problems`] against [`KNOWN_DOC_DEBT`].
+/// Returns the problems and the number of warnings (all admitted when there are no problems).
+fn r5_stable(run: &Run, libraries: &[&Member]) -> Result<(Vec<String>, usize), String> {
+    let stable = doc_run(run, "stable", false, None, "", libraries, &[])?;
+    let known = stable
+        .iter()
+        .filter(|message| message.level == "warning")
+        .count();
+    Ok((
+        doc_problems("stable", &stable, false, &KNOWN_DOC_DEBT),
+        known,
+    ))
+}
+
+/// The publishable members that have a library, which R5 documents; an error when there is none.
+fn r5_libraries<'a>(publishable: &[&'a Member]) -> Result<Vec<&'a Member>, String> {
     let libraries: Vec<&Member> = publishable
         .iter()
         .copied()
@@ -2038,13 +2082,26 @@ fn r5_docs(run: &Run, publishable: &[&Member], plan: &NightlyPlan) -> Result<Str
             "check-release R5: no publishable package has a library to document".to_owned(),
         );
     }
-    let mut problems = Vec::new();
-    let stable = doc_run(run, "stable", false, None, "", &libraries, &[])?;
-    problems.extend(doc_problems("stable", &stable, false, &KNOWN_DOC_DEBT));
-    let known = stable
-        .iter()
-        .filter(|message| message.level == "warning")
-        .count();
+    Ok(libraries)
+}
+
+/// `check-release --docs-only`: R5's stable pass and its judge, nothing else (what the CI job `release` runs for
+/// rustdoc, without packaging and without the registry). The nightly docs.rs pass is not run.
+fn r5_docs_only(run: &Run, publishable: &[&Member]) -> Result<String, String> {
+    let libraries = r5_libraries(publishable)?;
+    let (problems, known) = r5_stable(run, &libraries)?;
+    problems_to_error("R5", &problems)?;
+    Ok(format!(
+        "check-release --docs-only passed: R5 stable only, cargo doc --no-deps of {} librar{} ({known} warning(s), all admitted as known debt); the nightly docs.rs run, packaging and the registry were not used",
+        libraries.len(),
+        if libraries.len() == 1 { "y" } else { "ies" },
+    ))
+}
+
+/// R5: rustdoc.
+fn r5_docs(run: &Run, publishable: &[&Member], plan: &NightlyPlan) -> Result<String, String> {
+    let libraries = r5_libraries(publishable)?;
+    let (mut problems, known) = r5_stable(run, &libraries)?;
 
     let runs = docsrs_runs(&libraries);
     let nightly = match plan {

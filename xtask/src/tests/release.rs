@@ -13,9 +13,9 @@ use super::{
     doc_problems, docsrs_request, docsrs_runs, dry_run_problems, existing_crate_lines,
     finish_outcome, fixture_dependency_problems, has_nightly, helper_choice, metadata_problems,
     nightly_failure, nightly_verdict, package_allows, package_files, package_problems, parse_args,
-    parse_metadata, patch_config_arguments, patched_manifest, r1_command, r5_nightly_plan,
-    r8_command, readme_blocks, readme_problems, recipe_ran, registry_entries, registry_target,
-    required_file_problems, section_value, size_problems, target_dep_info_entries,
+    parse_metadata, patch_config_arguments, patched_manifest, r1_command, r5_libraries,
+    r5_nightly_plan, r8_command, readme_blocks, readme_problems, recipe_ran, registry_entries,
+    registry_target, required_file_problems, section_value, size_problems, target_dep_info_entries,
     unused_library_patches, verify_problems,
 };
 use crate::workspace::workspace_root;
@@ -137,7 +137,14 @@ fn the_options_are_parsed_and_the_rest_refused() {
         parse_args(&args(&["--work-dir=x"])).unwrap().work_dir,
         Some(PathBuf::from("x"))
     );
+    assert!(parse_args(&args(&["--docs-only"])).unwrap().docs_only);
+    assert!(!options.docs_only);
     for bad in [
+        args(&["--docs-only=1"]),
+        args(&["--docs-only", "--check-only"]),
+        args(&["--check-only", "--docs-only"]),
+        args(&["--docs-only", "--work-dir", "somewhere"]),
+        args(&["--work-dir=x", "--docs-only"]),
         args(&["--check-only=1"]),
         args(&["--work-dir"]),
         args(&["--work-dir="]),
@@ -146,6 +153,13 @@ fn the_options_are_parsed_and_the_rest_refused() {
     ] {
         assert!(parse_args(&bad).is_err(), "{bad:?}");
     }
+    let error = parse_args(&args(&["--docs-only", "--check-only"])).unwrap_err();
+    assert!(
+        error.contains("--docs-only")
+            && error.contains("--check-only")
+            && error.contains("--work-dir"),
+        "{error}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -204,6 +218,30 @@ fn members() -> Vec<Member> {
 
 fn member<'a>(members: &'a [Member], name: &str) -> &'a Member {
     members.iter().find(|member| member.name == name).unwrap()
+}
+
+/// `--docs-only` and the full R5 document the same set: the members that have a library (not a binary-only one), and
+/// no library at all is an error, not a pass over nothing.
+#[test]
+fn r5_documents_the_members_with_a_library_and_refuses_when_there_is_none() {
+    let members = members();
+    let all: Vec<&Member> = members.iter().collect();
+    let documented = r5_libraries(&all).unwrap();
+    let names: Vec<&str> = documented
+        .iter()
+        .map(|member| member.name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"alpha") && names.contains(&"alpha-macros"),
+        "{names:?}"
+    );
+    assert!(!names.contains(&"tool"), "{names:?}");
+    let error = r5_libraries(&[member(&members, "tool")]).unwrap_err();
+    assert!(
+        error.starts_with("check-release R5:")
+            && error.contains("no publishable package has a library"),
+        "{error}"
+    );
 }
 
 #[test]

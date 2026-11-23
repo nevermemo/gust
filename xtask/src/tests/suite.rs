@@ -1,6 +1,6 @@
 use super::{
-    DIFFTEST_UNIT_STEPS, NamedTests, Step, Suite, TestRequest, parse_test_args, plan_suite,
-    test_command,
+    DIFFTEST_FMT, DIFFTEST_UNIT_STEPS, NamedTests, Step, Suite, TestRequest, parse_test_args,
+    plan_suite, test_command,
 };
 use crate::{
     checks::{CPU_TESTS, GPU_SEMANTICS_TESTS, REFLECTION_TESTS},
@@ -18,7 +18,51 @@ use crate::{
 };
 use std::{cell::RefCell, path::Path};
 
-const UNIT: [Step; 26] = [
+const TOOL_FREE_CORE_DOC: Step = Step::ToolFreeCargo {
+    args: &[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
+        "--features",
+        "slang-runtime",
+        "--doc",
+        "--",
+        "--skip",
+        "slang::compile",
+        "--skip",
+        "reflect::compile::compile_reflected",
+        "--skip",
+        "reflect::model::CompiledReflection",
+        "--skip",
+        "reflect::compile::CleanCompilation",
+        "--skip",
+        "reflect::compile::reflect",
+        "--skip",
+        "artifact::Verified",
+    ],
+    hide_vulkan: false,
+};
+const TOOL_FREE_WGPU_DOC: Step = Step::ToolFreeCargo {
+    args: &[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute-wgpu",
+        "--features",
+        "slang-runtime",
+        "--doc",
+        "--",
+        "guide",
+        "device::AdapterChoice",
+        "GpuBuffer<T>",
+        "GpuUniform<T>",
+        "HeadlessDevice::read_typed_buffer_async",
+    ],
+    hide_vulkan: true,
+};
+
+const UNIT: [Step; 28] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-compute-macros"]),
     Step::Cargo(&["test", "--locked", "-p", "xtask"]),
     Step::Lint,
@@ -106,43 +150,8 @@ const UNIT: [Step; 26] = [
         "--test",
         "toolchain",
     ]),
-    Step::CountedCargo(&[
-        "test",
-        "--locked",
-        "-p",
-        "gust-compute",
-        "--features",
-        "slang-runtime",
-        "--doc",
-        "--",
-        "--skip",
-        "slang::compile",
-        "--skip",
-        "reflect::compile::compile_reflected",
-        "--skip",
-        "reflect::model::CompiledReflection",
-        "--skip",
-        "reflect::compile::CleanCompilation",
-        "--skip",
-        "reflect::compile::reflect",
-        "--skip",
-        "artifact::Verified",
-    ]),
-    Step::CountedCargo(&[
-        "test",
-        "--locked",
-        "-p",
-        "gust-compute-wgpu",
-        "--features",
-        "slang-runtime",
-        "--doc",
-        "--",
-        "guide",
-        "device::AdapterChoice",
-        "GpuBuffer<T>",
-        "GpuUniform<T>",
-        "HeadlessDevice::read_typed_buffer_async",
-    ]),
+    TOOL_FREE_CORE_DOC,
+    TOOL_FREE_WGPU_DOC,
     Step::CountedCargo(&[
         "test",
         "--locked",
@@ -177,6 +186,26 @@ const UNIT: [Step; 26] = [
         "gust-compute-wgpu",
         "--no-default-features",
         "--lib",
+    ]),
+    // CI's `precompiled` job, word for word (ci.yml).
+    Step::Cargo(&[
+        "fmt",
+        "--manifest-path",
+        "tests/precompiled/Cargo.toml",
+        "--all",
+        "--",
+        "--check",
+    ]),
+    Step::Cargo(&[
+        "clippy",
+        "--locked",
+        "--manifest-path",
+        "tests/precompiled/Cargo.toml",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings",
     ]),
     Step::Cargo(&[
         "fmt",
@@ -239,46 +268,13 @@ fn unit_runs_tests_lint_docs_and_architecture_without_external_tools() {
 #[test]
 fn doc_tests_run_where_their_resources_exist() {
     let is_doc = |step: &Step| match step {
-        Step::Cargo(args) | Step::CountedCargo(args) => args.contains(&"--doc"),
+        Step::Cargo(args) | Step::CountedCargo(args) | Step::ToolFreeCargo { args, .. } => {
+            args.contains(&"--doc")
+        }
         _ => false,
     };
-    let tool_free = Step::CountedCargo(&[
-        "test",
-        "--locked",
-        "-p",
-        "gust-compute",
-        "--features",
-        "slang-runtime",
-        "--doc",
-        "--",
-        "--skip",
-        "slang::compile",
-        "--skip",
-        "reflect::compile::compile_reflected",
-        "--skip",
-        "reflect::model::CompiledReflection",
-        "--skip",
-        "reflect::compile::CleanCompilation",
-        "--skip",
-        "reflect::compile::reflect",
-        "--skip",
-        "artifact::Verified",
-    ]);
-    let guide = Step::CountedCargo(&[
-        "test",
-        "--locked",
-        "-p",
-        "gust-compute-wgpu",
-        "--features",
-        "slang-runtime",
-        "--doc",
-        "--",
-        "guide",
-        "device::AdapterChoice",
-        "GpuBuffer<T>",
-        "GpuUniform<T>",
-        "HeadlessDevice::read_typed_buffer_async",
-    ]);
+    let tool_free = TOOL_FREE_CORE_DOC;
+    let guide = TOOL_FREE_WGPU_DOC;
     let unfiltered = Step::CountedCargo(&[
         "test",
         "--locked",
@@ -395,24 +391,90 @@ fn skip_difftest_leaves_out_exactly_the_harness_steps_and_says_which() {
     assert_eq!(skipped, DIFFTEST_UNIT_STEPS.to_vec());
     assert_eq!(run.len() + skipped.len(), Suite::Unit.steps().len());
     assert!(run.iter().all(|step| !DIFFTEST_UNIT_STEPS.contains(step)));
-    // The four steps are the last four of the Unit suite, the format check first and the batch last.
+    // The three steps are the last three of the Unit suite, the batch last; the format check just before them is not
+    // skipped (it is cheap, and CI's `unit` and `slang` jobs would otherwise not run it at all).
     let unit = Suite::Unit.steps();
-    assert_eq!(unit[unit.len() - 4..], DIFFTEST_UNIT_STEPS);
+    assert_eq!(unit[unit.len() - 3..], DIFFTEST_UNIT_STEPS);
     assert_eq!(
         DIFFTEST_UNIT_STEPS.map(|step| step.label()),
         [
-            "cargo fmt --manifest-path tests/difftest/Cargo.toml -- --check",
             "cargo clippy --locked --manifest-path tests/difftest/Cargo.toml --all-targets -- -D warnings",
             "cargo test --locked --manifest-path tests/difftest/Cargo.toml",
             "cargo xtask check-difftest --cpu-only --seeds 1-4",
         ]
     );
-    // Without the flag nothing is left out; the Slangc suite carries the same four steps.
+    let fmt = "cargo fmt --manifest-path tests/difftest/Cargo.toml -- --check";
+    assert_eq!(unit[unit.len() - 4].label(), fmt);
+    assert!(run.iter().any(|step| step.label() == fmt));
+    // Without the flag nothing is left out; the Slangc suite carries the same steps.
     let (all, none) = plan_suite(Suite::Unit, false).unwrap();
     assert_eq!((all, none.len()), (Suite::Unit.steps(), 0));
     let (slangc, skipped) = plan_suite(Suite::Slangc, true).unwrap();
     assert_eq!(skipped, DIFFTEST_UNIT_STEPS.to_vec());
     assert!(slangc.contains(&Step::RequireTool("slangc")));
+    assert!(slangc.iter().any(|step| step.label() == fmt));
+}
+
+/// The fixture workspace `tests/precompiled` is checked by the CI job `precompiled` with two commands; the Unit suite
+/// runs the same two, and `--skip-difftest` (which is about the harness crate) keeps them. The commands are read from
+/// the workflow, so the two cannot drift apart.
+#[test]
+fn the_precompiled_fixture_fmt_and_clippy_are_unit_steps_with_the_commands_of_ci() {
+    let ci = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../.github/workflows/ci.yml"),
+    )
+    .unwrap()
+    .replace("\r\n", "\n");
+    let commands = [
+        "cargo fmt --manifest-path tests/precompiled/Cargo.toml --all -- --check",
+        "cargo clippy --locked --manifest-path tests/precompiled/Cargo.toml --workspace --all-targets -- -D warnings",
+    ];
+    let job = job_text(&ci, "precompiled");
+    let (run, skipped) = plan_suite(Suite::Unit, true).unwrap();
+    let labels: Vec<String> = run.iter().map(|step| step.label()).collect();
+    for command in commands {
+        assert!(job.contains(&format!("          {command}\n")), "{command}");
+        assert!(labels.iter().any(|label| label == command), "{command}");
+        assert!(skipped.iter().all(|step| step.label() != command));
+    }
+    let slangc = Suite::Slangc.steps();
+    for command in commands {
+        assert!(
+            slangc.iter().any(|step| step.label() == command),
+            "{command}"
+        );
+    }
+}
+
+/// The two doc-test steps of the Unit suite run in the environment of the `unit` job (no Slang, no helper), the
+/// adapter-free one also with no Vulkan driver, and say so in their label; the unfiltered doc step of the Slangc tier
+/// (which needs the tools) and every other step do not.
+#[test]
+fn only_the_two_tool_free_doc_steps_run_in_the_tool_free_environment() {
+    let tool_free: Vec<Step> = Suite::Slangc
+        .steps()
+        .into_iter()
+        .filter(|step| matches!(step, Step::ToolFreeCargo { .. }))
+        .collect();
+    assert_eq!(tool_free, [TOOL_FREE_CORE_DOC, TOOL_FREE_WGPU_DOC]);
+    assert!(
+        TOOL_FREE_CORE_DOC
+            .label()
+            .ends_with("[tool-free environment: no Slang, no helper]")
+    );
+    assert!(
+        TOOL_FREE_WGPU_DOC
+            .label()
+            .ends_with("[tool-free environment: no Slang, no helper, no Vulkan driver]")
+    );
+    assert_eq!(
+        Suite::Unit
+            .steps()
+            .iter()
+            .filter(|step| matches!(step, Step::ToolFreeCargo { .. }))
+            .count(),
+        2
+    );
 }
 
 #[test]
@@ -495,7 +557,7 @@ fn ci_runs_the_harness_steps_in_a_job_of_their_own_and_the_unit_jobs_skip_them()
         difftest.contains("hashFiles('Cargo.lock', 'tests/difftest/**/Cargo.lock')"),
         "{difftest}"
     );
-    for step in DIFFTEST_UNIT_STEPS {
+    for step in [DIFFTEST_FMT].into_iter().chain(DIFFTEST_UNIT_STEPS) {
         let label = step.label();
         // `cargo xtask check-difftest ...` is written in the workflow as `cargo --locked xtask check-difftest ...`.
         let line = match step {
@@ -807,7 +869,9 @@ fn the_gpu_suite_step_runs_the_captured_runner_and_fails_on_a_drifted_count() {
 fn cargo_calls(step: Step) -> Vec<Vec<String>> {
     let owned = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
     match step {
-        Step::Cargo(args) | Step::CountedCargo(args) => vec![owned(args)],
+        Step::Cargo(args) | Step::CountedCargo(args) | Step::ToolFreeCargo { args, .. } => {
+            vec![owned(args)]
+        }
         Step::GpuSuite => vec![owned(&GPU_SUITE_CALL)],
         Step::AlgoGpuSuite => vec![owned(&ALGO_GPU_CALL)],
         Step::Named(tests) => vec![owned(tests.args)],
@@ -2073,8 +2137,8 @@ fn skip_path_names_an_item(path: &str) -> bool {
 /// on the item name, and it fails on a step with no `--` or with a different number of entries than `--skip` flags.
 #[test]
 fn doc_test_skip_paths_name_items_of_the_crate() {
-    let Step::CountedCargo(args) = super::CORE_DOC_TESTS_TOOL_FREE else {
-        panic!("CORE_DOC_TESTS_TOOL_FREE is a counted cargo step");
+    let Step::ToolFreeCargo { args, .. } = super::CORE_DOC_TESTS_TOOL_FREE else {
+        panic!("CORE_DOC_TESTS_TOOL_FREE is a counted cargo step in the tool-free environment");
     };
     assert!(args.contains(&"--"), "the step passes filters after `--`");
     let paths: Vec<&str> = args

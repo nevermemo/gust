@@ -6,7 +6,10 @@ use std::{
     sync::Once,
 };
 
-use crate::test_exact::parse_result_line;
+use crate::{
+    precompiled::{StripReport, child_environment, directory_has_slang_tool},
+    test_exact::parse_result_line,
+};
 
 /// The variable that selects the profile `gust` is built under (D44, plan M4 R4.2).
 pub(crate) const PROFILE_VARIABLE: &str = "GUST_PROFILE";
@@ -419,7 +422,156 @@ pub(crate) fn run_cargo_test_captured_under(
     args: &[String],
     profile: Option<&str>,
 ) -> Result<(TestTotals, String), String> {
-    let mut command = cargo_test_command(profile);
+    run_cargo_test_command(cargo_test_command(profile), root, args)
+}
+
+/// What a child changes in the parent's environment to see what the helper-less, GPU-less runner of the CI job `unit`
+/// sees: no variable that names Slang, a reflection helper that is a path that does not exist (not an unset variable:
+/// the lookup would then fall back to a helper built in the checkout, which a checkout may have and CI
+/// has not), no `PATH` folder that holds a Slang tool, a `GUST_SLANG_HOME` that names an empty directory (the default
+/// cache is not consulted), and, with `hide_vulkan`, the Vulkan loader pointed at no driver. `GUST_PROFILE`, the
+/// rustflags variables and the rest are left alone, so the build is the workspace's own (the strict profile of the
+/// precompiled consumer would refuse `slang-runtime`).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ToolFreeEnvironment {
+    /// The variables the child does not get.
+    pub(crate) unset: Vec<OsString>,
+    /// The variables the child gets with these values (`PATH` without its Slang folders, the empty Slang home, the
+    /// missing Vulkan driver files). Applied after `unset`.
+    pub(crate) set: Vec<(OsString, OsString)>,
+    /// How many `PATH` folders were dropped.
+    pub(crate) dropped_folders: usize,
+}
+
+/// [`ToolFreeEnvironment`] of `parent`, from the stripping that `check-precompiled` E1 does ([`child_environment`]):
+/// its report names the variables and the folders to take out. `home` is the empty directory for `GUST_SLANG_HOME`.
+pub(crate) fn tool_free_environment(
+    parent: &[(OsString, OsString)],
+    has_tool: &dyn Fn(&Path) -> bool,
+    home: &Path,
+    hide_vulkan: bool,
+) -> ToolFreeEnvironment {
+    let mut report = StripReport::default();
+    let stripped = child_environment(parent, has_tool, &mut report);
+    // The helper variable is set below to a missing path: `gust::toolchain::helper_path_in` returns an explicit path as
+    // `GUST_SLANG_HOME` is set below too, to the empty home.
+    // given, while an unset variable falls back to the checkout's own helper (`checkout_helper`). `workspace_command`
+    // exports the repository's helper when the parent names none, so the variable is set whether or not the parent
+    // has it.
+    let mut unset: Vec<OsString> = report
+        .variables
+        .iter()
+        .filter(|name| {
+            !name.eq_ignore_ascii_case(HELPER_VARIABLE)
+                && !name.eq_ignore_ascii_case("GUST_SLANG_HOME")
+        })
+        .map(OsString::from)
+        .collect();
+    let mut set: Vec<(OsString, OsString)> = stripped
+        .into_iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("PATH"))
+        .collect();
+    set.push((
+        OsString::from("GUST_SLANG_HOME"),
+        home.as_os_str().to_owned(),
+    ));
+    set.push((
+        OsString::from(HELPER_VARIABLE),
+        home.join("no-helper")
+            .join("gust-slang-reflect")
+            .into_os_string(),
+    ));
+    if hide_vulkan {
+        let nowhere = home.join("no-vulkan-driver").into_os_string();
+        for name in ["VK_DRIVER_FILES", "VK_ICD_FILENAMES"] {
+            set.push((OsString::from(name), nowhere.clone()));
+        }
+        // The loader adds these drivers even when the variables above name none.
+        unset.push(OsString::from("VK_ADD_DRIVER_FILES"));
+    }
+    ToolFreeEnvironment {
+        unset,
+        set,
+        dropped_folders: report.directories.len(),
+    }
+}
+
+impl ToolFreeEnvironment {
+    pub(crate) fn apply(&self, command: &mut Command) {
+        for name in &self.unset {
+            command.env_remove(name);
+        }
+        for (name, value) in &self.set {
+            command.env(name, value);
+        }
+    }
+}
+
+/// The cargo child of [`run_counted_tool_free`]: [`cargo_test_command`] with the environment changes of
+/// [`tool_free_environment`] for `parent` applied, and those changes. A function of its own so that a unit test can
+/// read the environment the child will get (that the step applies the stripping at all is what it pins).
+pub(crate) fn tool_free_command(
+    parent: &[(OsString, OsString)],
+    home: &Path,
+    hide_vulkan: bool,
+) -> (Command, ToolFreeEnvironment) {
+    let environment = tool_free_environment(parent, &directory_has_slang_tool, home, hide_vulkan);
+    let mut command = cargo_test_command(None);
+    environment.apply(&mut command);
+    (command, environment)
+}
+
+/// [`run_counted`] in the tool-free environment of [`tool_free_environment`] (m14.s9): the doc-test steps that the
+/// `unit` CI job runs without Slang and without a GPU driver behave the same on a machine that has both. The empty
+/// Slang home is a fresh directory of the temporary folder, removed afterwards.
+pub(crate) fn run_counted_tool_free(
+    root: &Path,
+    args: &[&str],
+    hide_vulkan: bool,
+) -> Result<TestTotals, String> {
+    let home =
+        std::env::temp_dir().join(format!("gust-tool-free-slang-home-{}", std::process::id()));
+    match std::fs::remove_dir_all(&home) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => {
+            return Err(format!("cannot clear {}: {error}", home.display()));
+        }
+        _ => {}
+    }
+    std::fs::create_dir_all(&home)
+        .map_err(|error| format!("cannot create {}: {error}", home.display()))?;
+    let parent: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+    let (command, environment) = tool_free_command(&parent, &home, hide_vulkan);
+    println!(
+        "   tool-free environment: {} variable(s) unset ({}), {} PATH folder(s) with a Slang tool dropped, \
+         GUST_SLANG_HOME is set to an empty directory, GUST_SLANG_REFLECT to a file that does not exist{}",
+        environment.unset.len(),
+        environment
+            .unset
+            .iter()
+            .map(|name| name.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(", "),
+        environment.dropped_folders,
+        if hide_vulkan {
+            ", the Vulkan loader finds no driver"
+        } else {
+            ""
+        }
+    );
+    let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+    let outcome = run_cargo_test_command(command, root, &args).map(|(totals, _)| totals);
+    // Best effort: a leftover empty folder of the temporary directory is harmless.
+    let _ = std::fs::remove_dir_all(&home);
+    outcome
+}
+
+/// Runs `command` (a cargo child) with `args` in `root`, streaming and capturing its output as
+/// [`run_cargo_test_captured_under`] does.
+fn run_cargo_test_command(
+    mut command: Command,
+    root: &Path,
+    args: &[String],
+) -> Result<(TestTotals, String), String> {
     let mut child = command
         .args(args)
         .current_dir(root)
@@ -494,6 +646,10 @@ pub(crate) fn run_counted_captured(
 #[cfg(test)]
 #[path = "tests/test_counts.rs"]
 mod test_counts_tests;
+
+#[cfg(test)]
+#[path = "tests/tool_free.rs"]
+mod tool_free_tests;
 
 #[cfg(test)]
 #[path = "tests/workspace_profile.rs"]

@@ -1451,9 +1451,10 @@ The harness crate has gates of its own in the Unit suite (fix round 1; the crate
 root's fmt, clippy and test never reached it): `cargo fmt --manifest-path tests/difftest/Cargo.toml -- --check`, `cargo
 clippy --locked --manifest-path tests/difftest/Cargo.toml --all-targets -- -D warnings` and `cargo test --locked
 --manifest-path tests/difftest/Cargo.toml` (the generator, interpreter, emitter, shrinker and corpus tests and the CPU
-`short_circuit` test; the GPU one is `--ignored`). They are Unit steps, next to the CPU-only batch, and the four of
-them are the steps that `cargo xtask test --suite Unit --skip-difftest` leaves out: CI runs them in the job `difftest`,
-beside `unit`, so the `unit` and `slang` jobs keep their time (R4.10). On the development PC, whole commands including
+`short_circuit` test; the GPU one is `--ignored`). They are Unit steps, next to the CPU-only batch; the clippy, the tests
+and the batch are the steps that `cargo xtask test --suite Unit --skip-difftest` leaves out (the format check always
+runs): CI runs them in the job `difftest`, beside `unit`, so the `unit` and `slang` jobs keep their time (R4.10). On the
+development PC, whole commands including
 the wrapper's cargo slot wait and the first compile of the profile: format check 49 s, clippy 55 s, tests 247 s (131
 tests, 9 s of them running).
 

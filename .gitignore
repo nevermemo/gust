@@ -1,4 +1,5 @@
 /target/
+/tests/precompiled/target/
 /generated-wgpu/
 /.claude/
 /vendor/

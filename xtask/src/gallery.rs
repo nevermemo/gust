@@ -45,6 +45,7 @@ use crate::{
     process::{
         exit_code, run_capture, set_workspace_profile, slangc_cannot_be_found, without_colors,
     },
+    verify::SKIP_WEB_FLAG,
     web::{Example, Options as WebOptions, evidence_label, run_example},
     workspace::{cargo_target_dir, workspace_root},
 };
@@ -1331,7 +1332,7 @@ pub(crate) fn output_has_line(output: &str, expected: &str) -> bool {
 /// for `wasm32-unknown-unknown`, served from a loopback server and run in headless Chrome through the runner of
 /// `check-web` (`web::run_example`), so the part also needs Chrome, a `wasm-bindgen` CLI of the locked version and the
 /// wasm32 target; a missing one fails the part, and so does a page that does not log its `GUST_OK` line.
-fn gpu_part(root: &Path, browser: bool) -> Result<String, String> {
+fn gpu_part(root: &Path, browser: bool, skipped_by: &str) -> Result<String, String> {
     let cargo = cargo_program()?;
     let gallery = root.join(GALLERY_DIR);
     let target = gallery_target(root, "no-slang");
@@ -1356,7 +1357,7 @@ fn gpu_part(root: &Path, browser: bool) -> Result<String, String> {
             lines.push(if browser {
                 browser_run(root, entry)?
             } else {
-                browser_skipped_line(entry)
+                browser_skipped_line(entry, skipped_by)
             });
             continue;
         }
@@ -1422,13 +1423,39 @@ fn gpu_part(root: &Path, browser: bool) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
-/// What the part prints for a browser entry it was asked to leave out (`check-full --skip-web`), so that the skip is
-/// visible in the output and not silent.
-pub(crate) fn browser_skipped_line(entry: &Entry) -> String {
+/// What the part prints for a browser entry it was asked to leave out, so that the skip is visible in the output and
+/// not silent. `command` is what asked for it (`check-full --skip-web` or `check-gallery --skip-web`). The line is no
+/// pass: it says the page has no browser evidence.
+pub(crate) fn browser_skipped_line(entry: &Entry, command: &str) -> String {
     format!(
-        "{}: browser run SKIPPED on request (check-full --skip-web); no evidence for the page in a browser",
+        "{}: browser run SKIPPED on request ({command}); no browser evidence for the page",
         entry.dir
     )
+}
+
+/// `check-full --skip-web` as the text of [`browser_skipped_line`].
+const CHECK_FULL_SKIP: &str = "check-full --skip-web";
+
+/// `check-gallery --skip-web` as the text of [`browser_skipped_line`].
+const CHECK_GALLERY_SKIP: &str = "check-gallery --skip-web";
+
+/// The parts and the browser switch the arguments of `check-gallery` select. `--skip-web` is refused unless the GPU
+/// part is selected (no flag selects all three, so it is allowed there), since only that part has a browser entry.
+pub(crate) fn parse_arguments(args: &[String]) -> Result<(Parts, bool), String> {
+    let skip_web = args.iter().any(|argument| argument == SKIP_WEB_FLAG);
+    let rest: Vec<String> = args
+        .iter()
+        .filter(|argument| *argument != SKIP_WEB_FLAG)
+        .cloned()
+        .collect();
+    let parts = Parts::parse(&rest)?;
+    if skip_web && !parts.gpu {
+        return Err(format!(
+            "check-gallery: {SKIP_WEB_FLAG} leaves the browser entry out of the GPU part, so it needs \
+             --gpu (or no part flag, which runs all three)"
+        ));
+    }
+    Ok((parts, !skip_web))
 }
 
 /// The page of a browser entry in headless Chrome, through the runner of `check-web`. The page's `GUST_OK` line must name the
@@ -1485,12 +1512,17 @@ pub(crate) fn adapter_name(output: &str) -> Option<&str> {
         .filter(|name| !name.is_empty())
 }
 
-/// `cargo xtask check-gallery [--slang] [--no-slang] [--gpu]`.
+/// `cargo xtask check-gallery [--slang] [--no-slang] [--gpu] [--skip-web]`.
 pub(crate) fn check_gallery(args: &[String]) -> Result<(), String> {
-    let parts = Parts::parse(args)?;
-    run_parts(&workspace_root()?, parts, true)?;
+    let (parts, browser) = parse_arguments(args)?;
+    run_parts(&workspace_root()?, parts, browser, CHECK_GALLERY_SKIP)?;
+    let note = if browser {
+        ""
+    } else {
+        "; the browser page was NOT run: no browser evidence, owed to a run without --skip-web"
+    };
     println!(
-        "check-gallery passed (parts run: {})",
+        "check-gallery passed (parts run: {}){note}",
         parts.run_names().join(", ")
     );
     Ok(())
@@ -1507,13 +1539,14 @@ pub(crate) fn check_gallery_gpu_report(browser: bool) -> Result<String, String> 
             gpu: true,
         },
         browser,
+        CHECK_FULL_SKIP,
     )
 }
 
 /// A part of the check, as [`run_parts`] calls it.
 type PartFn<'a> = dyn Fn(&Path) -> Result<String, String> + 'a;
 
-fn run_parts(root: &Path, parts: Parts, browser: bool) -> Result<String, String> {
+fn run_parts(root: &Path, parts: Parts, browser: bool, skipped_by: &str) -> Result<String, String> {
     println!(
         "check-gallery: parts that run: {}",
         parts.run_names().join(", ")
@@ -1535,7 +1568,7 @@ fn run_parts(root: &Path, parts: Parts, browser: bool) -> Result<String, String>
             parts.not_run_names().join(", ")
         ));
     }
-    let gpu = |root: &Path| gpu_part(root, browser);
+    let gpu = |root: &Path| gpu_part(root, browser, skipped_by);
     let parts_to_run: [(bool, &str, &PartFn<'_>); 3] = [
         (parts.slang, "slang", &slang_part),
         (parts.no_slang, "no-slang", &no_slang_part),

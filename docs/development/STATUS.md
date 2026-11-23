@@ -1062,6 +1062,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       task refuses it (`IndependentLengthEmpty`); documented and pinned by a test. Radeon 890M: task-basics GPU tests
       and `check-examples --gpu` pass. RTX 5090: owed (quiet window, D250). Opus review: merge after fixes; fixed;
       re-read MERGE (follow-ups: a test for the hook dropping its clear list, round 1 zero hits in the recycled test).
+    - m14.gskip (faster gates S3): `check-gallery --skip-web` leaves the web-hello browser run out when the GPU part
+      is selected (refused otherwise) and reports the page as no browser evidence, never a pass; the skipped line
+      names the command that asked for it (`check-full --skip-web` or `check-gallery --skip-web`). A gate that holds
+      only one adapter can now run the native gallery GPU entries and leave the browser page to a both-adapter run.
+      Opus review: merge after fixes; fixed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

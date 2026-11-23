@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn the_committed_seeds_reach_the_min_over_minus_one_discard() {
-        // A `-1` divisor is biased in (generator.rs) so that this condition of the domain is exercised by the corpus.
+        // A `-1` divisor is biased in (generator/scalar.rs) so that this condition of the domain is exercised by the corpus.
         let text = corpus_text(1, 8).unwrap();
         assert!(text.contains("min-over-minus-one="), "{text}");
     }

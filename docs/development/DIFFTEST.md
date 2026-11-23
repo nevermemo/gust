@@ -154,7 +154,7 @@ tuples, arrays, closures) extends the space in its own small slice and bumps the
   through `#[gust::gpu_module]` and rustc (`method_programs_compile_through_the_macro_without_a_gust_diagnostic`), and fails on
   any `[GUST-E` diagnostic or rustc error. Its first run found E0810 and the `bool` field; the generator now avoids both.
 
-**The interpreter's order rules** (`interp.rs`, written from the Rust Reference, not from the emitted Slang; a struct is
+**The interpreter's order rules** (`interp/`, written from the Rust Reference, not from the emitted Slang; a struct is
 a flat vector of its scalar components, a call keeps a stack of receivers):
 
 - `place = value`: the value first, then the store. `place op= value` on primitives: the value first, then the place is
@@ -763,7 +763,7 @@ of seeds 1 to 4 is pinned as format 12 and `seeds.txt` is regenerated. `xtask`: 
 
 ## The domain filter
 
-The interpreter (`interp.rs`) evaluates the AST with checked operations, in Rust's evaluation order and with
+The interpreter (`interp/`) evaluates the AST with checked operations, in Rust's evaluation order and with
 short-circuiting `&&`/`||`. It reports the first of these, which are the integer conditions of D38 and
 [SEMANTICS](../SEMANTICS.md) section 3 (items 1 to 3 and 6):
 
@@ -813,7 +813,7 @@ program that reads no input buffer is discarded as `no-input-read` (it would be 
 ## Float rules (v1, the exact-interval subset)
 
 The integer filter is exact: inside the domain all three parties agree bit for bit. Floats are not, so the oracle for
-a float program is an interval, not a value (R1-4 of the M5 plan). `float.rs` holds the arithmetic and `interp.rs`
+a float program is an interval, not a value (R1-4 of the M5 plan). `float.rs` holds the arithmetic and `interp/`
 applies it. For every float intermediate the interpreter carries the `f32` reference value (the written order, round to
 nearest even, which is what the CPU twin computes) and an `f64` interval that must contain every value a conforming
 WGSL implementation may hold for it. Numbers (`2^-50`, `2^-100`, ...) are the oracle's own choices, deliberately coarse;
@@ -831,7 +831,7 @@ the line numbers are `docs/SEMANTICS.md` and the section numbers are the WGSL sp
 | Every float intermediate must be exactly `[0, 0]` or inside `+-[2^-100, 2^100]` on one side of zero. Then no subnormal (which an implementation may flush) and no infinity or NaN (indeterminate) occurs on any party, and an interval that straddles zero is refused. | SEMANTICS.md:199; WGSL 15.7.2 |
 | The relative width of the output interval must be at most `2^-10`; a wider one is "unboundable", because the comparison would not mean anything. | R1-4 (a choice of this oracle) |
 | Float `%`, `bool` buffers, and inputs outside the bounded set (magnitudes in `[2^-20, 2^20]` or exactly zero, no negative zero) are never generated. | SEMANTICS.md:198 (float `%` has no stated bound) |
-| Vectors and matrices (format 6): every component is a float intermediate under the rows above. A component-wise `+ - * /` is the scalar operation per component. `dot` of `N` components, `(m * v)[i]` and `(m * m)[i][j]` are a sum of `N` products composed in the twin's written order, so they are one `+` chain of `N` product terms: widened by `N - 1` roundings of `S'` (the rule above), where each product is itself within 1 ULP of its exact value. A GPU that fuses (`fma`) or regroups inside the sum stays inside that interval, as for a scalar chain; there is no separate bound for vectors, the chain rule is the bound. The 4-term limit on an aggregate `+`/`-` chain (`fit_chain` in `generator.rs`) is a cap of the generator, not part of the bound: `dot` counts as one term there, so `a.dot(b) + c.dot(d)` is an 8-product chain, which is still sound because `Fl` joins the chains. | SEMANTICS.md:193, 194 and section 4 "Vectors and matrices"; WGSL 15.7.5 |
+| Vectors and matrices (format 6): every component is a float intermediate under the rows above. A component-wise `+ - * /` is the scalar operation per component. `dot` of `N` components, `(m * v)[i]` and `(m * m)[i][j]` are a sum of `N` products composed in the twin's written order, so they are one `+` chain of `N` product terms: widened by `N - 1` roundings of `S'` (the rule above), where each product is itself within 1 ULP of its exact value. A GPU that fuses (`fma`) or regroups inside the sum stays inside that interval, as for a scalar chain; there is no separate bound for vectors, the chain rule is the bound. The 4-term limit on an aggregate `+`/`-` chain (`fit_chain` in `generator/scalar.rs`) is a cap of the generator, not part of the bound: `dot` counts as one term there, so `a.dot(b) + c.dot(d)` is an 8-product chain, which is still sound because `Fl` joins the chains. | SEMANTICS.md:193, 194 and section 4 "Vectors and matrices"; WGSL 15.7.5 |
 
 Discard labels of the float rules, counted per seed beside the integer ones in `seeds.txt`:
 
@@ -865,7 +865,7 @@ against an adversarial CPU model, not against hardware.
 ## Seeds and the format stamp
 
 A program is a pure function of `(seed, attempt)`: `prng.rs` (xorshift64* seeded through SplitMix64) writes 4096 bytes,
-and `generator.rs` decodes them into the AST; bytes past the end read as zero, which selects the first option of every
+and `generator/` decodes them into the AST; bytes past the end read as zero, which selects the first option of every
 choice, so a truncated stream is still a valid, smaller program (the last pass of the shrinker relies on that).
 `generate_batch` walks attempts 0, 1, 2, ... and keeps the in-domain programs until it has seven (the float space), then
 walks attempts 1 000 000, 1 000 001, ... of the vector space until it has four more, then attempts 2 000 000, ... of the
@@ -878,8 +878,8 @@ SEEDS` prints them). Before format 8 it kept ten float and six vector programs, 
 reason=count... hash=`, where the hash is FNV-1a 64 of the emitted `src/lib.rs` followed by the input data of every
 program (type name, length and the 32-bit patterns, little endian), because the data is not part of the emitted text.
 The test `corpus::tests::the_committed_corpus_is_what_the_generator_decodes_today` regenerates the file and fails on
-any difference. A change to `prng.rs`, `generator.rs`, `ast.rs` or `emit.rs` that alters a line is
-either a bug or a deliberate format change: bump `DIFFTEST_FORMAT` (`generator.rs`; it is stamped into every emitted
+any difference. A change to `prng.rs`, `generator/`, `ast/` or `emit.rs` that alters a line is
+either a bug or a deliberate format change: bump `DIFFTEST_FORMAT` (`generator/mod.rs`; it is stamped into every emitted
 crate and `seeds.txt`) and regenerate with `cargo run --locked --bin difftest-gen -- seeds 1 8 > seeds.txt`. Do not
 regenerate to make a test pass without deciding which of the two it is.
 
@@ -1283,7 +1283,7 @@ permanent tests that fail for the same reason (the second was re-run against the
 The m6.d mutations were restored with `cp backup file && touch file` and compared with `cmp` before the gates. The (b)
 row is not a GPU-side finding: with zero tolerance the reference cannot sit inside its own interval, so the interpreter
 refuses before any party runs. Mutation (b'), review of m6.d: narrow every output interval to the reference point
-(`Some((reference, reference))` in `interp.rs`, so the assert holds) and run the GPU batch of seeds 1 to 8. It fails
+(`Some((reference, reference))` in `interp/`, so the assert holds) and run the GPU batch of seeds 1 to 8. It fails
 with 8 `gpu-outside-interval` mismatches (s3_a37, s3_a44, s5_a1000003, s6_a10, s6_a1000003, s6_a1000031, s6_a1000057,
 s6_a1000058): 561 of the 8589 `f32` output elements of the 36 `f32`-output programs differ from the written-order
 reference on the RTX 5090, by a few ULP (fusing or regrouping). So the float comparison carries load on this device,

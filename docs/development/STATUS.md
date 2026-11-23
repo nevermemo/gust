@@ -1081,6 +1081,9 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       docs.rs build) and the precompiled fixture's formatting (`precompiled` job) are fixed. CI stopped each job at
       its first failure, so the later steps of those jobs are proven by the first CI run after the merge. Opus
       review: merge after fixes; fixed.
+    - m13.splitd: the difftest crate's three largest files (ast, generator, interp) split into module directories.
+      A move only: every old line lands in exactly one new file in its old order; no behaviour change. Opus review:
+      merge.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

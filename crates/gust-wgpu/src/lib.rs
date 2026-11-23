@@ -81,6 +81,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]
 
+mod batch;
 mod buffers;
 mod cache;
 #[cfg(not(target_arch = "wasm32"))]

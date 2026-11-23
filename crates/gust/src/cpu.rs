@@ -1368,6 +1368,8 @@ pub fn __no_hook() {}
 #[doc(hidden)]
 pub mod parallel;
 
+mod batch;
+
 pub mod texture;
 
 #[cfg(test)]

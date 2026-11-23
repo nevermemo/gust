@@ -28,6 +28,7 @@ members = [
     "examples/walker-life",
     "examples/event-drain",
     "examples/task-basics",
+    "examples/batch-basics",
     "examples/web-vector-add",
     "xtask",
 ]

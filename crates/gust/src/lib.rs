@@ -195,6 +195,7 @@ extern crate self as gust;
 
 mod abi;
 pub mod artifact;
+pub mod batch;
 pub mod capability;
 pub mod capture;
 pub mod cpu;
@@ -233,6 +234,7 @@ pub use abi::{
     pod_slice_as_bytes,
 };
 pub use artifact::{Artifact, Format};
+pub use batch::{Batch, FrameRun, Submitted, Ticket};
 pub use descriptor::{
     Access, Kernel, KernelDescriptor, LineSpan, ModuleDescriptor, PIXEL_MAX_ELEMENTS,
     PIXEL_ROW_WIDTH, ParameterDescriptor, ParameterKind, ResourceBinding, Shape, SourceOrigin,
@@ -241,7 +243,7 @@ pub use dispatch::{
     Arg, BindingKind, Call, Extent, Independent, LengthRule, Resource, Run, SampledCall,
     SamplerArg, SamplerDevice, SamplerSet, TypedDevice, kind,
 };
-pub use gust_macros::{gpu_fn, gpu_module, gpu_task, par_for};
+pub use gust_macros::{gpu_batch, gpu_fn, gpu_module, gpu_task, par_for};
 pub use job::{Device, Job, JobStatus};
 pub use reflect::{
     PodCrossCheck, ReflectedField, ReflectedResource, ReflectedType, ReflectedTypeKind, Reflection,

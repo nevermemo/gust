@@ -75,7 +75,8 @@ fn export_artifacts_skips_the_examples_that_export_nothing() {
             "walker-transport",
             "walker-life",
             "event-drain",
-            "task-basics"
+            "task-basics",
+            "batch-basics"
         ]
     );
     for example in NO_EXPORT_EXAMPLES {

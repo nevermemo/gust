@@ -1,0 +1,15 @@
+[package]
+name = "batch-basics"
+description = "gpu_batch!: a sealed three-stage batch (1-D, 2-D, in place) with one frame in flight, two tickets and one queue submission per frame"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+gust.workspace = true
+gust-wgpu = { workspace = true, features = ["slang-runtime"] }
+
+[lints]
+workspace = true

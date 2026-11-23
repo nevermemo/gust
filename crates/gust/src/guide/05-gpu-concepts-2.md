@@ -21,6 +21,16 @@ updates a slice in place. On the GPU device a `submit()` is one queue submission
 together (counted on the Radeon 890M; the RTX 5090 run is pending). The example `examples/task-basics` runs all
 three, and GUST-E1001, E1002, E1003, E1007 and E1008 are its diagnostics.
 
+Several stages that belong together can be one sealed batch. `gust::gpu_batch!("name", on(&device); in_flight(1); |b| {
+.. })` runs its block once: `b.input::<T>(shape)` declares a buffer that frames write, `b.param::<T>(value)` a scalar
+that frames set, and each `gpu_task!` in the block is a stage that reads the handles and parameters declared by name
+(no capture list for them; the macro reads each `let`'s type). The block returns the handles that frames use, and the
+batch is sealed: the structure is frozen, the data stays writable. A frame is `batch.begin().await?`, then
+`write`, `set` and `ticket`, then `submit()` (one queue submission on the GPU device, however many stages and tickets),
+then `ticket.await`. A frame dropped before `submit` makes no submission and gives `Err(NotSubmitted)` to its tickets.
+This release has one frame in flight; `in_flight` above 1 is GUST-E1005. `examples/batch-basics` has a three-stage
+batch (1-D, 2-D and in place) with two tickets, and GUST-E1005 and E1006 are the diagnostics of the form.
+
 ## Workgroup memory and barriers
 
 The invocations of one workgroup can share fast memory and wait for each other. `Workgroup<[T; N]>` is a kernel

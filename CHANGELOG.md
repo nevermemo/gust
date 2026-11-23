@@ -7,6 +7,14 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- A sealed batch of stages with one frame in flight (m14.s2a2). New in `gust-compute`: `gpu_batch!("name", on(&device);
+  in_flight(1); |b| { .. })` returns a `gust::Batch` and the handles of its block; a frame is `begin().await`, `write`,
+  `set`, `ticket`, `submit()` (one queue submission on the GPU device) and `ticket.await`. New public names:
+  `gust::{Batch, FrameRun, Submitted, Ticket}` and, in `gust::batch`, `Builder`, `Stage`, `Param`, `StageInfo`,
+  `Report`, `D1`, `D2`, `Rank`, `IntoShape`, `ParamType`, `BoxFuture`, `Error` (with `NotInput` and `FrameLive`) and the
+  native `Blocking` (`dispatch()`, whose every `read` is a submission of its own). `in_flight` above 1 is GUST-E1005;
+  GUST-E1006 refuses a body or a place a batch stage does not take. Runs on `CpuDevice` and `HeadlessDevice`.
+
 - Capture one GPU call and replay chosen invocations on the CPU twin (g2.cap). Every kernel with a twin gets a generated
   `capture(&gpu, &call)` (test builds and `--cfg gust_dual`) returning a `gust::capture::Captured` with
   `run_element(id)`, `run_until(id)` and `run_all()` (a call the device refuses is not captured);

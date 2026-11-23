@@ -2,7 +2,7 @@
 // struct, called by method syntax and by each path spelling. This crate must compile, and rustc checks the path
 // calls as written.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod shapes {
     pub trait Shape {
         fn area(&self) -> u32;

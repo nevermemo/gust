@@ -1,17 +1,17 @@
 # Semantics contract and known limitations
 
-This page states what a `#[gpu]` kernel means on every GUST target, where the targets are allowed to differ, and
+This page states what a `#[gpu_module]` kernel means on every GUST target, where the targets are allowed to differ, and
 how sure each statement is. It is the executable-semantics contract of D22, narrowed to a defined domain by D38 and
 confirmed by the owner in D39. The cases outside the domain are written as limitations for users: the owner's
 position is that such differences are expected edge cases that developers avoid anyway, so GUST documents them and
 does not try to make the targets match.
 
-The CPU twin exists: `gust::cpu` (slice m3.b) is its backend and the `#[gpu]` macro emits the twin of every kernel with
+The CPU twin exists: `gust::cpu` (slice m3.b) is its backend and the `#[gpu_module]` macro emits the twin of every kernel with
 a typed call (slice m3.c). The fixture tests assert the twin next to the GPU and the independent host reference, the
 atomic functions run for real on the twin, and the ledger has a twin column (slice m3.d). `cargo xtask check-cpu`
 (slice m3.c2) is a step of the Unit suite and runs the locked, GPU-free tests of the vector-add, polynomial,
 signal-pipeline, particle-step, typed-pipeline, atomic-counter (slice m3.e1), staged-graph and component-pool (slice
-m3.e2) examples, of map-chain (slice m7.a2), whose twin runs the plain bodies of its three `#[gpu] fn` maps, and of
+m3.e2) examples, of map-chain (slice m7.a2), whose twin runs the plain bodies of its three `#[gpu_fn] fn` maps, and of
 texture-threshold (slice mx.t4) and shape-bench (slice mx.p1c) (the list is `CPU_TESTS` in `xtask/src/checks.rs`).
 `cargo xtask check-dual` (slices m3.f1 and m3.f2) proves across crates that the twin is absent from a
 production build and present in a `--cfg gust_dual` build, and, with an integer kernel whose `+` overflows, that a twin
@@ -26,7 +26,7 @@ One paragraph per feature: what it is, the rule in brief, and where the full rul
 used to stand beside these rules are in the appendix "SEMANTICS run narratives (m13.docs1a)" of
 [VALIDATION](development/VALIDATION.md); the tests and adapters named here are the evidence.
 
-- **GPU target (exists).** A `#[gpu]` module is translated directly from the Rust syntax tree to Slang, `slangc`
+- **GPU target (exists).** A `#[gpu_module]` module is translated directly from the Rust syntax tree to Slang, `slangc`
   compiles the Slang to WGSL, and wgpu runs the WGSL. The measured adapter is NVIDIA GeForce RTX 5090 on Vulkan,
   driver 610.88, slangc 2026.20, 2026-11-01 (the later slangc pins and runs are in the appendix). The WGSL
   specification is the portable reference. The contract does not extend to Slang's other targets: Slang itself leaves,
@@ -80,7 +80,7 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
   - *Limits.* Only the `u32` id range is enforced. The GPU's workgroup and storage limits are not emulated (section 5a).
   - *Panics.* A panic in a kernel body follows the build's panic strategy. It unwinds out of `dispatch` and `submit`
     under `panic = "unwind"` and aborts the process under `panic = "abort"`. Nothing catches it.
-  - *Parallelism (exists, m7.c).* The calls of a generated map (`#[gpu]` on a function: `map`, `map_on`,
+  - *Parallelism (exists, m7.c).* The calls of a generated map (`#[gpu_fn]` on a function: `map`, `map_on`,
     `map_on_async`) run in parallel chunks of the output on scoped `std` threads: each chunk is a range of element
     indexes that the generator owns and writes only its own elements, so the result is bit for bit the one a single
     thread gives. If elements panic, the panic of the lowest index is raised with its own payload and nothing is
@@ -104,7 +104,7 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
   reference (the per-kernel list, with each kernel's exact or derived-bound label, is appendix A1 of
   [VALIDATION](development/VALIDATION.md); section 4, "Derived kernels", has the bounds); none uses the opt-out.
   Integer, struct and copied outputs are exact; float outputs use the bound derived in section 4.
-- **Build-time routing (exists, m8.r1, D65 to D67, D137).** `#[gpu(route = "<tag>")]` on a module or a function sends
+- **Build-time routing (exists, m8.r1, D65 to D67, D137).** `#[gpu_module(route = "<tag>")]` on a module or `#[gpu_fn(route = "<tag>")]` on a function sends
   that item to one target for the whole build, where `GUST_PROFILE=cpu` sends every item. The tag is declared in the
   owning crate's `[package.metadata.gust.routes]` (a tag is used only by the crate that declares it, GUST-E0748
   otherwise), and the target is the first of these that is set: `GUST_PROFILE=cpu`; the variable
@@ -129,7 +129,7 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
   site is then E0277. Evidence is `cargo xtask check-dual` E4 (a routed kernel library and its consumer; the unrouted
   control is a `cargo build` of the same unit, so it also fails if the variable were not tracked) and
   `cargo xtask check-cpu-target` E-j (the crate `routed` under `native`, a CPU-routed kernel and a CPU-routed
-  `#[gpu(route = ..)] fn` map built and run, then the same `cargo build --release` flipped set, unset, set, unset in one
+  `#[gpu_fn(route = ..)] fn` map built and run, then the same `cargo build --release` flipped set, unset, set, unset in one
   warm directory, where each unset state must recompile and fail like the control); both are `Cpu` evidence, never GPU
   evidence.
   - **The routing driver (exists, m8.r2, D151)** is where an application sets the variables without writing them:
@@ -143,7 +143,7 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
     and `GUST_PROFILE`), while `gust`'s build script infers it from what cargo hands it (`PROFILE` and the target
     architecture), which also see `build.target` in `.cargo/config.toml`, `CARGO_BUILD_TARGET`, a custom profile that
     inherits `release` and a `GUST_PROFILE` set in the `[env]` table of the config. So the driver also sets
-    `GUST_ROUTED_PROFILE` to the profile it resolved the routes for (m8.z), and the code the `#[gpu]` macro writes for a
+    `GUST_ROUTED_PROFILE` to the profile it resolved the routes for (m8.z), and the code the `#[gpu_module]` macro writes for a
     module with a route tag reads it with `option_env!` and compares it with the profile `gust` was built for (a hidden
     `gust::profile::is_profile`). When they differ, that crate does not compile: the error is at the route's literal and
     names both profiles and the likely cause, so a kernel is never routed for a profile the build is not. Only a module
@@ -166,15 +166,18 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
   buffer parameter, `Uniform` for a uniform one), so a uniform where a buffer is expected, or the reverse, is a compile
   error (the `typed-call-kind-mismatch` case of `tests/ui`); a hand-built call is still refused at submit
   (`BindingKind`). A uniform is read-only for the kernel and one element long whatever the dispatch's element count.
-  `T` is a struct of the same `#[gpu]` module (GUST-E0206), declared `#[repr(C, align(16))]` by the macro with const
+  `T` is a struct of the same `#[gpu_module]` module (GUST-E0206), declared `#[repr(C, align(16))]` by the macro with const
   assertions of its `Std140V1` offsets and size. A struct a uniform reaches is not also a storage element
   (GUST-E0207), holds no `Mat2` or `bool` (GUST-E0205), and is read one field at a time, never as a whole value
   (GUST-E0321). The twin runs the kernel with a copy of the value. Its ABI is `Std140V1` (`std140-v1` in the generated
   host text): scalars, 2- and 4-wide vectors, 4x4 matrices and structs of them rounded up to 16 bytes. `T` must also
   be padding-free, because the upload copies the bytes of the Rust value and padding is uninitialised: `create_uniform`
   and `CpuDevice::uniform` refuse a padded `T` with a message that names the fix, explicit padding fields, and the twin
-  also refuses a uniform parameter whose rule is not `Std140V1`. The macro refuses at compile time a struct whose
-  constant-buffer layout has a gap before a field or a tail (GUST-E0209), naming the explicit padding fields to write.
+  also refuses a uniform parameter whose rule is not `Std140V1`. GUST inserts padding only into a struct marked
+  `#[pad]` (D239): `#[gpu_module]` adds private `f32` fields `_pad0`, `_pad1`, ... for every gap and for the tail of the
+  constant-buffer layout, and a Rust-only `const fn new(<the fields you wrote>)` that sets them to `0.0`; the `_padN`
+  names appear in the reflection record. Anywhere else a gap before a field or a tail is still GUST-E0209, naming the
+  explicit padding fields to write or the attribute; a misplaced `#[pad]` is GUST-E0219.
   A value is replaced by `HeadlessDevice::write_uniform` (`Queue::write_buffer`: after every earlier submission, before
   the next, so all dispatches of one later submission see the last value) or, ordered among the dispatches of one
   submission, by the copy node `StagedGraph::write_uniform` (a write of the uniform for the derived edges and the
@@ -183,7 +186,7 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
   `GpuUniform` bound to two kernels, and a graph update between two dispatches, each against an independent host
   reference and the twin, and checks that the reflected `constantBuffer` size equals Rust's `size_of` of the element
   (D17; that check has no host reference).
-- **Element-wise map (exists, m7.a1, D99).** `#[gpu]` on a free function whose parameters and result are scalars,
+- **Element-wise map (exists, m7.a1, D99).** `#[gpu_fn]` on a free function whose parameters and result are scalars,
   `Vec2`, `Vec4`, `IVec2`, `IVec4`, `UVec2`, `UVec4`, `Mat2` or `Mat4` generates a kernel and the calls `map`, `map_on`,
   `map_gpu`, `map_gpu_on`, `map_async` and `map_on_async` in a module of the function's name
   (`crates/gust-macros/src/expand/map.rs`). The function body is the dialect, so sections 3 and 4 apply to it as to any
@@ -228,7 +231,7 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
     (D26). Section 8 lists what the map tests pin.
 - **`par_for!` (exists, m7.p).** `par_for!(PATTERN in RANGES, [bindings] { body })` runs the body once for every
   index of a one-, two- or three-dimensional range that starts at 0, on the device named by `on(..)` or the default
-  one. The loop variable is the invocation's global id on that axis and the body is the `#[gpu]` dialect (the same
+  one. The loop variable is the invocation's global id on that axis and the body is the `#[gpu_module]` dialect (the same
   validator, the same codes). The macro adds a guard on all three axes (an unused axis has extent 1), so the invocations
   of a workgroup that lie outside the extent, along any axis, run nothing; an extent of 0 on any axis runs nothing and
   returns `Ok(())`. An extent that does not fit `u32` is an `Err`, and so is a launch past the invocation cap of
@@ -266,7 +269,7 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
   `STORAGE`) and the device instance at submit. Formats are the nine of `gust::texture::Format`
   (`R32/Rg32/Rgba32` x `Uint/Sint/Float`); `StorageTexture2D` (read-write) exists for the three r32 formats only,
   `WriteTexture2D` (write-only) for all nine.
-  *As built on the GPU (slices mx.t2 to mx.t4; measured on the adapter above).* A `#[gust::gpu]` kernel takes
+  *As built on the GPU (slices mx.t2 to mx.t4; measured on the adapter above).* A `#[gust::gpu_module]` kernel takes
   `Texture2D<T>` (sampled), `StorageTexture2D<R32*>`, `WriteTexture2D<F>` and `Sampler` parameters, and the typed
   `dispatch` and `dispatch_extent` take `gust_wgpu::GpuTexture2d<F>` and `GpuSampler` for them. `load` and `store` are
   exact: on all nine formats the GPU and the twin agree bit for bit and with an independent host expectation, and
@@ -529,11 +532,19 @@ Quotes (WGSL editor's draft, section numbers as read):
   which section 8.2 defines as "some arbitrary implementation-chosen value of the static type".
 - 15.7.2 (subnormals): inputs or outputs of the operations of 15.7.4 "may be flushed to zero". Other operations "are
   required to preserve subnormal numbers"; the arithmetic of this subset is in the first group. The same section
-  lets an implementation ignore the sign of a zero.
+  lets an implementation ignore the sign of a zero. Since the 2026.22.1 pin, slangc emits the negation of a float
+  vector as `-a` (it was `0 - a`, which gives `+0.0` for `+0.0`), so the vector now yields `-0.0` for `+0.0` like Rust;
+  this is inferred from IEEE 754 and was not run on a GPU, and an adapter may still ignore the sign of a zero.
 - 15.7.6 (conversions): "for non-NaN cases, floating point to integer conversion clamps the value to be within the
   range of the target type, then rounds toward zero." For NaN: "If X is a NaN, the result is an indeterminate value
   in T." For integer to float, when the value is not representable: "WGSL does not specify whether the higher or
-  lower representable value is chosen".
+  lower representable value is chosen". Since the 2026.22.1 pin, slangc folds a constant out-of-range float to `i32` or
+  `u32` conversion at compile time, so such an expression no longer reaches this conversion and gives other values than
+  on 2026.22 (measured on the RTX 5090 in spike SL221: `int4(float4(1e20, -1e20, 2147483648.0, -2147483904.0))` gave
+  `2147483520 INT_MIN 2147483520 INT_MIN` on 2026.22 and `0 0 INT_MIN 2147483392` folded; `uint4(float4(-1.0, 1e20,
+  4294967296.0, 3.9))` gave `0 0xffffff00 0xffffff00 3` and then `0xffffffff 0 0 3`). Neither route saturates like Rust;
+  this is a D39 limitation of the out-of-domain case, not a promise (rows KM-05 and KM-06). In-range constants fold to
+  the same value as before.
 
 Per-operation bounds, with their input domains. "Domain" means finite operands and a finite result, each zero or
 normal, unless the row says more. ULP is the unit in the last place of the result (15.7.4).
@@ -1048,14 +1059,14 @@ numbers of this page are kept, so this section carries the number 5a.
   (`a_gpu_grid_kernel_has_a_variant_and_a_cpu_or_pixel_kernel_has_none` in `crates/gust-macros/src/tests/profile.rs`),
   and a build without the run-time compiler plans no split
   (`a_split_variant_is_planned_only_in_a_build_with_the_run_time_compiler` in `crates/gust-wgpu/src/compile/source.rs`). *Not claimed:* the order of the pieces and any visibility between them (one piece reading what another
-  wrote, atomics across pieces). *Inferred, not tested:* the plain refusal of a split-capable `#[gpu]` kernel through
+  wrote, atomics across pieces). *Inferred, not tested:* the plain refusal of a split-capable `#[gpu_module]` kernel through
   the deprecated `dispatch_f32`/`dispatch_u32`, which no test exercises with a kernel that
   carries a variant (`crates/gust-wgpu/tests/limits.rs` tests the refusal of hand-built descriptors, which have none,
   on that path). An indirect launch is not in that list: it is neither split nor refused by the host for its workgroup
   count (read in `check_indirect_launch` and `prepare_indirect` in `crates/gust-wgpu/src/dispatch/prepare.rs`; m11.r5fix), and
   no test here launches a split-capable kernel indirectly.
 - **The portable floor (opt-in, m8.f, D143).** A crate that sets `limits = "portable"` in `[package.metadata.gust]` has every
-  `#[kernel]` body, and the kernel of each `#[gpu]` function and `par_for!` call (m11.floor), checked when it compiles against `gust::limits::PORTABLE`, the WebGPU defaults: a workgroup of at most
+  `#[kernel]` body, and the kernel of each `#[gpu_fn]` function and `par_for!` call (m11.floor), checked when it compiles against `gust::limits::PORTABLE`, the WebGPU defaults: a workgroup of at most
   256 x 256 x 64 and 256 invocations, 8 storage buffers, 12 uniform buffers, 16 sampled textures, 4 storage textures,
   16 samplers and 16384 bytes of workgroup memory per kernel. A kernel over one limit is GUST-E0746 (which stands where
   E0718 would for such a crate). Without the setting nothing is checked at compile time and the launch checks above stay
@@ -1073,6 +1084,19 @@ numbers of this page are kept, so this section carries the number 5a.
   with a y or z extent are a follow-up. The host code that `render_wgpu_source` generates takes `element_count: u32`
   for a kernel with a one-dimensional workgroup (no y or z extent can be given to it) and `extent: [u32; 3]` for a
   kernel with a two- or three-dimensional workgroup; it checks no launch limit.
+- **A device shared with a renderer (m14.devshare.1, D247, D248).** `HeadlessDevice::adopt` wraps a device the caller
+  opened, so that a renderer presents from the device GUST runs on. Surface, adapter, device and queue must come from
+  one `wgpu::Instance`: a device from another instance given to `Surface::configure` panics inside wgpu-core, or
+  silently binds the surface to an unrelated device of the surface's own instance, and GUST cannot detect either. A
+  device GUST opened itself lives in a private instance and is never given to a surface. The adopted device keeps the
+  semantics of an opened one, with these differences: its limits are the device's own; an optional feature the caller
+  did not enable degrades (timestamps, coherent storage and `float32-filterable` report false, a linear sampler is
+  `Error::TextureFilter`, the SPIR-V route falls back to WGSL) and a capability whose feature is missing is
+  `Error::MissingFeatures`; GUST's blocking calls wait for every submission on the queue, including the renderer's;
+  an error scope the caller holds on the same thread also catches the errors of GUST's infallible paths; GUST never
+  calls `destroy`. Adopting one device twice makes two GUST devices whose buffers refuse to mix. `set_default_device`
+  makes the shared handle the default device, and refuses one that lacks a capability of the build
+  (`Error::DefaultDeviceCapability`). Evidence: Radeon 890M on Vulkan; the RTX 5090, DX12 and the browser are pending.
 
 ## 6. Atomics
 
@@ -1141,7 +1165,7 @@ numbers of this page are kept, so this section carries the number 5a.
   11) are asserted as the set `{7, 11}` and `{-5, 11}` on the GPU, because WGSL allows a spurious failure there too
   (17.8.5); on the twin they are asserted at 11, by definition. The RTX 5090 took the exchange branch in every measured
   run, so the spurious branch is exercised only by the GPU-free test of the two check functions that the GPU tests call,
-  never by an adapter. On the 2026.22 pin (and on 2026.21 before it) the emitted WGSL is a retry loop (see the bullet
+  never by an adapter. On the 2026.22.1 pin (and on 2026.22 and 2026.21 before it) the emitted WGSL is a retry loop (see the bullet
   above), so the set is probably wider than that pin's WGSL produces; it stays because the contract is weak. Because the
   unchanged value is accepted in every compare-exchange case, a GPU compare-exchange that did nothing would pass all of
   the GPU assertions. The twin assertion catches a no-op twin; the failure case (exact, at 7, on both sides) catches a
@@ -1174,11 +1198,11 @@ needs the two targets to agree.
 | KM-02 | `x % 0` for `u32` and `i32` | Panics "attempt to calculate the remainder with a divisor of zero" in every profile. | Returns 0 (WGSL section 8.8). | spec-allowed, measured |
 | KM-03 | `i32::MIN / -1` and `i32::MIN % -1` | Panic "attempt to divide with overflow" and "attempt to calculate the remainder with overflow" in every profile. | `MIN / -1 == i32::MIN` and `MIN % -1 == 0` (WGSL section 8.8). | spec-allowed, measured |
 | KM-04 | Shift by a run-time amount outside 0..32 (`<<`, `>>` on `u32` and `i32`; run-time: Slang cannot fold it to a constant; a constant amount the macro sees is refused, GUST-E0335) | Checks on: panics "attempt to shift left with overflow" or "attempt to shift right with overflow". Checks off: the amount is masked to its low 5 bits. | The amount is masked to its low 5 bits (WGSL section 8.10): `1 << 32 == 1`, `1 << 33 == 2`, `1 << 64 == 1`, `0x8000_0000 >> 33 == 0x4000_0000`, `-8i32 >> 33 == -4`. | spec-allowed, measured |
-| KM-05 | `f32 as i32` of a value outside the `i32` range, and of NaN | Saturates: `1.0e10 -> i32::MAX`, `-1.0e10 -> i32::MIN`, `NaN -> 0`, in every profile. | Finite values: the `i32` value closest to the truncated source that `f32` represents exactly (WGSL section 15.7.6), which differs from Rust at the top end: `1.0e10 -> 2147483520` and `2^31 -> 2147483520` (not `i32::MAX`), `-1.0e10 -> i32::MIN`. NaN: indeterminate; observed `i32::MIN`. | spec-allowed (finite), unspecified (NaN), measured |
-| KM-06 | `f32 as u32` of a negative, too large or NaN value | Saturates: negative and NaN give 0, `1.0e10` and `2^32` give `u32::MAX`, in every profile. | Finite values (WGSL section 15.7.6, as KM-05): negatives such as `-1.0`, `-3.99` and `-1.0e10` give 0; `1.0e10` and `2^32` give 4294967040 (`0xffffff00`), not `u32::MAX`. NaN: indeterminate; observed 0. | spec-allowed (finite), unspecified (NaN), measured |
+| KM-05 | `f32 as i32` of a value outside the `i32` range, and of NaN | Saturates: `1.0e10 -> i32::MAX`, `-1.0e10 -> i32::MIN`, `NaN -> 0`, in every profile. | Finite values: the `i32` value closest to the truncated source that `f32` represents exactly (WGSL section 15.7.6), which differs from Rust at the top end: `1.0e10 -> 2147483520` and `2^31 -> 2147483520` (not `i32::MAX`), `-1.0e10 -> i32::MIN`. NaN: indeterminate; observed `i32::MIN`. Since the 2026.22.1 pin a constant operand that slangc folds gives other values (see the note under section 15.7.6 above: `1.0e20` gave 0 and `2147483648.0` gave `i32::MIN` in the spike probe), so this row describes run-time operands; neither route saturates like Rust. | spec-allowed (finite), unspecified (NaN), measured |
+| KM-06 | `f32 as u32` of a negative, too large or NaN value | Saturates: negative and NaN give 0, `1.0e10` and `2^32` give `u32::MAX`, in every profile. | Finite values (WGSL section 15.7.6, as KM-05): negatives such as `-1.0`, `-3.99` and `-1.0e10` give 0; `1.0e10` and `2^32` give 4294967040 (`0xffffff00`), not `u32::MAX`. NaN: indeterminate; observed 0. Since the 2026.22.1 pin a constant operand that slangc folds gives other values (see the note under section 15.7.6 above: `-1.0` gave `0xffffffff` and `1.0e20` gave 0 in the spike probe), so this row describes run-time operands; neither route saturates like Rust. | spec-allowed (finite), unspecified (NaN), measured |
 | KM-07 | NaN and infinity through arithmetic and comparison | IEEE 754: NaN propagates, `NaN != NaN` is true, ordered comparisons with NaN are false, `1.0 / 0.0` is `+inf`. | Unspecified (an operation that would produce NaN or infinity may give an indeterminate value; comparisons with NaN are not guaranteed to be unordered). Observed: NaN and infinity propagate and compare as in IEEE for every case except `NaN != NaN`, which is false. The sign and payload of a NaN are not preserved either: the GPU produced `0x7fffffff` in every case, Rust produces `0x7fc00000` or `0xffc00000`. Division by a divisor above 2^126 is also outside WGSL's division accuracy range: `3.0e38 / 3.0e38` gave 0 on the GPU, Rust gives 1. | unspecified, measured |
 | KM-08 | Denormal (subnormal) `f32` operands and results | Kept: `1.0e-40 * 1.0` is `1.0e-40`, `1.0e-40 == 0.0` is false. | Unspecified (flushing to zero is allowed). Observed: operands and results flushed to zero (`1.0e-40 * 1.0`, `+ 0.0`, `* 2.0`, `/ 2.0` and `4.0e-38 / 4.0` give 0), and `1.0e-40 == 0.0` is true. | unspecified, measured |
-| KM-09 | Contended `atomic_exchange` and `atomic_compare_exchange` (257 invocations, one cell), and the uncontended `atomic_compare_exchange` (one invocation) | Sequential, ascending invocation id: the exchange ends at 256; the compare-exchange from 999 to `id + 1` ends at 1. | Set-valued: the exchange ends at some id in 0 to 256, the compare-exchange at some value in 1 to 257, or at 999 (unchanged) because the weak compare-exchange may fail spuriously (WGSL section 17.8.5); the test accepts all of that set. The uncontended case (one invocation, `compare-exchange(cell, 999, id + 1)`) is set-valued too: the cell ends at 1 or stays 999 (WGSL section 17.8.5, D47), and the Rust and twin columns end at 1. On the 2026.22 pin, as on 2026.21 before it (131 of 131 golden WGSL entries identical, spike SL22), the emitted WGSL retries after a spurious failure (a retry loop around `atomicCompareExchangeWeak`, Slang #13918, read from the text), so the spurious failure is not expected there; the contract stays weak because it covers other pins and targets, and the tests accept the same set. Observed on the 2026.20 pin (before #13918; not re-measured on 2026.21), over 32 dispatches per run, three runs: 1 to 10 distinct final values per run, and, in the contended cases, never the sequential result (the exchange ended between 1 and 251, the compare-exchange between 7 and 137). The uncontended case ended at 1, the sequential result, in every dispatch, in both overflow modes. | spec-allowed (the set), measured |
+| KM-09 | Contended `atomic_exchange` and `atomic_compare_exchange` (257 invocations, one cell), and the uncontended `atomic_compare_exchange` (one invocation) | Sequential, ascending invocation id: the exchange ends at 256; the compare-exchange from 999 to `id + 1` ends at 1. | Set-valued: the exchange ends at some id in 0 to 256, the compare-exchange at some value in 1 to 257, or at 999 (unchanged) because the weak compare-exchange may fail spuriously (WGSL section 17.8.5); the test accepts all of that set. The uncontended case (one invocation, `compare-exchange(cell, 999, id + 1)`) is set-valued too: the cell ends at 1 or stays 999 (WGSL section 17.8.5, D47), and the Rust and twin columns end at 1. On the 2026.22.1 pin, as on 2026.22 and 2026.21 before it (131 of 131 golden WGSL entries identical, spike SL22; 189 of 190 on 2026.22.1, the one difference being `products`, spike SL221), the emitted WGSL retries after a spurious failure (a retry loop around `atomicCompareExchangeWeak`, Slang #13918, read from the text), so the spurious failure is not expected there; the contract stays weak because it covers other pins and targets, and the tests accept the same set. Observed on the 2026.20 pin (before #13918; not re-measured on 2026.21), over 32 dispatches per run, three runs: 1 to 10 distinct final values per run, and, in the contended cases, never the sequential result (the exchange ended between 1 and 251, the compare-exchange between 7 and 137). The uncontended case ended at 1, the sequential result, in every dispatch, in both overflow modes. | spec-allowed (the set), measured |
 | KM-10 | Overflow of the plain operators `+`, `-`, `*` and unary `-` on `u32` and `i32`. The methods `wrapping_add`, `wrapping_sub`, `wrapping_mul` and `wrapping_neg` are the way to ask for the wrapped result (slice m7.w): they are `DOMAIN` controls in the ledger test, not part of this row | Checks on: panics ("attempt to add with overflow" and so on). Checks off: wraps modulo 2^32. The `wrapping_*` methods wrap in every profile. | Wraps modulo 2^32 (WGSL section 6.2.3): `u32::MAX + 1 == 0`, `i32::MAX + 1 == i32::MIN`, `0u32 - 1 == u32::MAX`, `-i32::MIN == i32::MIN`. The `wrapping_*` methods lower to the same plain operators (`wrapping_neg` is `0 - a`) and give these values. | spec-allowed, measured |
 | KM-11 | Out-of-bounds index equal to the buffer length | Panics "index out of bounds" in every profile. | Unspecified (a dynamic error, WGSL section 6.5.7). Observed with index 4: a load from a 4-element buffer returned 0, and a store into a 4-element buffer was dropped (the buffer was unchanged); the store is measured alone, with a longer `source` so that the kernel's own load is in bounds, and the twin's store row panics at the store because its load is in bounds. | unspecified, measured |
 | KM-12 | A texel address outside a texture: `load` or `store` at `(width, 0)` or `(0, height)` of a 4 x 2 `r32uint` storage texture (slice mx.t4) | Panics "index out of bounds" in every profile: the twin says "index out of bounds: the texel is (4, 0) but the texture is 4x2" (a coordinate past the width panics although the flat index exists), and a `Vec<Vec<u32>>` indexed the same way panics too. | Unspecified (WGSL `textureLoad` and `textureStore` with an out-of-range coordinate). Observed at both addresses: the load returned 0 and the store changed no texel. One format, one adapter. | unspecified, measured |
@@ -1219,7 +1243,7 @@ never failed, and a zero read from buffer data never triggered it. Through D3D12
 and its flags. The generated Slang, WGSL and SPIR-V are correct and the AMD Radeon 890M computes Rust's values,
 so GUST does not refuse or rewrite the form. Programs that write a real change are not affected. A stored array in
 a struct field is affected the same way; arrays in storage buffers were not measured. The GPU test
-`driver_sentinel` (m9.sen) runs three `#[gpu]` kernels shaped like the investigations' programs (the D168 kernels read
+`driver_sentinel` (m9.sen) runs three `#[gpu_module]` kernels shaped like the investigations' programs (the D168 kernels read
 `v[0]` directly) and expects these wrong values on the RTX 5090 and Rust's elsewhere; if their results change on the
 5090, it fails, the cue to re-measure before touching the difftest guard. With the `spirv-route` feature on and the
 route taken (section 15), the defect did not reproduce on the RTX 5090: the sentinel reads the route of its kernels
@@ -1674,7 +1698,7 @@ sources non-negative and in range; these cases are not tested on the GPU.
 ### Refused, with codes
 
 **Two atomics on one cell in an assignment are refused (m9.z).** The old value of an atomic is not an operand in a
-`#[gpu]` body (the CPU twin returns it; section 6; the one exception since `m11.fetch` is the old value of `atomic_add`
+`#[gpu_module]` body (the CPU twin returns it; section 6; the one exception since `m11.fetch` is the old value of `atomic_add`
 as the whole initializer of a `let`), so `out[atomic_add(&mut c[i], 1u32) as usize] = atomic_add(&mut c[i], 10u32);`
 and `let i = atomic_add(&mut c[i], 1u32) + 1u32;` are refused with `GUST-E0606` (an atomic as a value). Any ordinary read or
 write of a buffer that the kernel also uses atomically, an index that reads the atomic cell among them, is refused with
@@ -1757,7 +1781,7 @@ values written by hand), the macro tests in `crates/gust-macros/src/tests/regres
 
 ### Accepted
 
-A `#[gpu]` module may declare `trait T { fn m(&self, ..) -> R; fn n(self, ..) -> Self; fn k(&mut self, ..); }`: methods
+A `#[gpu_module]` module may declare `trait T { fn m(&self, ..) -> R; fn n(self, ..) -> Self; fn k(&mut self, ..); }`: methods
 with a receiver and no body (`GUST-E0124` for anything else: a default body, an associated item, a supertrait, a generic
 trait or method). `impl T for S` is accepted for a struct or a field-less enum of the module (`GUST-E0121` for a foreign
 type or a blanket impl; `GUST-E0124` for `&mut self` on an enum). A trait is not a type (`GUST-E0218`: `dyn`,
@@ -2005,7 +2029,7 @@ the status log, not here.
 
 ### Accepted
 
-A `const NAME: T = <literal>;` at the top of a `#[gpu]` module (`T` one of `u32`, `i32`, `f32`, `bool`; GUST-E0127 for
+A `const NAME: T = <literal>;` at the top of a `#[gpu_module]` module (`T` one of `u32`, `i32`, `f32`, `bool`; GUST-E0127 for
 any other form) is one value read by the host, the CPU twin and every kernel of the module (for an `f32` constant
 expression, see the documented difference under D39 below). The macro evaluates
 nothing: it leaves the Rust item as written, so the host and the twin read the literal rustc compiles, and writes the

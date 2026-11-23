@@ -17,7 +17,7 @@ mod common;
 use gust::cpu::CpuDevice;
 use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod wgsl_tmpl {
     fn both(x: bool, y: bool) -> bool {
         if x {
@@ -82,7 +82,7 @@ mod wgsl_tmpl {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod wgsl_lit {
     fn flag(value: bool) -> uint {
         if value {

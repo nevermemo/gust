@@ -1,6 +1,6 @@
 // A trait method named like a method of the dialect (m9.g1, GUST-E0328).
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Sized {
         fn len(&self) -> u32;

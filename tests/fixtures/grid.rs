@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod grid {
     // Multi-dimensional dispatch (m7.d). The extent of a call is `Extent { x, y, z }`; every kernel here has a
     // workgroup of 16 x 16 (or 4 x 4 x 4), so an extent that is not a multiple of it runs whole workgroups and the

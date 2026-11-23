@@ -722,7 +722,7 @@ fn invalid_kernel_signatures_are_rejected_early() {
 
 #[test]
 fn invalid_kernel_options_are_rejected_early() {
-    // Rejected by `kernel_options` in expand/mod.rs.
+    // Rejected by `kernel_options` in expand/kernel_attributes.rs.
     for (source, code) in [
         (
             "mod bad { #[kernel(workgroup_size(0, 1, 1))] fn run(id: SV_DispatchThreadID) {} }",
@@ -2266,9 +2266,9 @@ fn the_stand_in_of_a_cfg_struct_carries_its_cfg_and_a_cfg_attr_derive_counts() {
     assert!(attributes_of("Other").is_empty());
 }
 
-/// When the arguments of `#[gpu(..)]` are refused as a whole, the recovered code names the facade as the expansion
-/// would: a well-formed `crate = <path>` among them forwards the prelude import and the stand-ins to it, and with
-/// none they keep `::gust::`.
+/// When the arguments of `#[gpu_module(..)]` are refused as a whole, the recovered code names the facade as the
+/// expansion would: a well-formed `crate = <path>` among them forwards the prelude import and the stand-ins to it, and
+/// with none they keep `::gust::`.
 #[test]
 fn recovery_after_refused_arguments_uses_the_facade_path_the_expansion_would() {
     let module = "mod demo { pub struct Params { pub a: uint } }";
@@ -3719,8 +3719,8 @@ fn mismatch_golden() {
 }
 
 /// The build-directory errors (a half artifact pair, an export write, a package name) carry stable codes like every
-/// other rejection `#[gpu]` reports (docs/DIAGNOSTICS.md). They are items beside a usable module, not `syn` errors, so
-/// the rendered text is asserted.
+/// other rejection `#[gpu_module]` reports (docs/DIAGNOSTICS.md). They are items beside a usable module, not `syn`
+/// errors, so the rendered text is asserted.
 #[test]
 fn build_directory_failures_carry_their_codes() {
     use crate::expand::expand_with_directories;
@@ -5812,7 +5812,7 @@ fn names_in_fn(source: &str, signature: &str) -> Vec<String> {
 
 #[test]
 fn every_method_table_name_has_an_emitter_arm_and_is_in_the_accepted_text() {
-    let validate = include_str!("../validate/mod.rs");
+    let validate = include_str!("../validate/tables.rs");
     let math = include_str!("../math_types.rs");
     let accepted = translate(&kernel_with_body("let y = x.count_zeros();"))
         .unwrap_err()
@@ -5895,9 +5895,9 @@ fn star_assign_on_a_place_with_a_wrapping_method_is_not_a_call_in_a_matrix_modul
 const TEXTURES_FIXTURE: &str = include_str!("../../../../tests/fixtures/textures.rs");
 const TEXTURES_GOLDEN: &str = include_str!("../../../../tests/fixtures/textures.slang");
 
-/// The textures fixture as `#[gpu]` receives it (the attribute is the macro's own).
+/// The textures fixture as `#[gpu_module]` receives it (the attribute is the macro's own).
 fn textures_module() -> String {
-    TEXTURES_FIXTURE.replacen("#[gust::gpu]", "", 1)
+    TEXTURES_FIXTURE.replacen("#[gust::gpu_module]", "", 1)
 }
 
 #[test]
@@ -8230,7 +8230,7 @@ fn a_raw_type_name_is_read_like_the_plain_one() {
     let plain_result = translate(&with_kernel(result, "out[id.x] = 1u32;")).unwrap();
     let raw_result = translate(&with_kernel(raw_result, "out[id.x] = 1u32;")).unwrap();
     assert_eq!(plain_result, raw_result);
-    // And a raw `Workgroup` is the workgroup parameter it names (barrier.rs, validate/mod.rs).
+    // And a raw `Workgroup` is the workgroup parameter it names (barrier.rs, validate/functions.rs).
     let workgroup = "mod m { #[kernel(workgroup_size(64, 1, 1), cpu = \"unsupported\")] \
                      pub fn run(id: SV_DispatchThreadID, mut wg: Workgroup<[uint; 4]>) { wg[0u32] = 1u32; } }";
     let plain = translate(workgroup).unwrap();
@@ -10559,7 +10559,7 @@ fn the_constants_round_trip_as_f32() {
 
 #[test]
 fn every_scalar_math_name_has_an_emitter_arm_and_is_in_the_accepted_text() {
-    let validate = include_str!("../validate/mod.rs");
+    let validate = include_str!("../validate/tables.rs");
     let accepted = translate(&kernel_with_body("let y = x.count_zeros();"))
         .unwrap_err()
         .to_string();

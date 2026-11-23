@@ -1,7 +1,7 @@
 // A barrier is a statement of its own: inside an array repeat or literal it is refused like in any expression (the barrier form).
 // expected.txt pins the code and the line of the barrier.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(64, 1, 1), cpu = "unsupported")]
     pub fn run(

@@ -2,7 +2,7 @@
 // and is defined modulo 2^32 for all of them. This crate must compile, so the validator, the lowering and the
 // preserved Rust (which calls the std methods on `u32` and `i32`) all accept it.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod hashing {
     fn scramble(x: uint) -> uint {
         x.wrapping_mul(2654435761u32).wrapping_add(2654435769u32)

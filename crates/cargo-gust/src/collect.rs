@@ -2,11 +2,11 @@
 //!
 //! `cargo gust` runs `cargo check -p <package>` in an isolated target directory, `<target>/gust-export`, with
 //! `GUST_EXPORT_DIR` pointing at a directory that is new for this run (`records/<nonce>`) and `GUST_PROFILE=dev` in the
-//! child environment. The `#[gpu]` macro tracks both variables with `option_env!`, so a new nonce re-expands exactly the
-//! crates that contain kernels, and in export mode it writes `<key>.slang` and `<key>.kernel.json` for every kernel
-//! into `<GUST_EXPORT_DIR>/<CARGO_PKG_NAME>/`. Only the target package's directory is read: path crates further down
-//! the graph write their own sets, which are ignored. The record directory is removed after every run, whatever its
-//! outcome, and a nonce is never reused, so a kernel deleted from the source leaves no record.
+//! child environment. The `#[gpu_module]` macro tracks both variables with `option_env!`, so a new nonce re-expands
+//! exactly the crates that contain kernels, and in export mode it writes `<key>.slang` and `<key>.kernel.json` for
+//! every kernel into `<GUST_EXPORT_DIR>/<CARGO_PKG_NAME>/`. Only the target package's directory is read: path crates
+//! further down the graph write their own sets, which are ignored. The record directory is removed after every run,
+//! whatever its outcome, and a nonce is never reused, so a kernel deleted from the source leaves no record.
 //!
 //! The command constructors here only build a [`Command`]; tests assert on them without running cargo.
 
@@ -287,7 +287,7 @@ impl Drop for RecordRoot {
 /// The error for a collection that found no kernel.
 pub(crate) fn zero_kernels_error(package: &str) -> String {
     format!(
-        "zero kernels collected for `{package}`: the crate may have no `#[gpu]` module, or its gust-compute-macros predates export mode (GUST_EXPORT_DIR); nothing was written"
+        "zero kernels collected for `{package}`: the crate may have no `#[gpu_module]` module, or its gust-compute-macros predates export mode (GUST_EXPORT_DIR); nothing was written"
     )
 }
 

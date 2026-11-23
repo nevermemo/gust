@@ -1,7 +1,7 @@
 //! `cargo gust`: the export tool for GUST kernels (D45, D46).
 //!
-//! A `#[gpu]` module is compiled to Slang by the macro; this tool turns the Slang into WGSL (and SPIR-V) ahead of
-//! time and commits the result, so that a production build needs no Slang at all. The pieces:
+//! A `#[gpu_module]` module is compiled to Slang by the macro; this tool turns the Slang into WGSL (and SPIR-V) ahead
+//! of time and commits the result, so that a production build needs no Slang at all. The pieces:
 //!
 //! 1. **Collect.** `cargo check -p <crate>` runs in an isolated target directory (`<target>/gust-export`) with
 //!    `GUST_EXPORT_DIR` set to a directory that is new for the run and `GUST_PROFILE=dev`. In export mode the macro
@@ -55,9 +55,9 @@
 //!   summary and the notes on a preset `GUST_ROUTE__*` variable go to standard error. An error names `gust.toml`, the
 //!   line and the tag, and cargo does not build (`cargo metadata` runs to read the declarations). The driver also sets
 //!   `GUST_ROUTED_PROFILE` to the profile it resolved the routes for, read from the command line and `GUST_PROFILE`;
-//!   the `#[gpu]` expansion of a routed module fails the compilation of its crate when `gust` was built for another
-//!   profile (a target from `build.target` or `CARGO_BUILD_TARGET`, or a custom profile that inherits `release`), so a
-//!   kernel is never routed for the wrong profile. A run that applies no `gust.toml` removes the variable.
+//!   the `#[gpu_module]` expansion of a routed module fails the compilation of its crate when `gust` was built for
+//!   another profile (a target from `build.target` or `CARGO_BUILD_TARGET`, or a custom profile that inherits
+//!   `release`), so a kernel is never routed for the wrong profile. A run that applies no `gust.toml` removes the variable.
 //! - `cargo gust doctor` shows the located Slang and where its licence notices are, the helper (refused when it was
 //!   built against another Slang than the located `slangc`), `spirv-val`, the profile a build here would get and the
 //!   install command.
@@ -117,8 +117,8 @@
 //!   put the release archive in `<cache>/archives/` and run the command again; its digest is checked the same way.
 //! - `cargo gust slang locate [--allow-slang-mismatch]` prints the `slangc` a build would use: the cache
 //!   (`GUST_SLANG_HOME` when set, else the default), then a `slangc` on `PATH`. A `PATH` slangc counts when its
-//!   `-version` is the pin exactly or a build listed in `VALIDATED_BUILDS` (the release prints `2026.22`; the list is
-//!   empty, since 2026.22 was validated with the release itself). Anything else is an error naming the install
+//!   `-version` is the pin exactly or a build listed in `VALIDATED_BUILDS` (the release prints `2026.22.1`; the list is
+//!   empty, since 2026.22.1 was validated with the release itself). Anything else is an error naming the install
 //!   command and the download URL; a `PATH` slangc of another version is used only with the flag, and is printed.
 //! - `cargo gust slang build-helper [--force] [--sdk-root <dir> --out-dir <dir>]` builds `gust-slang-reflect` from
 //!   `assets/slang-layout.cpp` (a copy of `scripts/probes/slang-layout.cpp`, kept equal by a test) with the first of
@@ -153,8 +153,8 @@
 //! # Limits
 //!
 //! Only kernels in the package's library and binary targets are collected (`cargo check -p`), not tests or examples.
-//! The `#[gpu]` macro names records by their 64-bit key. In export mode it never overwrites an existing record whose
-//! bytes differ: the second kernel with that key fails to expand (E0712, naming both kernels when it can read the
+//! The `#[gpu_module]` macro names records by their 64-bit key. In export mode it never overwrites an existing record
+//! whose bytes differ: the second kernel with that key fails to expand (E0712, naming both kernels when it can read the
 //! first one's name, else the key), and rewriting identical bytes is fine. The tool still rejects a record whose text
 //! does not match its key, and two records that share a key and differ in text, as defence in depth.
 //!

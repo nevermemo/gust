@@ -1,4 +1,4 @@
-# Diagnostic-code guard (docs/DIAGNOSTICS.md, "Stability"). Every rejection #[gpu] reports carries a
+# Diagnostic-code guard (docs/DIAGNOSTICS.md, "Stability"). Every rejection #[gpu_module] or #[gpu_fn] reports carries a
 # stable code, so a syn::Error is created, and a syn parse failure is given its code, only in
 # crates/gust-macros/src/diagnostics.rs. That file allows these items; clippy runs under
 # `-D warnings` in CI (.github/workflows/ci.yml), so any other use fails the build.

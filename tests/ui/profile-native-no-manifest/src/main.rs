@@ -3,7 +3,7 @@
 // `GUST_PROFILE=native`: one `E0080`, at the kernel's line in this file, telling the user to run `cargo gust init`
 // and `cargo gust build` (R4.3).
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod vector_add {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn add(

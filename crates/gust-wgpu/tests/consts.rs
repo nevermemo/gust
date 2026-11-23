@@ -1,5 +1,5 @@
-//! A module-level `const` shared by the kernels of a `#[gpu]` module, on the GPU and on the CPU twin (slice m11.g3,
-//! D205; Gpu tier).
+//! A module-level `const` shared by the kernels of a `#[gpu_module]` module, on the GPU and on the CPU twin (slice
+//! m11.g3, D205; Gpu tier).
 //!
 //! The module below holds four `pub const` items (a `u32`, a negative `i32`, an `f32` and a `bool`, plus a `u32` that is
 //! the largest value) read by a helper and by two kernels. The macro lowers each to one `static const` line in the text
@@ -17,7 +17,7 @@ mod common;
 use gust::{Independent, cpu::CpuDevice};
 use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod shared {
     pub const WIDTH: u32 = 4096;
     pub const OFFSET: i32 = -7;
@@ -362,7 +362,7 @@ fn extreme_literals_a_struct_method_and_a_closure_read_constants_on_the_gpu_and_
 // nothing: each Slang `static const` holds the expression the Rust item holds, operator for operator, so rustc computes
 // the host's value and slangc computes the shader's, and the test compares the two. rustc already refuses an item that
 // overflows or divides by zero.
-#[gust::gpu]
+#[gust::gpu_module]
 mod cexpr {
     // `u32`: a product, a chain through three constants, results above `i32::MAX`, truncating `/` and `%`, shifts by a
     // constant, and `!`.

@@ -1,7 +1,7 @@
 // A variant of a GPU enum carries no data: a data-carrying variant has no Slang lowering yet, GUST-E0122. expected.txt
 // pins the code and the line of the variant.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[derive(PartialEq, Eq)]
     pub enum Shape {

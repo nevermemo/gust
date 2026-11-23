@@ -9,4 +9,4 @@ file: gpupod-missing/src/main.rs
 line: 13
 message: `Outside` is not a GUST GPU POD type
 message: an `unsafe impl` written by hand must uphold the layout contract in the safety section of `GpuPod`
-label: declare a plain struct inside the same `#[gpu]` module so that the macro implements `GpuPod` for it; `u32`, `i32` and `f32` already implement it
+label: declare a plain struct inside the same `#[gpu_module]` module so that the macro implements `GpuPod` for it; `u32`, `i32` and `f32` already implement it

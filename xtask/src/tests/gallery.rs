@@ -195,7 +195,10 @@ fn the_gallery_sources_have_well_formed_anchors_with_the_regions_the_guide_will_
         ["imports", "kernel", "main", "tests"]
     );
     let kernel = anchored_region(&source, "kernel").unwrap();
-    assert!(kernel.starts_with("#[gpu]\nmod vector_add {\n"), "{kernel}");
+    assert!(
+        kernel.starts_with("#[gpu_module]\nmod vector_add {\n"),
+        "{kernel}"
+    );
     assert!(kernel.ends_with("    }\n}\n"), "{kernel}");
     let main = anchored_region(&source, "main").unwrap();
     assert!(main.starts_with("fn main() {\n"), "{main}");
@@ -509,8 +512,8 @@ fn a_cache_that_holds_slang_or_is_missing_is_refused() {
     let parent = environment(&[("PATH", &path)]);
     assert_eq!(slang_home_problem(&root.join("home")), None);
     // A fake cache with an installed Slang in it (`<home>/<version>/bin/slangc`).
-    fs::create_dir_all(root.join("cache/2026.22/bin")).unwrap();
-    write(&root.join("cache/2026.22/bin"), "slangc", "");
+    fs::create_dir_all(root.join("cache/2026.22.1/bin")).unwrap();
+    write(&root.join("cache/2026.22.1/bin"), "slangc", "");
     let problem = slang_home_problem(&root.join("cache")).unwrap();
     assert!(problem.contains("is not empty"), "{problem}");
     let error = no_slang_environment(
@@ -807,7 +810,7 @@ fn the_registered_guide_listings_match_the_real_gallery_and_a_changed_gallery_li
         "an unchanged copy"
     );
     for (needle, replacement) in [
-        ("use gust::gpu;", "use gust::gpu as g;"),
+        ("use gust::gpu_module;", "use gust::gpu_module as g;"),
         ("let i = id.x;", "let i = id.y;"),
         (
             "println!(\"hello-gust: {result:?}\");",
@@ -927,7 +930,7 @@ fn the_sources_of_web_hello_have_the_anchored_regions_a_guide_chapter_can_show()
         ]
     );
     let kernel = anchored_region(&source, "kernel").unwrap();
-    assert!(kernel.contains("#[gpu]\npub fn add(a: f32, b: f32) -> f32 {\n    a + b\n}\n"));
+    assert!(kernel.contains("#[gpu_fn]\npub fn add(a: f32, b: f32) -> f32 {\n    a + b\n}\n"));
     let browser = anchored_region(&source, "browser").unwrap();
     assert!(browser.contains("#[cfg(target_arch = \"wasm32\")]\nmod browser {"));
     assert!(browser.contains("add::map_async(&a, &b)"));

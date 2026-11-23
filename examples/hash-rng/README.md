@@ -21,7 +21,7 @@ Notes:
 - Bit equality (plain Rust reference, CPU twin, GPU) is measured on the Radeon 890M only; other adapters are
   unmeasured.
 - This is a hash for simulation, not for cryptography.
-- A `#[gpu]` module accepts module-level `const` items since m11.g3 (the kernels read them and so does the host);
+- A `#[gpu_module]` module accepts module-level `const` items since m11.g3 (the kernels read them and so does the host);
   this example still writes its constants as literals in place. The helpers must live in the module that uses them.
 
 Run with `cargo run -p hash-rng`; the CPU tests run with `cargo test -p hash-rng`, and the GPU test with

@@ -1,7 +1,7 @@
-//! The map generator (M7, D60, slice m7.a1): `#[gpu]` on a free scalar function.
+//! The map generator (M7, D60, slice m7.a1): `#[gpu_fn]` on a free scalar function.
 //!
 //! ```text
-//! #[gpu]
+//! #[gpu_fn]
 //! pub fn saxpy(a: f32, x: f32, y: f32) -> f32 { a * x + y }
 //! ```
 //!
@@ -20,12 +20,12 @@
 //!
 //! The generator does not emit a second pipeline. It builds the module above as syntax (the user's function validated
 //! as a helper of a module, the kernel written in the dialect around it) and hands it to the expansion that every
-//! `#[gpu]` module goes through, so the Slang, the descriptor, the typed calls, the CPU `Run` impl and the artifact
-//! handling are the ones of any kernel, and `extra` carries the host functions. The kernel is the grid-stride form of
-//! spike m7.s1: every buffer is bound `Independent`, the element count is the output's length, a dispatch has
-//! `min(n, CEILING)` invocations, and each invocation covers `ceil(n / CEILING)` rounds. An input buffer of length 1
-//! is a [`Broadcast`](https://docs.rs/) argument and is read at index 0, so one kernel serves every mix of vectors
-//! and broadcasts.
+//! `#[gpu_module]` module goes through, so the Slang, the descriptor, the typed calls, the CPU `Run` impl and the
+//! artifact handling are the ones of any kernel, and `extra` carries the host functions. The kernel is the grid-stride
+//! form of spike m7.s1: every buffer is bound `Independent`, the element count is the output's length, a dispatch has
+//! `min(n, CEILING)` invocations, and each invocation covers `ceil(n / CEILING)` rounds. An input buffer of length 1 is
+//! a [`Broadcast`](https://docs.rs/) argument and is read at index 0, so one kernel serves every mix of vectors and
+//! broadcasts.
 //!
 //! Profiles. Under `GUST_PROFILE=cpu` the host functions name only `::gust::cpu` (no GPU API), `map_gpu` and
 //! `map_async` are not emitted, and `map_on` and `map_on_async` are concrete over `CpuDevice` and run the CPU-only
@@ -113,8 +113,8 @@ pub(crate) fn map_kernel(function: &syn::ItemFn, profile: Profile) -> syn::Resul
     Ok(MapKernel { module, host })
 }
 
-/// Expands `#[gpu]` on a free function for `profile`: the function as written, then its module. The function may carry
-/// a route (`#[gpu(route = "tag")] fn`, M8, D65 to D67).
+/// Expands `#[gpu_fn]` on a free function for `profile`: the function as written, then its module. The function may
+/// carry a route (`#[gpu_fn(route = "tag")] fn`, M8, D65 to D67).
 pub(crate) fn expand_map_routed(
     function: syn::ItemFn,
     profile: Profile,
@@ -209,8 +209,8 @@ fn check_signature(function: &syn::ItemFn) -> syn::Result<Signature> {
         return Err(diagnostics::error(
             Code::MapSignature,
             &function.sig,
-            "a map function is not a `#[kernel]`: `#[gpu]` on a function generates the kernel; write a kernel \
-             inside `#[gpu] mod name { .. }` to control it",
+            "a map function is not a `#[kernel]`: `#[gpu_fn]` on a function generates the kernel; write a kernel \
+             inside `#[gpu_module] mod name { .. }` to control it",
         ));
     }
     let unraw = name.unraw().to_string();
@@ -219,7 +219,7 @@ fn check_signature(function: &syn::ItemFn) -> syn::Result<Signature> {
             Code::MapNameCollision,
             &name,
             format!(
-                "the module `{unraw}` that `#[gpu]` generates for this function would define `{unraw}` twice: \
+                "the module `{unraw}` that `#[gpu_fn]` generates for this function would define `{unraw}` twice: \
                  the generated names are {}; rename the function",
                 GENERATED_NAMES
                     .iter()
@@ -400,7 +400,7 @@ fn module_attributes(
          and `map_on_async` do not block"
     };
     let text = format!(
-        "The element-wise calls of [`{name}`] and its generated kernel (`#[gpu]` on a function, D60): {calls}. All \
+        "The element-wise calls of [`{name}`] and its generated kernel (`#[gpu_fn]` on a function, D60): {calls}. All \
          arguments of one call that have a length must be equally long."
     );
     attributes.push(syn::parse_quote!(#[doc = #text]));
@@ -1090,7 +1090,7 @@ mod tests {
     use super::*;
     use crate::expand::artifact::{TWIN_TEXT, tests::Scratch};
 
-    /// The export records of a `#[gpu] fn` hold no CPU twin text (GUST-E0712): the map kernel's dispatch id is not
+    /// The export records of a `#[gpu_fn] fn` hold no CPU twin text (GUST-E0712): the map kernel's dispatch id is not
     /// spelled `__gust_id`, the marker the guard reserves for the twin, so `cargo gust build` can export a map.
     #[test]
     fn the_export_records_of_a_gpu_fn_pass_the_twin_text_guard() {

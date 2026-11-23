@@ -1,7 +1,7 @@
 // A barrier reached only through the impl of a bound (m9.g2, D154, GUST-E0414): every impl is validated as a helper, so
 // the barrier is refused where it is written, whichever instantiation reaches it.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Sync {
         fn sync(&self) -> u32;

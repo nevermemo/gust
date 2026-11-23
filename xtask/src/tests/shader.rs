@@ -177,9 +177,9 @@ fn the_flag_is_the_text_the_compile_paths_of_gust_pass() {
             "fn slangc_command(",
         ),
         (
-            "crates/gust/src/reflect/mod.rs",
-            include_str!("../../../crates/gust/src/reflect/mod.rs"),
-            "fn slangc_reflection_command(",
+            "crates/gust/src/reflect/compile.rs",
+            include_str!("../../../crates/gust/src/reflect/compile.rs"),
+            "pub(super) fn slangc_reflection_command(",
         ),
     ] {
         let body = function_body(source, signature);

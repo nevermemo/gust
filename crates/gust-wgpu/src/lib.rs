@@ -55,10 +55,10 @@
 //!
 //! # Stability
 //!
-//! This crate is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version (`0.1` to `0.2`),
-//! and a patch release (`0.1.0` to `0.1.1`) only adds or fixes. The four crates of a release (`gust-compute`, the `#[gpu]`
-//! macro crate, this crate and `cargo-gust`) share one version and depend on each other with exact (`=`) pins: take
-//! them at the same version, and a minor bump of one is a minor bump of all.
+//! This crate is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version (`0.1` to `0.2`), and
+//! a patch release (`0.1.0` to `0.1.1`) only adds or fixes. The four crates of a release (`gust-compute`, the
+//! `#[gpu_module]` macro crate, this crate and `cargo-gust`) share one version and depend on each other with exact
+//! (`=`) pins: take them at the same version, and a minor bump of one is a minor bump of all.
 //!
 //! What a minor bump may change: any public item that is not support surface, including a function's signature and
 //! the public fields of the plain record types (`BufferDispatch`, `DeviceOptions` and the like).
@@ -88,6 +88,7 @@ mod compile;
 mod completion;
 mod device;
 mod dispatch;
+mod encode;
 mod error;
 mod generated_host;
 #[cfg(not(target_arch = "wasm32"))]
@@ -114,6 +115,7 @@ mod render;
 // `GpuBackend for HeadlessDevice` reads buffers back with `read_typed_buffer`, which does not exist on wasm32, where a
 // call cannot block either, so the routed handle has no GPU backend there (`RoutedDevice<NoGpu>` does).
 mod headless;
+pub mod inspect;
 mod readback;
 #[cfg(not(target_arch = "wasm32"))]
 mod routed;
@@ -129,7 +131,7 @@ use completion::Completion;
 use completion::blocking::block_on_mapping;
 pub use device::{
     AdapterChoice, DeviceHandle, DeviceOptions, FeaturesPolicy, LimitsPolicy, default_device,
-    default_device_async, set_default_options,
+    default_device_async, set_default_device, set_default_options,
 };
 pub use dispatch::*;
 pub use error::Error;
@@ -143,6 +145,9 @@ pub(crate) use readback::*;
 pub use texture::{GpuSampler, GpuSamplerBinding, GpuTexture2d};
 pub(crate) use typed_call::*;
 pub use vec::GpuVec;
+/// The `wgpu` this crate is built against, so that a renderer names the same copy, with the same features, as the
+/// handles it shares with GUST (see [`HeadlessDevice::adopt`]).
+pub use wgpu;
 
 // A build holds one target (D21): this crate is the GPU runtime, so a build under `GUST_PROFILE=cpu` stops here with
 // a compile error (E0080) that names the profile. Under `dev`, `native` and `web` this does nothing.

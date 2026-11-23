@@ -17,7 +17,7 @@ The pieces:
   "routed::smooth" = "gpu"
   ```
 
-- `#[gpu(route = "tidy")]` and `#[gpu(route = "smooth")]` put each module under its tag.
+- `#[gpu_module(route = "tidy")]` and `#[gpu_module(route = "smooth")]` put each module under its tag.
 - `main` opens the GPU, wraps it with `RoutedDevice::with_gpu`, and prints the target each kernel was built for
   (`DESCRIPTOR.target`).
 

@@ -49,7 +49,7 @@
 
 #[cfg(any(test, gust_dual))]
 use gust::cpu::CpuDevice;
-use gust::{Independent, gpu};
+use gust::{Independent, gpu_module};
 use gust_wgpu::{DeviceHandle, GpuVec, HeadlessDevice, WgpuJob, default_device};
 use std::{
     future::Future,
@@ -87,7 +87,7 @@ const _: () = assert!(LAG >= 1 && QUEUES > LAG);
 /// Cells per side of the grid: a power of two.
 pub const SIDE: usize = 64;
 
-// ---- Host side: inputs and the reference, plain Rust, not the `#[gpu]` bodies. ----
+// ---- Host side: inputs and the reference, plain Rust, not the `#[gpu_module]` bodies. ----
 
 /// The hash-rng finaliser ("lowbias32", Chris Wellons' hash-prospector, public domain).
 fn mix(x: u32) -> u32 {
@@ -311,7 +311,7 @@ fn decode(cap: usize, counters: &[u32], events: &[u32]) -> Result<Drained, Strin
     })
 }
 
-#[gpu]
+#[gpu_module]
 pub mod k {
     /// Cells per side: a power of two.
     pub const SIDE: u32 = 64;

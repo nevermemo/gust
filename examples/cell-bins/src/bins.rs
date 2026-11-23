@@ -38,10 +38,10 @@
 
 #[cfg(any(test, gust_dual))]
 use gust::cpu::{CpuBuffer, CpuDevice, CpuUniform};
-use gust::{Independent, gpu};
+use gust::{Independent, gpu_module};
 use gust_wgpu::{DeviceHandle, GpuUniform, GpuVec, HeadlessDevice};
 
-#[gpu]
+#[gpu_module]
 mod binning {
     /// The grid's side, then three pad fields: a uniform is `Std140V1`, a struct is rounded up to 16 bytes and may
     /// have no padding, so one `u32` is written with three explicit pad fields.

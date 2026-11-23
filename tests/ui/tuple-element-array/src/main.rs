@@ -1,7 +1,7 @@
 // A tuple element is a scalar, vector, matrix, struct, enum or tuple, GUST-E0213: not an array. expected.txt pins the
 // code and the line of the element type.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     fn pick(v: u32) -> ([u32; 2], u32) {
         ([v, v], v)

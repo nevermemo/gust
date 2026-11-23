@@ -1,6 +1,6 @@
 // A `&mut self` method called on a value that is not a place (m9.a2, GUST-E0333): the change would be lost.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Counter {
         pub n: uint,

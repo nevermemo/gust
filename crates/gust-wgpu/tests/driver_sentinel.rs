@@ -5,7 +5,7 @@ include!("fixtures/driver_sentinel.rs");
 // loop has a constant bound, and its exit is a `break` on a float comparison; `s` starts at 2^(t - 126) and is halved
 // each step, so the exit is due at iteration t - 1 (n = t). The start values and the thresholds come from buffers,
 // built from bits on the host, so the values are exact whatever the compiler folds.
-#[gust::gpu]
+#[gust::gpu_module]
 mod loop_break {
     // limit[i] is 1.5 * 2^-125 for lt_form and 2^-125 for eq_form. It is a per-invocation buffer, every element
     // alike, only because the typed buffers of one call share one length.

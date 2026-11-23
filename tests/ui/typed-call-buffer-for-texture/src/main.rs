@@ -1,6 +1,6 @@
 // A storage buffer where the kernel has a texture is a compile error in the typed call: the texture parameter is
 // bounded by `Kind = ::gust::kind::Texture`, and the buffer (the right element type) has kind `Storage`. The kernel
-// and its `blur_call` are written by hand, as `#[gpu]` cannot declare a texture parameter before slice mx.t3.
+// and its `blur_call` are written by hand, as `#[gpu_module]` cannot declare a texture parameter before slice mx.t3.
 // expected.txt pins the code and the line of the call.
 #![allow(dead_code)]
 
@@ -82,7 +82,7 @@ impl<K: Kernel, const N: usize> Run<K, N> for Mock {
     }
 }
 
-// A kernel with a texture, a sampler and an output buffer, written by hand: `#[gpu]` cannot declare a texture
+// A kernel with a texture, a sampler and an output buffer, written by hand: `#[gpu_module]` cannot declare a texture
 // parameter before slice mx.t3, but the typed call's bounds below are the ones the macro will emit.
 struct Blur;
 

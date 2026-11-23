@@ -4,7 +4,7 @@
 
 fn upload<T: gust::GpuPod>(_values: &[T]) {}
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod stepping {
     pub struct Particle {
         pub position: f32,

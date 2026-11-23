@@ -1,7 +1,7 @@
 // A pixel pin on a kernel that writes its output on one path only (GUST-E0726).
 // expected.txt pins the code and the line of the pin.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod shade {
     #[kernel(shape = pixel)]
     pub fn paint(id: SV_DispatchThreadID, input: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>) {

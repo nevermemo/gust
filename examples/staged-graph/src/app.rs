@@ -9,7 +9,7 @@
 
 use std::{path::PathBuf, time::Instant};
 
-use gust::{Independent, KernelDescriptor, gpu};
+use gust::{Independent, KernelDescriptor, gpu_module};
 #[cfg(test)]
 use gust_wgpu::{BufferBinding, BufferDispatch};
 use gust_wgpu::{GpuBufferAccess, GraphReport, HeadlessDevice, StagedGraph, render_wgpu_source};
@@ -17,7 +17,7 @@ use gust_wgpu::{GpuBufferAccess, GraphReport, HeadlessDevice, StagedGraph, rende
 /// Intermediates reduced into one summary element.
 pub const BLOCK: u32 = 8;
 
-#[gpu]
+#[gpu_module]
 mod staged {
     #[derive(Debug, PartialEq)]
     pub struct Settings {

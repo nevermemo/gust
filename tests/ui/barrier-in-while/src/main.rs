@@ -1,7 +1,7 @@
 // A barrier in a `while` loop: the loop is rejected for its own sake, GUST-E0402 (a `while` has no trip count fixed
 // at entry), and a barrier kernel adds no second error. expected.txt pins the code and the line of the `while`.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(256, 1, 1), cpu = "unsupported")]
     pub fn reduce(

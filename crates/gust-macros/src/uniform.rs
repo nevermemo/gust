@@ -4,9 +4,10 @@
 //! The macro has no type information, so everything here is by name, like [`crate::math_types`]. A struct is
 //! *uniform-reachable* when a `Uniform<T>` parameter of a kernel names it, or a uniform-reachable struct has it as a
 //! field. Such a struct is declared `#[repr(C, align(16))]` (a constant-buffer struct has alignment and size rounded up
-//! to 16) and must be padding-free in that layout: GUST never inserts padding, because the upload copies the bytes of
-//! the Rust value and padding bytes are uninitialised (`gust::GpuPod`). A gap or a tail is therefore a compile error
-//! that names the field and the explicit padding to write (`GUST-E0209`).
+//! to 16) and must be padding-free in that layout, because the upload copies the bytes of the Rust value and padding
+//! bytes are uninitialised (`gust::GpuPod`). GUST inserts padding only into a struct marked `#[pad]`
+//! ([`crate::expand::pad`]); anywhere else a gap or a tail is a compile error that names the field and the explicit
+//! padding to write, or the attribute (`GUST-E0209`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -170,7 +171,7 @@ pub(crate) fn check_parameters(stage: &dyn StageProfile, items: &[syn::Item]) ->
             return Err(diagnostics::error(
                 Code::UniformElement,
                 resource.parameter,
-                "a uniform parameter holds one struct declared in the same `#[gpu]` module: write `Uniform<Params>` \
+                "a uniform parameter holds one struct declared in the same `#[gpu_module]` module: write `Uniform<Params>` \
                  with `Params` a struct of the module (a scalar, a vector or a matrix goes in a field of it)",
             ));
         }
@@ -229,7 +230,7 @@ pub(crate) fn check_parameters(stage: &dyn StageProfile, items: &[syn::Item]) ->
 }
 
 /// The last segment of a field type that is a bare name.
-fn field_type_name(ty: &syn::Type) -> Option<String> {
+pub(crate) fn field_type_name(ty: &syn::Type) -> Option<String> {
     let syn::Type::Path(path) = ty else {
         return None;
     };
@@ -342,7 +343,8 @@ pub(crate) fn check_padding(stage: &dyn StageProfile, items: &[syn::Item]) -> sy
                     format!(
                         "field `{field_name}` of `{name}` would sit at byte {offset} of a constant buffer, {gap} bytes \
                          after the previous field ends at byte {end}: a struct a uniform reaches may contain no \
-                         implicit padding; add {gap} bytes of explicit padding before it ({}), or reorder the fields",
+                         implicit padding; add {gap} bytes of explicit padding before it ({}), reorder the fields, or \
+                         mark the struct `#[pad]` and GUST inserts the padding",
                         padding_fields(gap),
                     ),
                 ));
@@ -357,7 +359,7 @@ pub(crate) fn check_padding(stage: &dyn StageProfile, items: &[syn::Item]) -> sy
                 format!(
                     "`{name}` ends at byte {end} but a constant-buffer struct is rounded up to {} bytes: a struct a \
                      uniform reaches may contain no implicit padding; add {tail} bytes of explicit padding at the end \
-                     ({})",
+                     ({}), or mark the struct `#[pad]` and GUST inserts the padding",
                     layout.size,
                     padding_fields(tail),
                 ),

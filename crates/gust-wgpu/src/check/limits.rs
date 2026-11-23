@@ -335,7 +335,7 @@ mod tests {
         }
         assert_eq!(
             error.to_string(),
-            "kernel `test::kernel` requires the `subgroups` capability, which this device (adapter `Fake Adapter`) was not opened with; open it with `DeviceOptions::with_capabilities`"
+            "kernel `test::kernel` requires the `subgroups` capability, which this device (adapter `Fake Adapter`) was not opened or adopted with; pass the capability to `DeviceOptions::with_capabilities` or to `adopt`"
         );
         // With the capability the same kernel passes, and a kernel with no `requires` never needs one.
         assert!(

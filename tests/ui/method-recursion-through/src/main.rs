@@ -1,7 +1,7 @@
 // A method and a helper that reach each other (m9.a2, GUST-E0120): the cycle runs through a method call, which the
 // graph draws to every method of that name.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Counter {
         pub n: uint,

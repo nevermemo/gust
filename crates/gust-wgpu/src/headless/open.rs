@@ -3,12 +3,12 @@ use crate::cache::PipelineCache;
 use crate::default_device;
 use crate::{
     ADAPTER_ATTEMPTS, ADAPTER_BACKOFF, DeviceOptions, Error, HeadlessDevice, NEXT_DEVICE_ID,
-    TimestampProfiler, pause_between_attempts, retry_no_adapter, spirv_route_features,
+    TimestampProfiler, pause_between_attempts, retry_no_adapter,
 };
 use crate::{AdapterChoice, BufferPool, FeaturesPolicy, LimitsPolicy, device};
 use gust::capability::Capability;
 use std::sync::Mutex;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 impl HeadlessDevice {
     /// Select a high-performance Vulkan adapter and open a logical device.
@@ -69,68 +69,57 @@ impl HeadlessDevice {
     /// `float32-filterable` is enabled where the adapter offers it, so that a linear sampler can be bound
     /// ([`float32_filterable`](Self::float32_filterable) reports the result; see [`DeviceOptions`]).
     pub async fn new_async_with(options: DeviceOptions) -> Result<Self, Error> {
-        let DeviceOptions {
-            backends,
-            adapter,
-            limits,
-            features,
-            capabilities,
-        } = options;
         let adapter = retry_no_adapter(
             ADAPTER_ATTEMPTS,
             &ADAPTER_BACKOFF,
             pause_between_attempts,
             |line| eprintln!("{line}"),
-            || Self::request_adapter(backends, &adapter),
+            || Self::request_adapter(options.backends, &options.adapter),
         )
         .await?;
-        Self::open(adapter, limits, features, capabilities).await
+        Self::open(adapter, &options).await
     }
 
-    async fn open(
-        adapter: wgpu::Adapter,
-        limits_policy: LimitsPolicy,
-        features_policy: FeaturesPolicy,
-        capabilities: &'static [Capability],
-    ) -> Result<Self, Error> {
-        let adapter_info = adapter.get_info();
+    /// Request the device `options` describe from `adapter` (`DeviceOptions::device_request` says what is asked) and
+    /// wrap it.
+    async fn open(adapter: wgpu::Adapter, options: &DeviceOptions) -> Result<Self, Error> {
         // A capability the adapter lacks ends the open here (D23's startup failure), before the device is requested.
         // In a browser nothing is requestable: a non-empty set is refused there with the same error (ruling 5).
-        let capability_features = device::required_capability_features(
-            capabilities,
-            adapter.features(),
-            &adapter_info.name,
-            cfg!(target_arch = "wasm32"),
-        )?;
-        let subgroup_sizes = device::adapter_subgroup_sizes(adapter.features(), &adapter_info);
-        let timestamp_queries = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
-        let required_features = if timestamp_queries {
-            wgpu::Features::TIMESTAMP_QUERY
-        } else {
-            wgpu::Features::empty()
-        };
+        let request = options.device_request(&adapter)?;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("GUST headless device"),
-                required_features: required_features
-                    | (adapter.features() & wgpu::Features::MEMORY_DECORATION_COHERENT)
-                    | features_policy.required_features(&adapter)
-                    | spirv_route_features(&adapter)
-                    | capability_features,
-                required_limits: limits_policy.required_limits(&adapter),
+                required_features: request.features,
+                required_limits: request.limits,
                 ..Default::default()
             })
             .await
             .map_err(|error| Error::RequestDevice(error.to_string()))?;
-        let timestamp_profiler =
-            timestamp_queries.then(|| Mutex::new(TimestampProfiler::new(&device)));
+        Ok(Self::finish(&adapter, device, queue, options.capabilities))
+    }
+
+    /// The one place a `HeadlessDevice` is built, for a device GUST opened and for one the caller opened (`adopt`):
+    /// what GUST reads from the device and the adapter, whoever requested the device.
+    pub(super) fn finish(
+        adapter: &wgpu::Adapter,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        capabilities: &'static [Capability],
+    ) -> Self {
+        let adapter_info = adapter.get_info();
+        let subgroup_sizes = device::adapter_subgroup_sizes(adapter.features(), &adapter_info);
+        // From the device's own features, which are what it was granted, not from what the adapter offers.
+        let timestamp_profiler = device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
+            .then(|| Mutex::new(TimestampProfiler::new(&device)));
         let limits = device.limits();
         let fragment_storage = adapter
             .get_downlevel_capabilities()
             .flags
             .contains(wgpu::DownlevelFlags::FRAGMENT_WRITABLE_STORAGE);
 
-        Ok(Self {
+        Self {
             id: NEXT_DEVICE_ID.fetch_add(1, Ordering::Relaxed),
             device,
             queue,
@@ -142,8 +131,9 @@ impl HeadlessDevice {
             capabilities,
             subgroup_sizes,
             pool: BufferPool::new(),
+            submissions: AtomicU64::new(0),
             #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
             route_events: Mutex::new(Vec::new()),
-        })
+        }
     }
 }

@@ -97,7 +97,7 @@ Do not wait for Codex during normal local swarm work.
 
 ## Invariants
 
-- Preserve `#[gpu]` whole-module authoring, direct syn → Slang, readable artifacts,
+- Preserve `#[gpu_module]` whole-module authoring, direct syn → Slang, readable artifacts,
   real GPU tests, typed buffers, pipeline caching, ordered batches, and async jobs.
 - No new custom shader instruction IR or handwritten SPIR-V backend. An eventual
   execution graph is a high-level CPU/GPU scheduling model, not a replacement for Slang.
@@ -175,7 +175,9 @@ cargo xtask check-workspace
 Use stable Rust, the pinned `slangc` on PATH (`cargo gust slang install` installs it;
 `GUST_SLANG_HOME` moves that install), and a Vulkan adapter. For release evidence run
 `cargo xtask check-full` (its steps are in `xtask/src/verify.rs`; it requires SPIRV-Tools and a Vulkan adapter):
-the cheap checks (lint, docs-check, check-arch, check-ui); rustc and slangc versions; fmt and clippy; the workspace
+the cheap checks (lint, docs-check, check-arch, check-ui); rustc and slangc versions; fmt, then `check-cfg` (the
+runtime crates per feature set and for wasm32; the full mode needs the wasm32 standard library, `check-fast` skips
+the wasm32 runs without it and its closing line names them), then clippy; the workspace
 tests and the harness crate's checks; the release Slang tests and the mismatch ledger; every example's tests with
 `--include-ignored`, then each example run; the strict subgroups example; the Gpu suite under `dev+subgroups`;
 `check-dual`; every exported and golden SPIR-V validated with `spirv-val`; then `check-precompiled`, the full
@@ -189,8 +191,12 @@ untracked, and xtask redacts the workspace root and home directory in it; copy t
 summary into `STATUS.md`. Never commit machine-specific paths: the repository is public.
 
 Other parts of the repository have their own checks. `bench/` is a workspace of its own (the benchmark harness, run
-with `GUST_PROFILE=dev`; see `bench/README.md` and `docs/BENCHMARKS.md`): `cargo xtask check-bench` runs its
-functional check and renders the page, and it never produces a speed claim by itself. `gallery/` holds the ten gallery
+with `GUST_PROFILE=dev`; see `bench/README.md` and `docs/BENCHMARKS.md`): `cargo xtask check-bench` takes exactly one
+of `--functional`, `--budget-kit` and `--render`: the functional check, the budget-kit run (`budget-kit --small`
+with its correctness checks, which needs a real GPU and takes minutes) and the page render; none produces a speed
+claim by itself. `cargo xtask check-examples --gpu` runs every example's pinned GPU tests on their own and names
+the adapter (`check-examples` with no flag and `check-full` run them as part of their steps). `gallery/` holds the ten
+gallery
 programs: `cargo xtask check-gallery` with no flag runs all three parts (the Slang part, the no-Slang part with the
 CPU twins, and the GPU part, so it needs the pinned Slang and an adapter); `--slang`, `--no-slang` and `--gpu` select
 the parts (CI runs the first two; `check-full` runs the GPU part alone). The rustdoc guide is the chapters under

@@ -1,7 +1,7 @@
 // A subgroup operation on the right of `&&` is GUST-E0747: the operator short-circuits, so not every invocation
 // reaches it.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod scan {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn votes(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mut out: RWStructuredBuffer<u32>) {

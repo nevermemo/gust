@@ -1,7 +1,7 @@
 // Arithmetic on a type parameter (m9.g2): a bound of the module has no operators, so rustc refuses the `+` on the CPU
 // twin and the typecheck item; the error is rustc's and no Slang is built from it.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Tag {
         fn tag(&self) -> u32;

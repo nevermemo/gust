@@ -1,9 +1,9 @@
 //! The target a kernel is built for (D21, D65, D137).
 //!
-//! A kernel is built for one target in one build: the GPU, or the CPU (D51). `KernelDescriptor::target` records
-//! which. The `#[gpu]` macro decides it per module at expansion, from the build profile and the module's route tag
-//! (M8, slice m8.r1, D137): a module routed to the CPU, and every module under `GUST_PROFILE=cpu`, is [`Target::Cpu`]
-//! and has no [`GpuKernel`] impl; any other is [`Target::Gpu`].
+//! A kernel is built for one target in one build: the GPU, or the CPU (D51). `KernelDescriptor::target` records which.
+//! The `#[gpu_module]` macro decides it per module at expansion, from the build profile and the module's route tag (M8,
+//! slice m8.r1, D137): a module routed to the CPU, and every module under `GUST_PROFILE=cpu`, is [`Target::Cpu`] and
+//! has no [`GpuKernel`] impl; any other is [`Target::Gpu`].
 
 use crate::Kernel;
 
@@ -50,7 +50,7 @@ impl Target {
 
 /// Marks a kernel that this build runs on a GPU.
 ///
-/// The `#[gpu]` macro implements it for every kernel it builds for [`Target::Gpu`]; the GPU runtime bounds its
+/// The `#[gpu_module]` macro implements it for every kernel it builds for [`Target::Gpu`]; the GPU runtime bounds its
 /// typed entry points on it, so a kernel routed to the CPU cannot be handed to a GPU device. A hand-written
 /// [`Kernel`] implementation that runs on a GPU device adds one line,
 /// `impl gust::target::GpuKernel for MyKernel {}`.

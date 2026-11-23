@@ -1,4 +1,4 @@
-#[gpu]
+#[gpu_module]
 mod histogram {
     /// Every invocation adds one to the bin of its key. Many invocations hit the same few bins at once, so the
     /// increment must be atomic: a plain `bins[k] += 1` would lose counts on a GPU.

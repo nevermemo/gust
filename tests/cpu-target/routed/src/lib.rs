@@ -6,7 +6,7 @@
 // lives in the library so that this is the crate's only error: the binary, which runs the kernel on `CpuDevice` and so
 // would add a second error for a GPU kernel, is not compiled once the library has failed.
 
-#[gust::gpu(route = "physics")]
+#[gust::gpu_module(route = "physics")]
 pub mod kernels {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn scale(

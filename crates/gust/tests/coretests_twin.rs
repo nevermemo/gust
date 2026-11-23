@@ -1,6 +1,6 @@
 //! The scalar coretests transcription on the CPU twin (roadmap M5, slice m5.d1; Unit tier, no adapter).
 //!
-//! `tests/fixtures/coretests.rs` holds the `#[gpu]` kernels of the cases that `docs/development/CORETESTS.md`
+//! `tests/fixtures/coretests.rs` holds the `#[gpu_module]` kernels of the cases that `docs/development/CORETESTS.md`
 //! transcribes from the Rust core tests (tag 1.98.0), and this file runs the CPU twin of every kernel and compares
 //! each output slot with the expected literal of the table. The literal is the independent reference (D26): it comes
 //! from the Rust sources or is derived by hand, never from the twin. The twin is never GPU evidence; the GPU half is

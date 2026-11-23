@@ -418,6 +418,35 @@ pub enum Error {
         /// The largest subgroup size wgpu reports for the adapter (`AdapterInfo::subgroup_max_size`).
         subgroup_max: u32,
     },
+    /// `HeadlessDevice::adopt` was given a device that lacks features a capability needs: the caller opened it without
+    /// the features of [`DeviceOptions::device_request`](crate::DeviceOptions::device_request), or in a browser, where
+    /// no capability can be requested. `features` are the missing ones and `needed_by` names the capability.
+    /// `adapter` is the name of the adapter given to `adopt`.
+    MissingFeatures {
+        /// The name of the adapter the device is on.
+        adapter: String,
+        /// The features the device lacks.
+        features: wgpu::Features,
+        /// What needs them, in words.
+        needed_by: String,
+    },
+    /// `HeadlessDevice::adopt` was given an adapter that is not the one the device was opened on. Both names are the
+    /// adapters' own (`wgpu::AdapterInfo::name`); the comparison covers the whole `AdapterInfo`.
+    AdapterMismatch {
+        /// The name of the adapter given to `adopt`.
+        adapter: String,
+        /// The name of the adapter the device reports.
+        device_adapter: String,
+    },
+    /// `set_default_device` was given a device that was not opened or adopted with a capability this build was
+    /// compiled for ([`gust::capability::enabled`]), so the kernels that `require` it could not run on the default
+    /// device. `adapter` is the name of the device's adapter.
+    DefaultDeviceCapability {
+        /// The capability the device lacks.
+        capability: Capability,
+        /// The name of the device's adapter.
+        adapter: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -646,7 +675,7 @@ impl fmt::Display for Error {
             }
             Self::DefaultDeviceOpened => write!(
                 formatter,
-                "the default device is already open; call `set_default_options` before the first `default_device()`",
+                "the default device already exists; call `set_default_options` or `set_default_device` before the first `default_device()`",
             ),
             Self::TextureUse {
                 parameter,
@@ -696,7 +725,7 @@ impl fmt::Display for Error {
                 kernel: Some(kernel),
             } => write!(
                 formatter,
-                "kernel `{kernel}` requires the `{}` capability, which this device (adapter `{adapter}`) was not opened with; open it with `DeviceOptions::with_capabilities`",
+                "kernel `{kernel}` requires the `{}` capability, which this device (adapter `{adapter}`) was not opened or adopted with; pass the capability to `DeviceOptions::with_capabilities` or to `adopt`",
                 capability.name(),
             ),
             Self::KernelTarget { kernel, target } => write!(
@@ -711,6 +740,39 @@ impl fmt::Display for Error {
             } => write!(
                 formatter,
                 "kernel `{kernel}` runs {invocations} invocations per workgroup, which is not a multiple of {subgroup_max}, the largest subgroup size wgpu reports for this adapter; a subgroup kernel needs full subgroups",
+            ),
+            Self::MissingFeatures {
+                adapter,
+                features,
+                needed_by,
+            } => write!(
+                formatter,
+                "the device on `{adapter}` lacks {}, needed by {needed_by}; {}",
+                features
+                    .iter_names()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if cfg!(target_arch = "wasm32") {
+                    "a browser device cannot be asked for these features: adopt with an empty capability set"
+                } else {
+                    "request the features of `DeviceOptions::device_request` when opening it"
+                },
+            ),
+            Self::AdapterMismatch {
+                adapter,
+                device_adapter,
+            } => write!(
+                formatter,
+                "the adapter given to `adopt` (`{adapter}`) is not the one the device was opened on (`{device_adapter}`)",
+            ),
+            Self::DefaultDeviceCapability {
+                capability,
+                adapter,
+            } => write!(
+                formatter,
+                "the device given to `set_default_device` (adapter `{adapter}`) was not opened or adopted with the `{}` capability this build was compiled for; pass `gust::capability::enabled()`",
+                capability.name(),
             ),
         }
     }

@@ -2,7 +2,7 @@
 // (a run-time amount is accepted and masks on the GPU, see shift-ok). expected.txt pins the code, the line and the
 // amount named in the message.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<u32>) {

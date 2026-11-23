@@ -1,7 +1,7 @@
 // A closure named with the reserved prefix (m9.c, GUST-E0901): hoisted closures use __gust_cl_.
 // Expected: one error at the name, line 8.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>) {

@@ -51,7 +51,7 @@ const THIS_FILE: &str = include_str!("diagnostics.rs");
 #[path = "../../gust-macros/src/slang/collisions.rs"]
 mod collisions;
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod keyword_local {
     #[kernel]
     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
@@ -62,7 +62,7 @@ mod keyword_local {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod recursive_helper {
     fn count_down_step(n: uint) -> uint {
         n
@@ -90,7 +90,7 @@ mod recursive_helper {
 /// when the macro emitted the plain `%`, refused the kernel with E30002. This is the minimal reproducer. The macro now
 /// lowers the `%` to `__gust_rem`, and the kernel compiles on both targets (see
 /// `a_zero_divisor_that_slangc_folded_in_dead_code_compiles_on_each_target`).
-#[gust::gpu]
+#[gust::gpu_module]
 mod folded_zero_divisor {
     #[allow(
         clippy::assign_op_pattern,
@@ -115,7 +115,7 @@ mod folded_zero_divisor {
 
 // The other shapes of the same limitation, each of which failed with E30002 under the direct lowering (spike m6.s1,
 // measured on slangc 2026.20), and two that never failed: a live division and the vector overloads.
-#[gust::gpu]
+#[gust::gpu_module]
 mod zero_by_product {
     #[allow(clippy::erasing_op, unconditional_panic)]
     #[kernel]
@@ -127,7 +127,7 @@ mod zero_by_product {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod zero_by_difference {
     #[allow(clippy::eq_op, unconditional_panic)]
     #[kernel]
@@ -139,7 +139,7 @@ mod zero_by_difference {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod zero_by_buffer_product {
     #[allow(clippy::erasing_op, unconditional_panic)]
     #[kernel]
@@ -155,7 +155,7 @@ mod zero_by_buffer_product {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod zero_by_wrapping {
     #[allow(
         clippy::nonminimal_bool,
@@ -178,7 +178,7 @@ mod zero_by_wrapping {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod zero_in_dead_compound_assignments {
     #[allow(
         clippy::assign_op_pattern,
@@ -207,7 +207,7 @@ mod zero_in_dead_compound_assignments {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod live_division {
     #[kernel]
     pub fn run(
@@ -223,7 +223,7 @@ mod live_division {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod vector_division {
     #[allow(
         clippy::nonminimal_bool,
@@ -263,7 +263,7 @@ mod vector_division {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod other_vector_rows {
     #[kernel]
     pub fn run(
@@ -311,7 +311,7 @@ mod other_vector_rows {
 
 /// Valid on every target: a struct, a helper, a loop and a conditional, so the
 /// directives of the compile copy fall in a struct body, a helper and nested blocks.
-#[gust::gpu]
+#[gust::gpu_module]
 mod structured {
     pub struct Pair {
         pub low: uint,
@@ -338,7 +338,7 @@ mod structured {
 
 /// Valid: a `Result` helper and a lowered `match` (scaffolding lines, nested arm
 /// statements), so directives fall inside the `match` lowering.
-#[gust::gpu]
+#[gust::gpu_module]
 mod lowered_match {
     fn half_if_even(value: uint) -> Result<uint, uint> {
         if value & 1u32 == 0u32 {
@@ -373,7 +373,7 @@ mod lowered_match {
 }
 
 /// Valid: struct literals in a local initializer and as a helper result.
-#[gust::gpu]
+#[gust::gpu_module]
 mod struct_literal {
     pub struct Summary {
         pub total: uint,
@@ -405,7 +405,7 @@ mod struct_literal {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod else_if_chain {
     #[kernel]
     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
@@ -427,7 +427,7 @@ mod else_if_chain {
 // Seven more Slang-only failures in other positions, so that the line table is
 // exercised in loops, branches, helpers and at the top of a kernel.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod keyword_in_loop {
     #[allow(clippy::assign_op_pattern)]
     #[kernel]
@@ -443,7 +443,7 @@ mod keyword_in_loop {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod keyword_in_else {
     #[kernel]
     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
@@ -458,7 +458,7 @@ mod keyword_in_else {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod keyword_at_top {
     #[kernel]
     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
@@ -467,7 +467,7 @@ mod keyword_at_top {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod keyword_in_helper {
     fn bump(value: uint) -> uint {
         let new = value;
@@ -482,7 +482,7 @@ mod keyword_in_helper {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod recursion_with_locals {
     fn factorial_step(n: uint) -> uint {
         n
@@ -506,7 +506,7 @@ mod recursion_with_locals {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod keyword_in_nested_if {
     #[allow(clippy::collapsible_if)]
     #[kernel]
@@ -522,7 +522,7 @@ mod keyword_in_nested_if {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod recursion_in_loop {
     fn spread_step(n: uint) -> uint {
         n
@@ -545,7 +545,7 @@ mod recursion_in_loop {
     }
 }
 
-// A hand-written descriptor (M1 risk 5). It never passes through `#[gpu]`, so no
+// A hand-written descriptor (M1 risk 5). It never passes through `#[gpu_module]`, so no
 // GUST validator can reject its Slang: the fixture keeps a failing kernel even
 // when the validator learns to refuse the constructs above.
 
@@ -1769,7 +1769,7 @@ fn true_and_false_captured_by_a_local_silently_change_the_generated_code() {
 
 /// Slice m11.tx: the four texture and sampler type names (`Texture2D`, `RWTexture2D`, `WTexture2D`, `SamplerState`) are
 /// in the table as class-2 entries; the struct position is judged by the class-2 test above. This test measures the two
-/// other things the table needs to say, on slangc 2026.22 (WGSL and SPIR-V agreeing):
+/// other things the table needs to say, on slangc 2026.22.1 (WGSL and SPIR-V agreeing):
 ///
 /// - the global position (a kernel parameter of the name, next to the declaration GUST writes) fails bare, with
 ///   E39999 "expected a generic" for the three texture names and E30060 "expected a type" for `SamplerState`;

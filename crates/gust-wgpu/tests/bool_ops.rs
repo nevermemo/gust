@@ -13,7 +13,7 @@ mod common;
 use gust::cpu::CpuDevice;
 use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod bool_ops {
     // A `bool` field cannot exist: a module struct is `GpuPod`, and `bool` is not host-shareable. The `^=` on a
     // struct field is therefore an integer one.

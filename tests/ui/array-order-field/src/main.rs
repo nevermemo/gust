@@ -1,7 +1,7 @@
 // `rows[c.n].cells[1] = c.next()`: Rust evaluates the value first and the index after it, slangc 2026.21 reads the index
 // first, so another element would be written, GUST-E0421 (as for a plain buffer element, here through a field array).
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Counter {
         pub n: u32,

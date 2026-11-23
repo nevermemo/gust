@@ -1,10 +1,10 @@
 # Fixture workspace for the production CPU target (`GUST_PROFILE=cpu`, D21, plan M5 section 2.1): a production-shaped
-# consumer of `#[gust::gpu]` kernels that runs them on `gust::cpu::CpuDevice` in an ordinary (non-test) build with no
+# consumer of `#[gust::gpu_module]` kernels that runs them on `gust::cpu::CpuDevice` in an ordinary (non-test) build with no
 # compiler, no bridge and no GPU runtime. It is a workspace root of its own, so the root workspace does not contain it
 # and `cargo test --workspace` and `cargo clippy --workspace` never build it, and it has its own committed `Cargo.lock`
 # (the `tests/dual` pattern). Build it with its own target directory.
 #
-# - `kernels` holds the `#[gust::gpu]` modules: vector-add, the polynomial of `examples/polynomial`, the atomic
+# - `kernels` holds the `#[gust::gpu_module]` modules: vector-add, the polynomial of `examples/polynomial`, the atomic
 #   counter, and one kernel that opted out of the CPU.
 # - `app` runs the three CPU kernels, compares them with independent host references and prints a `CPU target:
 #   matches (...)` line each (steps E-a to E-c, E-h). Its `single-dispatch` binary has exactly one dispatch, so that a

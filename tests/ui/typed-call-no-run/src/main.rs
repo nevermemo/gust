@@ -48,7 +48,7 @@ impl<T: GpuPod> Resource for Buffer<T> {
 }
 
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod kernels {
     #[kernel]
     pub fn scale(

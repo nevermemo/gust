@@ -1,7 +1,7 @@
 // The array length is a literal, not an expression, GUST-E0216 (a module `const` is no length either).
 // expected.txt pins the code and the line of the type.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     fn first(a: [u32; 2 + 2]) -> u32 {
         1u32

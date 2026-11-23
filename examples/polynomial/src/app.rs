@@ -2,7 +2,7 @@ use std::{path::PathBuf, time::Instant};
 
 #[cfg(gust_dual)]
 use gust::cpu::CpuDevice;
-use gust::{JobStatus, gpu};
+use gust::{JobStatus, gpu_module};
 use gust_wgpu::{
     BufferDispatch, GpuBufferAccess, HeadlessDevice, TransferTiming, render_wgpu_source,
 };
@@ -12,7 +12,7 @@ const DEBUG_COUNT: usize = 1 << 18;
 /// 32 768 workgroups of 128 invocations, within the 65 535 workgroups per dimension of the default limits.
 const RELEASE_COUNT: usize = 1 << 22;
 
-#[gpu]
+#[gpu_module]
 mod polynomial {
     #[kernel(workgroup_size(128, 1, 1))]
     pub fn evaluate(

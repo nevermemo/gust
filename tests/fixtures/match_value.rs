@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod match_value {
     // Slice m9.e2 (D157): the value form of `match` (`let x: T = match e { .. };`) on an enum and on `u32` and `i32`
     // scrutinees with integer-literal patterns, in both forms. The Slang is `T x;` and a `switch` that assigns `x`.

@@ -15,8 +15,8 @@ detail lives in [NEXT_TASKS](development/NEXT_TASKS.md) and task contracts in
   (see [VALIDATION](development/VALIDATION.md)).
 - Change the order or content of milestones only with an owner decision recorded in
   DECISIONS.
-- No kill rules are attached for now (owner, 2026-10-23); scope is reviewed at
-  milestone boundaries instead.
+- Milestones carry no kill rules (owner, 2026-10-23); scope is reviewed at milestone
+  boundaries instead. Spikes do carry kill rules since D227 (owner, 2026-11-22).
 
 ## Direction
 
@@ -69,7 +69,7 @@ merge `2f96e69`) answer the two sanity checks: `cargo gust` exports the profile 
 kernel refuses a build whose profile differs, `check-full` runs the subgroup Gpu suite, and the two subgroup forms
 that had run nowhere ran on the RTX 5090 and lavapipe. M8 is closed (D153).
 
-**Now: M13, tidy, then M14, the API surface** (D242, 2026-11-22), inside M11's design phase. M13 finishes the build and test speed work and the cleanup: the difftest cache, a quiet-machine rerun of the merged test binary, the Slang 2026.22.1 pin if its spike says GO, the remaining duplication and split candidates, and a close with `check-full` on both adapters after the M13 sanity check. M14 then settles the surface that Breeze and Hurricane code will use: `#[pad]` (D239), the runtime fixes of D223, `map` with structs and multiple outputs (D221), D240's debugging minimum, and last the D237 rename. Everything else in the old M14 list waits. Done in M13 so far: the rulings records, every example's GPU tests gated per adapter, SEMANTICS and DIAGNOSTICS consolidated (D241 keeps their size), shared helpers in the proc macro and the runtime tests, the Slang emitter split, `check-cfg`, `check-ui` from one shared cargo call, budget-kit in `bench/`, faster dev builds (line tables, `rust-lld` on Windows MSVC), and the trail-step record.
+**Now: M13, tidy, then M14, the API surface** (D242, 2026-11-22), inside M11's design phase. M13 finishes the build and test speed work and the cleanup: the difftest cache, a quiet-machine rerun of the merged test binary, the Slang 2026.22.1 pin if its spike says GO, the remaining duplication and split candidates, and a close with `check-full` on both adapters after the M13 sanity check. M14 then settles the surface that Breeze and Hurricane code will use: `#[pad]` (D239), the runtime fixes of D223, `map` with structs and multiple outputs (D221), D240's debugging minimum; D243 puts the D237 rename first and the stage and batch surface (`gpu_task!`, `gpu_batch!`) second. Everything else in the old M14 list waits. Done in M13 so far: the rulings records, every example's GPU tests gated per adapter, SEMANTICS and DIAGNOSTICS consolidated (D241 keeps their size), shared helpers in the proc macro and the runtime tests, the Slang emitter split, `check-cfg`, `check-ui` from one shared cargo call, budget-kit in `bench/`, faster dev builds (line tables, `rust-lld` on Windows MSVC), and the trail-step record.
 
 **M11, realignment** (from 2026-11-17, D198; open while the joint review and the release hold last). The owner's joint review of the whole project: the review pack
 (decisions, misalignments with the owner's vision, drift between docs and code) is refreshed for the M10 close, the
@@ -77,7 +77,7 @@ owner holds the session, and the rulings are recorded as decision rows and folde
 (D189) stays until the owner lifts it. The milestones after M11 follow its rulings.
 Rulings so far (2026-11-20 and 2026-11-21): no release until GUST is mature, and the current phase is design (D199;
 M11 and the design phase name the same work, D206). A game that uses GPU resources and ECS well drives the design
-(D200), under drift guards: the plain `#[gpu] fn` and `map` path stays the front door, every new concept reaches a GPU
+(D200), under drift guards: the plain `#[gpu_fn]` and `map` path stays the front door, every new concept reaches a GPU
 run in its first slice, and gate examples carry no game wording (D201). Work lands on the `dev` branch (D202); the GPU
 for a run is the owner's call per night (D202, D207, D212). Kernel-language additions so far: float math, a
 deterministic hash generator shared by CPU and GPU, the old value of `atomic_add` (D203), module-level `const` items
@@ -291,7 +291,7 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 | M10 Publication | Benchmarks against rayon, hand-written WGSL with wgpu, CubeCL and rust-gpu; a "Rust program to GPU" example gallery; docs and a book; the API stability pass toward 1.0; the crates.io releases after MR's first | done: closed 2026-11-17 (D185); plan adopted 2026-11-14 (D177 to D183) |
 | M11 Realignment | The owner's joint review of the whole project (D189, D198): its decisions, misalignments with the owner's vision, and drift between docs and code; the rulings recorded as decision rows and folded into the roadmap; the release hold lifted or kept by the owner. The milestones after M11 follow its rulings | active: from 2026-11-17 (D198) |
 | M13 Tidy | Build and test speed, duplication and file splits, gates for the runtime feature sets and wasm32, documentation consolidation, the Slang pin, closed with `check-full` on both adapters (D221 to D241, D242) | active: from 2026-11-22 |
-| M14 API surface | `#[pad]`, the runtime fixes of D223, `map` with structs and multiple outputs, the debugging minimum of D240, then the D237 rename; the rest of the maturity list after it (D242) | planned |
+| M14 API surface | The D237 rename, the stage and batch surface, `#[pad]`, the runtime fixes of D223, `map` with structs and multiple outputs, the debugging minimum of D240; the rest of the maturity list after it (D242, D243); the stage and batch design is D244; device sharing for a renderer (D247) | planned |
 
 Order after M5 (owner, 2026-11-02, D75): M6, M7, MX (execution shapes and textures), MR (the first public
 crates.io release), then M8, M9 and M10. MX and MR keep letters so that the decisions naming M8 to M10 stay

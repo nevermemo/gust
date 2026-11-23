@@ -16,7 +16,8 @@ use crate::ast::{
     SHAPE_MUT_THROUGH_PARAM, SHAPE_PARAM_ARGS_SELF_ROOT, SHAPE_TRAIT_ARGS_ROOT,
     SHAPE_TRAIT_VALUE_SELF, TRAIT_CALL,
 };
-use crate::generator::{Space, TRAIT_ATTEMPT_BASE, TRAIT_PROGRAMS_PER_SEED, generate_batch_in};
+use crate::batches::space_batch;
+use crate::generator::{Space, TRAIT_ATTEMPT_BASE, TRAIT_PROGRAMS_PER_SEED};
 use crate::interp::{Mutant, env_mutant, run, run_covered, run_mutant};
 
 const S0: Ty = Ty::Struct(0);
@@ -370,8 +371,8 @@ fn the_argument_shapes_count_where_calls_on_one_root_are_arguments() {
 fn batch_programs(seeds: std::ops::RangeInclusive<u64>) -> Vec<Program> {
     let mut out = Vec::new();
     for seed in seeds {
-        let batch = generate_batch_in(Space::Trait, seed).unwrap();
-        out.extend(batch.programs.into_iter().take(TRAIT_PROGRAMS_PER_SEED));
+        let batch = space_batch(Space::Trait, seed);
+        out.extend(batch.programs.iter().take(TRAIT_PROGRAMS_PER_SEED).cloned());
     }
     out
 }
@@ -380,8 +381,8 @@ fn batch_programs(seeds: std::ops::RangeInclusive<u64>) -> Vec<Program> {
 #[test]
 fn the_batch_holds_the_first_two_programs_of_the_trait_space() {
     for seed in 1..=2 {
-        let batch = crate::generator::generate_batch(seed).unwrap();
-        let space = generate_batch_in(Space::Trait, seed).unwrap();
+        let batch = crate::batches::full_batch(seed);
+        let space = space_batch(Space::Trait, seed);
         let tail = &batch.programs
             [crate::generator::TRAIT_END - TRAIT_PROGRAMS_PER_SEED..crate::generator::TRAIT_END];
         assert_eq!(
@@ -398,7 +399,7 @@ fn the_batch_holds_the_first_two_programs_of_the_trait_space() {
 fn the_trait_space_has_trait_and_generic_calls_and_no_array() {
     let mut programs = 0;
     for seed in 1..=64 {
-        for p in generate_batch_in(Space::Trait, seed).unwrap().programs {
+        for p in &space_batch(Space::Trait, seed).programs {
             programs += 1;
             assert!(p.attempt >= TRAIT_ATTEMPT_BASE);
             assert!(p.methods.has_traits());

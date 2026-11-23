@@ -797,6 +797,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "task-basics"
+version = "0.2.0"
+dependencies = [
+ "gust-compute",
+ "gust-compute-wgpu",
+]
+
+[[package]]
 name = "termcolor"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

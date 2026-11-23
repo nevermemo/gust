@@ -222,7 +222,7 @@ pub(super) const LEDGER: &[Entry] = &[
     // An associated function of an `impl` block, `S::f(..)` (slice m9.a2): the marker `S::f` in `helpers`. Like a method it
     // takes values and returns a value, holds no resource, barrier or subgroup operation, and may call helpers and methods.
     module_method("associated", Neutral),
-    // ---- callees: the forms of `visit_expr_call` (validate/mod.rs) that accept a call ----
+    // ---- callees: the forms of `visit_expr_call` (validate/visit_impl.rs) that accept a call ----
     // A free function declared in the module, which is not a `#[kernel]`. A helper takes value parameters only
     // (`Code::HelperResourceParameter`) and holds no barrier (`Code::BarrierPosition`), so it reaches no resource, no
     // barrier and no atomic; the classifier scans only the kernel and relies on both refusals (D94, pinned by tests).

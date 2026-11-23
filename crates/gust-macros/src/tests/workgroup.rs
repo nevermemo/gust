@@ -17,15 +17,15 @@ use crate::{
 const FIXTURE: &str = include_str!("../../../../tests/fixtures/workgroup.rs");
 const GOLDEN: &str = include_str!("../../../../tests/fixtures/workgroup.slang");
 
-/// The expansion of a `#[gpu]` module given as source without its attribute.
+/// The expansion of a `#[gpu_module]` module given as source without its attribute.
 fn expansion(source: &str, profile: Profile) -> TokenStream {
     let item: TokenStream = source.parse().unwrap();
     crate::gpu_impl_with(TokenStream::new(), item, profile)
 }
 
-/// The fixture module as `#[gpu]` receives it (the attribute is the macro's own).
+/// The fixture module as `#[gpu_module]` receives it (the attribute is the macro's own).
 fn fixture_module() -> String {
-    FIXTURE.replacen("#[gust::gpu]", "", 1)
+    FIXTURE.replacen("#[gust::gpu_module]", "", 1)
 }
 
 /// [`expansion`] with all whitespace removed, so assertions do not depend on token spacing.

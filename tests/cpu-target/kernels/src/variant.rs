@@ -6,7 +6,7 @@
 // one the GPU gives under `dev`. Under another profile (the `cargo check` of the workspace tools) the module is built
 // as any other: `requires` only changes which body a build selects.
 
-#[gust::gpu]
+#[gust::gpu_module]
 pub mod pairs {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn partial_sums(

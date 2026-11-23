@@ -1,7 +1,7 @@
 // A `match` that gives a value as the tail of a function is GUST-E0419: bind it to a typed `let` and return the local.
 // expected.txt pins the code and the line of the `match`.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     fn pick(v: u32) -> u32 {
         match v {

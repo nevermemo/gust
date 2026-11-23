@@ -1,4 +1,4 @@
-#[gpu]
+#[gpu_module]
 mod scanner {
     /// What a symbol is, as far as the scanner cares.
     #[derive(PartialEq, Eq)]

@@ -1,6 +1,6 @@
 # particles (gallery G4)
 
-Particles falling under gravity and bouncing on a floor, stepped sixteen times in one batch. A particle is a `#[gpu]`
+Particles falling under gravity and bouncing on a floor, stepped sixteen times in one batch. A particle is a `#[gpu_module]`
 struct with **array fields** (`pos: [f32; 2]`, `vel: [f32; 2]`, and a `bounces` counter), stored in a
 `RWStructuredBuffer<Particle>` that the host fills with the same Rust type.
 

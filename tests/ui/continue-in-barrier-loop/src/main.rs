@@ -1,7 +1,7 @@
 // A conditional `continue` in a loop that holds a barrier is GUST-E0416: some invocations would skip the barrier of
 // an iteration that the others wait at. expected.txt pins the code and the line of the `continue`.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(256, 1, 1), cpu = "unsupported")]
     pub fn reduce(

@@ -1130,7 +1130,7 @@ fn the_route_flips_in_both_directions_and_the_route_reaches_only_the_set_states(
     ));
     assert!(ROUTED_MAP_LINE.ends_with("1024 elements)"));
     assert!(main.contains("const ELEMENTS: usize = 1024;"));
-    assert!(main.contains("#[gust::gpu(route = \"physics\")]\npub fn triple("));
+    assert!(main.contains("#[gust::gpu_fn(route = \"physics\")]\npub fn triple("));
 }
 
 #[test]

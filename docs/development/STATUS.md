@@ -869,7 +869,8 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       bullet per feature with its rules kept, launch limits are section 5a, sections 9-18 share one shape, and dated
       run records moved word for word to `docs/development/VALIDATION.md` appendix A1-A8. Every code, D id and
       anchor kept; the stale GUST-E0813 statement on arrays now matches the code. The 1,500-line target was not met
-      (2,150 lines): the section 1 rules exist nowhere else, so the diet moves to a later slice. Opus review: merge
+      (2,150 lines, and SEMANTICS started at 2,134, so its line count rose while its bytes fell): the section 1 rules
+      exist nowhere else, so the diet moves to a later slice. Opus review: merge
       after fixes; fixed.
     - m13.exgpu (`cc284e5`, m12 sanity follow-up): every example's ignored GPU tests are pinned by name (69 in 21
       packages, subgroup-reduce included); check-examples and check-full fail on a missing, failed or still-ignored
@@ -898,14 +899,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       fixes; fixed.
     - m13.t1b (tidy round): the macro crate's Slang emitter `slang/mod.rs` (4,197 lines) is split by concern into
       15 submodules (kernel, statements, expressions, value_if, declarations, calls, control, arrays, types,
-      closures, helpers, operators, usage, lowering, records); mod.rs keeps 152 lines. Moves only: 108 private items
+      closures, helpers, operators, usage, lowering, records); mod.rs keeps 169 lines. Moves only: 108 private items
       became `pub(super)`, nothing wider; emitted Slang for 379 modules and 444 kernels is byte-identical with the
       guards off and on. Doc pointers follow. Opus review: merge after fixes (pointers); fixed.
     - m13.uifast (build-time spike m13.btime, R5): `cargo xtask check-ui` judges the 229 plain fixtures from one
       shared `cargo check --workspace --keep-going` call split per package; the 30 fixtures with `env.txt` or
       dependency features (all 7 `build-error:` ones among them) keep their own call. A fixture missing from the
       stream fails, and the shared call's stderr is then reported once. Verdicts unchanged (215 fail, 7 build-fail,
-      37 compile of 259); about 500 s to about 70 s on a busy machine. Opus review: merge after fixes; fixed.
+      37 compile of 259); about 500 s to about 70 s on a busy machine (a coordinator-side measurement of the spike
+      m13.btime, not kept in the repository). Opus review: merge after fixes; fixed.
     - m13.exmove (m12 sanity follow-up): budget-kit moved to `bench/budget-kit` (bench workspace, history kept);
       main.rs (2,983 lines) split into setup, measure, report, the kernel module and one module per W row, moves
       only; masked before/after output identical on the Radeon 890M. `cargo xtask check-bench --budget-kit` runs
@@ -916,13 +918,134 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       "line-tables-only"`, backtraces keep file:line) and the Windows MSVC target links with the toolchain's
       `rust-lld`; the spike measured the incremental macro-edit and runtime-edit gates 25-31 % faster. The variant
       with full debug info for workspace crates saved 19.8 %, under the pre-registered 20 %, so the fallback was
-      taken. The release and bench profiles are unchanged, but every Windows MSVC build of the checkout
+      taken (both figures are coordinator-side measurements of the spike m13.btime, not kept in the repository).
+      The release and bench profiles are unchanged, but every Windows MSVC build of the checkout
       (release and `bench/` included) links with `rust-lld`; Linux and wasm32 builds are unchanged.
       Coordinator review (config only).
+    - m13.rulings (`db3a60b`): the owner's rulings of 2026-11-22 recorded as D221 to D238 in DECISIONS, and ROADMAP's
+      next steps follow them. Records only (DECISIONS and ROADMAP).
+    - m13.sortres: work area only.
+    - m13.fixtures: closed; done by m13.dedup-tests (above), which holds the shared test fixtures.
     - m13.trail2rec (D4): `bench/README.md` records the walker step of a game prototype test (a local spike, code
       not in the repository): two signals at 2^20 walkers on the Radeon 890M ran 8.06 / 9.00 ms (median / p95)
       against the pre-registered 4.0 / 8.0 ms, so the rule failed; 2^18 fits (2.85 / 3.24 ms); the RTX 5090 ran
       0.39 / 0.66 ms. No threshold reset, no tuning toward one adapter.
+    - m13.dtcache: the difftest trait, closure and array modules take each generated batch from a test-only
+      cache (one generation per (space or full, seed) per test binary, shared read-only). Seeds, ranges,
+      assertions and test counts are unchanged; a hash of the programs at every access (1000 accesses, 256
+      batches) is identical before and after. One before/after pair on a loaded machine: the three modules
+      500 s to 396 s (-21 %); generation dominated their time (summed over threads, so not a wall-clock
+      share). The other modules can reuse the cache in a follow-up. Opus review: merge.
+    - m14.pad (D239): `#[pad]` on a struct a uniform reaches makes GUST insert the private padding fields
+      std140 needs and generate a `const fn new` taking the user fields in declaration order (pads zero).
+      Misuse is E0219; E0208 and E0209 name `#[pad]` for a struct a uniform reaches, not for a storage-only
+      one. Eight ui fixtures, unit cases per gap kind, and `tests/uniform_pad.rs` (reflection layout against
+      the padded Rust structs, values built with `new` read back on the GPU and the CPU twin). Generated
+      Slang for unmarked modules is unchanged. Gpu suite 578 over 60 on the Radeon 890M (lane) and the
+      RTX 5090 (merge gate). Opus review: merge after fixes; fixed.
+    - m13.splitr: the `gust` crate's `reflect/mod.rs` (5,147 lines) is split by concern, moves only: a 72-line
+      `mod.rs` (module docs, `mod` lines, re-exports) and `error`, `model`, `compile`, `read`, `check`, `pod`
+      and `json` modules, with the tests under `tests/` by schema (largest file 652 lines). Public paths are
+      unchanged through re-exports; 21 items became `pub(super)`. Unit tests 355 and doctests 203 (1 ignored)
+      before and after; a token comparison finds every original item exactly once. Opus review: merge.
+    - g2.insp (D240, G2): `gust_wgpu::inspect`, a buffer inspector. `device.inspect(&buffer)` reads a buffer
+      back and decodes it through the module's type layout into named columns (nested structs, vectors,
+      matrices, arrays; padding never becomes a column): a text table and JSON rows (`{"index":..,"values":
+      {..}}`) over an index range, per-field statistics (NaN-aware) and a bit-for-bit diff of two snapshots
+      (an unchanged NaN is no change, `0.0` to `-0.0` is one). CPU tests decode planted bytes and fail when
+      either offset computation is broken; seven GPU tests on the Radeon 890M (lane) and the RTX 5090 (merge
+      gate). `wasm32` check clean; the browser path is not exercised. `GPU_SUITE_PIN` 591 over 61 by count.
+      Opus review: merge after fixes; fixed.
+    - m13.sfix2 (the M13 sanity checks' remaining fixes): `check-cfg` is a step of `check-fast` and
+      `check-full`, right after the format check (the full mode with `--require-wasm`; the fast mode's closing
+      line names the wasm32 builds it skipped) and gains `gust-algo` without `slang-runtime`; AGENTS lists
+      `check-cfg`, `check-bench --budget-kit` and `check-examples --gpu`; VALIDATION names
+      `CARGO_PROFILE_DEV_DEBUG=full`; the records above gained the lines and corrections the reviews asked for;
+      CHANGELOG and ROADMAP follow D226 and D227; the difftest workspace's rustfmt drift is fixed. Opus review:
+      merge after fixes; fixed.
+    - m14.rename (D237, D243; group 2's first slice, alone): `#[gpu]` is now `#[gpu_module]` on a module and
+      `#[gpu_fn]` on a function, through one expansion path; either attribute on the wrong item is GUST-E0702,
+      whose message names the attribute that fits (three unit tests). Diagnostics, DIAGNOSTICS, docs, guide,
+      examples, templates and fixtures use the new spellings; decision rows, history and earlier STATUS entries
+      keep the old one. The difftest corpus hashes `lib.rs`, so `DIFFTEST_FORMAT` is 15; older formats are
+      read with the old spelling and no pin changed (a test pins the format-14 hashes). The misuse errors have
+      ui fixtures. Gates on the Radeon 890M (lane and merge gate: the crate profile, the Gpu suite, check-difftest,
+      check-examples and check-gallery); the RTX 5090 Gpu suite and check-difftest passed on the merge before the
+      review fixes, which changed no emitted code. RTX 5090: owed (quiet window 2026-11-22, D250): check-examples,
+      check-web and the Gpu suite on the fixed merge. `GPU_SUITE_PIN` 591 over 61. Opus review: merge after fixes;
+      fixed.
+    - m13.pin2221 (D242 group 1, after spike m13.sl221; alone, right after the rename): the Slang pin is 2026.22.1.
+      Every committed set was regenerated with the real 2026.22.1 toolchain (map-chain, web-vector-add,
+      tests/precompiled and its fixture copies, the ten gallery sets, subgroup-reduce, gust-bench-pre, the schema-3
+      dump, and the cargo-gust array, uniform and variant testdata with the gust-wgpu array copies, rebuilt from their
+      modules in scratch crates; the variant manifest keeps its pre-split entries). No golden, `.wgsl`, `.slang` or
+      `.spv` file changed; the reflection records and manifests name the new compiler. SEMANTICS 15.7.2 and 15.7.6
+      and the edge-case ledger record that constant out-of-range float-to-int casts now fold at compile time
+      (neither route saturates like Rust, D39) and that float vector negation yields `-0.0` (inferred from IEEE, not
+      observed on a GPU). The pin-boundary tests gained the old pin as a prefix case. The D46 licence audit of the
+      three release archives passed (LICENSES-SLANG). Gates on the Radeon 890M (lane and merge gate, Reflect and
+      Slangc suites included). RTX 5090: owed (quiet window 2026-11-22, D250): check-full and check-web; the spike
+      ran this compiler's Gpu suite and difftest on the 5090 the same day. Opus review: merge after fixes; fixed.
+    - m14.s2r0 (D244 step A): the staged graph's upload copy, readback staging copy and indirect dispatch pass are
+      shared helpers in a new crate-private `encode.rs`; `graph.rs` calls them. No behaviour or public change (the
+      review compared usages, labels, sizes, offsets, timestamp writes, encoder order and staging lifetimes with the
+      old loop). The helpers take a caller's encoder and never submit, the shape D251's caller-encoder batches build
+      on. Gates on the Radeon 890M (lane and merge gate: the Gpu suite, check-examples and check-bench). RTX 5090:
+      owed (quiet window 2026-11-22, D250): the Gpu suite. `GPU_SUITE_PIN` 591 over 61. Opus review: merge; nits
+      fixed.
+    - m13.splitm (D242 group 1, step A): the macros' `validate/mod.rs` (6,936 lines) and `expand/mod.rs` (5,822
+      lines) are split into modules by concern, moves only: 14 validator modules and 11 expansion modules with their
+      tests beside them; moved items became `pub(super)`, nothing wider. Tests that read source text by path follow
+      the new files. Three files stay over 700 lines because moves alone cannot cut them (one `impl Visit`, one
+      659-line function, one former inline module). Emitted Slang compared byte-identical before and after over
+      5,406 macro-test emissions and 1,331 workspace emissions (builder hook, reverted); the review verified the
+      moves statically (removed and added lines balance; 1,258 tests before and after). Gates on the Radeon 890M
+      (lane and merge gate, check-artifacts, check-difftest, check-gallery and the Gpu suite included). RTX 5090:
+      owed (quiet window 2026-11-22, D250): the Gpu suite. Opus review: merge; comment pointers fixed.
+    - m13.xproc (D242 group 1, step A): xtask's "could not launch" errors that return go through one helper,
+      `process::run_capture_in` (18 sites; every message text unchanged, review-checked site by site; two tests pin
+      the format); sites that use `.status()`, handle the error, or say "could not run" stay as they were. No
+      `run_tar` helper: both callers already share the command builder and differ in failure handling.
+      `precompiled.rs` (3,190 lines) is split into nine modules by concern, moves only, with its tests in matching
+      files (52 tests before and after). Gates on the Radeon 890M (lane and merge gate, the full check-precompiled,
+      check-artifacts, check-gallery and check-difftest included). RTX 5090: owed (quiet window 2026-11-22, D250):
+      none beyond the head run. Opus review: merge after fixes; fixed.
+    - m14.devshare1 (D247, D248; group 2, step A): a renderer can share GUST's device. `DeviceOptions::
+      device_request` returns the features and limits GUST would ask for (`DeviceRequest`, the one source the open
+      also uses); `HeadlessDevice::adopt` takes a caller's adapter, device and queue with the capabilities to check
+      (`MissingFeatures`, `AdapterMismatch`, `MissingCapability`; it never changes the caller's device);
+      `set_default_device` installs a device as the default before first use (`DefaultDeviceOpened` after,
+      `DefaultDeviceCapability` for a device that lacks a default capability); `gust_wgpu::wgpu` is re-exported.
+      `examples/window-share` (its own workspace, one wgpu version) presents 60 frames to a window from an adopted
+      device and exits non-zero on a deadline; `cargo xtask check-window-example` builds and lints it and CI runs it.
+      Tests 1-7 of the plan on the Radeon 890M (test 2 a hand-written oracle; the real-pair case of test 5 is opt-in,
+      `GUST_DEVSHARE_REAL_PAIR=1`), and the default-capability refusal under `dev+subgroups`. The window run printed
+      `GUST_OK frames=60` on the 890M. Browser adoption is not claimed (slice 1w). `GPU_SUITE_PIN` 604 over 65.
+      RTX 5090: owed (quiet window 2026-11-22, D250): the Gpu suite, the window run, test 5's real pair and
+      presentation on DX12. Opus review: merge after fixes; fixed (two rounds).
+    - m14.s2a1 (D244, group 2 step B): a stage, `gpu_task!`, as a free task: a 1-D extent, a 2-D `(w, h)` shape
+      (row-major result) and an in-place `&mut target` form (1-D), with a written capture list of host slices and
+      scalars. It lowers through `par_for!`'s generator (same artifacts, record kind, routing and twin; existing
+      emitted code unchanged). `task.submit()` returns a future of the result on every target, `task.dispatch()`
+      waits on native. New codes E1001 (form), E1002 (a capture the macro cannot see, naming the list entry to
+      write), E1003 (a write to a capture), E1007 (index rank), E1008 (an in-place stage touching its target at
+      another index, including through a rebound index or an alias), each with a ui fixture or macro test.
+      `examples/task-basics` is exact against host code and the twin on the Radeon 890M. Known gap against D251: a
+      submit makes 2 queue submissions (3 on a recycled zeroed output), all made by `gust::task::submit_and_read`,
+      which slice m14.encb replaces with a one-submission path without changing generated code. RTX 5090: owed
+      (quiet window 2026-11-22, D250): task-basics and the Gpu suite. Opus review: merge after fixes; fixed (two
+      rounds).
+    - m14.encb (D251, group 2 step B): GUST batches recorded into a caller's command encoder.
+      `HeadlessDevice::encode_batch` records and never submits (fallible work before the first pass, except a
+      `pixel` attachment: discard the encoder on `Err`); `EncodedJob::submitted(&index)` gives the `WgpuJob`;
+      `submit_batch` uses the same path. `submit_batch_read` / `encode_batch_read` put dispatch, clear and a
+      read-back copy in one submission (3 before); a dropped `EncodedRead` retires its staging buffer.
+      `gust_submissions()` counts every GUST `queue.submit` (one wrapper, a source-scan test). Ordering rules in
+      the guide ("Batches in your own encoder"). Measured on the Radeon 890M (median of 400 frames, 2^12
+      elements): encode form 0.0095 ms over one raw submission. `GPU_SUITE_PIN` 618 over 66. Not yet done:
+      `gust::task::submit_and_read` still makes 2-3 submissions; its switch to `submit_batch_read` is the next
+      slice. RTX 5090: owed (quiet window 2026-11-22, D250): encode_batch tests and the Gpu suite. Opus review:
+      merge after fixes; fixed; re-read MERGE.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

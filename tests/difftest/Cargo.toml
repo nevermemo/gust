@@ -9,7 +9,7 @@ name = "difftest"
 version = "0.0.0"
 edition = "2024"
 publish = false
-description = "Seeded program generator, domain-tracking interpreter, #[gpu] source emitter and batch runner"
+description = "Seeded program generator, domain-tracking interpreter, #[gpu_module] source emitter and batch runner"
 
 [[bin]]
 name = "difftest-gen"

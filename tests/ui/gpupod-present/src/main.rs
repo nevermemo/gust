@@ -1,7 +1,7 @@
 // Control case: the buffer element is a struct declared inside the module, which the macro
 // makes a `GpuPod`. This must compile, so the diagnostic attribute cannot break valid code.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod kernels {
     struct Item {
         value: u32,

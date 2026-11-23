@@ -1,4 +1,4 @@
-#[gpu]
+#[gpu_module]
 mod stats {
     /// Sum, count over a limit and maximum of a stream, into three cells. The portable body: every invocation does its
     /// own atomic operations, so the three cells see one operation per element.

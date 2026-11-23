@@ -440,9 +440,9 @@ mod pixel {
     const FIXTURE: &str = include_str!("../../../../tests/fixtures/pixel.rs");
     const GOLDEN: &str = include_str!("../../../../tests/fixtures/pixel.slang");
 
-    /// The fixture module as `#[gpu]` receives it (the attribute is the macro's own).
+    /// The fixture module as `#[gpu_module]` receives it (the attribute is the macro's own).
     fn fixture_module() -> String {
-        FIXTURE.replacen("#[gust::gpu]", "", 1)
+        FIXTURE.replacen("#[gust::gpu_module]", "", 1)
     }
 
     fn facts<'a>(resources: &'a [String], derived: &'a [DerivedId]) -> KernelFacts<'a> {
@@ -498,7 +498,7 @@ mod pixel {
     }
 
     /// `validate_body` is judged on facts, so a double with the facts set shows what the profile refuses. Through
-    /// `#[gpu]` the classifier refuses the same constructs on a `pixel` pin first (GUST-E0723).
+    /// `#[gpu_module]` the classifier refuses the same constructs on a `pixel` pin first (GUST-E0723).
     #[test]
     fn the_pixel_profile_refuses_workgroup_memory_barriers_and_atomics() {
         let mut clean = BodyChecks::default();

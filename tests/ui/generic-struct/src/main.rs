@@ -1,6 +1,6 @@
 // A generic struct (m9.g2, GUST-E0103): structs stay concrete.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Wrap<T> {
         pub v: T,

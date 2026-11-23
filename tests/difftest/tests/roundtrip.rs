@@ -72,8 +72,8 @@ fn generated_crates_pass_cargo_check_with_the_template_lockfile() {
 #[test]
 fn method_programs_compile_through_the_macro_without_a_gust_diagnostic() {
     // Format 8 (m9.d1a): the generator never writes a form the macro refuses (E0421, E0116, E0333, E0120, E0328, ...).
-    // The method space of seeds 1 to 12 (16 programs each, 192 in all) goes through `#[gust::gpu]` and rustc; a refused
-    // form fails the check with a `[GUST-E` diagnostic, and a borrow conflict with rustc's own error.
+    // The method space of seeds 1 to 12 (16 programs each, 192 in all) goes through `#[gust::gpu_module]` and rustc; a
+    // refused form fails the check with a `[GUST-E` diagnostic, and a borrow conflict with rustc's own error.
     let dir = work_dir().join("roundtrip-methods");
     let mut programs = Vec::new();
     for seed in 1..=12 {
@@ -97,7 +97,7 @@ fn method_programs_compile_through_the_macro_without_a_gust_diagnostic() {
 fn enum_programs_compile_through_the_macro_without_a_gust_diagnostic() {
     // Format 9 (m9.d1b): the generator never writes an enum or `match` form the macro refuses (E0211, E0122, E0515,
     // E0521, E0518, E0418, E0417, ...). The enum space of seeds 1 to 12 (16 programs each, 192 in all) goes through
-    // `#[gust::gpu]` and rustc.
+    // `#[gust::gpu_module]` and rustc.
     let dir = work_dir().join("roundtrip-enums");
     let mut programs = Vec::new();
     for seed in 1..=12 {
@@ -121,7 +121,7 @@ fn enum_programs_compile_through_the_macro_without_a_gust_diagnostic() {
 fn array_programs_compile_through_the_macro_without_a_gust_diagnostic() {
     // Format 11 (m9.d1d): the generator never writes an array form the macro refuses (E0421 on an index, E0810 on a
     // struct literal element, a repeat outside its top positions, ...). The array space of seeds 1 to 12 (16 programs
-    // each, 192 in all) goes through `#[gust::gpu]` and rustc.
+    // each, 192 in all) goes through `#[gust::gpu_module]` and rustc.
     let dir = work_dir().join("roundtrip-arrays");
     let mut programs = Vec::new();
     for seed in 1..=12 {
@@ -146,7 +146,7 @@ fn closure_programs_compile_through_the_macro_without_a_gust_diagnostic() {
     // Format 12 (m9.d1e): the generator never writes a closure form the macro refuses (E0328 name, E0329 capture,
     // E0330 closure as a value, E0331 untyped or unit signature, E0332 nested closure, E0421 call in a `for` bound,
     // E0810 struct literal as a tail or argument, ...). The closure space of seeds 1 to 12 (16 programs each, 192 in
-    // all) goes through `#[gust::gpu]` and rustc.
+    // all) goes through `#[gust::gpu_module]` and rustc.
     let dir = work_dir().join("roundtrip-closures");
     let mut programs = Vec::new();
     for seed in 1..=12 {
@@ -170,7 +170,7 @@ fn closure_programs_compile_through_the_macro_without_a_gust_diagnostic() {
 fn trait_programs_compile_through_the_macro_without_a_gust_diagnostic() {
     // Format 13 (m9.d2): the generator never writes a trait or generic form the macro refuses (E0123 to E0126, E0218,
     // E0328, the bound rules of m9.g2, ...). The trait space of seeds 1 to 12 (16 programs each, 192 in all) goes
-    // through `#[gust::gpu]` and rustc.
+    // through `#[gust::gpu_module]` and rustc.
     let dir = work_dir().join("roundtrip-traits");
     let mut programs = Vec::new();
     for seed in 1..=12 {
@@ -194,7 +194,7 @@ fn trait_programs_compile_through_the_macro_without_a_gust_diagnostic() {
 fn math_programs_compile_through_the_macro_without_a_gust_diagnostic() {
     // Format 14 (m11.dt2): the generator never writes a module constant or a math method the macro refuses (D210 const
     // expressions, `rem_euclid`, `mul_add`, `abs`, `floor`, `ceil`, `trunc`, `min`, `max`, `clamp`). The math space of
-    // seeds 1 to 12 (16 programs each, 192 in all) goes through `#[gust::gpu]` and rustc.
+    // seeds 1 to 12 (16 programs each, 192 in all) goes through `#[gust::gpu_module]` and rustc.
     let dir = work_dir().join("roundtrip-math");
     let mut programs = Vec::new();
     for seed in 1..=12 {
@@ -202,7 +202,13 @@ fn math_programs_compile_through_the_macro_without_a_gust_diagnostic() {
     }
     assert_eq!(programs.len(), 192);
     assert!(programs.iter().all(|p| p.has_math_forms()));
-    write_crate(&dir, &package_name("math").unwrap(), &programs, &repo_root()).unwrap();
+    write_crate(
+        &dir,
+        &package_name("math").unwrap(),
+        &programs,
+        &repo_root(),
+    )
+    .unwrap();
     let (ok, output) = cargo_check(&dir);
     assert!(!output.contains("[GUST-E"), "{}", tail(&output));
     assert!(ok, "cargo check failed:\n{}", tail(&output));
@@ -212,7 +218,7 @@ fn math_programs_compile_through_the_macro_without_a_gust_diagnostic() {
 fn value_programs_compile_through_the_macro_without_a_gust_diagnostic() {
     // Format 10 (m9.d1c): the generator never writes a tuple or value-`match` form the macro refuses (E0212, E0213,
     // E0319, E0326, E0419, E0515, E0521, E0810, ...). The value space of seeds 1 to 12 (16 programs each, 192 in all)
-    // goes through `#[gust::gpu]` and rustc.
+    // goes through `#[gust::gpu_module]` and rustc.
     let dir = work_dir().join("roundtrip-values");
     let mut programs = Vec::new();
     for seed in 1..=12 {
@@ -285,7 +291,7 @@ fn the_round_trip_check_fails_when_the_gpu_validator_rejects_a_module() {
     let mut text = std::fs::read_to_string(&lib).unwrap();
     // `while` is outside the dialect: the macro must refuse it with a GUST diagnostic, not rustc.
     text.push_str(
-        "\n#[gust::gpu]\npub mod rejected {\n    #[kernel(workgroup_size(64, 1, 1))]\n    pub fn k(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {\n        let mut n = 0u32;\n        while n < 3u32 {\n            n = n + 1u32;\n        }\n        out[id.x] = n;\n    }\n}\n",
+        "\n#[gust::gpu_module]\npub mod rejected {\n    #[kernel(workgroup_size(64, 1, 1))]\n    pub fn k(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {\n        let mut n = 0u32;\n        while n < 3u32 {\n            n = n + 1u32;\n        }\n        out[id.x] = n;\n    }\n}\n",
     );
     std::fs::write(&lib, text).unwrap();
     let (ok, output) = cargo_check(&dir);

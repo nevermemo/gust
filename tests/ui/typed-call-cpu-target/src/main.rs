@@ -6,7 +6,7 @@
 
 use gust::{Independent, cpu::CpuDevice};
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod kernels {
     // User parameters named `element_count` and `device`, a settings buffer and a read-write output.
     #[kernel]

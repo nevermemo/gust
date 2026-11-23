@@ -1,7 +1,7 @@
 // X1 (m9.a1, GUST-E0333): a `&mut self` method on a storage element, called under a condition. The write would be a
 // shared write hidden in a call, so the receiver rule refuses it: a mutating receiver must be an invocation-local place.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Counter {
         pub n: uint,

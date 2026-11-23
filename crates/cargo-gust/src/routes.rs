@@ -12,7 +12,7 @@
 //! driver does nothing, which is what plain `cargo` does: the macro then resolves the tags from the source defaults).
 //! The tags themselves are declared in the `[package.metadata.gust.routes]` tables of the packages of the build, which
 //! `cargo metadata` reports, inline or in the header form `cargo package` writes. The driver validates the file
-//! against those declarations, resolves every declared tag the way the `#[gpu]` macro does, sets one environment
+//! against those declarations, resolves every declared tag the way the `#[gpu_module]` macro does, sets one environment
 //! variable per tag (`GUST_ROUTE__<package>__<tag>`, spelled by [`gust::routes::variable_name`]) on the cargo it
 //! starts, and writes the resolved table to `gust-artifacts/routes.json`.
 //!
@@ -25,11 +25,11 @@
 //! of M8.
 //!
 //! What the macro knows and this driver cannot: the per-kernel set (a kernel declared `cpu = "unsupported"` under a tag
-//! with no `targets` allows only the GPU), so the macro's own E0749 stays the backstop; and the true profile of a
-//! `run` or `test` whose profile cargo infers (a custom cargo profile, `build.target` or `CARGO_BUILD_TARGET`): the
-//! driver reads `GUST_PROFILE`, else `--release`, `--profile release` and `--target wasm32-*`, as `gust`'s build script
-//! does for those cases. It gives the profile it read to cargo as `GUST_ROUTED_PROFILE`, and the `#[gpu]` expansion of a
-//! routed module fails the compilation of that crate when `gust` was built for another profile (m8.z).
+//! with no `targets` allows only the GPU), so the macro's own E0749 stays the backstop; and the true profile of a `run`
+//! or `test` whose profile cargo infers (a custom cargo profile, `build.target` or `CARGO_BUILD_TARGET`): the driver
+//! reads `GUST_PROFILE`, else `--release`, `--profile release` and `--target wasm32-*`, as `gust`'s build script does
+//! for those cases. It gives the profile it read to cargo as `GUST_ROUTED_PROFILE`, and the `#[gpu_module]` expansion
+//! of a routed module fails the compilation of that crate when `gust` was built for another profile (m8.z).
 //!
 //! The `gust.toml` reader is a small subset of TOML (a `[routes]` table, quoted keys, strings and one-line inline
 //! tables), written here so that the tool keeps depending on nothing but `gust`; anything else is an error that
@@ -61,11 +61,11 @@ pub(crate) const ROUTES_FILE: &str = "routes.json";
 /// The two route targets.
 const TARGETS: [&str; 2] = ["gpu", "cpu"];
 
-/// The variable the driver sets, beside the route variables, to the profile it resolved them for (m8.z). The `#[gpu]`
-/// expansion of a module with a route tag compares it with the profile `gust` was built for and fails the compilation
-/// of that crate when they differ, because the driver reads its command line and `GUST_PROFILE` only, and the build
-/// also sees `build.target`, `CARGO_BUILD_TARGET` and custom profiles. The name is the macro's
-/// (`ROUTED_PROFILE_VARIABLE` in `crates/gust-macros/src/expand/mod.rs`; the macro cannot depend on this tool, so a
+/// The variable the driver sets, beside the route variables, to the profile it resolved them for (m8.z). The
+/// `#[gpu_module]` expansion of a module with a route tag compares it with the profile `gust` was built for and fails
+/// the compilation of that crate when they differ, because the driver reads its command line and `GUST_PROFILE` only,
+/// and the build also sees `build.target`, `CARGO_BUILD_TARGET` and custom profiles. The name is the macro's
+/// (`ROUTED_PROFILE_VARIABLE` in `crates/gust-macros/src/expand/routing.rs`; the macro cannot depend on this tool, so a
 /// test reads the source); it does not start with `GUST_ROUTE__`, so it is neither a route variable nor reported by
 /// [`RoutePlan::notes`].
 pub(crate) const ROUTED_PROFILE_VARIABLE: &str = "GUST_ROUTED_PROFILE";
@@ -2283,20 +2283,20 @@ mod tests {
     }
 
     /// m8.z (S1 of the M8 sanity checks): a command with routes also carries the profile they were resolved for, which
-    /// the `#[gpu]` expansion of a routed module compares with the profile `gust` was built for. A command without
-    /// routes carries nothing, and removes a stale inherited value (the variable is the driver's own), so plain
+    /// the `#[gpu_module]` expansion of a routed module compares with the profile `gust` was built for. A command
+    /// without routes carries nothing, and removes a stale inherited value (the variable is the driver's own), so plain
     /// behaviour (D67) is unchanged, and the variable is not one of the route variables.
     #[test]
     fn commands_with_routes_export_the_profile_the_routes_were_resolved_for() {
         // The name is the one the macro reads; the macro cannot depend on this tool, so the source is read.
         assert_eq!(ROUTED_PROFILE_VARIABLE, "GUST_ROUTED_PROFILE");
         let macro_source =
-            include_str!("../../gust-macros/src/expand/mod.rs").replace("\r\n", "\n");
+            include_str!("../../gust-macros/src/expand/routing.rs").replace("\r\n", "\n");
         assert!(
             macro_source.contains(&format!(
                 "pub(crate) const ROUTED_PROFILE_VARIABLE: &str = \"{ROUTED_PROFILE_VARIABLE}\";"
             )),
-            "crates/gust-macros/src/expand/mod.rs reads another variable"
+            "crates/gust-macros/src/expand/routing.rs reads another variable"
         );
         let cargo = OsString::from("cargo");
         let arguments = ["-p".to_owned(), "app".to_owned()];

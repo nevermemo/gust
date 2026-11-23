@@ -2,7 +2,7 @@
 //! the module form, a `route` module, a map function and `par_for!`. Nothing here is run.
 
 /// The module form.
-#[inner::gust::gpu(crate = ::inner::gust)]
+#[inner::gust::gpu_module(crate = ::inner::gust)]
 pub mod plain {
     #[kernel]
     pub fn scale(
@@ -18,7 +18,7 @@ pub mod plain {
 }
 
 /// A routed module, with the two arguments in the other order than the map function below.
-#[inner::gust::gpu(route = "physics", crate = ::inner::gust)]
+#[inner::gust::gpu_module(route = "physics", crate = ::inner::gust)]
 pub mod routed {
     #[kernel]
     pub fn scale(
@@ -34,7 +34,7 @@ pub mod routed {
 }
 
 /// A map function.
-#[inner::gust::gpu(crate = ::inner::gust)]
+#[inner::gust::gpu_fn(crate = ::inner::gust)]
 pub fn saxpy(a: f32, x: f32, y: f32) -> f32 {
     a * x + y
 }

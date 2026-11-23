@@ -1,6 +1,6 @@
 // Two helpers that call each other (m9.a2, GUST-E0120): the cycle is reported at the call that closes it.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     fn even(n: u32) -> bool {
         if n == 0u32 {

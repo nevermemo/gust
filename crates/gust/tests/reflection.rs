@@ -4,7 +4,7 @@ use gust::{
     slang::Target,
 };
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod sample {
     pub struct Inner {
         pub value: float,
@@ -706,7 +706,7 @@ fn entry_point_resources_are_not_silently_ignored() {
 /// carries the emitted names, the compiler reflects them, and the cross-check passes; a descriptor that kept the Rust
 /// spelling, or a reflected field with another name, fails it.
 #[allow(non_camel_case_types, non_snake_case)]
-#[gust::gpu]
+#[gust::gpu_module]
 mod renamed_reflect {
     pub struct class {
         pub new: uint,
@@ -1898,7 +1898,7 @@ mod schema_three {
 
     // ---- the real fixture kernel (review N5) ----
 
-    /// The `pixel` fixture of the macro, so the tamper cases also run on what `#[gpu]` emits and not only on the
+    /// The `pixel` fixture of the macro, so the tamper cases also run on what `#[gpu_module]` emits and not only on the
     /// hand-written Slang above.
     mod pixel_fixture {
         include!("../../../tests/fixtures/pixel.rs");

@@ -1,6 +1,6 @@
 //! Parallel CPU execution of the generated map kernels (M7, D119, slice m7.c). Macro support.
 //!
-//! Under `GUST_PROFILE=cpu` the map generator (`#[gpu]` on a free function) emits a CPU-only chunk body,
+//! Under `GUST_PROFILE=cpu` the map generator (`#[gpu_fn]` on a free function) emits a CPU-only chunk body,
 //! `__gust_map_cpu_chunk`: the function over the element indexes `lo..hi`, reading every input as a whole-length slice
 //! at the global index and writing only `chunk[i - lo]`, the invocation's own element. [`run_map_chunked`] runs that
 //! body over disjoint pieces of the output (`chunks_mut` under `std::thread::scope`), so the result is the one a

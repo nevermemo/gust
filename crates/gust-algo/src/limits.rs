@@ -3,9 +3,9 @@
 //!
 //! The workgroup count is not checked here any more (m11.algolift, D211): a first dispatch past
 //! `max_compute_workgroups_per_dimension` is split by the host into pieces (D208, "Launch size" in
-//! `docs/SEMANTICS.md`), because every kernel of this crate is a `#[gpu]` module kernel whose descriptor carries a split variant and every
-//! launch goes through the batch dispatch of the host. What still refuses is the storage half below; a build without
-//! run-time compilation refuses a launch that needs splitting when it is made, until D209.
+//! `docs/SEMANTICS.md`), because every kernel of this crate is a `#[gpu_module]` module kernel whose descriptor carries
+//! a split variant and every launch goes through the batch dispatch of the host. What still refuses is the storage half
+//! below; a build without run-time compilation refuses a launch that needs splitting when it is made, until D209.
 
 use gust_wgpu::HeadlessDevice;
 

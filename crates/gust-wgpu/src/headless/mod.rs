@@ -1,9 +1,11 @@
 use crate::BufferPool;
 mod accessors;
 mod adapter;
+mod adopt;
 mod open;
 
 pub(crate) use adapter::*;
+pub use adopt::DeviceRequest;
 
 #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
 use crate::RouteEvent;
@@ -15,15 +17,16 @@ use std::sync::atomic::AtomicU64;
 
 pub(crate) static NEXT_DEVICE_ID: AtomicU64 = AtomicU64::new(1);
 
-/// A logical device selected without creating a window or presentation surface.
+/// A logical device selected without creating a window or presentation surface. GUST itself never touches a window,
+/// hence the name; a renderer that presents can still share the device with GUST ([`HeadlessDevice::adopt`]).
 ///
 /// Open one, create buffers on it, run a kernel and read the result back:
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 /// use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod double {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {
@@ -64,6 +67,9 @@ pub struct HeadlessDevice {
     pub(crate) subgroup_sizes: Option<(u32, u32)>,
     /// Recycles the allocations of [`GpuVec`] and other pooled buffers.
     pub(crate) pool: BufferPool,
+    /// How many queue submissions GUST itself has made on this device (`HeadlessDevice::gust_submissions`). Only
+    /// `HeadlessDevice::submit_counted` adds to it, and every `queue.submit` of this crate goes through that.
+    pub(crate) submissions: AtomicU64,
     /// The route each kernel's pipeline was built from, in build order (`HeadlessDevice::route_events`).
     #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
     pub(crate) route_events: Mutex<Vec<RouteEvent>>,

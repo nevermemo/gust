@@ -49,8 +49,8 @@ This kernel computes a four-tap window with a closure and a local array. It is a
 not a gallery entry, and the doctest checks that the macro accepts it:
 
 ```rust,no_run
-# use gust::gpu;
-#[gpu]
+# use gust::gpu_module;
+#[gpu_module]
 mod window {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn sum4(
@@ -83,4 +83,4 @@ assignment, so the arguments of `feed` are bound to locals first; a struct needs
 unused `tag`.
 
 ```rust,no_run
-# use gust::gpu;
+# use gust::gpu_module;

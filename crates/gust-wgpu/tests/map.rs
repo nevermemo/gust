@@ -1,4 +1,4 @@
-//! The element-wise map calls of `#[gpu]` on a function (m7.a1, D60; Gpu tier).
+//! The element-wise map calls of `#[gpu_fn]` on a function (m7.a1, D60; Gpu tier).
 //!
 //! `tests/fixtures/map.rs` holds the functions; each gets `f::map`, `f::map_on`, `f::map_gpu`, `f::map_async` and the
 //! rest. Every comparison is against a host reference written here with plain Rust arithmetic: the float inputs are
@@ -295,7 +295,7 @@ fn the_async_calls_do_not_block() {
 }
 
 // A parameter called `id` is a plain input (the kernel's dispatch id has a reserved name).
-#[gust::gpu]
+#[gust::gpu_fn]
 pub fn hash(id: u32, salt: u32) -> u32 {
     (id + salt) * 3u32
 }

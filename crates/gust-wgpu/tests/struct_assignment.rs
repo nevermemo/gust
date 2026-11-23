@@ -3,7 +3,7 @@ mod common;
 use gust::cpu::CpuDevice;
 use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod assignments {
     pub struct Pair {
         pub first: uint,

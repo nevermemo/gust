@@ -1,7 +1,7 @@
 // Control case for the value form of `match` (m9.e2): a typed `let` on an enum and on `u32` and `i32` scrutinees with
 // integer-literal patterns, and the statement form with literals. This crate must compile.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[derive(PartialEq, Eq)]
     pub enum Mode {

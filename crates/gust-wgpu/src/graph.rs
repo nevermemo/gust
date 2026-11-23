@@ -18,12 +18,14 @@ use std::{
 };
 
 use gust::{Access, Call, GpuPod, TypeLayout, pod_slice_as_bytes, target::GpuKernel};
-use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::{
     BufferBinding, BufferDispatch, Error, GpuBuffer, GpuBufferAccess, GpuUniform, HeadlessDevice,
-    PassTimestamps, Raw, TIMESTAMP_RESULT_BYTES, completion::blocking::recv_mapping,
-    error::INDIRECT_ARGUMENTS, pod_vec_from_bytes, render,
+    PassTimestamps, Raw, TIMESTAMP_RESULT_BYTES,
+    completion::blocking::recv_mapping,
+    encode::{encode_indirect_pass, encode_readback_copy, encode_upload},
+    error::INDIRECT_ARGUMENTS,
+    pod_vec_from_bytes, render,
 };
 
 /// Handle to one node of a [`StagedGraph`], in insertion order.
@@ -228,10 +230,10 @@ fn readback_kind<'a, T: GpuPod>(buffer: &'a GpuBuffer<T>) -> NodeKind<'a> {
 /// and moves only the input and the result across the host boundary:
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 /// use gust_wgpu::{GpuBufferAccess, HeadlessDevice, StagedGraph};
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn square(id: SV_DispatchThreadID, mut data: RWStructuredBuffer<float>) {
@@ -767,10 +769,10 @@ impl HeadlessDevice {
     /// can then fail.
     ///
     /// ```
-    /// use gust::gpu;
+    /// use gust::gpu_module;
     /// use gust_wgpu::{GpuBufferAccess, HeadlessDevice, StagedGraph};
     ///
-    /// #[gpu]
+    /// #[gpu_module]
     /// mod ops {
     ///     #[kernel(workgroup_size(64, 1, 1))]
     ///     pub fn square(id: SV_DispatchThreadID, mut data: RWStructuredBuffer<float>) {
@@ -878,21 +880,13 @@ impl HeadlessDevice {
         for (index, node) in graph.nodes.iter().enumerate() {
             match &node.kind {
                 NodeKind::Upload { target, bytes, .. } => {
-                    if !bytes.is_empty() {
-                        let staging = self.device.create_buffer_init(&BufferInitDescriptor {
-                            label: Some("GUST staged graph upload"),
-                            contents: bytes,
-                            usage: wgpu::BufferUsages::COPY_SRC,
-                        });
-                        encoder.copy_buffer_to_buffer(
-                            &staging,
-                            0,
-                            target.buffer(),
-                            0,
-                            bytes.len() as u64,
-                        );
-                        staging_uploads.push(staging);
-                    }
+                    staging_uploads.extend(encode_upload(
+                        &self.device,
+                        &mut encoder,
+                        target,
+                        bytes,
+                        "GUST staged graph upload",
+                    ));
                     transfers.push(TransferRecord {
                         node: NodeId(index),
                         direction: TransferDirection::Upload,
@@ -926,36 +920,26 @@ impl HeadlessDevice {
                         None => self.prepare_indirect(&placeholder)?,
                     };
                     for prepared in list {
-                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some("GUST staged graph indirect compute pass"),
-                            timestamp_writes: stamps_of(pass_index).map(|stamps| {
-                                wgpu::ComputePassTimestampWrites {
-                                    query_set: stamps.query_set,
-                                    beginning_of_pass_write_index: stamps.begin,
-                                    end_of_pass_write_index: stamps.end,
-                                }
-                            }),
-                        });
+                        encode_indirect_pass(
+                            &mut encoder,
+                            &prepared,
+                            args,
+                            "GUST staged graph indirect compute pass",
+                            stamps_of(pass_index),
+                        );
                         pass_index += 1;
-                        pass.set_pipeline(prepared.cached_kernel.pipeline.compute());
-                        pass.set_bind_group(0, &prepared.bind_group, &[]);
-                        pass.dispatch_workgroups_indirect(args.buffer(), 0);
                         dispatches += 1;
                         indirect_dispatches += 1;
                     }
                 }
                 NodeKind::Readback { source, layout } => {
                     let byte_size = source.byte_len();
-                    let staging = (byte_size > 0).then(|| {
-                        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("GUST staged graph readback"),
-                            size: byte_size,
-                            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                            mapped_at_creation: false,
-                        });
-                        encoder.copy_buffer_to_buffer(source.buffer(), 0, &staging, 0, byte_size);
-                        staging
-                    });
+                    let staging = encode_readback_copy(
+                        &self.device,
+                        &mut encoder,
+                        source,
+                        "GUST staged graph readback",
+                    );
                     pending.push(PendingReadback {
                         node: NodeId(index),
                         layout: *layout,
@@ -980,7 +964,7 @@ impl HeadlessDevice {
                 TIMESTAMP_RESULT_BYTES,
             );
         }
-        let submission = self.queue.submit([encoder.finish()]);
+        let submission = self.submit_counted([encoder.finish()]);
         let receivers: Vec<_> = pending
             .iter()
             .map(|readback| {

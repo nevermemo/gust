@@ -1,4 +1,4 @@
-//! Error recovery for `#[gpu]`: the original tokens beside `compile_error!`.
+//! Error recovery for `#[gpu_module]` and `#[gpu_fn]`: the original tokens beside `compile_error!`.
 //!
 //! When the macro rejects its input it used to return only the error. Returning the
 //! user's code as well keeps the module's items present, so an editor (rust-analyzer
@@ -7,7 +7,7 @@
 //! build still fails and nothing is accepted silently.
 //!
 //! Measured with rustc 1.98.0 on `examples/vector-add` with one rejection inside the
-//! `#[gpu]` module (whose kernel `app.rs` also references through `DESCRIPTOR`):
+//! `#[gpu_module]` module (whose kernel `app.rs` also references through `DESCRIPTOR`):
 //! `cargo check` reports exactly one error both without and with the recovery of the
 //! module as written, and no error about the missing items in either case. For a module
 //! whose structs host code uses as `GpuPod`, the plain recovery added a second error (the
@@ -51,7 +51,7 @@ pub(crate) fn beside_error(
     tokens
 }
 
-/// The facade path of a `crate = <path>` argument of a `#[gpu(..)]` whose arguments as a whole are refused: the
+/// The facade path of a `crate = <path>` argument of a `#[gpu_module(..)]` whose arguments as a whole are refused: the
 /// recovered code names `::gust::` as the expansion would, so it goes through the same rewrite
 /// ([`crate::forward::forward_crate`]) when a well-formed `crate = <path>` is there. `None` when none is, and then the
 /// code keeps `::gust::`.
@@ -97,7 +97,7 @@ fn recovered_module(mut module: syn::ItemMod) -> Option<syn::ItemMod> {
         if let syn::Item::Fn(function) = item
             && is_kernel(&function.attrs)
         {
-            // The same shape the successful expansion gives a kernel (`expand/mod.rs`):
+            // The same shape the successful expansion gives a kernel (`expand/module.rs`):
             // a private type-checking shadow, so a callable host `add` is never offered.
             function.sig.ident = format_ident!("__gpu_typecheck_{}", function.sig.ident);
             function.vis = syn::Visibility::Inherited;
@@ -333,10 +333,11 @@ fn is_kernel(attributes: &[syn::Attribute]) -> bool {
         .any(|attribute| attribute.path().is_ident("kernel"))
 }
 
-/// Removes `#[kernel]` from the attribute lists of the items reachable from `items`
-/// (the macro strips it from the functions of a successful expansion; unprocessed it is
-/// an unknown attribute). A walk with `syn::visit_mut` would also reach functions nested
-/// in bodies, but it needs a `syn` feature the workspace does not enable.
+/// Removes `#[kernel]` and `#[pad]` from the attribute lists of the items reachable from `items`
+/// (the macro strips them from the items of a successful expansion; unprocessed they are
+/// unknown attributes: a module that misuses `#[pad]` goes back with it dropped, one that does
+/// not has been padded already, see `expand::pad::recover`). A walk with `syn::visit_mut` would also reach
+/// functions nested in bodies, but it needs a `syn` feature the workspace does not enable.
 fn strip_kernel_attributes(items: &mut [syn::Item]) {
     for item in items {
         match item {
@@ -378,5 +379,7 @@ fn strip_kernel_attributes(items: &mut [syn::Item]) {
 }
 
 fn strip_from(attributes: &mut Vec<syn::Attribute>) {
-    attributes.retain(|attribute| !attribute.path().is_ident("kernel"));
+    attributes.retain(|attribute| {
+        !attribute.path().is_ident("kernel") && !attribute.path().is_ident("pad")
+    });
 }

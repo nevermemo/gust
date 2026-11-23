@@ -1,7 +1,7 @@
 // The accepted shifts next to GUST-E0335: the boundary amount 31, 0, a signed amount in range, and run-time amounts
 // (the GPU masks those, KM-04). This crate must compile.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn run(id: SV_DispatchThreadID, input: StructuredBuffer<u32>, mut out: RWStructuredBuffer<u32>) {

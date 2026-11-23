@@ -1,7 +1,7 @@
 // The `cpu` option is stated once; a repeat is the macro's error E0710. A macro error carries no rustc code,
 // so expected.txt says `code: none` and pins the macro's own message text.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod kernels {
     #[kernel(cpu = "unsupported", cpu = "unsupported")]
     pub fn copy(

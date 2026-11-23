@@ -28,7 +28,7 @@ Development conventions live in [repository structure](docs/development/REPO_STR
 The current executable path is:
 
 ```text
-#[gpu] Rust module
+#[gpu_module] Rust module
         │
         ├─ rustc checks the shadow Rust types and kernel body
         │
@@ -58,7 +58,7 @@ a strict profile needs neither Slang nor the helper, D45):
 - Outside this checkout, once a release is on crates.io (none is, D226), `cargo install cargo-gust --locked --version
   "~0.2"` installs the `cargo gust` tool; it works without `GUST_PROFILE` ("Install from crates.io" has the whole
   setup for a crate of your own)
-- `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.22 (`cargo gust slang install` installs it, and
+- `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.22.1 (`cargo gust slang install` installs it, and
   `cargo gust doctor` names a `slangc` of another version). `cargo gust` finds its managed install itself (in
   `GUST_SLANG_HOME` when set), and so does the run-time bridge, but `cargo xtask` launches plain `slangc`, so put the
   install's `bin` directory first on `PATH`
@@ -117,10 +117,10 @@ program with the same features.
 
 Build profiles (D44, D51): the environment variable `GUST_PROFILE` is `dev`, `native`, `web` or `cpu`, and `gust`'s
 build script reads it (any other value, including an empty one, fails the build). `native` and `web` are strict: every
-`#[gpu]` kernel must have a precompiled artifact, or the build fails with a compile error at the kernel, and the
+GUST kernel must have a precompiled artifact, or the build fails with a compile error at the kernel, and the
 `slang-runtime` feature is refused, so the build holds no run-time Slang bridge (wgpu and the driver still compile the
 shipped WGSL or SPIR-V when the pipeline is created). `dev` has neither rule. A release build is strict even without the
-variable: with `GUST_PROFILE` unset, `cargo build --release` of a crate with `#[gpu]` kernels is treated as `web` for
+variable: with `GUST_PROFILE` unset, `cargo build --release` of a crate with GUST kernels is treated as `web` for
 `wasm32` and `native` for every other target, and prints
 `warning: gust-compute@<version>: gust: release build without GUST_PROFILE treated as native` (or `web`; cargo shows a
 build script's warning only for path and workspace packages, or with `-vv`). The one exception is the internal
@@ -135,13 +135,13 @@ sets `GUST_PROFILE=dev` explicitly (`GUST_PROFILE=dev cargo run --release -p pol
 by `cargo gust build` and re-checked by `cargo gust check`, D45); without them the build fails at the kernel by design.
 
 The `cpu` profile (D21, D51) is the production CPU target. It is never inferred: a release build without the variable
-stays `native`, so choosing the CPU is always explicit (`GUST_PROFILE=cpu cargo build --release`). The `#[gpu]` macro
+stays `native`, so choosing the CPU is always explicit (`GUST_PROFILE=cpu cargo build --release`). The `#[gpu_module]` macro
 then emits each kernel's `Run` impl for `gust::cpu::CpuDevice` in every build and uses no artifact, so a program can
 call `dispatch` on the CPU and run the kernel as plain Rust. A build holds one target: `gust-wgpu` fails to compile
 under `cpu` (a compile error that names the profile), and the `slang-runtime` feature is refused, so the binary
 contains no Slang bridge, helper or GPU runtime. A kernel marked `#[kernel(cpu = "unsupported")]` has no CPU form, and a
 `dispatch` on it does not compile. Kernels run on one thread, in ascending `global_id.x`, with one exception: the calls
-of an element-wise map (`#[gpu]` on a function) run in parallel chunks of the output (see "Current subset").
+of an element-wise map (`#[gpu_fn]` on a function) run in parallel chunks of the output (see "Current subset").
 `cargo xtask check-cpu-target` is the evidence (the `Cpu` tier).
 
 Capabilities (D138). `GUST_PROFILE` may name capabilities after its target, `<target>(+<capability>)*`, for example
@@ -207,6 +207,7 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask check-cpu` | CPU-twin evidence (no slangc, no GPU) | `--locked` tests of the examples with CPU twins (`vector-add`, `polynomial`, `signal-pipeline`, `particle-step`, `typed-pipeline`, `atomic-counter`, `staged-graph`, `component-pool`, `map-chain`, `texture-threshold`, `shape-bench`, `hash-rng`, `polar-transform`, `buffer-handoff`, `mc-histogram`, `field-relax`, `cell-bins`, `walker-steer`, `walker-transport`, `walker-life`, `event-drain`), whose non-ignored tests run each macro-emitted CPU twin against its host reference; part of the Unit suite. Each call fails when it reports no passed test (the test-count guard), and when a twin test or derivation-domain guard of the example is not reported `ok` by name |
 | `cargo xtask check-difftest [--seeds <list\|range\|random:N>] [--cpu-only] [--report PATH]` | Differential test of generated scalar kernels (`tests/difftest`, `docs/development/DIFFTEST.md`); `--cpu-only` needs no slangc and no GPU | runs `difftest-run` and fails unless its report has the requested seeds and mode, `programs_executed` equal to 17 times the seeds, no mismatch (named by seed) and, without `--cpu-only`, an adapter; without `--cpu-only` it also runs the `short_circuit` GPU test. `--cpu-only --seeds 1-4` is the last step of the Unit suite; the Gpu suite and `check-full` run all 8 seeds |
 | `cargo xtask check-dual [--check-only]` | Cross-crate dual-build evidence; `--check-only` needs no slangc and no GPU | refuses a preset `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS` or `CARGO_BUILD_RUSTFLAGS`; checks `tests/dual` with fmt and clippy, builds the workspace with `--cfg gust_dual` (through `CARGO_ENCODED_RUSTFLAGS`) in `<target>/dual`, runs clippy `-D warnings` on vector-add and polynomial with the cfg, then checks the `tests/dual` fixture: without the cfg a dependent's own `cfg(test)` (E1) and a production binary (E3) get no CPU twin of a library kernel (one E0277 each); with it the twin test runs and passes (E2). The full mode (GPU) also runs vector-add and polynomial with the cfg, which must print `CPU twin: matches (N elements, max ULP k)`, and vector-add without it, which must not. CI's `unit` job runs `--check-only`; `check-full` runs the full mode |
+| `cargo xtask check-window-example` | `examples/window-share` (m14.devshare.1) builds; compile-only, runs nothing | `cargo fmt --check`, `cargo build --locked` and `cargo clippy -D warnings` of the separate `examples/window-share` workspace (winit; not in the root workspace), into `<target>/window-share`; the window run is manual, with `GUST_WINDOW_ADAPTER=<name>` and a display, and prints `GUST_OK frames=60 adapter=<name>` |
 | `cargo xtask check-cpu-target` | Production CPU target evidence (`Cpu` tier; no slangc, no GPU) | builds the fixture `tests/cpu-target` in release under `GUST_PROFILE=cpu` and runs it against host references (E-a); scans the binary for `slangc`, `gust-slang-reflect`, `wgpu` and `vulkan` and reads `cargo tree -e features` (E-b); builds with `--cfg gust_dual` (E-c); checks four refusals (E-d to E-g: the missing twin without the profile, `gust-wgpu` under `cpu`, the bridge feature under `cpu`, an opted-out kernel); flips the profile six times in one target directory (E-h); runs `cargo test -p kernels` under `cpu` (E-i). Stops at the first failing step and names it. CI runs it as the job `cpu-target`, beside `unit` |
 | `cargo xtask check-routing [--check-only] [--case NAME]` | Routing driver evidence (cargo only with `--check-only`; CI job `routing`) | copies the fixture `tests/routing` to a scratch directory and checks plain cargo, seven `gust.toml` and profile states (the probe's targets, `routes.json` and a golden table agree), nine refused files (file, line and tag), `cargo gust test` and `run` (the plain-cargo control must fail with the E0277 "cannot run the kernel"), the flip of the route variable in both directions in one target directory, and rustfmt and clippy on the fixture, each package under its own route; without `--check-only` the GPU-routed kernel also runs on the adapter the machine has (named in the output) |
 | `cargo xtask check-gallery [--slang] [--no-slang] [--gpu]` | Example gallery `gallery/` (M10; D181) | three parts, no flag runs all: the Slang part (`cargo gust build` into a scratch copy, byte-equal to the committed artifacts), the no-Slang part (release build and tests with Slang proved absent, anchors and guide listings in sync) and the GPU part (each program on the adapter, `web-hello` in Chrome); `check-full` runs the GPU part |
@@ -261,13 +262,13 @@ GUST will be released as four packages that always share one version (the first 
 
 | Package | Library name | What it is |
 | --- | --- | --- |
-| `gust-compute` | `gust` | The `#[gpu]` attribute, `par_for!`, typed buffers and calls, the CPU runtime |
+| `gust-compute` | `gust` | The `#[gpu_module]` attribute, `par_for!`, typed buffers and calls, the CPU runtime |
 | `gust-compute-wgpu` | `gust_wgpu` | The headless wgpu backend that runs the kernels |
 | `gust-compute-macros` | `gust_macros` | The proc macros; `gust-compute` uses them and you never depend on them |
 | `cargo-gust` | none (a binary) | The `cargo gust` tool: precompiled artifacts and the pinned Slang |
 
 The package name and the library name differ, so you add one and write the other: `cargo add gust-compute
-gust-compute-wgpu`, then `use gust::gpu;` and `use gust_wgpu::...` in the code. Every `use gust::` snippet in this
+gust-compute-wgpu`, then `use gust::gpu_module;` and `use gust_wgpu::...` in the code. Every `use gust::` snippet in this
 README assumes that `cargo add` line. Do not run `cargo add gust`: that name belongs to an unrelated crate.
 
 A kernel runs in one of two ways (D44, D45). During development it is compiled at run time through Slang, which needs
@@ -279,7 +280,7 @@ Slang, nor the helper, nor `cargo-gust`.
 
 ```sh
 cargo install cargo-gust --locked --version "~0.2"
-cargo gust slang install        # downloads Slang 2026.22, checks its SHA-256, unpacks it into the cargo home
+cargo gust slang install        # downloads Slang 2026.22.1, checks its SHA-256, unpacks it into the cargo home
 cargo gust slang build-helper   # compiles the native reflection helper against that Slang and prints its path
 cargo gust doctor               # names whatever is still missing
 ```
@@ -332,10 +333,10 @@ version, so a range cannot mix two releases.
 And this `src/main.rs`:
 
 ```rust
-use gust::gpu;
+use gust::gpu_module;
 use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 
-#[gpu]
+#[gpu_module]
 mod vector_add {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn add(
@@ -381,7 +382,7 @@ cargo build --release
 ./target/release/hello-gust       # target\release\hello-gust.exe on Windows
 ```
 
-A release build with `GUST_PROFILE` unset is the strict `native` profile (`web` on wasm32): every `#[gpu]` kernel needs
+A release build with `GUST_PROFILE` unset is the strict `native` profile (`web` on wasm32): every GUST kernel needs
 its artifact, and the binary holds no Slang bridge (the build profiles are described under "Try it"; unless
 `cargo-gust` is listed as a dependency, which cargo flags as invalid: that build is `dev`, D117). Commit
 `gust-artifacts/`; `cargo gust check` fails when it no longer matches the sources. The first `cargo gust build` of a
@@ -394,7 +395,7 @@ called `gust` and `gust_wgpu`. Two things follow.
 
 - If you rename a dependency in your manifest, for example `g = { package = "gust-compute", version = "0.2" }`, add
   `extern crate g as gust;` at the root of your crate. If `gust-compute-wgpu` is renamed too (say to `gw`), also add
-  `extern crate gw as gust_wgpu;`. A doctest that uses `#[gpu]` needs the same lines inside it. The crate-path spike
+  `extern crate gw as gust_wgpu;`. A doctest that uses `#[gpu_module]` needs the same lines inside it. The crate-path spike
   (D106) built and ran a consumer with one and with both dependencies renamed this way, on the GPU, and passed such a
   doctest.
 - Two direct dependencies whose library is called `gust` cannot be used together: `gust-compute` and the unrelated
@@ -404,7 +405,7 @@ called `gust` and `gust_wgpu`. Two things follow.
   build on current stable for an unrelated reason), a transitive dependency on it built, and `cargo doc` of both only
   warned about an output filename collision.
 - A crate that reaches `gust` only through another crate (the other one says `pub use gust;`) has no `::gust` of its
-  own: name the path with `#[inner::gust::gpu(crate = ::inner::gust)]`, in either order with `route = ".."`, or with
+  own: name the path with `#[inner::gust::gpu_module(crate = ::inner::gust)]` (or `gpu_fn`), in either order with `route = ".."`, or with
   `crate(::inner::gust);` as one of the clauses before the loop of `par_for!` (any order, each at most once). The
   macro then rewrites each `::gust::` of its output that begins a path to that path: one after a path segment (as in
   `::inner::gust::`) or in a qualified path (`<T as X>::gust::`) is left alone; one after a keyword, `->`, a lifetime or
@@ -413,12 +414,12 @@ called `gust` and `gust_wgpu`. Two things follow.
   which includes a comparison when an earlier `<` (an operator too, in this or an earlier statement of the block) is
   still unmatched, as in `a < b && d > ::gust::K`: rustc then reports E0433 for it, and `d > (::gust::K)` avoids that.
   Spacing is ignored (`S<T> ::gust::x` and `S<T>::gust::x` are alike). The `::gust_wgpu::` paths
-  stay literal, so the function form of `#[gpu]` and `par_for!` still need a direct dependency on `gust-compute-wgpu`;
+  stay literal, so the function form, `#[gpu_fn]`, and `par_for!` still need a direct dependency on `gust-compute-wgpu`;
   the module form does not. `tests/reexport` compiles all four forms this way.
 
 ## Routing kernels to the CPU or the GPU at build time
 
-A kernel crate declares route tags in its `Cargo.toml`, and a module opts in with `#[gust::gpu(route = "physics")]`:
+A kernel crate declares route tags in its `Cargo.toml`, and a module opts in with `#[gust::gpu_module(route = "physics")]`:
 
 ```toml
 [package.metadata.gust.routes]
@@ -455,7 +456,7 @@ The resolved table, with the level that decided each tag (`profile`, `entry`, `d
 `gust-artifacts/routes.json` by `build`, `run` and `test`. It is a build output that changes with the profile, so ignore
 it in git; without a `gust.toml` the driver removes an old one. A summary of one line per tag goes to standard error, with
 a note when a `GUST_ROUTE__*` variable you set differs from the driver's value or matches no declared tag (the driver's
-value wins). The order is the one the `#[gpu]` macro uses: under `GUST_PROFILE=cpu` every tag goes to the CPU; otherwise
+value wins). The order is the one the `#[gpu_module]` macro uses: under `GUST_PROFILE=cpu` every tag goes to the CPU; otherwise
 the nearest `gust.toml` entry, then the nearest `default` in the declarations, then the GPU.
 
 A mistake (an unknown tag, a target outside the tag's `targets`, two packages whose names give one variable) is an
@@ -530,7 +531,7 @@ GUST is an experimental compiler and prerelease: no release line is maintained, 
 maturity (D226; nothing is published, and a 0.1.0 was prepared and never published). This is the promise it will
 carry. It follows SemVer for 0.x (D111): a change
 that breaks existing code bumps the minor version (0.2 to 0.3), and a patch release only adds or fixes: a construct may
-be added to the `#[gpu]` language in a patch and is refused only in a minor. The four packages are released together at
+be added to the `#[gpu_module]` language in a patch and is refused only in a minor. The four packages are released together at
 one version and depend on each other with exact versions, so upgrade them together. Each release is described in
 [CHANGELOG](CHANGELOG.md). GUST is pre-1.0: nothing here promises that the API stops changing between minors, only how a
 change is made and announced.
@@ -538,12 +539,12 @@ change is made and announced.
 The promise covers:
 
 - the public API of `gust-compute` and `gust-compute-wgpu`: every item that is not `#[doc(hidden)]`, including
-  `#[gpu]` and `par_for!`, the typed call surface, the buffer, device and map types, the CPU runtime and the artifact types. Every public enum is `#[non_exhaustive]`
+  `#[gpu_module]` and `par_for!`, the typed call surface, the buffer, device and map types, the CPU runtime and the artifact types. Every public enum is `#[non_exhaustive]`
   except `MatrixLayout` and `Access` (`gust-compute`) and `TransferDirection`, `GpuBufferAccess` and the binding enums
   (`gust-compute-wgpu`), which are closed sets, and the uninhabited marker types, which have no variants: a
   `#[non_exhaustive]` enum may gain variants, so match it with a wildcard arm. A minor bump may grow `Access` (a
   write-only access, say);
-- the `#[gpu]` language: the set of accepted constructs with their lowering contract ([SEMANTICS](docs/SEMANTICS.md));
+- the `#[gpu_module]` language: the set of accepted constructs with their lowering contract ([SEMANTICS](docs/SEMANTICS.md));
 - the commands of `cargo-gust` and the lines they print, which scripts and CI read;
 - the file formats: `gust-artifacts/manifest.json` (schema 4, with `split_of` linking a grid kernel's split artifact
   to its body), the record files (schema 5) and the reflection records
@@ -607,11 +608,11 @@ list; the `semver` CI job that covered the public API against that branch is ret
   longer compiles outside `gust-compute`, because the descriptor gained `variant`, `requires` and `target`. Build one
   with `KernelDescriptor::new(module, name, entry_point, workgroup_size, parameters, slang_source)`, which sets the grid
   shape, no capability and the GPU target, and change a field with its `with_*` setter (`with_shape`, `with_source`,
-  `with_artifacts` and the others). A later field is not a break again. Kernels written with `#[gpu]` need no change.
+  `with_artifacts` and the others). A later field is not a break again. Kernels written with `#[gpu_module]` need no change.
 - **B1, part 2: the `GpuKernel` bound.** A hand-written `Kernel` implementation that runs on `HeadlessDevice` also adds
   one line, `impl gust::target::GpuKernel for MyKernel {}`; without it the call is an E0277 that says the device
   cannot run the kernel. The semver tool does not list that line, because the marker is `#[doc(hidden)]`.
-- **B2: subgroup names are reserved (GUST-E0745).** A function of a `#[gpu]` module can no longer be named like one of
+- **B2: subgroup names are reserved (GUST-E0745).** A function of a `#[gpu_module]` module can no longer be named like one of
   the 21 subgroup operations (`subgroup_add`, `subgroup_size` and the rest); the call of such a name is that operation.
   Rename the function. The macro makes this check, so the semver tool cannot list it.
 - **B3: recursion is refused (GUST-E0120).** A cycle in the module's call graph, built from names (`f(..)`, `x.m(..)` to
@@ -639,8 +640,8 @@ list; the `semver` CI job that covered the public API against that branch is ret
   carries.
 - **Changed behaviour.** `DeviceOptions::default()` and `HeadlessDevice::new()` now request
   `gust::capability::enabled()`. In a build without a capability that is the empty set, as before; in a `+subgroups`
-  build they open a device with the feature, or fail with `Error::MissingCapability`. The pinned Slang is 2026.22
-  (D150); `cargo gust check` refuses artifacts built with 2026.20 until `cargo gust build` is run again.
+  build they open a device with the feature, or fail with `Error::MissingCapability`. The pinned Slang is 2026.22.1
+  (D150); `cargo gust check` refuses artifacts built with an earlier pin (2026.20, for the 0.1 line) until `cargo gust build` is run again.
 
 ## Minimum Rust
 
@@ -657,9 +658,9 @@ The preferred source vocabulary deliberately resembles Slang (the snippet needs 
 is published; the library is named `gust`):
 
 ```rust
-use gust::gpu;
+use gust::gpu_module;
 
-#[gpu]
+#[gpu_module]
 mod vector_add {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn add(
@@ -676,7 +677,7 @@ mod vector_add {
 }
 ```
 
-`#[gpu]` automatically imports the shader prelude. The names `float`, `int`,
+`#[gpu_module]` automatically imports the shader prelude. The names `float`, `int`,
 `uint`, `SV_DispatchThreadID`, `StructuredBuffer<T>`, and
 `RWStructuredBuffer<T>` are lightweight Rust shadow types: they let rustc parse,
 resolve, and type-check the source while the macro translates the original syntax
@@ -700,7 +701,7 @@ is not a public CPU execution API (there is no `.cpu(...)` wrapper). In a test b
 see "Development and next milestones") the macro also emits a CPU twin that runs this
 shadow body on `gust::cpu::CpuDevice`; `#[kernel(cpu = "unsupported")]` leaves a kernel
 without one. A production build contains no twin. CPU comparisons in the benchmark
-examples are ordinary, independent Rust implementations outside the `#[gpu]` module, and
+examples are ordinary, independent Rust implementations outside the `#[gpu_module]` module, and
 they stay the expected values in tests.
 
 ### Shapes: `grid` and `pixel`
@@ -1014,14 +1015,14 @@ not apply to it, and the kernel that writes the arguments must clamp. See the co
 
 ## Element-wise maps
 
-`#[gpu]` on a free function of scalars (or vectors) generates the kernel, the buffers, the bounds handling and the
+`#[gpu_fn]` on a free function of scalars (or vectors) generates the kernel, the buffers, the bounds handling and the
 dispatch of an element-wise call (D60). The function stays an ordinary Rust function; its module of the same name
 holds the calls (this snippet needs `cargo add gust-compute` too, once a release is published):
 
 ```rust
-use gust::{gpu, map::Broadcast};
+use gust::{gpu_fn, map::Broadcast};
 
-#[gpu]
+#[gpu_fn]
 pub fn saxpy(a: f32, x: f32, y: f32) -> f32 { a * x + y }
 
 let out: Vec<f32> = saxpy::map(Broadcast(2.0), &xs, &ys)?;          // host slices in, a Vec out
@@ -1075,7 +1076,7 @@ gust::par_for!(on(device); (x, y) in (0..w, 0..h), [img: &[f32], out: &mut [f32]
 device (without it the call opens the process's default device) and `workgroup_size(x, y, z);` overrides the
 defaults (256x1x1, 16x16x1, 8x8x4). The call is blocking and returns `Result<(), gust::map::Error>`.
 
-- The body is validated as a `#[gpu]` kernel (the same dialect and codes), and the macro adds a bounds guard on all
+- The body is validated as a `#[gpu_module]` kernel (the same dialect and codes), and the macro adds a bounds guard on all
   three axes, so a workgroup larger than the loop runs nothing outside it. A zero extent returns `Ok(())` without a
   launch; an extent past `u32` or past the 2^32 invocation cap (D102) is an `Err` before any device work.
 - Every buffer is an independent binding, and the iterations run in no defined order. A body whose iteration reads what
@@ -1171,7 +1172,7 @@ pub fn double_subgroups(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mu
   The subgroup form of the `gust-algo` reduction was not faster than the shipped one, so `gust_algo::evidence` keeps it
   outside the variant set (D146).
 - The portable floor is opt-in. A crate that sets `limits = "portable"` under `[package.metadata.gust]` has every
-  `#[kernel]` of its `#[gpu]` modules checked against `gust::limits::PORTABLE`, WebGPU's default limits (256 invocations
+  `#[kernel]` of its `#[gpu_module]` modules checked against `gust::limits::PORTABLE`, WebGPU's default limits (256 invocations
   per workgroup, 8 storage buffers, 16 KiB of workgroup memory and the rest of the table), and an overshoot is
   GUST-E0746. Element-wise maps and `par_for!` are not checked, and a crate without the setting is not checked at all.
 
@@ -1210,7 +1211,7 @@ to `web-hello`, the browser page; each has a README, and `cargo xtask check-gall
   printed and asserted by the tests.
 - `atomic-counter` has 257 invocations increment one shared counter with
   `atomic_add` and checks the total against the host count.
-- `map-chain` chains three `#[gpu] fn` maps two ways, as a GPU-resident chain
+- `map-chain` chains three `#[gpu_fn] fn` maps two ways, as a GPU-resident chain
   (`GpuVec` in, `map_gpu_on` three times, one read-back) and as host-slice calls
   (`map_on` three times), checks both against an independent `f64` reference within a
   float bound derived in the example, asserts that the resident chain takes the device pool's hand-outs of
@@ -1278,7 +1279,7 @@ the harness's functional check and renders that page.
 
 The direct syntax translator currently supports:
 
-- inline `#[gpu]` modules containing named-field structs and functions;
+- inline `#[gpu_module]` modules containing named-field structs and functions;
 - compute kernels with one dispatch-thread parameter and structured-buffer
   resources;
 - `float`/`f32`, `int`/`i32`, `uint`/`u32`, booleans, and nested POD structs;
@@ -1337,7 +1338,7 @@ The direct syntax translator currently supports:
 - `Option<T>` and `Result<T, T>` as local and helper values, including `if let` and
   a statement-only `match` with `Ok(x)`/`Err(e)` block arms (D14);
 - the vector and matrix types of `gust::math` (`Vec2` to `Vec4`, `IVec2` to `IVec4`, `UVec2` to `UVec4`, `Mat2` to
-  `Mat4`) in `#[gpu]` code, with swizzles, `dot`, `from_cols`, `from_rows`, `mul_vecN`, `mul_matN` and `transpose`,
+  `Mat4`) in `#[gpu_module]` code, with swizzles, `dot`, `from_cols`, `from_rows`, `mul_vecN`, `mul_matN` and `transpose`,
   lowered to Slang vector and matrix operations, column-major (M6 m6.m1). In a module that names a matrix type, `*`
   and `*=` between matrices, vectors and scalars lower to one overloaded Slang helper, so `m * v` is the matrix times
   the vector as on the CPU side, and unary `-` works on matrices (m6.m2, m6.n; E0323 and E0324 in
@@ -1348,7 +1349,8 @@ The direct syntax translator currently supports:
   the faulting layer is not isolated; the executed WGSL route is fine, and no M6 GPU case executes SPIR-V); see
   [SEMANTICS](docs/SEMANTICS.md) section 4;
 - uniform parameters, `Uniform<T>` or its alias `ConstantBuffer<T>`, whose `T` is a struct of the module: read one
-  field at a time and laid out `Std140V1` with explicit padding (M6 m6.u2; E0205 to E0209 and E0321 in
+  field at a time and laid out `Std140V1` with explicit padding, or with the padding GUST inserts into a struct marked
+  `#[pad]` (M6 m6.u2, m14.pad; E0205 to E0209, E0219 and E0321 in
   [DIAGNOSTICS](docs/DIAGNOSTICS.md)). The host creates them with `create_uniform`, updates them with
   `write_uniform` (also as a `StagedGraph` node) and binds them in parameter order (m6.u1, m6.g2);
 - a user name that collides with a Slang or WGSL keyword, a prelude name or a spelling GUST emits is renamed to
@@ -1389,7 +1391,7 @@ The direct syntax translator currently supports:
 - capability variants and subgroup operations (M8, D139, D140): `#[variant(of = .., requires(..))]` bodies, the 21
   `subgroup_*` functions in a body that requires `subgroups`, and the opt-in portable floor (`limits = "portable"`);
   GUST-E0740 to E0747, E0750, E0751 and E0753; see "Capability variants and subgroup operations";
-- build-time routing (M8, D65 to D67, D137): `#[gpu(route = "<tag>")]` on a module or a `#[gpu] fn` sends it to the CPU
+- build-time routing (M8, D65 to D67, D137): `#[gpu_module(route = "<tag>")]` on a module or a `#[gpu_fn] fn` sends it to the CPU
   or the GPU for a whole build, chosen by `GUST_ROUTE__*` variables that `cargo gust` sets from a `gust.toml`;
   GUST-E0748 and E0749; see "Routing kernels to the CPU or the GPU at build time".
 
@@ -1405,7 +1407,8 @@ whole-struct buffer copies and field updates work. Option and Result values cann
 Booleans are expression values, not host-shareable `GpuPod` fields. A buffer element is a 32-bit scalar, a 2- or 4-wide
 vector, a 2x2 or 4x4 matrix or a struct of these. `StorageV2` describes the padding that natural alignment implies, but
 a `GpuPod` type is the padding-free subset, so a struct with implicit padding is E0208 and no uninitialised byte is
-uploaded. A uniform is a `Std140V1` struct whose padding is written as fields (E0209) and holds no `Mat2` (E0205).
+uploaded. A uniform is a `Std140V1` struct whose padding is written as fields, or inserted by GUST into a struct marked
+`#[pad]` (anywhere else a gap or tail is E0209), and holds no `Mat2` (E0205).
 3-wide vectors and `Mat3` are not buffer elements (E0204). An array `[T; N]` is a buffer element or a struct field
 (storage only; see E0214, E0215 and E0216 in docs/DIAGNOSTICS.md); `GpuPod` is implemented for `[T; N]` with the lengths
 of that set. Since m7.lv (D116) the macro also writes these layouts into the export record, `storage_v2` for an element
@@ -1423,7 +1426,7 @@ Around the translator, the host side currently provides:
   headless wgpu device only; compile-time checks of element type, device type and
   resource count, and run-time checks of access, layout, device instance,
   length and aliasing (see "Running a kernel");
-- compile-time assertions emitted with `#[gpu]` that every buffer element type and
+- compile-time assertions emitted with `#[gpu_module]` that every buffer element type and
   struct field is a padding-free layout (StorageV1, or StorageV2 where a vector or matrix is involved) matching Rust's
   size and alignment (a failing one is rustc error E0080 that names the field or the
   parameter), and a run-time StorageV1 assertion when a typed buffer,
@@ -1445,7 +1448,9 @@ Around the translator, the host side currently provides:
   (`LimitsPolicy::Default`, wgpu's portable ones, or `Adapter`, the adapter's own buffer size, storage binding size
   and workgroups per dimension). `default_device()` opens `DeviceOptions::default()` once per process (native:
   Vulkan, high-performance, adapter limits), and `set_default_options` changes that before the first use (after it,
-  `Error::DefaultDeviceOpened`). Since M8 (D142) the options also carry the capabilities the device is opened with
+  `Error::DefaultDeviceOpened`); a renderer that owns the device hands it over with `HeadlessDevice::adopt` (features
+  and limits from `DeviceOptions::device_request`) and `set_default_device`, and `examples/window-share` shows it with
+  a window (`cargo xtask check-window-example` builds it; the 60-frame run is manual). Since M8 (D142) the options also carry the capabilities the device is opened with
   (`with_capabilities`; `default()` and `HeadlessDevice::new()` take `gust::capability::enabled()`), and a capability
   the adapter lacks is `Error::MissingCapability` at open. Tests: `gust-wgpu/tests/device_options.rs` and
   `capabilities.rs`;

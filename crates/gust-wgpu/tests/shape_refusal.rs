@@ -22,7 +22,7 @@ use gust_wgpu::{
 };
 
 /// A buffer of the layout an indirect launch reads (three `u32`s).
-#[gust::gpu]
+#[gust::gpu_module]
 mod indirect {
     #[derive(Debug, PartialEq)]
     pub struct DispatchArgs {

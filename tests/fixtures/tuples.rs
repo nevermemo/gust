@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod tuples {
     // Slice m9.t (D158): tuple values `(a, b)` and types `(A, B)` of two to eight elements, as locals, parameters, helper
     // and method results and method arguments; `t.0`; `let (x, y) = f();` and `let (x, y): (A, B) = ..;` (one

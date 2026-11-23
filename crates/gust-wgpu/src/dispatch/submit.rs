@@ -17,8 +17,6 @@ use gust::KernelDescriptor;
 use gust::{Access, BindingKind, pod_slice_as_bytes};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc;
-#[cfg(target_arch = "wasm32")]
-use std::sync::{Arc, atomic::Ordering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 #[cfg(not(target_arch = "wasm32"))]
@@ -143,44 +141,27 @@ impl HeadlessDevice {
     /// encoding work begins. Empty requests are valid and do not create GPU work. Encoding a `pixel` call creates its
     /// attachment, so such a call can still fail with [`Error::OutOfMemory`] named `GUST pixel attachment`; nothing
     /// is submitted then.
+    ///
+    /// This is the recording of [`encode_batch`](Self::encode_batch) into an encoder of its own, one counted
+    /// `queue.submit` ([`gust_submissions`](Self::gust_submissions)) and
+    /// [`EncodedJob::submitted`](crate::EncodedJob::submitted). A batch with no work makes no submission and returns a
+    /// job that is complete at once. To put a batch and your own commands in one submission, use `encode_batch`.
     pub fn submit_batch<'device>(
         &'device self,
         dispatches: &[BufferDispatch<'_>],
     ) -> Result<WgpuJob<'device>, Error> {
         let prepared = self.prepare_extent_batch(dispatches)?;
         if prepared.is_empty() {
-            return Ok(WgpuJob {
-                device: &self.device,
-                submission: None,
-                #[cfg(target_arch = "wasm32")]
-                done: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            });
+            return Ok(self.encoded_job(false).nothing_submitted());
         }
-
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("GUST typed batch encoder"),
             });
-        for dispatch in &prepared {
-            dispatch.encode(&self.device, &mut encoder, "GUST typed batched pass", None)?;
-        }
-        let submission = self.queue.submit([encoder.finish()]);
-        // The browser cannot poll, so the job learns of completion from the queue (`WgpuJob::status`).
-        #[cfg(target_arch = "wasm32")]
-        let done = {
-            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let flag = Arc::clone(&done);
-            self.queue
-                .on_submitted_work_done(move || flag.store(true, Ordering::Release));
-            done
-        };
-        Ok(WgpuJob {
-            device: &self.device,
-            submission: Some(submission),
-            #[cfg(target_arch = "wasm32")]
-            done,
-        })
+        self.record_prepared(&mut encoder, &prepared)?;
+        let submission = self.submit_counted([encoder.finish()]);
+        Ok(self.encoded_job(true).submitted(&submission))
     }
 
     /// Submit a batch and synchronously wait for its exact submission fence.
@@ -223,7 +204,7 @@ impl HeadlessDevice {
                     None,
                 )?;
             }
-            let submission = self.queue.submit([encoder.finish()]);
+            let submission = self.submit_counted([encoder.finish()]);
             self.wait_for_submission(submission)?;
             return Ok(DispatchTiming {
                 host_elapsed: started.elapsed(),
@@ -256,7 +237,7 @@ impl HeadlessDevice {
             0,
             TIMESTAMP_RESULT_BYTES,
         );
-        let submission = self.queue.submit([encoder.finish()]);
+        let submission = self.submit_counted([encoder.finish()]);
         let gpu_elapsed = self.read_timestamp_duration(&profiler, submission)?;
         Ok(DispatchTiming {
             host_elapsed: started.elapsed(),
@@ -376,7 +357,7 @@ impl HeadlessDevice {
                 encoder.copy_buffer_to_buffer(gpu_buffer, 0, readback, 0, byte_size);
             }
         }
-        self.queue.submit([encoder.finish()]);
+        self.submit_counted([encoder.finish()]);
 
         let mut completions = Vec::new();
         for readback in readback_buffers.iter().flatten() {
@@ -520,7 +501,7 @@ impl HeadlessDevice {
                 encoder.copy_buffer_to_buffer(gpu_buffer, 0, readback, 0, byte_size);
             }
         }
-        self.queue.submit([encoder.finish()]);
+        self.submit_counted([encoder.finish()]);
 
         let mut completions = Vec::new();
         for readback in readback_buffers.iter().flatten() {

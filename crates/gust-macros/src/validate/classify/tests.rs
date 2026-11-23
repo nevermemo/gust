@@ -568,7 +568,7 @@ fn the_map_generators_kernel_is_grid_only_by_the_rules() {
     assert!(whys.contains(&Why::OwnIndexWrite), "{whys:?}");
 
     // And the descriptor the expansion gives it says so.
-    let item: TokenStream = "#[gpu] fn add(x: f32, y: f32) -> f32 { x + y }"
+    let item: TokenStream = "#[gpu_fn] fn add(x: f32, y: f32) -> f32 { x + y }"
         .parse()
         .unwrap();
     let expansion = without_whitespace(crate::gpu_impl_with(

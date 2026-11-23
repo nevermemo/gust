@@ -2,7 +2,7 @@
 // `cpu = "unsupported"` (GUST-E0717), and `"lockstep"` is GUST-E0709. expected.txt pins the code, the message and the
 // line of the option.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(256, 1, 1), cpu = "lockstep")]
     pub fn reduce(

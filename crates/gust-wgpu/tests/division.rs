@@ -21,7 +21,7 @@ use gust::{
 };
 use gust_wgpu::{BufferBinding, GpuBuffer, GpuBufferAccess, HeadlessDevice};
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod divide {
     // Six slots per element, for the `int` pair and the `uint` pair: `/`, `%`, `/=` on a local, `%=` on a buffer element,
     // a literal dividend, and literal divisors (which stay plain operators).

@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     json::{self, Json},
-    process::{CheckRecord, cargo_program, report_check},
+    process::{CheckRecord, cargo_program, report_check, run_capture_in},
     workspace::{project_files, read_text},
 };
 
@@ -174,12 +174,14 @@ pub(crate) struct Package {
 /// inherited dependency without a root entry) is reported here with cargo's own message.
 fn read_metadata(root: &Path) -> Result<String, String> {
     let cargo = cargo_program();
-    let output = Command::new(&cargo)
-        .args(["metadata", "--format-version", "1", "--locked", "--no-deps"])
-        .current_dir(root)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| format!("cargo metadata: could not launch cargo: {error}"))?;
+    let output = run_capture_in(
+        Command::new(&cargo)
+            .args(["metadata", "--format-version", "1", "--locked", "--no-deps"])
+            .current_dir(root)
+            .stdin(Stdio::null()),
+        "cargo metadata",
+        "cargo",
+    )?;
     if !output.status.success() {
         return Err(format!(
             "cargo metadata failed ({}): {}",

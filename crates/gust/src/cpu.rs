@@ -1,5 +1,5 @@
-//! The CPU runtime: it runs a `#[gpu]` kernel's Rust shadow body on the CPU. It is the runtime of the `cpu` target
-//! (D21, D51) and the engine of the CPU twin (D22).
+//! The CPU runtime: it runs a `#[gpu_module]` kernel's Rust shadow body on the CPU. It is the runtime of the `cpu`
+//! target (D21, D51) and the engine of the CPU twin (D22).
 //!
 //! For each kernel with a typed call the macro emits an `impl Run<Kernel, N> for CpuDevice` that calls the shadow body
 //! once per invocation, and two kinds of build contain it:
@@ -13,7 +13,7 @@
 //! impl by hand for their own kernels. The module holds everything such an impl needs, so the emitted code contains no
 //! downcast: `validate`, `read`, `write`, `invocations` and `FromGlobalId` (all `#[doc(hidden)]` macro support). In
 //! both builds the kernel body is the Rust shadow body as written, executed one invocation after another; the one
-//! exception is the generated map kernel of the `cpu` target (`#[gpu]` on a free function), which splits its output
+//! exception is the generated map kernel of the `cpu` target (`#[gpu_fn]` on a free function), which splits its output
 //! over threads (`cpu::parallel`, macro support).
 //!
 //! A [`CpuDevice`] hands out [`CpuBuffer`]s; the typed `call`/`dispatch` functions of a kernel take them like the
@@ -1955,7 +1955,7 @@ mod tests {
     // ---- the element type is decided by `TypeId`, not by layout ----
 
     mod first {
-        #[gust::gpu]
+        #[gust::gpu_module]
         pub mod pods {
             pub struct Pair {
                 pub left: uint,
@@ -1965,7 +1965,7 @@ mod tests {
     }
 
     mod second {
-        #[gust::gpu]
+        #[gust::gpu_module]
         pub mod pods {
             pub struct Pair {
                 pub left: uint,
@@ -2812,7 +2812,7 @@ mod tests {
         assert_eq!(a.read(), vec![1.0, 1.0], "no rejected call wrote anything");
     }
 
-    #[gust::gpu]
+    #[gust::gpu_module]
     mod order_kernel {
         // Parameter 0 is read-write, so an alias on parameters 0 and 1 is an alias with a writer.
         #[kernel]

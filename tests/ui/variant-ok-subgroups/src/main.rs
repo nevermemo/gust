@@ -3,7 +3,7 @@
 // that needs a capability. Both kernels are covered by the default profiles: `sum` by its portable own body and
 // `prod` by its `requires()` variant, which is also the CPU form of `prod`.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod reduce {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn sum(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mut out: RWStructuredBuffer<u32>) {

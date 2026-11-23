@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn a_refusal_belongs_to_the_module_that_holds_its_line() {
-        let source = "// header\n\n/// doc\n#[gust::gpu]\npub mod s1_a0 {\n    body\n}\n\n#[gust::gpu]\npub mod s1_a1 {\n    body\n}\n";
+        let source = "// header\n\n/// doc\n#[gust::gpu_module]\npub mod s1_a0 {\n    body\n}\n\n#[gust::gpu_module]\npub mod s1_a1 {\n    body\n}\n";
         let ranges = module_ranges(source);
         assert_eq!(
             ranges,

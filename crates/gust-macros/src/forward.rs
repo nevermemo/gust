@@ -1,4 +1,4 @@
-//! The facade path option (`#[gpu(crate = <path>)]`, `par_for!`'s `crate(<path>);`; audit S6, D48).
+//! The facade path option (`#[gpu_module(crate = <path>)]`, `par_for!`'s `crate(<path>);`; audit S6, D48).
 //!
 //! The expansions spell the facade as the literal `::gust::` in several hundred places. A crate that depends on
 //! `gust` only through another crate (which re-exports it with `pub use gust;`) has no `::gust` of its own, so the
@@ -10,7 +10,7 @@
 //! - It rewrites each `::gust::` in the output that begins a path (the exact rule is on `continues_a_path`: not one
 //!   after a path segment, and not one after a `>` that is taken to close a path's arguments, a comparison after an
 //!   unmatched `<` operator included), the user's own tokens that spell one included.
-//! - It leaves `::gust_wgpu` alone: the function-map form of `#[gpu]` and `par_for!` still need a direct dependency
+//! - It leaves `::gust_wgpu` alone: the function-map form, `#[gpu_fn]`, and `par_for!` still need a direct dependency
 //!   on `gust-compute-wgpu`.
 
 use proc_macro2::{Group, Spacing, TokenStream, TokenTree};

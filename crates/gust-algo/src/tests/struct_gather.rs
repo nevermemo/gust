@@ -8,7 +8,7 @@ use gust::{Independent, cpu::CpuDevice};
 
 use crate::{cpu, schedule::Pass};
 
-#[gust::gpu]
+#[gust::gpu_module]
 pub mod particles {
     #[derive(Debug, PartialEq)]
     pub struct Particle {

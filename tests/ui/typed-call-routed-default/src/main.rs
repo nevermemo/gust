@@ -4,7 +4,7 @@
 
 use gust::cpu::CpuDevice;
 
-#[gust::gpu(route = "physics")]
+#[gust::gpu_module(route = "physics")]
 mod kernels {
     #[kernel]
     pub fn scale(

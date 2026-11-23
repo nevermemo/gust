@@ -16,7 +16,7 @@ use gust_wgpu::{Error, GpuBuffer, GpuBufferAccess, HeadlessDevice, NodeId, Stage
 
 // The two shapes of the staged-graph and component-pool examples. Kernel signatures (parameter types,
 // access, order) and bodies are those of `examples/staged-graph` and `examples/component-pool`.
-#[gust::gpu]
+#[gust::gpu_module]
 mod staged {
     #[derive(Debug, PartialEq)]
     pub struct Settings {
@@ -114,7 +114,7 @@ mod staged {
     }
 }
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod pool {
     #[derive(Debug, PartialEq)]
     pub struct Particle {
@@ -481,7 +481,7 @@ fn s4_component_pool_shape_derives_the_pre_registered_edges() {
 
 // ---- small kernels for the hazard rules ----
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod small {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn copy(
@@ -791,7 +791,7 @@ fn an_indirect_node_is_limit_checked_before_an_earlier_node_compiles() {
 
 // ---- the arguments buffer of an indirect dispatch ----
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod indirect {
     #[derive(Debug, PartialEq)]
     pub struct DispatchArgs {
@@ -976,8 +976,8 @@ fn an_indirect_node_ignores_the_workgroup_count_limit_but_not_the_others() {
 // ---- uniforms in a graph (m6.u1) ----
 //
 // `StagedGraph::write_uniform` is an encoded copy from a staging buffer, so an update falls between the dispatches of
-// one submission. The kernel is hand-written for the `edges` and report checks; `uniforms.rs` runs `#[gpu]` kernels in a
-// graph the same way.
+// one submission. The kernel is hand-written for the `edges` and report checks; `uniforms.rs` runs `#[gpu_module]`
+// kernels in a graph the same way.
 
 use gust::{
     Access, Arg, Call, GpuPod, Kernel, KernelDescriptor, ParameterDescriptor, ParameterKind,
@@ -1175,7 +1175,7 @@ fn a_uniform_of_another_device_cannot_be_written_in_a_graph() {
 // `execute_graph_timed` runs the same graph and reports `gpu_elapsed` from the first dispatch pass's begin to the end
 // of the last. The value is `Some` exactly when the adapter has timestamp queries and a dispatch pass ran.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod stamped {
     #[kernel(shape = pixel)]
     pub fn pixel_copy(

@@ -33,7 +33,7 @@ use gust_wgpu::{BufferDispatch, GpuVec};
 
 use crate::{Error, limits, schedule::BlockSchedule};
 
-#[gust::gpu]
+#[gust::gpu_module]
 pub mod block_sum_kernels {
     // The block step of `sum_u32`: lane t adds `block + t + 256 * k` for k in 0..32 (the lane chain of v1) and writes
     // `partials[gid]`, the workgroup's total. The portable body is v1's tree. The subgroup body replaces the tree by a

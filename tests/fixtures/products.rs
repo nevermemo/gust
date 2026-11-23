@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod products {
     // Every operand pair of `crates/gust-macros/src/slang/mul_table.rs` written as `a * b`, then the `*=` rows, then
     // the literal operands, then every operand type of `neg_table.rs` written as `-a`, through the macro. A test pins

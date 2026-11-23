@@ -30,8 +30,8 @@
 #![cfg(target_arch = "wasm32")]
 
 use gust::capability::Capability;
-use gust::gpu;
 use gust::{Access, Extent, JobStatus, KernelDescriptor, LengthRule, Resource};
+use gust::{gpu_fn, gpu_module};
 use gust_wgpu::{BufferDispatch, DeviceOptions, Error, GpuBufferAccess, HeadlessDevice, WgpuJob};
 use js_sys::{Function, Object, Promise, Reflect};
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
@@ -65,12 +65,12 @@ const LOWERED_LIMIT: u32 = 4;
 /// The element-wise map of the same job (D60), run by [`double_add::map_async`] after the vector add: it opens the
 /// default device itself (in the browser through `gust_wgpu::default_device_async`) and awaits the result. Small
 /// integers and halves, so its result is exact too.
-#[gpu]
+#[gpu_fn]
 pub fn double_add(a: f32, b: f32) -> f32 {
     a * 2.0 + b
 }
 
-#[gpu]
+#[gpu_module]
 mod vector_add {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn add(

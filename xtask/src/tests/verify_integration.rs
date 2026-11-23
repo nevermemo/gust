@@ -1,5 +1,6 @@
 use super::{
-    Integration, SKIP_WEB_FLAG, VerifyCommand, VerifyMode, integration_checks, web_preflight,
+    Integration, SKIP_WEB_FLAG, VerifyCommand, VerifyMode, WASM_SKIP_PREFIX, closing_line,
+    integration_checks, web_preflight,
 };
 
 const ALL_MODES: [VerifyMode; 6] = [
@@ -111,6 +112,50 @@ fn verify_inner_runs_the_whole_integration_checks_last() {
         .find("integration_checks(mode, skip_web)")
         .expect("integration loop");
     assert!(artifacts < integration);
+}
+
+/// A source pin (m13.sfix2): `check-cfg` runs in the cargo-call loop of `verify_inner`, right after the `fmt` call and
+/// inside one `if` that names the Fast and Full modes only; only the Full mode requires the wasm32 standard library.
+#[test]
+fn verify_inner_runs_check_cfg_after_fmt_in_the_fast_and_full_modes() {
+    let source = include_str!("../verify.rs").replace("\r\n", "\n");
+    let body = &source[source.find("fn verify_inner(").expect("verify_inner")..];
+    let guard = "if args.first().is_some_and(|name| name == \"fmt\")\n            && matches!(mode, VerifyMode::Fast | VerifyMode::Full)\n        {\n            run_check_cfg(root, mode == VerifyMode::Full, checks, skipped)?;\n        }\n";
+    let at = body
+        .find(guard)
+        .expect("the check-cfg call sits in the Fast|Full branch after the fmt call");
+    assert_eq!(body.matches("run_check_cfg(").count(), 1);
+    let cargo_call = body
+        .find("run_checked_owned(root, checks, \"cargo\", &args)")
+        .expect("cargo call");
+    assert!(
+        cargo_call < at,
+        "check-cfg runs after the cargo call of the loop"
+    );
+    assert!(
+        at < body
+            .find("VerifyMode::Examples | VerifyMode::Full")
+            .unwrap()
+    );
+}
+
+/// Fast mode: wasm32 builds that `check-cfg` skipped are named in the closing line, apart from checks skipped on
+/// request, and a run that skipped nothing closes as before.
+#[test]
+fn the_closing_line_names_skipped_wasm_builds_and_requested_skips() {
+    let wasm = |name: &str| format!("{WASM_SKIP_PREFIX}{name}");
+    assert_eq!(closing_line(&[]), "GUST verification passed.");
+    assert_eq!(
+        closing_line(&["check-web".to_owned()]),
+        "GUST verification passed, with check-web skipped on request: this is not the full release record."
+    );
+    assert_eq!(
+        closing_line(&[wasm("a"), wasm("b")]),
+        "GUST verification passed, 2 wasm32 builds skipped (the target is not installed; install it, pass --require-wasm or run check-full)."
+    );
+    let both = closing_line(&["check-web".to_owned(), wasm("a")]);
+    assert!(both.contains("check-web skipped on request"), "{both}");
+    assert!(both.contains("1 wasm32 builds skipped"), "{both}");
 }
 
 /// The preflight is the first thing `verify_inner` does, and it uses check-web's own lookups.

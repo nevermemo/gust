@@ -1,9 +1,9 @@
 //! Textures in `gust-wgpu` (roadmap MX, slice mx.t2, decision D64): `GpuTexture2d<F>`, `GpuSampler`, the host
 //! transfers, the two bind-group layout variants, and the submit-time checks of texture and sampler parameters.
 //!
-//! The kernels are hand-written descriptors with hand-written Slang (the `#[gpu]` macro does not emit texture kernels
-//! until slice mx.t3), built for one property each. Expectations come from host loops and constants, never from a
-//! shader shadow body:
+//! The kernels are hand-written descriptors with hand-written Slang (the `#[gpu_module]` macro does not emit texture
+//! kernels until slice mx.t3), built for one property each. Expectations come from host loops and constants, never from
+//! a shader shadow body:
 //!
 //! - `read_texture` returns exactly what `write_texture` stored, bit for bit, on all nine formats.
 //! - A sampled `Texture2D` reads through a `Nearest` sampler on the default device (the non-filterable layout variant)
@@ -1541,7 +1541,8 @@ fn the_generated_host_takes_the_feature_only_when_the_layout_depends_on_it() {
     }
 }
 
-// ==== slice mx.t4: `#[gpu]` texture kernels on the GPU, against the CPU twin and an independent host reference ====
+// ==== slice mx.t4: `#[gpu_module]` texture kernels on the GPU, against the CPU twin and an independent host reference
+// ====
 //
 // Everything above this line drives hand-written descriptors. From here on the kernels are written in Rust: the module
 // `textures` is the fixture of `tests/fixtures/textures.rs` (its Slang is the golden `textures.slang`), and the module
@@ -1554,7 +1555,7 @@ fn the_generated_host_takes_the_feature_only_when_the_layout_depends_on_it() {
 
 include!("../../../tests/fixtures/textures.rs");
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod evidence {
     // One copy kernel per format class: every texel of three sampled textures is `load`ed and `store`d into three
     // write-only textures of the same formats. With the three classes this is `load` and `store` on all nine formats.
@@ -2830,7 +2831,7 @@ fn the_fixture_kernels_that_sample_agree_with_the_twin_within_the_bound() {
 // ==== slice m11.tx: user structs named like the Slang texture and sampler types ====
 
 #[allow(non_snake_case)] // the kernel parameter named like a Slang type
-#[gust::gpu]
+#[gust::gpu_module]
 mod renamed_texture_names {
     // These three names are Slang's own texture and sampler types, which the emitter writes for the parameters below.
     // The collision table renames them in the emitted text, so the user's structs and the emitted declarations coexist.

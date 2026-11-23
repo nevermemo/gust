@@ -1,7 +1,7 @@
 // A mutable closure binding (m9.c, GUST-E0330): a closure is called by its name and is no value.
 // Expected: one error at the let of f, line 8.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>) {

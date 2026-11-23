@@ -1,6 +1,6 @@
 // A stored array of a three-wide element: the stride (16) differs from the size (12), GUST-E0214.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Row {
         pub corners: [Vec3; 4],

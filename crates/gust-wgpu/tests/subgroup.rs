@@ -948,7 +948,7 @@ fn a_macro_kernel_with_a_ragged_workgroup_is_refused_before_it_compiles() {
 /// broadcast and shuffle operations; this module is a second one, here, because that fixture is also the golden of the
 /// macro's tests. Each kernel writes three words per element: the broadcast value, the subgroup size and the lane. The
 /// portable body writes zeros, as the fixture's do.
-#[gust::gpu]
+#[gust::gpu_module]
 mod subgroup_forms {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn broadcast_literal_i32(

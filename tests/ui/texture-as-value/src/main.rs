@@ -1,7 +1,7 @@
 // A texture used as a value instead of as the receiver of a method (GUST-E0736).
 // expected.txt pins the code, the line of the offending node and the message.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod shade {
     #[kernel]
     pub fn paint(id: SV_DispatchThreadID, image: Texture2D<Vec4>, mut out: WriteTexture2D<Rgba32Float>) {

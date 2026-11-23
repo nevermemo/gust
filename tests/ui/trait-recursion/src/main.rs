@@ -1,6 +1,6 @@
 // Recursion through an impl (m9.g1, GUST-E0120).
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Depth {
         fn depth(&self) -> u32;

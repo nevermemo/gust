@@ -1,6 +1,6 @@
 // A std trait as a bound (m9.g2, GUST-E0125): only the traits of the module and `Copy` are bounds.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Tag {
         fn tag(&self) -> u32;

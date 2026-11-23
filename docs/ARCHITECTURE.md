@@ -94,7 +94,7 @@ row width exists twice, `ROW_WIDTH` in `gust-macros` and `gust::PIXEL_ROW_WIDTH`
 depend on `gust`; a `gust` test compares the emitted text with the constant.
 
 Which shapes a kernel can take is the classifier's job, a separate module (`validate/classify.rs`, mx.c, D94). It lives
-under `validate/` but runs in the expansion (`expand/mod.rs`), for every kernel and before the profile is chosen, on the
+under `validate/` but runs in the expansion (`expand/module.rs`), for every kernel and before the profile is chosen, on the
 signature and the body by conservative syntactic rules, gives the descriptor's `compatible_shapes`, and checks the
 `#[kernel(shape = ..)]` pin against them. Anything it does not recognise is `grid`-only with the span of the construct
 named, so a wrong guess costs a pin error and never a wrong shader. It does not read the map generator's `own_index`
@@ -164,7 +164,7 @@ exception (`gust::cpu::parallel`, below). `cargo xtask check-cpu-target` is the 
 docs/development/VALIDATION.md).
 
 The map generator (D60, slice m7.a1, amended by D99 and D122; `crates/gust-macros/src/expand/map.rs`).
-`#[gpu]` on a free scalar function (an `fn`, not a module) builds a synthetic module and hands it to the same
+`#[gpu_fn]` on a free scalar function (an `fn`, not a module) builds a synthetic module and hands it to the same
 `expand_validated` path as a written module, so the body gets the validation and the lowering of any kernel. The module
 holds one kernel, `map_kernel`, which is grid-stride at `workgroup_size(256, 1, 1)` and binds every buffer
 `Independent`. The host launches `min(n, CEILING)` invocations, where `CEILING` is 65535 * 256 = 16,776,960
@@ -176,7 +176,7 @@ result of such a type; a name that the generated module uses itself (`GENERATED_
 generator. It reuses the element-type lookup (`ElementTypes`, `element_types`) for its buffer elements and refuses a
 `bool` buffer there; a `bool` is a scalar binding, a `u32` word in the extent record. A call
 `par_for!(i in 0..n, [a: &[f32], out: &mut [f32]] { out[i] = a[i]; })` validates its body
-with the same rules as a `#[gpu]` kernel (an error in the body carries the code and the
+with the same rules as a `#[gpu_module]` kernel (an error in the body carries the code and the
 span of the offending statement, D33), lowers it once into a kernel `run` with an extent
 uniform and a bounds guard, and expands to a block that holds a module named
 `__gust_pf_<hash16>` and a launch of it. The hash is `content_key` of the entry point and
@@ -189,7 +189,7 @@ invocation cap (`Extent::MAX_INVOCATIONS`) is the device's `DeviceLimit` error, 
 uniform is created or anything is uploaded. The twin (`CpuDevice`; every build under `GUST_PROFILE=cpu`, test and
 dual builds otherwise) runs the loop sequentially.
 
-Export records. A `#[gpu]` module or function writes a schema 1 `<key>.kernel.json`
+Export records. A `#[gpu_module]` module or `#[gpu_fn]` function writes a schema 1 `<key>.kernel.json`
 whose `source` names its file and line table. A `par_for!` body can stand at any number
 of call sites, so its record is schema 2 and has no `source`: equal bodies write equal
 record bytes (`write_once` makes the second write a no-op). Each call site writes a
@@ -248,7 +248,7 @@ can collide.
 `gust::routed` (m9.h1, D65, D137; `crates/gust/src/routed.rs`, with `GpuBackend for HeadlessDevice` in
 `crates/gust-wgpu/src/routed.rs`) is the device handle that follows the route. `RoutedDevice<G>` holds a `CpuDevice`
 and, optionally, a GPU device `G: GpuBackend`, and implements `Run<K, N>` for every `K: Routed` by the kernel's
-associated `Routed::Side` (`OnGpu` or `OnCpu`), which the `#[gpu]` macro writes beside the `GpuKernel` marker (one
+associated `Routed::Side` (`OnGpu` or `OnCpu`), which the `#[gpu_module]` macro writes beside the `GpuKernel` marker (one
 associated type, because two blanket impls bounded on the two markers overlap, E0119). The dispatch is static, `gust`
 does not depend on `gust-wgpu`, and the explicit-device entry points are unchanged. Its buffers keep a host copy and a
 device copy and copy the whole buffer to the side that runs a call; a call that writes a buffer makes its side the only
@@ -324,7 +324,7 @@ can only lower them, to emulate a weaker target. "Default" has two meanings sinc
 limits (`LimitsPolicy::Adapter`), so a kernel validated on one can exceed the other's limits.
 
 The split variant (m11.g4a, m11.g4b, owner ruling "Option 3": the host splits, `id.x` stays the global index). The
-`#[gpu]` macro gives every `grid` kernel built for the GPU a second descriptor, `KernelDescriptor::split`: the same
+`#[gpu_module]` macro gives every `grid` kernel built for the GPU a second descriptor, `KernelDescriptor::split`: the same
 Slang plus one hidden uniform (`__gust_launch_base`, 16 bytes) at the next free binding, whose `x`, `y` and `z` the
 prologue adds to the dispatch-thread id before anything reads it. When a launch needs more workgroups on an axis than
 `max_compute_workgroups_per_dimension`, `prepare_dispatches` plans pieces (`split_pieces`: the 2^32 cap first,
@@ -436,7 +436,13 @@ hand-outs, the returns and the idle bytes. `DeviceHandle` is the shared handle t
 with `DeviceOptions` (`#[non_exhaustive]`; `DeviceOptions::default()` and `with_backends`, `with_adapter`, `with_limits`
 and `with_features`; `features` asks for `float32-filterable` when the adapter offers it on native and for nothing on
 `wasm32`; slice mx.t2); `set_default_options` applies to the first `default_device()` and is
-`Error::DefaultDeviceOpened` after that.
+`Error::DefaultDeviceOpened` after that. A renderer that presents from the device GUST runs on opens the device itself,
+in its own `wgpu::Instance`, with the features and limits of `DeviceOptions::device_request` (which the open also uses,
+so there is one source of truth; `crates/gust-wgpu/src/headless/adopt.rs`), and hands it over with
+`HeadlessDevice::adopt` (m14.devshare.1, D247, D248). `set_default_device` installs the shared handle as the default
+device (a handle that lacks a capability of the build is `Error::DefaultDeviceCapability`), and `gust_wgpu::wgpu`
+re-exports the wgpu the handles come from. The window example `examples/window-share` is a workspace of its own,
+built only by `cargo xtask check-window-example`.
 
 ### `gust-algo`
 
@@ -447,7 +453,7 @@ and `exclusive` prefix sums of a `GpuVec<u32>` in plain `+`, up to the device's 
 set flags through the exclusive scan and a scatter, and `gather_u32`, `gather_i32` and `gather_f32` by those indices; no
 readback anywhere, so the indices and the gathers are as long as the flags, zero from the count on; a generic gather
 of structs waits for M9 and is a user kernel until then). The kernels are ordinary GUST kernels in
-`tests/fixtures/reduce.rs`, `tests/fixtures/scan.rs` and `tests/fixtures/compact.rs` (one `#[gust::gpu]` module each,
+`tests/fixtures/reduce.rs`, `tests/fixtures/scan.rs` and `tests/fixtures/compact.rs` (one `#[gust::gpu_module]` module each,
 included as `kernels`, `scan_kernels` and `compact_kernels` and compiled at run time through the `slang-runtime`
 feature; the crate ships no precompiled artifact), and the host code only picks the schedule, takes one pooled
 `GpuVec` per level and submits the dispatches in one `dispatch_batch`.
@@ -480,7 +486,7 @@ kernel's descriptor has `workgroup_size` `[1, 1, 1]`. `gust::PIXEL_ROW_WIDTH` (8
 (2^26) sit beside `Shape` in `descriptor.rs`. The shape is not part of the content key: the stage is already in the
 clean Slang text, so one body under two shapes gives two keys. Schema 3 is schema 2's grammar plus an optional `shape` (`grid` or `pixel`; absent means `grid`) and an
 optional `source` (a record with one is read like schema 1, one without like schema 2). The macro writes it only for a
-kernel whose shape is not `grid`: a `#[gpu]` grid kernel keeps schema 1 and a `par_for!` grid kernel keeps schema 2,
+kernel whose shape is not `grid`: a `#[gpu_module]` grid kernel keeps schema 1 and a `par_for!` grid kernel keeps schema 2,
 byte for byte. A reader of schemas 1 and 2 refuses a schema 3 record, and a `shape` in a record that says schema 1 or
 2 is an error. The manifest (`gust-artifacts/manifest.json`) is schema 1 while every kernel is a grid kernel (no
 `shape` key anywhere; `cargo gust init` writes it) and schema 2 once one is not: then every kernel entry carries
@@ -650,7 +656,7 @@ rustc proves the signatures equal with a const that makes the two functions the 
 Since m8.r1 the macro sets each descriptor's `target` from the module's route (`Target::Cpu` for a module routed to the
 CPU and for the `cpu` profile, `Target::Gpu` otherwise), and a module with no route tag expands as it did before
 routing. `gust-compute-macros` declares the `toml` crate (1.x, `std` and `parse` only) for the reader of
-`[package.metadata.gust]` (m8.a: `profiles`, `limits`, `routes`) that every `#[gpu]` expansion and every `par_for!`
+`[package.metadata.gust]` (m8.a: `profiles`, `limits`, `routes`) that every `#[gpu_module]` expansion and every `par_for!`
 expansion uses.
 
 ## Struct ABI
@@ -665,7 +671,8 @@ named-field structs therefore receive `repr(C)`, `Clone`, `Copy`, and a generate
   alignment implies, but a `GpuPod` type is only the padding-free subset, so no uninitialised byte is uploaded.
 - `Std140V1` (M6) for `Uniform<T>` and `ConstantBuffer<T>`: `StorageV2` with structs rounded up to a multiple of 16 and
   no 2x2 matrix. The macro marks a struct a uniform reaches `#[repr(C, align(16))]` and const-asserts the offsets;
-  padding is explicit, written by the user as fields (E0208, E0209), and the same struct cannot also be a storage
+  GUST inserts padding only into a struct marked `#[pad]` (D239); anywhere else it is explicit, written by the user as
+  fields (E0208, E0209), and the same struct cannot also be a storage
   element (E0207).
 
 3-wide vectors and `Mat3` are locals, helper parameters and results only: no buffer element, storage field or uniform
@@ -771,7 +778,7 @@ dependency tracking beyond the content key remain future work.
 
 ## CPU comparison policy
 
-Independent CPU reference code lives outside `#[gpu]` modules. GPU authoring types are
+Independent CPU reference code lives outside `#[gpu_module]` modules. GPU authoring types are
 Rust shadows for Slang concepts, and the shadow body is not the oracle for them (D04,
 D26).
 
@@ -797,7 +804,7 @@ The test devices in the `gust::dispatch` unit tests exist only to exercise the t
 call surface: the recording mock mirrors a GPU backend and never runs a kernel body,
 and the CPU side is the real `gust::cpu::CpuDevice` (since m3.b), on which those tests
 run hand-written test bodies through the same `Call`. The recording mock is not a CPU
-runtime for `#[gpu]` shadow bodies. The macro-emitted CPU twin (the `Run<K, N>` impl for
+runtime for `#[gpu_module]` shadow bodies. The macro-emitted CPU twin (the `Run<K, N>` impl for
 `CpuDevice`) exists under `cfg(test)` of the defining crate, under `--cfg gust_dual`, and
 in every build under `GUST_PROFILE=cpu`. A GPU production build (`native`, `web`) never
 has it.

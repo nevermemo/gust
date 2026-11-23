@@ -1,7 +1,7 @@
 // Control case for mutating methods (m9.a2): `&mut self`, `self`, an associated function, `Self`, a second `impl`
 // block, a method that calls a method and a helper that calls a method. This crate must compile.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Counter {
         pub n: uint,

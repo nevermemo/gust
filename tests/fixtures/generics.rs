@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod generics {
     // Slice m9.g2 (D170): generic helpers and methods with trait bounds, static specialisation only. A type parameter is
     // bounded by the traits of the module (and `Copy`, which is dropped), is inferred from the arguments, and is typed

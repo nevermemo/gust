@@ -163,6 +163,7 @@ const EXAMPLE_GPU_TESTS: &[(&str, &[&str])] = &[
         ],
     ),
     ("event-drain", &["app::tests::gpu_matches_the_host"]),
+    ("task-basics", &["app::tests::gpu_matches_the_host"]),
     (
         "subgroup-reduce",
         &["tests::the_selected_body_runs_on_the_adapter"],

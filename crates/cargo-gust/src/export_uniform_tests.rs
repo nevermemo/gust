@@ -5,7 +5,7 @@
 //! still filled from the reflection's constant buffer as `Std140V1` ([`completed_descriptor`]) and is listed in
 //! `export_unchecked`; D104's exemption for it is retired. These tests use the records the macro wrote for two uniform
 //! kernels (`testdata/uniform/<key>.kernel.json`, made by `cargo gust build` on a crate with the same module), the WGSL
-//! and the reflection JSON the native helper wrote for them, and the descriptor `#[gust::gpu]` makes of the same
+//! and the reflection JSON the native helper wrote for them, and the descriptor `#[gust::gpu_module]` makes of the same
 //! kernels, so the cross-check that runs here is gust's own and no helper is needed.
 //! `the_helper_builds_the_stored_artifacts` needs the helper and checks that the stored bytes are what it writes today.
 
@@ -17,7 +17,7 @@ use gust::{
 use super::*;
 use crate::record::{LayoutKindRecord, ResourceRecord};
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod probes {
     // `gain` and three explicit padding fields: 16 bytes, no implicit padding (D80).
     pub struct Gain {
@@ -504,8 +504,8 @@ fn a_std140_valid_difference_from_the_macro_is_now_caught_at_export() {
             stored.name
         );
         // D17 still holds at run time for exactly that case (`export_unchecked`): a program that loads the artifact
-        // checks it against the macro's own Std140V1 descriptor, a real `#[gpu]` kernel descriptor, and refuses it by
-        // the field name.
+        // checks it against the macro's own Std140V1 descriptor, a real `#[gpu_module]` kernel descriptor, and refuses
+        // it by the field name.
         let error = verify_artifact(
             stored.kernel,
             &Artifact::new(Format::Wgsl, stored.key, stored.wgsl, leak_str(&renamed)),

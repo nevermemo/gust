@@ -1,6 +1,6 @@
 // `a[s.n as usize] = s.bump()`: Rust evaluates the value first and Slang the index first, GUST-E0421.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Counter {
         pub n: u32,

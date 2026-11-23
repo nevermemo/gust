@@ -5,12 +5,46 @@ All notable changes to the published packages `gust-compute`, `gust-compute-macr
 breaks existing code bumps the minor version, and the promise is described in the
 [README](README.md#stability).
 
+## Unreleased
+
+- A batch can be recorded into the caller's command encoder (m14.encb, D251). New in `gust-compute-wgpu`:
+  `HeadlessDevice::encode_batch(&mut encoder, &dispatches)` records without submitting and
+  `EncodedJob::submitted(&index)` returns the job after the caller's `queue.submit`; `submit_batch_read` and
+  `encode_batch_read` run a batch and read one buffer back in one submission, with `uncleared_buffer` and `PendingRead`;
+  `gust_submissions()` counts GUST's own submissions. Radeon 890M only; the RTX 5090 run is pending.
+
+- A renderer can share GUST's device (m14.devshare.1, D247, D248). New in `gust-compute-wgpu`:
+  `HeadlessDevice::adopt(&adapter, device, queue, capabilities)` wraps a device the caller opened in its own
+  `wgpu::Instance`; `DeviceOptions::device_request(&adapter)` returns the `DeviceRequest` (features and limits) that
+  GUST's own open asks for, to merge your own into; `set_default_device(handle)` makes a shared handle the default
+  device; `gust_wgpu::wgpu` re-exports the wgpu behind the handles. New errors: `MissingFeatures`, `AdapterMismatch` and
+  `DefaultDeviceCapability`. The text of `DefaultDeviceOpened` and of the launch refusal of a missing capability changed
+  to name `set_default_device` and `adopt`. Radeon 890M only; the RTX 5090 run is pending.
+
+- Added `gpu_task!`, a stage written at the call site and run as a free task: a 1-D, 2-D or in-place stage over host
+  slices and scalars, returned as a `gust::task::Task` with `submit()` (an asynchronous read-back) and `dispatch()`.
+  The example `task-basics` and the diagnostics GUST-E1001, E1002, E1003, E1007 and E1008 go with it (m14.s2a1).
+
+- The pinned Slang is now 2026.22.1 (`cargo gust slang install` fetches it; run `cargo gust build` again for a committed
+  artifact set). Two emitted differences: float and signed-integer vector negation is `-a` instead of `0 - a`, and a
+  constant out-of-range float-to-integer cast folds at compile time to another value than before (m13.pin2221).
+- Renamed the attribute: `#[gpu]` on an inline module is now `#[gpu_module]` and `#[gpu]` on a free function (the
+  element-wise map) is now `#[gpu_fn]`, with the same arguments (`route`, `crate`) and behaviour. `gust::gpu` is no
+  longer exported and there is no alias. `#[gpu_module]` on a function, or `#[gpu_fn]` on a module or any other item,
+  is `GUST-E0702` and the message names the attribute that fits. The generated Slang is unchanged (m14.rename,
+  D237, D243).
+- Added `#[pad]` for a struct of a `#[gpu_module]` module that a uniform reaches: `#[gpu_module]` inserts the `f32`
+  padding fields `_pad0`, `_pad1`, ... of its constant-buffer layout and generates `new(<your fields>)`; a misplaced
+  `#[pad]` is the new `GUST-E0219`, and an unmarked struct keeps `GUST-E0209` (m14.pad, D239).
+
 ## 0.2.0
 
-0.2.0 will be the first public release of GUST (D177). It is not published yet: the release waits for the owner's
-review of the whole project (milestone M11; D189, D198). A 0.1.0 was prepared on the branch `release/0.1` and was never
-published: it has no tag and is not on crates.io, so there is nothing to upgrade from, and a reader who meets 0.2.0 on
-crates.io can skip "Changed, and may break code written for the unpublished 0.1.0 line" and "Compatibility with the
+Nothing here has been published, and no release is planned yet: D226 abandoned the 0.1 and 0.2 plans, and releases
+wait for maturity (the hold of D189 and D199 stays). Older sentences below that say 0.2.0 will be the first public
+release, or wait for it to reach crates.io, record the plan of their time and are superseded by D226.
+A 0.1.0 was prepared on the branch `release/0.1` and was never
+published: it has no tag and is not on crates.io, so there is nothing to upgrade from, and a reader of a future first
+release can skip "Changed, and may break code written for the unpublished 0.1.0 line" and "Compatibility with the
 unpublished 0.1.0 line" below. Those two parts are kept for this repository's own fixtures and for anyone who built
 from `release/0.1`. This list describes `main` as of the M10 close: what the milestones M8, M9 and M10 merged. No
 release commit exists yet, and the semver report below will be rerun on the commit that is published.

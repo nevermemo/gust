@@ -1,4 +1,4 @@
-#[gpu]
+#[gpu_module]
 mod blocks {
     /// The sum of every tile of 64 elements, one tile per workgroup: each lane loads one element into workgroup memory,
     /// then six rounds of a tree (a barrier after the load and after every round) leave the tile's sum in cell 0, which

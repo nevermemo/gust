@@ -1,7 +1,7 @@
 // A shape that is neither grid nor pixel (GUST-E0721).
 // expected.txt pins the code and the line of the pin.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod shade {
     #[kernel(shape = vulkan)]
     pub fn paint(id: SV_DispatchThreadID, input: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>) {

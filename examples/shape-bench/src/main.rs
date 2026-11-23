@@ -29,7 +29,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gust::{
-    Extent, PIXEL_MAX_ELEMENTS, PIXEL_ROW_WIDTH, Shape, gpu, math::Vec4, pod_slice_as_bytes,
+    Extent, PIXEL_MAX_ELEMENTS, PIXEL_ROW_WIDTH, Shape, gpu_module, math::Vec4, pod_slice_as_bytes,
 };
 use gust_wgpu::{BufferDispatch, DeviceOptions, GpuBuffer, GpuBufferAccess, HeadlessDevice};
 
@@ -39,7 +39,7 @@ use gust_wgpu::{BufferDispatch, DeviceOptions, GpuBuffer, GpuBufferAccess, Headl
 // invocation id and the index expression come from the call site, so both name the same binding.
 macro_rules! variant_module {
     ($m:ident, $id:ident, [$($attr:tt)*], $index:expr) => {
-        #[gpu]
+        #[gpu_module]
         mod $m {
             pub struct Params {
                 pub w: u32,

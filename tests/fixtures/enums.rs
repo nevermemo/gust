@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod enums {
     // Slice m9.e1 (D157): field-less enums and the statement `match` on them. `Clone`, `Copy` and `#[repr(u32)]` are
     // added by the macro; the user derives the comparison. The variants after an explicit discriminant count up.

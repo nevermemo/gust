@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod subgroup {
     // Subgroup operations (M8, m8.s, D140). Every kernel here is a pair: the kernel is the portable body, which every
     // profile has, and `<name>_subgroups` is the body a build with the `subgroups` capability gets instead

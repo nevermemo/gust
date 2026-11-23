@@ -628,7 +628,7 @@ fn malformed_vector_and_matrix_layouts_are_refused_with_the_path_of_the_problem(
 
 // ---- schema 3: the record of a kernel whose shape is not `grid` (mx.k, D89) ----
 
-/// The sample record as a pixel kernel's `#[gpu]` record: schema 3, `shape` between `schema` and `source`.
+/// The sample record as a pixel kernel's `#[gpu_module]` record: schema 3, `shape` between `schema` and `source`.
 fn pixel_record_json() -> String {
     broken(
         "  \"schema\": 1,\n",
@@ -862,8 +862,8 @@ fn a_record_with_a_texture_and_a_sampler_reads_and_rebuilds_the_descriptor() {
         out.layout.as_ref().unwrap().rules,
         ShaderLayoutRules::TextureV1(written)
     );
-    // The descriptor carries the same facts a `#[gpu]` module's own descriptor carries (`ResourceLayout::texture_v1`
-    // over the texel type), and the sampler has no layout.
+    // The descriptor carries the same facts a `#[gpu_module]` module's own descriptor carries
+    // (`ResourceLayout::texture_v1` over the texel type), and the sampler has no layout.
     let descriptor = record.descriptor();
     let rebuilt: Vec<_> = descriptor
         .parameters

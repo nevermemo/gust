@@ -1,7 +1,7 @@
 // A GPU enum derives PartialEq, because `==`, `!=` and `match` compare enum values and the CPU twin must do the same,
 // GUST-E0122. expected.txt pins the code and the line of the enum name.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub enum Level {
         Low,

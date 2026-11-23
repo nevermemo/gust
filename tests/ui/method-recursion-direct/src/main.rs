@@ -1,6 +1,6 @@
 // A helper that calls itself (m9.a2, GUST-E0120): the call graph has a cycle of one function.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     fn fact(n: u32) -> u32 {
         if n == 0u32 {

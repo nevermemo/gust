@@ -132,7 +132,7 @@ fn the_golden_table_and_the_functions_are_the_ones_in_gust_row_for_row() {
     let rows = golden_rows(theirs);
     assert!(rows.len() >= 10, "{rows:?}");
     assert_eq!(golden_rows(mine), rows);
-    let routing_source = include_str!("../expand/mod.rs");
+    let routing_source = include_str!("../expand/routing.rs");
     for name in ["variable_name", "is_valid_tag"] {
         let copy = function_text(routing_source, name);
         assert!(copy.len() > 100, "{copy}");
@@ -1326,9 +1326,11 @@ fn a_gpu_fn_reports_a_malformed_manifest_at_its_name_and_a_bad_route_at_the_tag(
 // The entry point
 
 fn output_text(attribute: &str, item: &str) -> String {
+    let item: proc_macro2::TokenStream = item.parse().unwrap();
     crate::gpu_impl_routed(
+        crate::Form::of(&item),
         attribute.parse().unwrap(),
-        item.parse().unwrap(),
+        item,
         Profile::Other,
         &|_| None,
     )

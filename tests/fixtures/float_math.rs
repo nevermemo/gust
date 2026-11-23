@@ -1,6 +1,6 @@
 // Float math in the kernel language (slice m11.math): the exact methods, the integer methods, the constants and the
 // transcendentals, each in a kernel of its own so a failure names the group.
-#[gust::gpu]
+#[gust::gpu_module]
 mod float_math {
     pub struct Exact {
         pub f_abs: float,

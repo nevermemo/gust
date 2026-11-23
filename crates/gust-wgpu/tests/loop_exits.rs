@@ -7,7 +7,7 @@
 // `n` is the iteration (1-based) at which `s < 1.5 * 2^-125` first holds, which is t. Start values and thresholds
 // come from buffers built from bits on the host, so the values are exact whatever the compiler folds. One `#[test]`
 // per form (four), each running on the adapter the process gets and printing the adapter line and the route.
-#[gust::gpu]
+#[gust::gpu_module]
 mod loop_exits {
     // Form 1: a done flag instead of `break`.
     #[kernel(workgroup_size(64, 1, 1))]

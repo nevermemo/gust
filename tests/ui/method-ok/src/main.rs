@@ -1,7 +1,7 @@
 // Control case for methods (m9.a1): an `impl` block of a module struct with `&self` methods that take value parameters,
 // called on a storage element, on a field of one and on a local copy. This crate must compile.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod shapes {
     pub struct Circle {
         pub radius: f32,

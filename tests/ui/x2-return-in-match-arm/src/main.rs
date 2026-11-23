@@ -1,7 +1,7 @@
 // X2 (m9.e1): a `return` in an arm of an enum `match` is legal in a helper (`pick`) and stays GUST-E0415 in a kernel
 // with workgroup memory or a barrier. expected.txt pins the code and the line of the `return` in the arm.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[derive(PartialEq, Eq)]
     pub enum Mode {

@@ -37,10 +37,10 @@
 //! picks by the backend's [`Rounding`](super::Rounding). The correction (b3a, review M1) widens nothing that failed: no
 //! backend was outside the narrower bound; it makes the stated model the one the project's semantics grant.
 
-use gust::gpu;
+use gust::gpu_module;
 
 /// The GUST kernel. Workgroup size 256 (see `workloads::WORKGROUP`). The loop runs `degree` steps, at most 64.
-#[gpu]
+#[gpu_module]
 pub mod kernel {
     #[kernel(workgroup_size(256, 1, 1))]
     pub fn horner(

@@ -1,7 +1,7 @@
 // `out[s.n] = s.bump()` on a storage buffer: Rust evaluates the value first and the index after it, and slangc 2026.21
 // computes the index first (2026.20 did not), so the element written would differ, GUST-E0421.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub struct Counter {
         pub n: u32,

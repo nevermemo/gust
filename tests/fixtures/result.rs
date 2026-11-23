@@ -1,5 +1,5 @@
 #[allow(clippy::assign_op_pattern)]
-#[gust::gpu]
+#[gust::gpu_module]
 mod results {
     fn half_if_even(value: uint) -> Result<uint, uint> {
         if value & 1u32 == 0u32 {

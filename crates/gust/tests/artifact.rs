@@ -16,7 +16,7 @@ use gust::{
     reflect::Error,
 };
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod vector_add {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn add(
@@ -75,7 +75,7 @@ fn the_fixture_verifies_through_the_public_entry() {
     assert_eq!(verified.compiled.entry_point, "gpu_vector_add_add");
     assert_eq!(verified.compiled.workgroup_size, [64, 1, 1]);
     assert_eq!(verified.compiled.artifact, WGSL);
-    assert_eq!(verified.compiled.compiler_version, "2026.22");
+    assert_eq!(verified.compiled.compiler_version, "2026.22.1");
     let names: Vec<_> = verified
         .compiled
         .reflection
@@ -118,7 +118,7 @@ fn the_fixture_files_are_not_line_ending_converted() {
     assert!(!REFLECTION.contains('\r'));
     assert!(!MANIFEST.contains('\r'));
     assert_eq!(WGSL.len(), 478);
-    assert_eq!(REFLECTION.len(), 1040);
+    assert_eq!(REFLECTION.len(), 1042);
 }
 
 #[test]

@@ -1,7 +1,7 @@
 // A generic trait method (m9.g2, GUST-E0124): a trait method is not generic, a helper function with the trait as its
 // bound is.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Tag {
         fn tag(&self) -> u32;

@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod methods_mut {
     pub struct Counter {
         pub n: uint,

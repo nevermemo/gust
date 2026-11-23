@@ -27,7 +27,7 @@ mod common;
 use gust::{Independent, cpu::CpuDevice};
 use gust_wgpu::{BufferBinding, GpuBufferAccess};
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod value_if {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn branches(

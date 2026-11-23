@@ -33,10 +33,10 @@ use crate::{
 /// the `GpuVec` dropped may run after the pool has cleared or reused the buffer. Submit them before the drop.
 ///
 /// ```
-/// use gust::gpu;
+/// use gust::gpu_module;
 /// use gust_wgpu::GpuVec;
 ///
-/// #[gpu]
+/// #[gpu_module]
 /// mod ops {
 ///     #[kernel(workgroup_size(64, 1, 1))]
 ///     pub fn add_one(id: SV_DispatchThreadID, src: StructuredBuffer<float>, mut dst: RWStructuredBuffer<float>) {
@@ -248,7 +248,7 @@ void vec_tail_add_one(uint3 id : SV_DispatchThreadID)
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_buffer_to_buffer(buffer, 0, &staging, 0, size);
-        device.queue.submit([encoder.finish()]);
+        device.submit_counted([encoder.finish()]);
         let (sender, receiver) = std::sync::mpsc::channel();
         staging.map_async(wgpu::MapMode::Read, .., move |result| {
             let _ = sender.send(result.map_err(|error| error.to_string()));

@@ -1,7 +1,7 @@
 // A crate with `limits = "portable"` in its [package.metadata.gust] table is checked against the portable floor
 // (WebGPU defaults, D143): GUST-E0746 names the limit and both values. expected.txt pins the code and the signature line.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod kernels {
     pub struct Params {
         pub gain: f32,

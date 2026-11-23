@@ -8,6 +8,7 @@ use std::{
 
 use crate::{
     arch::check_arch,
+    check_cfg::check_cfg_report,
     checks::{GOLDEN_SPIRV_SETS, check_dual, tests_not_ok},
     difftest::check_difftest_report,
     docs::docs_check,
@@ -189,15 +190,54 @@ pub(crate) fn verify_with(mode: VerifyMode, record: bool, skip_web: bool) -> Res
         write_validation(&root, &run, result.as_ref().err(), &checks, &artifacts)?;
     }
     result?;
-    if skipped.is_empty() {
-        println!("GUST verification passed.");
-    } else {
-        println!(
-            "GUST verification passed, with {} skipped on request: this is not the full release record.",
-            skipped.join(", ")
-        );
-    }
+    println!("{}", closing_line(&skipped));
     Ok(())
+}
+
+/// The start of the name of each wasm32 build that `check-cfg` skipped for want of the standard library (Fast mode).
+pub(crate) const WASM_SKIP_PREFIX: &str = "check-cfg skipped: ";
+
+/// The last line of a passing run. Checks left out on request (`--skip-web`) and wasm32 builds skipped for want of the
+/// target are named apart: the first make the run "not the full release record", the second ask for `--require-wasm`.
+pub(crate) fn closing_line(skipped: &[String]) -> String {
+    let (wasm, requested): (Vec<&String>, Vec<&String>) = skipped
+        .iter()
+        .partition(|name| name.starts_with(WASM_SKIP_PREFIX));
+    let mut line = String::from("GUST verification passed");
+    if !requested.is_empty() {
+        let names: Vec<&str> = requested.iter().map(|name| name.as_str()).collect();
+        line.push_str(&format!(
+            ", with {} skipped on request: this is not the full release record",
+            names.join(", ")
+        ));
+    }
+    if !wasm.is_empty() {
+        line.push_str(&format!(
+            ", {} wasm32 builds skipped (the target is not installed; install it, pass --require-wasm or run check-full)",
+            wasm.len()
+        ));
+    }
+    line.push('.');
+    line
+}
+
+/// Run `check-cfg` in process and record it; its skipped wasm32 builds join `skipped`.
+fn run_check_cfg(
+    root: &Path,
+    require_wasm: bool,
+    checks: &mut Vec<CheckRecord>,
+    skipped: &mut Vec<String>,
+) -> Result<(), String> {
+    let outcome = check_cfg_report(root, require_wasm).map(|report| {
+        skipped.extend(
+            report
+                .skipped
+                .iter()
+                .map(|name| format!("{WASM_SKIP_PREFIX}{name}")),
+        );
+        format!("{}\n", report.line)
+    });
+    run_integration(checks, "check-cfg", outcome)
 }
 
 /// The name `--skip-web` records for the browser entry of the gallery's GPU part (beside `check-web`).
@@ -283,6 +323,15 @@ fn verify_inner(
                 .stderr
                 .push_str(&format!("test-count guard: {error}\n"));
             return Err(error);
+        }
+        // The runtime crates per feature set and for wasm32 (m13.sfix2): no workspace-wide build compiles them, so a
+        // gated unused import or a broken cfg showed only in CI. Fast and Full only (Smoke stays small), right after the
+        // seconds-long format check. Full requires the wasm32 standard library as CI does; Fast skips the wasm32 runs
+        // when it is missing, and the closing line says so ([`closing_line`]).
+        if args.first().is_some_and(|name| name == "fmt")
+            && matches!(mode, VerifyMode::Fast | VerifyMode::Full)
+        {
+            run_check_cfg(root, mode == VerifyMode::Full, checks, skipped)?;
         }
     }
     if matches!(mode, VerifyMode::Examples | VerifyMode::Full) {
@@ -1130,9 +1179,28 @@ pub(crate) struct GpuSuitePin {
 /// Slice m13.matchu: 574 over 58 became 576 over 59. The new test file `tests/value_match_untyped.rs` holds two tests
 /// (the host expectation, and an untyped value `match` on the GPU and in the CPU twin) and adds one `test result:`
 /// line. Updated by count; the merge gate's full Gpu suite on the RTX 5090 checks it.
+///
+/// Slice m14.pad: 576 over 59 became 578 over 60. The new test file `tests/uniform_pad.rs` holds two tests (the
+/// reflection record of three `#[pad]` uniforms against their padded Rust structs, and the structs built with the
+/// generated `new` and read field by field on the GPU and on the CPU twin) and adds one `test result:` line. Updated by
+/// count, then checked by full Gpu suite runs on the Radeon 890M (lane) and the RTX 5090 (merge gate).
+///
+/// Slice g2.insp: 578 over 60 became 591 over 61. The buffer inspector adds five unit tests to the library (layout
+/// decoding, JSON rows, the bit-for-bit diff), one `no_run` doc test, and the new test file `tests/inspect.rs` with
+/// seven GPU tests, which adds one `test result:` line. Updated by count; the merge gate's full Gpu suite on the RTX
+/// 5090 checks it.
+///
+/// Slice m14.devshare.1: 591 over 61 became 604 over 65. The device-sharing slice adds new test files and library
+/// unit tests (the coordinator measured 603 over 64 on the Radeon 890M at lane commit 90aadb2), and its fix round adds
+/// `tests/device_share_default_opened.rs` (one test, one `test result:` line). Checked by a full Gpu suite run on the
+/// Radeon 890M (lane).
+///
+/// Slice m14.encb: 604 over 65 became 618 over 66. The encode slice adds `tests/encode_batch.rs` (thirteen GPU tests,
+/// one `test result:` line) and one doc test (the `encode_batch` example). Checked by a full Gpu suite run on the
+/// Radeon 890M (lane); the RTX 5090 run is owed at the merge.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 576,
-    result_lines: 59,
+    passed: 618,
+    result_lines: 66,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu
@@ -1231,7 +1299,11 @@ fn check_pinned_counts(
 /// tests each must pass (m8.w2). The whole suite is pinned by [`GPU_SUITE_PIN`] under `dev` only; a profile run is one
 /// target, so its count is pinned here. Adding or removing a test of a listed target changes its entry in the same commit,
 /// and a target that is not listed cannot be run under a profile.
-pub(crate) const GPU_TARGET_PINS: [(&str, u64); 2] = [("capabilities", 6), ("subgroup", 17)];
+pub(crate) const GPU_TARGET_PINS: [(&str, u64); 3] = [
+    ("capabilities", 6),
+    ("subgroup", 17),
+    ("device_share_default", 1),
+];
 
 /// The cargo call of one gust-wgpu test target ([`GPU_TARGET_PINS`]). `--show-output` makes the harness print the
 /// output of the passing tests too, which is where [`BUILD_CAPABILITIES_TARGET`] reports the capabilities of the build.

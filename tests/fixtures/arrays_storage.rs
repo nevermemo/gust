@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod arrays_storage {
     // Slice m9.r2a (D159): fixed-size arrays in structs and in storage. A struct field `a: [T; N]` and a buffer element
     // `RWStructuredBuffer<[T; N]>`, with `N` in the GpuPod set (1 to 32 and the powers of two from 64 to 4096) and `T` a

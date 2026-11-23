@@ -51,10 +51,10 @@
 
 #[cfg(any(test, gust_dual))]
 use gust::cpu::CpuDevice;
-use gust::{Independent, gpu, map::Broadcast};
+use gust::{Independent, gpu_fn, gpu_module, map::Broadcast};
 use gust_wgpu::{DeviceHandle, GpuVec, HeadlessDevice, default_device};
 
-#[gpu]
+#[gpu_module]
 mod mc {
     /// Cells per side of the field: a power of two.
     pub const SIDE: u32 = 256;
@@ -140,10 +140,10 @@ mod mc {
 }
 
 /// The fixed-point cells as `f32` (the map stage): `cell * scale`, with `scale = 1 / UNIT` exact.
-// The plain Rust function behind each `#[gpu]` stays callable (D60), but this program calls only the generated
+// The plain Rust function behind each `#[gpu_fn]` stays callable (D60), but this program calls only the generated
 // maps, so the lint is silenced here.
 #[allow(dead_code)]
-#[gpu]
+#[gpu_fn]
 pub fn density(cell: u32, scale: f32) -> f32 {
     cell as f32 * scale
 }
@@ -163,7 +163,7 @@ fn density_scale() -> f32 {
     1.0 / mc::UNIT as f32
 }
 
-// ---- Host references: plain Rust, with their own copy of the arithmetic, not the `#[gpu]` bodies. ----
+// ---- Host references: plain Rust, with their own copy of the arithmetic, not the `#[gpu_module]` bodies. ----
 
 fn reference_mix(x: u32) -> u32 {
     let mut h = x ^ (x >> 16);

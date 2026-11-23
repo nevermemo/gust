@@ -1,4 +1,4 @@
-#[gust::gpu]
+#[gust::gpu_module]
 mod pixel {
     // The `pixel` shape (slice mx.p1a, decisions D61, D63, D120). A `pixel` kernel is a fragment shader: the host
     // draws one fragment per element and each fragment writes its own element of every output, which stays a storage

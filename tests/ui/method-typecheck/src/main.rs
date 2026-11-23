@@ -2,7 +2,7 @@
 // generated crate, so the validator's shape rules are not the only check on a method (M9 plan 2, F8). expected.txt pins
 // the code and the line of the mismatch.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod shapes {
     pub struct Circle {
         pub radius: f32,

@@ -2,7 +2,7 @@
 // has no supertrait and no where clause to say so, so the form is rustc's E0277 on the module as written. The macro does
 // not see it first; this fixture pins that the refusal is rustc's and not a slangc message.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     pub trait Pack {
         fn split(self) -> (Self, u32);

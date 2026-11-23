@@ -1,7 +1,7 @@
 // A barrier in a `for` nested in another `for` is GUST-E0414: only the statements of a top-level literal-range loop
 // are accepted positions. expected.txt pins the code and the line of the barrier.
 
-#[gust::gpu]
+#[gust::gpu_module]
 mod block {
     #[kernel(workgroup_size(256, 1, 1), cpu = "unsupported")]
     pub fn reduce(

@@ -1,13 +1,13 @@
 use std::{path::PathBuf, time::Instant};
 
-use gust::{GpuPod, gpu};
+use gust::{GpuPod, gpu_module};
 use gust_wgpu::{BufferDispatch, GpuBufferAccess, HeadlessDevice, render_wgpu_source};
 
 /// Particles per demo run: 16 384 workgroups of 64 invocations, within the 65 535 workgroups per
 /// dimension of the default limits.
 const PARTICLE_COUNT: usize = 1 << 20;
 
-#[gpu]
+#[gpu_module]
 mod particles {
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn scalar_order(

@@ -73,8 +73,9 @@ pub trait MapHost: TypedDevice<Error: error::Error + Send + Sync + 'static> {
     /// elements. `context` is what the call borrows besides the output; it is dropped when the call has been
     /// submitted. The work is submitted before this returns; the read-back is what the future completes.
     ///
-    /// The default is two device calls: `upload` or `zeroed`, [`Run::submit_call`], and then
-    /// [`readback_async`](Self::readback_async) when the future is first polled. A backend that can record the
+    /// The default is two queue submissions: `upload` or `zeroed` and [`Run::submit_call`], and then
+    /// [`readback_async`](Self::readback_async) when the future is first polled (plus the pool's clear when `zeroed`
+    /// recycles a buffer). A backend that can record the
     /// dispatch and the read-back copy together overrides it to make one queue submission (decision D251); the
     /// override must give the same values as the default. Macro support; not a stable surface.
     ///

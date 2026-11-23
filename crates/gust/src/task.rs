@@ -15,7 +15,7 @@
 //! # What `submit` costs on the queue
 //!
 //! The generated code builds the kernel's [`Call`](crate::Call) (`run::call_extent`) and nothing else about the
-//! submission: [`submit_and_read`] asks the device's [`MapHost::start_read`] to make the output buffer, run that call
+//! submission: [`submit_and_read`] asks the device's `MapHost::start_read` to make the output buffer, run that call
 //! and start the read-back. The default of that method is two device calls (the dispatch, then the read-back copy when
 //! the returned future is first polled); the GPU device overrides it to record the dispatch, the clear of a recycled
 //! output and the read-back copy in one command buffer. Decision D251 (one command encoder, one `queue.submit` per
@@ -45,8 +45,10 @@ use crate::{Call, GpuPod, Kernel, Run};
 /// `()` for an in-place task (its target slice then holds the result). It is the future that `map_async` returns today,
 /// boxed so that it owns the device handle and the output buffer.
 ///
-/// The read-back copy is submitted when the future is first polled. On a native GPU device the future completes only
-/// while something polls it (each poll polls the device once), so a caller without a runtime polls it in a loop;
+/// Where the read-back copy is made depends on the device. On the GPU device it is already in the one submission that
+/// [`Task::submit`] made, and the mapping of the result is requested at once. A device that keeps the default of
+/// `MapHost::start_read` makes the copy when the future is first polled. On a native GPU device the future completes
+/// only while something polls it (each poll polls the device once), so a caller without a runtime polls it in a loop;
 /// [`Task::dispatch`] does that.
 ///
 /// # What it is and what it holds
@@ -55,10 +57,11 @@ use crate::{Call, GpuPod, Kernel, Run};
 /// - It keeps everything the task's list names (the host slices and the in-place target) borrowed until the read-back
 ///   ends, for one lifetime `'t`, although the slices were uploaded when the task was submitted. A read-only slice
 ///   can be used again only after the future is ready or dropped.
-/// - Dropping it before the first poll starts no read-back and leaves nothing running on the host. The dispatch was
-///   submitted by [`Task::submit`] and is not undone: on a GPU device it still runs and its result is discarded. An
-///   in-place target is written only when the future resolves, so it is left exactly as it was before the task. The
-///   output buffer is released with the future.
+/// - Dropping it before the first poll leaves nothing running on the host and discards the values. The dispatch was
+///   submitted by [`Task::submit`] and is not undone: on a GPU device it still runs and the copy was already made, so
+///   the staging buffer goes back to the pool when its mapping completes. A device that keeps the default starts no
+///   read-back at all. An in-place target is written only when the future resolves, so it is left exactly as it was
+///   before the task. The output buffer is released with the future.
 ///
 /// A later slice (the ticket of the batch) may replace this type; it is not a stable surface.
 pub type Pending<'t, O> = Pin<Box<dyn Future<Output = Result<O, Error>> + 't>>;
@@ -83,14 +86,15 @@ impl<'t, O> Task<'t, O> {
 
     /// Upload the captures, start the kernel and return at once with the read-back of its result.
     ///
-    /// The work is submitted before this returns. The read-back copy is submitted when the returned future is first
-    /// polled, so a native caller drives it (see [`Pending`]); in the browser a plain `.await` does. Available on every
-    /// target.
+    /// The work is submitted before this returns. On the GPU device the read-back copy is part of that submission and
+    /// the mapping is requested at once; a device that keeps the default of `MapHost::start_read` makes the copy when
+    /// the returned future is first polled. Either way a native caller drives the future (see [`Pending`]); in the
+    /// browser a plain `.await` does. Available on every target.
     ///
     /// On the GPU device this is one queue submission, the dispatch and the read-back copy together (decision D251;
     /// measured on the Radeon 890M, see the module's section on the queue). The one exception is a task with an empty
     /// captured slice on a recycled pool buffer, which clears it in a submission of its own and is then refused. A
-    /// device that does not override [`MapHost::start_read`] makes two, the dispatch and the copy.
+    /// device that does not override `MapHost::start_read` makes two, the dispatch and the copy.
     ///
     /// An empty shape runs nothing and returns an empty result.
     ///

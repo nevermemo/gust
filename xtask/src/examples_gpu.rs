@@ -163,7 +163,18 @@ const EXAMPLE_GPU_TESTS: &[(&str, &[&str])] = &[
         ],
     ),
     ("event-drain", &["app::tests::gpu_matches_the_host"]),
-    ("task-basics", &["app::tests::gpu_matches_the_host"]),
+    (
+        "task-basics",
+        &[
+            "app::tests::gpu_a_fresh_one_d_task_is_one_submission",
+            "app::tests::gpu_a_recycled_output_is_still_one_submission",
+            "app::tests::gpu_a_two_d_task_is_one_submission",
+            "app::tests::gpu_an_in_place_task_is_one_submission",
+            "app::tests::gpu_an_empty_capture_on_a_recycled_buffer_makes_its_own_submission",
+            "app::tests::gpu_a_whole_run_is_one_submission_per_stage",
+            "app::tests::gpu_matches_the_host",
+        ],
+    ),
     (
         "subgroup-reduce",
         &["tests::the_selected_body_runs_on_the_adapter"],

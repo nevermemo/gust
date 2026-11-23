@@ -22,8 +22,8 @@ breaks existing code bumps the minor version, and the promise is described in th
   to name `set_default_device` and `adopt`. Radeon 890M only; the RTX 5090 run is pending.
 
 - A `gpu_task!` submit is one queue submission on the GPU device (m14.taskone, D251): the dispatch, the clear of a
-  recycled output and the read-back copy share one command buffer, through the new provided method
-  `MapHost::start_read` that `HeadlessDevice` overrides (an empty captured slice on a recycled pool buffer is still
+  recycled output and the read-back copy share one command buffer, through a new provided method of
+  the `MapHost` device trait that `HeadlessDevice` overrides (an empty captured slice on a recycled pool buffer is still
   cleared in a submission of its own, in a task that is then refused). Radeon 890M only; the RTX 5090 run is pending.
 
 - Added `gpu_task!`, a stage written at the call site and run as a free task: a 1-D, 2-D or in-place stage over host

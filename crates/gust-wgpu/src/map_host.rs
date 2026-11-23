@@ -55,7 +55,8 @@ impl MapHost for HeadlessDevice {
     /// submission ([`HeadlessDevice::submit_batch_read`]). A zeroed output is an
     /// [`uncleared_buffer`](HeadlessDevice::uncleared_buffer) that the submission clears itself; an output that starts
     /// with values is uploaded with `write_buffer`, which is no submission. The call is checked as `submit_call`
-    /// checks it (the batch validates each binding against the kernel).
+    /// checks it (the batch validates each binding against the kernel). The zeroed output carries the pool label
+    /// `"batch output"`, so an oversize task's `DeviceLimit` error names that label.
     fn start_read<'t, H, T, K, C, const N: usize>(
         device: H,
         initial: Option<&[T]>,

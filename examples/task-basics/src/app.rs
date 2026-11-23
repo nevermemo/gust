@@ -271,6 +271,11 @@ mod tests {
         device.buffer_pool_stats().hits
     }
 
+    /// How many buffers the pool has had to allocate so far.
+    fn misses(device: &HeadlessDevice) -> u64 {
+        device.buffer_pool_stats().misses
+    }
+
     #[test]
     #[ignore = "example validation runs only in full verification"]
     fn gpu_a_fresh_one_d_task_is_one_submission() {
@@ -295,22 +300,34 @@ mod tests {
         let weights = &weights[..];
         let n = 1000_usize;
         let want: Vec<f32> = (0..n).map(|i| weights[i % 4] * 2.0).collect();
-        let mut seen_hits = hits(&device);
+        let mut round_one_misses = 0;
+        let mut round_two_hits = 0;
         for round in 0..2 {
+            let (hits_before, misses_before) = (hits(&device), misses(&device));
             let got = counted(
                 &device,
                 1,
                 gpu_task!(on(Arc::clone(&device)); n, [weights: &[f32]], |i| -> f32 { weights[i % 4u32] * 2.0 }),
             );
             assert_eq!(got, want, "round {round}");
-            let now = hits(&device);
-            if round == 1 {
-                // The second round's output (a 1000-element `f32` buffer) came from the pool's idle list: the
-                // first round's output was released when its future was dropped.
-                assert!(now > seen_hits, "the second round recycled a buffer");
+            if round == 0 {
+                round_one_misses = misses(&device) - misses_before;
+            } else {
+                round_two_hits = hits(&device) - hits_before;
             }
-            seen_hits = now;
         }
+        // A round leases three pooled buffers: the capture upload (16 bytes), the output (a 1000-element `f32`
+        // buffer) and the read-back staging buffer. The first round allocates all of them; the first round's
+        // output is released inside its future once the read-back is done, so the second round finds every one of
+        // them idle again, the output included.
+        assert!(
+            round_one_misses >= 3,
+            "the first round allocated its leases"
+        );
+        assert_eq!(
+            round_two_hits, round_one_misses,
+            "every lease of the second round was recycled"
+        );
     }
 
     #[test]
@@ -363,9 +380,8 @@ mod tests {
         let mut made = Vec::new();
         for _ in 0..2 {
             let before = device.gust_submissions();
-            let Err(error) = gpu_task!(on(Arc::clone(&device)); n, [a: &[f32], empty: &[f32]], |i| -> f32 { a[i] + empty[0u32] })
-                .submit()
-            else {
+            let task = gpu_task!(on(Arc::clone(&device)); n, [a: &[f32], empty: &[f32]], |i| -> f32 { a[i] + empty[0u32] });
+            let Err(error) = task.submit() else {
                 panic!("a task with an empty capture and a non-empty extent is refused");
             };
             let refusal = error.downcast_ref::<gust_wgpu::Error>();

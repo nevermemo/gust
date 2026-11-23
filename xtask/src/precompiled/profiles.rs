@@ -193,7 +193,7 @@ pub(super) fn e6_profile_values(
     ))
 }
 
-/// The tests of E6k to E6o. They sit here and not in `tests/precompiled.rs`, which pins the cases of `e6_cases`.
+/// The tests of E6k to E6o. They sit here and not in `tests/precompiled_refusals.rs`, which pins the cases of `e6_cases`.
 #[cfg(test)]
 mod e6_profile_tests {
     use super::{super::refusals::e6_cases, *};

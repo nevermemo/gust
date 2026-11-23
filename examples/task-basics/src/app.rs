@@ -244,6 +244,156 @@ mod tests {
         assert_eq!(data, want);
     }
 
+    /// A device of this test's own, so that no other test's work moves its submission counter.
+    fn private_device() -> Arc<HeadlessDevice> {
+        Arc::new(HeadlessDevice::new().unwrap_or_else(|error| {
+            panic!("Vulkan adapter required; this test must not silently skip: {error}")
+        }))
+    }
+
+    /// Submits `task`, and returns its value after asserting that the queue made exactly `want` GUST submissions by
+    /// the time `submit` returned and still `want` after the read-back was awaited.
+    fn counted<O>(device: &HeadlessDevice, want: u64, task: gust::task::Task<'_, O>) -> O {
+        let before = device.gust_submissions();
+        let pending = task.submit().unwrap();
+        assert_eq!(device.gust_submissions() - before, want, "at submit");
+        let (value, _) = poll_to_end(pending);
+        assert_eq!(
+            device.gust_submissions() - before,
+            want,
+            "after the read-back"
+        );
+        value.unwrap()
+    }
+
+    /// How many buffers the pool has handed out from its idle lists so far.
+    fn hits(device: &HeadlessDevice) -> u64 {
+        device.buffer_pool_stats().hits
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn gpu_a_fresh_one_d_task_is_one_submission() {
+        let device = private_device();
+        let a: Vec<f32> = (0..N).map(|i| i as f32).collect();
+        let a = &a[..];
+        let n = a.len();
+        let got = counted(
+            &device,
+            1,
+            gpu_task!(on(Arc::clone(&device)); n, [a: &[f32]], |i| -> f32 { a[i] * 3.0 }),
+        );
+        let want: Vec<f32> = a.iter().map(|a| a * 3.0).collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn gpu_a_recycled_output_is_still_one_submission() {
+        let device = private_device();
+        let weights = [0.25_f32, 0.5, 1.0, 2.0];
+        let weights = &weights[..];
+        let n = 1000_usize;
+        let want: Vec<f32> = (0..n).map(|i| weights[i % 4] * 2.0).collect();
+        let mut seen_hits = hits(&device);
+        for round in 0..2 {
+            let got = counted(
+                &device,
+                1,
+                gpu_task!(on(Arc::clone(&device)); n, [weights: &[f32]], |i| -> f32 { weights[i % 4u32] * 2.0 }),
+            );
+            assert_eq!(got, want, "round {round}");
+            let now = hits(&device);
+            if round == 1 {
+                // The second round's output (a 1000-element `f32` buffer) came from the pool's idle list: the
+                // first round's output was released when its future was dropped.
+                assert!(now > seen_hits, "the second round recycled a buffer");
+            }
+            seen_hits = now;
+        }
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn gpu_a_two_d_task_is_one_submission() {
+        let device = private_device();
+        let bias: Vec<u32> = (0..WIDTH).map(|x| x * 3).collect();
+        let bias = &bias[..];
+        let got = counted(
+            &device,
+            1,
+            gpu_task!(on(Arc::clone(&device)); (WIDTH, HEIGHT), [bias: &[u32]], |x, y| -> u32 { bias[x] + y * 100u32 }),
+        );
+        let mut want = Vec::new();
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                want.push(x * 3 + y * 100);
+            }
+        }
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn gpu_an_in_place_task_is_one_submission() {
+        let device = private_device();
+        let mut data: Vec<f32> = (0..LEN).map(|i| (i % 50) as f32).collect();
+        counted(
+            &device,
+            1,
+            gpu_task!(on(Arc::clone(&device)); &mut data, [data: &mut [f32]], |i| { data[i] = data[i] * 0.5 + 1.0; }),
+        );
+        let want: Vec<f32> = (0..LEN).map(|i| (i % 50) as f32 * 0.5 + 1.0).collect();
+        assert_eq!(data, want);
+    }
+
+    /// The one exception to a task's one submission: generated code uploads an empty captured slice, and the pool
+    /// clears a recycled buffer of that upload in a submission of its own, outside `submit_and_read`. The launch then
+    /// refuses the task (`IndependentLengthEmpty`: an empty capture with a non-empty extent), so the exception is a
+    /// submission made by a task that fails. The first run finds no idle buffer of that size and the second recycles
+    /// the first's; the counts are those of `gust_submissions()` over each failed `submit`.
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn gpu_an_empty_capture_on_a_recycled_buffer_makes_its_own_submission() {
+        let device = private_device();
+        let a: Vec<f32> = (0..N).map(|i| i as f32).collect();
+        let a = &a[..];
+        let n = a.len();
+        let empty: &[f32] = &[];
+        let mut made = Vec::new();
+        for _ in 0..2 {
+            let before = device.gust_submissions();
+            let Err(error) = gpu_task!(on(Arc::clone(&device)); n, [a: &[f32], empty: &[f32]], |i| -> f32 { a[i] + empty[0u32] })
+                .submit()
+            else {
+                panic!("a task with an empty capture and a non-empty extent is refused");
+            };
+            let refusal = error.downcast_ref::<gust_wgpu::Error>();
+            assert!(
+                matches!(refusal, Some(gust_wgpu::Error::IndependentLengthEmpty { parameter }) if parameter == "empty"),
+                "{error}"
+            );
+            made.push(device.gust_submissions() - before);
+        }
+        assert_eq!(made, [0, 1]);
+    }
+
+    /// Four tasks (every stage of the example), each with `submit` and then with `dispatch`: four GUST submissions a
+    /// run, and the results are those of the host reference.
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn gpu_a_whole_run_is_one_submission_per_stage() {
+        let device = private_device();
+        let inputs = inputs();
+        let want = reference(&inputs);
+        for how in [How::Dispatch, How::Submit] {
+            let before = device.gust_submissions();
+            let got = run_gpu(&device, &inputs, how).unwrap();
+            assert_eq!(got, want, "{how:?}");
+            assert_eq!(device.gust_submissions() - before, 4, "{how:?}");
+        }
+    }
+
     #[test]
     #[ignore = "example validation runs only in full verification"]
     fn gpu_matches_the_host() {

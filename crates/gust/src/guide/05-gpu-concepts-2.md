@@ -17,8 +17,9 @@ When the loop should produce a value instead of filling a buffer you own, `gust:
 same kernel: `gpu_task!(n, [a: &[f32], k: f32], |i| -> f32 { a[i] * k })` is a `gust::task::Task` whose `submit()`
 returns the read-back as a future and whose `dispatch()` waits for it, with a fresh `Vec<f32>` as the result. A
 `(w, h)` shape gives a 2-D stage with a row-major result, and `gpu_task!(&mut data, [data: &mut [f32]], |i| { .. })`
-updates a slice in place. The example `examples/task-basics` runs all three, and GUST-E1001, E1002, E1003, E1007 and
-E1008 are its diagnostics.
+updates a slice in place. On the GPU device a `submit()` is one queue submission, the dispatch and the read-back copy
+together (counted on the Radeon 890M; the RTX 5090 run is pending). The example `examples/task-basics` runs all
+three, and GUST-E1001, E1002, E1003, E1007 and E1008 are its diagnostics.
 
 ## Workgroup memory and barriers
 

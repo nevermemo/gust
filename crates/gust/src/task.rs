@@ -15,20 +15,24 @@
 //! # What `submit` costs on the queue
 //!
 //! The generated code builds the kernel's [`Call`](crate::Call) (`run::call_extent`) and nothing else about the
-//! submission: [`submit_and_read`] makes the output buffer, submits that call, and starts the read-back. So the
-//! dispatch and the read-back are made in that one function, and decision D251 (one command encoder, one `queue.submit`
-//! per submit) needs no change to generated code (the encode-plus-read-back entry point itself lives in the backend). Today it is a known gap against D251, counted from the code paths and not
-//! measured on a queue: the dispatch is one submission (`Run::submit_call`), and the read-back copy is a second one
-//! (`MapHost::readback_async`) that is made when the returned future is first polled. A zeroed output that the
-//! device's buffer pool recycles adds a third, the pool's own clear (`MapHost::zeroed`), which is also made in
-//! [`submit_and_read`]. So a task makes 2 submissions with a fresh output and 3 with a recycled one; an in-place task
-//! uploads its target with `write_buffer` (no clear) and makes 2. The uploads of the captures and the extent record are
-//! made by the generated code and are `write_buffer` calls and buffer creations, not submissions, with one corner: an
-//! empty captured slice on a recycled pool buffer is cleared in a submission of its own.
+//! submission: [`submit_and_read`] asks the device's [`MapHost::start_read`] to make the output buffer, run that call
+//! and start the read-back. The default of that method is two device calls (the dispatch, then the read-back copy when
+//! the returned future is first polled); the GPU device overrides it to record the dispatch, the clear of a recycled
+//! output and the read-back copy in one command buffer. Decision D251 (one command encoder, one `queue.submit` per
+//! submit) is met on the GPU device without a change to generated code.
 //!
-//! The test `a_task_starts_one_dispatch_and_one_read_back` of this file counts the two calls that submit, on a device
-//! that records its calls, through [`submit_and_read`] itself. Slice m14.encb replaces that count by a counter on the
-//! device's queue, asserted on a GPU.
+//! Measured with the device's `gust_submissions()` counter (Radeon 890M only; the RTX 5090 run is pending): a `submit`
+//! makes exactly 1 submission, for a 1-D task with a fresh or a recycled output, a 2-D task and an in-place task alike,
+//! and the read-back adds none. The uploads of the captures and the extent record are `write_buffer` calls and buffer
+//! creations, not submissions, with one exception that generated code makes outside `submit_and_read`: an empty
+//! captured slice on a recycled pool buffer is cleared in a submission of its own. The launch refuses such a task
+//! (`IndependentLengthEmpty`, an empty capture with a non-empty extent), so that submission is made by a task that
+//! fails: it makes 1 and no dispatch. A device that keeps the default makes two submissions (the dispatch and the
+//! copy), three when its pool clears a recycled output; the CPU device has no queue.
+//!
+//! The ignored tests `gpu_*` of `examples/task-basics` count these on a GPU; the test
+//! `a_task_starts_one_dispatch_and_one_read_back` of this file counts the default path on a device that records its
+//! calls, through [`submit_and_read`] itself.
 
 use core::future::Future;
 use core::ops::Deref;
@@ -83,9 +87,10 @@ impl<'t, O> Task<'t, O> {
     /// polled, so a native caller drives it (see [`Pending`]); in the browser a plain `.await` does. Available on every
     /// target.
     ///
-    /// **Known gap (decision D251).** This is two queue submissions, the dispatch and the copy, three when the
-    /// device recycles the output buffer (see the module's section on the queue); the design asks for one. The
-    /// submissions are made in [`submit_and_read`], which slice m14.encb changes.
+    /// On the GPU device this is one queue submission, the dispatch and the read-back copy together (decision D251;
+    /// measured on the Radeon 890M, see the module's section on the queue). The one exception is a task with an empty
+    /// captured slice on a recycled pool buffer, which clears it in a submission of its own and is then refused. A
+    /// device that does not override [`MapHost::start_read`] makes two, the dispatch and the copy.
     ///
     /// An empty shape runs nothing and returns an empty result.
     ///
@@ -179,9 +184,9 @@ impl<'t, T: GpuPod> Sink<'t, T> for InPlace<'t, T> {
     }
 }
 
-/// What a device must offer to run the generated kernel of a task: [`MapHost`] (upload, a zeroed output, read-back) and
-/// the typed `Run` of the kernel. The generated code names this trait and nothing finer, so the bound that the
-/// one-submission entry point needs later is added here.
+/// What a device must offer to run the generated kernel of a task: [`MapHost`] (upload, a zeroed output, read-back and
+/// [`MapHost::start_read`], where a backend makes the dispatch and the read-back one submission) and the typed `Run`
+/// of the kernel. The generated code names this trait and nothing finer.
 #[doc(hidden)]
 pub trait TaskDevice<K: Kernel, const N: usize>: MapHost + Run<K, N> {}
 
@@ -191,10 +196,13 @@ impl<D: MapHost + Run<K, N>, K: Kernel, const N: usize> TaskDevice<K, N> for D {
 /// submission is an empty captured slice's clear on a recycled pool buffer, which generated code makes in its own
 /// submission.
 ///
-/// It makes the output buffer (`sink`), asks `build` for the kernel's [`Call`] over the context and that buffer (the
-/// generated closure binds the kernel's resources and does nothing else), submits the call, and returns the read-back
-/// as a future that owns the device handle and the buffer. `context` is whatever the call borrows besides the output
-/// (the extent record and the uploaded captures): it is moved in so that the call can borrow it. Macro support.
+/// It hands the sink's initial values (or its length), `build` and `context` to [`MapHost::start_read`], which makes
+/// the output buffer, asks `build` for the kernel's [`Call`] over the context and that buffer (the generated closure
+/// binds the kernel's resources and does nothing else), submits the call and starts the read-back. The result is a
+/// future that owns the device handle and the buffer. On the GPU device that is one queue submission, as measured by
+/// its `gust_submissions()` counter; the default of `start_read` makes two. `context` is whatever the call borrows
+/// besides the output (the extent record and the uploaded captures): it is moved in so that the call can borrow it.
+/// Macro support.
 ///
 /// # Errors
 ///
@@ -216,19 +224,9 @@ where
     K: Kernel,
 {
     let len = u32::try_from(sink.count()).map_err(|_| Error::TooLong { len: sink.count() })?;
-    let output = match sink.initial() {
-        Some(values) => device.upload(values),
-        None => device.zeroed::<T>(len),
-    }
-    .map_err(D::map_error)?;
-    {
-        let call = build(&context, &output);
-        <D as Run<K, N>>::submit_call(&*device, &call)
-            .map(core::mem::drop)
-            .map_err(D::map_error)?;
-    }
+    let read = D::start_read(device, sink.initial(), len, context, build).map_err(D::map_error)?;
     Ok(Box::pin(async move {
-        let values = device.readback_async(&output).await.map_err(D::map_error)?;
+        let values = read.await.map_err(D::map_error)?;
         Ok(sink.finish(values))
     }))
 }

@@ -4,12 +4,15 @@
 //! The blocking `readback` is native only (the browser cannot block, D69). `readback_async` exists on both targets, so
 //! the generic `map_on_async` of M7 is written over `D: MapHost` alone.
 
+use core::future::Future;
+use core::ops::Deref;
+
 use gust::{
-    GpuPod,
+    Access, Call, GpuPod, Kernel, LengthRule, Resource, Run,
     map::{MapHost, Resident},
 };
 
-use crate::{Error, GpuBuffer, GpuVec, HeadlessDevice, pool::Fill};
+use crate::{BufferDispatch, Error, GpuBuffer, GpuVec, HeadlessDevice, pool::Fill};
 
 /// A resident buffer is a map argument as it is (`&GpuVec<T>` binds without a copy); the trait gives the generic
 /// map call its length. It lives here because `GpuVec` and `GpuBuffer` do (m7.a1).
@@ -46,6 +49,47 @@ impl MapHost for HeadlessDevice {
 
     async fn readback_async<T: GpuPod>(&self, buffer: &GpuBuffer<T>) -> Result<Vec<T>, Error> {
         self.read_pooled_async(buffer).await
+    }
+
+    /// The dispatch, the clear of a recycled output and the read-back copy in one command buffer: one counted queue
+    /// submission ([`HeadlessDevice::submit_batch_read`]). A zeroed output is an
+    /// [`uncleared_buffer`](HeadlessDevice::uncleared_buffer) that the submission clears itself; an output that starts
+    /// with values is uploaded with `write_buffer`, which is no submission. The call is checked as `submit_call`
+    /// checks it (the batch validates each binding against the kernel).
+    fn start_read<'t, H, T, K, C, const N: usize>(
+        device: H,
+        initial: Option<&[T]>,
+        len: u32,
+        context: C,
+        build: impl for<'o> FnOnce(&'o C, &'o GpuBuffer<T>) -> Call<'o, Self, K, N>,
+    ) -> Result<impl Future<Output = Result<Vec<T>, Error>> + 't, Error>
+    where
+        H: Deref<Target = Self> + 't,
+        T: GpuPod + 't,
+        K: Kernel,
+        Self: Run<K, N> + 't,
+        GpuBuffer<T>: 't,
+    {
+        let (output, clear) = match initial {
+            Some(values) => (device.upload(values)?, false),
+            None => (device.uncleared_buffer::<T>(len as usize)?, true),
+        };
+        let pending = {
+            let call = build(&context, &output);
+            let dispatch =
+                BufferDispatch::new_extent(call.kernel(), call.extent(), call.bindings());
+            if clear {
+                let target = output.bind(Access::ReadWrite, LengthRule::Shared);
+                device.submit_batch_read(&[dispatch], &[target], &output)?
+            } else {
+                device.submit_batch_read(&[dispatch], &[], &output)?
+            }
+        };
+        Ok(async move {
+            let values = pending.finish(&device).await;
+            drop(output);
+            values
+        })
     }
 
     /// Resident buffers of two devices in one call are `MixedDevices`, as the map error names it.

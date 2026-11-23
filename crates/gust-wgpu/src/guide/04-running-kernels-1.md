@@ -21,6 +21,37 @@ A typed buffer is created from a slice with `create_typed_buffer(name, &data, ac
 structs of these with no implicit padding. `try_create_typed_buffer` and `create_zeroed_buffer` check the device's
 `max_buffer_size` first and return `Error::DeviceLimit`; `create_typed_buffer` itself does not.
 
+## Sharing a device with a renderer
+
+A renderer that presents to a window must present from the device GUST runs on, and a device GUST opened itself cannot
+do that: it lives in a private `wgpu::Instance`, so configuring a surface of another instance with it panics inside
+wgpu-core, or silently binds the surface to an unrelated device. So the renderer opens the device and GUST adopts it.
+The renderer creates the instance, the surface and the adapter, asks `DeviceOptions::device_request(&adapter)` for the
+features and limits GUST needs, adds its own (`request.features | wgpu::Features::FLOAT32_BLENDABLE`,
+`request.limits.or_better_values_from(&mine)`), requests the device, and calls
+`HeadlessDevice::adopt(&adapter, device, queue, gust::capability::enabled())`. `gust_wgpu::wgpu` is the wgpu behind
+these types, so a renderer can name the same copy. Wrap the result in a `DeviceHandle` and call `set_default_device`
+with it, and `default_device()`, the map calls, `par_for!` and `GpuVec::from_slice` run on the shared device too.
+
+Rules of a shared device:
+
+- Surface, adapter, device and queue come from one `wgpu::Instance`. GUST cannot check this.
+- Adopt a device once and share the `DeviceHandle`: two adoptions of one device are two GUST devices whose buffers
+  refuse to mix.
+- GUST's blocking calls wait for every submission on the queue, so a GUST readback also waits for the renderer's frames
+  in flight, and the renderer's callbacks can run inside a GUST call.
+- An error scope the renderer holds on the same thread also catches errors from GUST's calls that cannot return one.
+  GUST installs no uncaptured-error handler and no device-lost callback; the renderer's stay in force.
+- GUST never calls `destroy`. The renderer's `destroy`, and a device loss, end both users.
+- A feature the renderer did not enable degrades and is reported (`supports_gpu_timestamps`,
+  `supports_coherent_storage`, `float32_filterable`); a capability whose feature is missing is
+  `Error::MissingFeatures`, and an adapter that is not the device's is `Error::AdapterMismatch`.
+- In a browser the page creates the instance, the canvas surface, the adapter and the device, adopts with an empty
+  capability set, and calls `set_default_device` with an `Rc`.
+
+`examples/window-share` in the repository is a window that does this and presents 60 frames whose colour comes from a
+GUST kernel; it is a workspace of its own, built only by `cargo xtask check-window-example`.
+
 ## Looking at a buffer
 
 `device.inspect(&buffer)` shows what a kernel wrote, with the field names of the element layout as columns:

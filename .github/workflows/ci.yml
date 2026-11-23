@@ -237,6 +237,35 @@ jobs:
         # installed above.
         run: cargo --locked xtask check-gallery --slang
 
+  window-example:
+    # Compile only (m14.devshare.1): `examples/window-share` is a workspace of its own with winit, so no other job
+    # builds it. `check-window-example` formats it and builds it with `--locked`; nothing is run (a window needs a display
+    # and an adapter; the run is manual and prints `GUST_OK frames=60`). Its kernel needs the pinned Slang at build time,
+    # installed as in the `slang` job. Not a required check, and not part of `verify`, `check-fast` or `check-full`.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CXX: g++
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt
+      - name: Install the pinned Slang and build the helper
+        run: |
+          gust() { cargo run --locked --quiet -p cargo-gust -- "$@"; }
+          gust slang install
+          gust slang locate > "$RUNNER_TEMP/locate.txt"
+          slangc=$(sed -n 's/^slangc: //p' "$RUNNER_TEMP/locate.txt")
+          gust slang build-helper > "$RUNNER_TEMP/helper.txt"
+          helper=$(sed -n 's/^helper: //p' "$RUNNER_TEMP/helper.txt")
+          test -n "$slangc"
+          test -n "$helper"
+          echo "SLANG_SDK=$(dirname "$(dirname "$slangc")")" >> "$GITHUB_ENV"
+          echo "GUST_SLANG_REFLECT=$helper" >> "$GITHUB_ENV"
+          dirname "$slangc" >> "$GITHUB_PATH"
+      - name: Window example (compile only)
+        run: cargo --locked xtask check-window-example
+
   precompiled:
     # D45, D46: the production-shaped consumer of precompiled kernels (tests/precompiled). `--check-only` is the mode
     # for a runner without an adapter or Slang: it runs the builds and checks of E1 to E8 (the stripped-environment

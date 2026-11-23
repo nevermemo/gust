@@ -7,6 +7,14 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- A renderer can share GUST's device (m14.devshare.1, D247, D248). New in `gust-compute-wgpu`:
+  `HeadlessDevice::adopt(&adapter, device, queue, capabilities)` wraps a device the caller opened in its own
+  `wgpu::Instance`; `DeviceOptions::device_request(&adapter)` returns the `DeviceRequest` (features and limits) that
+  GUST's own open asks for, to merge your own into; `set_default_device(handle)` makes a shared handle the default
+  device; `gust_wgpu::wgpu` re-exports the wgpu behind the handles. New errors: `MissingFeatures`, `AdapterMismatch` and
+  `DefaultDeviceCapability`. The text of `DefaultDeviceOpened` and of the launch refusal of a missing capability changed
+  to name `set_default_device` and `adopt`. Radeon 890M only; the RTX 5090 run is pending.
+
 - The pinned Slang is now 2026.22.1 (`cargo gust slang install` fetches it; run `cargo gust build` again for a committed
   artifact set). Two emitted differences: float and signed-integer vector negation is `-a` instead of `0 - a`, and a
   constant out-of-range float-to-integer cast folds at compile time to another value than before (m13.pin2221).

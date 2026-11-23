@@ -11,7 +11,8 @@ impl HeadlessDevice {
         &self.adapter_info
     }
 
-    /// The capabilities this device was opened with (`DeviceOptions::capabilities`), as asked: a kernel whose
+    /// The capabilities this device was opened or adopted with (`DeviceOptions::capabilities`, or the argument of
+    /// [`adopt`](Self::adopt)), as asked: a kernel whose
     /// `requires` names a capability not in this set is refused with [`Error::MissingCapability`].
     pub fn capabilities(&self) -> &'static [Capability] {
         self.capabilities
@@ -40,6 +41,11 @@ impl HeadlessDevice {
     ///
     /// Work you create here is not tracked by GUST: validation, limits and pooling stay your concern.
     /// Ordering is the queue's ([`Self::wgpu_queue`]).
+    ///
+    /// A device GUST opened itself lives in a private `wgpu::Instance` and must never be given to a surface: configuring
+    /// a surface of another instance with it panics inside wgpu-core, or silently binds the surface to an unrelated
+    /// device. A renderer that presents opens its own device in its own instance and shares it with
+    /// [`adopt`](Self::adopt) instead.
     ///
     /// Hazards: calling `destroy` on this device destroys GUST's device too, and every call of this `HeadlessDevice`
     /// fails or panics after it. An `on_uncaptured_error` handler you install replaces wgpu's default, so the panic of

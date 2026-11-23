@@ -1,0 +1,23 @@
+# A window that presents from the device GUST runs on (m14.devshare.1, D247, D248). A workspace of its own, like
+# `tests/dual`: the root workspace neither contains it nor builds it with `--workspace --all-targets`, so winit never
+# enters a lane's gate build. `cargo xtask check-window-example` builds it; running it needs a display and a Vulkan
+# adapter and is manual.
+#
+# There is no `wgpu` dependency on purpose: the example names `gust_wgpu::wgpu`, so wgpu's default backends are never
+# unified into anyone's build. Its `Cargo.lock` pins the same wgpu and wgpu-core versions as the root lock.
+[package]
+name = "window-share"
+description = "A window that presents from a device shared with GUST (adopt, device_request)"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.90"
+publish = false
+
+[workspace]
+
+[dependencies]
+gust = { package = "gust-compute", path = "../../crates/gust" }
+gust-wgpu = { package = "gust-compute-wgpu", path = "../../crates/gust-wgpu", features = ["slang-runtime"] }
+pollster = "0.4"
+winit = "0.30"

@@ -42,6 +42,8 @@ mod ops;
 mod shape;
 mod slot;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use frame::Blocking;
 pub use frame::{FrameRun, Submitted, Ticket};
 pub use shape::{D1, D2, IntoShape, ParamType, Rank};
 #[doc(hidden)]

@@ -173,7 +173,8 @@ impl HeadlessDevice {
         }
     }
 
-    /// Drop every compiled kernel owned by this device and reset its counters.
+    /// Drop the cache's references to every compiled kernel of this device and reset its counters. A graph node
+    /// that kept a bind group still holds its kernel until the node is executed again or the graph drops.
     pub fn clear_pipeline_cache(&self) {
         *self.lock_pipeline_cache() = PipelineCache::default();
     }

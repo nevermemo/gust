@@ -1067,6 +1067,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       names the command that asked for it (`check-full --skip-web` or `check-gallery --skip-web`). A gate that holds
       only one adapter can now run the native gallery GPU entries and leave the browser page to a both-adapter run.
       Opus review: merge after fixes; fixed.
+    - m14.rtfix1 (Breeze gap G16, graph overhead): `ComputeGraph::validate` checks hazards against a per-buffer
+      history (amortized linear, a reachability bitset per node) instead of the pairwise loop; a seeded oracle checks
+      it against the old loop. A node keeps its bind group between runs. Read-back staging buffers come from the
+      device's buffer pool up to a 64 MiB class (pooled, uncleared, counted in the stats and the cap); larger
+      transfers and every upload use a fresh staging buffer (upload pooling measured no gain and was reverted).
+      `GPU_SUITE_PIN` 642 over 67 (Radeon 890M, merge gate). RTX 5090: owed. Opus review: merge after fixes; fixed;
+      re-check merge after fixes; fixed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

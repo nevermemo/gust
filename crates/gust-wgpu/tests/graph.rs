@@ -1390,3 +1390,229 @@ fn timed_graphs_and_timed_batches_share_the_profiler_without_deadlock() {
     assert_eq!(device.read_typed_buffer(&graph_out).unwrap(), ramp(1.0));
     assert_eq!(device.read_typed_buffer(&batch_out).unwrap(), ramp(1.0));
 }
+
+// ---- the hazard check on graphs of 40 or more nodes (m14.rtfix1) ----
+
+/// Nodes of the long graphs below: more than the 40 the check was measured at.
+const LONG: usize = 44;
+
+#[test]
+fn a_graph_of_forty_four_derived_nodes_validates_and_runs() {
+    let device = device();
+    let input = ramp(3.0);
+    let chain: Vec<GpuBuffer<f32>> = (0..=LONG)
+        .map(|index| floats(&device, &format!("chain {index}"), &vec![0.0; COUNT]))
+        .collect();
+    let calls: Vec<_> = (0..LONG)
+        .map(|index| small::copy::call(COUNT as u32, &chain[index], &chain[index + 1]))
+        .collect();
+
+    let mut graph = StagedGraph::new();
+    graph.write(&chain[0], &input);
+    for call in &calls {
+        graph.run(call);
+    }
+    let read = graph.read(&chain[LONG]);
+    assert_eq!(graph.len(), LONG + 2);
+
+    // Twice: the second execution reuses what the first kept, and must see the same.
+    for _ in 0..2 {
+        let output = device.execute_graph(&graph).unwrap();
+        assert_eq!(output.report.dispatches, LONG);
+        assert_eq!(output.readback::<f32>(read).unwrap(), input);
+    }
+}
+
+/// `LONG - 2` writers of one buffer, each depending on the one before, and a reader of that buffer that declares
+/// `dependencies` (given the writers' ids).
+fn reader_after_a_long_writer_chain(
+    dependencies: impl Fn(&[NodeId]) -> Vec<NodeId>,
+) -> Result<(), Error> {
+    let device = device();
+    let source = floats(&device, "source", &ramp(1.0));
+    let shared = floats(&device, "shared", &vec![0.0; COUNT]);
+    let out = floats(&device, "out", &vec![0.0; COUNT]);
+    let write = small::copy::call(COUNT as u32, &source, &shared);
+    let read = small::copy::call(COUNT as u32, &shared, &out);
+
+    let mut graph = StagedGraph::new();
+    let mut writers: Vec<NodeId> = Vec::new();
+    for _ in 0..LONG - 2 {
+        let previous: Vec<NodeId> = writers.last().copied().into_iter().collect();
+        writers.push(graph.dispatch((&write).into(), &previous));
+    }
+    let reader = graph.dispatch((&read).into(), &dependencies(&writers));
+    assert_eq!(reader.index(), LONG - 2);
+    device.execute_graph(&graph).map(|_| {
+        assert_eq!(device.read_typed_buffer(&out).unwrap(), ramp(1.0));
+    })
+}
+
+#[test]
+fn a_missing_edge_names_the_lowest_producer_the_node_does_not_follow() {
+    // No edge at all: node 0 is the lowest of the 42 writers.
+    match reader_after_a_long_writer_chain(|_| Vec::new()).expect_err("no edge") {
+        Error::GraphMissingDependency { node, producer } => {
+            assert_eq!((node, producer), (LONG - 2, 0));
+        }
+        other => panic!("expected GraphMissingDependency, got {other:?}"),
+    }
+    // An edge to writer 20 covers writers 0 to 20 (each depends on the one before): 21 is the lowest left.
+    match reader_after_a_long_writer_chain(|writers| vec![writers[20]]).expect_err("a short edge") {
+        Error::GraphMissingDependency { node, producer } => {
+            assert_eq!((node, producer), (LONG - 2, 21));
+        }
+        other => panic!("expected GraphMissingDependency, got {other:?}"),
+    }
+    // An edge to the last writer covers all of them: the graph is valid.
+    reader_after_a_long_writer_chain(|writers| vec![*writers.last().unwrap()]).unwrap();
+}
+
+/// `LONG - 3` readers of one uploaded buffer, then an overwrite of it that declares an edge to the upload and to
+/// every reader except `skipped` (when given).
+fn overwrite_after_many_readers(skipped: Option<usize>) -> Result<(), Error> {
+    let device = device();
+    let (first, second) = (ramp(1.0), ramp(500.0));
+    let shared = floats(&device, "shared", &vec![0.0; COUNT]);
+    let outs: Vec<GpuBuffer<f32>> = (0..LONG - 3)
+        .map(|index| floats(&device, &format!("out {index}"), &vec![0.0; COUNT]))
+        .collect();
+    let calls: Vec<_> = outs
+        .iter()
+        .map(|out| small::copy::call(COUNT as u32, &shared, out))
+        .collect();
+
+    let mut graph = StagedGraph::new();
+    let upload = graph.upload(&shared, &first, &[]);
+    let readers: Vec<NodeId> = calls
+        .iter()
+        .map(|call| graph.dispatch(call.into(), &[upload]))
+        .collect();
+    let mut edges: Vec<NodeId> = vec![upload];
+    edges.extend(
+        readers
+            .iter()
+            .filter(|reader| Some(reader.index()) != skipped),
+    );
+    let overwrite = graph.upload(&shared, &second, &edges);
+    assert_eq!(overwrite.index(), LONG - 2);
+    device.execute_graph(&graph).map(|_| {
+        for out in &outs {
+            assert_eq!(device.read_typed_buffer(out).unwrap(), first);
+        }
+        assert_eq!(device.read_typed_buffer(&shared).unwrap(), second);
+    })
+}
+
+#[test]
+fn an_overwrite_must_follow_every_reader_of_a_long_graph() {
+    overwrite_after_many_readers(None).expect("every reader is an edge");
+    // The reader at node index 17 is the only one left out; the readers before it are covered.
+    match overwrite_after_many_readers(Some(17))
+        .expect_err("the reader at node index 17 is not an ancestor")
+    {
+        Error::GraphMissingDependency { node, producer } => {
+            assert_eq!((node, producer), (LONG - 2, 17));
+        }
+        other => panic!("expected GraphMissingDependency, got {other:?}"),
+    }
+}
+
+// ---- the staging buffers of readbacks come from the device's pool (m14.rtfix1) ----
+
+#[test]
+fn a_graph_takes_its_readback_staging_from_the_pool_and_gives_it_back() {
+    let device = device();
+    let input = ramp(2.0);
+    let x = floats(&device, "x", &vec![0.0; COUNT]);
+    let y = floats(&device, "y", &vec![0.0; COUNT]);
+    let copy = small::copy::call(COUNT as u32, &x, &y);
+    let mut graph = StagedGraph::new();
+    graph.write(&x, &input);
+    graph.run(&copy);
+    let read = graph.read(&y);
+
+    // The first execution finds the pool empty: one staging buffer for the readback (the upload uses a fresh one).
+    let before = device.buffer_pool_stats();
+    let output = device.execute_graph(&graph).unwrap();
+    assert_eq!(output.readback::<f32>(read).unwrap(), input);
+    let first = device.buffer_pool_stats();
+    assert_eq!(first.misses - before.misses, 1);
+    assert_eq!(first.hits - before.hits, 0);
+    assert_eq!(first.outstanding, before.outstanding);
+    assert_eq!(first.free_buffers - before.free_buffers, 1);
+    assert_eq!(first.discarded_mapped, before.discarded_mapped);
+
+    // Every later execution reuses it, and the reused readback buffer was unmapped on return.
+    for _ in 0..3 {
+        let output = device.execute_graph(&graph).unwrap();
+        assert_eq!(output.readback::<f32>(read).unwrap(), input);
+    }
+    let later = device.buffer_pool_stats();
+    assert_eq!(later.misses, first.misses);
+    assert_eq!(later.hits - first.hits, 3);
+    assert_eq!(later.free_buffers, first.free_buffers);
+    assert_eq!(later.outstanding, before.outstanding);
+    assert_eq!(later.discarded_mapped, before.discarded_mapped);
+}
+
+#[test]
+fn a_readback_above_the_staging_ceiling_is_a_fresh_buffer_and_leaves_the_pool_alone() {
+    // 17_000_000 floats are 68_000_000 bytes: the next power of two, 128 MiB, is above the 64 MiB ceiling.
+    const HUGE: usize = 17_000_000;
+    let device = device();
+    let values: Vec<f32> = (0..HUGE).map(|index| (index % 1000) as f32).collect();
+    let x = floats(&device, "x", &vec![0.0; HUGE]);
+    let before = device.buffer_pool_stats();
+    let mut graph = StagedGraph::new();
+    graph.write(&x, &values);
+    let read = graph.read(&x);
+    let output = device.execute_graph(&graph).unwrap();
+    assert_eq!(output.readback::<f32>(read).unwrap(), values);
+    assert_eq!(device.buffer_pool_stats(), before);
+}
+
+#[test]
+fn a_readback_inside_the_staging_ceiling_is_pooled_and_returned() {
+    // 10_000_000 floats are 40_000_000 bytes: the next power of two, 64 MiB, is at the ceiling and still pooled.
+    const BIG: usize = 10_000_000;
+    const CLASS: u64 = 64 << 20;
+    let device = device();
+    let values: Vec<f32> = (0..BIG).map(|index| (index % 1000) as f32).collect();
+    let x = floats(&device, "x", &vec![0.0; BIG]);
+    let before = device.buffer_pool_stats();
+    let mut graph = StagedGraph::new();
+    graph.write(&x, &values);
+    let read = graph.read(&x);
+    let output = device.execute_graph(&graph).unwrap();
+    assert_eq!(output.readback::<f32>(read).unwrap(), values);
+    let mut expected = before;
+    expected.misses += 1;
+    expected.returned += 1;
+    expected.free_buffers += 1;
+    expected.free_bytes += CLASS;
+    assert_eq!(device.buffer_pool_stats(), expected);
+}
+
+#[test]
+fn a_pooled_readback_buffer_larger_than_the_data_is_read_over_the_data_only() {
+    // 70_000 floats are 280_000 bytes, past the exact classes: the readback staging buffer is the next power of two.
+    const BIG: usize = 70_000;
+    let device = device();
+    let first: Vec<f32> = (0..BIG).map(|index| index as f32).collect();
+    let second: Vec<f32> = (0..BIG).map(|index| (BIG - index) as f32).collect();
+    let x = floats(&device, "x", &vec![0.0; BIG]);
+
+    for values in [&first, &second, &first] {
+        let mut graph = StagedGraph::new();
+        graph.write(&x, values);
+        let read = graph.read(&x);
+        let output = device.execute_graph(&graph).unwrap();
+        assert_eq!(output.readback::<f32>(read).unwrap(), *values);
+        assert_eq!(output.report.upload_bytes, (BIG * 4) as u64);
+        assert_eq!(output.report.readback_bytes, (BIG * 4) as u64);
+    }
+    // The three graphs shared one readback buffer.
+    let stats = device.buffer_pool_stats();
+    assert_eq!((stats.misses, stats.hits), (1, 2));
+}

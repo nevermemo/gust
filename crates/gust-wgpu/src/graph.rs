@@ -13,6 +13,7 @@
 //! uniform, so a dispatch that reads it, and a later update of it, are ordered around it.
 
 use std::{
+    collections::HashMap,
     sync::mpsc,
     time::{Duration, Instant},
 };
@@ -20,12 +21,14 @@ use std::{
 use gust::{Access, Call, GpuPod, TypeLayout, pod_slice_as_bytes, target::GpuKernel};
 
 use crate::{
-    BufferBinding, BufferDispatch, Error, GpuBuffer, GpuBufferAccess, GpuUniform, HeadlessDevice,
-    PassTimestamps, Raw, TIMESTAMP_RESULT_BYTES,
+    BindGroupSlot, BufferBinding, BufferDispatch, Error, GpuBuffer, GpuBufferAccess, GpuUniform,
+    HeadlessDevice, PassTimestamps, Raw, TIMESTAMP_RESULT_BYTES,
     completion::blocking::recv_mapping,
     encode::{encode_indirect_pass, encode_readback_copy, encode_upload},
     error::INDIRECT_ARGUMENTS,
-    pod_vec_from_bytes, render,
+    pod_vec_from_bytes,
+    pool::Lease,
+    render,
 };
 
 /// Handle to one node of a [`StagedGraph`], in insertion order.
@@ -187,6 +190,88 @@ struct Node<'a> {
     dependencies: Vec<NodeId>,
     /// The graph computed `dependencies` from the buffers the node touches.
     derived: bool,
+    /// The bind group of a dispatch node, kept from one execution to the next (unused by a transfer node).
+    bind_group: BindGroupSlot,
+}
+
+/// A set of node indices below a bound, one bit each.
+struct NodeSet(Vec<u64>);
+
+impl NodeSet {
+    fn new(bound: usize) -> Self {
+        Self(vec![0; bound.div_ceil(64)])
+    }
+
+    fn insert(&mut self, index: usize) {
+        self.0[index / 64] |= 1 << (index % 64);
+    }
+
+    fn contains(&self, index: usize) -> bool {
+        self.0[index / 64] & (1 << (index % 64)) != 0
+    }
+
+    /// Add every member of `other`, a set of a smaller or equal bound.
+    fn union(&mut self, other: &Self) {
+        for (word, added) in self.0.iter_mut().zip(&other.0) {
+            *word |= added;
+        }
+    }
+}
+
+/// The earlier nodes that touched one buffer or texture, for the hazard check of [`StagedGraph::validate`].
+#[derive(Default)]
+struct Touches {
+    /// Every earlier node that touched it, ascending.
+    all: Vec<usize>,
+    /// The earlier nodes that wrote it, ascending.
+    writers: Vec<usize>,
+    /// The latest of the writers.
+    last_writer: Option<usize>,
+    /// The nodes that only read it since the latest writer.
+    readers_since_writer: Vec<usize>,
+}
+
+impl Touches {
+    /// The lowest earlier node whose access conflicts with an `access` by a new node and is not one of `ancestors`
+    /// (the new node's ancestors), if there is one. A write conflicts with every earlier toucher, a read with every
+    /// earlier writer.
+    ///
+    /// The quick answer looks at the latest writer and the readers since it only: every toucher before that writer
+    /// was one of its ancestors when it was validated, so the new node's ancestors cover them when they cover the
+    /// writer. Only a violation pays for the scan that names the lowest producer.
+    fn first_unordered(&self, access: Access, ancestors: &NodeSet) -> Option<usize> {
+        let covered = |index: &usize| ancestors.contains(*index);
+        if self.last_writer.iter().all(covered)
+            && (access == Access::ReadOnly || self.readers_since_writer.iter().all(covered))
+        {
+            return None;
+        }
+        let conflicting = if access == Access::ReadWrite {
+            &self.all
+        } else {
+            &self.writers
+        };
+        conflicting
+            .iter()
+            .copied()
+            .find(|&index| !ancestors.contains(index))
+    }
+
+    fn record(&mut self, node: usize, access: Access) {
+        if self.all.last() != Some(&node) {
+            self.all.push(node);
+        }
+        if access == Access::ReadWrite {
+            if self.writers.last() != Some(&node) {
+                self.writers.push(node);
+            }
+            self.last_writer = Some(node);
+            self.readers_since_writer.clear();
+        } else if self.last_writer != Some(node) && self.readers_since_writer.last() != Some(&node)
+        {
+            self.readers_since_writer.push(node);
+        }
+    }
 }
 
 fn upload_kind<'a, T: GpuPod>(buffer: &'a GpuBuffer<T>, values: &'a [T]) -> NodeKind<'a> {
@@ -421,6 +506,7 @@ impl<'a> StagedGraph<'a> {
             kind,
             dependencies: dependencies.to_vec(),
             derived: false,
+            bind_group: BindGroupSlot::default(),
         });
         NodeId(self.nodes.len() - 1)
     }
@@ -431,6 +517,7 @@ impl<'a> StagedGraph<'a> {
             kind,
             dependencies,
             derived: true,
+            bind_group: BindGroupSlot::default(),
         });
         NodeId(self.nodes.len() - 1)
     }
@@ -498,11 +585,17 @@ impl<'a> StagedGraph<'a> {
     /// Check every node and every edge before any GPU object is created: bindings, launch limits and
     /// aliasing of each node, then the hazards between nodes. Nothing is compiled or cached when this
     /// fails, however late in the graph the offending node is.
+    ///
+    /// The hazard part is amortized linear in the number of accesses (a per-buffer history, see [`Touches`]);
+    /// reachability is a bitset per node, so the whole check is not linear in the node count.
     fn validate(&self, device: &HeadlessDevice) -> Result<(), Error> {
         let device_id = device.id;
-        let mut ancestors: Vec<Vec<bool>> = Vec::with_capacity(self.nodes.len());
+        let mut ancestors: Vec<NodeSet> = Vec::with_capacity(self.nodes.len());
+        // wgpu compares and hashes a buffer or texture by its id, which never changes, whatever its interior state.
+        #[allow(clippy::mutable_key_type)]
+        let mut history: HashMap<Raw<'a>, Touches> = HashMap::new();
         for (index, node) in self.nodes.iter().enumerate() {
-            let mut reachable = vec![false; index];
+            let mut reachable = NodeSet::new(index);
             for dependency in &node.dependencies {
                 if dependency.0 >= index {
                     return Err(Error::GraphDependencyOrder {
@@ -510,10 +603,8 @@ impl<'a> StagedGraph<'a> {
                         dependency: dependency.0,
                     });
                 }
-                reachable[dependency.0] = true;
-                for (earlier, &covered) in ancestors[dependency.0].iter().enumerate() {
-                    reachable[earlier] |= covered;
-                }
+                reachable.insert(dependency.0);
+                reachable.union(&ancestors[dependency.0]);
             }
 
             match &node.kind {
@@ -604,24 +695,22 @@ impl<'a> StagedGraph<'a> {
                 }
             }
 
-            // Every earlier conflicting access to the same buffer must be an ancestor.
-            for (buffer, access) in Self::accesses(node) {
-                for (earlier, previous) in self.nodes[..index].iter().enumerate() {
-                    let conflict =
-                        Self::accesses(previous)
-                            .into_iter()
-                            .any(|(other, other_access)| {
-                                other == buffer
-                                    && (access == Access::ReadWrite
-                                        || other_access == Access::ReadWrite)
-                            });
-                    if conflict && !reachable[earlier] {
-                        return Err(Error::GraphMissingDependency {
-                            node: index,
-                            producer: earlier,
-                        });
-                    }
+            // Every earlier conflicting access to the same buffer must be an ancestor. The accesses of this node are
+            // checked against the earlier nodes' only, then recorded.
+            let accesses = Self::accesses(node);
+            for (buffer, access) in &accesses {
+                if let Some(producer) = history
+                    .get(buffer)
+                    .and_then(|touches| touches.first_unordered(*access, &reachable))
+                {
+                    return Err(Error::GraphMissingDependency {
+                        node: index,
+                        producer,
+                    });
                 }
+            }
+            for (buffer, access) in accesses {
+                history.entry(buffer).or_default().record(index, access);
             }
             ancestors.push(reachable);
         }
@@ -677,7 +766,10 @@ impl<'a> StagedGraph<'a> {
 struct PendingReadback {
     node: NodeId,
     layout: TypeLayout,
-    staging: Option<wgpu::Buffer>,
+    /// The bytes of the buffer: what the copy, the mapping and the read cover of the (possibly larger) staging buffer.
+    bytes: u64,
+    /// The pooled staging buffer the copy goes to; `None` for an empty buffer.
+    staging: Option<Lease>,
 }
 
 /// Readbacks and the transfer report of one executed graph.
@@ -739,6 +831,10 @@ impl HeadlessDevice {
     /// scheduling hint. Intermediate buffers that no node uploads or reads back never leave
     /// the GPU; the report counts their bytes as resident. Encoding a `pixel` node creates its attachment, so the
     /// graph can fail with [`Error::OutOfMemory`] named `GUST pixel attachment`; nothing is submitted then.
+    ///
+    /// The staging buffers of the graph's read-backs come from the device's buffer pool, uncleared, and count in its
+    /// stats and byte cap; one whose size class is above `STAGING_POOL_CEILING_BYTES` (64 MiB) is a fresh buffer,
+    /// dropped after use. Each upload uses a fresh staging buffer.
     pub fn execute_graph(&self, graph: &StagedGraph<'_>) -> Result<GraphOutput, Error> {
         self.execute_graph_inner(graph, false)
     }
@@ -830,12 +926,12 @@ impl HeadlessDevice {
             for node in &graph.nodes {
                 let list = match &node.kind {
                     NodeKind::Dispatch(dispatch) => {
-                        self.prepare_batch(std::slice::from_ref(dispatch))?
+                        self.prepare_node(dispatch, &node.bind_group)?
                     }
                     NodeKind::DispatchIndirect { dispatch, .. } => {
                         let placeholder =
                             BufferDispatch::new(dispatch.kernel, 1, dispatch.bindings);
-                        self.prepare_indirect(&placeholder)?
+                        self.prepare_indirect(&placeholder, &node.bind_group)?
                     }
                     _ => Vec::new(),
                 };
@@ -896,7 +992,7 @@ impl HeadlessDevice {
                 NodeKind::Dispatch(dispatch) => {
                     let list = match pre_prepared.as_mut() {
                         Some(all) => std::mem::take(&mut all[index]),
-                        None => self.prepare_batch(std::slice::from_ref(dispatch))?,
+                        None => self.prepare_node(dispatch, &node.bind_group)?,
                     };
                     for prepared in list {
                         prepared.encode(
@@ -917,7 +1013,7 @@ impl HeadlessDevice {
                     let placeholder = BufferDispatch::new(dispatch.kernel, 1, dispatch.bindings);
                     let list = match pre_prepared.as_mut() {
                         Some(all) => std::mem::take(&mut all[index]),
-                        None => self.prepare_indirect(&placeholder)?,
+                        None => self.prepare_indirect(&placeholder, &node.bind_group)?,
                     };
                     for prepared in list {
                         encode_indirect_pass(
@@ -935,14 +1031,15 @@ impl HeadlessDevice {
                 NodeKind::Readback { source, layout } => {
                     let byte_size = source.byte_len();
                     let staging = encode_readback_copy(
-                        &self.device,
+                        self,
                         &mut encoder,
                         source,
                         "GUST staged graph readback",
-                    );
+                    )?;
                     pending.push(PendingReadback {
                         node: NodeId(index),
                         layout: *layout,
+                        bytes: byte_size,
                         staging,
                     });
                     transfers.push(TransferRecord {
@@ -965,14 +1062,19 @@ impl HeadlessDevice {
             );
         }
         let submission = self.submit_counted([encoder.finish()]);
+        // A staging buffer with a mapping requested never goes back to the pool unless it is recycled after the read.
         let receivers: Vec<_> = pending
-            .iter()
+            .iter_mut()
             .map(|readback| {
-                readback.staging.as_ref().map(|staging| {
+                let bytes = readback.bytes;
+                readback.staging.as_mut().map(|staging| {
                     let (sender, receiver) = mpsc::channel();
-                    staging.map_async(wgpu::MapMode::Read, .., move |result| {
-                        let _ = sender.send(result.map_err(|error| error.to_string()));
-                    });
+                    staging.mark_mapped();
+                    staging
+                        .buffer()
+                        .map_async(wgpu::MapMode::Read, 0..bytes, move |result| {
+                            let _ = sender.send(result.map_err(|error| error.to_string()));
+                        });
                     receiver
                 })
             })
@@ -994,11 +1096,12 @@ impl HeadlessDevice {
                 (Some(staging), Some(receiver)) => {
                     recv_mapping(&receiver)?;
                     let view = staging
-                        .get_mapped_range(..)
+                        .buffer()
+                        .get_mapped_range(0..readback.bytes)
                         .map_err(|error| Error::Map(error.to_string()))?;
                     let bytes = view.to_vec();
                     drop(view);
-                    staging.unmap();
+                    staging.recycle(true);
                     bytes
                 }
                 _ => Vec::new(),
@@ -1037,7 +1140,263 @@ impl HeadlessDevice {
 
 #[cfg(test)]
 mod tests {
-    use super::stamp_slots;
+    use super::{NodeSet, StagedGraph, Touches, stamp_slots};
+    use crate::{GpuBufferAccess, HeadlessDevice};
+    use gust::Access;
+
+    #[gust::gpu_module]
+    mod ops {
+        #[kernel(workgroup_size(64, 1, 1))]
+        pub fn add_one(
+            id: SV_DispatchThreadID,
+            src: StructuredBuffer<uint>,
+            mut dst: RWStructuredBuffer<uint>,
+        ) {
+            let i = id.x;
+            if i < dst.len() && i < src.len() {
+                dst[i] = src[i] + 1u32;
+            }
+        }
+    }
+
+    #[test]
+    fn a_node_set_holds_the_members_added_and_those_of_its_unions() {
+        let mut low = NodeSet::new(70);
+        low.insert(3);
+        low.insert(69);
+        let mut high = NodeSet::new(130);
+        high.insert(64);
+        high.insert(129);
+        high.union(&low);
+        let members: Vec<usize> = (0..130).filter(|&index| high.contains(index)).collect();
+        assert_eq!(members, [3, 64, 69, 129]);
+        assert!(NodeSet::new(0).0.is_empty());
+        assert_eq!(NodeSet::new(64).0.len(), 1);
+        assert_eq!(NodeSet::new(65).0.len(), 2);
+    }
+
+    #[test]
+    fn the_history_check_names_what_the_pairwise_loop_names_on_random_graphs() {
+        // The loop the history check replaced: for the first access of the node that conflicts with an earlier node's
+        // access to the same buffer without that node being an ancestor, the lowest such earlier node.
+        fn pairwise(
+            nodes: &[Vec<(usize, Access)>],
+            index: usize,
+            reachable: &NodeSet,
+        ) -> Option<usize> {
+            nodes[index].iter().find_map(|&(buffer, access)| {
+                (0..index).find(|&earlier| {
+                    !reachable.contains(earlier)
+                        && nodes[earlier].iter().any(|&(other, other_access)| {
+                            other == buffer
+                                && (access == Access::ReadWrite
+                                    || other_access == Access::ReadWrite)
+                        })
+                })
+            })
+        }
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+        let (mut accepted, mut rejected, mut longest_prefix) = (0, 0, 0);
+        for _ in 0..400 {
+            let count = 2 + next(70);
+            // Few buffers reject early; many let long histories build up.
+            let buffers = [4, 32, 400][next(3)];
+            let nodes: Vec<Vec<(usize, Access)>> = (0..count)
+                .map(|_| {
+                    (0..1 + next(3))
+                        .map(|_| {
+                            let access = [Access::ReadOnly, Access::ReadWrite][next(2)];
+                            (next(buffers), access)
+                        })
+                        .collect()
+                })
+                .collect();
+            let mut ancestors: Vec<NodeSet> = Vec::new();
+            let mut history: std::collections::HashMap<usize, Touches> = Default::default();
+            let mut outcome = None;
+            for index in 0..count {
+                let mut reachable = NodeSet::new(index);
+                for (earlier, earlier_ancestors) in ancestors.iter().enumerate() {
+                    if next(100) < 12 {
+                        reachable.insert(earlier);
+                        reachable.union(earlier_ancestors);
+                    }
+                }
+                let expected = pairwise(&nodes, index, &reachable);
+                let found = nodes[index].iter().find_map(|&(buffer, access)| {
+                    history
+                        .get(&buffer)
+                        .and_then(|touches| touches.first_unordered(access, &reachable))
+                });
+                assert_eq!(found, expected, "node {index} of {count}");
+                if found.is_some() {
+                    outcome = found;
+                    break;
+                }
+                longest_prefix = longest_prefix.max(index + 1);
+                for &(buffer, access) in &nodes[index] {
+                    history.entry(buffer).or_default().record(index, access);
+                }
+                ancestors.push(reachable);
+            }
+            if outcome.is_some() {
+                rejected += 1;
+            } else {
+                accepted += 1;
+            }
+        }
+        assert!(
+            accepted > 0 && rejected > 0,
+            "{accepted} accepted, {rejected} rejected"
+        );
+        assert!(
+            longest_prefix >= 20,
+            "no graph accepted 20 nodes before its first rejection (longest: {longest_prefix})"
+        );
+    }
+
+    #[test]
+    fn touches_name_the_lowest_conflicting_node_that_is_not_an_ancestor() {
+        // Node 0 writes, nodes 1 and 2 read, node 3 writes, node 4 reads.
+        let mut touches = Touches::default();
+        touches.record(0, Access::ReadWrite);
+        touches.record(1, Access::ReadOnly);
+        touches.record(2, Access::ReadOnly);
+        touches.record(3, Access::ReadWrite);
+        touches.record(4, Access::ReadOnly);
+        let ancestors = |members: &[usize]| {
+            let mut set = NodeSet::new(6);
+            for &member in members {
+                set.insert(member);
+            }
+            set
+        };
+        // The sets are closed the way a validated graph's are: an ancestor brings its own ancestors (1 and 2 follow 0,
+        // 3 follows 0, 1 and 2, 4 follows 3).
+        // A new write conflicts with all five.
+        let everything = [0, 1, 2, 3, 4];
+        assert_eq!(
+            touches.first_unordered(Access::ReadWrite, &ancestors(&everything)),
+            None
+        );
+        // The reader 4 is the only one left out: found by the readers since the latest writer.
+        assert_eq!(
+            touches.first_unordered(Access::ReadWrite, &ancestors(&[0, 1, 2, 3])),
+            Some(4)
+        );
+        // The latest writer is left out: the lowest of the nodes left out is named, not the writer.
+        assert_eq!(
+            touches.first_unordered(Access::ReadWrite, &ancestors(&[0, 2])),
+            Some(1)
+        );
+        assert_eq!(
+            touches.first_unordered(Access::ReadWrite, &ancestors(&[])),
+            Some(0)
+        );
+        // A new read conflicts with the writers 0 and 3 only: the readers 1, 2 and 4 are no conflict.
+        assert_eq!(
+            touches.first_unordered(Access::ReadOnly, &ancestors(&[0, 1, 2, 3])),
+            None
+        );
+        assert_eq!(
+            touches.first_unordered(Access::ReadOnly, &ancestors(&[0, 1, 2])),
+            Some(3)
+        );
+        assert_eq!(
+            touches.first_unordered(Access::ReadOnly, &ancestors(&[])),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn a_node_that_touches_a_buffer_twice_is_recorded_once() {
+        let mut touches = Touches::default();
+        touches.record(0, Access::ReadOnly);
+        touches.record(0, Access::ReadWrite);
+        touches.record(0, Access::ReadOnly);
+        assert_eq!(touches.all, [0]);
+        assert_eq!(touches.writers, [0]);
+        assert_eq!(touches.last_writer, Some(0));
+        assert!(touches.readers_since_writer.is_empty());
+    }
+
+    #[test]
+    fn an_unchanged_node_keeps_its_bind_group_until_its_pipeline_is_replaced() {
+        let device = HeadlessDevice::new().expect("Vulkan adapter required");
+        let src = device.create_typed_buffer("src", &[1u32, 2, 3], GpuBufferAccess::ReadWrite);
+        let dst = device.create_typed_buffer("dst", &[0u32; 3], GpuBufferAccess::ReadWrite);
+        let call = ops::add_one::call(3, &src, &dst);
+        let nothing = device.create_typed_buffer("nothing", &[0u32; 0], GpuBufferAccess::ReadWrite);
+        let nowhere = device.create_typed_buffer("nowhere", &[0u32; 0], GpuBufferAccess::ReadWrite);
+        let skipped = ops::add_one::call(0, &nothing, &nowhere);
+        let mut graph = StagedGraph::new();
+        graph.run(&call);
+        graph.run(&skipped);
+        assert!(graph.nodes[0].bind_group.kept_group().is_none());
+
+        device.execute_graph(&graph).unwrap();
+        let first = graph.nodes[0].bind_group.kept_group().expect("kept");
+        assert_eq!(device.read_typed_buffer(&dst).unwrap(), [2, 3, 4]);
+        // A node that launches nothing builds nothing to keep.
+        assert!(graph.nodes[1].bind_group.kept_group().is_none());
+
+        // The kept group still binds the live buffers: new contents give new results. A timed execution takes the same
+        // group as an untimed one.
+        device.write_typed_buffer(&src, &[10u32, 20, 30]).unwrap();
+        device.execute_graph(&graph).unwrap();
+        assert_eq!(
+            graph.nodes[0].bind_group.kept_group().as_ref(),
+            Some(&first)
+        );
+        assert_eq!(device.read_typed_buffer(&dst).unwrap(), [11, 21, 31]);
+        device
+            .write_typed_buffer(&src, &[100u32, 200, 300])
+            .unwrap();
+        device.execute_graph_timed(&graph).unwrap();
+        assert_eq!(
+            graph.nodes[0].bind_group.kept_group().as_ref(),
+            Some(&first)
+        );
+        assert_eq!(device.read_typed_buffer(&dst).unwrap(), [101, 201, 301]);
+
+        // A pipeline compiled again is another cache entry: the group is built for it and replaces the kept one.
+        device.clear_pipeline_cache();
+        device.write_typed_buffer(&src, &[4u32, 5, 6]).unwrap();
+        device.execute_graph(&graph).unwrap();
+        let rebuilt = graph.nodes[0].bind_group.kept_group().expect("kept");
+        assert_ne!(rebuilt, first);
+        assert_eq!(device.read_typed_buffer(&dst).unwrap(), [5, 6, 7]);
+    }
+
+    #[test]
+    fn two_nodes_of_one_kernel_keep_a_bind_group_each() {
+        // Guards a slot keyed by kernel instead of by node (node 2 would get node 1's group); it is not a reuse test.
+        let device = HeadlessDevice::new().expect("Vulkan adapter required");
+        let a = device.create_typed_buffer("a", &[1u32, 2], GpuBufferAccess::ReadWrite);
+        let b = device.create_typed_buffer("b", &[0u32; 2], GpuBufferAccess::ReadWrite);
+        let c = device.create_typed_buffer("c", &[0u32; 2], GpuBufferAccess::ReadWrite);
+        let first = ops::add_one::call(2, &a, &b);
+        let second = ops::add_one::call(2, &b, &c);
+        let mut graph = StagedGraph::new();
+        graph.run(&first);
+        graph.run(&second);
+        for _ in 0..2 {
+            device.execute_graph(&graph).unwrap();
+            assert_eq!(device.read_typed_buffer(&c).unwrap(), [3, 4]);
+        }
+        let groups: Vec<_> = graph
+            .nodes
+            .iter()
+            .map(|node| node.bind_group.kept_group().expect("kept"))
+            .collect();
+        assert_ne!(groups[0], groups[1]);
+    }
 
     #[test]
     fn the_first_pass_stamps_the_beginning_and_the_last_the_end() {

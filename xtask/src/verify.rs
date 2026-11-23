@@ -1202,8 +1202,15 @@ pub(crate) struct GpuSuitePin {
 /// Slice g2.cap: 618 over 66 became 629 over 67. The capture slice adds `tests/capture.rs` (ten GPU tests, one
 /// `test result:` line) and the `DeviceOptions::with_capture` doc test. Checked by a full Gpu suite run on the
 /// Radeon 890M (lane); the RTX 5090 run is owed at the merge.
+///
+/// Slice m14.rtfix1: 629 over 67 became 642 over 67. The graph fixes add six unit tests to the library (the node
+/// set, the hazard history twice, the random-graph oracle, the kept bind group of a node, the groups of two nodes) and
+/// seven GPU tests to `tests/graph.rs` (a graph of forty-four nodes, the lowest producer named for a missing edge, an
+/// overwrite after many readers, the pooled read-back staging buffers, a read-back buffer larger than its data, a
+/// read-back above the staging ceiling, a read-back inside it), on existing lines. Checked by a full Gpu suite run
+/// on the Radeon 890M at the merge; the RTX 5090 run is owed.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 629,
+    passed: 642,
     result_lines: 67,
 };
 

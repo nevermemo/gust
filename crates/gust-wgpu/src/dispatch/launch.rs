@@ -1,7 +1,7 @@
 use crate::cache::{CachedKernel, Pipeline};
 use crate::{Error, INVOCATION_CAP_LIMIT, device_limit, render};
 use gust::{Extent, KernelDescriptor, ParameterDescriptor, Shape};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// What one prepared dispatch launches: compute workgroups for a `grid` kernel, a full-screen pass over `elements`
 /// fragments for a `pixel` kernel (slice mx.p1b).
@@ -20,6 +20,44 @@ pub(crate) struct PreparedDispatch {
     /// The pieces of a split `grid` launch (m11.g4b), in dispatch order: empty for a launch that runs whole. A split
     /// launch's `bind_group` is its first piece's and `launch` holds the workgroups of that piece.
     pub(crate) pieces: Vec<SplitPiece>,
+}
+
+/// The bind group of one dispatch node of a staged graph, kept from one execution of the graph to the next.
+///
+/// A bind group is fixed by the pipeline's layout and the resources bound. A node's bindings are borrowed by the graph
+/// for its whole life, so no buffer or texture of it can be replaced or dropped while the slot exists: the resources
+/// are the same on every execution, and what can differ is the pipeline (another device, or a cache that compiled the
+/// kernel again). The slot therefore keeps the pipeline entry the group was built for and hands the group out only
+/// for that very entry (`Arc::ptr_eq`); any other entry builds a group and replaces the stored one.
+#[derive(Default)]
+pub(crate) struct BindGroupSlot {
+    kept: Mutex<Option<(Arc<CachedKernel>, wgpu::BindGroup)>>,
+}
+
+impl BindGroupSlot {
+    fn lock(&self) -> MutexGuard<'_, Option<(Arc<CachedKernel>, wgpu::BindGroup)>> {
+        // Nothing runs under the lock that can leave the pair half-written.
+        self.kept.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The kept group, if it was built for `kernel`.
+    pub(crate) fn reuse(&self, kernel: &Arc<CachedKernel>) -> Option<wgpu::BindGroup> {
+        self.lock()
+            .as_ref()
+            .filter(|(built_for, _)| Arc::ptr_eq(built_for, kernel))
+            .map(|(_, group)| group.clone())
+    }
+
+    /// Keep `group`, built for `kernel`, for the next execution.
+    pub(crate) fn keep(&self, kernel: &Arc<CachedKernel>, group: &wgpu::BindGroup) {
+        *self.lock() = Some((Arc::clone(kernel), group.clone()));
+    }
+
+    /// The kept group, for a test that compares it across executions.
+    #[cfg(test)]
+    pub(crate) fn kept_group(&self) -> Option<wgpu::BindGroup> {
+        self.lock().as_ref().map(|(_, group)| group.clone())
+    }
 }
 
 /// One piece of a split launch: a bind group whose hidden launch-base uniform holds the piece's base, and the

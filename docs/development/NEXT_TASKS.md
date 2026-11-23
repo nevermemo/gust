@@ -616,7 +616,7 @@ test module; do not mix that mechanical move with behavior changes.
   not, and the opt-in `spirv-route` feature (m9.rt2, D172, D174) takes that route, but only with run-time compilation: a
   shipped `native` or `web` build and a precompiled artifact stay on WGSL. Still open: a production route (SPIR-V
   artifacts). The feature is off by default, so the difftest guard stays.
-- m9.d1e re-check nits: the `CLOSURE_INFO` registry (`tests/difftest/src/ast.rs`) is thread-local state that
+- m9.d1e re-check nits: the `CLOSURE_INFO` registry (`tests/difftest/src/ast/shapes_more.rs`) is thread-local state that
   `bin_shape` and `closure_call_names` depend on silently (pass it explicitly); the high closure mutant counts come
   mostly from the fixed kernel-result probes, so measure order and by-value observation for closures bound in
   helpers and methods apart; the self-assignment scan should check that a plain dynamic set's value reads nothing

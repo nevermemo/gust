@@ -47,7 +47,7 @@ use std::{
 };
 
 use crate::{
-    process::cargo_program,
+    process::{cargo_program, run_capture_in},
     workspace::{cargo_target_dir, workspace_root},
 };
 
@@ -743,9 +743,7 @@ fn wgpu_feature_tree(root: &Path, target: Option<&str>) -> Result<String, String
     if let Some(target) = target {
         command.args(["--target", target]);
     }
-    let output = command
-        .output()
-        .map_err(|error| format!("check-web: could not launch cargo tree: {error}"))?;
+    let output = run_capture_in(&mut command, "check-web", "cargo tree")?;
     if !output.status.success() {
         return Err(format!(
             "check-web: cargo tree failed ({}): {}",

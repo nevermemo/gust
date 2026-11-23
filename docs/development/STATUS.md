@@ -1002,6 +1002,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       moves statically (removed and added lines balance; 1,258 tests before and after). Gates on the Radeon 890M
       (lane and merge gate, check-artifacts, check-difftest, check-gallery and the Gpu suite included). RTX 5090:
       owed (quiet window 2026-11-22, D250): the Gpu suite. Opus review: merge; comment pointers fixed.
+    - m13.xproc (D242 group 1, step A): xtask's "could not launch" errors that return go through one helper,
+      `process::run_capture_in` (18 sites; every message text unchanged, review-checked site by site; two tests pin
+      the format); sites that use `.status()`, handle the error, or say "could not run" stay as they were. No
+      `run_tar` helper: both callers already share the command builder and differ in failure handling.
+      `precompiled.rs` (3,190 lines) is split into nine modules by concern, moves only, with its tests in matching
+      files (52 tests before and after). Gates on the Radeon 890M (lane and merge gate, the full check-precompiled,
+      check-artifacts, check-gallery and check-difftest included). RTX 5090: owed (quiet window 2026-11-22, D250):
+      none beyond the head run. Opus review: merge after fixes; fixed.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

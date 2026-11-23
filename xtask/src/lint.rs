@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     json::{self, Json},
-    process::{CheckRecord, cargo_program, report_check, run_capture},
+    process::{CheckRecord, cargo_program, report_check, run_capture, run_capture_in},
     validation::sha256_hex,
 };
 
@@ -736,12 +736,14 @@ fn release_metadata_problems(root: &Path) -> (usize, Vec<String>) {
 /// `cargo metadata --format-version 1 --locked --no-deps` in `root`.
 fn read_metadata(root: &Path) -> Result<String, String> {
     let cargo = cargo_program();
-    let output = Command::new(&cargo)
-        .args(["metadata", "--format-version", "1", "--locked", "--no-deps"])
-        .current_dir(root)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| format!("cargo metadata: could not launch cargo: {error}"))?;
+    let output = run_capture_in(
+        Command::new(&cargo)
+            .args(["metadata", "--format-version", "1", "--locked", "--no-deps"])
+            .current_dir(root)
+            .stdin(Stdio::null()),
+        "cargo metadata",
+        "cargo",
+    )?;
     if !output.status.success() {
         return Err(format!(
             "cargo metadata failed ({}): {}",

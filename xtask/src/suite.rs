@@ -6,7 +6,8 @@ use crate::{
     docs::docs_check,
     lint::lint,
     process::{
-        require_command, run_cargo_test_captured_under, run_counted, run_direct, without_colors,
+        require_command, run_cargo_test_captured_under, run_counted, run_counted_tool_free,
+        run_direct, without_colors,
     },
     ui::check_ui,
     verify::{
@@ -56,6 +57,13 @@ pub(crate) enum Step {
     /// `cargo test <filter>` in the workspace root that must run at least one test (a filter that
     /// matches nothing exits 0 in cargo).
     CountedCargo(&'static [&'static str]),
+    /// [`Step::CountedCargo`] in the environment of the CI job `unit`, which has no Slang, no reflection helper and no
+    /// GPU driver ([`crate::process::tool_free_environment`]): the Unit doc tests that must not need them are run the
+    /// way CI runs them, also on a machine that has them. `hide_vulkan` points the Vulkan loader at no driver too.
+    ToolFreeCargo {
+        args: &'static [&'static str],
+        hide_vulkan: bool,
+    },
     /// [`GPU_SUITE_CALL`] with the `test result:` lines checked against [`GPU_SUITE_PIN`], as `verify --mode gpu`
     /// does (m5.f1): the same guard, so `test --suite Gpu` cannot pass with a dropped Gpu test file.
     GpuSuite,
@@ -241,8 +249,13 @@ const CORE_TOOLCHAIN_TESTS: Step = Step::CountedCargo(&[
 /// the test names, nothing broader) leave out because the `unit` CI job has neither. The `compile_fail` type-safety pins
 /// and the rest stay here, so the required check still guards them. The skipped twelve run in the Slangc tier, in
 /// [`CORE_DOC_TESTS`]. The step names `slang-runtime` (the docs.rs feature) instead of relying on the self
-/// dev-dependency. Counted.
-const CORE_DOC_TESTS_TOOL_FREE: Step = Step::CountedCargo(&[
+/// dev-dependency. Counted, and run in the tool-free environment of the `unit` job ([`Step::ToolFreeCargo`]), so a
+/// machine with Slang gets the same doc tests as the CI runner.
+const CORE_DOC_TESTS_TOOL_FREE: Step = Step::ToolFreeCargo {
+    args: CORE_DOC_TESTS_TOOL_FREE_ARGS,
+    hide_vulkan: false,
+};
+const CORE_DOC_TESTS_TOOL_FREE_ARGS: &[&str] = &[
     "test",
     "--locked",
     "-p",
@@ -263,15 +276,21 @@ const CORE_DOC_TESTS_TOOL_FREE: Step = Step::CountedCargo(&[
     "reflect::compile::reflect",
     "--skip",
     "artifact::Verified",
-]);
+];
 /// The doc tests of `gust-compute-wgpu` (m10.k2) that need no adapter: the guide (programs that compile `no_run` or have
 /// an empty `main`) and four others (`device::AdapterChoice`, `GpuBuffer<T>`, `GpuUniform<T>` and
 /// `HeadlessDevice::read_typed_buffer_async`, whose `compile_fail` or compile-only examples never open one). Each
 /// positional filter after `--` is a substring of the test names (without a space: rustdoc splits its test arguments on
 /// whitespace), and a test runs if it matches any. The other doc tests
 /// of the crate open an adapter (`NoAdapter` in the `unit` and `slang` CI jobs); they run in the Gpu suite, through
-/// [`GPU_SUITE_CALL`], and are counted in `GPU_SUITE_PIN`. Counted.
-const WGPU_DOC_TESTS_ADAPTER_FREE: Step = Step::CountedCargo(&[
+/// [`GPU_SUITE_CALL`], and are counted in `GPU_SUITE_PIN`. Counted, and run in the tool-free environment of the `unit`
+/// job with the Vulkan loader pointed at no driver ([`Step::ToolFreeCargo`]), so a machine with Slang and a GPU gets
+/// the same doc tests as the CI runner.
+const WGPU_DOC_TESTS_ADAPTER_FREE: Step = Step::ToolFreeCargo {
+    args: WGPU_DOC_TESTS_ADAPTER_FREE_ARGS,
+    hide_vulkan: true,
+};
+const WGPU_DOC_TESTS_ADAPTER_FREE_ARGS: &[&str] = &[
     "test",
     "--locked",
     "-p",
@@ -285,7 +304,7 @@ const WGPU_DOC_TESTS_ADAPTER_FREE: Step = Step::CountedCargo(&[
     "GpuBuffer<T>",
     "GpuUniform<T>",
     "HeadlessDevice::read_typed_buffer_async",
-]);
+];
 /// All doc tests of `gust-compute` (m10.k2), unfiltered: the twelve that [`CORE_DOC_TESTS_TOOL_FREE`] leaves out call
 /// slangc or the native reflection helper, so this step runs in the Slangc tier, after the Unit steps.
 const CORE_DOC_TESTS: Step = Step::CountedCargo(&[
@@ -393,6 +412,28 @@ const DIFFTEST_TESTS_ARGS: &[&str] = &[
     "--manifest-path",
     "tests/difftest/Cargo.toml",
 ];
+/// The fixture workspace `tests/precompiled` is a workspace of its own too (the root's fmt and clippy never reach it);
+/// the CI job `precompiled` checks it with these two commands, so the Unit suite does the same and a machine's gate
+/// catches what that job would (m14.s9). Not harness steps: `--skip-difftest` keeps them.
+const PRECOMPILED_FMT: Step = Step::Cargo(&[
+    "fmt",
+    "--manifest-path",
+    "tests/precompiled/Cargo.toml",
+    "--all",
+    "--",
+    "--check",
+]);
+const PRECOMPILED_CLIPPY: Step = Step::Cargo(&[
+    "clippy",
+    "--locked",
+    "--manifest-path",
+    "tests/precompiled/Cargo.toml",
+    "--workspace",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings",
+]);
 const DIFFTEST_FMT: Step = Step::Cargo(DIFFTEST_FMT_ARGS);
 const DIFFTEST_CLIPPY: Step = Step::Cargo(DIFFTEST_CLIPPY_ARGS);
 const DIFFTEST_TESTS: Step = Step::Cargo(DIFFTEST_TESTS_ARGS);
@@ -400,11 +441,12 @@ const DIFFTEST_TESTS: Step = Step::Cargo(DIFFTEST_TESTS_ARGS);
 /// as the Full mode of `verify` (`check-full`) runs them after the workspace tests.
 pub(crate) const DIFFTEST_CARGO_CALLS: [&[&str]; 3] =
     [DIFFTEST_FMT_ARGS, DIFFTEST_CLIPPY_ARGS, DIFFTEST_TESTS_ARGS];
-/// The steps of the harness crate in the Unit and Slangc suites, in order. The CI job `difftest` runs them as steps of
-/// its own, so the `unit` and `slang` jobs pass `--skip-difftest` and keep their time (R4.10); a local run of the
-/// suite runs them all.
-pub(crate) const DIFFTEST_UNIT_STEPS: [Step; 4] =
-    [DIFFTEST_FMT, DIFFTEST_CLIPPY, DIFFTEST_TESTS, DIFFTEST_CPU];
+/// The steps of the harness crate in the Unit and Slangc suites that `--skip-difftest` leaves out, in order: clippy,
+/// the tests and the batch. The format check ([`DIFFTEST_FMT`]) is cheap and is a Unit step that always runs, so the
+/// `unit` and `slang` CI jobs, which pass the flag, also catch what the job `difftest` would. That job runs all four
+/// as steps of its own, and so the other two keep their time (R4.10); a local run of the suite without the flag runs
+/// them all.
+pub(crate) const DIFFTEST_UNIT_STEPS: [Step; 3] = [DIFFTEST_CLIPPY, DIFFTEST_TESTS, DIFFTEST_CPU];
 /// The Gpu tier's differential batch: all eight seeds on the first adapter, and the `short_circuit` GPU test.
 const DIFFTEST_GPU: Step = Step::CheckDifftest(&[]);
 
@@ -451,7 +493,7 @@ impl Suite {
     pub(crate) fn covers(self) -> &'static str {
         match self {
             Self::Unit => {
-                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), the coretests_twin test (the scalar Rust core test cases on the CPU twin against their literals), the uniforms_twin test (the uniforms fixture on the CPU twin against a hand reference), the pixel_twin, textures_twin, parallel, routed_handle (the routed device handle without a GPU runtime) and toolchain test binaries, the doc tests of gust-compute that need no tool (every one but the twelve whose examples launch slangc or the native reflection helper; they run in Slangc) and the adapter-free doc tests of gust-compute-wgpu (its guide and four more; the rest of that crate's doc tests need an adapter and run in Gpu), the tests of cargo-gust that need no helper, clippy and check of gust and gust-wgpu without default features (the slang-runtime off state), the format check, clippy and tests of the harness crate tests/difftest (a workspace of its own; CI runs them in the job `difftest`, and `--skip-difftest` leaves them out of the `unit` and `slang` jobs), and the differential batch of seeds 1 to 4 in its CPU-only mode (64 generated kernels: an independent interpreter against the CPU twin, report.json judged by cargo xtask check-difftest); no external tools"
+                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), the coretests_twin test (the scalar Rust core test cases on the CPU twin against their literals), the uniforms_twin test (the uniforms fixture on the CPU twin against a hand reference), the pixel_twin, textures_twin, parallel, routed_handle (the routed device handle without a GPU runtime) and toolchain test binaries, the doc tests of gust-compute that need no tool (every one but the twelve whose examples launch slangc or the native reflection helper; they run in Slangc) and the adapter-free doc tests of gust-compute-wgpu (its guide and four more; the rest of that crate's doc tests need an adapter and run in Gpu); both doc-test steps run in the environment of the CI job `unit` whatever the machine has: no Slang variable, no reflection helper, no PATH folder with a Slang tool, an empty GUST_SLANG_HOME, and for the wgpu one no Vulkan driver; the tests of cargo-gust that need no helper, clippy and check of gust and gust-wgpu without default features (the slang-runtime off state), the format check and clippy of the fixture workspace tests/precompiled (CI runs them in the job `precompiled`), the format check, clippy and tests of the harness crate tests/difftest (a workspace of its own; CI runs them in the job `difftest`, and `--skip-difftest` leaves all but the format check out of the `unit` and `slang` jobs), and the differential batch of seeds 1 to 4 in its CPU-only mode (64 generated kernels: an independent interpreter against the CPU twin, report.json judged by cargo xtask check-difftest); no external tools"
             }
             Self::Cpu => {
                 "the production CPU target (GUST_PROFILE=cpu) on the fixture tests/cpu-target: the kernels build in release, run on gust::cpu::CpuDevice and equal independent host references; the binary holds no compiler, helper or GPU runtime; gust-wgpu refuses the profile; the cfg(test) and --cfg gust_dual builds keep one impl; the profile flips rebuild correctly; cargo only"
@@ -521,6 +563,8 @@ impl Suite {
             CARGO_GUST_TESTS,
             OFF_STATE_CLIPPY,
             OFF_STATE_CHECK,
+            PRECOMPILED_FMT,
+            PRECOMPILED_CLIPPY,
             DIFFTEST_FMT,
             DIFFTEST_CLIPPY,
             DIFFTEST_TESTS,
@@ -558,6 +602,15 @@ impl Step {
     fn label(self) -> String {
         match self {
             Self::Cargo(args) | Self::CountedCargo(args) => format!("cargo {}", args.join(" ")),
+            Self::ToolFreeCargo { args, hide_vulkan } => format!(
+                "cargo {} [tool-free environment: no Slang, no helper{}]",
+                args.join(" "),
+                if hide_vulkan {
+                    ", no Vulkan driver"
+                } else {
+                    ""
+                }
+            ),
             Self::GpuSuite => format!("cargo {}", GPU_SUITE_CALL.join(" ")),
             Self::AlgoGpuSuite => format!("cargo {}", ALGO_GPU_CALL.join(" ")),
             Self::Named(tests) => match tests.profile {
@@ -591,6 +644,9 @@ impl Step {
         match self {
             Self::Cargo(args) => run_direct(&root, "cargo", args),
             Self::CountedCargo(args) => run_counted(&root, args).map(|_| ()),
+            Self::ToolFreeCargo { args, hide_vulkan } => {
+                run_counted_tool_free(&root, args, hide_vulkan).map(|_| ())
+            }
             Self::GpuSuite => {
                 let call = GPU_SUITE_CALL.map(str::to_owned);
                 let (_, stdout) = test_runner(&root, &call, None)?;

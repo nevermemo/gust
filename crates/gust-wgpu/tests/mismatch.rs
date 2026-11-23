@@ -2809,7 +2809,8 @@ fn the_ledger_mode_is_the_overflow_mode_of_this_crate() {
         OverflowChecks::Wrapping
     };
     assert_eq!(overflow_checks(), expected);
-    // The macro and the probe of a build agree here: no per-package override exists in this workspace.
+    // The macro and the probe of a build agree here: no per-package override of `overflow-checks` exists in this
+    // workspace.
     assert_eq!(overflow_checks(), gust::cpu::overflow_checks());
 }
 

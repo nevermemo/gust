@@ -7,8 +7,8 @@
 //! A chain of N one-kernel nodes (node `i` reads buffer `i` and writes buffer `i + 1`), built once and executed over
 //! and over. Three shapes, each at 10, 20 and 40 nodes:
 //!
-//! - `zero`: every element count is 0, so the graph is validated and submitted but nothing is prepared or encoded;
-//!   this is the floor that validation raises.
+//! - `zero`: every element count is 0, so the graph is validated and submitted but no pipeline
+//!   lookup, bind group or pass is made; this is the floor that validation raises.
 //! - `step`: 128 elements per node, no transfer: validation, preparation, encoding, submission and the wait.
 //! - `frame`: `step` plus an upload into the first buffer and a readback of the last, the shape of a frame.
 //!
@@ -73,7 +73,12 @@ fn buffers(device: &HeadlessDevice, count: usize, len: usize) -> Vec<GpuBuffer<u
 }
 
 fn row(name: &str, nodes: usize, (wall, cpu): (f64, f64)) {
-    println!("{name:<6} {nodes:>3} nodes   wall {wall:>8.1} us   thread cpu {cpu:>8.1} us");
+    let cpu = if cfg!(windows) {
+        format!("{cpu:>8.1} us")
+    } else {
+        format!("{:>8}", "n/a")
+    };
+    println!("{name:<6} {nodes:>3} nodes   wall {wall:>8.1} us   thread cpu {cpu}");
 }
 
 fn main() {

@@ -585,6 +585,9 @@ impl<'a> StagedGraph<'a> {
     /// Check every node and every edge before any GPU object is created: bindings, launch limits and
     /// aliasing of each node, then the hazards between nodes. Nothing is compiled or cached when this
     /// fails, however late in the graph the offending node is.
+    ///
+    /// The hazard part is amortized linear in the number of accesses (a per-buffer history, see [`Touches`]);
+    /// reachability is a bitset per node, so the whole check is not linear in the node count.
     fn validate(&self, device: &HeadlessDevice) -> Result<(), Error> {
         let device_id = device.id;
         let mut ancestors: Vec<NodeSet> = Vec::with_capacity(self.nodes.len());
@@ -828,6 +831,10 @@ impl HeadlessDevice {
     /// scheduling hint. Intermediate buffers that no node uploads or reads back never leave
     /// the GPU; the report counts their bytes as resident. Encoding a `pixel` node creates its attachment, so the
     /// graph can fail with [`Error::OutOfMemory`] named `GUST pixel attachment`; nothing is submitted then.
+    ///
+    /// The staging buffers of the graph's read-backs come from the device's buffer pool, uncleared, and count in its
+    /// stats and byte cap; one whose size class is above `STAGING_POOL_CEILING_BYTES` (64 MiB) is a fresh buffer,
+    /// dropped after use. Each upload uses a fresh staging buffer.
     pub fn execute_graph(&self, graph: &StagedGraph<'_>) -> Result<GraphOutput, Error> {
         self.execute_graph_inner(graph, false)
     }
@@ -970,12 +977,12 @@ impl HeadlessDevice {
             match &node.kind {
                 NodeKind::Upload { target, bytes, .. } => {
                     staging_uploads.extend(encode_upload(
-                        self,
+                        &self.device,
                         &mut encoder,
                         target,
                         bytes,
                         "GUST staged graph upload",
-                    )?);
+                    ));
                     transfers.push(TransferRecord {
                         node: NodeId(index),
                         direction: TransferDirection::Upload,
@@ -1163,7 +1170,95 @@ mod tests {
         high.union(&low);
         let members: Vec<usize> = (0..130).filter(|&index| high.contains(index)).collect();
         assert_eq!(members, [3, 64, 69, 129]);
-        assert!(!NodeSet::new(0).0.iter().any(|&word| word != 0));
+        assert!(NodeSet::new(0).0.is_empty());
+        assert_eq!(NodeSet::new(64).0.len(), 1);
+        assert_eq!(NodeSet::new(65).0.len(), 2);
+    }
+
+    #[test]
+    fn the_history_check_names_what_the_pairwise_loop_names_on_random_graphs() {
+        // The loop the history check replaced: for the first access of the node that conflicts with an earlier node's
+        // access to the same buffer without that node being an ancestor, the lowest such earlier node.
+        fn pairwise(
+            nodes: &[Vec<(usize, Access)>],
+            index: usize,
+            reachable: &NodeSet,
+        ) -> Option<usize> {
+            nodes[index].iter().find_map(|&(buffer, access)| {
+                (0..index).find(|&earlier| {
+                    !reachable.contains(earlier)
+                        && nodes[earlier].iter().any(|&(other, other_access)| {
+                            other == buffer
+                                && (access == Access::ReadWrite
+                                    || other_access == Access::ReadWrite)
+                        })
+                })
+            })
+        }
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+        let (mut accepted, mut rejected, mut longest_prefix) = (0, 0, 0);
+        for _ in 0..400 {
+            let count = 2 + next(70);
+            // Few buffers reject early; many let long histories build up.
+            let buffers = [4, 32, 400][next(3)];
+            let nodes: Vec<Vec<(usize, Access)>> = (0..count)
+                .map(|_| {
+                    (0..1 + next(3))
+                        .map(|_| {
+                            let access = [Access::ReadOnly, Access::ReadWrite][next(2)];
+                            (next(buffers), access)
+                        })
+                        .collect()
+                })
+                .collect();
+            let mut ancestors: Vec<NodeSet> = Vec::new();
+            let mut history: std::collections::HashMap<usize, Touches> = Default::default();
+            let mut outcome = None;
+            for index in 0..count {
+                let mut reachable = NodeSet::new(index);
+                for (earlier, earlier_ancestors) in ancestors.iter().enumerate() {
+                    if next(100) < 12 {
+                        reachable.insert(earlier);
+                        reachable.union(earlier_ancestors);
+                    }
+                }
+                let expected = pairwise(&nodes, index, &reachable);
+                let found = nodes[index].iter().find_map(|&(buffer, access)| {
+                    history
+                        .get(&buffer)
+                        .and_then(|touches| touches.first_unordered(access, &reachable))
+                });
+                assert_eq!(found, expected, "node {index} of {count}");
+                if found.is_some() {
+                    outcome = found;
+                    break;
+                }
+                longest_prefix = longest_prefix.max(index + 1);
+                for &(buffer, access) in &nodes[index] {
+                    history.entry(buffer).or_default().record(index, access);
+                }
+                ancestors.push(reachable);
+            }
+            if outcome.is_some() {
+                rejected += 1;
+            } else {
+                accepted += 1;
+            }
+        }
+        assert!(
+            accepted > 0 && rejected > 0,
+            "{accepted} accepted, {rejected} rejected"
+        );
+        assert!(
+            longest_prefix >= 20,
+            "no graph accepted 20 nodes before its first rejection (longest: {longest_prefix})"
+        );
     }
 
     #[test]
@@ -1281,6 +1376,7 @@ mod tests {
 
     #[test]
     fn two_nodes_of_one_kernel_keep_a_bind_group_each() {
+        // Guards a slot keyed by kernel instead of by node (node 2 would get node 1's group); it is not a reuse test.
         let device = HeadlessDevice::new().expect("Vulkan adapter required");
         let a = device.create_typed_buffer("a", &[1u32, 2], GpuBufferAccess::ReadWrite);
         let b = device.create_typed_buffer("b", &[0u32; 2], GpuBufferAccess::ReadWrite);

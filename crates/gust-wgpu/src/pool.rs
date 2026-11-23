@@ -343,6 +343,11 @@ use std::{
 #[doc(hidden)]
 pub const EXACT_CLASS_BYTES: u64 = 64 * 1024;
 
+/// A staged graph's read-back staging buffer whose size class is above this many bytes (64 MiB) is not pooled: it is
+/// a fresh buffer of the transfer's size, dropped after use, and the pool's stats and cap never see it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const STAGING_POOL_CEILING_BYTES: u64 = 64 << 20;
+
 /// The most bytes a pool keeps idle by default (1 GiB). Past it the least recently returned buffers are dropped.
 pub const DEFAULT_POOL_BYTES_MAX: u64 = 1 << 30;
 
@@ -466,6 +471,10 @@ impl PoolShared {
 /// * A buffer with a mapping pending or active is never put back, so it can never be handed out while mapped. A
 ///   staging buffer that a recorded command still copies into, whose `EncodedRead` was dropped, is retired in the same
 ///   way (`PoolStats::retired`).
+/// * The read-back staging buffers of a staged graph (`HeadlessDevice::execute_graph`) come from the pool too,
+///   uncleared: they count in the stats and in the byte cap, next to the idle storage of `GpuVec`s. One whose size
+///   class is above 64 MiB is the exception: it is a fresh buffer, dropped after use, and changes no stat. A graph's
+///   uploads do not use the pool.
 ///
 /// [`HeadlessDevice::buffer_pool`] is the pool of a device. `clear` drops the idle buffers, and `set_max_bytes`
 /// changes the idle cap:
@@ -553,6 +562,20 @@ impl BufferPool {
         }
     }
 
+    /// A lease on a buffer that never belongs to the pool: no stat counts it, and it is dropped with the lease.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn unpooled_lease(&self, buffer: wgpu::Buffer) -> Lease {
+        Lease {
+            buffer,
+            usage: 0,
+            class: 0,
+            mapped: false,
+            retired: false,
+            pooled: false,
+            pool: Arc::clone(&self.shared),
+        }
+    }
+
     /// A lease that returns `buffer` (of `class` bytes, `usage`) to this pool when it drops.
     pub(crate) fn lease(
         &self,
@@ -567,6 +590,7 @@ impl BufferPool {
             class,
             mapped: false,
             retired: false,
+            pooled: true,
             pool: Arc::clone(&self.shared),
         }
     }
@@ -590,6 +614,8 @@ pub(crate) struct Lease {
     class: u64,
     mapped: bool,
     retired: bool,
+    /// `false` for a buffer over [`STAGING_POOL_CEILING_BYTES`]: dropped, never counted.
+    pooled: bool,
     pool: Arc<PoolShared>,
 }
 
@@ -621,6 +647,9 @@ impl Lease {
 
 impl Drop for Lease {
     fn drop(&mut self) {
+        if !self.pooled {
+            return;
+        }
         let mut state = self.pool.lock();
         state.stats.outstanding -= 1;
         if self.retired {
@@ -732,9 +761,10 @@ impl HeadlessDevice {
         })
     }
 
-    /// A pooled staging buffer of at least `bytes` bytes with `usage`, for one transfer of a staged graph: not cleared,
-    /// so a recycled one holds its previous contents. The lease puts it back when it drops, unless it was marked
-    /// mapped.
+    /// A pooled staging buffer of at least `bytes` bytes with `usage`, for one read-back of a staged graph: not
+    /// cleared, so a recycled one holds its previous contents. The lease puts it back when it drops, unless it was
+    /// marked mapped. Above [`STAGING_POOL_CEILING_BYTES`] the buffer is a fresh one of `bytes` bytes (rounded up to
+    /// 4) that the pool never sees.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn pooled_staging(
         &self,
@@ -743,6 +773,10 @@ impl HeadlessDevice {
         bytes: u64,
     ) -> Result<Lease, Error> {
         let class = self.pooled_class(label, bytes)?;
+        if class > STAGING_POOL_CEILING_BYTES {
+            let raw = self.allocate(label, bytes.next_multiple_of(4), usage)?;
+            return Ok(self.pool.unpooled_lease(raw));
+        }
         let raw = match self.pool.take(usage, class) {
             Some(raw) => raw,
             None => self.allocate(label, class, usage)?,

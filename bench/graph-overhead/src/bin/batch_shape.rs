@@ -110,8 +110,8 @@ fn reference(x: &[u32]) -> Vec<u32> {
     let mut out = vec![0u32; ELEMENTS];
     for chunk in 0..CHUNKS {
         let mut acc = 0usize;
-        for i in chunk * 256..(chunk + 1) * 256 {
-            let v = x[i] ^ (x[i] >> 5);
+        for &value in &x[chunk * 256..(chunk + 1) * 256] {
+            let v = value ^ (value >> 5);
             if v & 3 == 0 {
                 out[chunk * 256 + acc] = v;
                 acc += 1;
@@ -322,7 +322,12 @@ fn measure(mut frame: impl FnMut()) -> (f64, f64) {
 }
 
 fn row(name: &str, (wall, cpu): (f64, f64)) {
-    println!("{name:<22} wall {wall:>8.1} us   thread cpu {cpu:>8.1} us");
+    let cpu = if cfg!(windows) {
+        format!("{cpu:>8.1} us")
+    } else {
+        format!("{:>8}", "n/a")
+    };
+    println!("{name:<22} wall {wall:>8.1} us   thread cpu {cpu}");
 }
 
 fn main() {

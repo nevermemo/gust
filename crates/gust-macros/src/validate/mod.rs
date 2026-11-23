@@ -224,11 +224,13 @@ pub(crate) fn validate_module_in(
                 {
                     let message = if name == "gpu_module" {
                         "`#[gpu_module]` goes on a module, not on a function: a map function takes \
-                         `#[gpu_fn]` and goes outside any `#[gpu_module]` module, because a module already is GPU code \
-                         and its functions are helpers or `#[kernel]`s"
+                         `#[gpu_fn]`, on a free scalar function or, when it takes or returns a struct, inside the \
+                         `#[gpu_module]` module that declares the struct; the other functions of a module are \
+                         helpers or `#[kernel]`s"
                     } else {
-                        "`#[gpu_fn]` on a function goes on a free function outside any `#[gpu_module]` module: \
-                         a module already is GPU code, and its functions are helpers or `#[kernel]`s"
+                        "`#[gpu_fn]` goes on a function directly inside a `#[gpu_module]` module, once; here it \
+                         cannot be expanded (a nested module, or a function that is not a module item): the other \
+                         functions of a module are helpers or `#[kernel]`s"
                     };
                     return Err(diagnostics::error(
                         Code::NestedGpuFunction,

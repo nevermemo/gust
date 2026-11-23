@@ -1345,8 +1345,8 @@ Decision: T10.
 ### GUST-E0701 `#[gpu_module]` and `#[gpu_fn]` take `route = "<tag>"` and `crate = <path>`
 
 The attribute has two options, each at most once and in either order: `route = "<tag>"` (build-time routing: GUST-E0748, GUST-E0749) and `crate = <path>`, where `gust` is for a crate that reaches it through another crate's `pub use gust;` (the path starts with `::` or `crate::`, has plain segments only and no generic arguments). Anything else, a repeated option and a malformed path included, is this error.
-Reached through `#[gpu_module]`. A malformed `crate(..);` clause of `par_for!` is GUST-E0719 instead.
-Rejected: `#[gpu_module(debug)] mod shaders { ... }`, `#[gpu_module(route = 5)]`, `#[gpu_module(route = "a", "b")]`, `#[gpu_module(route = "a", route = "b")]`, `#[gpu_module(crate = inner::gust)]`, `#[gpu_module(crate = ::inner::gust, crate = ::inner::gust)]`.
+Reached through `#[gpu_module]`, and through a `#[gpu_fn(..)]` with arguments inside a `#[gpu_module]` module (it takes none: the module's own `route` and `crate` apply, m14.mapw1). A malformed `crate(..);` clause of `par_for!` is GUST-E0719 instead.
+Rejected: `#[gpu_module(debug)] mod shaders { ... }`, `#[gpu_module(route = 5)]`, `#[gpu_module(route = "a", "b")]`, `#[gpu_module(route = "a", route = "b")]`, `#[gpu_module(crate = inner::gust)]`, `#[gpu_module(crate = ::inner::gust, crate = ::inner::gust)]`. Also rejected: `#[gpu_module] mod m { #[gpu_fn(route = "x")] pub fn f(x: f32) -> f32 { x } }`.
 Write instead: `#[gpu_module] mod shaders { ... }`, `#[gpu_module(route = "physics")] mod shaders { ... }` with the tag declared in `Cargo.toml`, or `#[gpu_module(crate = ::inner::gust)] mod shaders { ... }`.
 Decision: D02, D65, D48.
 
@@ -1469,27 +1469,27 @@ Decision: D45, D46.
 
 ### GUST-E0714 map function signature
 
-`#[gpu_fn]` on a free function generates a grid-stride kernel and the element-wise calls of the function (`saxpy::map`, `saxpy::map_on`, `saxpy::map_gpu`, `saxpy::map_async`, ..), so its signature must be one the generator can make a kernel of: at least one parameter, each a plain identifier of type `f32`, `i32`, `u32`, `bool` or a vector or matrix buffer element (`Vec2`, `Vec4`, `IVec2`, `IVec4`, `UVec2`, `UVec4`, `Mat2`, `Mat4`), by value, a result of such a type, and no `#[kernel]` attribute. The body follows the rules of a helper function, so its own errors have the codes of those rules.
-Reached through `#[gpu_fn]`.
-Rejected: `#[gpu_fn] fn f() -> f32`, `#[gpu_fn] fn f(x: f32)` (no result), `x: f64`, `x: &f32`, `x: Option<f32>`, a tuple or array, a result of `()`, `#[gpu_fn] #[kernel] fn ..`.
-Write instead: a function from scalars and vectors to one value; write a `#[kernel]` inside `#[gpu_module] mod name { .. }` for anything else. A 3-wide type is GUST-E0204.
+`#[gpu_fn]` on a free function generates a grid-stride kernel and the element-wise calls of the function (`saxpy::map`, `saxpy::map_on`, `saxpy::map_gpu`, `saxpy::map_async`, ..), so its signature must be one the generator can make a kernel of: at least one parameter, each a plain identifier of type `f32`, `i32`, `u32`, `bool`, a vector or matrix buffer element (`Vec2`, `Vec4`, `IVec2`, `IVec4`, `UVec2`, `UVec4`, `Mat2`, `Mat4`) or a struct declared in the same `#[gpu_module]` module as the function (the function is then written inside that module, with `#[gpu_fn]` on it; m14.mapw1), by value, a result of such a type, and no `#[kernel]` attribute. The body follows the rules of a helper function, so its own errors have the codes of those rules.
+Reached through `#[gpu_fn]` and through `#[gpu_module]` (a `#[gpu_fn]` function inside a module). Also rejected in a module: `#[cfg(..)]` on the `#[gpu_fn]` function (its kernel is part of the module, so gate the module), and `#[gpu_fn] #[gpu_fn]` on one function.
+Rejected: `#[gpu_fn] fn f() -> f32`, `#[gpu_fn] fn f(x: f32)` (no result), `x: f64`, `x: &f32`, `x: Option<f32>`, a tuple or array, a result of `()`, `#[gpu_fn] #[kernel] fn ..`, and a struct the macro cannot see: a struct declared outside the module the function is written in, a path such as `super::Outside`, a generic instance `W<f32>`, or any struct on a free function (a free function has no module to declare it in). A struct of the module is accepted; what is wrong inside it is the module's own code (GUST-E0204 for a 3-wide field, GUST-E0208 for padding, GUST-E0211 for an enum field, GUST-E0214 for an array of 3-wide elements; a `bool` field has no `GpuPod` impl and is the rustc E0277 of the module's own assertion, fixture `tests/ui/map-struct-bool-field`; the macro test `the_module_refuses_what_a_struct_element_cannot_hold_with_its_own_codes`; fixture `tests/ui/map-struct-outside` for the struct outside the module).
+Write instead: a function from scalars, vectors and the structs of its module to one value; move the function into `#[gpu_module] mod name { pub struct S { .. } #[gpu_fn] pub fn f(s: S) -> S { .. } }` for a struct; write a `#[kernel]` inside `#[gpu_module] mod name { .. }` for anything else. A 3-wide type is GUST-E0204.
 Related, not a GUST code: under a GPU profile (`dev`, `native`, ..) the generated `map`, `map_on`, `map_gpu`, `map_gpu_on`, `map_async` and `map_on_async` name `::gust_wgpu`, so the crate that writes `#[gpu_fn]` on a function must depend on `gust-wgpu` directly. Without it rustc reports E0433 (failed to resolve: use of unresolved module or unlinked crate `gust_wgpu`) at the attribute. Add `gust-wgpu` to that crate's dependencies. Under `GUST_PROFILE=cpu` the functions name only `::gust::cpu`, nothing GPU is named and no `gust-wgpu` is needed. An argument is also typed by the function's own parameter: a `bool` parameter takes `bool`s and a `u32` parameter takes `u32`s, so passing one for the other is rustc's E0277 (the trait bound `MapArg<u32, ..>` or `MapArg<bool, ..>` is not satisfied).
 Decision: D60.
 
 ### GUST-E0715 map function name collides with the generated module
 
-The module `#[gpu_fn]` generates for `fn name` is named `name` and defines `map`, `map_on`, `map_gpu`, `map_gpu_on`, `map_async`, `map_on_async`, `map_kernel`, `DESCRIPTOR`, `MODULE_DESCRIPTOR` and `OWN_INDEX`, and holds the function itself under its own name, so the function may not have one of those names and no parameter may have the function's name.
-Reached through `#[gpu_fn]`.
+The module `#[gpu_fn]` generates for `fn name` is named `name` and defines `map`, `map_on`, `map_gpu`, `map_gpu_on`, `map_async`, `map_on_async`, `map_kernel`, `DESCRIPTOR`, `MODULE_DESCRIPTOR` and `OWN_INDEX`, and holds the function itself under its own name, so the function may not have one of those names and no parameter may have the function's name. Inside a `#[gpu_module]` module no parameter may take the name of a function, constant, static, struct or enum of the module either (the kernel declares them all beside the parameter's buffer, and slangc refuses the redeclaration: probed, `E30200`); fixture of the rule: the macro test `a_parameter_named_like_an_item_of_the_module_is_refused`.
+Reached through `#[gpu_fn]` and through `#[gpu_module]` (a `#[gpu_fn]` function inside a module, where the generated kernel `<name>_map_kernel` may not take the name of an item the module already has). Rejected here also: `#[gpu_module] mod m { pub fn f_map_kernel(x: f32) -> f32 { x } #[gpu_fn] pub fn f(x: f32) -> f32 { x } }`.
 Rejected: `#[gpu_fn] fn map(x: f32) -> f32`, `#[gpu_fn] fn DESCRIPTOR(..)`, `#[gpu_fn] fn f(f: f32) -> f32`.
 Write instead: another name for the function or the parameter.
 Decision: D60.
 
-### GUST-E0716 `#[gpu_fn]` function inside a `#[gpu_module]` module
+### GUST-E0716 `#[gpu_module]` on a function inside a module
 
-`#[gpu_fn]` on a function generates a module beside the function, and a `#[gpu_module]` module has no place for one: its functions are kernels and helpers. `#[gpu_module]` itself written on a function inside a module is this error too (the message says it goes on a module, and a map function takes `#[gpu_fn]` outside any module).
+`#[gpu_module]` goes on a module. Written on a function inside a module it is this error (the message says it goes on a module, and a map function takes `#[gpu_fn]`). `#[gpu_fn]` on a function inside a `#[gpu_module]` module is allowed since m14.mapw1 (D221): the function becomes a map over the module's structs, `module::f::map(..)`; before that slice it was this error.
 Reached through `#[gpu_module]`.
-Rejected: `#[gpu_module] mod m { #[gpu_fn] pub fn f(x: f32) -> f32 { x } }`, also spelled `#[gust::gpu_module]`, and `#[gpu_module] mod m { #[gpu_module] pub fn f(x: f32) -> f32 { x } }`.
-Write instead: put the function outside the module (a map function is plain Rust that the generated kernel calls), or drop the inner attribute and use it as a helper.
+Rejected: `#[gpu_module] mod m { #[gpu_module] pub fn f(x: f32) -> f32 { x } }`, also spelled `#[gust::gpu_module]`.
+Write instead: drop the inner attribute and use the function as a helper, or write `#[gpu_fn]` on it for a map.
 Decision: D60.
 
 ### GUST-E0717 barrier kernel without `cpu = "unsupported"`

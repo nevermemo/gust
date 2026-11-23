@@ -936,6 +936,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "map-struct-bool-field"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "map-struct-ok"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "map-struct-outside"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "map-three-wide"
 version = "0.0.0"
 dependencies = [

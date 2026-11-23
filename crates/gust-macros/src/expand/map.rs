@@ -1,4 +1,5 @@
-//! The map generator (M7, D60, slice m7.a1): `#[gpu_fn]` on a free scalar function.
+//! The map generator (M7, D60, slice m7.a1): `#[gpu_fn]` on a free scalar function, or (m14.mapw1, D221) on a function
+//! inside a `#[gpu_module]` module, whose own structs it may take and return.
 //!
 //! ```text
 //! #[gpu_fn]
@@ -32,6 +33,8 @@
 //! chunk body of the plan's section 6 (`__gust_map_cpu_chunk`) in parallel pieces of the output through
 //! `gust::cpu::parallel` (m7.c). Under every other profile `map`, `map_on`, `map_gpu`, `map_gpu_on`, `map_async` and
 //! `map_on_async` are emitted; the blocking ones are not emitted on `wasm32` (nothing may block there, D69).
+
+use std::collections::HashSet;
 
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
@@ -87,9 +90,12 @@ struct Parameter {
     element: ElementTypes,
 }
 
-/// A map function understood: its name, parameters and result.
+/// A map function understood: its name, the name of its kernel, parameters and result.
 struct Signature {
     name: syn::Ident,
+    /// The generated kernel: `map_kernel` in the module of a free function, `<name>_map_kernel` in the module a
+    /// `#[gpu_fn]` function is written in.
+    kernel: syn::Ident,
     parameters: Vec<Parameter>,
     result: ElementTypes,
 }
@@ -107,20 +113,67 @@ pub(crate) struct MapKernel {
 /// [`check_signature`] and validation.
 #[cfg(test)]
 pub(crate) fn map_kernel(function: &syn::ItemFn, profile: Profile) -> syn::Result<MapKernel> {
-    let signature = check_signature(function)?;
+    let signature = check_signature(function, &HashSet::new(), format_ident!("{}", KERNEL))?;
     validate(function)?;
     let (module, host) = build(function, &signature, profile);
     Ok(MapKernel { module, host })
 }
 
-/// Expands `#[gpu_fn]` on a free function for `profile`: the function as written, then its module. The function may
-/// carry a route (`#[gpu_fn(route = "tag")] fn`, M8, D65 to D67).
+/// The module a `#[gpu_module]` module with `#[gpu_fn]` functions is expanded from: validated, with the generated
+/// kernels added after its own items.
+#[cfg(test)]
+pub(crate) fn map_module_kernels(
+    module: syn::ItemMod,
+    profile: Profile,
+) -> syn::Result<syn::ItemMod> {
+    let environment = Environment {
+        manifest_dir: None,
+        export_dir: None,
+        package: None,
+        reported_file: None,
+    };
+    prepare_module(module, &environment, profile, &routing::Request::none())
+        .map(|prepared| prepared.module)
+}
+
+/// Expands `#[gpu_fn]` for `profile`, on one of two items. A free function: the function as written, then its module;
+/// it may carry a route (`#[gpu_fn(route = "tag")] fn`, M8, D65 to D67). A `#[gpu_module]` module that holds
+/// `#[gpu_fn]` functions (m14.mapw1, D221): the module with their kernels, and a module of host calls for each.
 pub(crate) fn expand_map_routed(
-    function: syn::ItemFn,
+    item: syn::Item,
     profile: Profile,
     request: &routing::Request<'_>,
 ) -> syn::Result<TokenStream> {
-    expand_map_in_routed(function, &Environment::from_process(), profile, request)
+    let environment = Environment::from_process();
+    match item {
+        syn::Item::Fn(function) => expand_map_in_routed(function, &environment, profile, request),
+        syn::Item::Mod(module) => expand_module_in_routed(module, &environment, profile, request),
+        other => Err(diagnostics::error(
+            Code::ItemNotModule,
+            &other,
+            "`#[gpu_fn]` goes on a free scalar function, or inside a `#[gpu_module]` module",
+        )),
+    }
+}
+
+/// The profile the host functions of a map are built for: the build's, or the one the route resolves to (the `cpu`
+/// family under a CPU route). A malformed manifest is GUST-E0753 at `at`.
+fn built_for(
+    environment: &Environment,
+    profile: Profile,
+    request: &routing::Request<'_>,
+    at: proc_macro2::Span,
+) -> syn::Result<Profile> {
+    if request.tag.is_none() {
+        return Ok(profile);
+    }
+    let declarations = crate::manifest::read_dir(environment.manifest_dir.as_deref())
+        .map_err(|error| diagnostics::error_at(Code::GustMetadata, at, error.to_string()))?
+        .unwrap_or_default();
+    Ok(
+        routing::resolve(request, environment, &declarations, profile)?
+            .map_or(profile, |route| route.effective(profile)),
+    )
 }
 
 /// [`expand_map_routed`] with the environment given and no route, as the module expansion has it.
@@ -143,7 +196,7 @@ pub(crate) fn expand_map_in_routed(
     profile: Profile,
     request: &routing::Request<'_>,
 ) -> syn::Result<TokenStream> {
-    let signature = check_signature(&function)?;
+    let signature = check_signature(&function, &HashSet::new(), format_ident!("{}", KERNEL))?;
     validate(&function)?;
     let (module, host) = build(&function, &signature, profile);
     // The portable floor (m11.floor): the generated kernel binds one storage buffer per parameter and one for the
@@ -155,21 +208,7 @@ pub(crate) fn expand_map_in_routed(
         &function.sig,
         &format!("{}::{KERNEL}", function.sig.ident.unraw()),
     )?;
-    let built_for = if request.tag.is_some() {
-        let declarations = crate::manifest::read_dir(environment.manifest_dir.as_deref())
-            .map_err(|error| {
-                diagnostics::error_at(
-                    Code::GustMetadata,
-                    function.sig.ident.span(),
-                    error.to_string(),
-                )
-            })?
-            .unwrap_or_default();
-        routing::resolve(request, environment, &declarations, profile)?
-            .map_or(profile, |route| route.effective(profile))
-    } else {
-        profile
-    };
+    let built_for = built_for(environment, profile, request, function.sig.ident.span())?;
     let (module, host) = if built_for == profile {
         (module, host)
     } else {
@@ -192,6 +231,213 @@ pub(crate) fn expand_map_in_routed(
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// `#[gpu_fn]` inside a `#[gpu_module]` module (m14.mapw1, D221).
+// ---------------------------------------------------------------------------------------------------------------
+
+fn is_map_attribute(attribute: &syn::Attribute) -> bool {
+    crate::validate::gpu_attribute_name(attribute) == Some("gpu_fn")
+}
+
+/// Takes the `#[gpu_fn]` attribute off every function of `module` and returns those functions (as written, without
+/// it). They stay in the module as helpers, which is what the module's validation and lowering see.
+fn lift(module: &mut syn::ItemMod) -> syn::Result<Vec<syn::ItemFn>> {
+    let mut lifted = Vec::new();
+    let Some((_, items)) = module.content.as_mut() else {
+        return Ok(lifted);
+    };
+    for item in items {
+        let syn::Item::Fn(function) = item else {
+            continue;
+        };
+        let Some(position) = function.attrs.iter().position(is_map_attribute) else {
+            continue;
+        };
+        let attribute = function.attrs.remove(position);
+        if let Some(again) = function
+            .attrs
+            .iter()
+            .find(|attribute| is_map_attribute(attribute))
+        {
+            return Err(diagnostics::error(
+                Code::MapSignature,
+                again,
+                "`#[gpu_fn]` is written once on a function",
+            ));
+        }
+        if !matches!(attribute.meta, syn::Meta::Path(_)) {
+            return Err(diagnostics::error(
+                Code::GpuArguments,
+                &attribute,
+                "`#[gpu_fn]` inside a `#[gpu_module]` module takes no arguments: the module's own `route` and \
+                 `crate` apply to it",
+            ));
+        }
+        if function
+            .attrs
+            .iter()
+            .any(|attribute| attribute.path().is_ident("cfg"))
+        {
+            return Err(diagnostics::error(
+                Code::MapSignature,
+                &function.sig,
+                "a `#[gpu_fn]` inside a module cannot carry `#[cfg]`: its kernel is part of the module, so gate the \
+                 module instead",
+            ));
+        }
+        lifted.push(function.clone());
+    }
+    Ok(lifted)
+}
+
+/// Expands a `#[gpu_module]` module that holds `#[gpu_fn]` functions. The module is expanded as any module is (the
+/// variants, the `#[pad]` structs, the limits and the validation of `expand_in_routed`, with each function a helper),
+/// and each function adds a generated kernel `<name>_map_kernel` to it, which sees the module's structs, so the
+/// Slang, the descriptor, `GpuPod`, the layout assertions and the CPU twin are the module's own. The host calls of a
+/// function (`map`, `map_on`, ..) go in a module of its name inside this one: `module::function::map(..)`.
+pub(crate) fn expand_module_in_routed(
+    module: syn::ItemMod,
+    environment: &Environment,
+    profile: Profile,
+    request: &routing::Request<'_>,
+) -> syn::Result<TokenStream> {
+    let prepared = prepare_module(module, environment, profile, request)?;
+    super::expand_validated_with(
+        prepared.module,
+        environment,
+        profile,
+        &GRID,
+        &prepared.extra,
+        Identity::Module,
+        &prepared.plan,
+        request,
+    )
+}
+
+/// A module with maps, validated and with the kernels added, and what goes beside them.
+struct Prepared {
+    module: syn::ItemMod,
+    plan: super::variant::VariantPlan,
+    /// The `#[pad]` constructors and the host modules, emitted inside the module.
+    extra: TokenStream,
+}
+
+/// The steps of [`expand_module_in_routed`] before the expansion itself; tests read the Slang of the kernels from it.
+fn prepare_module(
+    mut module: syn::ItemMod,
+    environment: &Environment,
+    profile: Profile,
+    request: &routing::Request<'_>,
+) -> syn::Result<Prepared> {
+    let functions = lift(&mut module)?;
+    let structs = module_structs(&module);
+    let names = module_item_names(&module);
+    let mut signatures = Vec::new();
+    for function in &functions {
+        let kernel = format_ident!("{}_map_kernel", function.sig.ident.unraw());
+        if let Some((_, items)) = &module.content
+            && items
+                .iter()
+                .any(|item| matches!(item, syn::Item::Fn(other) if other.sig.ident == kernel))
+        {
+            return Err(diagnostics::error(
+                Code::MapNameCollision,
+                &function.sig.ident,
+                format!(
+                    "the module already defines `{kernel}`, which `#[gpu_fn]` names the kernel of this function; \
+                     rename one of them"
+                ),
+            ));
+        }
+        let signature = check_signature(function, &structs, kernel)?;
+        // The kernel of every function carries all the module's items as Slang globals beside its own buffers, so a
+        // parameter (a global buffer there) named like another item is a redeclaration that slangc refuses (E30200).
+        for parameter in &signature.parameters {
+            if names.contains(&parameter.name.unraw().to_string()) {
+                return Err(diagnostics::error(
+                    Code::MapNameCollision,
+                    &parameter.name,
+                    format!(
+                        "the parameter `{}` has the name of an item of the module, which the generated kernel \
+                         declares beside its buffers; rename the parameter",
+                        parameter.name.unraw()
+                    ),
+                ));
+            }
+        }
+        signatures.push(signature);
+    }
+    let (mut module, plan, mut extra) = super::prepare_user_module(module, environment)?;
+    for (function, signature) in functions.iter().zip(&signatures) {
+        let kernel = kernel_function(signature);
+        let probe: syn::ItemMod = syn::parse_quote!(mod __gust_probe { #kernel });
+        crate::validate::limits::check_generated(
+            &probe,
+            environment.manifest_dir.as_deref(),
+            &function.sig,
+            &format!("{}::{}", function.sig.ident.unraw(), signature.kernel),
+        )?;
+        let built_for = built_for(environment, profile, request, function.sig.ident.span())?;
+        if let Some((_, items)) = module.content.as_mut() {
+            items.push(syn::Item::Fn(kernel));
+        }
+        extra.extend(host_module(function, signature, built_for));
+    }
+    Ok(Prepared {
+        module,
+        plan,
+        extra,
+    })
+}
+
+/// The names of the structs a module declares: the user types a `#[gpu_fn]` inside it may take and return.
+fn module_structs(module: &syn::ItemMod) -> HashSet<String> {
+    module
+        .content
+        .iter()
+        .flat_map(|(_, items)| items)
+        .filter_map(|item| match item {
+            syn::Item::Struct(item) => Some(item.ident.unraw().to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The names of the functions, constants, statics, structs and enums of a module: what a map parameter may not be named.
+fn module_item_names(module: &syn::ItemMod) -> HashSet<String> {
+    module
+        .content
+        .iter()
+        .flat_map(|(_, items)| items)
+        .filter_map(|item| match item {
+            syn::Item::Fn(item) => Some(item.sig.ident.unraw().to_string()),
+            syn::Item::Const(item) => Some(item.ident.unraw().to_string()),
+            syn::Item::Static(item) => Some(item.ident.unraw().to_string()),
+            syn::Item::Struct(item) => Some(item.ident.unraw().to_string()),
+            syn::Item::Enum(item) => Some(item.ident.unraw().to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The module `module::function` of the host calls of one function, which sees what the module does (the helper, the
+/// structs and the kernel's handle).
+fn host_module(function: &syn::ItemFn, signature: &Signature, profile: Profile) -> TokenStream {
+    let name = &signature.name;
+    let visibility = &function.vis;
+    let attributes = module_attributes(function, signature, profile);
+    let host = host_items(signature, profile);
+    quote! {
+        #(#attributes)*
+        #visibility mod #name {
+            #[allow(unused_imports)]
+            use super::*;
+
+            #host
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // The signature.
 // ---------------------------------------------------------------------------------------------------------------
 
@@ -199,7 +445,11 @@ pub(crate) fn expand_map_in_routed(
 /// plain identifier with a scalar, vector or matrix type that can be a buffer element, a result of such a type, no
 /// `#[kernel]`, and a name the generated module does not use itself. Everything else about the function (its body,
 /// `async`, generics, `self`) is the validator's, which sees the function as a helper of a module.
-fn check_signature(function: &syn::ItemFn) -> syn::Result<Signature> {
+fn check_signature(
+    function: &syn::ItemFn,
+    structs: &HashSet<String>,
+    kernel: syn::Ident,
+) -> syn::Result<Signature> {
     let name = function.sig.ident.clone();
     if function
         .attrs
@@ -256,7 +506,7 @@ fn check_signature(function: &syn::ItemFn) -> syn::Result<Signature> {
                 ),
             ));
         }
-        let element = element(&input.ty, &format!("parameter `{parameter}`"))?;
+        let element = element(&input.ty, &format!("parameter `{parameter}`"), structs)?;
         parameters.push(Parameter {
             name: pattern.ident.clone(),
             element,
@@ -270,7 +520,7 @@ fn check_signature(function: &syn::ItemFn) -> syn::Result<Signature> {
         ));
     }
     let result = match &function.sig.output {
-        syn::ReturnType::Type(_, ty) => element(ty, "the return type")?,
+        syn::ReturnType::Type(_, ty) => element(ty, "the return type", structs)?,
         syn::ReturnType::Default => {
             return Err(diagnostics::error(
                 Code::MapSignature,
@@ -281,6 +531,7 @@ fn check_signature(function: &syn::ItemFn) -> syn::Result<Signature> {
     };
     Ok(Signature {
         name,
+        kernel,
         parameters,
         result,
     })
@@ -289,14 +540,30 @@ fn check_signature(function: &syn::ItemFn) -> syn::Result<Signature> {
 /// The element a map parameter or result of type `ty` is: `f32`, `i32`, `u32`, `bool` (or their dialect spellings
 /// `float`, `int`, `uint`) and the vector and matrix types that can be buffer elements (GUST-E0714 otherwise,
 /// GUST-E0204 for a 3-wide type or `Mat3`).
-fn element(ty: &syn::Type, what: &str) -> syn::Result<ElementTypes> {
+fn element(ty: &syn::Type, what: &str, structs: &HashSet<String>) -> syn::Result<ElementTypes> {
+    // A struct the `#[gpu_module]` module declares (m14.mapw1): the kernel, the host calls and the CPU chunk spell it
+    // as the module does, and the module's own expansion gives it its Slang declaration, `GpuPod` and layout checks.
+    if let syn::Type::Path(path) = ty
+        && path.qself.is_none()
+        && let Some(ident) = path.path.get_ident()
+        && structs.contains(&ident.unraw().to_string())
+    {
+        let name = quote!(#ident);
+        return Ok(ElementTypes {
+            kernel: name.clone(),
+            buffer: name.clone(),
+            host: name,
+            boolean: false,
+        });
+    }
     element_types(ty).map_err(|reject| match reject {
         ElementReject::Unsupported => diagnostics::error(
             Code::MapSignature,
             ty,
             format!(
                 "{what} has a type a map function cannot take: use `f32`, `i32`, `u32`, `bool`, `Vec2`, `Vec4`, \
-                 `IVec2`, `IVec4`, `UVec2`, `UVec4`, `Mat2` or `Mat4`, by value"
+                 `IVec2`, `IVec4`, `UVec2`, `UVec4`, `Mat2` or `Mat4`, or a struct declared in the same \
+                 `#[gpu_module]` module as the function (write the function inside that module), by value"
             ),
         ),
         ElementReject::ThreeWide(name) => diagnostics::error(
@@ -414,13 +681,33 @@ fn build(
     profile: Profile,
 ) -> (syn::ItemMod, TokenStream) {
     let name = &signature.name;
-    let kernel = format_ident!("{}", KERNEL);
 
     // The user's function as a private helper of the module: their tokens, so errors in the body point at their code.
     let mut helper = function.clone();
     helper.attrs.clear();
     helper.vis = syn::Visibility::Inherited;
 
+    let kernel = kernel_function(signature);
+    let module_name = name.clone();
+    let visibility = &function.vis;
+    let attributes = module_attributes(function, signature, profile);
+    let module: syn::ItemMod = syn::parse_quote! {
+        #(#attributes)*
+        #visibility mod #module_name {
+            #helper
+
+            #kernel
+        }
+    };
+    let host = host_items(signature, profile);
+    (module, host)
+}
+
+/// The generated kernel of `signature`: the grid-stride loop over the output that calls the user's function with the
+/// element of each argument at the invocation's index (an argument of length 1 is a broadcast and is read at 0).
+fn kernel_function(signature: &Signature) -> syn::ItemFn {
+    let name = &signature.name;
+    let kernel = &signature.kernel;
     let kernel_parameters = signature.parameters.iter().map(|parameter| {
         let (name, element) = (&parameter.name, &parameter.element.kernel);
         quote!(#name: StructuredBuffer<#element>)
@@ -462,36 +749,26 @@ fn build(
         quote!(__gust_out[__gust_j] = __gust_r;)
     };
     let ceiling = Literal::u32_suffixed(CEILING);
-    let module_name = name.clone();
-    let visibility = &function.vis;
-    let attributes = module_attributes(function, signature, profile);
-    let module: syn::ItemMod = syn::parse_quote! {
-        #(#attributes)*
-        #visibility mod #module_name {
-            #helper
-
-            #[kernel(workgroup_size(256, 1, 1))]
-            pub fn #kernel(
-                __gust_gid: SV_DispatchThreadID,
-                #(#kernel_parameters,)*
-                mut __gust_out: RWStructuredBuffer<#result_element>,
-            ) {
-                let __gust_n = __gust_out.len();
-                let __gust_rounds = __gust_n / #ceiling + (__gust_n % #ceiling != 0u32) as u32;
-                for __gust_round in 0u32..__gust_rounds {
-                    let __gust_j = __gust_gid.x + __gust_round * #ceiling;
-                    if __gust_j < __gust_n {
-                        #(#indices)*
-                        #(#values)*
-                        let __gust_r = #name(#(#arguments),*);
-                        #store
-                    }
+    syn::parse_quote! {
+        #[kernel(workgroup_size(256, 1, 1))]
+        pub fn #kernel(
+            __gust_gid: SV_DispatchThreadID,
+            #(#kernel_parameters,)*
+            mut __gust_out: RWStructuredBuffer<#result_element>,
+        ) {
+            let __gust_n = __gust_out.len();
+            let __gust_rounds = __gust_n / #ceiling + (__gust_n % #ceiling != 0u32) as u32;
+            for __gust_round in 0u32..__gust_rounds {
+                let __gust_j = __gust_gid.x + __gust_round * #ceiling;
+                if __gust_j < __gust_n {
+                    #(#indices)*
+                    #(#values)*
+                    let __gust_r = #name(#(#arguments),*);
+                    #store
                 }
             }
         }
-    };
-    let host = host_items(signature, profile);
-    (module, host)
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -542,7 +819,7 @@ fn call_body(
     device: &TokenStream,
     finish: Finish,
 ) -> TokenStream {
-    let kernel = format_ident!("{}", KERNEL);
+    let kernel = &signature.kernel;
     let counted: Vec<TokenStream> = signature
         .parameters
         .iter()
@@ -691,7 +968,7 @@ enum Finish {
 
 fn host_items(signature: &Signature, profile: Profile) -> TokenStream {
     let name = &signature.name;
-    let kernel = format_ident!("{}", KERNEL);
+    let kernel = &signature.kernel;
     let count = signature.parameters.len() + 1;
     let result_host = &signature.result.host;
     let result_buffer = &signature.result.buffer;
@@ -945,7 +1222,7 @@ fn host_items(signature: &Signature, profile: Profile) -> TokenStream {
 /// every chunk; the output is the zeroed buffer of the device, split into disjoint pieces by the runner. Lengths and
 /// the thread count are checked before anything is uploaded, so an error leaves nothing behind.
 fn cpu_body(signature: &Signature, shape: &Shape) -> TokenStream {
-    let kernel = format_ident!("{}", KERNEL);
+    let kernel = &signature.kernel;
     let device_type = quote!(::gust::cpu::CpuDevice);
     let map_error = quote!(<#device_type as ::gust::map::MapHost>::map_error);
     let count = signature.parameters.len();

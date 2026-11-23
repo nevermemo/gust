@@ -135,12 +135,14 @@ pub fn gpu_module(attribute: TokenStream, item: TokenStream) -> TokenStream {
     gpu_entry(Form::Module, attribute, item)
 }
 
-/// Marks a free scalar function as an element-wise map (D60).
+/// Marks a free scalar function as an element-wise map (D60), or a function of a [`gpu_module`] module, which may
+/// take and return that module's structs (m14.mapw1, D221): there the calls are in a module of the function's name
+/// inside the module (`records::scale_item::map(..)`) and the kernel is `<fn>_map_kernel`.
 ///
-/// The function stays as written (`#[gpu_fn] pub fn saxpy(a: f32, x: f32, y: f32) -> f32 { .. }`) and the macro adds a
+/// The free function stays as written (`#[gpu_fn] pub fn saxpy(a: f32, x: f32, y: f32) -> f32 { .. }`) and the macro adds a
 /// module of the same name with a generated grid-stride kernel and the calls `map`, `map_on`, `map_gpu`,
 /// `map_gpu_on`, `map_async` and `map_on_async` (under `GUST_PROFILE=cpu`: `map`, `map_on` and `map_on_async`). A
-/// module takes [`gpu_module`] instead (D237); `#[gpu_fn]` on anything but a free function is GUST-E0702.
+/// module takes [`gpu_module`] instead (D237); `#[gpu_fn]` on anything but a function is GUST-E0702.
 ///
 /// It takes the same two optional arguments as [`gpu_module`], `route = "<tag>"` and `crate = <path>`, with the same
 /// rules (`#[gpu_fn(crate = ::inner::gust)]`). The expansion names `::gust_wgpu` literally, so it needs a direct
@@ -173,7 +175,7 @@ fn gpu_entry(form: Form, attribute: TokenStream, item: TokenStream) -> TokenStre
 pub(crate) enum Form {
     /// `#[gpu_module]`: an inline module.
     Module,
-    /// `#[gpu_fn]`: a free scalar function, the element-wise map.
+    /// `#[gpu_fn]`: a free scalar function, the element-wise map (inside a module it is expanded with the module).
     Function,
 }
 
@@ -349,8 +351,15 @@ fn expand_item(
     request: &expand::routing::Request<'_>,
 ) -> proc_macro2::TokenStream {
     match parsed {
+        // A module with `#[gpu_fn]` functions in it (m14.mapw1, D221): they are the module's own element-wise maps and
+        // see its structs; the rest of the expansion is the module's.
         Ok(syn::Item::Mod(module)) if form == Form::Module => {
-            match expand::expand_with_routed(module.clone(), profile, request) {
+            let expansion = if holds_map_functions(&module) {
+                expand::expand_map_routed(syn::Item::Mod(module.clone()), profile, request)
+            } else {
+                expand::expand_with_routed(module.clone(), profile, request)
+            };
+            match expansion {
                 Ok(tokens) => tokens,
                 Err(error) => recover::beside_error(error, item, Some(without_nested_gpu(module))),
             }
@@ -368,7 +377,7 @@ fn expand_item(
                     None,
                 );
             }
-            match expand::expand_map_routed(function, profile, request) {
+            match expand::expand_map_routed(syn::Item::Fn(function), profile, request) {
                 Ok(tokens) => tokens,
                 Err(error) => recover::beside_error(error, item, None),
             }
@@ -411,7 +420,20 @@ fn wrong_item_message(form: Form) -> &'static str {
     }
 }
 
-/// A rejected module goes back beside the error as written, except that a `#[gpu_fn]` function inside it (GUST-E0716)
+/// Whether `module` has a function with `#[gpu_fn]` on it, which a `#[gpu_module]` module expands as a map (m14.mapw1).
+fn holds_map_functions(module: &syn::ItemMod) -> bool {
+    module
+        .content
+        .iter()
+        .flat_map(|(_, items)| items)
+        .any(|item| {
+            matches!(item, syn::Item::Fn(function) if function.attrs.iter().any(|attribute| {
+                validate::gpu_attribute_name(attribute) == Some("gpu_fn")
+            }))
+        })
+}
+
+/// A rejected module goes back beside the error as written, except that a `#[gpu_fn]` function inside it
 /// loses the attribute: left on, it would expand by itself in the user's crate and add errors that only follow from
 /// the first. A `#[variant]` function goes back as a `#[kernel]` and `#[variant]` anywhere else is dropped (M8, D139):
 /// the recovery of `recover.rs` knows the one attribute, and an unknown attribute would be a second error.

@@ -1,4 +1,5 @@
-//! The map generator (m7.a1, D60): `#[gpu_fn]` on a free scalar function.
+//! The map generator (m7.a1, D60): `#[gpu_fn]` on a free scalar function, and (m14.mapw1, D221) on a function of a
+//! `#[gpu_module]` module, which may take and return the module's structs.
 
 use proc_macro2::TokenStream;
 
@@ -7,7 +8,7 @@ use crate::{
         Code,
         testing::{assert_rendered_code, parse_str, parse2},
     },
-    expand::{Profile, kernel_options, map_kernel},
+    expand::{Profile, kernel_options, map_kernel, map_module_kernels},
     regression_tests::assert_golden,
     slang::emit_kernel,
 };
@@ -30,6 +31,26 @@ fn kernel_slang(function: &syn::ItemFn) -> String {
     emit_kernel(&generated.module, kernel, options)
         .unwrap()
         .source
+}
+
+/// The function name and Slang of each kernel the generator adds to `module` (a `#[gpu_module]` module with
+/// `#[gpu_fn]` functions), in the module's order.
+fn module_kernel_slang(module: syn::ItemMod) -> Vec<(String, String)> {
+    let generated = map_module_kernels(module, Profile::Other).unwrap();
+    let (_, items) = generated.content.as_ref().unwrap();
+    items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Fn(function) => {
+                let name = function.sig.ident.to_string();
+                let function_name = name.strip_suffix("_map_kernel")?.to_owned();
+                let options = kernel_options(function).unwrap().unwrap();
+                let source = emit_kernel(&generated, function, options).unwrap().source;
+                Some((function_name, source))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// The expansion of `source` (a `#[gpu_module]` item) for `profile`.
@@ -75,13 +96,24 @@ fn kernels_of_the_map_fixture_match_the_golden() {
     let file: syn::File = parse_str(FIXTURE).unwrap();
     let mut actual = String::new();
     for item in file.items {
-        let syn::Item::Fn(mut function) = item else {
-            panic!("the fixture holds functions only");
-        };
-        function.attrs.clear();
-        actual.push_str(&format!("// ==== kernel {} ====\n", function.sig.ident));
-        actual.push_str(&kernel_slang(&function));
-        actual.push('\n');
+        match item {
+            syn::Item::Fn(mut function) => {
+                function.attrs.clear();
+                actual.push_str(&format!("// ==== kernel {} ====\n", function.sig.ident));
+                actual.push_str(&kernel_slang(&function));
+                actual.push('\n');
+            }
+            // A `#[gpu_module]` module with `#[gpu_fn]` functions (m14.mapw1): one section per function, in order.
+            syn::Item::Mod(mut module) => {
+                module.attrs.clear();
+                for (function, source) in module_kernel_slang(module) {
+                    actual.push_str(&format!("// ==== kernel {function} ====\n"));
+                    actual.push_str(&source);
+                    actual.push('\n');
+                }
+            }
+            _ => panic!("the fixture holds functions and modules only"),
+        }
     }
     assert_golden(&actual, "map.slang", &GOLDEN.replace("\r\n", "\n"));
 }
@@ -381,19 +413,182 @@ fn names_the_module_defines_are_e0715() {
     assert_rejected("pub fn f(f: f32) -> f32 { f }", Code::MapNameCollision);
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// `#[gpu_fn]` inside a `#[gpu_module]` module: structs (m14.mapw1, D221).
+// ---------------------------------------------------------------------------------------------------------------
+
+/// A module with a struct, a struct-to-struct map with a scalar beside it and a struct-to-scalar map.
+const RECORDS: &str = "mod records { \
+    pub struct Item { pub pos: Vec2, pub id: u32, pub weight: f32 } \
+    #[gust::gpu_fn] pub fn scale(item: Item, k: f32) -> Item { \
+        let moved = Item { pos: item.pos, id: item.id + 1u32, weight: item.weight * k }; moved } \
+    #[gpu_fn] pub fn total(item: Item) -> f32 { item.weight + item.id as f32 } }";
+
+/// Asserts the expansion of the module `source` is a `compile_error!` carrying `code` and that the module comes back
+/// without any `#[gpu_fn]` attribute (left on, it would expand by itself in the user's crate).
+#[track_caller]
+fn assert_module_rejected(source: &str, code: Code) -> String {
+    let output = expansion(source, Profile::Other).to_string();
+    assert!(
+        output.starts_with(":: core :: compile_error !"),
+        "{output}\nfor {source}"
+    );
+    assert_rendered_code(&output, code);
+    assert!(
+        !output.contains("gpu_fn ]"),
+        "the attribute is dropped: {output}"
+    );
+    output
+}
+
+/// The functions of the module `outer::inner` of `file`, by name.
+fn functions_of(file: &syn::File, outer: &str, inner: &str) -> Vec<String> {
+    let syn::Item::Mod(module) = file
+        .items
+        .iter()
+        .find(|item| matches!(item, syn::Item::Mod(module) if module.ident == outer))
+        .unwrap_or_else(|| panic!("no module {outer}"))
+    else {
+        unreachable!()
+    };
+    let (_, items) = module.content.as_ref().unwrap();
+    let seen: Vec<String> = items
+        .iter()
+        .map(|item| match item {
+            syn::Item::Mod(m) => format!("mod {}", m.ident),
+            syn::Item::Fn(f) => format!("fn {}", f.sig.ident),
+            other => format!("{:?}", std::mem::discriminant(other)),
+        })
+        .collect();
+    let Some(syn::Item::Mod(inner)) = items
+        .iter()
+        .find(|item| matches!(item, syn::Item::Mod(module) if module.ident == inner))
+    else {
+        panic!("no module {outer}::{inner}: {seen:?}");
+    };
+    let (_, items) = inner.content.as_ref().unwrap();
+    items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Fn(function) => Some(function.sig.ident.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
-fn nested_gpu_functions_are_e0716() {
-    let on_fn = "`#[gpu_fn]` on a function goes on a free function outside any `#[gpu_module]` module: \
-                 a module already is GPU code, and its functions are helpers or `#[kernel]`s";
-    let on_module = "`#[gpu_module]` goes on a module, not on a function: a map function takes \
-                     `#[gpu_fn]` and goes outside any `#[gpu_module]` module, because a module \
-                     already is GPU code and its functions are helpers or `#[kernel]`s";
-    for (attribute, message) in [
-        ("gpu_fn", on_fn),
-        ("gust::gpu_fn", on_fn),
-        ("gpu_module", on_module),
-        ("gust::gpu_module", on_module),
+fn a_gpu_fn_in_a_module_gets_its_calls_in_a_module_of_its_name() {
+    let file: syn::File = parse2(expansion(RECORDS, Profile::Other)).unwrap();
+    for function in ["scale", "total"] {
+        let mut names = functions_of(&file, "records", function);
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "map",
+                "map_async",
+                "map_gpu",
+                "map_gpu_on",
+                "map_on",
+                "map_on_async"
+            ],
+            "{function}"
+        );
+    }
+    let text = expanded(RECORDS, Profile::Other);
+    // The kernels are the module's own and are named for their function; the function stays a helper.
+    for needle in [
+        "modscale{",
+        "modtotal{",
+        "scale_map_kernel",
+        "total_map_kernel",
+        "pubfnscale(item:Item,k:f32)->Item",
     ] {
+        assert!(text.contains(needle), "{needle}: {text}");
+    }
+    assert!(
+        !text.contains("gpu_fn]pubfn"),
+        "the attribute is taken off the helper: {text}"
+    );
+}
+
+#[test]
+fn the_cpu_profile_has_the_cpu_calls_and_the_chunk() {
+    let file: syn::File = parse2(expansion(RECORDS, Profile::Cpu)).unwrap();
+    let mut names = functions_of(&file, "records", "scale");
+    names.sort();
+    assert_eq!(
+        names,
+        ["__gust_map_cpu_chunk", "map", "map_on", "map_on_async"]
+    );
+}
+
+#[test]
+fn a_struct_the_module_does_not_declare_is_e0714() {
+    // Outside the module the macro cannot see the struct: a type outside the element types is GUST-E0714, whose message
+    // names the struct of the module as the way out.
+    for source in [
+        "mod m { #[gpu_fn] pub fn f(item: Outside) -> f32 { 1.0 } }",
+        "mod m { #[gpu_fn] pub fn f(x: f32) -> super::Outside { x } }",
+        "mod m { pub struct W<T> { pub x: T } #[gpu_fn] pub fn f(w: W<f32>) -> f32 { w.x } }",
+    ] {
+        let output = assert_module_rejected(source, Code::MapSignature);
+        assert!(
+            output.contains("a struct declared in the same `#[gpu_module]` module"),
+            "{output}"
+        );
+    }
+    // A free function has no module to declare it in.
+    let output = expansion("pub fn f(item: Item) -> f32 { 1.0 }", Profile::Other).to_string();
+    assert_rendered_code(&output, Code::MapSignature);
+}
+
+#[test]
+fn the_module_refuses_what_a_struct_element_cannot_hold_with_its_own_codes() {
+    let module = |fields: &str| {
+        format!("mod m {{ pub struct S {{ {fields} }} #[gpu_fn] pub fn f(s: S) -> f32 {{ 1.0 }} }}")
+    };
+    // A 3-wide field, an array of 3-wide elements, an enum field, a storage gap, a generic struct.
+    assert_module_rejected(&module("pub v: Vec3, pub w: f32"), Code::ThreeWideInBuffer);
+    assert_module_rejected(&module("pub v: [Vec3; 2]"), Code::ArrayStride);
+    assert_module_rejected(&module("pub a: f32, pub v: Vec2"), Code::ImplicitPadding);
+    assert_module_rejected(
+        "mod m { pub enum E { A, B } pub struct S { pub e: E } #[gpu_fn] pub fn f(s: S) -> f32 { 1.0 } }",
+        Code::EnumInResource,
+    );
+    assert_module_rejected(
+        "mod m { pub struct S<T> { pub x: T } #[gpu_fn] pub fn f(x: f32) -> f32 { x } }",
+        Code::GenericStruct,
+    );
+}
+
+#[test]
+fn a_gpu_fn_in_a_module_takes_no_arguments_and_no_cfg() {
+    assert_module_rejected(
+        "mod m { #[gpu_fn(route = \"x\")] pub fn f(x: f32) -> f32 { x } }",
+        Code::GpuArguments,
+    );
+    assert_module_rejected(
+        "mod m { #[cfg(test)] #[gpu_fn] pub fn f(x: f32) -> f32 { x } }",
+        Code::MapSignature,
+    );
+}
+
+#[test]
+fn the_kernel_name_of_a_module_function_may_not_be_taken() {
+    assert_module_rejected(
+        "mod m { pub fn f_map_kernel(x: f32) -> f32 { x } #[gpu_fn] pub fn f(x: f32) -> f32 { x } }",
+        Code::MapNameCollision,
+    );
+}
+
+#[test]
+fn a_gpu_module_attribute_on_a_function_in_a_module_is_still_e0716() {
+    let message = "`#[gpu_module]` goes on a module, not on a function: a map function takes \
+                   `#[gpu_fn]`, on a free scalar function or, when it takes or returns a struct, inside the \
+                   `#[gpu_module]` module that declares the struct; the other functions of a module are \
+                   helpers or `#[kernel]`s";
+    for attribute in ["gpu_module", "gust::gpu_module"] {
         let source = format!("mod m {{ #[{attribute}] pub fn f(x: f32) -> f32 {{ x }} }}");
         let output = expansion(&source, Profile::Other).to_string();
         assert!(output.starts_with(":: core :: compile_error !"), "{output}");
@@ -404,10 +599,9 @@ fn nested_gpu_functions_are_e0716() {
 
 #[test]
 fn a_rejected_module_returns_without_the_nested_attribute() {
-    // Left on, the inner `#[gust::gpu_module]` would expand by itself in the user's crate and add errors that only
-    // follow.
-    let source =
-        "mod m { #[gust::gpu_fn] pub fn f(x: f32) -> f32 { x } pub fn g(x: f32) -> f32 { x } }";
+    // Left on, the inner `#[gust::gpu_fn]` would expand by itself in the user's crate and add errors that only
+    // follow from the first.
+    let source = "mod m { static X: u32 = 1; #[gust::gpu_fn] pub fn f(x: f32) -> f32 { x } pub fn g(x: f32) -> f32 { x } }";
     let output = expansion(source, Profile::Other).to_string();
     assert!(output.starts_with(":: core :: compile_error !"), "{output}");
     assert!(!output.contains("# [gust :: gpu_fn]"), "{output}");
@@ -548,4 +742,109 @@ fn each_attribute_on_another_item_names_its_own_form() {
             assert_eq!(output.matches("[GUST-E").count(), 1, "{output}");
         }
     }
+}
+
+#[test]
+fn a_gpu_fn_written_twice_is_refused() {
+    // `lift` takes the first attribute off; a second would expand by itself, so it is the error.
+    assert_module_rejected(
+        "mod m { #[gpu_fn] #[gpu_fn] pub fn f(x: f32) -> f32 { x } }",
+        Code::MapSignature,
+    );
+}
+
+/// A scratch crate whose manifest declares the route `physics`, removed when dropped.
+struct RoutedCrate(std::path::PathBuf);
+
+impl RoutedCrate {
+    fn new(name: &str) -> Self {
+        let directory =
+            std::env::temp_dir().join(format!("gust-mapw1-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n\
+             [package.metadata.gust.routes]\nphysics = {}\n",
+        )
+        .unwrap();
+        Self(directory)
+    }
+}
+
+impl Drop for RoutedCrate {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The expansion of the module `RECORDS` under the route `physics` with the variable set to `value` (if any).
+fn routed_records(scratch: &RoutedCrate, value: Option<&str>) -> String {
+    use crate::expand::{Environment, expand_module_in_routed, routing};
+    let lookup = |name: &str| {
+        (name == "GUST_ROUTE__demo__physics")
+            .then(|| value.map(str::to_owned))
+            .flatten()
+    };
+    let request = routing::Request {
+        tag: Some(routing::Tag {
+            text: "physics".to_owned(),
+            span: proc_macro2::Span::call_site(),
+        }),
+        variables: &lookup,
+    };
+    let environment = Environment {
+        manifest_dir: Some(scratch.0.clone()),
+        export_dir: None,
+        package: Some("demo".to_owned()),
+        reported_file: None,
+    };
+    let module: syn::ItemMod = parse_str(RECORDS).unwrap();
+    expand_module_in_routed(module, &environment, Profile::Other, &request)
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn a_routed_module_with_a_gpu_fn_follows_its_route_in_the_host_calls() {
+    let scratch = RoutedCrate::new("records");
+    // Routed to the GPU (the default): the GPU calls, and the kernel has its GPU target.
+    let gpu = routed_records(&scratch, None);
+    assert!(gpu.contains("map_gpu"), "{gpu}");
+    assert!(gpu.contains("Target :: Gpu"), "{gpu}");
+    // Routed to the CPU by the variable: the CPU family of host calls, the chunk body, no GPU API, and the kernel's
+    // CPU target.
+    let cpu = routed_records(&scratch, Some("cpu"));
+    assert!(cpu.contains("Target :: Cpu"), "{cpu}");
+    assert!(!cpu.contains("GpuKernel"), "{cpu}");
+    assert!(
+        !cpu.contains("map_gpu") && !cpu.contains("gust_wgpu"),
+        "{cpu}"
+    );
+    assert!(cpu.contains("__gust_map_cpu_chunk"), "{cpu}");
+    assert!(cpu.contains("scale_map_kernel"), "{cpu}");
+}
+
+#[test]
+fn a_parameter_named_like_an_item_of_the_module_is_refused() {
+    // Probed on the 890M before the check: the parameter becomes a global `StructuredBuffer<float> total;` beside the
+    // module's `float total(..)`, and slangc refuses the kernel at run time (E30200, conflicting declaration).
+    for source in [
+        "mod m { #[gpu_fn] pub fn total(x: f32) -> f32 { x } #[gpu_fn] pub fn scale(total: f32, k: f32) -> f32 { total * k } }",
+        "mod m { const LIMIT: u32 = 4; #[gpu_fn] pub fn f(LIMIT: u32) -> u32 { LIMIT } }",
+        "mod m { pub struct S { pub a: f32 } #[gpu_fn] pub fn f(S: f32) -> f32 { S } }",
+    ] {
+        let output = assert_module_rejected(source, Code::MapNameCollision);
+        assert!(
+            output.contains("has the name of an item of the module"),
+            "{output}"
+        );
+    }
+    // Another name is fine.
+    let ok = expansion(
+        "mod m { #[gpu_fn] pub fn total(x: f32) -> f32 { x } #[gpu_fn] pub fn scale(sum: f32, k: f32) -> f32 { sum * k } }",
+        Profile::Other,
+    )
+    .to_string();
+    assert!(!ok.starts_with(":: core :: compile_error !"), "{ok}");
 }

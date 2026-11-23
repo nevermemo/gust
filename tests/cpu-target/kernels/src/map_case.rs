@@ -80,6 +80,7 @@ pub fn run() -> Result<(), String> {
         other => return Err(format!("scale_add::map with a short argument returned {other:?}")),
     }
     parallel()?;
+    structs()?;
     println!("CPU target: map calls match (scale_add, pick, {ELEMENTS} elements)");
     Ok(())
 }
@@ -157,4 +158,70 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
         .map(|text| (*text).to_owned())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_default()
+}
+
+// m14.mapw1: a map over a struct of the module that declares it. Under `GUST_PROFILE=cpu` the calls are `map`, `map_on`
+// and the chunk body, and no `::gust_wgpu` is named.
+#[gust::gpu_module]
+pub mod records {
+    pub struct Item {
+        pub weight: f32,
+        pub id: u32,
+    }
+
+    #[gust::gpu_fn]
+    pub fn bump(item: Item, k: f32) -> Item {
+        let mut bumped = item;
+        bumped.weight = item.weight * k;
+        bumped.id = item.id + 1u32;
+        bumped
+    }
+
+    #[gust::gpu_fn]
+    pub fn total(item: Item) -> f32 {
+        item.weight + item.id as f32
+    }
+}
+
+/// The struct map in the production CPU target: `map`, `map_on`, the chunk body and a parallel run (a long input),
+/// each against a host reference. Small integers, so every float result is exact.
+fn structs() -> Result<(), String> {
+    use records::Item;
+    let make = |count: usize| -> Vec<Item> {
+        (0..count)
+            .map(|i| Item {
+                weight: (i % 11) as f32 - 5.0,
+                id: i as u32 % 97,
+            })
+            .collect()
+    };
+    let reference = |item: &Item| (item.weight * 2.0, item.id + 1);
+    for count in [ELEMENTS, MANY] {
+        let items = make(count);
+        let expected: Vec<(f32, u32)> = items.iter().map(reference).collect();
+        let bumped = records::bump::map(&items, Broadcast(2.0)).map_err(|error| format!("records::bump::map: {error}"))?;
+        if bumped.iter().map(|item| (item.weight, item.id)).collect::<Vec<_>>() != expected {
+            return Err(format!("records::bump::map differs from the host reference ({count} elements)"));
+        }
+        let on = records::bump::map_on(&CpuDevice::new(), &items, Broadcast(2.0))
+            .map_err(|error| format!("records::bump::map_on: {error}"))?;
+        if on.iter().map(|item| (item.weight, item.id)).collect::<Vec<_>>() != expected {
+            return Err(format!("records::bump::map_on differs from the host reference ({count} elements)"));
+        }
+        let totals = records::total::map(&items).map_err(|error| format!("records::total::map: {error}"))?;
+        if !totals.iter().zip(&items).all(|(got, item)| *got == item.weight + item.id as f32) {
+            return Err(format!("records::total::map differs from the host reference ({count} elements)"));
+        }
+    }
+    // The chunk body: elements 300 to 700, the broadcast scalar as a slice of one.
+    let items = make(ELEMENTS);
+    let mut chunk = make(400);
+    let current = Cell::new(0);
+    records::bump::__gust_map_cpu_chunk(300, 700, &items, &[2.0], &mut chunk, &current);
+    if chunk.iter().map(|item| (item.weight, item.id)).collect::<Vec<_>>()
+        != items[300..700].iter().map(reference).collect::<Vec<_>>()
+    {
+        return Err("records::bump::__gust_map_cpu_chunk differs from the host reference".to_owned());
+    }
+    Ok(())
 }

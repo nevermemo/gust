@@ -63,9 +63,9 @@ pub(crate) mod pad;
 mod map;
 #[cfg(test)]
 pub(crate) use map::expand_map_in_routed;
-#[cfg(test)]
-pub(crate) use map::map_kernel;
 pub(crate) use map::{ElementReject, element_types, expand_map_routed};
+#[cfg(test)]
+pub(crate) use map::{expand_module_in_routed, map_kernel, map_module_kernels};
 
 /// What names a kernel's export record to the tool that reads it: a `#[gpu_module]` module or `#[gpu_fn]` function is
 /// one place in the source, so its record says where (schema 1, `source`); a `par_for!` call is a body that can stand
@@ -165,15 +165,7 @@ pub(crate) fn expand_in_routed(
     profile: Profile,
     request: &routing::Request<'_>,
 ) -> syn::Result<TokenStream> {
-    // The variants become kernels first (M8, D139), so that every body is validated and lowered like any kernel.
-    let (module, plan) = variant::lower(module)?;
-    // The `#[pad]` structs are padded next (m14.pad, D239), so that the validator, the layout assertions, the `GpuPod`
-    // impls and the Slang emitter all read the padded struct. This is the one place a user's module enters the
-    // expansion: the `#[gpu_fn]` function and `par_for!` paths expand a module of their own making, which holds no
-    // user struct, through `expand_validated`.
-    let (module, constructors) = pad::apply(module, &GRID)?;
-    crate::validate::limits::check_declared(&module, environment.manifest_dir.as_deref())?; // before E0718 (m8.f)
-    crate::validate::validate_module_in(&GRID, &module)?;
+    let (module, plan, constructors) = prepare_user_module(module, environment)?;
     expand_validated_with(
         module,
         environment,
@@ -184,6 +176,24 @@ pub(crate) fn expand_in_routed(
         &plan,
         request,
     )
+}
+
+/// The passes a user's module goes through before it is expanded, in their order: the variants become kernels first
+/// (M8, D139), so that every body is validated and lowered like any kernel; the `#[pad]` structs are padded next
+/// (m14.pad, D239), so that the validator, the layout assertions, the `GpuPod` impls and the Slang emitter all read
+/// the padded struct; then the declared limits (before E0718, m8.f) and the validation. This is the one place a user's
+/// module is prepared: [`expand_in_routed`] and the module form of `#[gpu_fn]` (`map.rs`, which adds its kernels
+/// afterwards) both call it. The free `#[gpu_fn]` function and `par_for!` paths expand a module of their own making,
+/// which holds no user struct, through `expand_validated`.
+pub(crate) fn prepare_user_module(
+    module: syn::ItemMod,
+    environment: &Environment,
+) -> syn::Result<(syn::ItemMod, variant::VariantPlan, TokenStream)> {
+    let (module, plan) = variant::lower(module)?;
+    let (module, constructors) = pad::apply(module, &GRID)?;
+    crate::validate::limits::check_declared(&module, environment.manifest_dir.as_deref())?;
+    crate::validate::validate_module_in(&GRID, &module)?;
+    Ok((module, plan, constructors))
 }
 
 /// [`expand_in`] for a module that is already validated: the module's items are expanded as they stand, and `extra`

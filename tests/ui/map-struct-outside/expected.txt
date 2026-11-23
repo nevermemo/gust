@@ -1,0 +1,4 @@
+code: none
+file: map-struct-outside/src/main.rs
+line: 12
+message: [GUST-E0714] parameter `item` has a type a map function cannot take

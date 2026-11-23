@@ -1,0 +1,4 @@
+code: E0277
+file: map-struct-bool-field/src/main.rs
+line: 8
+message: `bool` is not a GUST GPU POD type

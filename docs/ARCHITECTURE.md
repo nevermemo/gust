@@ -164,9 +164,11 @@ exception (`gust::cpu::parallel`, below). `cargo xtask check-cpu-target` is the 
 docs/development/VALIDATION.md).
 
 The map generator (D60, slice m7.a1, amended by D99 and D122; `crates/gust-macros/src/expand/map.rs`).
-`#[gpu_fn]` on a free scalar function (an `fn`, not a module) builds a synthetic module and hands it to the same
-`expand_validated` path as a written module, so the body gets the validation and the lowering of any kernel. The module
-holds one kernel, `map_kernel`, which is grid-stride at `workgroup_size(256, 1, 1)` and binds every buffer
+`#[gpu_fn]` inside a `#[gpu_module]` module (m14.mapw1, D221) is expanded with the module: its struct parameters and
+result are the module's own structs, each function adds a `<fn>_map_kernel` to the module and a host module
+`module::<fn>`. `#[gpu_fn]` on a free scalar function (an `fn`, not a module) builds a synthetic module and hands it to
+the same `expand_validated` path as a written module, so the body gets the validation and the lowering of any kernel.
+The module holds one kernel, `map_kernel`, which is grid-stride at `workgroup_size(256, 1, 1)` and binds every buffer
 `Independent`. The host launches `min(n, CEILING)` invocations, where `CEILING` is 65535 * 256 = 16,776,960
 (`gust::map::CEILING`), and runs ceil(n / CEILING) rounds. The signature rules (GUST-E0714, E0715 and, for a 3-wide
 type, E0204) ask for at least one parameter, each a plain identifier of a type that can be a buffer element, and a

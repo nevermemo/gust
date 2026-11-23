@@ -1795,6 +1795,8 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
         [
             "map-bool-for-u32",
             "map-ok",
+            "map-struct-bool-field",
+            "map-struct-ok",
             "map-u32-for-bool",
             "missing-docs-fn-ok",
             "par-for-binding",
@@ -1835,7 +1837,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 274] = [
+const PINNED_FIXTURES: [&str; 277] = [
     "array-barrier",
     "array-buffer-len",
     "array-const-len",
@@ -1926,6 +1928,9 @@ const PINNED_FIXTURES: [&str; 274] = [
     "map-nested",
     "map-ok",
     "map-signature",
+    "map-struct-bool-field",
+    "map-struct-ok",
+    "map-struct-outside",
     "map-three-wide",
     "map-u32-for-bool",
     "match-break-in-arm",

@@ -97,7 +97,7 @@ fn recovered_module(mut module: syn::ItemMod) -> Option<syn::ItemMod> {
         if let syn::Item::Fn(function) = item
             && is_kernel(&function.attrs)
         {
-            // The same shape the successful expansion gives a kernel (`expand/mod.rs`):
+            // The same shape the successful expansion gives a kernel (`expand/module.rs`):
             // a private type-checking shadow, so a callable host `add` is never offered.
             function.sig.ident = format_ident!("__gpu_typecheck_{}", function.sig.ident);
             function.vis = syn::Visibility::Inherited;

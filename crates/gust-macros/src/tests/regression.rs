@@ -722,7 +722,7 @@ fn invalid_kernel_signatures_are_rejected_early() {
 
 #[test]
 fn invalid_kernel_options_are_rejected_early() {
-    // Rejected by `kernel_options` in expand/mod.rs.
+    // Rejected by `kernel_options` in expand/kernel_attributes.rs.
     for (source, code) in [
         (
             "mod bad { #[kernel(workgroup_size(0, 1, 1))] fn run(id: SV_DispatchThreadID) {} }",
@@ -8230,7 +8230,7 @@ fn a_raw_type_name_is_read_like_the_plain_one() {
     let plain_result = translate(&with_kernel(result, "out[id.x] = 1u32;")).unwrap();
     let raw_result = translate(&with_kernel(raw_result, "out[id.x] = 1u32;")).unwrap();
     assert_eq!(plain_result, raw_result);
-    // And a raw `Workgroup` is the workgroup parameter it names (barrier.rs, validate/mod.rs).
+    // And a raw `Workgroup` is the workgroup parameter it names (barrier.rs, validate/functions.rs).
     let workgroup = "mod m { #[kernel(workgroup_size(64, 1, 1), cpu = \"unsupported\")] \
                      pub fn run(id: SV_DispatchThreadID, mut wg: Workgroup<[uint; 4]>) { wg[0u32] = 1u32; } }";
     let plain = translate(workgroup).unwrap();

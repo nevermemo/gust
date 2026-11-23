@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish = false
+# `cargo run -p batch-basics` (check-artifacts, check-examples) runs the example; `--bin sb1` runs the SB1 harness.
+default-run = "batch-basics"
 
 [dependencies]
 gust.workspace = true

@@ -1177,7 +1177,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "check-cpu: `cargo test --locked` of the examples with a CPU twin (vector-add, polynomial, signal-pipeline, particle-step, typed-pipeline, atomic-counter, staged-graph, component-pool, map-chain, texture-threshold, shape-bench, hash-rng, polar-transform, buffer-handoff, mc-histogram, field-relax, cell-bins, walker-steer, walker-transport, walker-life, event-drain, task-basics), running the non-ignored twin tests against the host references (a package that runs no test fails, and each package's twin tests and derivation-domain guard must be reported `ok` by name); needs neither slangc nor a GPU; a step of the Unit suite"
         }
         "check-dual" => {
-            "check-dual: the dual test build (`--cfg gust_dual`, D26) and its cross-crate proof, with its own target directory <target>/dual: tests/dual is formatted (`cargo fmt --check`) and passes clippy with -D warnings (the root fmt and CI clippy do not reach that workspace), as do vector-add and polynomial with the cfg (CI's clippy compiles their dual code out); the workspace builds with the cfg; in tests/dual a consumer's test (E1) and production binary (E3) each fail with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib` without the cfg, and with it (E2) the test passes; a production binary that dispatches a module routed to the CPU (E4: `GUST_ROUTE__kernel_lib__physics=cpu`, no cfg) builds and runs on `gust::cpu::CpuDevice`, and the same source without the route fails with exactly one E0277 (E4-control). Without `--check-only` it then runs `cargo run` of vector-add and polynomial with the cfg, which must print the `CPU twin: matches (N elements, max ULP k)` line (polynomial also the twin's time beside run_cpu's), and of vector-add without the cfg, which must not mention the twin; that part needs a Vulkan GPU, and `check-full` runs it. Refuses to run while RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS or CARGO_BUILD_RUSTFLAGS is set (it delivers the cfg through CARGO_ENCODED_RUSTFLAGS). `--check-only` is the CPU-only mode CI runs; it needs cargo only"
+            "check-dual: the dual test build (`--cfg gust_dual`, D26) and its cross-crate proof, with one target directory per build state (<target>/dual with the cfg, <target>/dual-nocfg without it, <target>/dual-native for E5): tests/dual is formatted (`cargo fmt --check`) and passes clippy with -D warnings (the root fmt and CI clippy do not reach that workspace), as do vector-add and polynomial with the cfg (CI's clippy compiles their dual code out); the workspace builds with the cfg; in tests/dual a consumer's test (E1) and production binary (E3) each fail with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib` without the cfg, and with it (E2) the test passes; a production binary that dispatches a module routed to the CPU (E4: `GUST_ROUTE__kernel_lib__physics=cpu`, no cfg) builds and runs on `gust::cpu::CpuDevice`, and the same source without the route fails with exactly one E0277 (E4-control). Without `--check-only` it then runs `cargo run` of vector-add and polynomial with the cfg, which must print the `CPU twin: matches (N elements, max ULP k)` line (polynomial also the twin's time beside run_cpu's), and of vector-add without the cfg, which must not mention the twin; that part needs a Vulkan GPU, and `check-full` runs it; `--check-only` builds those three binaries in the same states first, so `--runs-only` (only the three runs, not combinable with `--check-only`) compiles nothing and prints any `Compiling` line it does see. Refuses to run while RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS or CARGO_BUILD_RUSTFLAGS is set (it delivers the cfg through CARGO_ENCODED_RUSTFLAGS). `--check-only` is the CPU-only mode CI runs; it needs cargo only"
         }
         "check-cpu-target" => {
             "check-cpu-target: the production CPU target (D21, D51) on the fixture workspace tests/cpu-target, with cargo only (no slangc, no GPU), in <target>/cpu-target, cpu-target-dual and cpu-target-flip: E-a builds `app` in release under GUST_PROFILE=cpu and runs it (one `CPU target: matches` line per kernel, the `CPU target: map calls match (..)` line of the map case (which includes the parallel map of m7.c) and the `CPU target: par_for calls match (..)` line of the par_for case, each exactly once, the final line); E-b scans that binary for slangc, gust-slang-reflect, wgpu and vulkan (any letter case, with a control string) and reads `cargo tree -e features -p app`; E-c builds and runs it under cpu with --cfg gust_dual; E-d to E-g judge the four refusals on tests/cpu-target/e-*-expected.txt (E-e is the E0080 of gust-wgpu's require_gpu_target); E-h flips the profile cpu, unset, cpu, unset, cpu, unset in one directory; E-i runs cargo test -p kernels under cpu. Stops at the first failing step and names it. The Cpu suite is this command; CI's unit job runs it"
@@ -1208,7 +1208,8 @@ pub(crate) fn export_artifacts() -> Result<(), String> {
 
 /// Runs every example, which exports its Slang, WGSL and SPIR-V to `generated-wgpu/`. With `--hash-manifest PATH`
 /// or `--compare PATH` the `.slang`, `.rs`, `.wgsl` and `.spv` files of that directory are deleted first (so a stale
-/// file cannot survive), and afterwards the SHA-256 of each is written to PATH (sorted) and/or compared with the manifest at PATH,
+/// file cannot survive), and afterwards the SHA-256 of each is written to PATH (sorted) and/or compared with the
+/// manifest at PATH,
 /// which fails on any missing, unexpected or changed file. The byte-identical gate of mx.p0 (plan section 2.3).
 pub(crate) fn export_artifacts_with(args: &[String]) -> Result<(), String> {
     let options = ExportOptions::parse(args)?;
@@ -1407,6 +1408,9 @@ pub(crate) enum DualMode {
     CheckOnly,
     /// No argument: the same steps, then the example runs of [`dual_run_steps`], which need the GPU.
     Full,
+    /// `--runs-only`: only the example runs of [`dual_run_steps`] (the steps that open an adapter), in the same target
+    /// directories as [`DualMode::Full`], so that a `--check-only` run before it leaves them warm.
+    RunsOnly,
 }
 
 /// How one step of `check-dual` is judged.
@@ -1453,7 +1457,9 @@ pub(crate) enum DualKind {
 /// One cargo call of `check-dual`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DualStep {
-    /// `fmt`, `build`, `clippy`, `clippy-examples`, `E1`, `E2-compile`, `E2-run`, `E3`, `E4-routed`, `E4-control` or, in Full mode,
+    /// `fmt`, `build`, `clippy`, `clippy-examples`, `E1`, `E2-compile`, `E2-run`, `E3`, `E4-routed`, `E4-control`, the
+    /// builds `build-vector-add`,
+    /// `build-polynomial` and `build-vector-add-no-cfg` or, in Full and `--runs-only` mode,
     /// `run-vector-add`, `run-polynomial` or `run-vector-add-no-cfg`; the steps of the precompiled fixture
     /// ([`precompiled_dual_steps`]) are `E5-build`, `E5-test` and `E5-tree`.
     pub(crate) id: &'static str,
@@ -1469,6 +1475,30 @@ pub(crate) struct DualStep {
 }
 
 impl DualStep {
+    /// The suffix of this step's target directory after `dual`: one directory per build state (cfg and profile), so
+    /// that no step flips the state of another's cache: empty (cfg, `dev`), `-nocfg` (no cfg, `dev`) or `-native`
+    /// (cfg, strict profile of E5).
+    pub(crate) fn state_suffix(&self) -> String {
+        let mut suffix = String::new();
+        if !self.cfg {
+            suffix.push_str("-nocfg");
+        }
+        if let Some(profile) = self.profile {
+            suffix.push('-');
+            suffix.push_str(profile);
+        }
+        suffix
+    }
+
+    /// This step with its `--target-dir` (if it has one) set to `base` plus [`DualStep::state_suffix`].
+    pub(crate) fn in_state_dir(mut self, base: &str) -> Self {
+        let directory = format!("{base}{}", self.state_suffix());
+        if let Some(at) = self.args.iter().position(|arg| arg == "--target-dir") {
+            self.args[at + 1] = directory;
+        }
+        self
+    }
+
     /// The environment this step adds to the child's: the cfg (E1 and E3 build without it) and, for the fixture, the
     /// strict profile. The workspace steps add no profile and keep the `dev` of [`set_workspace_profile`].
     pub(crate) fn env(&self) -> Vec<(&'static str, &'static str)> {
@@ -1489,7 +1519,7 @@ impl DualStep {
     }
 
     /// The command line for the terminal: the arguments with the target directory (a machine-specific path) replaced
-    /// by `<target>/dual`.
+    /// by `<target>/dual` plus the suffix of the step's state ([`DualStep::state_suffix`]).
     pub(crate) fn shown(&self) -> String {
         let mut env = String::new();
         if self.cfg {
@@ -1504,13 +1534,14 @@ impl DualStep {
         {
             env.push_str(&format!("{variable}={value} "));
         }
+        let placeholder = format!("<target>/dual{}", self.state_suffix());
         let mut shown: Vec<&str> = Vec::with_capacity(self.args.len());
         let mut args = self.args.iter().map(String::as_str);
         while let Some(arg) = args.next() {
             shown.push(arg);
             if arg == "--target-dir" {
                 args.next();
-                shown.push("<target>/dual");
+                shown.push(&placeholder);
             }
         }
         format!("{env}cargo {}", shown.join(" "))
@@ -1518,7 +1549,9 @@ impl DualStep {
 }
 
 /// `check-dual`'s own target directory: `<cargo target dir>/dual`, so that the changed rustflags never invalidate
-/// the cache of the normal build. A relative `CARGO_TARGET_DIR` is read against the repository root, where the
+/// the cache of the normal build. It is the directory of the cfg and `dev` state; the steps without the cfg build in
+/// `dual-nocfg` and E5 (strict profile) in `dual-native` beside it ([`DualStep::state_suffix`]), so no step flips the
+/// build state of another's cache. A relative `CARGO_TARGET_DIR` is read against the repository root, where the
 /// child cargo processes run.
 pub(crate) fn dual_target_dir(root: &Path) -> PathBuf {
     dual_dir_under(root, &cargo_target_dir(root))
@@ -1531,8 +1564,9 @@ pub(crate) fn dual_dir_under(root: &Path, target: &Path) -> PathBuf {
 
 /// The cargo calls of `check-dual --check-only`, in order: `cargo fmt --check` of the `tests/dual` fixture, the
 /// workspace build with the cfg, clippy of the fixture and of the two examples that have a dual `main` (both with
-/// the cfg), then E1, E2 and E3 on the fixture. Every call
-/// that builds is `--locked`. Kept as data so a test can require the exact lists.
+/// the cfg), then E1, E2, E3 and E4 on the fixture, and last the builds of the three example binaries that the run
+/// steps run ([`dual_run_steps`]), in exactly their states. Every call that builds is `--locked`. Kept as data so a
+/// test can require the exact lists.
 ///
 /// The fixture is a workspace of its own, so neither the root `cargo fmt --all` nor the clippy of CI (both of the root
 /// workspace) look at it; `fmt` and `clippy` here are what cover it. Clippy runs with the cfg because `kernel-lib`'s
@@ -1751,6 +1785,29 @@ pub(crate) fn dual_steps(target_dir: &str) -> Vec<DualStep> {
                 expected: "e4-expected.txt",
             },
         },
+        // The builds of the three binaries that the run steps of the full mode (and `--runs-only`) run, in exactly
+        // their state and flags, so that the runs under the adapter only run and compile nothing.
+        DualStep {
+            id: "build-vector-add",
+            args: strings(&["build", "--locked", "-p", "vector-add"]),
+            cfg: true,
+            profile: None,
+            kind: DualKind::Build,
+        },
+        DualStep {
+            id: "build-polynomial",
+            args: strings(&["build", "--locked", "-p", "polynomial"]),
+            cfg: true,
+            profile: None,
+            kind: DualKind::Build,
+        },
+        DualStep {
+            id: "build-vector-add-no-cfg",
+            args: strings(&["build", "--locked", "-p", "vector-add"]),
+            cfg: false,
+            profile: None,
+            kind: DualKind::Build,
+        },
     ]
 }
 
@@ -1792,8 +1849,9 @@ pub(crate) fn routed_run_problems(
 
 /// The example runs of the full mode, in order (debug profile, so debug sizes): `vector-add` and `polynomial` with the
 /// cfg must each print the `CPU twin: matches` line, and `vector-add` without it must not mention the twin (a normal
-/// build prints nothing new). They run in the dual target directory beside the fixture steps; the cfg changes the
-/// fingerprints, so the two builds of the examples keep separate artifacts there. They need the GPU.
+/// build prints nothing new). They run in the target directory of their state (`dual` with the cfg, `dual-nocfg`
+/// without it), where the
+/// `build-*` steps of `--check-only` have built the same binaries. They need the GPU.
 pub(crate) fn dual_run_steps(target_dir: &str) -> Vec<DualStep> {
     let run = |package: &str| -> Vec<String> {
         ["run", "--locked", "-p", package, "--target-dir", target_dir]
@@ -1864,7 +1922,7 @@ pub(crate) fn precompiled_dual_steps(target_dir: &str) -> Vec<DualStep> {
         args.push(target_dir.to_owned());
         args
     };
-    vec![
+    let steps = vec![
         DualStep {
             id: "E5-build",
             args: with_target(&[
@@ -1914,16 +1972,29 @@ pub(crate) fn precompiled_dual_steps(target_dir: &str) -> Vec<DualStep> {
             profile: Some(PRECOMPILED_PROFILE),
             kind: DualKind::Tree,
         },
-    ]
+    ];
+    // `target_dir` is `<target>/dual`; the strict profile builds in its own directory, `<target>/dual-native`.
+    steps
+        .into_iter()
+        .map(|step| step.in_state_dir(target_dir))
+        .collect()
 }
 
-/// Every step of a mode, in order: the `--check-only` steps, then in the full mode the example runs.
+/// Every step of a mode, in order: the `--check-only` steps, then in the full mode the example runs; `--runs-only` has
+/// only the example runs. `target_dir` is `<target>/dual`, the directory of the cfg and `dev` state; each step builds
+/// in the directory of its own state ([`DualStep::in_state_dir`]).
 pub(crate) fn dual_steps_for(mode: DualMode, target_dir: &str) -> Vec<DualStep> {
-    let mut steps = dual_steps(target_dir);
-    if mode == DualMode::Full {
+    let mut steps = Vec::new();
+    if mode != DualMode::RunsOnly {
+        steps.extend(dual_steps(target_dir));
+    }
+    if mode != DualMode::CheckOnly {
         steps.extend(dual_run_steps(target_dir));
     }
     steps
+        .into_iter()
+        .map(|step| step.in_state_dir(target_dir))
+        .collect()
 }
 
 /// The `(elements, max ULP)` of a line `CPU twin: matches (N elements, max ULP k)`, or `None` for any other text.
@@ -1985,12 +2056,19 @@ pub(crate) fn twin_run_problems(id: &str, twin: bool, also: &[&str], stdout: &st
     problems
 }
 
-/// `--check-only`, or no argument for the full mode.
+/// `--check-only`, `--runs-only`, or no argument for the full mode.
 pub(crate) fn parse_dual_args(args: &[String]) -> Result<DualMode, String> {
+    let has = |flag: &str| args.iter().any(|arg| arg == flag);
     match args {
         [] => Ok(DualMode::Full),
         [flag] if flag == "--check-only" => Ok(DualMode::CheckOnly),
-        _ => Err("check-dual takes only `--check-only` (CPU only, what CI runs)".into()),
+        [flag] if flag == "--runs-only" => Ok(DualMode::RunsOnly),
+        [_, _] if has("--check-only") && has("--runs-only") => Err(
+            "check-dual: `--check-only` and `--runs-only` exclude each other; run neither for the full mode".into(),
+        ),
+        _ => Err(
+            "check-dual takes only `--check-only` (CPU only, what CI runs) or `--runs-only` (only the example runs on the adapter)".into(),
+        ),
     }
 }
 
@@ -2104,8 +2182,9 @@ pub(crate) fn target_rustflags_variables(names: impl Iterator<Item = OsString>) 
     found
 }
 
-/// `cargo xtask check-dual [--check-only]`: the dual test build (`--cfg gust_dual`, D26) and its cross-crate
-/// proof. `--check-only` needs cargo only (no slangc, no GPU); the full mode also runs two examples on the GPU.
+/// `cargo xtask check-dual [--check-only | --runs-only]`: the dual test build (`--cfg gust_dual`, D26) and its
+/// cross-crate proof. `--check-only` needs cargo only (no slangc, no GPU); the full mode also runs two examples on the
+/// GPU; `--runs-only` runs only those example runs (the two options exclude each other).
 ///
 /// 1. `tests/dual` is formatted (`cargo fmt --check`; the root `cargo fmt --all` does not reach that workspace).
 /// 2. The workspace builds with the cfg (all targets) in `<target dir>/dual`.
@@ -2146,20 +2225,30 @@ pub(crate) fn check_dual(args: &[String]) -> Result<(), String> {
     }
     // The strict-plus-dual build of the precompiled fixture (E5 of `check-precompiled`), last: it is the only part
     // here that builds under another profile than `dev`.
-    for step in precompiled_dual_steps(target_dir) {
-        println!("check-dual {}: {}", step.id, step.shown());
-        run_dual_step(&root, &step)?;
+    if mode != DualMode::RunsOnly {
+        for step in precompiled_dual_steps(target_dir) {
+            println!("check-dual {}: {}", step.id, step.shown());
+            run_dual_step(&root, &step)?;
+        }
+    }
+    if mode == DualMode::RunsOnly {
+        println!(
+            "check-dual --runs-only: with --cfg gust_dual `cargo run` of vector-add and polynomial (debug profile, on the GPU) each printed the `CPU twin: matches` line, and without it vector-add printed nothing about the twin; the other steps were skipped (run `--check-only` for them)"
+        );
+        return Ok(());
     }
     println!(
         "check-dual passed: tests/dual is formatted and passes clippy with -D warnings; the workspace built with --cfg gust_dual; without it the tests/dual consumer's test (E1) and binary (E3) each failed with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib`, and with it (E2) the test dispatched on `gust::cpu::CpuDevice` and passed, and a production binary with a module routed to the CPU (E4) ran on `CpuDevice` with no cfg while the unrouted source (E4-control) failed with exactly one E0277, together with the overflow-mode test of a package with its own override and the two tests that dispatch an overflowing integer kernel (the dependency's twin followed the dependency's mode, the twin of the dependent's own kernel the dependent's). Last, the precompiled fixture tests/precompiled (E5 of check-precompiled) built with the cfg under GUST_PROFILE=native, its `app` test ran the CPU twin of the fixture's own kernel against the host reference, and `cargo tree -e features` of `app` showed no slang-runtime."
     );
-    match mode {
-        DualMode::CheckOnly => println!(
+    // `--runs-only` returned above, with its own summary.
+    if mode == DualMode::CheckOnly {
+        println!(
             "check-dual --check-only: needs cargo only; no slangc and no GPU was involved, and the example runs of the full mode were skipped"
-        ),
-        DualMode::Full => println!(
+        );
+    } else {
+        println!(
             "check-dual full mode: with --cfg gust_dual `cargo run` of vector-add and polynomial (debug profile, on the GPU) each printed the `CPU twin: matches` line, and without it vector-add printed nothing about the twin"
-        ),
+        );
     }
     Ok(())
 }
@@ -2247,6 +2336,14 @@ pub(crate) fn run_dual_step(root: &Path, step: &DualStep) -> Result<(), String> 
                     "check-dual {id}: cargo run failed (exit {}); the example needs a Vulkan adapter and its own assertions must hold",
                     exit_code(output.status)
                 ));
+            }
+            // A compile here, under the adapter's lock, would be invisible otherwise: print cargo's `Compiling` lines.
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            for line in without_colors(&stderr)
+                .lines()
+                .filter(|line| line.trim_start().starts_with("Compiling "))
+            {
+                println!("  {}", line.trim());
             }
             // The whole output of an example is long (the generated Slang); the lines about the twin are the point.
             for line in without_colors(&stdout)

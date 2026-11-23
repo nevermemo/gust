@@ -83,6 +83,8 @@
 
 mod buffers;
 mod cache;
+#[cfg(not(target_arch = "wasm32"))]
+mod capture;
 mod check;
 mod compile;
 mod completion;

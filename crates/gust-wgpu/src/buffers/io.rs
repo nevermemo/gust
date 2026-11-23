@@ -25,10 +25,7 @@ impl HeadlessDevice {
         access: GpuBufferAccess,
     ) -> GpuBuffer<T> {
         assert_pod_matches_storage_layout::<T>();
-        let mut usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
-        if access == GpuBufferAccess::ReadWrite {
-            usage |= wgpu::BufferUsages::COPY_SRC;
-        }
+        let usage = self.storage_usage(access);
         let raw = if values.is_empty() {
             self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),

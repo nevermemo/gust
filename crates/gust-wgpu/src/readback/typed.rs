@@ -101,14 +101,26 @@ impl HeadlessDevice {
         if buffer.access != GpuBufferAccess::ReadWrite {
             return Err(Error::PersistentBufferNotReadable);
         }
-        if buffer.is_empty() {
-            return Ok(TypedReadback {
+        Ok(self.start_raw_readback(&buffer.raw, buffer.len))
+    }
+
+    /// Copy the first `len` elements of `raw` (a buffer with `COPY_SRC`, holding at least that many `T`) into a
+    /// mappable staging buffer, submit the copy and request the mapping. Shared by the typed read-back and by capture
+    /// (`DeviceOptions::capture`), which checks the usage flag itself. The returned readback completes once a device
+    /// poll has run the `map_async` callback; an empty `len` submits nothing.
+    pub(crate) fn start_raw_readback<T: GpuPod>(
+        &self,
+        raw: &wgpu::Buffer,
+        len: usize,
+    ) -> TypedReadback<T> {
+        if len == 0 {
+            return TypedReadback {
                 mapping: None,
                 element: PhantomData,
-            });
+            };
         }
 
-        let byte_size = buffer.len as u64 * size_of::<T>() as u64;
+        let byte_size = len as u64 * size_of::<T>() as u64;
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("GUST persistent buffer readback"),
             size: byte_size,
@@ -120,7 +132,7 @@ impl HeadlessDevice {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("GUST persistent buffer readback encoder"),
             });
-        encoder.copy_buffer_to_buffer(&buffer.raw, 0, &readback, 0, byte_size);
+        encoder.copy_buffer_to_buffer(raw, 0, &readback, 0, byte_size);
         self.submit_counted([encoder.finish()]);
 
         let mapped = Completion::new();
@@ -130,10 +142,10 @@ impl HeadlessDevice {
             // the `Completion` anyway.
             let _ = callback.complete(result.map_err(|error| error.to_string()));
         });
-        Ok(TypedReadback {
+        TypedReadback {
             mapping: Some(PendingMapping { readback, mapped }),
             element: PhantomData,
-        })
+        }
     }
 
     /// [`HeadlessDevice::read_typed_buffer_timed`] for an `f32` buffer.

@@ -196,6 +196,7 @@ extern crate self as gust;
 mod abi;
 pub mod artifact;
 pub mod capability;
+pub mod capture;
 pub mod cpu;
 mod descriptor;
 mod dispatch;

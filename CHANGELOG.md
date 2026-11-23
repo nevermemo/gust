@@ -7,6 +7,12 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- Capture one GPU call and replay chosen invocations on the CPU twin (g2.cap). Every kernel with a twin gets a generated
+  `capture(&gpu, &call)` (test builds and `--cfg gust_dual`) returning a `gust::capture::Captured` with
+  `run_element(id)`, `run_until(id)` and `run_all()` (a call the device refuses is not captured);
+  new `DeviceOptions::capture` / `with_capture` lets read-only buffers be copied.
+  A replay reproduces the twin's order, not the GPU's schedule.
+
 - A batch can be recorded into the caller's command encoder (m14.encb, D251). New in `gust-compute-wgpu`:
   `HeadlessDevice::encode_batch(&mut encoder, &dispatches)` records without submitting and
   `EncodedJob::submitted(&index)` returns the job after the caller's `queue.submit`; `submit_batch_read` and

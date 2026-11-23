@@ -56,6 +56,7 @@ impl HeadlessDevice {
             limits: LimitsPolicy::Default,
             features: FeaturesPolicy::Default,
             capabilities: gust::capability::enabled(),
+            capture: false,
         })
         .await
     }
@@ -95,7 +96,9 @@ impl HeadlessDevice {
             })
             .await
             .map_err(|error| Error::RequestDevice(error.to_string()))?;
-        Ok(Self::finish(&adapter, device, queue, options.capabilities))
+        let mut opened = Self::finish(&adapter, device, queue, options.capabilities);
+        opened.capture = options.capture;
+        Ok(opened)
     }
 
     /// The one place a `HeadlessDevice` is built, for a device GUST opened and for one the caller opened (`adopt`):
@@ -130,6 +133,7 @@ impl HeadlessDevice {
             fragment_storage,
             capabilities,
             subgroup_sizes,
+            capture: false,
             pool: BufferPool::new(),
             submissions: AtomicU64::new(0),
             #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]

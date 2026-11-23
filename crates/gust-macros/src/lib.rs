@@ -106,6 +106,9 @@ mod value_match_untyped_tests;
 mod pad_tests;
 
 #[cfg(test)]
+#[path = "tests/capture.rs"]
+mod capture_tests;
+#[cfg(test)]
 #[path = "tests/task.rs"]
 mod task_tests;
 

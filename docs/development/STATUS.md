@@ -1046,6 +1046,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       `gust::task::submit_and_read` still makes 2-3 submissions; its switch to `submit_batch_read` is the next
       slice. RTX 5090: owed (quiet window 2026-11-22, D250): encode_batch tests and the Gpu suite. Opus review:
       merge after fixes; fixed; re-read MERGE.
+    - g2.cap (D240, debugging design r2 section 2.5): capture one GPU call and replay it on the CPU twin. Generated
+      `capture(&gpu, &call)` (test builds and `--cfg gust_dual`) validates the call with the device's own dispatch
+      validation, copies every bound buffer and uniform, and returns `gust::capture::Captured` with `run_element`
+      (one invocation), `run_until` (twin order up to an id) and `run_all` (the twin's whole launch, padding
+      included). `DeviceOptions::with_capture` makes read-only storage copyable; without it the error names the
+      option. Textures and samplers: a typed `Unsupported`; no twin (or no portable body): `NoTwin`. Limit stated:
+      replay is the twin's order, not the GPU's history; a kernel with variants replays its portable body. Capture's
+      read-back goes through the counted submit path. Radeon 890M: capture tests 10, `GPU_SUITE_PIN` 629 over 67.
+      RTX 5090: owed (quiet window 2026-11-22, D250). Opus review: merge after fixes; fixed; re-read MERGE.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

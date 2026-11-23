@@ -2879,9 +2879,13 @@ fn a_storage_kernel_gets_exactly_one_twin_behind_the_dual_cfg() {
         )),
         "{text}"
     );
-    // The twin is the only place that names the cfg: the host API and the descriptor are not gated.
-    assert_eq!(text.matches("any (test , gust_dual)").count(), 1, "{text}");
-    assert_eq!(text.matches("cfg (").count(), 1, "{text}");
+    // The twin and the `capture` beside it (g2.cap) are the only places that name the cfg: the host API and the
+    // descriptor are not gated.
+    assert_eq!(text.matches("any (test , gust_dual)").count(), 2, "{text}");
+    assert_eq!(text.matches("cfg (").count(), 2, "{text}");
+    let twin_only = without_capture(&text, "add");
+    assert_eq!(twin_only.matches("any (test , gust_dual)").count(), 1);
+    assert_eq!(twin_only.matches("cfg (").count(), 1);
 }
 
 #[test]
@@ -2924,7 +2928,19 @@ fn the_twin_has_the_exact_shape_of_the_hand_written_one_in_gust_cpu() {
 
 #[test]
 fn the_twin_acquires_read_only_with_read_and_read_write_with_write() {
-    let text = expansion(VECTOR_ADD).to_string();
+    let whole = expansion(VECTOR_ADD).to_string();
+    // The twin acquires them, and the replay of `capture` (g2.cap) acquires them the same way: each count doubles.
+    assert_eq!(
+        whole.matches(":: cpu :: read :: < float > (").count(),
+        4,
+        "{whole}"
+    );
+    assert_eq!(
+        whole.matches(":: cpu :: write :: < float > (").count(),
+        2,
+        "{whole}"
+    );
+    let text = without_capture(&whole, "add");
     assert_eq!(
         text.matches(":: cpu :: read :: < float > (").count(),
         2,
@@ -2945,8 +2961,17 @@ fn the_twin_acquires_read_only_with_read_and_read_write_with_write() {
          mut y: RWStructuredBuffer<float>) { let i = id.x; if i < x.len() && i < y.len() {} } }",
     )
     .to_string();
-    assert_eq!(swap.matches(":: cpu :: write :: <").count(), 2, "{swap}");
-    assert_eq!(swap.matches(":: cpu :: read :: <").count(), 0, "{swap}");
+    let swap_twin = without_capture(&swap, "swap");
+    assert_eq!(
+        swap_twin.matches(":: cpu :: write :: <").count(),
+        2,
+        "{swap}"
+    );
+    assert_eq!(
+        swap_twin.matches(":: cpu :: read :: <").count(),
+        0,
+        "{swap}"
+    );
     assert!(swap.contains("impl :: gust :: Run < swap , 2 >"), "{swap}");
 }
 
@@ -2961,7 +2986,10 @@ fn the_invocation_argument_is_built_by_from_global_id_for_every_spelling() {
         let expected = format!(
             "< {spelling} as :: gust :: cpu :: FromGlobalId > :: from_global_id (__gust_id)"
         );
-        assert_eq!(text.matches(&expected).count(), 1, "{spelling}: {text}");
+        // Once in the twin; the replay of `capture` (g2.cap) calls the same shadow body and so builds it once more.
+        assert_eq!(text.matches(&expected).count(), 2, "{spelling}: {text}");
+        let twin_only = without_capture(&text, "run");
+        assert_eq!(twin_only.matches(&expected).count(), 1, "{spelling}");
     }
 }
 
@@ -3114,8 +3142,35 @@ fn the_cpu_expansion_is_the_other_expansion_without_the_gate_and_nothing_else() 
     // is no `GpuKernel` impl.
     assert_eq!(
         squeezed(&cpu),
-        squeezed(&cpu_target_of(&other.replace(TWIN_CFG, UNGATED_IMPL)))
+        squeezed(&cpu_target_of(
+            &without_capture(&other, "add").replace(TWIN_CFG, UNGATED_IMPL)
+        ))
     );
+    // `capture` is the one thing the `cpu` profile lacks besides the gate: there is no GPU to capture from.
+    assert!(other.contains("pub fn capture"), "{other}");
+    assert!(!cpu.contains("pub fn capture"), "{cpu}");
+}
+
+/// `text` without the gated `capture` item of `kernel` (g2.cap): the `impl <kernel> { .. }` that stands beside the twin
+/// under the same gate. What is left is the expansion as it was before `capture` existed.
+fn without_capture(text: &str, kernel: &str) -> String {
+    let marker = format!("# [cfg (any (test , gust_dual))] impl {kernel} {{");
+    let start = text.find(&marker).expect("a capture item");
+    let rest = &text[start..];
+    let mut depth = 0_usize;
+    for (offset, character) in rest.char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return format!("{}{}", &text[..start], &rest[offset + 1..]);
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unbalanced capture item in {text}");
 }
 
 #[test]
@@ -3177,7 +3232,16 @@ fn kernels_without_a_twin_have_none_under_cpu_either() {
     let other = expansion_for(opted_out, Profile::Other).to_string();
     assert!(!cpu.contains("impl :: gust :: Run"), "{cpu}");
     assert!(!cpu.contains(":: cpu :: CpuDevice"), "{cpu}");
-    assert_eq!(squeezed(&cpu), squeezed(&cpu_target_of(&other)));
+    // The `GPU` build has the `capture` that says there is no twin (g2.cap); the `cpu` build has no `capture` at all.
+    assert!(
+        other.contains(":: gust :: capture :: Error :: NoTwin"),
+        "{other}"
+    );
+    assert!(!cpu.contains("capture"), "{cpu}");
+    assert_eq!(
+        squeezed(&cpu),
+        squeezed(&cpu_target_of(&without_capture(&other, "add")))
+    );
 }
 
 /// `text`, an expansion for a GPU build, without the split variants (m11.g4a): the `const __GUST_SPLIT_<kernel>`
@@ -3290,7 +3354,12 @@ fn cpu_unsupported_emits_no_twin_and_keeps_the_typed_host_api() {
     );
     let text = output.to_string();
     assert!(!text.contains("impl :: gust :: Run"), "{text}");
-    assert!(!text.contains("any (test , gust_dual)"), "{text}");
+    // The only gated item is the `capture` that says there is no twin (g2.cap).
+    assert_eq!(text.matches("any (test , gust_dual)").count(), 1, "{text}");
+    assert!(
+        text.contains(":: gust :: capture :: Error :: NoTwin"),
+        "{text}"
+    );
     assert!(!text.contains(":: cpu :: CpuDevice"), "{text}");
     let item = typed_impl(&output, "add").expect("typed impl of `add`");
     for name in ["call", "submit", "dispatch"] {
@@ -3299,8 +3368,11 @@ fn cpu_unsupported_emits_no_twin_and_keeps_the_typed_host_api() {
     assert!(text.contains("impl :: gust :: Kernel for add"), "{text}");
     // The option changes nothing else: the same module without it is this one plus the twin.
     assert_eq!(
-        squeezed(&text),
-        squeezed(&without_twin(&expansion(VECTOR_ADD).to_string()))
+        squeezed(&without_capture(&text, "add")),
+        squeezed(&without_capture(
+            &without_twin(&expansion(VECTOR_ADD).to_string()),
+            "add"
+        ))
     );
 }
 

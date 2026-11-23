@@ -711,7 +711,8 @@ fn an_untagged_module_is_what_it_was_and_reads_no_route() {
     );
     assert!(plain.contains(GPU_MARKER), "{plain}");
     assert!(plain.contains("require_artifact (false)"), "{plain}");
-    assert_eq!(plain.matches(GATE).count(), 1, "{plain}");
+    // The twin and the `capture` beside it (g2.cap).
+    assert_eq!(plain.matches(GATE).count(), 2, "{plain}");
     assert!(!plain.contains("GUST_ROUTE__"), "{plain}");
     // The variables and the declared default say nothing about a module that carries no tag.
     let with_variables = text(

@@ -462,7 +462,8 @@ pub(super) fn expand_validated_with(
                     profile,
                 )?
             }
-            None => TokenStream::new(),
+            // No twin, but a call can still be captured: `capture` says so (`NoTwin`).
+            None => capture::no_twin_items(stage, &original_name, &function.sig.inputs, profile)?,
         };
         retire_kernel(function, typecheck_name.clone());
         pending.push(PendingKernel {

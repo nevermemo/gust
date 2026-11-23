@@ -16,6 +16,6 @@ Queue cost: today a `submit()` makes two queue submissions with a fresh output a
 output (the pool clears it itself). That is a known gap against D251, counted from the code paths of
 `gust::task::submit_and_read` and not measured on a queue. The generated code only builds the kernel's `Call`; the
 dispatch, the read-back and the output buffer are made in `submit_and_read`, so the one-submission entry point of slice
-m14.encb changes `crates/gust/src/task.rs` alone. (The uploads of the captures are `write_buffer` calls, not
+m14.encb needs no change to generated code (its encode-plus-read-back entry point itself lives in the backend). (The uploads of the captures are `write_buffer` calls, not
 submissions; an empty captured slice on a recycled pool buffer is the one corner that is cleared in a submission of its
 own.)

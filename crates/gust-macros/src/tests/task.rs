@@ -357,6 +357,9 @@ fn a_capture_whose_element_type_the_macro_cannot_see_is_e1002_and_names_the_entr
             "&mut data, [data: &mut [f32]], |i| { data[i] = data[i] * k; }",
             "`k: f32`",
         ),
+        // the form follows the use: an index use never suggests a scalar, any other use never a slice
+        ("n, |i| -> f32 { (a)[i] }", "`a: &[f32]`"),
+        ("n, |i| -> f32 { a[i].x }", "`a: &[f32]`"),
         // an in-place target with no entry, and one whose entry is read-only
         ("&mut data, |i| { data[i] = 1.0; }", "`data: &mut [f32]`"),
         (
@@ -368,6 +371,28 @@ fn a_capture_whose_element_type_the_macro_cannot_see_is_e1002_and_names_the_entr
         let scratch = Scratch::new("entry");
         let text = expand(input, &scratch, 1, Profile::Other);
         assert!(text.contains(entry), "{entry} not in {text}");
+    }
+    // A name the body uses that the list lacks names one form: the slice for an index use, the scalar otherwise.
+    for (input, name, scalar) in [
+        ("n, |i| -> f32 { a[i] }", "a", false),
+        ("n, [k: f32], |i| -> f32 { a[i] * k }", "a", false),
+        ("n, [a: &[f32]], |i| -> f32 { a[i] * scale }", "scale", true),
+        ("n, |i| -> u32 { n }", "n", true),
+        (
+            "&mut data, [data: &mut [f32]], |i| { data[i] = data[i] * k; }",
+            "k",
+            true,
+        ),
+    ] {
+        let scratch = Scratch::new("form");
+        let text = expand(input, &scratch, 1, Profile::Other);
+        let (this, other) = if scalar {
+            (format!("`{name}: f32`"), format!("`{name}: &[f32]`"))
+        } else {
+            (format!("`{name}: &[f32]`"), format!("`{name}: f32`"))
+        };
+        assert!(text.contains(&this), "{this} not in {text}");
+        assert!(!text.contains(&other), "{other} in {text}");
     }
 }
 
@@ -383,6 +408,25 @@ fn names_the_body_binds_are_not_missing_list_entries() {
     ] {
         let text = expand(input, &scratch, 1, Profile::Other);
         assert!(!failed(&text), "{input}\n{text}");
+    }
+    // The shapes that bind or name something without being a list entry: whatever else the dialect says of them, it is
+    // not E1002.
+    for input in [
+        // a nested closure parameter
+        "n, [a: &[f32]], |i| -> f32 { let f = |t: f32| t + 1.0; f(a[i]) }",
+        // a `match` binding
+        "n, [a: &[f32]], |i| -> f32 { match i { 0u32 => 1.0, k => a[k] } }",
+        // a prelude call
+        "n, [a: &[f32]], |i| -> f32 { subgroup_add(a[i]) }",
+        "n, [a: &[f32]], |i| -> f32 { abs(a[i]) }",
+        // a method receiver (a parameter and a local)
+        "n, [a: &[f32]], |i| -> f32 { let v = a[i]; v.abs() }",
+        "n, [a: &[f32]], |i| -> u32 { i.min(3u32) }",
+        // struct shorthand
+        "n, [a: &[f32]], |i| -> Vec2 { let x = a[i]; let y = 1.0; Vec2 { x, y } }",
+    ] {
+        let text = expand(input, &scratch, 1, Profile::Other);
+        assert!(!text.contains("GUST-E1002"), "{input}\n{text}");
     }
 }
 
@@ -463,6 +507,31 @@ fn a_read_of_the_in_place_target_at_another_index_is_e1008() {
         "&mut data, [data: &mut [f32]], |k| { data[k] = data[k] * 0.5; }",
         "&mut data, [data: &mut [f32]], |i| { let j = i + 1u32; data[i] = data[i] + 1.0; }",
         "&mut data, [data: &mut [f32]], |i| { for step in 0u32..4u32 { data[i] = data[i] + 1.0; } }",
+    ] {
+        let text = expand(input, &scratch, 1, Profile::Other);
+        assert!(!failed(&text), "{input}\n{text}");
+    }
+}
+
+/// The probe of fix round 2: a name bound to the target expanded cleanly before the rule, so the write and the read
+/// through it escaped E1008.
+#[test]
+fn an_alias_of_the_in_place_target_is_e1008() {
+    for input in [
+        "&mut data, [data: &mut [f32]], |i| { let d = data; d[i + 1u32] = 0.0; }",
+        "&mut data, [data: &mut [f32]], |i| { let d = data; data[i] = d[i + 1u32]; }",
+        "&mut data, [data: &mut [f32]], |i| { let d = (data); d[i + 1u32] = 0.0; }",
+        "&mut data, [data: &mut [f32], o: &[f32]], |i| { let d = o; data[i] = d[i]; let e = data; e[i] = 0.0; }",
+        "&mut data, [data: &mut [f32]], |i| { match data { d => { d[i + 1u32] = 0.0; } } }",
+        "&mut data, [data: &mut [f32]], |i| { if let d = data { d[i + 1u32] = 0.0; } }",
+    ] {
+        rejected(input, Code::TaskInPlaceRead);
+    }
+    // A free stage has no target to hide, and a copy of a value is not an alias.
+    let scratch = Scratch::new("alias");
+    for input in [
+        "n, [a: &[f32]], |i| -> f32 { let d = a; d[i + 1u32] }",
+        "&mut data, [data: &mut [f32]], |i| { let v = data[i]; data[i] = v + 1.0; }",
     ] {
         let text = expand(input, &scratch, 1, Profile::Other);
         assert!(!failed(&text), "{input}\n{text}");

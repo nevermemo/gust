@@ -174,8 +174,9 @@ impl TaskPlan {
     }
 
     /// The host function inside the generated module: it uploads the inputs, records the extent, and hands the closure
-    /// that builds the kernel's `Call` to `gust::task::submit_and_read`, which makes the output buffer and every queue
-    /// submission of the task (the dispatch and the read-back).
+    /// that builds the kernel's `Call` to `gust::task::submit_and_read`, which makes the output buffer and the queue
+    /// submissions of the dispatch and of the read-back. (The one exception: an empty captured slice on a recycled pool
+    /// buffer is cleared in its own submission, from generated code, through `MapArg::bind`.)
     pub(crate) fn host_items(&self, plan: &Plan) -> TokenStream {
         let record = format_ident!("{}", "__GustExtent");
         let count = proc_macro2::Literal::usize_unsuffixed(1 + plan.buffers().count());
@@ -542,7 +543,7 @@ impl Rules<'_> {
 
     /// A value path of the body. A single name that is not a parameter, a capture or a local is a capture the list does
     /// not have: the kernel sees nothing of the call site, so the entry is the only way to name it.
-    fn used(&mut self, path: &syn::ExprPath) {
+    fn used(&mut self, path: &syn::ExprPath, indexed: bool) {
         let Some(ident) = path.path.get_ident().filter(|_| path.qself.is_none()) else {
             return;
         };
@@ -552,15 +553,56 @@ impl Rules<'_> {
         {
             return;
         }
+        // What the body does with the name tells the form: an index use is a host slice, any other use a scalar.
+        let entry = if indexed {
+            format!(
+                "write the entry `{name}: &[f32]` for a host slice (with the element type of `{name}` in place of `f32`)"
+            )
+        } else {
+            format!(
+                "write the entry `{name}: f32` for a scalar (with the type of `{name}`, `u32`, `i32`, `f32` or `bool`, \
+                 in place of `f32`)"
+            )
+        };
         self.refuse(
             Code::TaskCapture,
             ident,
             format!(
                 "`{name}` is used in the body, but a stage sees only its parameters and the entries of its capture \
-                 list: write the entry, `{name}: &[f32]` for a host slice or `{name}: f32` for a scalar (with the \
-                 type of `{name}`: `u32`, `i32`, `f32` or `bool`, or the element type of the slice)"
+                 list: {entry}"
             ),
         );
+    }
+
+    /// A binding (a `let`, a `match` or `if let` scrutinee) of a bare view or target name in an in-place body: the new
+    /// name would index the target where E1008 cannot see it (`let d = data; d[i + 1u32] = 0.0;`).
+    fn aliased(&mut self, value: &syn::Expr) {
+        if self.target.is_none() {
+            return;
+        }
+        let mut value = value;
+        while let syn::Expr::Paren(paren) = value {
+            value = &paren.expr;
+        }
+        let syn::Expr::Path(path) = value else {
+            return;
+        };
+        if let Some(name) = path
+            .path
+            .get_ident()
+            .filter(|name| path.qself.is_none() && self.is_view(name))
+        {
+            self.refuse(
+                Code::TaskInPlaceRead,
+                value,
+                format!(
+                    "an in-place stage does not bind `{0}` to another name: a read or a write through the alias would \
+                     reach `{0}` at an index the check cannot see, so the GPU and the CPU twin could differ; index \
+                     `{0}` itself",
+                    name.unraw()
+                ),
+            );
+        }
     }
 
     /// An assignment (or a compound one) to `place`.
@@ -597,7 +639,19 @@ impl<'ast> Visit<'ast> for Rules<'_> {
         syn::visit::visit_pat_ident(self, pattern);
     }
 
+    fn visit_local(&mut self, local: &'ast syn::Local) {
+        if let Some(init) = &local.init {
+            self.aliased(&init.expr);
+        }
+        syn::visit::visit_local(self, local);
+    }
+
     fn visit_expr(&mut self, expression: &'ast syn::Expr) {
+        match expression {
+            syn::Expr::Match(matched) => self.aliased(&matched.expr),
+            syn::Expr::Let(binding) => self.aliased(&binding.expr),
+            _ => {}
+        }
         match expression {
             // The callee of a call is a function of the dialect, not a value: only its arguments are names used.
             syn::Expr::Call(call) if matches!(&*call.func, syn::Expr::Path(_)) => {
@@ -606,7 +660,7 @@ impl<'ast> Visit<'ast> for Rules<'_> {
                 }
                 return;
             }
-            syn::Expr::Path(path) => self.used(path),
+            syn::Expr::Path(path) => self.used(path, false),
             syn::Expr::Assign(assign) => self.written(&assign.left),
             syn::Expr::Binary(binary) if is_compound_assignment(&binary.op) => {
                 self.written(&binary.left);
@@ -623,6 +677,14 @@ impl<'ast> Visit<'ast> for Rules<'_> {
                 }
             }
             syn::Expr::Index(index) => {
+                // `a[..]` of a name nothing binds: the slice form is the entry to write.
+                let mut base = &*index.expr;
+                while let syn::Expr::Paren(paren) = base {
+                    base = &paren.expr;
+                }
+                if let syn::Expr::Path(path) = base {
+                    self.used(path, true);
+                }
                 if let Some(name) = root_name(&index.expr).filter(|name| self.is_view(name)) {
                     let mut at = &*index.index;
                     while let syn::Expr::Paren(paren) = at {

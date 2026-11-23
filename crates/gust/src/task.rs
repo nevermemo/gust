@@ -17,7 +17,7 @@
 //! The generated code builds the kernel's [`Call`](crate::Call) (`run::call_extent`) and nothing else about the
 //! submission: [`submit_and_read`] makes the output buffer, submits that call, and starts the read-back. So the
 //! dispatch and the read-back are made in that one function, and decision D251 (one command encoder, one `queue.submit`
-//! per submit) is a change to it alone. Today it is a known gap against D251, counted from the code paths and not
+//! per submit) needs no change to generated code (the encode-plus-read-back entry point itself lives in the backend). Today it is a known gap against D251, counted from the code paths and not
 //! measured on a queue: the dispatch is one submission (`Run::submit_call`), and the read-back copy is a second one
 //! (`MapHost::readback_async`) that is made when the returned future is first polled. A zeroed output that the
 //! device's buffer pool recycles adds a third, the pool's own clear (`MapHost::zeroed`), which is also made in
@@ -187,7 +187,9 @@ pub trait TaskDevice<K: Kernel, const N: usize>: MapHost + Run<K, N> {}
 
 impl<D: MapHost + Run<K, N>, K: Kernel, const N: usize> TaskDevice<K, N> for D {}
 
-/// The one place where a task reaches the queue (see the module's section on it).
+/// The place where a task's dispatch and read-back reach the queue (see the module's section on it). The one other
+/// submission is an empty captured slice's clear on a recycled pool buffer, which generated code makes in its own
+/// submission.
 ///
 /// It makes the output buffer (`sink`), asks `build` for the kernel's [`Call`] over the context and that buffer (the
 /// generated closure binds the kernel's resources and does nothing else), submits the call, and returns the read-back

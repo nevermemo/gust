@@ -2040,14 +2040,14 @@ A host slice, and the target of an in-place stage, are flat views of rank 1: `a[
 Reached through `#[gpu_module]`, raised by `gpu_task!` only (the function-like macro that shares the validator of `#[gpu_module]`).
 Rejected: `a[(i, 0u32)]` and `data[(i, 0u32)]`.
 Fixture: `tests/ui/task-index-rank`.
-Write instead: index the slice with one value, computed from the invocation indices (`a[y * w + x]`).
+Write instead: index the slice with one value, computed from the invocation indices, with the width in the capture list (`[a: &[u32], w: u32]` and `a[y * w + x]`).
 Decision: plan m14.s2, slice s2a1.
 
 ### GUST-E1008 read or write of an in-place target away from its own index
 
-An in-place stage runs its invocations in no defined order and in parallel, so it may read or write its target only at the invocation's own index (`data[i]` with `i` the closure's parameter): an access to another element races with the write of another invocation. The closure's parameter cannot be bound again in the body (a `let`, a `for` pattern, a closure parameter or a `match` arm named `i`), because the new `i` would hide a shifted index behind the name.
+An in-place stage runs its invocations in no defined order and in parallel, so it may read or write its target only at the invocation's own index (`data[i]` with `i` the closure's parameter): an access to another element races with the write of another invocation. The closure's parameter cannot be bound again in the body (a `let`, a `for` pattern, a closure parameter or a `match` arm named `i`), because the new `i` would hide a shifted index behind the name. A view (the target or a capture slice) cannot be bound to another name either (`let d = data;`, or a `match` or `if let` on it), because an index of the alias would reach the target where the check cannot see it.
 Reached through `#[gpu_module]`, raised by `gpu_task!` only (the function-like macro that shares the validator of `#[gpu_module]`).
-Rejected: `data[i] = data[i + 1u32];`, `data[i + 1u32] = 1.0;`, `data[i] = data[0u32];`, `let i = i + 1u32; data[i] = 0.0;` and `for i in 0..4u32 { data[i] = 0.0; }`.
+Rejected: `data[i] = data[i + 1u32];`, `data[i + 1u32] = 1.0;`, `data[i] = data[0u32];`, `let i = i + 1u32; data[i] = 0.0;`, `for i in 0..4u32 { data[i] = 0.0; }` and `let d = data; d[i + 1u32] = 0.0;`.
 Fixture: `tests/ui/task-in-place-read`.
 Write instead: read the neighbour from a copy passed as a host-slice capture (`prev: &[T]`), or use two stages; give a new value a name other than the closure's parameter.
 Decision: plan m14.s2, slice s2a1.

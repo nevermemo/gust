@@ -7,18 +7,16 @@ every value is exact; a program with arbitrary floats should compare with a tole
 
 ## Batches in your own encoder
 
-A program that records its own passes on a shared device (`HeadlessDevice::adopt`) should not pay a queue submission
-for every GUST batch: each extra submission costs host time every frame.
-`device.encode_batch(&mut encoder, &dispatches)`
-records a batch into the encoder you pass and never submits it, so a frame can be GUST batch, your own pass, GUST
-batch, one `finish` and one `queue.submit`. `EncodedJob::submitted(&index)` takes the index that `queue.submit`
-returned and gives back the same `WgpuJob` that `submit_batch` returns, which you wait on or poll. `submit_batch` is
-those steps with an encoder of its own. `device.submit_batch_read(&dispatches, &clear, &buffer)` is the
-one-submission form of a dispatch followed by a read-back (it also zeroes the buffers in `clear`, which saves the
-separate submission that a recycled zeroed output otherwise costs, provided the output comes from
-`uncleared_buffer`: `GpuVec::zeroed_on` still clears in a submission of its own); `encode_batch_read` is its encode form.
-`device.gust_submissions()` counts the submissions GUST itself makes, so a test can state a budget; on a shared device
-your own submissions are not in it.
+A program that records its own passes on a shared device (`HeadlessDevice::adopt`) should not pay a queue submission for
+every GUST batch: each extra submission costs host time every frame. `device.encode_batch(&mut encoder, &dispatches)`
+records a batch into the encoder you pass and never submits it, so a frame can be GUST batch, your own pass, GUST batch,
+one `finish` and one `queue.submit`. `EncodedJob::submitted(&index)` takes the index that `queue.submit` returned and
+gives back the same `WgpuJob` that `submit_batch` returns, which you wait on or poll. `submit_batch` is those steps with
+an encoder of its own. `device.submit_batch_read(&dispatches, &clear, &buffer)` is the one-submission form of a dispatch
+followed by a read-back (it also zeroes the buffers in `clear`, which saves the separate submission that a recycled
+zeroed output otherwise costs, provided the output comes from `uncleared_buffer`: `GpuVec::zeroed_on` still clears in a
+submission of its own); `encode_batch_read` is its encode form. `device.gust_submissions()` counts the submissions GUST
+itself makes, so a test can state a budget; on a shared device your own submissions are not in it.
 
 The rules are those of one wgpu queue, which GUST does not change:
 

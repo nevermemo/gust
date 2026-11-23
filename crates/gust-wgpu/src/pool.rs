@@ -461,8 +461,8 @@ impl PoolShared {
 ///   is cleared with `CommandEncoder::clear_buffer` in a submission of its own (queue order puts it before every later
 ///   one), a fresh one is zero by wgpu's guarantee. Buffers filled from a slice are written over their whole logical
 ///   range.
-/// * An uncleared hand-out (`HeadlessDevice::uncleared_buffer`) is not zeroed by the pool: a recycled one holds what its
-///   previous user left until the call that takes it in its `clear` list zeroes it.
+/// * An uncleared hand-out (`HeadlessDevice::uncleared_buffer`) is not zeroed by the pool: a recycled one holds what
+///   its previous user left until the call that takes it in its `clear` list zeroes it.
 /// * A buffer with a mapping pending or active is never put back, so it can never be handed out while mapped. A
 ///   staging buffer that a recorded command still copies into, whose `EncodedRead` was dropped, is retired in the same
 ///   way (`PoolStats::retired`).

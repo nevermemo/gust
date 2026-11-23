@@ -173,11 +173,11 @@ impl<T: GpuPod> PendingRead<T> {
 
     /// Block until the copied values are ready. Native only. It waits for the submission that carries the copy, not
     /// for later work of yours on the queue, then for the mapping.
-    #[cfg(not(target_arch = "wasm32"))]
     ///
     /// # Errors
     ///
     /// [`Error::ForeignPersistentBuffer`] when `device` is not the device that made this read-back.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn wait(self, device: &HeadlessDevice) -> Result<Vec<T>, Error> {
         self.check_device(device)?;
         if let Some(submission) = self.submission.clone() {

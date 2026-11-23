@@ -33,6 +33,39 @@ resources. For every public kernel the macro defines a zero-sized host handle wi
 module: `module::kernel`. Its `DESCRIPTOR` holds the generated Slang source and the entry point, and its typed
 `call`, `submit` and `dispatch` functions are how the host runs it ([chapter 4][ch4]).
 
+## A map over your own structs
+
+A free scalar function takes `#[gpu_fn]` and becomes an element-wise map (`f::map(..)` and its relatives). A
+function that takes or returns a struct of your own is written inside the `#[gpu_module]` module that declares the
+struct, with `#[gpu_fn]` on it, because the module is where the macro sees the struct (its layout, its Slang
+declaration and its `GpuPod` impl are the module's own). The calls go in a module of the function's name inside the
+module, `module::f::map(..)`; the function stays a helper of the module that its own kernel calls, and `impl` methods
+of the struct are available to its body.
+
+```text
+#[gust::gpu_module]
+pub mod records {
+    pub struct Item { pub pos: Vec2, pub id: u32, pub weight: f32 }
+
+    #[gust::gpu_fn]
+    pub fn scale_item(item: Item, k: f32) -> Item {
+        let mut scaled = item;
+        scaled.pos = Vec2::new(item.pos.x * k, item.pos.y + k);
+        scaled.id = item.id + 1u32;
+        scaled.weight = item.weight * k;
+        scaled
+    }
+}
+// host: records::scale_item::map(&items, gust::map::Broadcast(3.0)) -> Result<Vec<Item>, gust::map::Error>
+```
+
+A parameter and the result may each be such a struct, a scalar or a vector, with a slice, an array, a `Broadcast` or
+a resident `GpuVec` as the argument. The struct holds what any storage struct of a module holds: a field the module
+refuses (a 3-wide vector, an enum, a layout with padding) is refused with the module's own code, and a struct
+declared outside the module is GUST-E0714. This example is `records::scale_item` of the fixture
+`tests/fixtures/map.rs`, run against a host computation and the CPU twin by the test
+`a_struct_in_and_out_with_a_broadcast_scalar_beside_it` of `crates/gust-wgpu/tests/map.rs`.
+
 ## A kernel with a uniform
 
 The first listing is gallery entry G2, `saxpy-uniform` in the repository's `gallery/` directory. It computes

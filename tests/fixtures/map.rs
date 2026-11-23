@@ -37,3 +37,31 @@ pub fn mirror(v: Vec2, s: f32) -> Vec2 {
 pub fn add_one(x: u32) -> u32 {
     x + 1u32
 }
+
+// m14.mapw1: a user struct is a map's element when the function is written inside the `#[gpu_module]` module that
+// declares it (`records::scale_item::map(..)`). The struct has a vector field, so its stride is the 16 bytes of
+// `Vec2` (8, alignment 8) + `u32` + `f32`.
+#[gust::gpu_module]
+pub mod records {
+    pub struct Item {
+        pub pos: Vec2,
+        pub id: u32,
+        pub weight: f32,
+    }
+
+    // A struct in and a struct out, with a broadcast scalar beside it.
+    #[gust::gpu_fn]
+    pub fn scale_item(item: Item, k: f32) -> Item {
+        let mut scaled = item;
+        scaled.pos = Vec2::new(item.pos.x * k, item.pos.y + k);
+        scaled.id = item.id + 1u32;
+        scaled.weight = item.weight * k;
+        scaled
+    }
+
+    // A struct in and a scalar out.
+    #[gust::gpu_fn]
+    pub fn item_total(item: Item) -> f32 {
+        item.pos.x + item.pos.y + item.weight + item.id as f32
+    }
+}

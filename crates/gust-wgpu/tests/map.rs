@@ -1,4 +1,5 @@
-//! The element-wise map calls of `#[gpu_fn]` on a function (m7.a1, D60; Gpu tier).
+//! The element-wise map calls of `#[gpu_fn]` on a function (m7.a1, D60; Gpu tier), and of a `#[gpu_fn]` inside a
+//! `#[gpu_module]` module over its struct (m14.mapw1, D221).
 //!
 //! `tests/fixtures/map.rs` holds the functions; each gets `f::map`, `f::map_on`, `f::map_gpu`, `f::map_async` and the
 //! rest. Every comparison is against a host reference written here with plain Rust arithmetic: the float inputs are
@@ -337,4 +338,168 @@ fn more_elements_than_one_round_takes_a_second_round() {
         .zip(&input)
         .position(|(out, input)| *out != input + 1);
     assert_eq!(wrong, None, "the first wrong element");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// User structs (m14.mapw1, D221): `records::scale_item` and `records::item_total` of the fixture, written inside the
+// `#[gpu_module]` module that declares `Item`. Every comparison is against a host computation written here, and the
+// CPU twin (`map_on` over `CpuDevice`) runs the same functions.
+// ---------------------------------------------------------------------------------------------------------------
+
+use records::Item;
+
+/// An item whose fields are small integer-valued numbers, different in every position and between `salt`s.
+fn items(len: usize, salt: u32) -> Vec<Item> {
+    let x = floats(len, salt);
+    let y = floats(len, salt + 100);
+    let w = floats(len, salt + 200);
+    (0..len)
+        .map(|i| Item {
+            pos: Vec2::new(x[i], y[i]),
+            id: (i as u32).wrapping_mul(7) % 5000,
+            weight: w[i],
+        })
+        .collect()
+}
+
+/// The fields of items, which have no `PartialEq`: position, id, weight.
+fn fields(items: &[Item]) -> Vec<(f32, f32, u32, f32)> {
+    items
+        .iter()
+        .map(|item| (item.pos.x, item.pos.y, item.id, item.weight))
+        .collect()
+}
+
+fn scale_reference(item: &Item, k: f32) -> Item {
+    Item {
+        pos: Vec2::new(item.pos.x * k, item.pos.y + k),
+        id: item.id + 1,
+        weight: item.weight * k,
+    }
+}
+
+fn total_reference(item: &Item) -> f32 {
+    item.pos.x + item.pos.y + item.weight + item.id as f32
+}
+
+#[test]
+fn a_struct_in_and_out_with_a_broadcast_scalar_beside_it() {
+    let cpu = CpuDevice::new();
+    for len in SIZES {
+        let input = items(len, 1);
+        let expected = fields(
+            &input
+                .iter()
+                .map(|item| scale_reference(item, 3.0))
+                .collect::<Vec<_>>(),
+        );
+        let gpu = records::scale_item::map(&input, Broadcast(3.0)).unwrap();
+        assert_eq!(fields(&gpu), expected, "GPU, {len} elements");
+        let twin = records::scale_item::map_on(&cpu, &input, Broadcast(3.0)).unwrap();
+        assert_eq!(fields(&twin), expected, "CPU twin, {len} elements");
+    }
+}
+
+#[test]
+fn a_struct_in_and_a_scalar_out() {
+    let cpu = CpuDevice::new();
+    for len in SIZES {
+        let input = items(len, 2);
+        let expected: Vec<f32> = input.iter().map(total_reference).collect();
+        assert_eq!(
+            records::item_total::map(&input).unwrap(),
+            expected,
+            "GPU, {len} elements"
+        );
+        assert_eq!(
+            records::item_total::map_on(&cpu, &input).unwrap(),
+            expected,
+            "CPU twin, {len} elements"
+        );
+    }
+}
+
+#[test]
+fn a_broadcast_struct_is_read_at_index_zero() {
+    let cpu = CpuDevice::new();
+    let item = Item {
+        pos: Vec2::new(5.0, -7.0),
+        id: 41,
+        weight: 11.0,
+    };
+    for len in [1usize, 257, 1000] {
+        let ks = floats(len, 3);
+        let expected = fields(
+            &ks.iter()
+                .map(|k| scale_reference(&item, *k))
+                .collect::<Vec<_>>(),
+        );
+        let gpu = records::scale_item::map(Broadcast(item), &ks).unwrap();
+        assert_eq!(fields(&gpu), expected, "GPU, {len} elements");
+        let twin = records::scale_item::map_on(&cpu, Broadcast(item), &ks).unwrap();
+        assert_eq!(fields(&twin), expected, "CPU twin, {len} elements");
+    }
+    // Both arguments broadcast: nothing sizes the result.
+    assert!(matches!(
+        records::scale_item::map(Broadcast(item), Broadcast(2.0)),
+        Err(MapError::Empty)
+    ));
+}
+
+#[test]
+fn every_call_of_a_struct_map_takes_and_returns_the_struct() {
+    let input = items(1000, 4);
+    let expected = fields(
+        &input
+            .iter()
+            .map(|item| scale_reference(item, 2.0))
+            .collect::<Vec<_>>(),
+    );
+    // Resident: the result of one call is the argument of the next, and the host reads it once.
+    let resident = GpuVec::from_slice(&input).unwrap();
+    let scaled = records::scale_item::map_gpu(&resident, Broadcast(2.0)).unwrap();
+    assert_eq!(fields(&scaled.to_vec().unwrap()), expected);
+    let twice = records::scale_item::map_gpu(&scaled, Broadcast(1.0)).unwrap();
+    let once_more = records::item_total::map(&twice).unwrap();
+    let reference: Vec<f32> = input
+        .iter()
+        .map(|item| total_reference(&scale_reference(&scale_reference(item, 2.0), 1.0)))
+        .collect();
+    assert_eq!(once_more, reference);
+    let default = default_device().unwrap();
+    let on = records::scale_item::map_gpu_on(&default, &resident, Broadcast(2.0)).unwrap();
+    assert_eq!(fields(&on.to_vec().unwrap()), expected);
+    // The async forms, on the GPU and on the twin.
+    let awaited = drive(records::scale_item::map_async(&input, Broadcast(2.0))).unwrap();
+    assert_eq!(fields(&awaited), expected);
+    let on_async = drive(records::scale_item::map_on_async(
+        &CpuDevice::new(),
+        &input,
+        Broadcast(2.0),
+    ))
+    .unwrap();
+    assert_eq!(fields(&on_async), expected);
+    // Arrays and `Vec`s are arguments too, and a length mismatch is the usual error.
+    let array = [input[0], input[1]];
+    assert_eq!(
+        fields(&records::scale_item::map(&array, Broadcast(2.0)).unwrap()),
+        expected[..2]
+    );
+    assert!(matches!(
+        records::scale_item::map(&input, &[1.0f32, 2.0]),
+        Err(MapError::LengthMismatch { .. })
+    ));
+}
+
+#[test]
+fn the_descriptor_of_a_struct_map_is_the_generated_kernels() {
+    let descriptor = records::scale_item::DESCRIPTOR;
+    assert_eq!(descriptor.name, "scale_item_map_kernel");
+    assert_eq!(descriptor.entry_point, "gpu_records_scale_item_map_kernel");
+    assert_eq!(descriptor.workgroup_size, [256, 1, 1]);
+    let names: Vec<&str> = descriptor.parameters.iter().map(|p| p.name).collect();
+    assert_eq!(names, ["__gust_gid", "item", "k", "__gust_out"]);
+    assert_eq!(records::MODULE_DESCRIPTOR.name, "records");
+    assert_eq!(records::MODULE_DESCRIPTOR.kernels.len(), 2);
+    const { assert!(records::scale_item::OWN_INDEX) };
 }

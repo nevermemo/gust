@@ -1095,6 +1095,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       refuses a stale stamp, runs E1's Slang-free checks, then the E1, E3 and E8 runs. Prepare 299 s outside the GPU
       lock, adapter runs 6 s under it (890M), against 382 s for the full run. Opus review: merge after fixes; fixed,
       re-checked (merge).
+    - m14.mapw1 (D253, D254): `#[gpu_fn]` inside a `#[gpu_module]` module maps over the module's own structs. New
+      refusals E0701, E0714, E0715; CPU-profile execution in tests/cpu-target; SPIR-V goldens for the struct maps
+      validated by spirv-val. The builder's last map runs skipped the GPU lock and name no adapter; the merge gate's
+      890M Gpu suite is their evidence. Vec4/Mat4 and nested structs follow after s2a2 (D254). Opus review: merge after
+      fixes; fixed, re-checked (merge).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -7,6 +7,11 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- `map` takes and returns user structs (m14.mapw1, D221): write `#[gpu_fn]` on a function inside the
+  `#[gpu_module]` module that declares the struct and call `module::f::map(..)` (and `map_on`, `map_gpu`,
+  `map_async`, ..) with slices, arrays, `Broadcast` values or resident buffers of the struct. The GUST-E0716 error
+  for `#[gpu_fn]` inside a module is lifted.
+
 - Capture one GPU call and replay chosen invocations on the CPU twin (g2.cap). Every kernel with a twin gets a generated
   `capture(&gpu, &call)` (test builds and `--cfg gust_dual`) returning a `gust::capture::Captured` with
   `run_element(id)`, `run_until(id)` and `run_all()` (a call the device refuses is not captured);

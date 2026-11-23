@@ -1,4 +1,4 @@
 code: none
 file: map-nested/src/main.rs
 line: 6
-message: [GUST-E0716] `#[gpu_fn]` on a function goes on a free function outside any `#[gpu_module]` module
+message: [GUST-E0716] `#[gpu_module]` goes on a module, not on a function

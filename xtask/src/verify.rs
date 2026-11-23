@@ -1209,8 +1209,12 @@ pub(crate) struct GpuSuitePin {
 /// overwrite after many readers, the pooled read-back staging buffers, a read-back buffer larger than its data, a
 /// read-back above the staging ceiling, a read-back inside it), on existing lines. Checked by a full Gpu suite run
 /// on the Radeon 890M at the merge; the RTX 5090 run is owed.
+///
+/// Slice m14.mapw1: 642 over 67 became 647 over 67. The struct-map slice adds five GPU tests to the existing
+/// `tests/map.rs` (no new test file, so the `test result:` lines stay). Checked by a full Gpu suite run on the
+/// Radeon 890M at the merge; the RTX 5090 run is owed.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 642,
+    passed: 647,
     result_lines: 67,
 };
 

@@ -16,9 +16,9 @@
 //!   with it. Each golden is split at its `// ==== kernel <name> ====` markers where it has them, and each
 //!   `[shader("compute")]` or `[shader("fragment")]` entry of each section is compiled to WGSL with the `slangc` command
 //!   line (the stage of its shape) through
-//!   `gust::slang::compile_source_as`: 120 entries. The descriptor of an entry comes from the fixture's Rust source,
+//!   `gust::slang::compile_source_as`: 122 entries. The descriptor of an entry comes from the fixture's Rust source,
 //!   included below the way the other test files include it;
-//! - every fixture kernel, 130 in all (the 120 above and the 10 that no golden holds: `atomics.slang` keeps only the
+//! - every fixture kernel, 132 in all (the 122 above and the 10 that no golden holds: `atomics.slang` keeps only the
 //!   first of the ten kernels of `atomics.rs`, and `numeric.slang` only the first of the two of `numeric.rs`),
 //!   compiled from its descriptor's own Slang through the native reflection helper, `gust::reflect::compile_reflected`.
 //!   That is the route `HeadlessDevice` takes at run time, so these are the bytes a device is handed when it compiles
@@ -77,13 +77,13 @@ macro_rules! fixture {
 // `MODULE_DESCRIPTOR`: this second form names the functions and joins their descriptors in file order, which is the
 // order of the sections of `map.slang`. `Vec2` is the one name the functions use from the prelude of the file.
 macro_rules! fixture_functions {
-    ($name:ident, $path:literal, [$($function:ident),+]) => {
+    ($name:ident, $path:literal, [$($function:ident),+], [$($extra:expr),*]) => {
         #[allow(dead_code)]
         mod $name {
             use gust::math::Vec2;
             include!($path);
             $(const _: () = assert!($function::MODULE_DESCRIPTOR.kernels.len() == 1);)+
-            pub const KERNELS: &[gust::KernelDescriptor] = &[$($function::MODULE_DESCRIPTOR.kernels[0]),+];
+            pub const KERNELS: &[gust::KernelDescriptor] = &[$($function::MODULE_DESCRIPTOR.kernels[0],)+ $($extra),*];
         }
     };
 }
@@ -119,7 +119,11 @@ fixture!(
 fixture_functions!(
     f_map,
     "../../../tests/fixtures/map.rs",
-    [saxpy, clamp_signed, even_and, mirror, add_one]
+    [saxpy, clamp_signed, even_and, mirror, add_one],
+    [
+        records::scale_item::DESCRIPTOR,
+        records::item_total::DESCRIPTOR
+    ]
 );
 fixture!(f_methods, methods, "../../../tests/fixtures/methods.rs");
 fixture!(
@@ -238,7 +242,7 @@ fn goldens() -> [Golden; 31] {
         Golden {
             file: "map.slang",
             text: include_str!("../../../tests/fixtures/map.slang"),
-            entries: 5,
+            entries: 7,
             kernels: f_map::KERNELS,
         },
         Golden {
@@ -897,7 +901,7 @@ fn compare_kernel(kernel: &KernelDescriptor, module: &Module) -> Vec<String> {
 }
 
 /// The compute and fragment entries the thirty-one goldens hold in all (pinned per golden in [`goldens`]).
-const GOLDEN_ENTRIES: usize = 120;
+const GOLDEN_ENTRIES: usize = 122;
 
 /// The fixture kernels that no golden holds: the macro's golden test keeps only the first kernel of `atomics.rs`
 /// (`atomics.slang` has one entry for the ten kernels of the module) and of `numeric.rs` (one of two).

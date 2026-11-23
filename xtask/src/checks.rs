@@ -138,11 +138,13 @@ pub(crate) const UNIFORM_GOLDEN_SPIRV: [&str; 1] = ["uniforms__run.spv"];
 /// or loses a kernel changes its list in the same commit; the `par_for` list also changes when a lowering change
 /// re-hashes a body (the module name is the hash of the lowered Slang). The unit tests of xtask catch both.
 pub(crate) const MAP_GOLDEN_STEMS: [&str; 1] = ["map"];
-pub(crate) const MAP_GOLDEN_SPIRV: [&str; 5] = [
+pub(crate) const MAP_GOLDEN_SPIRV: [&str; 7] = [
     "map__add_one_map_kernel.spv",
     "map__clamp_signed_map_kernel.spv",
     "map__even_and_map_kernel.spv",
     "map__mirror_map_kernel.spv",
+    "map__records_item_total_map_kernel.spv",
+    "map__records_scale_item_map_kernel.spv",
     "map__saxpy_map_kernel.spv",
 ];
 

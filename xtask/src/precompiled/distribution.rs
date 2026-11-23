@@ -11,10 +11,10 @@ use std::{
 };
 
 use super::{
-    Options, PRECOMPILED_DIR,
+    Mode, Options, PRECOMPILED_DIR,
     fixture::{Fixture, require_success},
     reexpand::snapshot,
-    stripped::{VERIFIED_PREFIX, judge_run},
+    stripped::{RunReport, VERIFIED_PREFIX, judge_run},
 };
 use crate::{
     json::{self, Json},
@@ -329,6 +329,34 @@ pub(crate) fn kernels_patch_configs(root: &Path) -> Result<[String; 2], String> 
     ])
 }
 
+/// The directory under the cargo target directory where `--prepare` keeps the consumer of E8.
+const KEPT_CONSUMER_DIR: &str = "precompiled-dist";
+
+/// Where `--prepare` keeps the built consumer of E8, whose work directory is deleted.
+pub(super) fn kept_consumer(fixture: &Fixture) -> PathBuf {
+    fixture
+        .target
+        .join(KEPT_CONSUMER_DIR)
+        .join(format!("dist-consumer{EXE_SUFFIX}"))
+}
+
+/// The run half of E8: the built consumer on the adapter. Returns what it printed.
+pub(super) fn e8_run(fixture: &Fixture, binary: &Path) -> Result<RunReport, String> {
+    let run = fixture
+        .command(binary)
+        .output()
+        .map_err(|error| format!("check-precompiled E8: could not run the consumer: {error}"))?;
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+    print!("{stdout}");
+    judge_run(run.status.success(), &stdout, &stderr).map_err(|problems| {
+        format!(
+            "check-precompiled E8: the consumer: {}",
+            problems.join("; ")
+        )
+    })
+}
+
 /// E8: the packages and the relocated consumer. Returns the summary. The work directory is deleted at the end, and
 /// a failure to delete it fails the check.
 pub(super) fn e8_distribution(fixture: &Fixture, options: &Options) -> Result<String, String> {
@@ -610,22 +638,19 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
     // 4c. Run it.
     let built = Fixture::app_binary(&target);
     let built = built.with_file_name(format!("dist-consumer{EXE_SUFFIX}"));
-    if options.check_only {
-        return Ok("passed (build only: --check-only skips the run, which needs an adapter): the four packages are on the allow-list and Slang-free, no default feature of gust-compute or gust-compute-wgpu turns on slang-runtime, and the consumer with registry-style dependencies built in release under native in the stripped environment, with every patch used and no `source` in the lock for the four packages".to_owned());
+    if options.mode == Mode::Prepare {
+        // The work directory is deleted when this step ends; `--adapter-runs` runs the kept copy.
+        let kept = kept_consumer(fixture);
+        fs::create_dir_all(fixture.target.join(KEPT_CONSUMER_DIR))
+            .and_then(|()| fs::copy(&built, &kept))
+            .map_err(|error| {
+                format!("check-precompiled E8: could not keep the consumer: {error}")
+            })?;
     }
-    let run = fixture
-        .command(&built)
-        .output()
-        .map_err(|error| format!("check-precompiled E8: could not run the consumer: {error}"))?;
-    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
-    print!("{stdout}");
-    let report = judge_run(run.status.success(), &stdout, &stderr).map_err(|problems| {
-        format!(
-            "check-precompiled E8: the consumer: {}",
-            problems.join("; ")
-        )
-    })?;
+    if !options.mode.runs() {
+        return Ok("passed (build only: this mode skips the run, which needs an adapter): the four packages are on the allow-list and Slang-free, no default feature of gust-compute or gust-compute-wgpu turns on slang-runtime, and the consumer with registry-style dependencies built in release under native in the stripped environment, with every patch used and no `source` in the lock for the four packages".to_owned());
+    }
+    let report = e8_run(fixture, &built)?;
     Ok(format!(
         "passed: the four packages are on the allow-list and Slang-free, no default feature of gust-compute or gust-compute-wgpu turns on slang-runtime, and the consumer with registry-style dependencies on the unpacked packages built in release under native in the stripped environment (every patch used, no `source` in the lock for the four) and printed `{VERIFIED_PREFIX}{} elements` on the adapter `{}`",
         report.elements, report.adapter

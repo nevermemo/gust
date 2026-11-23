@@ -1,10 +1,14 @@
 //! E1 and E2: the release `app` built and run with Slang taken out of the environment, and its binary scanned for the
 //! strings of the run-time Slang bridge.
 
-use std::{env::consts::EXE_SUFFIX, fs, path::PathBuf};
+use std::{
+    env::consts::EXE_SUFFIX,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use super::{
-    CONTROL_PROFILE, PRECOMPILED_DIR,
+    CONTROL_PROFILE, Mode, PRECOMPILED_DIR,
     environment::{directory_has_slang_tool, slang_free_problems},
     fixture::{Fixture, names_or_none, require_success},
 };
@@ -43,10 +47,16 @@ pub(crate) const BRIDGE_MARKERS: [&str; 3] =
 // E1
 
 /// E1: release build and run of `app` with Slang taken out of the environment. Returns the summary.
-pub(super) fn e1_stripped_build_and_run(
-    fixture: &Fixture,
-    check_only: bool,
-) -> Result<String, String> {
+pub(super) fn e1_stripped_build_and_run(fixture: &Fixture, mode: Mode) -> Result<String, String> {
+    e1_build(fixture)?;
+    if !mode.runs() {
+        return Ok("passed (build only: this mode skips the run, which needs an adapter): the release `app` built with Slang taken out of the environment".to_owned());
+    }
+    e1_run(fixture, &Fixture::app_binary(&fixture.target_dir))
+}
+
+/// E1's check that the environment the children get has no Slang; `--adapter-runs` repeats it before the runs.
+pub(super) fn check_slang_free(fixture: &Fixture) -> Result<(), String> {
     let problems = slang_free_problems(&fixture.environment, &directory_has_slang_tool);
     if !problems.is_empty() {
         return Err(format!(
@@ -56,7 +66,12 @@ pub(super) fn e1_stripped_build_and_run(
     }
     slangc_cannot_be_found(&fixture.environment).map_err(|error| {
         format!("check-precompiled E1: the stripped environment still has Slang: {error}")
-    })?;
+    })
+}
+
+/// The build half of E1: the stripped environment, the clean, and the release build.
+fn e1_build(fixture: &Fixture) -> Result<(), String> {
+    check_slang_free(fixture)?;
     println!(
         "check-precompiled E1: environment stripped ({} variable(s) removed: {}; {} PATH director{} removed); `slangc` is not found with it",
         fixture.report.variables.len(),
@@ -121,15 +136,15 @@ pub(super) fn e1_stripped_build_and_run(
     println!(
         "check-precompiled E1: cargo clean of gust-compute, gust-compute-macros, kernels and app, then cargo build --release -p app, succeeded"
     );
+    Ok(())
+}
 
-    if check_only {
-        return Ok("passed (build only: --check-only skips the run, which needs an adapter): the release `app` built with Slang taken out of the environment".to_owned());
-    }
-    let binary = Fixture::app_binary(&fixture.target_dir);
-    let run = fixture.command(&binary).output().map_err(|error| {
+/// The run half of E1: the binary built by [`e1_build`] on the adapter.
+pub(super) fn e1_run(fixture: &Fixture, binary: &Path) -> Result<String, String> {
+    let run = fixture.command(binary).output().map_err(|error| {
         format!(
             "check-precompiled E1: could not run {}: {error}",
-            fixture.shown(&binary)
+            fixture.shown(binary)
         )
     })?;
     let stdout = String::from_utf8_lossy(&run.stdout).into_owned();

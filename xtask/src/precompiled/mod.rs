@@ -1,8 +1,8 @@
-//! `cargo xtask check-precompiled [--check-only] [--work-dir PATH]`: the evidence that a production-shaped consumer of
-//! precompiled kernels needs no Slang (D45, D46). The fixture is `tests/precompiled`, a workspace of its own like
-//! `tests/dual`: the `kernels` crate holds one `#[gpu_module]` vector-add and its committed `gust-artifacts/` (written
-//! by `cargo gust build`), and `app` dispatches it through `gust-wgpu` with `default-features = false` and checks the
-//! result.
+//! `cargo xtask check-precompiled [--check-only | --prepare | --adapter-runs] [--work-dir PATH]`: the evidence that a
+//! production-shaped consumer of precompiled kernels needs no Slang (D45, D46). The fixture is `tests/precompiled`, a
+//! workspace of its own like `tests/dual`: the `kernels` crate holds one `#[gpu_module]` vector-add and its committed
+//! `gust-artifacts/` (written by `cargo gust build`), and `app` dispatches it through `gust-wgpu` with
+//! `default-features = false` and checks the result.
 //!
 //! Every cargo child runs under `GUST_PROFILE=native`, the strict profile, set explicitly (R4.2), except the control
 //! build of E2, which needs the bridge and runs under `dev` in its own target directory, the profile checks of E6
@@ -62,19 +62,28 @@
 //!   charting crate `gust`).
 //!
 //! `--check-only` skips the parts that need an adapter (the runs of E1, E3 and E8) and Slang (the second half of E7);
-//! it is what the CI job `precompiled` runs. Nothing but `cargo gust build` of E7 runs `slangc` or the native helper.
+//! it is what the CI job `precompiled` runs. `--prepare` and `--adapter-runs` split the full check in two (see
+//! [`Mode`]).
+//! Nothing but `cargo gust build` of E7 runs `slangc` or the native helper.
 //! The environment of the xtask process is never changed; the stripped environment exists only in the children.
 //! `CARGO_NET_OFFLINE` and the rest of the parent's environment pass through. E8 needs the registry (the consumer
 //! needs `wgpu` from crates.io), so it is no offline proof.
 
-use std::path::PathBuf;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+};
 
-use crate::{process::PROFILE_VARIABLE, workspace::workspace_root};
+use crate::{process::PROFILE_VARIABLE, validation::sha256_hex, workspace::workspace_root};
 
 mod artifacts;
 mod distribution;
 mod environment;
 mod fixture;
+#[cfg(test)]
+#[path = "../tests/precompiled_modes.rs"]
+mod modes_tests;
 mod profiles;
 mod reexpand;
 mod refusals;
@@ -84,12 +93,15 @@ mod stripped;
 mod test_support;
 
 use self::{
-    artifacts::{e3_mutated_artifact, e4_missing_artifact, e5_strict_plus_dual},
-    distribution::e8_distribution,
+    artifacts::{e3_mutated_artifact, e3_run, e4_missing_artifact, e5_strict_plus_dual},
+    distribution::{e8_distribution, e8_run, kept_consumer},
     fixture::Fixture,
     reexpand::{e7_build_twice, e7_reexpansion},
     refusals::e6_refusals,
-    stripped::{e1_stripped_build_and_run, e2_binary_and_features},
+    stripped::{
+        VERIFIED_PREFIX, check_slang_free, e1_run, e1_stripped_build_and_run,
+        e2_binary_and_features,
+    },
 };
 pub(crate) use self::{
     distribution::{is_inside, lock_packages, unused_patch_lines},
@@ -107,11 +119,40 @@ const STRICT_PROFILE: &str = "native";
 /// The profile of the control build of E2, the only child that is not strict: the bridge needs a development profile.
 const CONTROL_PROFILE: &str = "dev";
 
+/// Which part of `cargo xtask check-precompiled` runs. Each step is in exactly one of `Prepare` and `AdapterRuns`, and
+/// the two together are `Full`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mode {
+    /// No flag: every step, builds and runs.
+    #[default]
+    Full,
+    /// `--check-only`: skip what needs an adapter (the runs of E1, E3 and E8) and Slang (the second half of E7).
+    CheckOnly,
+    /// `--prepare`: no adapter, but Slang: every step but the three runs, E7b included; E8's consumer is copied out of
+    /// its temporary directory to `<target>/precompiled-dist`; then a stamp (HEAD, a hash of the working tree and a
+    /// hash of each of the three binaries) that `AdapterRuns` reads.
+    Prepare,
+    /// `--adapter-runs`: only the three runs of E1, E3 and E8, on the binaries `Prepare` left and only if the stamp
+    /// still matches; no build and no `cargo clean`.
+    AdapterRuns,
+}
+
+impl Mode {
+    /// Whether the runs of E1, E3 and E8, which need an adapter, run.
+    pub(crate) const fn runs(self) -> bool {
+        matches!(self, Self::Full | Self::AdapterRuns)
+    }
+
+    /// Whether E7b (`cargo gust build` twice), which needs Slang, runs.
+    pub(crate) const fn slang(self) -> bool {
+        matches!(self, Self::Full | Self::Prepare)
+    }
+}
+
 /// What `cargo xtask check-precompiled` was asked for.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Options {
-    /// `--check-only`: skip what needs an adapter (the runs of E1, E3 and E8) and Slang (the second half of E7).
-    pub(crate) check_only: bool,
+    pub(crate) mode: Mode,
     /// `--work-dir PATH`: where E8 builds its consumer; a directory that does not exist yet or is empty.
     pub(crate) work_dir: Option<PathBuf>,
 }
@@ -126,11 +167,18 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Options, String> {
             _ => (argument.as_str(), None),
         };
         match name {
-            "--check-only" => {
+            "--check-only" | "--prepare" | "--adapter-runs" => {
                 if inline.is_some() {
-                    return Err("`--check-only` takes no value".into());
+                    return Err(format!("`{name}` takes no value"));
                 }
-                options.check_only = true;
+                if options.mode != Mode::Full {
+                    return Err("`--check-only`, `--prepare` and `--adapter-runs` exclude each other and can be given once".into());
+                }
+                options.mode = match name {
+                    "--check-only" => Mode::CheckOnly,
+                    "--prepare" => Mode::Prepare,
+                    _ => Mode::AdapterRuns,
+                };
             }
             "--work-dir" => {
                 let value = match inline {
@@ -149,15 +197,137 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             _ => {
                 return Err(format!(
-                    "check-precompiled takes only `--check-only` and `--work-dir PATH`, not `{argument}`"
+                    "check-precompiled takes only `--check-only`, `--prepare`, `--adapter-runs` and `--work-dir PATH`, not `{argument}`"
                 ));
             }
         }
     }
+    if options.mode == Mode::AdapterRuns && options.work_dir.is_some() {
+        return Err("`--adapter-runs` builds nothing, so it takes no `--work-dir`".into());
+    }
     Ok(options)
 }
 
-/// `cargo xtask check-precompiled [--check-only] [--work-dir PATH]`.
+/// What `--prepare` leaves in `<target>/precompiled-prepared.stamp` for `--adapter-runs`.
+const STAMP_FILE: &str = "precompiled-prepared.stamp";
+
+/// The three binaries the runs need (E1's and E3's `app`, E8's kept consumer), with the stamp key of each.
+fn stamped_binaries(fixture: &Fixture) -> [(&'static str, PathBuf); 3] {
+    [
+        (
+            "sha256 of the E1 app",
+            Fixture::app_binary(&fixture.target_dir),
+        ),
+        (
+            "sha256 of the E3 app",
+            Fixture::app_binary(&fixture.scratch_target_dir()),
+        ),
+        ("sha256 of the E8 consumer", kept_consumer(fixture)),
+    ]
+}
+
+/// The stamp: HEAD, the tree hash and the hash of each binary, one `key=value` line each.
+fn stamp_text(fixture: &Fixture, head: &str, tree: &str) -> Result<String, String> {
+    let mut text = format!("head={head}\ntree={tree}\n");
+    for (key, path) in stamped_binaries(fixture) {
+        let bytes = fs::read(&path)
+            .map_err(|error| format!("cannot read the binary {}: {error}", fixture.shown(&path)))?;
+        text.push_str(&format!("{key}={}\n", sha256_hex(&bytes)));
+    }
+    Ok(text)
+}
+
+/// The first line of the stamp `now` that the stamp of `--prepare` does not have, as a refusal naming both values.
+fn stamp_refusal(prepared: &str, now: &str) -> Option<String> {
+    let line = now
+        .lines()
+        .find(|line| !prepared.lines().any(|p| p == *line))?;
+    let (key, value) = line.split_once('=')?;
+    let before = prepared
+        .lines()
+        .find_map(|p| p.strip_prefix(key)?.strip_prefix('='))
+        .unwrap_or("(none)");
+    Some(format!(
+        "the prepared binaries are stale: {key} was {before} when `--prepare` ran and is {value} now; run `cargo xtask check-precompiled --prepare` again"
+    ))
+}
+
+/// HEAD and a hash of the working tree's state (status, the binary diff against HEAD, and the path, length and bytes of
+/// each untracked file).
+fn source_state(root: &Path) -> Result<(String, String), String> {
+    let git = |args: &[&str]| -> Result<Vec<u8>, String> {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| format!("could not run git {}: {error}", args.join(" ")))?;
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            Err(format!(
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))
+        }
+    };
+    let head = String::from_utf8_lossy(&git(&["rev-parse", "HEAD"])?)
+        .trim()
+        .to_owned();
+    let mut state = git(&["status", "--porcelain", "-z", "--untracked-files=all"])?;
+    state.extend(git(&[
+        "diff",
+        "HEAD",
+        "--binary",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+    ])?);
+    for path in git(&["ls-files", "--others", "--exclude-standard", "-z"])?
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        let name = String::from_utf8_lossy(path);
+        let bytes = fs::read(root.join(name.as_ref()))
+            .map_err(|error| format!("cannot read the untracked file {name}: {error}"))?;
+        state.extend(format!("\n{name} {}\n", bytes.len()).bytes());
+        state.extend(bytes);
+    }
+    Ok((head, sha256_hex(&state)))
+}
+
+/// `--adapter-runs`: the three runs of E1, E3 and E8 on the binaries that `--prepare` built, if its stamp is current.
+fn adapter_runs(fixture: &Fixture) -> Result<String, String> {
+    let refuse = |message: String| format!("check-precompiled --adapter-runs: {message}");
+    let file = fixture.target.join(STAMP_FILE);
+    let prepared = fs::read_to_string(&file).map_err(|error| {
+        refuse(format!(
+            "no stamp at {} ({error}); run `cargo xtask check-precompiled --prepare` first",
+            fixture.shown(&file)
+        ))
+    })?;
+    let (head, tree) = source_state(&fixture.root)?;
+    let now = stamp_text(fixture, &head, &tree).map_err(|error| {
+        refuse(format!(
+            "{error}; run `cargo xtask check-precompiled --prepare` again"
+        ))
+    })?;
+    if let Some(message) = stamp_refusal(&prepared, &now) {
+        return Err(refuse(message));
+    }
+    check_slang_free(fixture)?;
+    let [(_, e1), (_, e3), (_, e8)] = stamped_binaries(fixture);
+    let report = e1_run(fixture, &e1)?;
+    let identity = e3_run(fixture, &e3)?;
+    let consumer = e8_run(fixture, &e8)?;
+    Ok(format!(
+        "check-precompiled --adapter-runs passed (binaries prepared at HEAD {head}): E1 {report}. E3 {identity}. E8 the consumer printed `{VERIFIED_PREFIX}{} elements` on the adapter `{}`.",
+        consumer.elements, consumer.adapter
+    ))
+}
+
+/// `cargo xtask check-precompiled [--check-only | --prepare | --adapter-runs] [--work-dir PATH]`.
 pub(crate) fn check_precompiled(args: &[String]) -> Result<(), String> {
     println!("{}", check_precompiled_report(args)?);
     Ok(())
@@ -172,24 +342,45 @@ pub(crate) fn check_precompiled_report(args: &[String]) -> Result<String, String
     println!(
         "check-precompiled: cargo target directory {}{}",
         fixture.shown(&fixture.target_dir),
-        if options.check_only {
-            " (--check-only: no adapter, no Slang)"
-        } else {
-            ""
+        match options.mode {
+            Mode::Full => "",
+            Mode::CheckOnly => " (--check-only: no adapter, no Slang)",
+            Mode::Prepare => " (--prepare: no adapter; the stamp for --adapter-runs at the end)",
+            Mode::AdapterRuns => " (--adapter-runs: the three runs only)",
         }
     );
+    if options.mode == Mode::AdapterRuns {
+        return adapter_runs(&fixture);
+    }
+    // Taken before the builds, and the old stamp removed, so that a failed `--prepare` leaves none.
+    let prepared = if options.mode == Mode::Prepare {
+        let _ = fs::remove_file(fixture.target.join(STAMP_FILE));
+        Some(source_state(&root)?)
+    } else {
+        None
+    };
 
-    let report = e1_stripped_build_and_run(&fixture, options.check_only)?;
+    let report = e1_stripped_build_and_run(&fixture, options.mode)?;
     let binary = e2_binary_and_features(&fixture)?;
-    let identity = e3_mutated_artifact(&fixture, options.check_only)?;
+    let identity = e3_mutated_artifact(&fixture, options.mode)?;
     let located = e4_missing_artifact(&fixture)?;
     let strict_dual = e5_strict_plus_dual(&fixture)?;
     let refusals = e6_refusals(&fixture)?;
     let reexpanded = e7_reexpansion(&fixture)?;
-    let reproducible = e7_build_twice(&fixture, options.check_only)?;
+    let reproducible = e7_build_twice(&fixture, options.mode)?;
     let distribution = e8_distribution(&fixture, &options)?;
 
+    let headline = match prepared {
+        Some((head, tree)) => {
+            let stamp = stamp_text(&fixture, &head, &tree)?;
+            fs::write(fixture.target.join(STAMP_FILE), stamp).map_err(|error| {
+                format!("check-precompiled --prepare: could not write the stamp: {error}")
+            })?;
+            format!("check-precompiled --prepare passed (runs pending, stamp at HEAD {head})")
+        }
+        None => "check-precompiled passed".to_owned(),
+    };
     Ok(format!(
-        "check-precompiled passed: E1 {report}. E2 {binary}. E3 {identity}. E4 (E6f) {located}. E5 {strict_dual}. E6a to E6o {refusals}. E7 {reexpanded}. E7 {reproducible}. E8 {distribution}. The fixture is tests/precompiled; every child ran under {PROFILE_VARIABLE}={STRICT_PROFILE} except the E2 control and E6e ({PROFILE_VARIABLE}={CONTROL_PROFILE}), E6k to E6o (each under its own value, `native+subgroups` to `native+f16`), the profile-free builds of E6c, E6d, E6g, E6i and E6j, and cargo gust of E7."
+        "{headline}: E1 {report}. E2 {binary}. E3 {identity}. E4 (E6f) {located}. E5 {strict_dual}. E6a to E6o {refusals}. E7 {reexpanded}. E7 {reproducible}. E8 {distribution}. The fixture is tests/precompiled; every child ran under {PROFILE_VARIABLE}={STRICT_PROFILE} except the E2 control and E6e ({PROFILE_VARIABLE}={CONTROL_PROFILE}), E6k to E6o (each under its own value, `native+subgroups` to `native+f16`), the profile-free builds of E6c, E6d, E6g, E6i and E6j, and cargo gust of E7."
     ))
 }

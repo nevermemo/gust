@@ -220,6 +220,7 @@ pub mod slang;
 #[doc(hidden)]
 pub mod spirv;
 pub mod target;
+pub mod task;
 pub mod texture;
 #[cfg(feature = "slang-runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "slang-runtime")))]
@@ -239,7 +240,7 @@ pub use dispatch::{
     Arg, BindingKind, Call, Extent, Independent, LengthRule, Resource, Run, SampledCall,
     SamplerArg, SamplerDevice, SamplerSet, TypedDevice, kind,
 };
-pub use gust_macros::{gpu_fn, gpu_module, par_for};
+pub use gust_macros::{gpu_fn, gpu_module, gpu_task, par_for};
 pub use job::{Device, Job, JobStatus};
 pub use reflect::{
     PodCrossCheck, ReflectedField, ReflectedResource, ReflectedType, ReflectedTypeKind, Reflection,

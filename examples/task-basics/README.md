@@ -12,10 +12,11 @@ All four run on the CPU twin (the tests) and on the GPU (`cargo run -p task-basi
 `gpu_matches_the_host`), each with `dispatch` and with `submit`, and are compared bit for bit with a host reference
 written from the rules (every value is exact in `f32`).
 
-Queue cost: today a `submit()` makes two queue submissions with a fresh output and three when the pool recycles a zeroed
-output (the pool clears it itself). That is a known gap against D251, counted from the code paths of
-`gust::task::submit_and_read` and not measured on a queue. The generated code only builds the kernel's `Call`; the
-dispatch, the read-back and the output buffer are made in `submit_and_read`, so the one-submission entry point of slice
-m14.encb needs no change to generated code (its encode-plus-read-back entry point itself lives in the backend). (The uploads of the captures are `write_buffer` calls, not
-submissions; an empty captured slice on a recycled pool buffer is the one corner that is cleared in a submission of its
-own.)
+Queue cost (D251): on the GPU device a `submit()` is one queue submission, the dispatch and the read-back copy
+together, with a fresh or a recycled output, in 1-D, 2-D and in place, as counted by `gust_submissions()` in the
+ignored `gpu_*` tests (Radeon 890M only; the RTX 5090 run is pending). The generated code only builds the kernel's
+`Call`; the output buffer, the dispatch and the read-back are made by `MapHost::start_read`, which the GPU device
+overrides. The uploads of the captures are `write_buffer` calls, not submissions; an empty captured slice on a recycled
+pool buffer is the one corner that is cleared in a submission of its own, and the launch then refuses the task
+(`IndependentLengthEmpty`), so that submission belongs to a task that fails (pinned by
+`gpu_an_empty_capture_on_a_recycled_buffer_makes_its_own_submission`).

@@ -18,8 +18,10 @@ use core::fmt;
 use std::error;
 
 use core::borrow::Borrow;
+use core::future::Future;
+use core::ops::Deref;
 
-use crate::{GpuPod, Resource, TypedDevice};
+use crate::{Call, GpuPod, Kernel, Resource, Run, TypedDevice};
 
 /// A device that can hold the buffers of a map call: upload, a zeroed output, readback.
 ///
@@ -64,6 +66,48 @@ pub trait MapHost: TypedDevice<Error: error::Error + Send + Sync + 'static> {
         &self,
         buffer: &Self::Buffer<T>,
     ) -> impl core::future::Future<Output = Result<Vec<T>, Self::Error>>;
+
+    /// Make an output buffer, run the call that `build` makes over it, and return the read-back of that buffer as a
+    /// future that owns `device` and the buffer: what [`crate::task::submit_and_read`] asks of a device. `initial`
+    /// holds the values the buffer starts with (an in-place task's target); `None` is a zeroed buffer of `len`
+    /// elements. `context` is what the call borrows besides the output; it is dropped when the call has been
+    /// submitted. The work is submitted before this returns; the read-back is what the future completes.
+    ///
+    /// The default is two queue submissions: `upload` or `zeroed` and [`Run::submit_call`], and then
+    /// [`readback_async`](Self::readback_async) when the future is first polled (plus the pool's clear when `zeroed`
+    /// recycles a buffer). A backend that can record the
+    /// dispatch and the read-back copy together overrides it to make one queue submission (decision D251); the
+    /// override must give the same values as the default. Macro support; not a stable surface.
+    ///
+    /// # Errors
+    ///
+    /// The device's failures from the upload or the zeroed buffer and from the submission; the future's output is
+    /// the device's failure to read back.
+    #[doc(hidden)]
+    fn start_read<'t, H, T, K, C, const N: usize>(
+        device: H,
+        initial: Option<&[T]>,
+        len: u32,
+        context: C,
+        build: impl for<'o> FnOnce(&'o C, &'o Self::Buffer<T>) -> Call<'o, Self, K, N>,
+    ) -> Result<impl Future<Output = Result<Vec<T>, Self::Error>> + 't, Self::Error>
+    where
+        H: Deref<Target = Self> + 't,
+        T: GpuPod + 't,
+        K: Kernel,
+        Self: Run<K, N> + 't,
+        Self::Buffer<T>: 't,
+    {
+        let output = match initial {
+            Some(values) => device.upload(values)?,
+            None => device.zeroed::<T>(len)?,
+        };
+        {
+            let call = build(&context, &output);
+            <Self as Run<K, N>>::submit_call(&*device, &call).map(core::mem::drop)?;
+        }
+        Ok(async move { device.readback_async(&output).await })
+    }
 
     /// The map [`Error`] of a failure of this device. The default boxes it as [`Error::Device`]; a backend overrides
     /// it to report the causes that have a variant of their own (the GPU backend maps resident buffers of two devices

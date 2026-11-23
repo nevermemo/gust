@@ -256,8 +256,10 @@ valid one. It covers storage buffers only and its calls are synchronous; the lim
 documentation.
 
 `gust::map` (D60, slice m7.a1, amended by D99 and D122) is the host side of the element-wise map.
-`MapHost: TypedDevice` is what a device offers it (`upload`, `zeroed`, `readback`, `readback_async` and `map_error`);
-`CpuDevice` implements it in `gust`, and `HeadlessDevice` in `gust-wgpu` (`map_host.rs`). `MapArg<H, D>` is what a call
+`MapHost: TypedDevice` is what a device offers it (`upload`, `zeroed`, `readback`, `readback_async` and `map_error`,
+plus `start_read`, the hidden hook `gpu_task!` submits through: by default two queue submissions, one in
+`HeadlessDevice`'s override, m14.taskone); `CpuDevice` implements it in `gust`, and `HeadlessDevice` in `gust-wgpu`
+(`map_host.rs`). `MapArg<H, D>` is what a call
 argument may be (a slice, a `&Vec`, a `&[T; N]`, `Broadcast`, or a `&R` for a `Resident` buffer), and the sealed
 `MapElement` ties a host type to its device element. The element count is checked before anything is bound or
 uploaded (`Error::LengthMismatch`, `TooLong`, `Empty`); `MixedDevices` is a resident argument of another device and

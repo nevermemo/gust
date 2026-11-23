@@ -174,9 +174,10 @@ impl TaskPlan {
     }
 
     /// The host function inside the generated module: it uploads the inputs, records the extent, and hands the closure
-    /// that builds the kernel's `Call` to `gust::task::submit_and_read`, which makes the output buffer and the queue
-    /// submissions of the dispatch and of the read-back. (The one exception: an empty captured slice on a recycled pool
-    /// buffer is cleared in its own submission, from generated code, through `MapArg::bind`.)
+    /// that builds the kernel's `Call` to `gust::task::submit_and_read`, which makes the output buffer and submits the
+    /// dispatch and the read-back through `MapHost::start_read` (one submission on a GPU device). (The one exception:
+    /// an empty captured slice on a recycled pool buffer is cleared in its own submission, from generated code,
+    /// through `MapArg::bind`.)
     pub(crate) fn host_items(&self, plan: &Plan) -> TokenStream {
         let record = format_ident!("{}", "__GustExtent");
         let count = proc_macro2::Literal::usize_unsuffixed(1 + plan.buffers().count());

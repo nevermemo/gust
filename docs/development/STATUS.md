@@ -1055,6 +1055,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       replay is the twin's order, not the GPU's history; a kernel with variants replays its portable body. Capture's
       read-back goes through the counted submit path. Radeon 890M: capture tests 10, `GPU_SUITE_PIN` 629 over 67.
       RTX 5090: owed (quiet window 2026-11-22, D250). Opus review: merge after fixes; fixed; re-read MERGE.
+    - m14.taskone (D251): a `gpu_task!` submit is one queue submission on the GPU device. `gust::task::submit_and_read`
+      calls `MapHost::start_read`, a provided hook that `HeadlessDevice` overrides with `submit_batch_read`, so the
+      dispatch, the clear of a recycled output and the read-back copy share one command buffer. One corner keeps its
+      own submission: an empty captured slice on a recycled pool buffer is cleared through `MapArg::bind` before the
+      task refuses it (`IndependentLengthEmpty`); documented and pinned by a test. Radeon 890M: task-basics GPU tests
+      and `check-examples --gpu` pass. RTX 5090: owed (quiet window, D250). Opus review: merge after fixes; fixed;
+      re-read MERGE (follow-ups: a test for the hook dropping its clear list, round 1 zero hits in the recycled test).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

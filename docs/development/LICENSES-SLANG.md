@@ -13,12 +13,12 @@ read; all six matched. What was run: file listings of all six archives and their
 `LICENSE`, `README.md`, `LICENSES/`, `third-party-notices/` and `share/slang/agent-skills/` between the two versions on
 each platform; a string scan for "GNU General Public" and "GNU Lesser" of every regular file in `bin/` and `lib/` of the
 three 2026.22.1 archives (Windows 56 files, Linux 56, macOS 64; no hit in any); and the `mi_malloc` counts of the compiler
-library. The counts differ from the 2026.22 audit (56, 57 and 65) because of how the archives were extracted, not
-because of their content: the listings of `bin/` and `lib/` hold the same entries in both versions (Windows 56, Linux 60
-and macOS 68), and this audit scanned the regular files only: the Linux extraction held 4 symbolic links (counted), and
-the macOS difference of 4 is read the same way (inferred from the counts). The Linux and macOS archives were extracted on Windows with its `tar`, which here
-created the links; an extraction on Windows may fail to create symbolic links (the 2026.22 audit's did for two), and the
-file count then changes, so every count above comes with the listing it was taken from. The evidence (digests, listings,
+library. The scan counts differ from the 2026.22 audit's (56, 57 and 65): the listings of `bin/` and `lib/` hold the
+same entries in both versions (Windows 56, Linux 60 and macOS 68), so the difference is not content, and the 2026.22
+counts are not reconstructed. This audit scanned regular files only (the Linux extraction held 4 symbolic links, which
+were counted; the macOS figure is inferred from the listing count). The Linux and macOS archives were extracted on
+Windows with its `tar`, which here created the links; an extraction on Windows may fail to create symbolic links (the
+2026.22 audit's did for two), and the file count then changes. The evidence (digests, listings,
 listing differences, scan output, counts) was kept as text in the session's scratch area only and is not retained; every
 check above can be repeated with the commands named. Nothing from any archive was run in this audit. Rule (D46): permissive licences are accepted with their notices
 kept; a copyleft or non-commercial component stops the download path for that platform.

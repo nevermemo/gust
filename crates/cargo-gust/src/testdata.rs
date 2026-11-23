@@ -197,7 +197,10 @@ pub(crate) const VECTOR_ADD_REFLECTION: &str =
 ///
 /// They come from a real `cargo gust build` of a scratch crate whose `src/lib.rs` held the two modules below, with the
 /// pinned Slang: the macro's records and clean Slang text of all four bodies (`<key>.kernel.json`, `<key>.slang`), the
-/// WGSL and reflection JSON the helper wrote for each, and the `manifest.json` (schema 3) the build wrote. The tests
+/// WGSL and reflection JSON the helper wrote for each, and the `manifest.json` (schema 3) the build wrote. Since
+/// Slang 2026.22.1 a build of the same crate also writes four split entries (D209); the fixture deliberately keeps the
+/// schema-3 manifest of the four bodies, and its `slang` tag and `reflection_sha256` values were updated for 2026.22.1
+/// rather than written by a 2026.22.1 build (its WGSL and reflection files are byte-identical to such a build's). The tests
 /// check them against the macro as it is today (the descriptor of the two bodies the build's profile selects, found by
 /// key, under any profile), against the reader, and against a plan built from the records alone.
 pub(crate) mod variant {

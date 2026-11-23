@@ -176,8 +176,12 @@ compile time to other values than in 2026.22 (slangc #14511; neither route satur
 SEMANTICS 15.7.6 and ledger rows KM-05 and KM-06). The Gpu suite and the difftest passed on the RTX 5090 and on the
 Radeon 890M in the spike. In slice m13.pin2221 every committed artifact set was regenerated with the 2026.22.1 slangc and
 helper (`cargo gust build`, including the sets of `cargo-gust`'s testdata, rebuilt from scratch crates that hold their
-modules; the WGSL of each is byte-identical to the committed file, and the committed variant manifest keeps its four
-pre-split entries), and all of that slice's gates ran on the Radeon 890M only: the RTX 5090 run is owed (D250). Only the
+modules; the WGSL and reflection files of each are byte-identical to the committed ones, all 24 of them). A 2026.22.1
+build of the variant crate now also writes four split (D209) entries, and the committed variant fixture deliberately
+keeps its schema-3 manifest: its `slang` tag and `reflection_sha256` values were updated, not written by a 2026.22.1
+build. The slice ran the Reflect suite, the Slangc suite (with `CARGO_GUST_HELPER_TESTS` and `CARGO_GUST_VARIANT_GATE`),
+check-artifacts, check-precompiled, check-bench, the Gpu suite and check-difftest, and all of those gates ran on the
+Radeon 890M only: the RTX 5090 run is owed (D250). Only the
 Windows archive of 2026.22.1 has been executed; the Linux and macOS archives are digest and size entries compared with
 GitHub's published values. The three archives were audited again under D46 (`LICENSES-SLANG.md`). The 2026.22 pin
 follows, as written for slice m9.p: 2026.22 was validated on Windows with the release archive itself (spike

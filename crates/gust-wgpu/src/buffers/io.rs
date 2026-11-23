@@ -150,7 +150,7 @@ impl HeadlessDevice {
         let started = Instant::now();
         self.write_typed_buffer(buffer, values)?;
         if !values.is_empty() {
-            let submission = self.queue.submit([]);
+            let submission = self.submit_counted([]);
             self.wait_for_submission(submission)?;
         }
         Ok(TransferTiming {

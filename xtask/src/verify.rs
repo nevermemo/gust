@@ -1194,9 +1194,13 @@ pub(crate) struct GpuSuitePin {
 /// unit tests (the coordinator measured 603 over 64 on the Radeon 890M at lane commit 90aadb2), and its fix round adds
 /// `tests/device_share_default_opened.rs` (one test, one `test result:` line). Checked by a full Gpu suite run on the
 /// Radeon 890M (lane).
+///
+/// Slice m14.encb: 604 over 65 became 616 over 66. The encode slice adds `tests/encode_batch.rs` (eleven GPU tests,
+/// one `test result:` line) and one doc test (the `encode_batch` example). Checked by a full Gpu suite run on the
+/// Radeon 890M (lane); the RTX 5090 run is owed at the merge.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 604,
-    result_lines: 65,
+    passed: 616,
+    result_lines: 66,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

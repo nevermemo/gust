@@ -7,6 +7,12 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- A batch can be recorded into the caller's command encoder (m14.encb, D251). New in `gust-compute-wgpu`:
+  `HeadlessDevice::encode_batch(&mut encoder, &dispatches)` records without submitting and `EncodedJob::submitted(&index)`
+  returns the job after the caller's `queue.submit`; `submit_batch_read` and `encode_batch_read` run a batch and read one
+  buffer back in one submission, with `uncleared_buffer` and `PendingRead`; `gust_submissions()` counts GUST's own
+  submissions. Radeon 890M only; the RTX 5090 run is pending.
+
 - A renderer can share GUST's device (m14.devshare.1, D247, D248). New in `gust-compute-wgpu`:
   `HeadlessDevice::adopt(&adapter, device, queue, capabilities)` wraps a device the caller opened in its own
   `wgpu::Instance`; `DeviceOptions::device_request(&adapter)` returns the `DeviceRequest` (features and limits) that

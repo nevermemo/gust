@@ -619,7 +619,7 @@ mod tests {
                 None,
             )
             .expect("the attachment fits");
-            device.queue.submit([encoder.finish()]);
+            device.submit_counted([encoder.finish()]);
             let count = device.read_typed_buffer(&counter).unwrap();
             assert_eq!(
                 count,

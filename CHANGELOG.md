@@ -7,6 +7,11 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- Capture one GPU call and replay chosen invocations on the CPU twin (g2.cap). Every kernel with a twin gets a generated
+  `capture(&gpu, &call)` (test builds and `--cfg gust_dual`) returning a `gust::capture::Captured` with
+  `run_element(id)` and `run_until(id)`; new `DeviceOptions::capture` / `with_capture` lets read-only buffers be copied.
+  A replay reproduces the twin's order, not the GPU's schedule.
+
 - A renderer can share GUST's device (m14.devshare.1, D247, D248). New in `gust-compute-wgpu`:
   `HeadlessDevice::adopt(&adapter, device, queue, capabilities)` wraps a device the caller opened in its own
   `wgpu::Instance`; `DeviceOptions::device_request(&adapter)` returns the `DeviceRequest` (features and limits) that

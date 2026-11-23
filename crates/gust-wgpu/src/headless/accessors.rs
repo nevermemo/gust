@@ -18,6 +18,12 @@ impl HeadlessDevice {
         self.capabilities
     }
 
+    /// Whether this device creates capture-capable buffers (`DeviceOptions::capture`): read-only storage buffers can be
+    /// copied for a debugging capture. A device adopted with [`adopt`](Self::adopt) does not.
+    pub fn captures(&self) -> bool {
+        self.capture
+    }
+
     /// The smallest and the largest subgroup size as wgpu reports them for the adapter (`AdapterInfo`), or `None` when the
     /// adapter does not offer subgroup operations. On Metal wgpu reports a fixed 4..64, whatever the GPU does.
     ///

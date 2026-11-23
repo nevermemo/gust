@@ -104,6 +104,10 @@ mod value_match_untyped_tests;
 #[path = "tests/pad.rs"]
 mod pad_tests;
 
+#[cfg(test)]
+#[path = "tests/capture.rs"]
+mod capture_tests;
+
 /// Marks an inline Rust module as GUST GPU code.
 ///
 /// The macro validates a deliberately small Rust subset, translates each kernel directly to Slang, and generates

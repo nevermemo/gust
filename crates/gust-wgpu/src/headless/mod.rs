@@ -65,6 +65,9 @@ pub struct HeadlessDevice {
     /// The subgroup size range wgpu reports for the adapter, when it offers subgroup operations
     /// (`HeadlessDevice::subgroup_sizes`).
     pub(crate) subgroup_sizes: Option<(u32, u32)>,
+    /// Whether persistent buffers are created capture-capable (`DeviceOptions::capture`): read-only storage buffers
+    /// get `COPY_SRC` too.
+    pub(crate) capture: bool,
     /// Recycles the allocations of [`GpuVec`] and other pooled buffers.
     pub(crate) pool: BufferPool,
     /// The route each kernel's pipeline was built from, in build order (`HeadlessDevice::route_events`).

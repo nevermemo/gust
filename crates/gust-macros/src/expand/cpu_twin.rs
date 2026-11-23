@@ -23,9 +23,11 @@ pub(super) fn cpu_twin_items(
     profile: Profile,
 ) -> syn::Result<TokenStream> {
     if cpu == CpuTwin::Unsupported {
-        return Ok(TokenStream::new());
+        return capture::no_twin_items(stage, kernel, inputs, profile);
     }
     let mut names = Vec::new();
+    let mut resources: Vec<TwinResource> = Vec::new();
+    let mut sampler_labels: Vec<String> = Vec::new();
     let mut sampler_names: Vec<syn::Ident> = Vec::new();
     let mut acquisitions = Vec::new();
     let mut arguments = Vec::new();
@@ -81,6 +83,10 @@ pub(super) fn cpu_twin_items(
             ParameterFlavor::StorageRead => {
                 let element = crate::slang::wrapper_element_type(&input.ty)?;
                 names.push(name.clone());
+                resources.push(TwinResource {
+                    label: label.clone(),
+                    kind: TwinResourceKind::Read(element.clone()),
+                });
                 acquisitions.push(quote! {
                     let #name = ::gust::cpu::read::<#element>(#name, #label)?;
                 });
@@ -89,6 +95,10 @@ pub(super) fn cpu_twin_items(
             ParameterFlavor::StorageReadWrite => {
                 let element = crate::slang::wrapper_element_type(&input.ty)?;
                 names.push(name.clone());
+                resources.push(TwinResource {
+                    label: label.clone(),
+                    kind: TwinResourceKind::Write(element.clone()),
+                });
                 acquisitions.push(quote! {
                     let mut #name = ::gust::cpu::write::<#element>(#name, #label)?;
                 });
@@ -100,6 +110,10 @@ pub(super) fn cpu_twin_items(
                 // validator refuses `mut` on the parameter and `.0` on it (GUST-E0321), the two ways around that.
                 let element = crate::slang::wrapper_element_type(&input.ty)?;
                 names.push(name.clone());
+                resources.push(TwinResource {
+                    label: label.clone(),
+                    kind: TwinResourceKind::Uniform(element.clone()),
+                });
                 acquisitions.push(quote! {
                     let #name = ::gust::cpu::read_uniform::<#element>(#name, #label)?;
                 });
@@ -115,6 +129,10 @@ pub(super) fn cpu_twin_items(
                 .map_err(|message| diagnostics::error(Code::TextureType, &input.ty, message))?;
                 let texel = spec.element_type();
                 names.push(name.clone());
+                resources.push(TwinResource {
+                    label: label.clone(),
+                    kind: TwinResourceKind::Texture,
+                });
                 acquisitions.push(quote! {
                     let #name = ::gust::cpu::texture::read::<#texel>(#name, #label)?;
                 });
@@ -136,6 +154,10 @@ pub(super) fn cpu_twin_items(
                     quote!(::gust::WriteTexture2D)
                 };
                 names.push(name.clone());
+                resources.push(TwinResource {
+                    label: label.clone(),
+                    kind: TwinResourceKind::Texture,
+                });
                 acquisitions.push(quote! {
                     let mut #name = ::gust::cpu::texture::write::<#texel>(#name, #label)?;
                 });
@@ -145,6 +167,7 @@ pub(super) fn cpu_twin_items(
             }
             ParameterFlavor::Sampler => {
                 sampler_names.push(name.clone());
+                sampler_labels.push(label.clone());
                 arguments.push(quote!(::gust::cpu::texture::sampler(#name)));
             }
             ParameterFlavor::Value => return Ok(TokenStream::new()),
@@ -190,7 +213,7 @@ pub(super) fn cpu_twin_items(
             ))
         }
     };
-    Ok(quote! {
+    let twin = quote! {
         #gate
         impl #run_trait for ::gust::cpu::CpuDevice {
             fn submit_call(
@@ -207,5 +230,45 @@ pub(super) fn cpu_twin_items(
                 ::core::result::Result::Ok(::gust::cpu::CpuJob::complete())
             }
         }
+    };
+    let capture = capture::capture_items(
+        kernel,
+        typecheck,
+        &TwinParts {
+            names: &names,
+            acquisitions: &acquisitions,
+            arguments: &arguments,
+            resources: &resources,
+            sampler_labels: &sampler_labels,
+        },
+        profile,
+    );
+    Ok(quote! {
+        #twin
+        #capture
     })
+}
+
+/// What `capture` needs of the twin's parameter walk: the same names, acquisitions and arguments the twin's `submit_call`
+/// is built from (so the replay runs the same body in the same way), and what each resource is.
+pub(super) struct TwinParts<'a> {
+    pub(super) names: &'a [syn::Ident],
+    pub(super) acquisitions: &'a [TokenStream],
+    pub(super) arguments: &'a [TokenStream],
+    pub(super) resources: &'a [TwinResource],
+    pub(super) sampler_labels: &'a [String],
+}
+
+/// One resource parameter of a twin, in declaration order.
+pub(super) struct TwinResource {
+    pub(super) label: String,
+    pub(super) kind: TwinResourceKind,
+}
+
+/// What a resource parameter is, with the element type spelled as the module writes it.
+pub(super) enum TwinResourceKind {
+    Read(syn::Type),
+    Write(syn::Type),
+    Uniform(syn::Type),
+    Texture,
 }

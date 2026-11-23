@@ -8,6 +8,7 @@
 //! - `routing` and `variant`: build-time routing and kernel variants
 //! - `kernel_attributes` and `parameters`: the `#[kernel]` attribute and the kernel's parameters
 //! - `typed_call`, `cpu_twin` and `pod`: the typed host call, the CPU twin and the plain-data records
+//! - `capture`: the typed `capture` of a kernel (copy a call's inputs, replay chosen invocations on the twin)
 //! - `artifact_items` and `origin`: artifact checks and source origins
 //! - `artifact`, `map` and `pad`: existing expansions of artifacts, element-wise maps and `#[pad]` structs
 //! - `tests`: the unit tests, by concern
@@ -28,6 +29,7 @@ use crate::{
 mod artifact;
 mod artifact_items;
 mod build_profile;
+mod capture;
 mod cpu_twin;
 mod kernel_attributes;
 mod module;

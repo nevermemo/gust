@@ -182,6 +182,37 @@ Two build-graph consequences matter more than the differences. Cargo unifies fea
 precompiled artifact hashes the Slang, so artifacts built by `cargo gust build` without the feature do not match a
 build with it, and the reverse. Build the artifacts and the program with the same set of features.
 
+## Replaying one call on the twin
+
+When a kernel's result is wrong for one element, the twin lets you step through that element in a debugger.
+Every kernel with a twin has a generated `capture(&gpu, &call)` (in a test build, or with `--cfg gust_dual`). Call it
+with the same call you are about to dispatch, before the dispatch: it copies every bound buffer and uniform to the host
+and returns a `gust::capture::Captured`, which owns the copies and runs the twin over them.
+
+```rust,ignore
+let call = update::step::call(count, &params, &input, &out);
+let captured = update::step::capture(&gpu, &call)?;
+update::step::dispatch(&gpu, count, &params, &input, &out)?;
+// Run the body for element 1042 only (set a breakpoint in the kernel body first).
+captured.run_element([1042, 0, 0])?;
+let after = captured.buffer::<Particle>("out").unwrap().read();
+```
+
+`run_element(id)` runs one invocation and `run_until(id)` runs every invocation up to and including `id`, in the
+twin's order (x fastest, then y, then z). Every run starts from the captured values, so runs do not add up. An id
+outside the launch extent, including the padding of the last workgroup, is an error and runs nothing. Three things to
+know:
+
+- **Read-only buffers need an option.** A read-only storage buffer can only be copied if the device was opened with
+  `DeviceOptions::default().with_capture(true)`; without it the capture fails with `PersistentBufferNotReadable` and a
+  hint that names the option. Read-write buffers, `GpuVec`s, pool buffers and uniforms need nothing.
+- **Not supported yet:** a kernel with a texture or a sampler returns a coded `Unsupported` error, and a kernel with
+  `cpu = "unsupported"` returns `NoTwin`, because there is no twin to replay on.
+- **A replay reproduces the twin's order, not the GPU's schedule.** For a kernel without races and atomics that is the
+  GPU's result, bit for bit inside the defined domain. For a kernel with atomics or an order-dependent result, the replay
+  is one member of the allowed set, not the history the GPU had; a race that corrupted the GPU run does not show up in
+  the replay at all (see the paragraph on races above).
+
 ## Where to go next
 
 - The kernel-side rules for atomics, workgroup memory and subgroups are in

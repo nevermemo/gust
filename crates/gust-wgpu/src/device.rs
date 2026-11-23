@@ -233,6 +233,14 @@ pub struct DeviceOptions {
     /// never dropped silently (D142), and in a browser (`wasm32`) any non-empty set is refused the same way. The set is
     /// separate from [`features`](Self::features), which holds the optional features GUST asks for on its own.
     pub capabilities: &'static [Capability],
+    /// Whether the device allocates its buffers so that a debugging capture can copy them (default `false`). A
+    /// read-only storage buffer is created without `COPY_SRC`, so it cannot be read back; with this option it gets
+    /// `COPY_SRC`, and a call that binds one can be captured (the generated `capture` of a kernel, which copies a call's
+    /// inputs for replay on the CPU twin). Read-write buffers, `GpuVec`s, pool buffers, indirect buffers and uniforms are
+    /// readable either way. It costs nothing at run time beyond the extra usage flag, but it asks the driver for a buffer
+    /// a read-only binding does not need, so it is off unless you are debugging. It applies to buffers created after the
+    /// device is opened, on a device GUST opens (a device adopted with [`HeadlessDevice::adopt`] has it off).
+    pub capture: bool,
 }
 
 impl Default for DeviceOptions {
@@ -264,6 +272,7 @@ impl Default for DeviceOptions {
             limits,
             features,
             capabilities: gust::capability::enabled(),
+            capture: false,
         }
     }
 }
@@ -304,6 +313,20 @@ impl DeviceOptions {
     #[must_use]
     pub fn with_capabilities(mut self, capabilities: &'static [Capability]) -> Self {
         self.capabilities = capabilities;
+        self
+    }
+
+    /// These options with capture-capable allocation switched to `capture`: see [`capture`](Self::capture).
+    ///
+    /// ```
+    /// use gust_wgpu::DeviceOptions;
+    ///
+    /// assert!(!DeviceOptions::default().capture);
+    /// assert!(DeviceOptions::default().with_capture(true).capture);
+    /// ```
+    #[must_use]
+    pub fn with_capture(mut self, capture: bool) -> Self {
+        self.capture = capture;
         self
     }
 }
@@ -545,7 +568,7 @@ impl HeadlessDevice {
         access: GpuBufferAccess,
     ) -> Result<GpuBuffer<T>, Error> {
         assert_pod_matches_storage_layout::<T>();
-        let usage = storage_usage(access);
+        let usage = self.storage_usage(access);
         let size = u64::from(T::LAYOUT.stride).saturating_mul(values.len().max(1) as u64);
         self.check_buffer_size(label, size)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -580,7 +603,7 @@ impl HeadlessDevice {
     ) -> Result<GpuBuffer<T>, Error> {
         assert_pod_matches_storage_layout::<T>();
         let size = zeroed_size(T::LAYOUT.stride, len);
-        let raw = self.allocate(label, size, storage_usage(access))?;
+        let raw = self.allocate(label, size, self.storage_usage(access))?;
         Ok(self.unpooled(raw, len, access, T::LAYOUT))
     }
 
@@ -600,12 +623,22 @@ impl HeadlessDevice {
             &wgpu::BufferDescriptor {
                 label: Some(label),
                 size,
-                usage: storage_usage(access),
+                usage: self.storage_usage(access),
                 mapped_at_creation: false,
             },
         )?;
         scope_result(label, size, caught.await)?;
         Ok(self.unpooled(raw, len, access, T::LAYOUT))
+    }
+
+    /// `STORAGE | COPY_DST` (and `COPY_SRC` for a read-write buffer, or for any buffer when the device was opened with
+    /// [`DeviceOptions::capture`]): what every persistent typed buffer is created with.
+    pub(crate) fn storage_usage(&self, access: GpuBufferAccess) -> wgpu::BufferUsages {
+        let mut usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+        if access == GpuBufferAccess::ReadWrite || self.capture {
+            usage |= wgpu::BufferUsages::COPY_SRC;
+        }
+        usage
     }
 
     fn unpooled<T>(
@@ -666,15 +699,6 @@ pub(crate) fn scope_result(
             "allocating `{label}` ({bytes} bytes): {other}"
         ))),
     }
-}
-
-/// `STORAGE | COPY_DST` (and `COPY_SRC` for a read-write buffer), as `create_typed_buffer` allocates.
-pub(crate) fn storage_usage(access: GpuBufferAccess) -> wgpu::BufferUsages {
-    let mut usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
-    if access == GpuBufferAccess::ReadWrite {
-        usage |= wgpu::BufferUsages::COPY_SRC;
-    }
-    usage
 }
 
 /// The bytes of a buffer of `len` elements of `stride` bytes: one element for an empty buffer (wgpu has no

@@ -6,10 +6,10 @@ use std::{
 
 use super::{
     DUAL_DIR, DUAL_RUSTFLAGS, DUAL_TESTS, DualKind, DualMode, DualStep, RUSTFLAGS_VARIABLES,
-    dual_command, dual_dir_under, dual_problems, dual_run_steps, dual_steps, dual_steps_for,
-    explain_check, parse_dual_args, parse_twin_match, precompiled_dual_steps,
-    refuse_preset_rustflags, rustflags_config_files, target_rustflags_variables, tests_not_ok,
-    twin_run_problems,
+    compile_lines, dual_command, dual_dir_under, dual_problems, dual_run_steps, dual_steps,
+    dual_steps_for, explain_check, finished_lines, missing_finished_problem, parse_dual_args,
+    parse_twin_match, precompiled_dual_steps, refuse_preset_rustflags, run_status_lines,
+    rustflags_config_files, target_rustflags_variables, tests_not_ok, twin_run_problems,
 };
 use crate::{
     ui::parse_expected,
@@ -158,13 +158,14 @@ fn the_spawned_child_has_no_rustflags_variable_but_the_cfg_on_the_cfg_steps() {
         ]
     );
     let os = |text: &str| OsString::from(text);
-    // Every step, cfg or not, removes all three variables (absent, not inherited) ...
+    // Every step, cfg or not, removes the three rustflags variables and `CARGO_TERM_QUIET` (absent, not inherited) ...
     let removed = |name: &str| (os(name), None);
     // ... and builds the workspace under the `dev` profile whatever the parent has (R4.2).
     let profile = (os("GUST_PROFILE"), Some(os("dev")));
     let without_cfg = vec![
         removed("CARGO_BUILD_RUSTFLAGS"),
         removed("CARGO_ENCODED_RUSTFLAGS"),
+        removed("CARGO_TERM_QUIET"),
         profile.clone(),
         removed("RUSTFLAGS"),
     ];
@@ -175,6 +176,7 @@ fn the_spawned_child_has_no_rustflags_variable_but_the_cfg_on_the_cfg_steps() {
             os("CARGO_ENCODED_RUSTFLAGS"),
             Some(os("--cfg\u{1f}gust_dual")),
         ),
+        removed("CARGO_TERM_QUIET"),
         profile,
         removed("RUSTFLAGS"),
     ];
@@ -188,7 +190,7 @@ fn the_spawned_child_has_no_rustflags_variable_but_the_cfg_on_the_cfg_steps() {
         if step.id == "E4-routed" {
             // The route variable of E4 is the one addition, and it sorts between the profile and RUSTFLAGS.
             let mut routed = without_cfg.clone();
-            routed.insert(3, (os("GUST_ROUTE__kernel_lib__physics"), Some(os("cpu"))));
+            routed.insert(4, (os("GUST_ROUTE__kernel_lib__physics"), Some(os("cpu"))));
             assert_eq!(envs, routed, "{}", step.id);
             continue;
         }
@@ -1311,4 +1313,89 @@ fn ci_runs_check_dual_check_only_in_the_unit_job() {
     );
     // One step, in the unit job only, and never the GPU mode (the runner has none).
     assert_eq!(ci.matches("check-dual").count(), 1, "{ci}");
+}
+
+// ---- the cargo lines `--runs-only` prints ----
+
+const COLD_STDERR: &str = "   Compiling gust-compute v0.1.0 (/work/crates/gust-compute)\n   Compiling vector-add v0.1.0 (/work/examples/vector-add)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.21s\n     Running `target/dual/debug/vector-add`\n";
+const WARM_STDERR: &str = "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.31s\n     Running `target/dual/debug/vector-add`\n";
+
+#[test]
+fn compile_lines_finds_plain_and_indented_compiling_lines() {
+    assert_eq!(
+        compile_lines(COLD_STDERR),
+        [
+            "Compiling gust-compute v0.1.0 (/work/crates/gust-compute)",
+            "Compiling vector-add v0.1.0 (/work/examples/vector-add)",
+        ]
+    );
+    assert_eq!(
+        compile_lines("\t   Compiling gust-compute v0.1.0 (path)\r\n"),
+        ["Compiling gust-compute v0.1.0 (path)"]
+    );
+}
+
+#[test]
+fn run_status_lines_are_found_through_colors() {
+    let coloured = "\u{1b}[1m\u{1b}[92m   Compiling\u{1b}[0m gust-compute v0.1.0 (path)\n\u{1b}[1m\u{1b}[92m    Finished\u{1b}[0m `dev` profile in 1.00s\n";
+    assert_eq!(
+        run_status_lines(coloured),
+        [
+            "Compiling gust-compute v0.1.0 (path)",
+            "Finished `dev` profile in 1.00s"
+        ]
+    );
+}
+
+#[test]
+fn run_status_lines_are_the_compiling_lines_then_the_finished_line() {
+    assert_eq!(
+        run_status_lines(COLD_STDERR),
+        [
+            "Compiling gust-compute v0.1.0 (/work/crates/gust-compute)",
+            "Compiling vector-add v0.1.0 (/work/examples/vector-add)",
+            "Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.21s",
+        ]
+    );
+    assert!(run_status_lines("").is_empty());
+}
+
+#[test]
+fn warm_build_has_a_finished_line_and_no_compiling_line() {
+    assert!(compile_lines(WARM_STDERR).is_empty());
+    assert_eq!(finished_lines(WARM_STDERR).len(), 1);
+    assert!(missing_finished_problem("run-x", WARM_STDERR).is_none());
+}
+
+#[test]
+fn stderr_without_a_finished_line_is_refused() {
+    let problem =
+        missing_finished_problem("run-x", "     Running `target/dual/debug/vector-add`\n")
+            .expect("no Finished line must be refused");
+    assert!(
+        problem.contains("run-x") && problem.contains("no `Finished` line"),
+        "{problem}"
+    );
+    assert!(missing_finished_problem("run-x", "").is_some());
+}
+
+#[test]
+fn compiling_in_the_middle_of_a_line_is_not_counted() {
+    let text = "warning: Compiling is slow here\n  = note: see Compiling notes\n    Finished `dev` profile in 0.1s\n";
+    assert!(compile_lines(text).is_empty());
+}
+
+#[test]
+fn lines_after_cargos_running_line_are_the_examples_own() {
+    let text = "    Finished `dev` profile in 0.1s\n     Running `target/dual/debug/vector-add`\nCompiling the shader\nFinished the frame\n";
+    assert!(compile_lines(text).is_empty());
+    assert_eq!(finished_lines(text), ["Finished `dev` profile in 0.1s"]);
+    // An example's `Finished` line alone does not satisfy the step.
+    assert!(
+        missing_finished_problem(
+            "run-x",
+            "     Running `target/dual/debug/vector-add`\nFinished the frame\n"
+        )
+        .is_some()
+    );
 }

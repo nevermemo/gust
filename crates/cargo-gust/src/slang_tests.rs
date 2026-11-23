@@ -135,6 +135,10 @@ fn the_pin_matches_exactly_or_a_listed_validated_build_and_nothing_else() {
         "2026.2",
         "2026.220",
         "2026.23",
+        // The previous pin (a strict prefix of this one) and the neighbours of the pin's last component.
+        "2026.22",
+        "2026.22.10",
+        "2026.22.2",
         "2026.22.1-",
         "2026.22.1-rc1",
         "2026.22.1-1",

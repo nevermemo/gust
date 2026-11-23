@@ -737,6 +737,14 @@ fn a_stale_compiler_tag_is_named_with_its_file_and_both_tags() {
         compiler_tag_problems("k.reflection.json", longer, PIN).len(),
         1
     );
+    // The previous pin, a strict prefix of this one, is stale too.
+    let previous = r#"{"compiler":"2026.22"}"#;
+    let problems = compiler_tag_problems("k.reflection.json", previous, PIN);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("`compiler` is `2026.22` but SLANG_PIN is `2026.22.1`"),
+        "{problems:?}"
+    );
     // Both fields stale: two problems.
     let both = r#"{"compiler":"old","slang":"old"}"#;
     assert_eq!(compiler_tag_problems("manifest.json", both, PIN).len(), 2);

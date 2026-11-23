@@ -537,6 +537,10 @@ fn the_pin_rule_is_exactly_the_one_of_cargo_gust() {
         "2026.2",
         "2026.220",
         "2026.23",
+        // The previous pin (a strict prefix of this one) and the neighbours of the pin's last component.
+        "2026.22",
+        "2026.22.10",
+        "2026.22.2",
         "2026.22.1-",
         "2026.22.1-rc1",
         "2026.22.1-1",
@@ -619,6 +623,9 @@ fn the_version_check_accepts_exactly_the_pin_and_names_both_otherwise() {
         "2026.19",
         "2026.220",
         "2026.2",
+        "2026.22",
+        "2026.22.10",
+        "2026.22.2",
         "2026.22.1-1-g0a1b2c3d4",
         "2026.22.1-rc1",
     ] {

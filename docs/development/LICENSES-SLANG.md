@@ -13,7 +13,14 @@ read; all six matched. What was run: file listings of all six archives and their
 `LICENSE`, `README.md`, `LICENSES/`, `third-party-notices/` and `share/slang/agent-skills/` between the two versions on
 each platform; a string scan for "GNU General Public" and "GNU Lesser" of every regular file in `bin/` and `lib/` of the
 three 2026.22.1 archives (Windows 56 files, Linux 56, macOS 64; no hit in any); and the `mi_malloc` counts of the compiler
-library. Nothing from any archive was run in this audit. Rule (D46): permissive licences are accepted with their notices
+library. The counts differ from the 2026.22 audit (56, 57 and 65) because of how the archives were extracted, not
+because of their content: the listings of `bin/` and `lib/` hold the same entries in both versions (Windows 56, Linux 60
+and macOS 68), and this audit scanned the regular files only: the Linux extraction held 4 symbolic links (counted), and
+the macOS difference of 4 is read the same way (inferred from the counts). The Linux and macOS archives were extracted on Windows with its `tar`, which here
+created the links; an extraction on Windows may fail to create symbolic links (the 2026.22 audit's did for two), and the
+file count then changes, so every count above comes with the listing it was taken from. The evidence (digests, listings,
+listing differences, scan output, counts) was kept as text in the session's scratch area only and is not retained; every
+check above can be repeated with the commands named. Nothing from any archive was run in this audit. Rule (D46): permissive licences are accepted with their notices
 kept; a copyleft or non-commercial component stops the download path for that platform.
 
 | Archive | SHA-256 | Verdict |
@@ -35,6 +42,15 @@ kept; a copyleft or non-commercial component stops the download path for that pl
   only, and the open item stands: no one has checked the Linux and macOS libraries for linked mimalloc symbols.
 - The 14 listing names that contain "optix" per platform are documentation test sources, as in 2026.22; no `optix.h` is in
   any listing (from the listings, not from running anything).
+
+## The named checks (2026.22.1)
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| No GPL-2.0 lz4 code | pass | `third-party-notices/lz4-LICENSE` is byte for byte the 2026.22 one. No "GNU General Public" or "GNU Lesser" in any regular file of `bin/` or `lib/` on any platform. |
+| cmark's CC-BY-SA part | pass | `cmark-COPYING` is byte for byte the 2026.22 one; no `spec.txt` and no cmark source tree is in the one added listing entry. |
+| glslang's GPL-3.0 text | pass | `glslang-LICENSE.txt` is byte for byte the 2026.22 one (the notice directories are identical on every platform). |
+| optix-dev absent | pass (listing) | No `optix.h` in any listing; the 14 names that contain "optix" are the documentation test sources of 2026.22. From the listings, not from running anything. |
 
 Verdict: all three 2026.22.1 archives are accepted under D46 (permissive licences with notices, no copyleft or
 non-commercial component added, and no licence text or notice changed).

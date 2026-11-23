@@ -640,7 +640,7 @@ list; the `semver` CI job that covered the public API against that branch is ret
 - **Changed behaviour.** `DeviceOptions::default()` and `HeadlessDevice::new()` now request
   `gust::capability::enabled()`. In a build without a capability that is the empty set, as before; in a `+subgroups`
   build they open a device with the feature, or fail with `Error::MissingCapability`. The pinned Slang is 2026.22.1
-  (D150); `cargo gust check` refuses artifacts built with 2026.20 until `cargo gust build` is run again.
+  (D150); `cargo gust check` refuses artifacts built with an earlier pin (2026.20, for the 0.1 line) until `cargo gust build` is run again.
 
 ## Minimum Rust
 

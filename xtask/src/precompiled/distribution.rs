@@ -386,6 +386,15 @@ pub(super) fn e8_distribution(fixture: &Fixture, options: &Options) -> Result<St
     work.finish(outcome)
 }
 
+/// Prints the whole seconds since `since` for the E8 sub-step `step`, and starts the next lap.
+fn print_lap(step: &str, since: &mut Instant) {
+    println!(
+        "check-precompiled E8: {step} took {} s",
+        since.elapsed().as_secs()
+    );
+    *since = Instant::now();
+}
+
 /// E8 in the work directory `work`.
 fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String, String> {
     let read = |path: PathBuf| {
@@ -423,6 +432,7 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
     .map_err(|error| format!("check-precompiled E8: {error}"))?;
 
     // 1. `cargo package --list`: the allow-list of each package.
+    let mut lap = Instant::now();
     let mut problems = Vec::new();
     for spec in &E8_PACKAGES {
         let mut args = vec!["package", "--list", "--allow-dirty", "--color", "never"];
@@ -450,6 +460,7 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
         "check-precompiled E8: the file lists of {} packages are on the allow-list (kernels lists every committed artifact)",
         E8_PACKAGES.len()
     );
+    print_lap("the package lists", &mut lap);
 
     // 2. Package and unpack outside the repository. The three repository crates go in one call: cargo then resolves
     // them against each other, which a single `-p gust-compute` cannot (`gust-compute-macros` is not on crates.io).
@@ -527,6 +538,8 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
         require_success("E8", &format!("tar -xzf {file}"), &output)?;
     }
 
+    print_lap("packaging and unpacking", &mut lap);
+
     // 3. The unpacked trees are judged again, and the kernels tree is Slang-free.
     for (spec, version) in E8_PACKAGES.iter().zip(&versions) {
         let tree = unpacked.join(format!("{}-{version}", spec.name));
@@ -582,6 +595,7 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
         .to_str()
         .ok_or("check-precompiled E8: the work directory is not valid UTF-8")?;
 
+    lap = Instant::now();
     // 4a. `cargo metadata` first: the features the registry consumer sees are the packaged ones.
     let output = run_step(
         "E8",
@@ -614,6 +628,8 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
         ));
     }
 
+    print_lap("cargo metadata", &mut lap);
+
     // 4b. The release build under `native` in the stripped environment of E1. Its target directory outlives the work
     // directory, so the third-party objects are built once; the objects of the five path packages are removed first,
     // because the unpacked trees sit at a new path every run and would pile up under new hashes (and under a reused
@@ -639,6 +655,7 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
         "cargo clean --release (the path packages of the consumer)",
         fixture.cargo_in(&consumer, &clean),
     )?;
+    print_lap("cargo clean of the path packages", &mut lap);
     let started = Instant::now();
     let output = run_step(
         "E8",
@@ -680,6 +697,7 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
     // 4c. Run it.
     let built = Fixture::app_binary(&target);
     let built = built.with_file_name(format!("{CONSUMER_NAME}{EXE_SUFFIX}"));
+    lap = Instant::now();
     if options.mode == Mode::Prepare {
         // The next run's clean removes the built binary, and the stamp hashes the fixed kept path, so
         // `--adapter-runs` runs this copy.
@@ -689,6 +707,7 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
             .map_err(|error| {
                 format!("check-precompiled E8: could not keep the consumer: {error}")
             })?;
+        print_lap("copying the consumer", &mut lap);
     }
     if !options.mode.runs() {
         return Ok("passed (build only: this mode skips the run, which needs an adapter): the four packages are on the allow-list and Slang-free, no default feature of gust-compute or gust-compute-wgpu turns on slang-runtime, and the consumer with registry-style dependencies built in release under native in the stripped environment, with every patch used and no `source` in the lock for the four packages".to_owned());

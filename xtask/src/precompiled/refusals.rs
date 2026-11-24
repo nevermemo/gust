@@ -518,12 +518,22 @@ fn add_bridge_user(fixture: &Fixture, copy: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The target directory of `case`: one per (profile, release) pair, and one for the repository workspace, so that a
+/// case finds the objects of the same case in the previous run instead of the build script re-running after every flip
+/// of `GUST_PROFILE` (E3 and E4 stay in `scratch_target_dir`).
+fn e6_target_dir(fixture: &Fixture, case: &E6Case) -> PathBuf {
+    let profile = format!("{:?}", case.profile).to_lowercase();
+    let mode = if case.release { "release" } else { "debug" };
+    let scope = if case.workspace { "-workspace" } else { "" };
+    fixture
+        .scratch
+        .join(format!("e6-target-{profile}-{mode}{scope}"))
+}
+
 /// E6a to E6j: the refusals of `gust`'s build script, their positive controls, and the three ways in which the internal
 /// `cargo-gust-bridge` feature (D108) makes a release build without a variable `dev` (E6g, E6i, E6j; a release build
 /// without `GUST_PROFILE` is otherwise strict). Returns the summary.
 pub(super) fn e6_refusals(fixture: &Fixture) -> Result<String, String> {
-    let scratch_target = fixture.scratch_target_dir();
-    let target_dir = Fixture::target_dir_arg(&scratch_target)?;
     let fixture_manifest = format!("{PRECOMPILED_DIR}/Cargo.toml");
     let copy = fixture.scratch.join("e6c");
     copy_fixture(fixture, &copy)?;
@@ -552,6 +562,8 @@ pub(super) fn e6_refusals(fixture: &Fixture) -> Result<String, String> {
         } else {
             fixture_manifest.as_str()
         };
+        let case_target = e6_target_dir(fixture, &case);
+        let target_dir = Fixture::target_dir_arg(&case_target)?;
         let args = e6_args(&case, manifest, target_dir);
         let arguments: Vec<&str> = args.iter().map(String::as_str).collect();
         let mut command = match case.profile {

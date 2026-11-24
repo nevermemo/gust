@@ -332,6 +332,7 @@ pub(super) fn e7_build_twice(fixture: &Fixture, mode: Mode) -> Result<String, St
     }
     let tool = build_cargo_gust(fixture)?;
     let copy = fixture.scratch.join("e7-gust");
+    let copy_target = fixture.scratch.join("e7-gust-target");
     copy_fixture(fixture, &copy)?;
     let manifest = copy.join("kernels").join("Cargo.toml");
     let artifacts = copy.join("kernels").join("gust-artifacts");
@@ -359,14 +360,16 @@ pub(super) fn e7_build_twice(fixture: &Fixture, mode: Mode) -> Result<String, St
             .arg("--manifest-path")
             .arg(&manifest);
         // The tool sets the profile of its collect step itself; a target directory of the parent would put the build
-        // into the repository's cache, so the copy gets its own `target`.
-        for name in RUSTFLAGS_VARIABLES.iter().copied().chain([
-            PROFILE_VARIABLE,
-            "GUST_EXPORT_DIR",
-            "CARGO_TARGET_DIR",
-        ]) {
+        // into the repository's cache, so the copy builds into a directory of its own that outlives the run (the copy
+        // itself stays fresh and without artifacts; only the compiled dependencies are reused).
+        for name in RUSTFLAGS_VARIABLES
+            .iter()
+            .copied()
+            .chain([PROFILE_VARIABLE, "GUST_EXPORT_DIR"])
+        {
             command.env_remove(name);
         }
+        command.env("CARGO_TARGET_DIR", &copy_target);
         let output = run_capture_in(&mut command, "check-precompiled E7", "cargo-gust")?;
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();

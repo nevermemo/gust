@@ -13,7 +13,10 @@ use std::sync::Arc;
 use gust::{GpuPod, capability::Capability, pod_slice_as_bytes};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
-use crate::{Error, GpuBuffer, GpuBufferAccess, HeadlessDevice, assert_pod_matches_storage_layout};
+use crate::{
+    ADAPTER_ATTEMPTS, ADAPTER_BACKOFF, Error, GpuBuffer, GpuBufferAccess, HeadlessDevice,
+    assert_pod_matches_storage_layout, pause_between_attempts, retry_empty_list,
+};
 
 /// The handle a resident buffer holds to its device: `Arc<HeadlessDevice>` on native, where the device is `Send` and
 /// `Sync`, and `Rc<HeadlessDevice>` on `wasm32`, where wgpu's WebGPU device is neither (checked under `check-web`,
@@ -400,15 +403,31 @@ impl HeadlessDevice {
 
     #[cfg_attr(not(target_arch = "wasm32"), doc = "[`enumerate`](Self::enumerate)")]
     #[cfg_attr(target_arch = "wasm32", doc = "`enumerate`")]
-    /// without blocking. A browser lists at most the adapter it hands out.
+    /// without `pollster`. A browser lists at most the adapter it hands out.
+    ///
+    /// An empty list is asked for again, as device creation does for a transient `NoAdapter` (three attempts; 100 ms
+    /// and 400 ms between them on native, none in a browser), because wgpu's Vulkan enumeration has returned an empty
+    /// list a few times in test runs while other threads opened devices. A retry that finds adapters logs one line to
+    /// stderr; a machine or backend with no adapter still gets the empty list, after the last attempt.
+    ///
+    /// On native the pauses sleep the calling thread, as in [`new_async`](Self::new_async), so an empty answer
+    /// comes back about half a second later and blocks an executor thread that awaits this.
     pub async fn enumerate_async(backends: wgpu::Backends) -> Vec<wgpu::AdapterInfo> {
-        let instance = new_instance(backends);
-        instance
-            .enumerate_adapters(backends)
-            .await
-            .iter()
-            .map(wgpu::Adapter::get_info)
-            .collect()
+        retry_empty_list(
+            ADAPTER_ATTEMPTS,
+            &ADAPTER_BACKOFF,
+            pause_between_attempts,
+            |line| eprintln!("{line}"),
+            || async {
+                new_instance(backends)
+                    .enumerate_adapters(backends)
+                    .await
+                    .iter()
+                    .map(wgpu::Adapter::get_info)
+                    .collect()
+            },
+        )
+        .await
     }
 
     /// One adapter request. Used by the retry in `new_async_with`; only `Error::NoAdapter` is retried.

@@ -56,6 +56,36 @@ pub(crate) async fn retry_no_adapter<
     }
 }
 
+/// Run `list` up to `attempts` times until it returns a non-empty list, pausing `backoff[n]` through `pause`
+/// after the `n`th empty one. A machine with no adapter still gets an empty list, only after the last attempt.
+/// When a list is non-empty after at least one empty attempt, one line goes to `log`, so the transient failure
+/// stays visible. Shares the attempts, backoff and futures contract of [`retry_no_adapter`].
+pub(crate) async fn retry_empty_list<
+    T,
+    List: Future<Output = Vec<T>>,
+    Pause: Future<Output = ()>,
+>(
+    attempts: u32,
+    backoff: &[Duration],
+    pause: impl FnMut(Duration) -> Pause,
+    log: impl FnMut(&str),
+    mut list: impl FnMut() -> List,
+) -> Vec<T> {
+    retry_no_adapter(attempts, backoff, pause, log, || {
+        let pending = list();
+        async move {
+            let found = pending.await;
+            if found.is_empty() {
+                Err(Error::NoAdapter("the adapter list was empty".to_owned()))
+            } else {
+                Ok(found)
+            }
+        }
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// The pause between two adapter requests. Native sleeps the calling thread and returns a ready future.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn pause_between_attempts(delay: Duration) -> std::future::Ready<()> {
@@ -167,6 +197,87 @@ mod tests {
         assert_eq!(calls, 1);
         assert!(pauses.is_empty());
         assert!(logs.is_empty(), "no retry happened, so nothing is logged");
+    }
+
+    fn retry_empty_list<T>(
+        mut pause: impl FnMut(Duration),
+        log: impl FnMut(&str),
+        mut list: impl FnMut() -> Vec<T>,
+    ) -> Vec<T> {
+        pollster::block_on(super::retry_empty_list(
+            ADAPTER_ATTEMPTS,
+            &ADAPTER_BACKOFF,
+            |delay| {
+                pause(delay);
+                std::future::ready(())
+            },
+            log,
+            || std::future::ready(list()),
+        ))
+    }
+
+    #[test]
+    fn adapter_enumeration_retries_an_empty_list_and_logs_once() {
+        let mut calls = 0;
+        let mut pauses = Vec::new();
+        let mut logs = Vec::new();
+        let found = retry_empty_list(
+            |delay| pauses.push(delay),
+            |line| logs.push(line.to_string()),
+            || {
+                calls += 1;
+                if calls < 2 { Vec::new() } else { vec![calls] }
+            },
+        );
+        assert_eq!(found, [2]);
+        assert_eq!(pauses, ADAPTER_BACKOFF[..1]);
+        assert_eq!(
+            logs,
+            [format!(
+                "gust-compute-wgpu: adapter request succeeded on attempt 2 of {ADAPTER_ATTEMPTS} after a transient NoAdapter failure: the adapter list was empty"
+            )]
+        );
+    }
+
+    #[test]
+    fn adapter_enumeration_returns_empty_after_the_attempts() {
+        let mut calls = 0;
+        let mut pauses = Vec::new();
+        let mut logs = Vec::new();
+        let found: Vec<u32> = retry_empty_list(
+            |delay| pauses.push(delay),
+            |line| logs.push(line.to_string()),
+            || {
+                calls += 1;
+                Vec::new()
+            },
+        );
+        assert!(found.is_empty());
+        assert_eq!(calls, ADAPTER_ATTEMPTS);
+        assert_eq!(pauses, ADAPTER_BACKOFF);
+        assert!(
+            logs.is_empty(),
+            "no adapter was found, so nothing is logged"
+        );
+    }
+
+    #[test]
+    fn adapter_enumeration_returns_a_first_list_at_once() {
+        let mut calls = 0;
+        let mut pauses = Vec::new();
+        let mut logs = Vec::new();
+        let found = retry_empty_list(
+            |delay| pauses.push(delay),
+            |line| logs.push(line.to_string()),
+            || {
+                calls += 1;
+                vec![7]
+            },
+        );
+        assert_eq!(found, [7]);
+        assert_eq!(calls, 1);
+        assert!(pauses.is_empty());
+        assert!(logs.is_empty());
     }
 
     #[test]

@@ -27,8 +27,11 @@
 //! submitted (decision D258), so the batch's data persists from frame to frame: an input or parameter that a frame
 //! does not `write` or `set` holds the value of the last frame that reached the queue, whatever `n` is, on both
 //! devices. A frame recorded into a caller's encoder follows [`Encoded`]: a reported frame's `set`s hold, a dropped
-//! frame's are discarded. A frame's tickets read that frame's results; a later frame's writes never reach an earlier
-//! frame. A shape cannot change after the seal (a `set` that would is [`Error::ShapeMismatch`]).
+//! frame's are discarded. A frame records the extent record of a stage only when a parameter of the stage was set in
+//! it; after a frame recorded into a caller's encoder, the parameters that frame set stay on the list of the ones a
+//! later frame records again, until a frame made by `submit` clears it. A frame's tickets read that frame's results; a
+//! later frame's writes never reach an earlier frame. A shape cannot change after the seal (a `set` that would is
+//! [`Error::ShapeMismatch`]).
 
 use core::any::Any;
 use core::cell::{Cell, RefCell};
@@ -37,7 +40,7 @@ use core::pin::Pin;
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, PoisonError,
     atomic::{AtomicU64, Ordering},
 };
 
@@ -567,9 +570,24 @@ pub(crate) struct RunState<D: BatchDevice> {
     pub(crate) depth: usize,
     /// The submitted frames that `begin` has not yet waited for, the oldest first; never more than `depth`.
     pub(crate) pending: VecDeque<D::Submission>,
-    /// The device may not hold the parameter values of `values`: a frame recorded into a caller's encoder was reported
-    /// or dropped, and the host cannot tell whether that encoder ran. The next frame records every parameter again.
-    pub(crate) resync: bool,
+    /// The parameters whose values the device may not hold: the ones set in a frame recorded into a caller's encoder
+    /// that was reported or dropped (the host cannot tell whether that encoder ran), and the ones that were stale when
+    /// it was recorded. A frame records the extent record of every stage that has one of them, and a frame that the
+    /// batch submitted itself clears the set.
+    pub(crate) stale: Vec<usize>,
+    /// How many extent records the frames of the batch have recorded (see [`Batch::extent_records`]).
+    pub(crate) extent_records: u64,
+}
+
+impl<D: BatchDevice> RunState<D> {
+    /// Remember that the device may not hold these parameters' values.
+    pub(crate) fn mark_stale(&mut self, ids: impl Iterator<Item = usize>) {
+        for id in ids {
+            if !self.stale.contains(&id) {
+                self.stale.push(id);
+            }
+        }
+    }
 }
 
 pub(crate) struct Core<D: BatchDevice> {
@@ -660,6 +678,19 @@ impl<D: BatchDevice> Batch<D> {
                     .collect(),
             })
             .collect()
+    }
+
+    /// Test support, outside the pre-1.0 promise (D111): how many extent records (the per-stage records that carry the
+    /// parameters' values) the batch's frames have recorded so far. A frame records the record of each stage that has
+    /// a parameter set in that frame or left stale by a frame recorded into a caller's encoder.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn extent_records(&self) -> u64 {
+        self.core
+            .run
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extent_records
     }
 
     /// What the batch holds in memory.
@@ -1258,7 +1289,8 @@ pub fn build<D: BatchDevice, H: DeviceRef<Device = D>, O>(
             live: false,
             depth: usize::try_from(in_flight.max(1)).unwrap_or(1),
             pending: VecDeque::new(),
-            resync: false,
+            stale: Vec::new(),
+            extent_records: 0,
         }),
     };
     // The cell of `core` is not `Sync` (the CPU device's buffers are single-threaded); the batch is a shared handle for

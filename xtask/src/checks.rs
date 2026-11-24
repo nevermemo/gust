@@ -545,6 +545,17 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "app::tests::twin_the_batch_reports_its_stages_in_order",
             "app::tests::twin_the_report_counts_the_buffers_and_their_bytes",
             "app::tests::twin_the_blocking_form_reads_the_frame_it_ran",
+            // The integration tests of `tests/in_flight.rs` and `tests/encode.rs` are named by their bare function.
+            "twin_a_dropped_encoded_with_a_submitted_encoder",
+            "twin_a_failed_submission_leaves_no_discarded_set",
+            "twin_a_refused_set_holds",
+            "twin_a_refused_set_holds_when_the_next_frame_sets_the_other_parameter",
+            "twin_a_refused_write_is_lost",
+            "twin_an_unchanged_stage_is_not_re_recorded",
+            "twin_dropped_frames_and_claims",
+            "twin_encode_equals_submit",
+            "twin_overlapping_frames_are_exact",
+            "twin_the_three_refusals_are_not_submitted",
         ],
     ),
 ];

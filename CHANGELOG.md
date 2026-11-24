@@ -20,8 +20,8 @@ breaks existing code bumps the minor version, and the promise is described in th
   `#[gpu_module]` module that declares the struct and call `module::f::map(..)` (and `map_on`, `map_gpu`,
   `map_async`, ..) with slices, arrays, `Broadcast` values or resident buffers of the struct. The GUST-E0716 error
   for `#[gpu_fn]` inside a module is lifted.
-- A sealed batch of stages with one frame in flight (m14.s2a2). New in `gust-compute`: `gpu_batch!("name", on(&device);
-  in_flight(1); |b| { .. })` returns a `gust::Batch` and the handles of its block; a frame is `begin().await`, `write`,
+- A sealed batch of stages (m14.s2a2; frames in flight above one: the m14.s2c entry below). New in `gust-compute`:
+  `gpu_batch!("name", on(&device); in_flight(1); |b| { .. })` returns a `gust::Batch` and the handles of its block; a frame is `begin().await`, `write`,
   `set`, `ticket`, `submit()` (one queue submission on the GPU device) and `ticket.await`. New public names:
   `gust::{Batch, FrameRun, Submitted, Ticket}` and, in `gust::batch`, `Builder`, `Stage`, `Param`, `StageInfo`,
   `Report`, `D1`, `D2`, `Rank`, `IntoShape`, `ParamType`, `BoxFuture`, `Error` (with `NotInput` and `FrameLive`) and the
@@ -44,7 +44,13 @@ breaks existing code bumps the minor version, and the promise is described in th
   parameter that a frame does not write or set holds the value of the last frame that reached the queue; a frame
   recorded into a caller's encoder counts by its report (a reported frame's `set`s hold, a dropped frame's are
   discarded). No speed claim for `in_flight` above 1 yet: SB1p on the Radeon 890M gave 1.462 at 2^10 (likely
-  clock-bound), 1.292 at 2^16 and 0.997 at 2^20; the RTX 5090 half is owed.
+  clock-bound), 1.292 at 2^16 and 0.997 at 2^20; the RTX 5090 half is owed. New public names: `gust::batch::Encoded`
+  and `gust::cpu::CpuEncoder`. Follow-up (m14.s2cf): a frame recorded into a caller's encoder records again only the
+  extent records of the stages whose parameters were set in it or left stale by an earlier such frame (a frame made by
+  `submit` clears the list), counted by a hidden counter for tests; the names of the eight CPU twin tests of the
+  frames-in-flight and encode scenarios, and of one for this, are required by `check-cpu`, and xtask's pin check now
+  reads a package's `tests/` folder too; a dropped CPU frame whose submission failed after its records ran also marks
+  its parameters stale; the retirement of a staging buffer is counted on the GPU. Radeon 890M only; RTX 5090 pending.
 
 - Capture one GPU call and replay chosen invocations on the CPU twin (g2.cap). Every kernel with a twin gets a generated
   `capture(&gpu, &call)` (test builds and `--cfg gust_dual`) returning a `gust::capture::Captured` with

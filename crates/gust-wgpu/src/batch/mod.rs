@@ -1,7 +1,8 @@
 //! The GPU device's batch (plan m14.s2, slice s2a2): [`HeadlessDevice`] as a `gust::batch::BatchDevice`.
 //!
 //! A frame is recorded into one command encoder: its own at `submit`, or the caller's at `encode`. The writes of the
-//! frame are encoded copies, the extent records of the stages whose parameters changed are encoded copies, then come
+//! frame are encoded copies, the extent records of the stages with a parameter set in the frame (or left stale by an
+//! earlier frame recorded into a caller's encoder, see `gust::batch::Encoded`) are encoded copies, then come
 //! the passes of the stages in order, then the read-back copies of the tickets; `submit` finishes the encoder and makes
 //! **one** counted queue submission ([`HeadlessDevice::gust_submissions`] rises by 1 whatever the number of stages and
 //! tickets). One encoder per frame and ticket-before-submit are decision D251.

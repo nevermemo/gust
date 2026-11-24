@@ -348,6 +348,10 @@ pub const EXACT_CLASS_BYTES: u64 = 64 * 1024;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) const STAGING_POOL_CEILING_BYTES: u64 = 64 << 20;
 
+/// The word that a frame recorded into a caller's encoder copies into its epoch buffer: nonzero, so that the zeroed
+/// buffer of an encoder that never ran differs from it.
+pub(crate) const EPOCH: u32 = 0x4755_5354;
+
 /// The most bytes a pool keeps idle by default (1 GiB). Past it the least recently returned buffers are dropped.
 pub const DEFAULT_POOL_BYTES_MAX: u64 = 1 << 30;
 
@@ -504,15 +508,15 @@ pub struct BufferPool {
 }
 
 impl BufferPool {
-    /// The `COPY_SRC` buffer that holds `word`, one per device: a frame recorded into a caller's encoder copies it into
-    /// its own epoch buffer. The first call fixes the word; every caller of one device passes the same one.
-    pub(crate) fn epoch_source(&self, device: &wgpu::Device, word: [u8; 4]) -> wgpu::Buffer {
+    /// The `COPY_SRC` buffer that holds [`EPOCH`], one per device: a frame recorded into a caller's encoder copies it
+    /// into its own epoch buffer.
+    pub(crate) fn epoch_source(&self, device: &wgpu::Device) -> wgpu::Buffer {
         self.shared
             .epoch
             .get_or_init(|| {
                 device.create_buffer_init(&BufferInitDescriptor {
                     label: Some("GUST batch epoch word"),
-                    contents: &word,
+                    contents: &EPOCH.to_le_bytes(),
                     usage: wgpu::BufferUsages::COPY_SRC,
                 })
             })
@@ -650,7 +654,7 @@ impl Lease {
 
     /// Never put the buffer back: a command recorded into an encoder of the caller's still uses it, and nothing says
     /// when that command runs. Dropping the lease counts it as retired.
-    pub(crate) fn retire(mut self) {
+    fn retire(mut self) {
         self.retired = true;
     }
 
@@ -1050,7 +1054,9 @@ impl<T: GpuPod> PooledReadback<T> {
     /// Like [`finish`](Self::finish), but the values are only good when `ran` says the copy into the staging buffer ran.
     /// When it says it did not (or fails to say), the staging buffer is retired, not recycled: the caller's encoder
     /// that holds the copy may still be submitted, and a pooled buffer must not be written by a command that nobody
-    /// accounts for. Returns `None` for a copy that did not run.
+    /// accounts for. Returns `None` for a copy that did not run. Only this awaited path checks it: a ticket dropped
+    /// before it resolves, or a mapping that fails, recycles the buffer whatever the epoch says, which is sound under
+    /// the documented rule that such an encoder is never submitted.
     pub(crate) async fn finish_if_ran(
         mut self,
         device: &wgpu::Device,

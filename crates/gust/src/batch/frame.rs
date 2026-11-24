@@ -374,9 +374,11 @@ impl<D: BatchDevice> FrameRun<D> {
     }
 
     /// Record the frame into the caller's encoder instead of making a submission: the writes, the extent records of
-    /// the parameters that changed, the stages in order and the copies of the tickets. Nothing runs until the caller
-    /// submits the encoder and reports it with [`Encoded::submitted`]; one queue submission can then carry the frame
-    /// and the caller's own passes. Returns at once.
+    /// the stages whose parameters were set in this frame or are stale (the host cannot tell whether an earlier encoded
+    /// frame's encoder ran, so what it set is recorded again until a frame made by `submit` clears it), the stages in
+    /// order and the copies of the tickets. Nothing runs until the caller submits the encoder and reports it with
+    /// [`Encoded::submitted`]; one queue submission can then carry the frame and the caller's own passes. Returns at
+    /// once.
     ///
     /// The frame stays live until it is reported or dropped, and its tickets resolve only after the report. Frames
     /// run in the order of the caller's submissions, so with `in_flight(n)` each of the `n` frames can be encoded
@@ -391,39 +393,49 @@ impl<D: BatchDevice> FrameRun<D> {
     /// encoder; do not submit it.
     pub fn encode(mut self, encoder: &mut D::Encoder) -> Result<Encoded<D>, Error> {
         let core = Arc::clone(&self.core);
+        // Set before recording: a failure inside `record` leaves the frame's copies in the caller's encoder, which the
+        // caller may still submit.
+        self.encoded = true;
         let frame = self.record(encoder)?;
         let encoded = core
             .device
             .encoded_frame(frame, encoder)
             .map_err(device_error::<D>)?;
-        self.encoded = true;
         Ok(Encoded { run: self, encoded })
     }
 
-    /// First step of `submit` and of `encode`: the writes, the extent records that a `set` changed, the stages in
-    /// order, then the copies of the tickets, all into `encoder`.
+    /// First step of `submit` and of `encode`: the writes, the extent records of the stages that have a parameter set
+    /// in this frame or left stale by a frame recorded into a caller's encoder, the stages in order, then the copies of
+    /// the tickets, all into `encoder`.
     fn record(&mut self, encoder: &mut D::Encoder) -> Result<D::Frame, Error> {
         let core = Arc::clone(&self.core);
         let device = &*core.device;
         let mut frame = self.frame.take().expect("a live frame holds its recorder");
-        let (mut values, resync) = {
+        let (mut values, stale) = {
             let run = core.run.lock().unwrap_or_else(PoisonError::into_inner);
-            (run.values.clone(), run.resync)
+            (run.values.clone(), run.stale.clone())
         };
         for (id, value) in &self.pending {
             values[*id] = *value;
         }
         let values = Values(values);
-        for stage in &core.stages {
-            let changed = resync
-                || stage
-                    .params
-                    .iter()
-                    .any(|id| self.pending.iter().any(|(set, _)| set == id));
+        let mut recorded = 0;
+        let result = core.stages.iter().try_for_each(|stage| {
+            let changed = stage
+                .params
+                .iter()
+                .any(|id| stale.contains(id) || self.pending.iter().any(|(set, _)| set == id));
             if let (true, Some(update)) = (changed, &stage.update) {
                 update(device, &mut frame, &values).map_err(device_error::<D>)?;
+                recorded += 1;
             }
-        }
+            Ok::<(), Error>(())
+        });
+        core.run
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extent_records += recorded;
+        result?;
         device
             .frame_uploads(&mut frame, encoder)
             .map_err(device_error::<D>)?;
@@ -447,12 +459,16 @@ impl<D: BatchDevice> FrameRun<D> {
         }
         {
             let mut run = core.run.lock().unwrap_or_else(PoisonError::into_inner);
+            if self.encoded {
+                // The caller's encoder may not have run: what this frame set may not be on the device.
+                run.mark_stale(self.pending.iter().map(|(id, _)| *id));
+            } else {
+                // The frame recorded every stale parameter and the batch itself submitted it.
+                run.stale.clear();
+            }
             for (id, value) in self.pending.drain(..) {
                 run.values[id] = value;
             }
-            // A frame that re-recorded every parameter leaves nothing to resync, unless it is itself a caller's: its
-            // encoder may not have run.
-            run.resync = self.encoded;
             run.live = false;
             run.pending.push_back(submission.clone());
         }
@@ -469,13 +485,14 @@ impl<D: BatchDevice> Drop for FrameRun<D> {
         for slot in self.reads.drain(..) {
             slot.abandon();
         }
-        if self.encoded {
-            // The caller may still submit the encoder: the device can hold this frame's parameters and writes.
+        if self.encoded || self.frame.is_none() {
+            // The frame was recorded: the caller may still submit its encoder, or a CPU submission failed after its
+            // extent records ran. Either way the device can hold this frame's parameters and writes.
             self.core
                 .run
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .resync = true;
+                .mark_stale(self.pending.iter().map(|(id, _)| *id));
         }
         release(&self.core);
     }
@@ -493,11 +510,11 @@ impl<D: BatchDevice> Drop for FrameRun<D> {
 ///   frame sees the input as the last frame that did reach the queue left it. If the caller still submits the encoder
 ///   of a dropped `Encoded`, its writes do land in the device.
 /// * A parameter: the `set`s of a reported frame hold for the later frames whether or not its encoder ran (the next
-///   frame records every parameter again, so the device follows the host); the `set`s of a dropped `Encoded` are
+///   frames record those parameters again, so the device follows the host); the `set`s of a dropped `Encoded` are
 ///   discarded, and the next frame records the values from before it, even if the caller submitted its encoder.
 ///
 /// An encoder whose frame was reported with a submission that did not carry it, or was dropped, must be dropped, never
-/// submitted later: it would write the batch's buffers out of order with the frames after it.
+/// submitted after a later frame was begun: it would write the batch's buffers out of order with that frame.
 #[must_use = "submit the encoder, then report it with `submitted`"]
 pub struct Encoded<D: BatchDevice> {
     run: FrameRun<D>,

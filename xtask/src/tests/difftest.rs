@@ -1182,7 +1182,9 @@ fn the_profile_step_exports_the_dev_batch_and_compares_the_two_trees() {
         .expect("run_steps");
     for needle in [
         "fresh_record_dirs(target)",
-        "run_batch(options, root, target, report_path, \"dev\", export)",
+        "let export = records.as_ref().map(|dirs| dirs.0.as_path());",
+        "prebuilt(\"dev\").as_deref()",
+        "prebuilt(SUBGROUPS_PROFILE).as_deref()",
         "SUBGROUPS_PROFILE,",
         "record_problems(&dev, &subgroups)",
     ] {

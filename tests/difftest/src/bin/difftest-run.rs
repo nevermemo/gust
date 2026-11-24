@@ -2,7 +2,7 @@
 //! write `report.json`; or shrink one failing program. See docs/development/DIFFTEST.md.
 //!
 //! ```text
-//! difftest-run --seeds 1-2 [--shapes grid,pixel] [--profile P] [--export-dir DIR] [--cpu-only] [--report PATH] [--target-dir DIR] [--repo-root DIR]
+//! difftest-run --seeds 1-2 [--shapes grid,pixel] [--profile P] [--export-dir DIR] [--prepare-exe PATH | --run-exe PATH] [--cpu-only] [--report PATH] [--target-dir DIR] [--repo-root DIR]
 //! difftest-run --shrink <seed>:<index> [--cpu-only] [--report PATH] [--max-candidates N] [--max-minutes M] [--target-dir DIR] [--repo-root DIR]
 //! difftest-run --refresh-lock [--repo-root DIR]
 //! ```
@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use difftest::harness::{Options, parse_seeds, refresh_lock, run};
+use difftest::harness::{Options, parse_seeds, prepare, refresh_lock, run, run_prebuilt};
 use difftest::reduce::Limits;
 use difftest::shapes::{Shape, parse_shapes};
 use difftest::shrink::{Shrunk, parse_target, shrink};
@@ -27,6 +27,8 @@ struct Args {
     cpu_only: bool,
     profile: Option<String>,
     export_dir: Option<PathBuf>,
+    prepare_exe: Option<PathBuf>,
+    run_exe: Option<PathBuf>,
     report: Option<PathBuf>,
     target_dir: Option<PathBuf>,
     repo_root: Option<PathBuf>,
@@ -43,6 +45,8 @@ fn parse(args: &[String]) -> Result<Args, String> {
         cpu_only: false,
         profile: None,
         export_dir: None,
+        prepare_exe: None,
+        run_exe: None,
         report: None,
         target_dir: None,
         repo_root: None,
@@ -63,6 +67,8 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--shapes" => parsed.shapes = Some(value("--shapes")?),
             "--profile" => parsed.profile = Some(value("--profile")?),
             "--export-dir" => parsed.export_dir = Some(PathBuf::from(value("--export-dir")?)),
+            "--prepare-exe" => parsed.prepare_exe = Some(PathBuf::from(value("--prepare-exe")?)),
+            "--run-exe" => parsed.run_exe = Some(PathBuf::from(value("--run-exe")?)),
             "--cpu-only" => parsed.cpu_only = true,
             "--report" => parsed.report = Some(PathBuf::from(value("--report")?)),
             "--target-dir" => parsed.target_dir = Some(PathBuf::from(value("--target-dir")?)),
@@ -81,6 +87,13 @@ fn parse(args: &[String]) -> Result<Args, String> {
     }
     if parsed.shrink.is_some() && parsed.seeds.is_some() {
         return Err("--shrink and --seeds are exclusive".into());
+    }
+    if (parsed.prepare_exe.is_some() && parsed.run_exe.is_some())
+        || ((parsed.prepare_exe.is_some() || parsed.run_exe.is_some()) && parsed.shrink.is_some())
+    {
+        return Err(
+            "--prepare-exe and --run-exe are exclusive and belong to a batch, not --shrink".into(),
+        );
     }
     if parsed.shrink.is_some() && parsed.shapes.is_some() {
         return Err(
@@ -111,7 +124,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
     Ok(parsed)
 }
 
-const USAGE: &str = "usage: difftest-run --seeds 1-2 [--shapes grid,pixel] [--profile P] [--export-dir DIR] [--cpu-only] [--report PATH] [--target-dir DIR] [--repo-root DIR] | --shrink <seed>:<index> [--cpu-only] [--report PATH] [--max-candidates N] [--max-minutes M] | --refresh-lock [--repo-root DIR]";
+const USAGE: &str = "usage: difftest-run --seeds 1-2 [--shapes grid,pixel] [--profile P] [--export-dir DIR] [--prepare-exe PATH | --run-exe PATH] [--cpu-only] [--report PATH] [--target-dir DIR] [--repo-root DIR] | --shrink <seed>:<index> [--cpu-only] [--report PATH] [--max-candidates N] [--max-minutes M] | --refresh-lock [--repo-root DIR]";
 
 /// The repository root: the `--repo-root` argument, else two levels above `tests/difftest` (this crate's manifest).
 fn repo_root(given: Option<PathBuf>) -> Result<PathBuf, String> {
@@ -201,7 +214,18 @@ fn main_inner() -> Result<ExitCode, String> {
             }
         };
     }
-    let outcome = run(&options)?;
+    if let Some(exe) = &args.prepare_exe {
+        let seconds = prepare(&options, exe)?;
+        eprintln!(
+            "difftest-run: built the test executable of the {} run crate in {seconds:.1} s; no program ran",
+            options.profile
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    let outcome = match &args.run_exe {
+        Some(exe) => run_prebuilt(&options, exe)?,
+        None => run(&options)?,
+    };
     write_or_print(&args.report, &outcome.report.pretty())?;
     let get = |key: &str| {
         outcome
@@ -272,6 +296,26 @@ mod tests {
         );
         // The order of the arguments does not matter.
         assert!(parse(&args(&["--export-dir", "records", "--shrink", "1:0"])).is_err());
+    }
+
+    #[test]
+    fn the_split_flags_exclude_each_other_and_shrink() {
+        let both = parse(&args(&[
+            "--seeds",
+            "1",
+            "--prepare-exe",
+            "a",
+            "--run-exe",
+            "b",
+        ]));
+        assert!(both.err().is_some_and(|e| e.contains("exclusive")));
+        for flag in ["--prepare-exe", "--run-exe"] {
+            assert!(
+                parse(&args(&["--shrink", "1:0", flag, "a"])).is_err(),
+                "{flag}"
+            );
+            assert!(parse(&args(&["--seeds", "1", flag, "a"])).is_ok(), "{flag}");
+        }
     }
 
     #[test]

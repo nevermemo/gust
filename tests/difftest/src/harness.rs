@@ -896,6 +896,14 @@ pub fn check_pixel_presence(
 /// Runs a batch end to end. `Err` is a harness failure (build, test run, missing files); a program that disagrees is
 /// an `Ok` outcome with `passed == false`.
 pub fn run(options: &Options) -> Result<Outcome, String> {
+    let (seed_plans, plan) = plan_batch(options)?;
+    let (package, name) = crate_identity_in(&options.seeds, DIFFTEST_FORMAT, &options.shapes)?;
+    let (raws, cargo, shapes) = execute_shapes(options, &package, &name, &plan, &[], None)?;
+    finish(options, &seed_plans, &plan, &raws, &cargo, &shapes)
+}
+
+/// The plan of every seed (generation and the interpreter) and the programs in order.
+fn plan_batch(options: &Options) -> Result<(Vec<SeedPlan>, Vec<Planned>), String> {
     let mut seed_plans = Vec::new();
     for seed in &options.seeds {
         seed_plans.push(plan_seed_timed(*seed)?);
@@ -911,24 +919,146 @@ pub fn run(options: &Options) -> Result<Outcome, String> {
             plan.len()
         ));
     }
+    Ok((seed_plans, plan))
+}
 
-    let (package, name) = crate_identity_in(&options.seeds, DIFFTEST_FORMAT, &options.shapes)?;
-    let (raws, cargo, shapes) = execute_shapes(options, &package, &name, &plan, &[], None)?;
+/// Classifies the results of a run and builds its report.
+fn finish(
+    options: &Options,
+    seed_plans: &[SeedPlan],
+    plan: &[Planned],
+    raws: &[Raw],
+    cargo: &CargoRun,
+    shapes: &ShapePlan,
+) -> Result<Outcome, String> {
     let mut mismatches = Vec::new();
-    for (planned, raw) in plan.iter().zip(&raws) {
+    for (planned, raw) in plan.iter().zip(raws) {
         mismatches.extend(classify(planned, raw, options.cpu_only));
     }
     let programs: Vec<&Program> = plan.iter().map(|p| &p.program).collect();
     let coverage = coverage_json(&programs)?;
     Ok(build_report(
         options,
-        &seed_plans,
-        &raws,
+        seed_plans,
+        raws,
         &mismatches,
         coverage,
-        &cargo,
-        &shapes,
+        cargo,
+        shapes,
     ))
+}
+
+/// The package and directory of the run crate of a batch, `<target>/difftest/<name>/` (the batches of one gate that
+/// differ only in profile share it). The split run takes the grid run only: with `pixel` the first build decides which
+/// programs run as pixel, so no build can be separated from its run.
+fn split_crate(options: &Options) -> Result<(String, PathBuf), String> {
+    if options.shapes.contains(&Shape::Pixel) {
+        return Err("--prepare-exe and --run-exe take the grid run only (--shapes grid): with pixel the build decides which programs run as pixel".into());
+    }
+    let (package, name) = crate_identity_in(&options.seeds, DIFFTEST_FORMAT, &options.shapes)?;
+    Ok((package, options.target_dir.join("difftest").join(name)))
+}
+
+/// The test executable of `package` in the `--message-format=json-render-diagnostics` output of `cargo test --no-run`.
+fn test_executable(output: &str, package: &str) -> Result<PathBuf, String> {
+    let mut found = Vec::new();
+    for message in output
+        .lines()
+        .filter_map(|line| crate::json::parse(line).ok())
+    {
+        let ours = message
+            .get("package_id")
+            .and_then(Json::as_str)
+            .is_some_and(|id| id.contains(package));
+        if let (true, Some(path)) = (ours, message.get("executable").and_then(Json::as_str)) {
+            found.push(path.to_owned());
+        }
+    }
+    match found.as_slice() {
+        [one] => Ok(PathBuf::from(one)),
+        _ => Err(format!(
+            "expected one test executable of {package} in the build output, found {}",
+            found.len()
+        )),
+    }
+}
+
+/// The adapter-free half of [`run`] (`difftest-run --prepare-exe`): plans the seeds, writes the run crate, builds its test
+/// executable under `options.profile` and copies it to `exe`, which [`run_prebuilt`] runs later. Returns the seconds
+/// of the build. The copy is what lets the build of one profile survive the build of the next.
+pub fn prepare(options: &Options, exe: &Path) -> Result<f64, String> {
+    let (package, dir) = split_crate(options)?;
+    let (_, plan) = plan_batch(options)?;
+    write_run_crate_in(
+        &dir,
+        &package,
+        &plan,
+        &options.repo_root,
+        &ShapePlan::new(&options.shapes),
+    )
+    .map_err(|e| format!("{}: {e}", dir.display()))?;
+    unique_package_names(&options.target_dir.join("difftest"))?;
+    let log = dir.join("build.log");
+    let build_s = cargo_step(
+        &dir,
+        &options.target_dir,
+        &[
+            "test",
+            "--no-run",
+            "--message-format=json-render-diagnostics",
+        ],
+        None,
+        options.cpu_only,
+        &log,
+        &[],
+        &options.profile,
+        options.export_dir.as_deref(),
+        None,
+    )?;
+    let output = std::fs::read_to_string(&log).map_err(|e| format!("{}: {e}", log.display()))?;
+    let built = test_executable(&output, &package)?;
+    std::fs::copy(&built, exe).map_err(|e| format!("{}: {e}", exe.display()))?;
+    Ok(build_s)
+}
+
+/// The adapter half of [`run`] (`difftest-run --run-exe`): plans the seeds again (the comparison needs the interpreter's
+/// values), runs the executable [`prepare`] left (no cargo, no build) and judges its results.
+pub fn run_prebuilt(options: &Options, exe: &Path) -> Result<Outcome, String> {
+    let (_, dir) = split_crate(options)?;
+    let (seed_plans, plan) = plan_batch(options)?;
+    let out = dir.join("out");
+    let _ = std::fs::remove_dir_all(&out);
+    std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let mut command = Command::new(exe);
+    command
+        .current_dir(&dir)
+        .env("DIFFTEST_OUT", &out)
+        .env(
+            "DIFFTEST_CPU_ONLY",
+            if options.cpu_only { "1" } else { "0" },
+        )
+        .stdin(Stdio::null());
+    let start = Instant::now();
+    let (status, text) = run_with_deadline(command, None)?;
+    let run_s = start.elapsed().as_secs_f64();
+    let log = dir.join("run.log");
+    std::fs::write(&log, &text).map_err(|e| format!("{}: {e}", log.display()))?;
+    if !status.is_some_and(|status| status.success()) {
+        return Err(format!(
+            "{} failed; log {}:\n{}",
+            exe.display(),
+            log.display(),
+            tail(&text, 40)
+        ));
+    }
+    let raws = read_results(&out, &plan)?;
+    let shapes = ShapePlan::new(&options.shapes);
+    check_pixel_presence(&plan, &raws, &shapes)?;
+    let cargo = CargoRun {
+        build_s: 0.0,
+        run_s,
+    };
+    finish(options, &seed_plans, &plan, &raws, &cargo, &shapes)
 }
 
 /// Regenerates `tests/difftest/template/Cargo.lock` from the root `Cargo.lock`: the root lock is copied in as the
@@ -1074,6 +1204,40 @@ mod tests {
         let (status, text) = run_with_deadline(command, Some(Duration::from_secs(60))).unwrap();
         assert!(status.unwrap().success());
         assert!(text.contains("test result: ok"), "{text}");
+    }
+
+    #[test]
+    fn the_test_executable_is_the_one_artifact_of_the_package() {
+        let artifact = |package: &str, executable: &str| {
+            format!("{{\"reason\":\"compiler-artifact\",\"package_id\":\"{package} 0.0.0\",\"executable\":{executable}}}
+")
+        };
+        let noise = "   Compiling x
+not json
+";
+        let none = format!("{noise}{}", artifact("run-1", "null"));
+        assert!(
+            test_executable(&none, "run-1")
+                .unwrap_err()
+                .contains("found 0")
+        );
+        let other = format!("{noise}{}", artifact("gust", "\"gust.exe\""));
+        assert!(
+            test_executable(&other, "run-1")
+                .unwrap_err()
+                .contains("found 0")
+        );
+        let one = format!("{none}{other}{}", artifact("run-1", "\"t/run-1.exe\""));
+        assert_eq!(
+            test_executable(&one, "run-1").unwrap(),
+            PathBuf::from("t/run-1.exe")
+        );
+        let two = format!("{one}{}", artifact("run-1", "\"t/other.exe\""));
+        assert!(
+            test_executable(&two, "run-1")
+                .unwrap_err()
+                .contains("found 2")
+        );
     }
 
     #[test]

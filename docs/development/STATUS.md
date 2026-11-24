@@ -1221,6 +1221,10 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       order, because it builds. 890M: 181 s median before, 87 s after; every judged line identical (136 programs,
       the `short_circuit` verdict, 544 exported records). The RTX 5090 run is owed. Opus review: merge after fixes;
       fixed in two rounds, re-checked (merge).
+    - m14.utime (faster gates, measurement): every step of `cargo xtask test --suite <name>` prints its seconds when
+      it returns (also a failing step, before the error), and a passing run prints its five slowest steps and the
+      summed step seconds against the wall. No step, order or exit code changes. One cold Unit run put check-cpu
+      and check-ui first (builds included); the merge gates' Unit logs give the warm split. Opus review: merge.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

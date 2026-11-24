@@ -1,7 +1,7 @@
 # Decisions and boundaries
 
-Append-only log. Next id: **D261** (D249 is reserved for the M13 close, D258 for the m14.s2c merge, D260 for the first merge gate that
-runs its GPU-lock stage as two chains). Add a row for every owner decision or durable
+Append-only log. Next id: **D261** (D249 is reserved for the M13 close, D258 for the m14.s2c merge, D260 for
+the first merge gate that runs its GPU-lock stage as two chains). Add a row for every owner decision or durable
 technical decision, with its date and source; supersede an old row with a new one
 instead of editing it. D01–D18 were recorded 2026-09-07 from the owner's GUST handoff,
 earlier reflection deferral, and independent inspection. Chat research is design

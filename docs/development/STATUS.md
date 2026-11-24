@@ -1157,6 +1157,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       run, and the four packaged crates and the consumer are cleaned before each build, so they always rebuild. E8
       verdicts identical, cache size flat. 890M: build step 125 s cold, 28 s and 26 s warm; the RTX 5090 run is
       owed. Opus review: merge after fixes; fixed, re-checked (merge).
+    - m14.galw (faster gates): `cargo xtask check-gallery`'s Slang part builds in one target directory again, and the
+      scratch copy carries the repository's `.cargo/config.toml`, so cargo reads the same configuration there as in
+      `gallery/`; before, every switch between the two source trees rebuilt the dependency graph (the linker setting
+      is the likely cause, inferred from timings). Every `$` step prints its elapsed seconds; `copy_gallery` and the
+      scratch-artifacts guard have tests. 890M: Slang part 905 to 1010 s before, 73 to 101 s warm after, all ten
+      entries byte-identical; `--no-slang` 70 s; the RTX 5090 run is owed. Opus review: merge after fixes; fixed,
+      re-checked (merge), plus a follow-up so the config copy is skipped when the repository has none.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

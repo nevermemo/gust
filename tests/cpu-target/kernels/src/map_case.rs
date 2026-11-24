@@ -9,6 +9,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use gust::{
     cpu::{CpuDevice, parallel::ELEMENTS_PER_THREAD},
     map::{Broadcast, Error},
+    math::{Mat4, Vec4},
 };
 
 #[gust::gpu_fn]
@@ -81,6 +82,7 @@ pub fn run() -> Result<(), String> {
     }
     parallel()?;
     structs()?;
+    wide_structs()?;
     println!("CPU target: map calls match (scale_add, pick, {ELEMENTS} elements)");
     Ok(())
 }
@@ -222,6 +224,132 @@ fn structs() -> Result<(), String> {
         != items[300..700].iter().map(reference).collect::<Vec<_>>()
     {
         return Err("records::bump::__gust_map_cpu_chunk differs from the host reference".to_owned());
+    }
+    Ok(())
+}
+
+// m14.mapw2: a struct with a `Vec4` and a `Mat4` field, and one that holds it, through the same calls.
+#[gust::gpu_module]
+pub mod wide {
+    pub struct Frame {
+        pub id: u32,
+        pub fill_a: [u32; 3],
+        pub dir: Vec4,
+        pub tag: u32,
+        pub fill_b: [u32; 3],
+        pub basis: Mat4,
+    }
+
+    pub struct Slot {
+        pub flag: u32,
+        pub fill_a: [u32; 3],
+        pub frame: Frame,
+        pub weight: f32,
+        pub fill_b: [u32; 3],
+    }
+
+    #[gust::gpu_fn]
+    pub fn slot_step(slot: Slot, k: f32) -> Slot {
+        let mut stepped = slot;
+        stepped.flag = slot.flag + 1u32;
+        stepped.fill_a = slot.fill_b;
+        stepped.frame.fill_a = slot.frame.fill_b;
+        stepped.frame.fill_b = slot.frame.fill_a;
+        stepped.fill_b = slot.fill_a;
+        stepped.frame.id = slot.frame.tag;
+        stepped.frame.dir = slot.frame.basis.mul_vec4(slot.frame.dir) * k;
+        stepped.frame.tag = slot.frame.id;
+        stepped.frame.basis = slot.frame.basis.transpose();
+        stepped.weight = slot.weight * k;
+        stepped
+    }
+}
+
+/// Every field of a slot, the matrix as the product with each unit vector (it has no public fields).
+type SlotFields = (u32, u32, [f32; 4], u32, [[f32; 4]; 4], f32, [[u32; 3]; 4]);
+
+fn slot_fields(slot: &wide::Slot) -> SlotFields {
+    let dir = slot.frame.dir;
+    let columns = [
+        Vec4::new(1.0, 0.0, 0.0, 0.0),
+        Vec4::new(0.0, 1.0, 0.0, 0.0),
+        Vec4::new(0.0, 0.0, 1.0, 0.0),
+        Vec4::new(0.0, 0.0, 0.0, 1.0),
+    ]
+    .map(|unit| {
+        let column = slot.frame.basis.mul_vec4(unit);
+        [column.x, column.y, column.z, column.w]
+    });
+    (
+        slot.flag,
+        slot.frame.id,
+        [dir.x, dir.y, dir.z, dir.w],
+        slot.frame.tag,
+        columns,
+        slot.weight,
+        [slot.fill_a, slot.fill_b, slot.frame.fill_a, slot.frame.fill_b],
+    )
+}
+
+/// `wide::slot_step` through `map`, `map_on` and the chunk body, against a host reference.
+fn wide_structs() -> Result<(), String> {
+    use wide::{Frame, Slot};
+    let value = |i: usize, salt: usize| ((i * 7 + salt * 3) % 11) as f32 - 5.0;
+    let vec4 = |i: usize, salt: usize| Vec4::new(value(i, salt), value(i, salt + 1), value(i, salt + 2), value(i, salt + 3));
+    let make = |count: usize| -> Vec<Slot> {
+        (0..count)
+            .map(|i| Slot {
+                flag: i as u32 % 50,
+                fill_a: [i as u32, 1, 2],
+                frame: Frame {
+                    id: i as u32 % 97,
+                    fill_a: [3, i as u32, 4],
+                    dir: vec4(i, 0),
+                    tag: i as u32 % 31 + 5,
+                    fill_b: [5, 6, i as u32],
+                    basis: Mat4::from_cols(vec4(i, 10), vec4(i, 20), vec4(i, 30), vec4(i, 40)),
+                },
+                weight: value(i, 50),
+                fill_b: [i as u32 + 7, 8, 9],
+            })
+            .collect()
+    };
+    let reference = |slot: &Slot| {
+        slot_fields(&Slot {
+            flag: slot.flag + 1,
+            fill_a: slot.fill_b,
+            frame: Frame {
+                id: slot.frame.tag,
+                fill_a: slot.frame.fill_b,
+                dir: slot.frame.basis.mul_vec4(slot.frame.dir) * 2.0,
+                tag: slot.frame.id,
+                fill_b: slot.frame.fill_a,
+                basis: slot.frame.basis.transpose(),
+            },
+            weight: slot.weight * 2.0,
+            fill_b: slot.fill_a,
+        })
+    };
+    for count in [ELEMENTS, MANY] {
+        let slots = make(count);
+        let expected: Vec<SlotFields> = slots.iter().map(reference).collect();
+        let stepped = wide::slot_step::map(&slots, Broadcast(2.0)).map_err(|error| format!("wide::slot_step::map: {error}"))?;
+        if stepped.iter().map(slot_fields).collect::<Vec<_>>() != expected {
+            return Err(format!("wide::slot_step::map differs from the host reference ({count} elements)"));
+        }
+        let on = wide::slot_step::map_on(&CpuDevice::new(), &slots, Broadcast(2.0))
+            .map_err(|error| format!("wide::slot_step::map_on: {error}"))?;
+        if on.iter().map(slot_fields).collect::<Vec<_>>() != expected {
+            return Err(format!("wide::slot_step::map_on differs from the host reference ({count} elements)"));
+        }
+    }
+    // The chunk body: elements 300 to 700, the broadcast scalar as a slice of one.
+    let slots = make(ELEMENTS);
+    let mut chunk = make(400);
+    let current = Cell::new(0);
+    wide::slot_step::__gust_map_cpu_chunk(300, 700, &slots, &[2.0], &mut chunk, &current);
+    if chunk.iter().map(slot_fields).collect::<Vec<_>>() != slots[300..700].iter().map(reference).collect::<Vec<_>>() {
+        return Err("wide::slot_step::__gust_map_cpu_chunk differs from the host reference".to_owned());
     }
     Ok(())
 }

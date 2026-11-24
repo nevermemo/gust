@@ -1218,8 +1218,12 @@ pub(crate) struct GpuSuitePin {
 /// library's `headless::adapter` module (an empty list retried and logged once, an empty list after the attempts, a
 /// first list returned at once), on existing lines. Checked by a full Gpu suite run on the Radeon 890M after the
 /// merge; the RTX 5090 run is owed.
+///
+/// Slice m14.mapw2: 650 over 67 became 652 over 67 (the lane counted 647 to 649 on its older base). The wide-field
+/// slice adds two GPU tests to `tests/map.rs` (a struct with a `Vec4` and a `Mat4` field, a struct that holds it), on
+/// an existing line. Checked by a full Gpu suite run on the Radeon 890M at the merge; the RTX 5090 run is owed.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 650,
+    passed: 652,
     result_lines: 67,
 };
 

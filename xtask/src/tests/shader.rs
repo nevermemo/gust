@@ -477,7 +477,7 @@ fn the_committed_goldens_of_m7_split_into_sections_that_each_hold_their_entries(
     // kernels is not one Slang module. Every entry must lie in exactly one section, and a section of the multi-kernel
     // goldens must hold at most one entry (the single-module workgroup golden is split too, harmlessly).
     for (name, text, kernels) in [
-        ("map", include_str!("../../../tests/fixtures/map.slang"), 7),
+        ("map", include_str!("../../../tests/fixtures/map.slang"), 9),
         (
             "grid",
             include_str!("../../../tests/fixtures/grid.slang"),

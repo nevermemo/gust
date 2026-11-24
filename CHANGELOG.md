@@ -14,6 +14,8 @@ breaks existing code bumps the minor version, and the promise is described in th
   the pauses device creation uses), so a transient empty answer from wgpu's Vulkan enumeration no longer reads as
   "no adapter" (m14.enumr). A machine or backend with no adapter still gets the empty list, about half a second
   later on native; a retry that finds adapters logs one line to stderr.
+- Tests: a `map` over a struct with `Vec4` and `Mat4` fields and over a struct that holds it now runs on the GPU and
+  the CPU twin, every field compared (m14.mapw2; Radeon 890M, RTX 5090 pending). No behaviour change.
 - `map` takes and returns user structs (m14.mapw1, D221): write `#[gpu_fn]` on a function inside the
   `#[gpu_module]` module that declares the struct and call `module::f::map(..)` (and `map_on`, `map_gpu`,
   `map_async`, ..) with slices, arrays, `Broadcast` values or resident buffers of the struct. The GUST-E0716 error

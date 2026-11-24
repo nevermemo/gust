@@ -18,7 +18,10 @@ use crate::{
     },
     workspace::workspace_root,
 };
-use std::path::Path;
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
 /// An evidence tier of docs/development/VALIDATION.md, runnable as one command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -934,6 +937,33 @@ fn run_step(step: Step, gpu_jobs: usize) -> Result<(), String> {
     )
 }
 
+/// How many of the slowest steps a passing suite lists.
+const SLOWEST_STEPS: usize = 5;
+
+/// The line printed right after a step returns: its seconds (one decimal) and its label.
+fn step_time_line(label: &str, elapsed: Duration) -> String {
+    format!("   step {:.1} s: {label}", elapsed.as_secs_f64())
+}
+
+/// The lines closing a passing suite: the slowest steps, slowest first (ties keep step order), then the summed step
+/// seconds against the suite's wall seconds.
+fn timing_summary(timings: &[(String, Duration)], wall: Duration) -> Vec<String> {
+    let mut ranked: Vec<&(String, Duration)> = timings.iter().collect();
+    ranked.sort_by_key(|timing| std::cmp::Reverse(timing.1));
+    let mut lines: Vec<String> = ranked
+        .into_iter()
+        .take(SLOWEST_STEPS)
+        .map(|(label, elapsed)| format!("   slowest: {:.1} s {label}", elapsed.as_secs_f64()))
+        .collect();
+    let sum: Duration = timings.iter().map(|(_, elapsed)| *elapsed).sum();
+    lines.push(format!(
+        "   steps {:.1} s of {:.1} s",
+        sum.as_secs_f64(),
+        wall.as_secs_f64()
+    ));
+    lines
+}
+
 fn run_suite(suite: Suite, skip_difftest: bool, gpu_jobs: usize) -> Result<(), String> {
     let name = suite.name();
     let (steps, skipped) = plan_suite(suite, skip_difftest)?;
@@ -946,11 +976,20 @@ fn run_suite(suite: Suite, skip_difftest: bool, gpu_jobs: usize) -> Result<(), S
             step.label()
         );
     }
+    let suite_start = Instant::now();
+    let mut timings: Vec<(String, Duration)> = Vec::new();
     for step in steps {
         let label = run_label(step, gpu_jobs);
         println!("-- {label}");
-        run_step(step, gpu_jobs)
-            .map_err(|error| format!("suite {name} failed at `{label}`: {error}"))?;
+        let step_start = Instant::now();
+        let result = run_step(step, gpu_jobs);
+        let elapsed = step_start.elapsed();
+        println!("{}", step_time_line(&label, elapsed));
+        result.map_err(|error| format!("suite {name} failed at `{label}`: {error}"))?;
+        timings.push((label, elapsed));
+    }
+    for line in timing_summary(&timings, suite_start.elapsed()) {
+        println!("{line}");
     }
     if skipped.is_empty() {
         println!(

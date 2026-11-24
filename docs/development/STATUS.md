@@ -1276,6 +1276,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       README.md says each set of variables shares one call, but a set of one fixture runs alone; one doc line in
       `ui_stream.rs` is 129 columns wide.
       Opus review: merge after fixes; fixed, re-checked (merge).
+    - m14.s2v (D261): `Batch::view(&handle)` gives a stable `View` of an input or a stage result, and
+      `GpuBuffer::as_binding()` binds its live elements (one zeroed placeholder element for an empty buffer). GPU
+      tests view both the input and the output across frames and check what a pass before and after `encode`
+      reads; a write that bypasses the frame's encoder fails two of them. The API allows one encoded frame that is
+      not yet reported, so the test of two frames in flight is sequential, and that mutation is caught only at
+      `in_flight(1)`. A CPU twin checks the before-and-after reads. Radeon 890M and RTX 5090: 5 of 5 view tests
+      each. Opus review: merge after fixes; fixed, re-checked (merge; three doc nits fixed by the coordinator).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

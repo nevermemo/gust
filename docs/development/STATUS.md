@@ -1183,6 +1183,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       mutations (exclusive flag, max as min, scatter removed, length check removed) each failed their test on the
       890M. Open for s2f2: the plan docs say two runs must not be in flight at once, against D259's frames in
       flight. Radeon 890M only; the RTX 5090 run is owed. Opus review: merge after fixes; fixed, re-checked (merge).
+    - m14.prepiso (faster gates): `cargo xtask check-precompiled --prepare` builds E6a to E6j in one target
+      directory per profile and release setting and E6i in its own, so E6d no longer flips `GUST_PROFILE` on the
+      release unit that E3 shares; E7b builds in a persistent export target that outlives the run (E6k to E6o stay
+      on the shared scratch target). 890M: `--prepare` median 168 s before, 125 s after (E3 15 to 3-4 s, E7b 35 to
+      5-6 s, E6 unchanged); verdicts and the final summary line identical; about 1.35 GB of new directories inside
+      the lane or gate target; each target pays one cold `--prepare` (about 400 s) after the merge. The stamp's
+      binary hashes differ between runs of the same code, so a hash comparison was void, not passed. Follow-ups:
+      fold the refusal-only E6 directories, and read CI's cold `precompiled` job after the push. The RTX 5090 run
+      is owed. Opus review: merge; should-fix wording and a unit test of the directory choice done.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

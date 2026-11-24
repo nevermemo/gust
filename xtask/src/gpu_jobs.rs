@@ -19,6 +19,10 @@
 //!
 //! A job that runs longer than [`JOB_TIME_LIMIT`] is killed with its child processes and named in the error; after any
 //! failure or time-out the jobs still running are killed too, so no GPU test process outlives the run.
+//!
+//! `check-examples --gpu` (`examples_gpu.rs`) uses the same pieces for the examples' test executables: it passes `--ignored`,
+//! gives its jobs a time limit of its own, and refuses a listing call that compiles anything (the build is the gate's
+//! prebuild, not part of the run).
 
 use std::{
     ffi::OsString,
@@ -36,7 +40,7 @@ use std::{
 
 use crate::{
     json::{self, Json},
-    process::{exit_code, set_workspace_profile, workspace_command},
+    process::{exit_code, set_workspace_profile, without_colors, workspace_command},
     verify::{GPU_SUITE_CALL, GPU_SUITE_PIN, check_gpu_suite_counts},
 };
 
@@ -268,7 +272,8 @@ pub(crate) fn test_executables(
     }
     if found.is_empty() {
         return Err(format!(
-            "cargo's JSON output names no test executable of {PACKAGE}, so there is nothing to run"
+            "cargo's JSON output names no test executable of the package in {}, so there is nothing to run",
+            manifest_dir.display()
         ));
     }
     found.sort_by(|a, b| (a.integration, &a.name).cmp(&(b.integration, &b.name)));
@@ -344,6 +349,15 @@ pub(crate) fn block(job: &Job, output: &JobOutput) -> String {
 /// concatenation of each started job's header and standard output, which is the text the pin of the single call is
 /// checked against; `Err` names every job that failed and says how many never started.
 pub(crate) fn judge(jobs: &[Job], results: &[Option<JobOutput>]) -> Result<String, String> {
+    judge_named(PACKAGE, jobs, results)
+}
+
+/// [`judge`] for the jobs of `subject` (a package, or a name for several), which the error names.
+pub(crate) fn judge_named(
+    subject: &str,
+    jobs: &[Job],
+    results: &[Option<JobOutput>],
+) -> Result<String, String> {
     let mut counted = String::new();
     let mut failed = Vec::new();
     let mut not_started = 0;
@@ -361,7 +375,7 @@ pub(crate) fn judge(jobs: &[Job], results: &[Option<JobOutput>]) -> Result<Strin
         return Ok(counted);
     }
     Err(format!(
-        "{} of the {} jobs of {PACKAGE} failed: {}{}",
+        "{} of the {} jobs of {subject} failed: {}{}",
         failed.len(),
         jobs.len(),
         failed.join("; "),
@@ -578,8 +592,8 @@ impl Capture {
     }
 }
 
-/// `cargo metadata --format-version 1 --locked --no-deps` in `root`.
-fn read_package(root: &Path) -> Result<Package, String> {
+/// `cargo metadata --format-version 1 --locked --no-deps` in `root`: its output, for [`package_of`].
+pub(crate) fn read_metadata(root: &Path) -> Result<String, String> {
     let output = workspace_command("cargo")
         .args(["metadata", "--format-version", "1", "--locked", "--no-deps"])
         .current_dir(root)
@@ -593,20 +607,42 @@ fn read_package(root: &Path) -> Result<Package, String> {
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    package_of(&String::from_utf8_lossy(&output.stdout), PACKAGE)
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// The jobs of the call: the executables `cargo <GPU_SUITE_CALL> --no-run --message-format=json` names (its standard
-/// error is shown, so a build that happens under the lock is in the log) and the doc tests.
-fn read_jobs(root: &Path, package: &Package) -> Result<Vec<Job>, String> {
-    let call = call_with(&["--no-run", "--message-format=json"]);
-    let output = workspace_command("cargo")
-        .args(&call)
-        .current_dir(root)
-        .stdin(Stdio::null())
-        .stderr(Stdio::inherit())
+fn read_package(root: &Path) -> Result<Package, String> {
+    package_of(&read_metadata(root)?, PACKAGE)
+}
+
+/// The line of cargo's standard error that reports a compilation (`Compiling <crate>`), if any.
+pub(crate) fn compiling_line(stderr: &str) -> Option<String> {
+    without_colors(stderr)
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("Compiling "))
+        .map(str::to_owned)
+}
+
+/// Runs `cargo <call>` (a `--no-run --message-format=json` call) in `root` and returns its standard output. With
+/// `refuse_build` its standard error is shown after it ends and a compilation is an error that says to build first (a
+/// build under a lock would be part of the measured run); otherwise it is shown as it arrives.
+pub(crate) fn no_run_build(
+    root: &Path,
+    call: &[String],
+    refuse_build: bool,
+) -> Result<String, String> {
+    let mut command = workspace_command("cargo");
+    command.args(call).current_dir(root).stdin(Stdio::null());
+    if !refuse_build {
+        command.stderr(Stdio::inherit());
+    }
+    let output = command
         .output()
         .map_err(|error| format!("could not launch cargo: {error}"))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if refuse_build {
+        eprint!("{stderr}");
+    }
     if !output.status.success() {
         return Err(format!(
             "cargo {} failed (exit {})",
@@ -614,33 +650,45 @@ fn read_jobs(root: &Path, package: &Package) -> Result<Vec<Job>, String> {
             exit_code(output.status)
         ));
     }
-    test_executables(
-        &String::from_utf8_lossy(&output.stdout),
-        &package.manifest_dir,
-    )
-    .map(plan_jobs)
+    if refuse_build && let Some(line) = compiling_line(&stderr) {
+        return Err(format!(
+            "cargo {} compiled something (`{line}`): that call has built them now, so run this again (before the run, build them with `check-examples --gpu --prebuild`)",
+            call.join(" ")
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The jobs of the call: the executables `cargo <GPU_SUITE_CALL> --no-run --message-format=json` names (its standard
+/// error is shown, so a build that happens under the lock is in the log) and the doc tests.
+fn read_jobs(root: &Path, package: &Package) -> Result<Vec<Job>, String> {
+    let call = call_with(&["--no-run", "--message-format=json"]);
+    test_executables(&no_run_build(root, &call, false)?, &package.manifest_dir).map(plan_jobs)
+}
+
+/// The command of a test executable: the environment of a cargo test run in the package's directory.
+pub(crate) fn executable_command(executable: &TestExecutable, package: &Package) -> Command {
+    let mut command = Command::new(&executable.path);
+    set_workspace_profile(&mut command);
+    command.current_dir(&package.manifest_dir);
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(is_package_variable) {
+            command.env_remove(name);
+        }
+    }
+    for (name, value) in &package.environment {
+        command.env(name, value);
+    }
+    if let Some(path) = library_path(&executable.path, std::env::var_os("PATH")) {
+        command.env("PATH", path);
+    }
+    command
 }
 
 /// The command of a job: the executable with the environment of a cargo test run, or the doc-test call.
 fn job_command(root: &Path, package: &Package, job: &Job) -> Command {
     match job {
-        Job::Executable(executable) => {
-            let mut command = Command::new(&executable.path);
-            set_workspace_profile(&mut command);
-            command.current_dir(&package.manifest_dir);
-            for (name, _) in std::env::vars_os() {
-                if name.to_str().is_some_and(is_package_variable) {
-                    command.env_remove(name);
-                }
-            }
-            for (name, value) in &package.environment {
-                command.env(name, value);
-            }
-            if let Some(path) = library_path(&executable.path, std::env::var_os("PATH")) {
-                command.env("PATH", path);
-            }
-            command
-        }
+        Job::Executable(executable) => executable_command(executable, package),
         Job::Doc => {
             let mut command = workspace_command("cargo");
             command.args(call_with(&["--doc"])).current_dir(root);
@@ -662,7 +710,11 @@ fn unfinished(status: String, stdout: String, stderr: String) -> JobOutput {
 /// Runs one job to its end, killing it (and what it started) after [`JOB_TIME_LIMIT`] or when `cancel` is set, and
 /// captures its output.
 fn run_job(root: &Path, package: &Package, job: &Job, cancel: &AtomicBool) -> JobOutput {
-    let mut command = job_command(root, package, job);
+    run_command(job_command(root, package, job), JOB_TIME_LIMIT, cancel)
+}
+
+/// [`run_job`] for a command that is already built.
+fn run_command(mut command: Command, limit: Duration, cancel: &AtomicBool) -> JobOutput {
     let mut child = match command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -680,12 +732,7 @@ fn run_job(root: &Path, package: &Package, job: &Job, cancel: &AtomicBool) -> Jo
     };
     let stdout = child.stdout.take().map(Capture::start);
     let stderr = child.stderr.take().map(Capture::start);
-    let end = supervise(
-        &mut ChildProcess(child),
-        JOB_TIME_LIMIT,
-        POLL_INTERVAL,
-        cancel,
-    );
+    let end = supervise(&mut ChildProcess(child), limit, POLL_INTERVAL, cancel);
     let complete = matches!(end, End::Finished(_));
     let stdout = stdout.map_or_else(String::new, |capture| capture.text(complete));
     let stderr = stderr.map_or_else(String::new, |capture| capture.text(complete));
@@ -697,10 +744,7 @@ fn run_job(root: &Path, package: &Package, job: &Job, cancel: &AtomicBool) -> Jo
             stderr,
         },
         End::TimedOut => unfinished(
-            format!(
-                "timed out after {} s and was killed",
-                JOB_TIME_LIMIT.as_secs()
-            ),
+            format!("timed out after {} s and was killed", limit.as_secs()),
             stdout,
             stderr,
         ),
@@ -723,12 +767,34 @@ pub(crate) fn run_parallel_gpu_suite(root: &Path, width: usize) -> Result<(), St
         jobs.len(),
         jobs.len() - 1
     );
-    let cancel = AtomicBool::new(false);
-    let results = run_in_order(
+    let results = run_printed(
         &jobs,
         &start_order(&jobs),
         width,
-        &|job| run_job(root, &package, job, &cancel),
+        &|job| job.clone(),
+        &|job, cancel| run_job(root, &package, job, cancel),
+    );
+    let counted = judge(&jobs, &results)?;
+    check_gpu_suite_counts(&GPU_SUITE_CALL.map(str::to_owned), &counted, GPU_SUITE_PIN)
+}
+
+/// Runs every job of `jobs` through `run` (given the cancellation flag, which a failed job sets so that the others are
+/// killed), at most `width` at a time in the order `starts`, and prints each job's [`block`] (`job_of` names the [`Job`]
+/// it prints under) in the order of `jobs` as soon as it and the ones before it have ended. The results, `None` for a job
+/// that never started, are for [`judge`] and [`judge_named`].
+pub(crate) fn run_printed<J: Sync>(
+    jobs: &[J],
+    starts: &[usize],
+    width: usize,
+    job_of: &impl Fn(&J) -> Job,
+    run: &(impl Fn(&J, &AtomicBool) -> JobOutput + Sync),
+) -> Vec<Option<JobOutput>> {
+    let cancel = AtomicBool::new(false);
+    run_in_order(
+        jobs,
+        starts,
+        width,
+        &|job| run(job, &cancel),
         &|output| {
             let failed = !output.success;
             if failed {
@@ -739,10 +805,21 @@ pub(crate) fn run_parallel_gpu_suite(root: &Path, width: usize) -> Result<(), St
         |index, output| {
             let mut stdout = io::stdout().lock();
             // Echoing is best effort; the captured copy is what the guard reads.
-            let _ = stdout.write_all(block(&jobs[index], output).as_bytes());
+            let _ = stdout.write_all(block(&job_of(&jobs[index]), output).as_bytes());
             let _ = stdout.flush();
         },
-    );
-    let counted = judge(&jobs, &results)?;
-    check_gpu_suite_counts(&GPU_SUITE_CALL.map(str::to_owned), &counted, GPU_SUITE_PIN)
+    )
+}
+
+/// [`run_job`] for a test executable that [`executable_command`] builds with `arguments`, killed after `limit`.
+pub(crate) fn run_executable(
+    executable: &TestExecutable,
+    package: &Package,
+    arguments: &[&str],
+    limit: Duration,
+    cancel: &AtomicBool,
+) -> JobOutput {
+    let mut command = executable_command(executable, package);
+    command.args(arguments);
+    run_command(command, limit, cancel)
 }

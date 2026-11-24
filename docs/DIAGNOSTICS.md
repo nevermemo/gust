@@ -463,7 +463,7 @@ Decision: D42.
 ### GUST-E0211 enum in a struct field, a buffer, a uniform, workgroup memory, an `Option` or a `Result`
 
 An enum is a value of the invocation and is never stored: it has no `GpuPod` layout (a stored word could be none of its variants), and `Option` and `Result` have no proven layout for it. The enum lives in locals, parameters and results of helpers; store its integer (`mode as u32`) and match on it where it is read.
-Reached through `#[gpu_module]`.
+Reached through `#[gpu_module]`. An enum as a bare `map` argument or result is GUST-E0714 and as a `par_for!` buffer element GUST-E0720 (neither type is a buffer element); an enum field of a struct reaches this code. A stage or batch element is a separate surface that this code does not describe: a `#[repr(u32)]` enum there, read back through a validating decode, is planned (D244) and not accepted yet, and today it is refused as a type a buffer cannot hold (GUST-E1002 for a handle a stage reads, GUST-E0720 for a result type).
 Rejected: `struct S { m: Mode }`, `StructuredBuffer<Mode>`, `RWStructuredBuffer<Mode>`, a uniform or `Workgroup<[Mode; N]>` parameter, `Option<Mode>` and `Result<Mode, Mode>` in a result or a local (a struct field of `Option` type is GUST-E0501 first).
 Write instead: a `u32` (or `i32`) field or element holding `mode as u32`, and a helper that turns it back into the enum.
 Fixture: `tests/ui/enum-in-field` and `tests/ui/enum-in-buffer` (code: none).
@@ -2033,6 +2033,15 @@ Rejected: `a[i] = 1u32;` and `a[i] += 1u32;` for a capture `a`, `let r = &mut a[
 Fixture: `tests/ui/task-write`.
 Write instead: return the value as the tail of the closure, or make the buffer the target of an in-place stage with `gpu_task!(&mut data, [data: &mut [T]], |i| { data[i] = ..; })`.
 Decision: plan m14.s2, slice s2a1.
+
+### GUST-E1004 `bool` as the element of a stage of a batch
+
+A buffer holds a `bool` as a `u32` word, so a stage of a batch has no `bool` element: a `Stage<bool>` that a stage reads or writes (an input or an earlier stage declared with `bool`) and a `bool` result type (`|i| -> bool { .. }`) are this error. The message names the fix, a `u32` holding `0` and `1`; a `#[repr(u32)]` enum element is planned (D244) and not accepted yet. A `bool` parameter (`b.param::<bool>(..)`, read as `p.get()`) and a `bool` scalar capture are not elements and stay allowed. Outside a batch, `gpu_task!`, `map` and `par_for!` keep their own text for a `bool` buffer (GUST-E1002 for the `bool` slice entry of a stand-alone `gpu_task!`).
+Reached through `#[gpu_module]`, raised by `gpu_task!` written inside a `gpu_batch!` (the function-like macros that share the validator of `#[gpu_module]`). The check is made where a stage is read, so one mistake can report more than once: a `-> bool` stage that a later stage reads is E1004 twice (once on the result type, once on the reader's handle), and a `b.input::<bool>(..)` that a stage reads is E1004 plus the compiler's own error (`bool` is not `GpuPod`); one that no stage reads is only the compiler's error. A later slice raises the check where the block declares the handle.
+Rejected: `gpu_task!(n, |i| -> bool { i > 2u32 })` in a block, and a stage whose body reads `flags` after `let flags = b.input::<bool>(n);`.
+Fixture: `tests/ui/batch-bool`.
+Write instead: a `u32` holding `0` and `1`; a stage's last expression is not a value `if` (GUST-E0811), so bind it first: `|i| -> u32 { let v: u32 = if i > 2u32 { 1u32 } else { 0u32 }; v }`.
+Decision: D157 as amended by D222 and D244, plan m14.s2, slice s2e.
 
 ### GUST-E1005 `gpu_batch!` form this release does not have, or a stage the macro cannot read
 

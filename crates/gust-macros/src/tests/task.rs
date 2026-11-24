@@ -546,3 +546,43 @@ fn a_dialect_error_in_the_body_keeps_its_own_code() {
     assert!(failed(&text), "{text}");
     assert_rendered_code(&text, Code::UnknownCall);
 }
+
+#[test]
+fn a_bool_element_of_a_batch_stage_is_e1004_with_the_fix() {
+    // A `bool` result type (also raw), a `bool` handle the stage reads (also raw), and a `bool` in-place target, each
+    // written as `gpu_batch!` writes a stage (the hidden clause, and the entry it makes for a handle).
+    for input in [
+        "batch(b, \"flags\"); n, |i| -> bool { i > 1u32 }",
+        "batch(b, \"flags\"); n, |i| -> r#bool { i > 1u32 }",
+        "batch(b, \"flags\"); n, [a: Stage<bool>], |i| -> u32 { 1u32 }",
+        "batch(b, \"flags\"); n, [a: Stage<r#bool>], |i| -> u32 { 1u32 }",
+        "batch(b, \"flags\"); &mut a, [a: &mut Stage<bool>], |i| { a[i] = true; }",
+    ] {
+        rejected(input, Code::BatchElementBool);
+        let scratch = Scratch::new("bool");
+        let text = expand(input, &scratch, 1, Profile::Other);
+        assert!(text.contains("repr(u32)"), "{input}\n{text}");
+    }
+}
+
+#[test]
+fn a_bool_outside_a_batch_keeps_its_code() {
+    // Not a batch: the `bool` slice entry is still E1002 (the pinned text of s2a1), a `bool` result still E0720.
+    rejected("n, [a: &[bool]], |i| -> u32 { 1u32 }", Code::TaskCapture);
+    rejected("n, |i| -> bool { true }", Code::ParForBinding);
+}
+
+#[test]
+fn the_documented_fix_and_a_bool_parameter_or_scalar_of_a_batch_stage_are_accepted() {
+    // The fix E1004 names (a `u32` of `0` and `1`, written with a typed `let` because a value `if` is not a stage's
+    // tail), and the `bool` values that are not elements: a parameter read as `p.get()` and a scalar.
+    let scratch = Scratch::new("bool-ok");
+    for input in [
+        "batch(b, \"x\"); n, |i| -> u32 { let v: u32 = if i > 2u32 { 1u32 } else { 0u32 }; v }",
+        "batch(b, \"x\"); n, [flag: Param<bool>], |i| -> u32 { let v: u32 = if flag.get() { 1u32 } else { 0u32 }; v }",
+        "batch(b, \"x\"); n, [flag: bool], |i| -> u32 { let v: u32 = if flag { 1u32 } else { 0u32 }; v }",
+    ] {
+        let text = expand(input, &scratch, 1, Profile::Other);
+        assert!(!failed(&text), "{input}\n{text}");
+    }
+}

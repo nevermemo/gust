@@ -256,6 +256,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "batch-bool"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "batch-form"
 version = "0.0.0"
 dependencies = [

@@ -1,10 +1,13 @@
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use super::{
     ExportOptions, MATRIX_LAYOUT_FLAG, ShaderStage, ShaderTarget, SlangcOptions, SpirvValOptions,
     check_spirv_header, clear_exports, compare_golden_names, compare_manifests, compute_entries,
     count_copy_logical, golden_file_name, golden_jobs, golden_sections, hash_manifest,
-    parse_manifest, shader_entries, sidecar,
+    parse_manifest, refuse_shared_output, run_in_job_order, shader_entries, sidecar,
 };
 
 fn args(values: &[&str]) -> Vec<String> {
@@ -384,6 +387,88 @@ fn two_entries_that_make_the_same_file_name_are_refused_not_overwritten() {
             .len(),
         2
     );
+}
+
+#[test]
+fn jobs_run_in_parallel_and_their_results_come_back_in_job_order() {
+    let jobs: Vec<usize> = (0..40).collect();
+    for threads in [1, 3, 8, 100] {
+        let (in_flight, peak) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let results = run_in_job_order(&jobs, threads, |job| {
+            peak.fetch_max(
+                in_flight.fetch_add(1, Ordering::SeqCst) + 1,
+                Ordering::SeqCst,
+            );
+            // Uneven durations, so finish order differs from job order; sleeping jobs overlap even on one core.
+            std::thread::sleep(std::time::Duration::from_millis(5 + (40 - *job as u64) % 5));
+            in_flight.fetch_sub(1, Ordering::SeqCst);
+            Ok(job * 2)
+        })
+        .unwrap();
+        assert_eq!(results, (0..40).map(|job| job * 2).collect::<Vec<_>>());
+        let peak = peak.load(Ordering::SeqCst);
+        if threads == 1 {
+            assert_eq!(peak, 1, "one thread runs one job at a time");
+        } else {
+            assert!(
+                peak > 1,
+                "{threads} threads ran at most {peak} jobs at once"
+            );
+            assert!(peak <= threads, "{threads} threads ran {peak} jobs at once");
+        }
+    }
+    assert!(
+        run_in_job_order(&[] as &[usize], 4, |job| Ok(*job))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn the_first_failing_job_in_job_order_is_the_error() {
+    // Many jobs of 5 ms each: without the early stop they all run (a second or more); with it, only the few already
+    // taken do. Job 3 fails at once and job 2 fails 50 ms later, so the first error in time is not the first in order.
+    // To flake the early-stop assertion the thread that ran job 3 would have to stall between its sleep and its
+    // store for as long as the other workers need to run half the jobs (hundreds of ms at 8 threads, seconds at 4).
+    let jobs: Vec<usize> = (0..1000).collect();
+    for threads in [1, 4, 8] {
+        let ran = AtomicUsize::new(0);
+        let error = run_in_job_order(&jobs, threads, |job| {
+            ran.fetch_add(1, Ordering::SeqCst);
+            let millis = if *job == 2 { 50 } else { 5 };
+            std::thread::sleep(std::time::Duration::from_millis(millis));
+            if *job == 2 || *job == 3 || *job == 500 {
+                Err(format!("job {job} failed"))
+            } else {
+                Ok(*job)
+            }
+        })
+        .unwrap_err();
+        assert_eq!(error, "job 2 failed", "{threads} threads");
+        let ran = ran.load(Ordering::SeqCst);
+        if threads == 1 {
+            assert_eq!(ran, 3, "one thread stops at the first failure");
+        } else {
+            assert!(
+                ran < 500,
+                "{threads} threads ran {ran} of 1000 jobs after a failure"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_file_two_jobs_make_is_refused_without_regard_to_case() {
+    let out = std::path::Path::new("dir/vectors__run.spv");
+    let taken = ["vectors__run.spv", "products__run.spv"];
+    let error = refuse_shared_output(taken.into_iter(), "vectors__run.spv", out).unwrap_err();
+    assert_eq!(
+        error,
+        format!("{} already exists; use a fresh output path", out.display())
+    );
+    assert!(refuse_shared_output(taken.into_iter(), "PRODUCTS__Run.spv", out).is_err());
+    assert!(refuse_shared_output(taken.into_iter(), "vectors__walk.spv", out).is_ok());
+    assert!(refuse_shared_output([].into_iter(), "vectors__run.spv", out).is_ok());
 }
 
 #[test]

@@ -2,6 +2,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -543,7 +544,10 @@ pub(crate) fn golden_jobs(stem: &str, text: &str) -> Result<Vec<(usize, String, 
     for (index, section) in golden_sections(text).iter().enumerate() {
         for (entry, _) in shader_entries(section) {
             let file = golden_file_name(stem, &entry)?;
-            if jobs.iter().any(|(_, _, other)| *other == file) {
+            if jobs
+                .iter()
+                .any(|(_, _, other)| other.eq_ignore_ascii_case(&file))
+            {
                 return Err(format!(
                     "tests/fixtures/{stem}.slang: two entries make the file {file}"
                 ));
@@ -552,6 +556,76 @@ pub(crate) fn golden_jobs(stem: &str, text: &str) -> Result<Vec<(usize, String, 
         }
     }
     Ok(jobs)
+}
+
+/// Refuses the output `file` (to be written at `out`) when a job in `taken` already makes it, with the text `slangc`
+/// gives for an existing output. Names compare without regard to ASCII case, because NTFS treats `a__Run.spv` and
+/// `a__run.spv` as one file.
+fn refuse_shared_output<'a>(
+    mut taken: impl Iterator<Item = &'a str>,
+    file: &str,
+    out: &Path,
+) -> Result<(), String> {
+    if taken.any(|other| other.eq_ignore_ascii_case(file)) {
+        return Err(format!(
+            "{} already exists; use a fresh output path",
+            out.display()
+        ));
+    }
+    Ok(())
+}
+
+/// The most threads `compile_golden_spirv` compiles on.
+const MAX_GOLDEN_THREADS: usize = 8;
+
+/// Runs `run` on every job on `threads` threads (jobs are taken in order from a shared index) and returns the results
+/// in job order. Once a job has failed, a worker that sees it takes no new job, but a worker that has not seen it yet
+/// may still take one, so up to `threads - 1` jobs can start after the failure. The error returned is the first in job
+/// order: a job is run as soon as it is taken (nothing may be checked between the two), and indices are taken in
+/// order, so every job before a failed one is taken, runs, and finishes before the scope ends. A job that panics
+/// panics the caller once the other workers have finished; they do not stop early.
+pub(crate) fn run_in_job_order<J: Sync, R: Send>(
+    jobs: &[J],
+    threads: usize,
+    run: impl Fn(&J) -> Result<R, String> + Sync,
+) -> Result<Vec<R>, String> {
+    let next = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    let mut results: Vec<Option<Result<R, String>>> = jobs.iter().map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads.clamp(1, jobs.len().max(1)))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    while !failed.load(Ordering::Relaxed) {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(job) = jobs.get(index) else { break };
+                        let result = run(job);
+                        if result.is_err() {
+                            failed.store(true, Ordering::Relaxed);
+                        }
+                        done.push((index, result));
+                    }
+                    done
+                })
+            })
+            .collect();
+        for worker in workers {
+            match worker.join() {
+                Ok(done) => {
+                    for (index, result) in done {
+                        results[index] = Some(result);
+                    }
+                }
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+    });
+    results
+        .into_iter()
+        .enumerate()
+        .map(|(index, result)| result.unwrap_or_else(|| Err(format!("job {index} did not run"))))
+        .collect()
 }
 
 /// Compiles every compute and fragment entry of `tests/fixtures/<stem>.slang`, for each stem, to SPIR-V in a fresh directory under
@@ -572,7 +646,7 @@ pub(crate) fn compile_golden_spirv(
     }
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let fixtures = root.join("tests").join("fixtures");
-    let mut found = Vec::new();
+    let mut jobs: Vec<(String, SlangcOptions)> = Vec::new();
     for stem in stems {
         let source = fixtures.join(format!("{stem}.slang"));
         let text = fs::read_to_string(&source)
@@ -593,17 +667,28 @@ pub(crate) fn compile_golden_spirv(
                 .into_iter()
                 .find_map(|(name, stage)| (name == entry).then_some(stage))
                 .ok_or_else(|| format!("the entry `{entry}` has no stage"))?;
-            slangc(&SlangcOptions {
+            // The compiles run at the same time, so slangc's own check for an existing output would race: refuse a
+            // file two jobs share (a stem listed twice, or stems whose prefixed names meet) before any starts.
+            let out = directory.join(&file);
+            refuse_shared_output(jobs.iter().map(|(other, _)| other.as_str()), &file, &out)?;
+            let options = SlangcOptions {
                 source: section_source,
                 entry,
                 stage,
                 target: ShaderTarget::Spirv,
-                out: directory.join(&file),
+                out,
                 extra: vec!["-fvk-use-entrypoint-name".to_owned()],
-            })?;
-            found.push(file);
+            };
+            jobs.push((file, options));
         }
     }
+    // The compiles do not touch the GPU and are independent; run them on half the cores (the machine is shared).
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |cores| cores.get() / 2)
+        .clamp(1, MAX_GOLDEN_THREADS);
+    let mut found = run_in_job_order(&jobs, threads, |(file, options)| {
+        slangc(options).map(|()| file.clone())
+    })?;
     compare_golden_names(expected, &found)?;
     found.sort_unstable();
     Ok(found.iter().map(|file| directory.join(file)).collect())

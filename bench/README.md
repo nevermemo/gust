@@ -192,7 +192,10 @@ The shared warm-up uses real load (end-to-end samples alternating with 1024-pass
 P0 with the memory clock within 90 % and the SM clock within 50 % of their maxima, capped at 1 s (`--warmup-secs S`
 changes the cap; the deadline is checked before every iteration, so it is overrun by at most one, and `warmup.actual_s`
 records the real time). P0 is a record, not a goal: a group that hits the cap is kept and marked `p0_not_reached`; the
-pairing, not P0, is what makes the backends comparable. The clocks at the end of the warm-up (`warmup.clocks`) and right
+pairing, not P0, is what makes the backends comparable. `nvidia-smi` describes only an NVIDIA adapter: on any other
+adapter the harness makes no `nvidia-smi` query (it prints one line saying so), the clock and snapshot fields and the
+driver are null, the warm-up runs to its cap without polling, and `p0_reached` is null (unknown). A functional run
+(`check-bench --functional`) passes `--warmup-secs 0` and skips the warm-up, because it judges correctness only. The clocks at the end of the warm-up (`warmup.clocks`) and right
 after the timed samples (`clocks_after_timing`), the PCIe link and the P0 counts are in the aggregate; every end-to-end
 table carries the PCIe link. `--cold-only` skips the four timings and measures only the cold start (`--cold-repeats
 N`). The precompiled package must pass `cargo gust check -p gust-bench-pre` (measure.sh --build-only runs it): a stale
@@ -462,7 +465,8 @@ workgroups and is rejected). Three f32 streams of the last size are 192 MiB, bey
   their checks, and the message is the only symptom. Re-run the layer after a wgpu bump (`docs/SEMANTICS.md`, section 7,
   "Known validation-layer message"). The check is not a gate of this harness.
 - Results from a shared machine are labelled "shared machine, not publishable"; other lanes run cargo and GPU tests.
-  The JSON carries an `nvidia-smi` snapshot before and after every cell and process counts before and after a run.
+  On an NVIDIA adapter the JSON carries an `nvidia-smi` snapshot before and after every cell; on any other adapter no
+  `nvidia-smi` query is made and those snapshots are null. Process counts before and after a run are always recorded.
 - The harness never pins clocks and never stops other services.
 - Results and the metadata record adapter, driver, OS, CPU and versions, and no paths or user names. Results go
   where the caller points `--out`, never into the repository; point it outside the work tree, because a run that

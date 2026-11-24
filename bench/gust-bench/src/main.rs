@@ -965,6 +965,14 @@ fn run(options: &Options) -> BenchResult<bool> {
         )
         .into());
     }
+    // `nvidia-smi` describes only an NVIDIA adapter: on any other it would read a different GPU, so it is not queried.
+    let smi_on = meta::limit_smi_to_adapter(adapter.vendor);
+    if !smi_on {
+        eprintln!(
+            "nvidia-smi is not queried: the adapter's vendor id is {:#06x}, not NVIDIA's, so it would describe another GPU",
+            adapter.vendor
+        );
+    }
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
 
     let config = build_config(options, group);
@@ -1021,7 +1029,10 @@ fn run(options: &Options) -> BenchResult<bool> {
     );
     let load_before = meta::load_snapshot();
     let gpu_before = meta::gpu_snapshot();
-    eprintln!("gpu before: {gpu_before}\nload before: {load_before}");
+    if smi_on {
+        eprintln!("gpu before: {gpu_before}");
+    }
+    eprintln!("load before: {load_before}");
     let timing = run_timing(options);
     // A functional run checks correctness only: no window, no judgement.
     let sampler_on = !options.no_sampler && !options.functional;

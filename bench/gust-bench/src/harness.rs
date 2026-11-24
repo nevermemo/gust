@@ -197,7 +197,8 @@ fn load_round(
 /// samples alternating with `config.warmup_batch`-pass batches, while a
 /// second thread polls the clock query (`nvidia-smi` takes a few hundred ms to answer, so the load must go on while it
 /// runs), until the query reports P0 or `config.warmup_cap` is hit. A cell that hits the cap is recorded with
-/// `p0_reached: false` and the mark `p0_not_reached`, not dropped: P0 is a record here, not a goal (the paired
+/// `p0_reached: false` and the mark `p0_not_reached`, not dropped (on an adapter `nvidia-smi` does not describe nothing
+/// is polled, and `p0_reached` is null): P0 is a record here, not a goal (the paired
 /// rotation of [`run_gpu_group`] is what makes the backends comparable). Returns the record; `clocks` is the last poll.
 fn warm_up_to_p0(
     group: &mut [&mut dyn Backend],
@@ -210,8 +211,11 @@ fn warm_up_to_p0(
     let stop = AtomicBool::new(false);
     let mut rounds = 0u64;
     let mut out = Vec::new();
+    // On an adapter `nvidia-smi` does not describe nothing is polled: the load runs to the cap and P0 stays unknown.
+    let query_clocks = meta::smi_enabled();
     let (clocks, polls, time_to_p0) = std::thread::scope(|scope| {
-        let poller = scope.spawn(|| {
+        let poller = query_clocks.then(|| {
+            scope.spawn(|| {
             let mut last = Value::Null;
             let mut polls = 0u64;
             let mut first_p0 = None;
@@ -225,6 +229,7 @@ fn warm_up_to_p0(
                 }
             }
             (last, polls, first_p0)
+            })
         });
         let mut result = Ok(());
         while !reached.load(Ordering::Relaxed) && started.elapsed() < config.warmup_cap {
@@ -244,20 +249,34 @@ fn warm_up_to_p0(
         }
         stop.store(true, Ordering::Relaxed);
         // `join` only fails when the poller panicked.
-        let polled = poller.join().unwrap_or((Value::Null, 0, None));
+        let polled = poller.map_or((Value::Null, 0, None), |poller| {
+            poller.join().unwrap_or((Value::Null, 0, None))
+        });
         result.map(|()| polled)
     })?;
-    let p0 = reached.load(Ordering::Relaxed);
+    let (p0_reached, p0_mark) = p0_record(query_clocks, reached.load(Ordering::Relaxed));
     Ok(json!({
         "cap_s": config.warmup_cap.as_secs_f64(),
         "actual_s": started.elapsed().as_secs_f64(),
-        "p0_reached": p0,
-        "p0_mark": if p0 { Value::Null } else { json!("p0_not_reached") },
+        "p0_reached": p0_reached,
+        "p0_mark": p0_mark,
         "time_to_p0_s": time_to_p0,
         "rounds": rounds,
         "polls": polls,
         "clocks": clocks,
     }))
+}
+
+/// The `p0_reached` and `p0_mark` fields of a warm-up record: unknown (null, no mark) when no clock query was made,
+/// because nothing was measured; otherwise whether P0 was reached and the `p0_not_reached` mark when it was not.
+fn p0_record(clocks_queried: bool, reached: bool) -> (Value, Value) {
+    if !clocks_queried {
+        (Value::Null, Value::Null)
+    } else if reached {
+        (json!(true), Value::Null)
+    } else {
+        (json!(false), json!("p0_not_reached"))
+    }
 }
 
 /// The clock state right after the timed samples: read while the backend still dispatches, so a GPU that is already
@@ -926,6 +945,16 @@ pub fn prepare_case(n: usize, workload: Workload) -> (Inputs, Reference) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_warm_up_without_a_clock_query_records_p0_as_unknown_not_as_missed() {
+        assert_eq!(p0_record(false, false), (Value::Null, Value::Null));
+        assert_eq!(p0_record(true, true), (json!(true), Value::Null));
+        assert_eq!(
+            p0_record(true, false),
+            (json!(false), json!("p0_not_reached"))
+        );
+    }
 
     /// The `publishable` group's reference (`Group::reference` is the run's own).
     const PAIR_REFERENCE: &str = "wgsl-prebuilt";

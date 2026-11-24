@@ -110,6 +110,19 @@ fn only_the_functional_run_builds_in_the_functional_profile() {
 }
 
 #[test]
+fn the_functional_run_skips_the_warm_up_and_ends_with_the_results_file_option() {
+    // The pair belongs to gust-bench, so it must come after cargo's `--` separator.
+    let separator = FUNCTIONAL_ARGS.iter().position(|word| *word == "--");
+    let pair = FUNCTIONAL_ARGS
+        .windows(2)
+        .position(|pair| pair == ["--warmup-secs", "0"]);
+    assert!(pair.is_some(), "the warm-up is skipped");
+    assert!(separator.is_some() && separator < pair);
+    // `functional` appends the results path right after the last word, so that word must be `--out`.
+    assert_eq!(FUNCTIONAL_ARGS.last(), Some(&"--out"));
+}
+
+#[test]
 fn the_functional_profile_overrides_only_lto_and_codegen_units_of_release() {
     let root = workspace_root().expect("the repository root");
     let manifest = fs::read_to_string(root.join("bench/Cargo.toml")).expect("bench/Cargo.toml");

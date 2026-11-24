@@ -1,5 +1,5 @@
 //! The element-wise map calls of `#[gpu_fn]` on a function (m7.a1, D60; Gpu tier), and of a `#[gpu_fn]` inside a
-//! `#[gpu_module]` module over its struct (m14.mapw1, D221).
+//! `#[gpu_module]` module over its struct (m14.mapw1, D221), with wide and nested fields (m14.mapw2).
 //!
 //! `tests/fixtures/map.rs` holds the functions; each gets `f::map`, `f::map_on`, `f::map_gpu`, `f::map_async` and the
 //! rest. Every comparison is against a host reference written here with plain Rust arithmetic: the float inputs are
@@ -20,7 +20,7 @@ use common::drive;
 use gust::{
     cpu::CpuDevice,
     map::{Broadcast, CEILING, Error as MapError},
-    math::Vec2,
+    math::{Mat4, Vec2, Vec4},
 };
 use gust_wgpu::{DeviceHandle, GpuVec, default_device};
 
@@ -502,4 +502,215 @@ fn the_descriptor_of_a_struct_map_is_the_generated_kernels() {
     assert_eq!(records::MODULE_DESCRIPTOR.name, "records");
     assert_eq!(records::MODULE_DESCRIPTOR.kernels.len(), 2);
     const { assert!(records::scale_item::OWN_INDEX) };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Wide and nested fields (m14.mapw2): `wide::frame_mix` over a struct with a `Vec4` and a `Mat4` field (a scalar
+// before each, so the layout has padding), and `wide::slot_step` over a struct that holds that struct. Every field of
+// every element is compared with a host computation written here and with the CPU twin.
+// ---------------------------------------------------------------------------------------------------------------
+
+use wide::{Frame, Slot};
+
+/// Integers in `-30..=30`. Within one element the twenty salts of a frame (`salt + 0..=3`, `+ 10..=13` up to
+/// `+ 40..=43`) give twenty different values: the salt steps by 7 modulo the prime 61 after the index hash. Every
+/// product the tests form stays far below 2^24, so every result is exact in `f32`.
+fn small(index: usize, salt: u32) -> f32 {
+    let hashed = (index as u32).wrapping_mul(2_654_435_761) >> 9;
+    ((hashed + salt * 7) % 61) as f32 - 30.0
+}
+
+fn vec4_at(index: usize, salt: u32) -> Vec4 {
+    Vec4::new(
+        small(index, salt),
+        small(index, salt + 1),
+        small(index, salt + 2),
+        small(index, salt + 3),
+    )
+}
+
+/// Explicit fill words with a value of their own in every position: a layout that moves or clobbers them shows.
+fn fill(index: usize, salt: u32) -> [u32; 3] {
+    let base = (index as u32).wrapping_mul(97).wrapping_add(salt * 1000);
+    [base, base + 1, base + 2]
+}
+
+fn frames(len: usize, salt: u32) -> Vec<Frame> {
+    (0..len)
+        .map(|i| Frame {
+            id: (i as u32).wrapping_mul(13) % 4000,
+            fill_a: fill(i, salt),
+            dir: vec4_at(i, salt),
+            tag: (i as u32).wrapping_mul(29) % 3000 + 7,
+            fill_b: fill(i, salt + 1),
+            basis: Mat4::from_cols(
+                vec4_at(i, salt + 10),
+                vec4_at(i, salt + 20),
+                vec4_at(i, salt + 30),
+                vec4_at(i, salt + 40),
+            ),
+        })
+        .collect()
+}
+
+fn slots(len: usize, salt: u32) -> Vec<Slot> {
+    let inner = frames(len, salt);
+    let weights = floats(len, salt + 300);
+    inner
+        .into_iter()
+        .zip(weights)
+        .enumerate()
+        .map(|(i, (frame, weight))| Slot {
+            flag: (i as u32).wrapping_mul(3) % 100,
+            fill_a: fill(i, salt + 2),
+            frame,
+            weight,
+            fill_b: fill(i, salt + 3),
+        })
+        .collect()
+}
+
+/// The columns of a matrix (its product with each unit vector), which has no public fields.
+fn columns(matrix: Mat4) -> [[f32; 4]; 4] {
+    [
+        Vec4::new(1.0, 0.0, 0.0, 0.0),
+        Vec4::new(0.0, 1.0, 0.0, 0.0),
+        Vec4::new(0.0, 0.0, 1.0, 0.0),
+        Vec4::new(0.0, 0.0, 0.0, 1.0),
+    ]
+    .map(|unit| {
+        let c = matrix.mul_vec4(unit);
+        [c.x, c.y, c.z, c.w]
+    })
+}
+
+type FrameFields = (u32, [u32; 3], [f32; 4], u32, [u32; 3], [[f32; 4]; 4]);
+type SlotFields = (u32, [u32; 3], FrameFields, f32, [u32; 3]);
+
+/// Whether the matrix times `dir` differs from its transpose times `dir`: a value check that sees a wrong orientation.
+fn orientation_shows(matrix: Mat4, dir: Vec4) -> bool {
+    let a = matrix.mul_vec4(dir);
+    let b = matrix.transpose().mul_vec4(dir);
+    [a.x, a.y, a.z, a.w] != [b.x, b.y, b.z, b.w]
+}
+
+fn frame_fields(frame: &Frame) -> FrameFields {
+    (
+        frame.id,
+        frame.fill_a,
+        [frame.dir.x, frame.dir.y, frame.dir.z, frame.dir.w],
+        frame.tag,
+        frame.fill_b,
+        columns(frame.basis),
+    )
+}
+
+fn slot_fields(slot: &Slot) -> SlotFields {
+    (
+        slot.flag,
+        slot.fill_a,
+        frame_fields(&slot.frame),
+        slot.weight,
+        slot.fill_b,
+    )
+}
+
+fn frame_mix_reference(frame: &Frame, k: f32) -> Frame {
+    Frame {
+        id: frame.id + 1,
+        fill_a: frame.fill_b,
+        dir: frame.basis.mul_vec4(frame.dir) * k,
+        tag: frame.tag + frame.id,
+        fill_b: frame.fill_a,
+        basis: frame.basis.transpose(),
+    }
+}
+
+fn slot_step_reference(slot: &Slot, k: f32) -> Slot {
+    Slot {
+        flag: slot.flag + 1,
+        fill_a: slot.fill_b,
+        frame: Frame {
+            id: slot.frame.tag,
+            fill_a: slot.frame.fill_b,
+            dir: slot.frame.basis.mul_vec4(slot.frame.dir) + Vec4::splat(k),
+            tag: slot.frame.id,
+            fill_b: slot.frame.fill_a,
+            basis: slot.frame.basis.transpose(),
+        },
+        weight: slot.weight * k,
+        fill_b: slot.fill_a,
+    }
+}
+
+#[test]
+fn a_struct_with_a_vec4_and_a_mat4_field_keeps_every_field() {
+    let cpu = CpuDevice::new();
+    for len in SIZES {
+        let input = frames(len, 5);
+        // A transposed matrix must differ from the original, so a row and column mix-up cannot pass on constant or
+        // symmetric inputs.
+        assert!(
+            input
+                .iter()
+                .all(|f| columns(f.basis) != columns(f.basis.transpose())),
+            "{len} elements"
+        );
+        assert!(
+            input.iter().all(|f| orientation_shows(f.basis, f.dir)),
+            "{len} elements"
+        );
+        let expected: Vec<FrameFields> = input
+            .iter()
+            .map(|frame| frame_fields(&frame_mix_reference(frame, 3.0)))
+            .collect();
+        let gpu = wide::frame_mix::map(&input, Broadcast(3.0)).unwrap();
+        assert_eq!(
+            gpu.iter().map(frame_fields).collect::<Vec<_>>(),
+            expected,
+            "GPU, {len} elements"
+        );
+        let twin = wide::frame_mix::map_on(&cpu, &input, Broadcast(3.0)).unwrap();
+        assert_eq!(
+            twin.iter().map(frame_fields).collect::<Vec<_>>(),
+            expected,
+            "CPU twin, {len} elements"
+        );
+    }
+}
+
+#[test]
+fn a_struct_with_a_struct_field_keeps_every_field() {
+    let cpu = CpuDevice::new();
+    for len in SIZES {
+        let input = slots(len, 6);
+        assert!(
+            input
+                .iter()
+                .all(|s| columns(s.frame.basis) != columns(s.frame.basis.transpose())),
+            "{len} elements"
+        );
+        assert!(
+            input
+                .iter()
+                .all(|s| orientation_shows(s.frame.basis, s.frame.dir)),
+            "{len} elements"
+        );
+        let expected: Vec<SlotFields> = input
+            .iter()
+            .map(|slot| slot_fields(&slot_step_reference(slot, 2.0)))
+            .collect();
+        let gpu = wide::slot_step::map(&input, Broadcast(2.0)).unwrap();
+        assert_eq!(
+            gpu.iter().map(slot_fields).collect::<Vec<_>>(),
+            expected,
+            "GPU, {len} elements"
+        );
+        let twin = wide::slot_step::map_on(&cpu, &input, Broadcast(2.0)).unwrap();
+        assert_eq!(
+            twin.iter().map(slot_fields).collect::<Vec<_>>(),
+            expected,
+            "CPU twin, {len} elements"
+        );
+    }
 }

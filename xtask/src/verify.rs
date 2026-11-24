@@ -1213,8 +1213,12 @@ pub(crate) struct GpuSuitePin {
 /// Slice m14.mapw1: 642 over 67 became 647 over 67. The struct-map slice adds five GPU tests to the existing
 /// `tests/map.rs` (no new test file, so the `test result:` lines stay). Checked by a full Gpu suite run on the
 /// Radeon 890M at the merge; the RTX 5090 run is owed.
+///
+/// Slice m14.mapw2: 647 over 67 became 649 over 67. The wide-field slice adds two GPU tests to `tests/map.rs` (a struct
+/// with a `Vec4` and a `Mat4` field, a struct that holds it), on an existing line. Checked by a full Gpu suite run on
+/// the Radeon 890M at the merge; the RTX 5090 run is owed.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 647,
+    passed: 649,
     result_lines: 67,
 };
 

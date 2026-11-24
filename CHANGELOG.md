@@ -10,6 +10,8 @@ breaks existing code bumps the minor version, and the promise is described in th
 - A stage of a `gpu_batch!` refuses a `bool` element (m14.s2e part 1): a `Stage<bool>` it reads or writes, or a
   `bool` result type, is `GUST-E1004` with `u32` as the fix. `map`, `par_for!` and a stand-alone `gpu_task!` are
   unchanged.
+- Tests: a `map` over a struct with `Vec4` and `Mat4` fields and over a struct that holds it now runs on the GPU and
+  the CPU twin, every field compared (m14.mapw2; Radeon 890M, RTX 5090 pending). No behaviour change.
 - `map` takes and returns user structs (m14.mapw1, D221): write `#[gpu_fn]` on a function inside the
   `#[gpu_module]` module that declares the struct and call `module::f::map(..)` (and `map_on`, `map_gpu`,
   `map_async`, ..) with slices, arrays, `Broadcast` values or resident buffers of the struct. The GUST-E0716 error

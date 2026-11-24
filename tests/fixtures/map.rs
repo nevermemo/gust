@@ -65,3 +65,57 @@ pub mod records {
         item.pos.x + item.pos.y + item.weight + item.id as f32
     }
 }
+
+// m14.mapw2: structs whose fields are 16-aligned or are structs themselves. A struct may not have implicit padding
+// (GUST-E0208), so each scalar before a wide field is followed by explicit fill words. `Frame`: `id` at 0, `fill_a` at
+// 4, `dir` (`Vec4`) at 16, `tag` at 32, `fill_b` at 36, `basis` (`Mat4`) at 48, size 112. `Slot` nests it: `flag` at 0,
+// `fill_a` at 4, `frame` at 16, `weight` at 128, `fill_b` at 132, size 144.
+#[gust::gpu_module]
+pub mod wide {
+    pub struct Frame {
+        pub id: u32,
+        pub fill_a: [u32; 3],
+        pub dir: Vec4,
+        pub tag: u32,
+        pub fill_b: [u32; 3],
+        pub basis: Mat4,
+    }
+
+    pub struct Slot {
+        pub flag: u32,
+        pub fill_a: [u32; 3],
+        pub frame: Frame,
+        pub weight: f32,
+        pub fill_b: [u32; 3],
+    }
+
+    // A struct with a `Vec4` and a `Mat4` field, in and out.
+    #[gust::gpu_fn]
+    pub fn frame_mix(frame: Frame, k: f32) -> Frame {
+        let mut mixed = frame;
+        mixed.id = frame.id + 1u32;
+        mixed.fill_a = frame.fill_b;
+        mixed.dir = frame.basis.mul_vec4(frame.dir) * k;
+        mixed.tag = frame.tag + frame.id;
+        mixed.fill_b = frame.fill_a;
+        mixed.basis = frame.basis.transpose();
+        mixed
+    }
+
+    // A struct with a struct field (itself holding a `Vec4` and a `Mat4`), in and out.
+    #[gust::gpu_fn]
+    pub fn slot_step(slot: Slot, k: f32) -> Slot {
+        let mut stepped = slot;
+        stepped.flag = slot.flag + 1u32;
+        stepped.fill_a = slot.fill_b;
+        stepped.frame.id = slot.frame.tag;
+        stepped.frame.fill_a = slot.frame.fill_b;
+        stepped.frame.dir = slot.frame.basis.mul_vec4(slot.frame.dir) + Vec4::splat(k);
+        stepped.frame.tag = slot.frame.id;
+        stepped.frame.fill_b = slot.frame.fill_a;
+        stepped.frame.basis = slot.frame.basis.transpose();
+        stepped.weight = slot.weight * k;
+        stepped.fill_b = slot.fill_a;
+        stepped
+    }
+}

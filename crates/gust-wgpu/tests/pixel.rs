@@ -380,6 +380,10 @@ fn skipped(device: &HeadlessDevice, test: &str, n: u32, stride: usize) -> bool {
 /// The 32-bit words in which `left` and `right` differ (all of the longer one's, when the lengths differ).
 fn differing_words<T: GpuPod>(left: &[T], right: &[T]) -> usize {
     let (left, right) = (pod_slice_as_bytes(left), pod_slice_as_bytes(right));
+    // Equal bytes (the usual case, and a memcmp even in a debug build) differ in no word.
+    if left == right {
+        return 0;
+    }
     let common = left
         .as_chunks::<4>()
         .0
@@ -388,6 +392,38 @@ fn differing_words<T: GpuPod>(left: &[T], right: &[T]) -> usize {
         .filter(|(left, right)| left != right)
         .count();
     common + left.len().abs_diff(right.len()).div_ceil(4)
+}
+
+/// `(0..n).map(element).collect()`, computed on several threads in chunks of consecutive indices (a debug build
+/// makes the serial loop over 16M elements the cost of the test); the values are those of the serial loop, in order.
+fn host_reference<T: Send>(n: u32, element: impl Fn(u32) -> T + Sync) -> Vec<T> {
+    const SERIAL_BELOW: u32 = 1 << 16;
+    let threads = if n < SERIAL_BELOW {
+        1
+    } else {
+        // Several tests run at once on a shared machine: half the hardware threads, at least four, at most eight.
+        thread::available_parallelism().map_or(1, |threads| {
+            (threads.get() / 2).clamp(4, 8).min(threads.get()) as u32
+        })
+    };
+    let chunk = n.div_ceil(threads).max(1);
+    let element = &element;
+    thread::scope(|scope| {
+        let parts: Vec<_> = (0..threads)
+            .map(|k| {
+                let range = (k * chunk).min(n)..((k + 1) * chunk).min(n);
+                scope.spawn(move || range.map(element).collect::<Vec<T>>())
+            })
+            .collect();
+        let mut all = Vec::with_capacity(n as usize);
+        for part in parts {
+            all.extend(
+                part.join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+            );
+        }
+        all
+    })
 }
 
 fn typed<T: GpuPod>(device: &HeadlessDevice, label: &str, values: &[T]) -> GpuBuffer<T> {
@@ -434,7 +470,7 @@ macro_rules! identity_test {
                 ident::$pixel::dispatch(&device, n, &input, &pixel_out).unwrap();
                 let grid = device.read_typed_buffer(&grid_out).unwrap();
                 let pixel = device.read_typed_buffer(&pixel_out).unwrap();
-                let want: Vec<$ty> = (0..n).map(|i| $host_h($host_seed(i), i)).collect();
+                let want: Vec<$ty> = host_reference(n, |i| $host_h($host_seed(i), i));
                 assert_eq!(
                     differing_words(&pixel, &grid),
                     0,

@@ -1149,6 +1149,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       pauses of device creation (`retry_empty_list` is built on `retry_no_adapter`), since wgpu's Vulkan enumeration
       returned an empty list a few times in test runs; NEXT_TASKS keeps the remaining gaps. device_options 10 of 10
       on the 890M; the RTX 5090 run is owed. Opus review: merge after fixes; fixed, re-checked (merge).
+    - m14.enumr follow-up: the next merge gate's full Gpu suite run on the Radeon 890M counted 650 passed over 67
+      result lines, all green, against a pin of 647: the three new enumeration unit tests had not moved
+      `GPU_SUITE_PIN`. The pin is now 650 over 67.
+    - m14.e8cache (gates T2): `cargo xtask check-precompiled` E8 builds its consumer in a persistent target
+      directory, so the dependencies stay built between runs; packaging, unpacked sources and the lock stay fresh per
+      run, and the four packaged crates and the consumer are cleaned before each build, so they always rebuild. E8
+      verdicts identical, cache size flat. 890M: build step 125 s cold, 28 s and 26 s warm; the RTX 5090 run is
+      owed. Opus review: merge after fixes; fixed, re-checked (merge).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

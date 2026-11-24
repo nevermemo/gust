@@ -1138,6 +1138,17 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       merge gate pays fell from about 115 s to 53.5 s on the 890M, with identical functional results; the merge
       gate's prebuild builds the same profile. The RTX 5090 run is owed. Opus review: merge after fixes; fixed,
       re-checked (merge).
+    - m14.s8c (gates S8c): `cargo xtask check-difftest --prepare` does the adapter-free part of the GPU differential
+      test (generation, CPU oracle, both test executables) and stamps HEAD, a tree hash read before the builds, the
+      seeds, a fresh records directory and each executable's sha256; `--runs-only` refuses a stale or changed stamp,
+      compiles nothing and runs both batches and `short_circuit` on the adapter. The Gpu suite takes
+      `--skip-difftest`, so a merge gate prepares outside the GPU lock. 890M: whole 260 s, prepare 62 s outside the
+      lock, runs-only 162 s under it (98 s less lock time); 136 of 136 programs, 0 mismatches, 544 records identical.
+      The RTX 5090 run is owed. Opus review: merge after fixes; fixed, re-checked (merge).
+    - m14.enumr: `HeadlessDevice::enumerate` and `enumerate_async` retry an empty adapter list with the attempts and
+      pauses of device creation (`retry_empty_list` is built on `retry_no_adapter`), since wgpu's Vulkan enumeration
+      returned an empty list a few times in test runs; NEXT_TASKS keeps the remaining gaps. device_options 10 of 10
+      on the 890M; the RTX 5090 run is owed. Opus review: merge after fixes; fixed, re-checked (merge).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

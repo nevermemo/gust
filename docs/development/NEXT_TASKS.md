@@ -210,7 +210,14 @@ test module; do not mix that mechanical move with behavior changes.
   rerun). Find out whether an empty enumeration is transient on this driver under concurrent load, and whether
   `enumerate` or the test should report or retry it (m7.a1). (The `Error::Map` m7.r1 saw is a separate readback
   race, fixed in m7.rb, D97.) Third sighting: m7.rb's fix round (`an_adapter_is_chosen_by_index_and_by_name`, 12 of
-  12 reruns passed); m7.rb's probe of about 360 concurrent enumerations found none empty.
+  12 reruns passed); m7.rb's probe of about 360 concurrent enumerations found none empty. Further sightings: the pad
+  gate of 2026-11-22 (RTX 5090) and gate t14c of 2026-11-24 (Radeon 890M). m14.enumr is the mitigation: `enumerate`
+  and `enumerate_async` ask again when the list is empty (three attempts, as device creation does); whether it
+  absorbs the real transient is unproven. Gaps that remain: raw `enumerate_adapters` calls bypass the retry
+  (`device_options.rs` `coherent_storage_is_reported_only_when_the_adapter_offers_it`, `textures.rs`
+  `adapter_offers_float32_filterable`, `device_share.rs`, gust-bench `wgsl_wgpu.rs`); a partial list (one of two
+  adapters missing) is not retried; libtest captures the retry's `eprintln!` for passing tests, so a gate shows it
+  only with `--nocapture`.
 - mx.t0b: drop schema 2 from xtask's `check_helper_pin` once every helper in use reports schema 3 (mx.t0a accepts
   both so lanes on older trees keep working).
 - The mutex that serialised gust-algo's GPU tests is gone (m7.r3; heavy tests share one lock). The first

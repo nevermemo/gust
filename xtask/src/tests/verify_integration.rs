@@ -1,6 +1,7 @@
 use super::{
-    Integration, SKIP_WEB_FLAG, VerifyCommand, VerifyMode, WASM_SKIP_PREFIX, closing_line,
-    integration_checks, web_preflight,
+    ArtifactPart, GOLDENS_ONLY_FLAG, Integration, SKIP_GOLDENS_FLAG, SKIP_WEB_FLAG,
+    SKIPPED_EXAMPLES, SKIPPED_GOLDENS, VerifyCommand, VerifyMode, WASM_SKIP_PREFIX, closing_line,
+    integration_checks, skipped_examples_notice, skipped_goldens_notice, web_preflight,
 };
 
 const ALL_MODES: [VerifyMode; 6] = [
@@ -86,6 +87,111 @@ fn skip_web_is_a_full_mode_flag() {
     assert!(VerifyCommand::parse(&args(&[SKIP_WEB_FLAG])).is_err());
 }
 
+#[test]
+fn check_artifacts_takes_either_split_flag_alone_and_never_both() {
+    assert_eq!(ArtifactPart::parse(&args(&[])), Ok(ArtifactPart::Both));
+    assert_eq!(
+        ArtifactPart::parse(&args(&[GOLDENS_ONLY_FLAG])),
+        Ok(ArtifactPart::GoldensOnly)
+    );
+    assert_eq!(
+        ArtifactPart::parse(&args(&[SKIP_GOLDENS_FLAG])),
+        Ok(ArtifactPart::SkipGoldens)
+    );
+    for both in [
+        [GOLDENS_ONLY_FLAG, SKIP_GOLDENS_FLAG],
+        [SKIP_GOLDENS_FLAG, GOLDENS_ONLY_FLAG],
+    ] {
+        let error = ArtifactPart::parse(&args(&both)).unwrap_err();
+        assert!(error.contains("not both"), "{error}");
+    }
+    assert!(ArtifactPart::parse(&args(&["--unknown"])).is_err());
+    assert!(ArtifactPart::parse(&args(&[GOLDENS_ONLY_FLAG, GOLDENS_ONLY_FLAG])).is_err());
+}
+
+#[test]
+fn each_split_form_prints_which_half_it_left_out_and_names_it_in_its_closing_line() {
+    let goldens = skipped_goldens_notice();
+    assert!(goldens.contains("SKIPPED") && goldens.contains(SKIP_GOLDENS_FLAG));
+    assert!(goldens.contains(&format!("check-artifacts {GOLDENS_ONLY_FLAG}")));
+    let examples = skipped_examples_notice();
+    assert!(examples.contains("NOT RUN") && examples.contains(GOLDENS_ONLY_FLAG));
+    assert!(examples.contains(&format!("check-artifacts {SKIP_GOLDENS_FLAG}")));
+    let plain = closing_line(&[]);
+    for (name, flag) in [
+        (SKIPPED_GOLDENS, SKIP_GOLDENS_FLAG),
+        (SKIPPED_EXAMPLES, GOLDENS_ONLY_FLAG),
+    ] {
+        let line = closing_line(&[name.to_owned()]);
+        assert_ne!(line, plain);
+        assert!(line.contains(flag), "{line}");
+        assert!(line.contains("not the full release record"), "{line}");
+    }
+}
+
+/// A source pin: the adapter path cannot be handed `--goldens-only`. `check_artifacts` sends each of the three parts
+/// to its own call, `GoldensOnly` to the function that opens no adapter, and `verify_run` and `verify_inner` take the
+/// skips (`RunSkips`), a type with no goldens-only state. The Full mode and `verify` run both parts.
+#[test]
+fn the_adapter_path_is_never_given_the_goldens_only_part() {
+    let source = include_str!("../verify.rs").replace("\r\n", "\n");
+    let function = |start: &str| {
+        let rest = &source[source.find(start).unwrap_or_else(|| panic!("{start}"))..];
+        rest[..rest.find("\n}\n").expect("its end")].to_owned()
+    };
+    let dispatch = function("pub(crate) fn check_artifacts(");
+    assert!(dispatch.contains("ArtifactPart::GoldensOnly => check_goldens_only(),"));
+    assert_eq!(dispatch.matches("verify_run(").count(), 2, "{dispatch}");
+    for name in ["fn verify_run(", "fn verify_inner("] {
+        assert!(
+            !function(name).contains("ArtifactPart"),
+            "{name} knows the parts"
+        );
+    }
+    let with = function("pub(crate) fn verify_with(");
+    assert!(with.contains("goldens: false"), "{with}");
+    // The goldens are compiled only in the branch of a run that did not skip them.
+    let inner = function("fn verify_inner(");
+    assert!(
+        inner.contains(
+            "} else {\n            for (area, stems, expected) in GOLDEN_SPIRV_SETS {\n                spv.extend(compile_golden_spirv("
+        ),
+        "the compile left its else branch"
+    );
+}
+
+/// A source pin: `--goldens-only` opens no adapter by its code path. Its function starts `slangc`, `spirv-val` and
+/// (in `copy_logical_note`) `spirv-dis` as children and calls nothing that runs cargo, the adapter probe, an example,
+/// the reflection helper or a browser.
+#[test]
+fn the_goldens_only_path_starts_slangc_spirv_val_and_spirv_dis_and_nothing_that_opens_an_adapter() {
+    let source = include_str!("../verify.rs").replace("\r\n", "\n");
+    let body = &source[source.find("fn check_goldens_only(").expect("the function")..];
+    let body = &body[..body.find("\n}\n").expect("its end")];
+    for needle in [
+        "\"cargo\"",
+        "cargo_calls",
+        "record_adapter",
+        "name_adapter",
+        "ADAPTER_INFO_ARGS",
+        "prepare_helper",
+        "clear_generated_output",
+        "run_cargo_test",
+        "check_examples_gpu",
+        "verify_run",
+        "verify_inner",
+        "check_dual",
+        "check_gallery",
+        "check_web",
+    ] {
+        assert!(
+            !body.contains(needle),
+            "check_goldens_only names `{needle}`"
+        );
+    }
+    assert!(body.contains("compile_golden_spirv(") && body.contains("validate_spirv_files("));
+}
+
 /// A source pin: `verify_inner` needs cargo, Slang and a GPU, so a unit test cannot run it. The Full gate calls the
 /// whole `check-precompiled` (no `--check-only`) and the whole `check-web` (not `--tree-only`), after its own steps.
 #[test]
@@ -107,7 +213,9 @@ fn verify_inner_runs_the_whole_integration_checks_last() {
         );
     }
     assert!(!body.contains("--check-only") && !body.contains("--tree-only"));
-    let artifacts = body.find("Validated {file}").expect("artifact scan");
+    let artifacts = body
+        .find("validate_spirv_files(root, checks, artifacts, spv)?")
+        .expect("artifact scan");
     let integration = body
         .find("integration_checks(mode, skip_web)")
         .expect("integration loop");

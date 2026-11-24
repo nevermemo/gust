@@ -1,10 +1,13 @@
 use super::{PackageStream, fixture_of, shared_cause, split_by_package, stderr_of};
 use crate::ui::{
-    Case, Expectation, judge_shared, manifest_sets_features, parse_expectation, parse_expected,
-    shared_args, shared_command, shares_call,
+    Case, Expectation, group_args, group_by_env, group_command, group_label, groups_call,
+    judge_shared, manifest_sets_features, parse_expectation, parse_expected, shared_args,
+    shared_command, shares_call,
 };
 
 const ROOT: &str = "C:/work/repo";
+
+const LABEL: &str = "the shared `cargo check`";
 
 fn manifest(case: &str) -> String {
     format!("{ROOT}/tests/ui/{case}/Cargo.toml")
@@ -130,10 +133,10 @@ fn a_message_for_package_a_never_judges_fixture_b() {
     ]));
     let (a, b) = (fails("a", "E1", 3), fails("b", "E1", 3));
     assert_eq!(
-        judge_shared(&a, packages.get("a"), ""),
+        judge_shared(&a, packages.get("a"), "", LABEL),
         Vec::<String>::new()
     );
-    let problems = judge_shared(&b, packages.get("b"), "");
+    let problems = judge_shared(&b, packages.get("b"), "", LABEL);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(
         problems[0]
@@ -149,12 +152,12 @@ fn a_wrong_expectation_is_named_by_fixture_and_the_others_still_pass() {
         message("b", "b", "error", "E1", 3),
     ]));
     let wrong = fails("b", "E2", 3);
-    let problems = judge_shared(&wrong, packages.get("b"), "");
+    let problems = judge_shared(&wrong, packages.get("b"), "", LABEL);
     assert!(
         problems[0].starts_with("b: the rustc error does not satisfy `code: E2` of expected.txt"),
         "{problems:?}"
     );
-    assert!(judge_shared(&fails("a", "E1", 3), packages.get("a"), "").is_empty());
+    assert!(judge_shared(&fails("a", "E1", 3), packages.get("a"), "", LABEL).is_empty());
 }
 
 #[test]
@@ -165,7 +168,7 @@ fn a_package_missing_from_the_stream_is_a_failure_never_a_pass() {
         "gone",
     );
     for case in [compiles("gone"), fails("gone", "E1", 3)] {
-        let problems = judge_shared(&case, packages.get("gone"), &stderr);
+        let problems = judge_shared(&case, packages.get("gone"), &stderr, LABEL);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(
             problems[0].starts_with(
@@ -188,8 +191,8 @@ fn a_fixture_that_must_compile_needs_an_artifact_and_no_error() {
         message("ok", "ok", "warning", "W1", 1),
         message("bad", "bad", "error", "E1", 2),
     ]));
-    assert!(judge_shared(&compiles("ok"), packages.get("ok"), "").is_empty());
-    let problems = judge_shared(&compiles("bad"), packages.get("bad"), "");
+    assert!(judge_shared(&compiles("ok"), packages.get("ok"), "", LABEL).is_empty());
+    let problems = judge_shared(&compiles("bad"), packages.get("bad"), "", LABEL);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(
         problems[0].starts_with(
@@ -217,6 +220,105 @@ fn only_plain_fixtures_share_the_call() {
     let mut with_features = compiles("a");
     with_features.features = true;
     assert!(!shares_call(&with_features));
+}
+
+fn with_env(case: &str, variables: &[(&str, &str)]) -> Case {
+    let mut case = compiles(case);
+    case.env = variables
+        .iter()
+        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+        .collect();
+    case
+}
+
+fn group_names(cases: &[Case]) -> Vec<Vec<String>> {
+    let refs: Vec<&Case> = cases.iter().collect();
+    group_by_env(&refs)
+        .iter()
+        .map(|group| group.iter().map(|case| case.name.clone()).collect())
+        .collect()
+}
+
+#[test]
+fn fixtures_of_the_same_env_and_no_features_share_a_group_in_name_order() {
+    let cpu = [("GUST_PROFILE", "cpu")];
+    let cases = [
+        with_env("a", &cpu),
+        with_env("b", &[("GUST_PROFILE", "native")]),
+        with_env("c", &cpu),
+        with_env("d", &cpu),
+    ];
+    assert_eq!(
+        group_names(&cases),
+        [vec!["a", "c", "d"], vec!["b"]],
+        "groups come in the order of their first fixture"
+    );
+    assert_eq!(group_names(&cases), group_names(&cases), "stable");
+}
+
+#[test]
+fn the_order_of_the_variables_does_not_split_a_group() {
+    let cases = [
+        with_env("a", &[("X", "1"), ("Y", "2")]),
+        with_env("b", &[("Y", "2"), ("X", "1")]),
+        with_env("c", &[("X", "1"), ("Y", "3")]),
+        with_env("d", &[("X", "1")]),
+    ];
+    assert_eq!(group_names(&cases), [vec!["a", "b"], vec!["c"], vec!["d"]]);
+}
+
+#[test]
+fn features_and_build_errors_stay_alone_even_with_the_same_env() {
+    let cpu = [("GUST_PROFILE", "cpu")];
+    let mut features = with_env("b", &cpu);
+    features.features = true;
+    let mut build_error = with_env("c", &cpu);
+    build_error.expectation = parse_expectation("build-error: x\n").unwrap();
+    let cases = [
+        with_env("a", &cpu),
+        features,
+        build_error,
+        with_env("d", &cpu),
+    ];
+    assert!(groups_call(&cases[0]) && !groups_call(&cases[1]) && !groups_call(&cases[2]));
+    assert_eq!(group_names(&cases), [vec!["a", "d"], vec!["b"], vec!["c"]]);
+}
+
+#[test]
+fn a_group_call_checks_its_packages_with_keep_going_and_the_group_env_wins_over_the_workspace_profile()
+ {
+    assert_eq!(
+        group_args(&["a", "b"]),
+        [
+            "check",
+            "--locked",
+            "--keep-going",
+            "--color",
+            "never",
+            "--manifest-path",
+            "tests/ui/Cargo.toml",
+            "-p",
+            "a",
+            "-p",
+            "b",
+            "--message-format",
+            "json"
+        ]
+    );
+    let env = [("GUST_PROFILE".to_owned(), "cpu".to_owned())];
+    let command = group_command(std::path::Path::new("ROOT"), &["a", "b"], &env);
+    let given: Vec<_> = command.get_args().map(ToOwned::to_owned).collect();
+    let wanted: Vec<std::ffi::OsString> = group_args(&["a", "b"])
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    assert_eq!(given, wanted);
+    let profile: Vec<_> = command
+        .get_envs()
+        .filter(|(name, _)| *name == "GUST_PROFILE")
+        .collect();
+    assert_eq!(profile.len(), 1);
+    assert_eq!(profile[0].1, Some(std::ffi::OsStr::new("cpu")));
 }
 
 #[test]
@@ -280,7 +382,7 @@ fn a_cause_that_names_no_fixture_is_carried_with_cargos_stderr() {
         r#"{{"reason":"compiler-message","manifest_path":"{ROOT}/crates/gust/Cargo.toml","target":{{"name":"gust"}},"message":{{"level":"error","message":"m","spans":[],"children":[],"rendered":"error: gust broke\n"}}}}"#
     );
     let stderr = "error: could not compile `gust-compute` (lib) due to 1 previous error\n";
-    let cause = shared_cause(&stream(&[dependency, artifact("other")]), stderr);
+    let cause = shared_cause(&stream(&[dependency, artifact("other")]), stderr, LABEL);
     assert!(
         cause.starts_with("tests/ui: the shared `cargo check` did not reach every fixture"),
         "{cause}"
@@ -291,14 +393,14 @@ fn a_cause_that_names_no_fixture_is_carried_with_cargos_stderr() {
         "{cause}"
     );
     // A fixture's own message is not repeated here.
-    let own = shared_cause(&stream(&[message("a", "a", "error", "E1", 3)]), "");
+    let own = shared_cause(&stream(&[message("a", "a", "error", "E1", 3)]), "", LABEL);
     assert!(!own.contains("rendered a"), "{own}");
 }
 
 #[test]
 fn a_huge_cause_is_cut_to_200_lines_with_a_note() {
     let stderr: String = (0..250).map(|n| format!("line {n}\n")).collect();
-    let cause = shared_cause("", &stderr);
+    let cause = shared_cause("", &stderr, LABEL);
     assert!(cause.contains("    line 199\n"), "{cause}");
     assert!(!cause.contains("line 200"), "{cause}");
     assert!(
@@ -318,4 +420,42 @@ fn a_manifest_that_names_features_is_not_shared() {
     assert!(!manifest_sets_features(
         "# features are not set here\n[dependencies]\ng = { path = \"x\" }\n"
     ));
+}
+
+#[test]
+fn a_fixture_without_variables_or_with_features_only_never_joins_a_group() {
+    let empty = compiles("a");
+    let mut features = compiles("b");
+    features.features = true;
+    assert!(!groups_call(&empty), "no env.txt: the shared call takes it");
+    assert!(
+        !groups_call(&features),
+        "features and no env.txt stay alone"
+    );
+    assert_eq!(group_names(&[empty, features]), [vec!["a"], vec!["b"]]);
+}
+
+#[test]
+fn a_group_failure_names_its_group_and_not_the_shared_call() {
+    let env = [
+        ("GUST_PROFILE".to_owned(), "cpu".to_owned()),
+        ("A".to_owned(), "1".to_owned()),
+    ];
+    let label = group_label(&env);
+    assert_eq!(
+        label,
+        "the `cargo check` of the fixtures with A=1 GUST_PROFILE=cpu"
+    );
+    let packages = split_by_package("");
+    let problems = judge_shared(&compiles("gone"), packages.get("gone"), "", &label);
+    assert!(
+        problems[0].starts_with(&format!("gone: {label} printed no")),
+        "{problems:?}"
+    );
+    assert!(!problems[0].contains("shared"), "{problems:?}");
+    let cause = shared_cause("", "", &label);
+    assert!(
+        cause.starts_with(&format!("tests/ui: {label} did not reach every fixture")),
+        "{cause}"
+    );
 }

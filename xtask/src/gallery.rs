@@ -1,12 +1,15 @@
 //! `cargo xtask check-gallery`: the example gallery (`gallery/`, plan M10 section 3.1) in three parts. Every part that
 //! runs is named in the output, the parts that do not run are named with the reason, and a missing tool or adapter
 //! fails a part (nothing is skipped silently). With no flag all three run; `--slang`, `--no-slang` and `--gpu` select
-//! parts explicitly (CI runs the first two in separate jobs).
+//! parts explicitly (CI runs the first two in separate jobs). Every `$` step of every part prints its elapsed seconds.
 //!
 //! - **Slang part** (needs the pinned Slang and its helper): builds `cargo-gust`, copies the gallery to a scratch
 //!   directory without the committed `gust-artifacts/`, runs `cargo gust build` there, `cargo gust check` on the fresh
 //!   artifacts, and compares them byte for byte with the committed ones; `cargo gust check` also runs on the committed
-//!   artifacts in place.
+//!   artifacts in place. The scratch copy also holds the repository's `.cargo/config.toml`, so cargo reads the same
+//!   configuration (the linker among it) there as in `gallery/`. With one target directory and no such file, every
+//!   switch between the two source trees rebuilt the whole dependency graph; the timings of the fix agree with the
+//!   linker being the cause, which no fingerprint log has confirmed.
 //! - **No-Slang part**: `cargo build --release` and `cargo test` in the environment of `check-precompiled` E1 (no
 //!   variable that names Slang, no `PATH` folder with `slangc` or `gust-slang-reflect`, `GUST_SLANG_HOME` an empty
 //!   directory so the default cache is not consulted), which is asserted Slang-free, including a lookup of `slangc` by the
@@ -799,7 +802,8 @@ fn cargo_program() -> Result<PathBuf, String> {
 }
 
 /// The target directory of the gallery builds: one folder beside the other xtask scratch output, away from the
-/// repository workspace's own build and not tracked by git. The no-Slang part and the GPU part share it.
+/// repository workspace's own build and not tracked by git. `name` picks the directory: `no-slang` (shared by the
+/// no-Slang and GPU parts), `slang` (the Slang part) or `web`.
 fn gallery_target(root: &Path, name: &str) -> PathBuf {
     root.join(cargo_target_dir(root)).join("gallery").join(name)
 }
@@ -825,7 +829,9 @@ fn tail(text: &str, count: usize) -> String {
 
 fn exec(mut command: Command, label: &str) -> Result<Done, String> {
     println!("  $ {label}");
+    let started = Instant::now();
     let output = run_capture(command.stdin(Stdio::null()), label)?;
+    println!("    {} s", started.elapsed().as_secs());
     Ok(Done {
         success: output.status.success(),
         code: exit_code(output.status),
@@ -865,10 +871,33 @@ fn gallery_cargo(directory: &Path, target: &Path) -> Result<Command, String> {
 
 /// Copies `source` to `destination` without `target` folders and without the committed `gust-artifacts/` of the
 /// entries; `../../crates/` in a manifest becomes the absolute path of the repository's `crates/` so that the copy,
-/// which sits elsewhere, finds the library crates.
+/// which sits elsewhere, finds the library crates. The repository's `.cargo/config.toml` is copied to the root of the
+/// copy when it has one, so that cargo reads the same configuration (the linker among it) there as in `gallery/`.
 fn copy_gallery(root: &Path, source: &Path, destination: &Path) -> Result<(), String> {
     let crates = format!("{}/crates/", root.to_string_lossy().replace('\\', "/"));
-    copy_tree(source, destination, &crates)
+    copy_tree(source, destination, &crates)?;
+    let from = root.join(".cargo").join("config.toml");
+    if from.is_file() {
+        let config = destination.join(".cargo");
+        fs::create_dir_all(&config)
+            .map_err(|error| format!("cannot create {}: {error}", config.display()))?;
+        fs::copy(&from, config.join("config.toml"))
+            .map_err(|error| format!("cannot copy {}: {error}", from.display()))?;
+    }
+    Ok(())
+}
+
+/// Fails when `directory` (an entry's `gust-artifacts/` in the scratch copy) exists before the fresh build: a stale
+/// artifact could then pass for a fresh one.
+fn require_no_artifacts(directory: &Path) -> Result<(), String> {
+    if directory.exists() {
+        Err(format!(
+            "{} exists before the fresh build: a stale artifact could pass for a fresh one",
+            directory.display()
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn copy_tree(source: &Path, destination: &Path, crates: &str) -> Result<(), String> {
@@ -1025,6 +1054,7 @@ fn slang_part(root: &Path) -> Result<String, String> {
             &label,
         )?;
         // A fresh build in the scratch copy (which has no artifacts), checked, then compared byte for byte.
+        require_no_artifacts(&scratch.join(entry.dir).join("gust-artifacts"))?;
         let label = format!("cargo gust build -p {} (scratch copy)", entry.dir);
         require(
             exec(driver_command(&scratch, "build", entry), &label)?,

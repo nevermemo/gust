@@ -2,8 +2,46 @@
 //! versions and counts.
 
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
+
+/// The PCI vendor id of NVIDIA, the only vendor whose GPU `nvidia-smi` can describe.
+#[cfg(feature = "gpu")]
+const NVIDIA_VENDOR_ID: u32 = 0x10DE;
+
+/// Whether `nvidia-smi` may be queried. On until `limit_smi_to_adapter` turns it off: before an adapter is chosen
+/// (and in a build without a GPU runtime) nothing changes.
+static SMI_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Whether `nvidia-smi` describes the adapter with this PCI vendor id: only an NVIDIA adapter. On any other adapter it
+/// reads a different GPU (or none), so its numbers would be wrong evidence.
+#[cfg(feature = "gpu")]
+pub fn smi_describes_vendor(vendor: u32) -> bool {
+    vendor == NVIDIA_VENDOR_ID
+}
+
+/// Called once the adapter under test is known: from here on every `nvidia-smi` query of the run (driver, clocks,
+/// snapshots, compute apps) is skipped and answers `None`/null when the adapter is not an NVIDIA one. Returns whether
+/// the queries stay on.
+#[cfg(feature = "gpu")]
+pub fn limit_smi_to_adapter(vendor: u32) -> bool {
+    let on = smi_describes_vendor(vendor);
+    SMI_ENABLED.store(on, Ordering::Relaxed);
+    on
+}
+
+/// Whether `nvidia-smi` is queried in this run (false on an adapter it does not describe).
+pub fn smi_enabled() -> bool {
+    SMI_ENABLED.load(Ordering::Relaxed)
+}
+
+/// `nvidia-smi` with `args` through [`capture`], or `None` without running it when the adapter is not an NVIDIA one.
+fn capture_smi(args: &[&str]) -> Option<String> {
+    smi_enabled()
+        .then(|| capture("nvidia-smi", args))
+        .flatten()
+}
 
 /// Runs `program args` and returns its trimmed stdout, or `None` when it cannot run or fails.
 fn capture(program: &str, args: &[&str]) -> Option<String> {
@@ -285,10 +323,10 @@ pub fn machine(
     );
     map.insert(
         "nvidia_driver".to_owned(),
-        json!(capture(
-            "nvidia-smi",
-            &["--query-gpu=driver_version", "--format=csv,noheader"]
-        )),
+        json!(capture_smi(&[
+            "--query-gpu=driver_version",
+            "--format=csv,noheader"
+        ])),
     );
     map.insert(
         "wgpu_limits".to_owned(),
@@ -323,7 +361,7 @@ pub fn machine_cpu(rayon_threads: usize) -> Value {
 pub fn gpu_snapshot() -> Value {
     let fields = "utilization.gpu,clocks.sm,clocks.mem,temperature.gpu,power.draw,memory.used";
     let query = format!("--query-gpu={fields}");
-    let Some(text) = capture("nvidia-smi", &[&query, "--format=csv,noheader,nounits"]) else {
+    let Some(text) = capture_smi(&[&query, "--format=csv,noheader,nounits"]) else {
         return Value::Null;
     };
     let values = text
@@ -353,7 +391,7 @@ pub fn gpu_snapshot() -> Value {
 pub fn gpu_clocks() -> Value {
     let fields = "clocks.sm,clocks.mem,pstate,pcie.link.gen.gpucurrent,pcie.link.gen.max,pcie.link.width.current,clocks.max.sm,clocks.max.mem";
     let query = format!("--query-gpu={fields}");
-    capture("nvidia-smi", &[&query, "--format=csv,noheader,nounits"])
+    capture_smi(&[&query, "--format=csv,noheader,nounits"])
         .map_or(Value::Null, |text| parse_clocks(&text))
 }
 
@@ -402,13 +440,10 @@ pub fn load_snapshot() -> Value {
             counts.insert(watched.to_owned(), json!(count));
         }
     }
-    let gpu_apps = capture(
-        "nvidia-smi",
-        &[
-            "--query-compute-apps=process_name,used_memory",
-            "--format=csv,noheader",
-        ],
-    )
+    let gpu_apps = capture_smi(&[
+        "--query-compute-apps=process_name,used_memory",
+        "--format=csv,noheader",
+    ])
     .map(|text| text.lines().filter(|line| !line.trim().is_empty()).count());
     json!({ "process_counts": counts, "gpu_compute_app_count": gpu_apps })
 }
@@ -463,6 +498,16 @@ fn provenance_of(route: &str, adapter: Value, git: &GitState) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn nvidia_smi_describes_an_nvidia_adapter_only() {
+        assert!(smi_describes_vendor(0x10DE));
+        // AMD (the Radeon 890M), Intel and the software rasteriser's id.
+        for vendor in [0x1002, 0x8086, 0x10005] {
+            assert!(!smi_describes_vendor(vendor), "vendor {vendor:#x}");
+        }
+    }
 
     #[test]
     fn the_build_dirty_flag_is_unknown_unless_the_build_said_one_way_or_the_other() {

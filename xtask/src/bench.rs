@@ -141,7 +141,8 @@ pub(crate) fn check_bench(args: &[String]) -> Result<(), String> {
 // ---- --functional ----
 
 /// The cargo arguments of the functional run, up to the results file: the `functional` profile (no cross-crate LTO), never `release`.
-const FUNCTIONAL_ARGS: [&str; 15] = [
+/// `--warmup-secs 0` skips the clock warm-up: a functional run judges no timing, only correctness.
+const FUNCTIONAL_ARGS: [&str; 17] = [
     "run",
     "--profile",
     "functional",
@@ -156,6 +157,8 @@ const FUNCTIONAL_ARGS: [&str; 15] = [
     "--quick",
     "--label",
     "check-bench",
+    "--warmup-secs",
+    "0",
     "--out",
 ];
 

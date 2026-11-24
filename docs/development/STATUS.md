@@ -1172,6 +1172,17 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       mutation (`row_major float4x4`) was caught by the run-time reflection check before any value comparison; the
       value check alone was not shown on the GPU. `GPU_SUITE_PIN` 650 to 652 at the merge. Radeon 890M only; the
       RTX 5090 run is owed. Opus review: merge after fixes; fixed, re-checked (merge), plus the orientation check.
+    - m14.s2f1 (gust-algo recording, D259): owned `'static` plans (`ReducePlan`, `SumWrappingPlan`, `ScanPlan`,
+      `CountPlan`, `CompactPlan`) made from a device, a variant and a length append their dispatches to a public
+      `record::Sink` over borrowed operands of any `record::Operand` (`GpuVec`, `GpuBuffer`); a wrong length is
+      `Error::Length` with nothing appended, length 0 is `Error::Empty`. `record::Recording` is built on them.
+      Differences from D259, named by the lane: `Operand` adds `operand_len()` because `Resource` has no length, and
+      operands are `Kind = Storage`; S4(a) was dropped because `check-cfg --require-wasm -p gust-algo` fails under
+      the strict web profile (its kernels need precompiled artifacts the crate does not include), which is also what
+      keeps gust-algo out of s2f2's check-web. Seven record GPU tests pinned (70 gust-algo adapter tests); four
+      mutations (exclusive flag, max as min, scatter removed, length check removed) each failed their test on the
+      890M. Open for s2f2: the plan docs say two runs must not be in flight at once, against D259's frames in
+      flight. Radeon 890M only; the RTX 5090 run is owed. Opus review: merge after fixes; fixed, re-checked (merge).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

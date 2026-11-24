@@ -53,6 +53,16 @@ breaks existing code bumps the minor version, and the promise is described in th
   pin check now reads a package's `tests/` folder too; a dropped CPU frame whose submission failed after its records
   ran also marks its parameters stale; the retirement of a staging buffer is counted on the GPU. Radeon 890M only;
   RTX 5090 pending.
+- A caller reads a batch's buffers on the GPU through a stable view (m14.s2v, D261). New public names:
+  `gust::batch::View` (`buffer`, `len`, `is_empty`, `width`, `height`, `generation`), `Batch::view(&handle)` (an input
+  or a stage result the block returned; `Error::Foreign` and `Error::NotOutput` as for a ticket),
+  `Batch::generation()` (one counter per batch, `0` until a later slice replaces a buffer) and
+  `GpuBuffer::as_binding()` in `gust-compute-wgpu` (offset 0 and the live elements' bytes, never the size class; a
+  buffer of no element binds one zeroed placeholder element). A view is the batch's own buffer, so a bind group built
+  once serves every frame; keep the view and the batch alive as long as any bind group built over it (a bind group
+  does not keep the buffer's pool lease alive). What a pass sees follows the queue order of D258 (a pass recorded
+  after `FrameRun::encode` reads that frame, one recorded before it the frame before) and is documented, and a view is
+  to be bound as read-only storage (a documented rule, not a check). Verified on the Radeon 890M and the RTX 5090.
 
 - Capture one GPU call and replay chosen invocations on the CPU twin (g2.cap). Every kernel with a twin gets a generated
   `capture(&gpu, &call)` (test builds and `--cfg gust_dual`) returning a `gust::capture::Captured` with

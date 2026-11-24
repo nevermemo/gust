@@ -122,4 +122,30 @@ impl<T> GpuBuffer<T> {
     pub fn as_wgpu_buffer(&self) -> &wgpu::Buffer {
         &self.raw
     }
+
+    /// The bytes a binding of this buffer exposes: `len` elements (one element for an empty buffer, whose allocation
+    /// holds a placeholder), capped by the allocation. For every buffer that is not pooled this is the whole
+    /// allocation, which is what `as_entire_binding` bound before; for a pooled buffer it is the logical length, not
+    /// the class size. One formula for GUST's own bindings and for [`as_binding`](Self::as_binding).
+    pub(crate) fn logical_bytes(&self) -> u64 {
+        let wanted = (self.len.max(1) as u64).saturating_mul(u64::from(self.layout.stride));
+        wanted.min(self.raw.size())
+    }
+
+    /// The binding of the live elements, for a bind group of your own: offset 0 and `len()` elements' bytes (`stride`
+    /// each), never the size class, so for a non-empty buffer a shader's `arrayLength` is `len()`. This is what GUST's
+    /// own bindings expose.
+    ///
+    /// A buffer of no element binds one placeholder element (zeroed), as GUST's own bindings do, because wgpu refuses a
+    /// zero-size binding: the shader's `arrayLength` is 1 then, so read `len()` for the count. Every element's stride
+    /// is a multiple of 4 (the storage ABI of `GpuPod`), so the bound size always is.
+    ///
+    /// Bind it as `read-only` storage when the buffer belongs to a batch (see `gust::batch::View`).
+    pub fn as_binding(&self) -> wgpu::BufferBinding<'_> {
+        wgpu::BufferBinding {
+            buffer: &self.raw,
+            offset: 0,
+            size: std::num::NonZeroU64::new(self.logical_bytes()),
+        }
+    }
 }

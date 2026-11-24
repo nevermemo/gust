@@ -368,6 +368,10 @@ commit you will run; the binary is `bench/target/release/gust-bench` (`bench/tar
 
 `--functional` is the CI-safe correctness run: quick sizes, no sampler, a software adapter (lavapipe) allowed, the
 file marked `"functional": true` and never publishable. `cargo xtask check-bench --functional --quick` runs it.
+It builds in the `functional` profile of `bench/Cargo.toml` (release settings without cross-crate LTO, parallel
+codegen; its binary is `bench/target/functional/gust-bench`), which only that command uses. A publishable run must be
+built with `release`: the harness's publishable judgement checks only that debug assertions are off, so it does not
+tell the two profiles apart.
 
 ## The quiet-window sampler and the publishable judgement
 

@@ -1,8 +1,10 @@
 //! `cargo xtask check-bench` (M10 b1b): the benchmark harness's CI-safe functional run, and the renderer of
 //! `docs/BENCHMARKS.md` from filed results.
 //!
-//! - `--functional [--quick]`: builds and runs `bench/gust-bench` with `run --functional --quick` into a scratch directory
-//!   outside the work tree. The run checks every backend's output against the CPU reference on whatever adapter is there
+//! - `--functional [--quick]`: builds `bench/gust-bench` in the `functional` profile of `bench/Cargo.toml` (release
+//!   settings without cross-crate LTO and with parallel codegen, so the build is quick) and runs it with
+//!   `run --functional --quick` into a scratch directory outside the work tree. The run checks every backend's output
+//!   against the CPU reference on whatever adapter is there
 //!   (lavapipe in CI); it times nothing for publication and is never publishable. The command fails unless the harness
 //!   exits 0, the file says `"functional": true` and `"publishable": false`, no cell failed and at least one check passed.
 //! - `--budget-kit`: builds and runs `bench/budget-kit` with `--small` (a game-shaped design aid, not a benchmark: every
@@ -138,27 +140,31 @@ pub(crate) fn check_bench(args: &[String]) -> Result<(), String> {
 
 // ---- --functional ----
 
+/// The cargo arguments of the functional run, up to the results file: the `functional` profile (no cross-crate LTO), never `release`.
+const FUNCTIONAL_ARGS: [&str; 15] = [
+    "run",
+    "--profile",
+    "functional",
+    "--locked",
+    "--manifest-path",
+    "bench/Cargo.toml",
+    "-p",
+    "gust-bench",
+    "--",
+    "run",
+    "--functional",
+    "--quick",
+    "--label",
+    "check-bench",
+    "--out",
+];
+
 fn functional(root: &Path) -> Result<(), String> {
     let out_dir = std::env::temp_dir().join(format!("gust-check-bench-{}", std::process::id()));
     fs::create_dir_all(&out_dir).map_err(|error| format!("{}: {error}", out_dir.display()))?;
     let out = out_dir.join("functional.json");
     let status = workspace_command("cargo")
-        .args([
-            "run",
-            "--release",
-            "--locked",
-            "--manifest-path",
-            "bench/Cargo.toml",
-            "-p",
-            "gust-bench",
-            "--",
-            "run",
-            "--functional",
-            "--quick",
-            "--label",
-            "check-bench",
-            "--out",
-        ])
+        .args(FUNCTIONAL_ARGS)
         .arg(&out)
         .current_dir(root)
         .status()
@@ -204,24 +210,26 @@ const BUDGET_KIT_ROWS: [&str; 13] = [
 const BUDGET_KIT_LINES: [&str; 3] = ["G4: probe", "G4 remedy:", "Variant text:"];
 /// The last line of a run that checked everything.
 const BUDGET_KIT_SUMMARY: &str = "0 row(s) FAILED";
+/// The cargo arguments of the budget-kit run, up to the output file: a release build.
+const BUDGET_KIT_ARGS: [&str; 10] = [
+    "run",
+    "--release",
+    "--locked",
+    "--manifest-path",
+    "bench/Cargo.toml",
+    "-p",
+    "budget-kit",
+    "--",
+    "--small",
+    "--out",
+];
 
 fn budget_kit(root: &Path) -> Result<(), String> {
     let out_dir = std::env::temp_dir().join(format!("gust-check-bench-kit-{}", std::process::id()));
     fs::create_dir_all(&out_dir).map_err(|error| format!("{}: {error}", out_dir.display()))?;
     let out = out_dir.join("budget-kit.txt");
     let status = workspace_command("cargo")
-        .args([
-            "run",
-            "--release",
-            "--locked",
-            "--manifest-path",
-            "bench/Cargo.toml",
-            "-p",
-            "budget-kit",
-            "--",
-            "--small",
-            "--out",
-        ])
+        .args(BUDGET_KIT_ARGS)
         .arg(&out)
         .current_dir(root)
         .status()

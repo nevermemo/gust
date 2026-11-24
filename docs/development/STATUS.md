@@ -1243,6 +1243,25 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       encoder's confirmation (measure first). One early mutation run passed without a recorded cause; the tests in the
       final tree catch the plausible edits (read, not run). Radeon 890M only; the RTX 5090 run is owed. Opus review:
       merge after fixes; fixed, re-checked (merge).
+    - m14.goldout (faster gates): `cargo xtask check-artifacts --goldens-only` compiles and validates the fixture
+      goldens (slangc, spirv-val, spirv-dis) and opens no adapter, so a merge gate runs it outside the GPU lock;
+      `--skip-goldens` runs the rest (the examples part needs an adapter). Together they check what one plain run
+      checks; each form names the half it left out, and the options refuse each other. The adapter-reaching
+      verification paths take a type that cannot carry `--goldens-only`, and a source test pins that the goldens
+      path calls no cargo, adapter, example, helper or browser step. `verify --mode artifacts --record` and
+      check-full still run both parts. 890M: check-artifacts under the lock 202 s median before, 123 s after (the
+      goldens move outside, about 45 to 52 s with no GPU). Opus review: merge after fixes; fixed, re-checked (merge).
+    - m14.benchw (faster gates): `check-bench --functional` passes `--warmup-secs 0` (its verdict never reads the
+      warm-up), and on an adapter that is not NVIDIA gust-bench makes no `nvidia-smi` query, says so in one line
+      and records those fields as null (`p0_reached` unknown rather than missed). NVIDIA runs are unchanged.
+      890M: 64.3 s before, 24.2 s after; part of that saving was the skipped `nvidia-smi` calls, so an NVIDIA gate
+      saves less. Opus review: merge.
+    - m14.benchfix (a failing bench test): `cargo test -p gust-bench` failed since m11.psplit-a, because the
+      particles layout test counted reflections whose entry point is `gpu_kernel_step` and found the step kernel's
+      body and its split form (D209, D214). Neither artifact is stale (`cargo gust check` matches all 24 kernels).
+      The test now selects the body and its split through the manifest's `split_of`, asserts exactly one of each,
+      and runs the unchanged layout checks on both. Not closed: nothing automated runs this crate's tests or
+      `cargo gust check` on `bench/gust-bench-pre`. Opus review: merge.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

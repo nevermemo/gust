@@ -1,9 +1,14 @@
 //! The GPU device's batch (plan m14.s2, slice s2a2): [`HeadlessDevice`] as a `gust::batch::BatchDevice`.
 //!
-//! A frame is one command encoder. The writes of the frame are encoded copies, the extent records of the stages whose
-//! parameters changed are encoded copies, then come the passes of the stages in order, then the read-back copies of the
-//! tickets; `submit` finishes the encoder and makes **one** counted queue submission
-//! ([`HeadlessDevice::gust_submissions`] rises by 1 whatever the number of stages and tickets). Decision D251.
+//! A frame is recorded into one command encoder: its own at `submit`, or the caller's at `encode`. The writes of the
+//! frame are encoded copies, the extent records of the stages whose parameters changed are encoded copies, then come
+//! the passes of the stages in order, then the read-back copies of the tickets; `submit` finishes the encoder and makes
+//! **one** counted queue submission ([`HeadlessDevice::gust_submissions`] rises by 1 whatever the number of stages and
+//! tickets). One encoder per frame and ticket-before-submit are decision D251.
+//!
+//! Frames in flight (`in_flight(n)`) share the batch's one set of buffers and are kept apart by queue order
+//! (decision D258): only a ticket owns per-frame storage, its staging buffer. So an input or parameter that a frame
+//! does not write holds the value of the last frame that reached the queue, for every `n`.
 //!
 //! The pieces are by concern: [`build`] seals a stage, [`frame`] records a frame and submits it, [`ticket`] reserves
 //! and starts the read-backs. `shape` and `ops` hold what later slices add.
@@ -24,12 +29,15 @@ mod slot;
 mod ticket;
 
 pub use build::GpuStage;
-pub use frame::{GpuFrame, GpuSubmission};
+pub use frame::{GpuEncoded, GpuFrame, GpuSubmission};
 pub use ticket::GpuRead;
 
 impl BatchDevice for HeadlessDevice {
     type Prepared = GpuStage;
     type Frame = GpuFrame;
+    type Encoder = wgpu::CommandEncoder;
+    type Token = wgpu::SubmissionIndex;
+    type Encoded = GpuEncoded;
     type Read<T: GpuPod> = GpuRead<T>;
     type Submission = GpuSubmission;
 
@@ -47,7 +55,7 @@ impl BatchDevice for HeadlessDevice {
     }
 
     fn begin_frame(&self) -> Result<GpuFrame, Error> {
-        Ok(self.new_frame())
+        Ok(Self::new_frame())
     }
 
     fn frame_write<T: GpuPod>(
@@ -71,28 +79,65 @@ impl BatchDevice for HeadlessDevice {
         self.encode_uniform(frame, &**target, &value)
     }
 
-    fn frame_stage(&self, frame: &mut GpuFrame, stage: &GpuStage) -> Result<(), Error> {
-        self.encode_stage(frame, stage)
+    fn new_encoder(&self) -> wgpu::CommandEncoder {
+        self.new_batch_encoder()
+    }
+
+    fn frame_uploads(
+        &self,
+        frame: &mut GpuFrame,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<(), Error> {
+        Self::record_uploads(frame, encoder);
+        Ok(())
+    }
+
+    fn frame_stage(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        stage: &GpuStage,
+    ) -> Result<(), Error> {
+        self.encode_stage(encoder, stage)
     }
 
     fn reserve_read<T: GpuPod>(&self, source: &Arc<GpuBuffer<T>>) -> Result<GpuRead<T>, Error> {
         self.reserve(source)
     }
 
-    fn frame_read<T: GpuPod>(&self, frame: &mut GpuFrame, read: &mut GpuRead<T>) {
-        read.encode_copy(frame);
+    fn frame_read<T: GpuPod>(&self, encoder: &mut wgpu::CommandEncoder, read: &mut GpuRead<T>) {
+        read.encode_copy(encoder);
     }
 
-    fn submit_frame(&self, frame: GpuFrame) -> Result<GpuSubmission, Error> {
-        Ok(self.submit_one(frame))
+    fn submit_frame(
+        &self,
+        frame: GpuFrame,
+        encoder: wgpu::CommandEncoder,
+    ) -> Result<GpuSubmission, Error> {
+        Ok(self.submit_one(frame, encoder))
+    }
+
+    fn encoded_frame(
+        &self,
+        frame: GpuFrame,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<GpuEncoded, Error> {
+        Ok(self.encoded_one(frame, encoder))
+    }
+
+    fn encoded_submitted(
+        &self,
+        encoded: GpuEncoded,
+        token: &wgpu::SubmissionIndex,
+    ) -> GpuSubmission {
+        self.encoded_submission(encoded, token)
     }
 
     fn begin_read<T: GpuPod + Send>(
         &self,
         read: GpuRead<T>,
-        _submission: &GpuSubmission,
-    ) -> BoxFuture<Result<Vec<T>, map::Error>> {
-        self.start_ticket(read)
+        submission: &GpuSubmission,
+    ) -> BoxFuture<Result<Option<Vec<T>>, map::Error>> {
+        self.start_ticket(read, submission)
     }
 
     fn completion(&self, submission: &GpuSubmission) -> BoxFuture<Result<(), map::Error>> {

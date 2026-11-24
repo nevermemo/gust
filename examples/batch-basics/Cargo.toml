@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish = false
+default-run = "batch-basics"
 
 [dependencies]
 gust.workspace = true

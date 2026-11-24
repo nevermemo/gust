@@ -177,21 +177,31 @@ fn the_crate_option_is_passed_to_each_stage() {
 // ---- E1005 ----
 
 #[test]
-fn in_flight_above_one_is_e1005() {
-    for count in ["2", "8"] {
+fn in_flight_outside_one_to_four_is_e1005() {
+    for count in ["5", "8"] {
         let text = batch(&format!("\"t\", on(&d); in_flight({count}); |b| {{ }}"));
         assert!(failed(&text), "{text}");
-        assert!(text.contains("not in this release"), "{text}");
+        assert!(text.contains("from 1 to 4"), "{text}");
         assert_rendered_code(&text, Code::BatchForm);
     }
     batch_rejected("\"t\", on(&d); in_flight(0); |b| { }", Code::BatchForm);
     batch_rejected("\"t\", on(&d); in_flight(n); |b| { }", Code::BatchForm);
+    batch_rejected(
+        "\"t\", on(&d); in_flight(2); in_flight(2); |b| { }",
+        Code::BatchForm,
+    );
 }
 
 #[test]
-fn in_flight_one_is_accepted() {
-    let text = batch("\"t\", on(&d); in_flight(1); |b| { }");
-    assert!(!failed(&text), "{text}");
+fn in_flight_one_to_four_is_accepted_and_reaches_the_build() {
+    for count in ["1", "2", "4"] {
+        let text = batch(&format!("\"t\", on(&d); in_flight({count}); |b| {{ }}"));
+        assert!(!failed(&text), "{text}");
+        assert!(text.contains(&format!("(& d) , {count}u32 ,")), "{text}");
+    }
+    // Left out, it is 1.
+    let text = batch("\"t\", on(&d); |b| { }");
+    assert!(text.contains("(& d) , 1u32 ,"), "{text}");
 }
 
 #[test]

@@ -21,13 +21,19 @@
 //! with two implementations: the GPU device (`gust_wgpu::HeadlessDevice`) and [`CpuDevice`](crate::cpu::CpuDevice),
 //! which runs the stages in order at `submit` and has its tickets ready then.
 //!
-//! This release has one frame in flight (`in_flight(1)`); [`Batch::begin`] waits for the frame before it. A shape
-//! cannot change after the seal (a `set` that would is [`Error::ShapeMismatch`]).
+//! A batch keeps up to `in_flight(n)` frames in flight (1 to 4; `in_flight(1)` when the option is left out): a frame
+//! is submitted while the ones before it may still be running, and [`Batch::begin`] waits only when `n` frames are
+//! already in flight, for the oldest. The frames share the batch's one set of buffers and run in the order they were
+//! submitted (decision D258), so the batch's data persists from frame to frame: an input or parameter that a frame
+//! does not `write` or `set` holds the value of the last frame that reached the queue, whatever `n` is, on both
+//! devices. A frame's tickets read that frame's results; a later frame's writes never reach an earlier frame. A
+//! shape cannot change after the seal (a `set` that would is [`Error::ShapeMismatch`]).
 
 use core::any::Any;
 use core::cell::{Cell, RefCell};
 use core::future::Future;
 use core::pin::Pin;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::{
     Arc, Mutex,
@@ -42,7 +48,9 @@ mod ops;
 mod shape;
 mod slot;
 
-pub use frame::{FrameRun, Submitted, Ticket};
+#[cfg(not(target_arch = "wasm32"))]
+pub use frame::Blocking;
+pub use frame::{Encoded, FrameRun, Submitted, Ticket};
 pub use shape::{D1, D2, IntoShape, ParamType, Rank};
 #[doc(hidden)]
 pub use shape::{ShapeSource, Value, Values};
@@ -199,8 +207,16 @@ impl From<map::Error> for Error {
 pub trait BatchDevice: MapHost + Sized + 'static {
     /// A stage that was sealed with the batch.
     type Prepared;
-    /// What one frame records into (on the GPU, its command encoder).
+    /// What one frame collects before it is recorded: its writes and parameter records, in the order of the calls.
     type Frame;
+    /// What a frame is recorded into: on the GPU the command encoder of the queue submission (the frame's own, or the
+    /// caller's for [`FrameRun::encode`]), on the CPU the list of steps that run at the submission.
+    type Encoder;
+    /// What the caller of [`FrameRun::encode`] reports after its own submission: on the GPU the index of the queue
+    /// submission, on the CPU the job of the encoder it ran.
+    type Token;
+    /// What a frame recorded into a caller's encoder keeps until the caller reports its submission.
+    type Encoded;
     /// A reserved read-back of a buffer.
     type Read<T: GpuPod>: 'static;
     /// What a submitted frame waits for.
@@ -256,14 +272,28 @@ pub trait BatchDevice: MapHost + Sized + 'static {
     where
         U: Resource<Element = T, Device = Self, Kind = kind::Uniform> + 'static;
 
+    /// An encoder of the device's own, for a frame that is submitted with [`FrameRun::submit`].
+    fn new_encoder(&self) -> Self::Encoder;
+
+    /// Record the frame's writes and parameter records into `encoder`, in the order of the calls.
+    ///
+    /// # Errors
+    ///
+    /// The device's failure to record them.
+    fn frame_uploads(
+        &self,
+        frame: &mut Self::Frame,
+        encoder: &mut Self::Encoder,
+    ) -> Result<(), Self::Error>;
+
     /// Record the dispatch of a stage.
     ///
     /// # Errors
     ///
-    /// The device's failure to record it.
+    /// The device's failure to record it. What the encoder holds then is the device's to document.
     fn frame_stage(
         &self,
-        frame: &mut Self::Frame,
+        encoder: &mut Self::Encoder,
         stage: &Self::Prepared,
     ) -> Result<(), Self::Error>;
 
@@ -280,21 +310,41 @@ pub trait BatchDevice: MapHost + Sized + 'static {
         Self::Buffer<T>: 'static;
 
     /// Record the copy of a reserved read-back, after the stages.
-    fn frame_read<T: GpuPod>(&self, frame: &mut Self::Frame, read: &mut Self::Read<T>);
+    fn frame_read<T: GpuPod>(&self, encoder: &mut Self::Encoder, read: &mut Self::Read<T>);
 
-    /// Submit the frame: one queue submission on the GPU, the recorded steps in order on the CPU.
+    /// Submit the frame with its own encoder: one queue submission on the GPU, the recorded steps in order on the CPU.
     ///
     /// # Errors
     ///
     /// The device's failure to submit it.
-    fn submit_frame(&self, frame: Self::Frame) -> Result<Self::Submission, Self::Error>;
+    fn submit_frame(
+        &self,
+        frame: Self::Frame,
+        encoder: Self::Encoder,
+    ) -> Result<Self::Submission, Self::Error>;
 
-    /// The values of a reserved read-back, after the submission that carried its copy.
+    /// The frame was recorded into a caller's encoder: what it keeps until the caller reports its submission. On the
+    /// GPU this also records the epoch word that tells a ticket whether the encoder ran.
+    ///
+    /// # Errors
+    ///
+    /// The device's failure to record it.
+    fn encoded_frame(
+        &self,
+        frame: Self::Frame,
+        encoder: &mut Self::Encoder,
+    ) -> Result<Self::Encoded, Self::Error>;
+
+    /// The caller submitted the encoder: the submission of the frame.
+    fn encoded_submitted(&self, encoded: Self::Encoded, token: &Self::Token) -> Self::Submission;
+
+    /// The values of a reserved read-back, after the submission that carried its copy: `None` when the copy never ran
+    /// (the caller's encoder was dropped, or never submitted).
     fn begin_read<T: GpuPod + Send>(
         &self,
         read: Self::Read<T>,
         submission: &Self::Submission,
-    ) -> BoxFuture<Result<Vec<T>, map::Error>>;
+    ) -> BoxFuture<Result<Option<Vec<T>>, map::Error>>;
 
     /// A future that completes when the submission has run.
     fn completion(&self, submission: &Self::Submission) -> BoxFuture<Result<(), map::Error>>;
@@ -510,8 +560,15 @@ pub(crate) struct StageRec<D: BatchDevice> {
 
 pub(crate) struct RunState<D: BatchDevice> {
     pub(crate) values: Vec<Value>,
+    /// A frame is being recorded.
     pub(crate) live: bool,
-    pub(crate) last: Option<D::Submission>,
+    /// The most frames the batch has submitted and not yet waited for (`in_flight(n)`).
+    pub(crate) depth: usize,
+    /// The submitted frames that `begin` has not yet waited for, the oldest first; never more than `depth`.
+    pub(crate) pending: VecDeque<D::Submission>,
+    /// The device may not hold the parameter values of `values`: a frame recorded into a caller's encoder was reported
+    /// or dropped, and the host cannot tell whether that encoder ran. The next frame records every parameter again.
+    pub(crate) resync: bool,
 }
 
 pub(crate) struct Core<D: BatchDevice> {
@@ -1129,7 +1186,8 @@ pub fn failed<D: BatchDevice, H: DeviceRef<Device = D>, O>(
 }
 
 /// The batch of a `gpu_batch!`: run `block` as the build scope and seal what it recorded. Macro support; the macro
-/// is the form to write.
+/// is the form to write. `in_flight` is the `in_flight(n)` of the macro (1 to 4, checked there); the function clamps
+/// 0 to 1.
 ///
 /// # Errors
 ///
@@ -1139,6 +1197,7 @@ pub fn failed<D: BatchDevice, H: DeviceRef<Device = D>, O>(
 pub fn build<D: BatchDevice, H: DeviceRef<Device = D>, O>(
     name: &str,
     device: &H,
+    in_flight: u32,
     block: impl FnOnce(&Builder<D>) -> O,
 ) -> Result<(Batch<D>, O), Error> {
     if BUILDING.with(Cell::get) {
@@ -1196,7 +1255,9 @@ pub fn build<D: BatchDevice, H: DeviceRef<Device = D>, O>(
         run: Mutex::new(RunState {
             values,
             live: false,
-            last: None,
+            depth: usize::try_from(in_flight.max(1)).unwrap_or(1),
+            pending: VecDeque::new(),
+            resync: false,
         }),
     };
     // The cell of `core` is not `Sync` (the CPU device's buffers are single-threaded); the batch is a shared handle for

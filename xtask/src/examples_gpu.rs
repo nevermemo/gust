@@ -9,11 +9,30 @@
 
 use crate::{
     checks::tests_not_ok,
-    process::run_cargo_test_captured,
+    gpu_jobs::{
+        Job, JobOutput, Package, TestExecutable, judge_named, no_run_build,
+        package_of as package_environment, read_metadata, run_executable, run_printed,
+        test_executables,
+    },
+    process::{require_tests_ran, run_cargo_test_captured, sum_test_results},
     verify::{name_adapter, prepare_helper},
     workspace::workspace_root,
 };
-use std::path::Path;
+use std::{cmp::Reverse, path::Path, time::Duration};
+
+/// How many test executables of the examples run at a time when `--gpu-jobs` is not given (a value of its own, apart
+/// from the Gpu suite's).
+const DEFAULT_EXAMPLE_JOBS: usize = 3;
+
+/// How long one example test executable may run. The slowest takes well under a minute, and the gate's outer time
+/// limit is longer, so a hang is killed and named here instead of leaving test processes behind.
+const EXAMPLE_JOB_TIME_LIMIT: Duration = Duration::from_secs(300);
+
+/// The examples whose dependency features differ from the others (`subgroup-reduce` leaves out `slang-runtime` on
+/// purpose: its strict proof refuses the run-time Slang compiler). Cargo unifies the features of the packages of one
+/// call, so each of these is built and listed by a call of its own; a unit test requires the packages of the combined
+/// call to declare the same features.
+const OWN_BUILD: &[&str] = &["subgroup-reduce"];
 
 /// The ignored tests of each example package, by the name `cargo test` prints (`app::tests::..` for the examples
 /// that keep their tests in `src/app.rs`, `tests::..` for the single-file ones).
@@ -262,19 +281,73 @@ fn require_adapter_line(adapter: &str) -> Result<&str, String> {
     }
 }
 
-/// `cargo xtask check-examples --gpu`: names the adapter (the first Vulkan one, which the examples' tests open), then
-/// runs the ignored tests of every example, one cargo call per package, and requires each pinned name to pass
-/// ([`check_pinned_example_tests`]). It runs nothing else of `check-examples` (no example binary, no artifact), so the
-/// coordinator can run it once per adapter. Needs slangc, the reflection helper and an adapter.
-pub(crate) fn check_examples_gpu() -> Result<(), String> {
+/// The option of `check-examples --gpu`: how many test executables run at a time.
+const GPU_JOBS_OPTION: &str = "--gpu-jobs";
+
+/// The build-only option of `check-examples --gpu`.
+const PREBUILD_OPTION: &str = "--prebuild";
+
+/// What `check-examples --gpu` was asked to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GpuMode {
+    /// Run the tests, `width` executables at a time.
+    Run { width: usize },
+    /// Only build (and list) the test executables the run needs, with the run's own calls and environment.
+    Prebuild,
+}
+
+/// The arguments after `--gpu`: nothing, `--gpu-jobs <n>` (`n` at least 1) or `--prebuild`.
+pub(crate) fn parse_gpu_args(args: &[String]) -> Result<GpuMode, String> {
+    match args {
+        [] => Ok(GpuMode::Run {
+            width: DEFAULT_EXAMPLE_JOBS,
+        }),
+        [option] if option == PREBUILD_OPTION => Ok(GpuMode::Prebuild),
+        [option, value] if option == GPU_JOBS_OPTION => match value.parse::<usize>() {
+            Ok(width) if width >= 1 => Ok(GpuMode::Run { width }),
+            _ => Err(format!(
+                "{GPU_JOBS_OPTION} takes a whole number of at least 1, not `{value}`"
+            )),
+        },
+        _ => Err(format!(
+            "check-examples --gpu takes no argument, {GPU_JOBS_OPTION} <n> or {PREBUILD_OPTION}"
+        )),
+    }
+}
+
+/// `cargo xtask check-examples --gpu [--gpu-jobs <n> | --prebuild]`: names the adapter (the first Vulkan one, which the
+/// examples' tests open), then runs the ignored tests of every example and requires each pinned name to pass
+/// ([`check_pinned_example_tests`]). With `--gpu-jobs 1` that is one cargo call per package; otherwise the prebuilt test
+/// executables of the examples run `width` at a time ([`run_example_executables`]). `--prebuild` only makes those
+/// executables ([`build_example_executables`]), so a gate can do it before it takes the adapter. It runs nothing else of
+/// `check-examples` (no example binary, no artifact), so the coordinator can run it once per adapter. Needs slangc, the
+/// reflection helper and (but for `--prebuild`) an adapter.
+pub(crate) fn check_examples_gpu(mode: GpuMode) -> Result<(), String> {
     let root = workspace_root()?;
     crate::process::require_command("cargo")?;
     crate::process::require_command("slangc")?;
     prepare_helper(&root, None)?;
+    let width = match mode {
+        GpuMode::Run { width } => width,
+        GpuMode::Prebuild => {
+            let metadata = read_metadata(&root)?;
+            let jobs = example_jobs(&metadata, &build_example_executables(&root, false)?)?;
+            println!(
+                "check-examples --gpu --prebuild: {} test executable(s) of {} example packages are built",
+                jobs.len(),
+                packages().count()
+            );
+            return Ok(());
+        }
+    };
     let adapter = name_adapter(&root)?;
     let adapter = require_adapter_line(&adapter)?;
     println!("{adapter}");
-    let ran = run_example_gpu_tests(&root)?;
+    let ran = if width == 1 {
+        run_example_gpu_tests(&root)?
+    } else {
+        run_example_executables(&root, width)?
+    };
     println!(
         "check-examples --gpu passed: {ran} pinned ignored tests of {} example packages ran and passed on the {adapter}",
         packages().count()
@@ -297,6 +370,140 @@ fn run_example_gpu_tests(root: &Path) -> Result<u64, String> {
         ran += totals.passed;
     }
     Ok(ran)
+}
+
+/// One test executable of an example package, with the package's environment.
+#[derive(Debug)]
+struct ExampleJob {
+    package: &'static str,
+    environment: Package,
+    executable: TestExecutable,
+}
+
+impl ExampleJob {
+    /// The job the runner prints it as.
+    fn job(&self) -> Job {
+        Job::Executable(self.executable.clone())
+    }
+}
+
+/// The groups of packages that one `cargo test --no-run` call lists and builds: every package whose features agree in
+/// one call, then each of [`OWN_BUILD`] alone.
+fn build_groups() -> Vec<Vec<&'static str>> {
+    let mut groups = vec![
+        packages()
+            .filter(|package| !OWN_BUILD.contains(package))
+            .collect::<Vec<_>>(),
+    ];
+    groups.extend(
+        packages()
+            .filter(|package| OWN_BUILD.contains(package))
+            .map(|package| vec![package]),
+    );
+    groups
+}
+
+/// The `cargo test --no-run` call that lists (and, run beforehand, builds) the test executables of `group`.
+fn example_build_call(group: &[&str]) -> Vec<String> {
+    ["test", "--locked", "--no-run", "--message-format=json"]
+        .into_iter()
+        .map(str::to_owned)
+        .chain(
+            group
+                .iter()
+                .flat_map(|package| ["-p".to_owned(), (*package).to_owned()]),
+        )
+        .collect()
+}
+
+/// Runs the call of every group of [`build_groups`] and returns their standard output together, for [`example_jobs`].
+/// With `refuse_build` (the run) a compilation is an error; without it (`--prebuild`) the calls build.
+fn build_example_executables(root: &Path, refuse_build: bool) -> Result<String, String> {
+    let mut output = String::new();
+    for group in build_groups() {
+        let call = example_build_call(&group);
+        println!("-- cargo {}", call.join(" "));
+        output.push_str(&no_run_build(root, &call, refuse_build)?);
+        output.push('\n');
+    }
+    Ok(output)
+}
+
+/// The jobs of a run in print order (the packages in the table's order, each one's executables in cargo's order), from
+/// the output of `cargo metadata` and of [`example_build_call`]. A package without a test executable is an error.
+fn example_jobs(metadata: &str, build_output: &str) -> Result<Vec<ExampleJob>, String> {
+    let mut jobs = Vec::new();
+    for package in packages() {
+        let environment = package_environment(metadata, package)?;
+        let executables = test_executables(build_output, &environment.manifest_dir)
+            .map_err(|error| format!("{package}: {error}"))?;
+        jobs.extend(executables.into_iter().map(|executable| ExampleJob {
+            package,
+            environment: environment.clone(),
+            executable,
+        }));
+    }
+    Ok(jobs)
+}
+
+/// The order in which the jobs start: the packages with the most pinned tests first (the time of a package follows its
+/// tests), so that the long ones do not start last; a permutation of the job indices. Printing stays in job order.
+fn example_start_order(jobs: &[ExampleJob]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..jobs.len()).collect();
+    order.sort_by_key(|&index| Reverse(pinned_tests(jobs[index].package).map_or(0, <[_]>::len)));
+    order
+}
+
+/// Judges the finished jobs: none may have failed or been left unstarted, and the standard output of each package's
+/// executables together must pass [`check_ignored_only_run`] as the output of the package's one cargo call did. Returns
+/// how many pinned tests passed.
+fn judge_example_jobs(jobs: &[ExampleJob], results: &[Option<JobOutput>]) -> Result<u64, String> {
+    let all: Vec<Job> = jobs.iter().map(ExampleJob::job).collect();
+    judge_named("the example packages", &all, results)?;
+    let mut ran = 0;
+    for package in packages() {
+        let stdout: String = jobs
+            .iter()
+            .zip(results)
+            .filter(|(job, _)| job.package == package)
+            .filter_map(|(_, result)| result.as_ref())
+            .map(|output| format!("{}\n", output.stdout))
+            .collect();
+        let totals = sum_test_results(&stdout);
+        let call = example_gpu_call(package);
+        require_tests_ran(&call, &totals)?;
+        check_ignored_only_run(&call, &stdout, totals.passed)?;
+        ran += totals.passed;
+    }
+    Ok(ran)
+}
+
+/// The ignored tests of every example through its prebuilt test executables, `width` at a time ([`example_jobs`]; the
+/// build must exist already, one that happens here is an error), judged by [`judge_example_jobs`].
+fn run_example_executables(root: &Path, width: usize) -> Result<u64, String> {
+    let metadata = read_metadata(root)?;
+    let jobs = example_jobs(&metadata, &build_example_executables(root, true)?)?;
+    println!(
+        "   {} test executable(s) of {} example packages, {width} at a time",
+        jobs.len(),
+        packages().count()
+    );
+    let results = run_printed(
+        &jobs,
+        &example_start_order(&jobs),
+        width,
+        &ExampleJob::job,
+        &|job, cancel| {
+            run_executable(
+                &job.executable,
+                &job.environment,
+                &["--ignored"],
+                EXAMPLE_JOB_TIME_LIMIT,
+                cancel,
+            )
+        },
+    );
+    judge_example_jobs(&jobs, &results)
 }
 
 /// The guard on a `--ignored` run of one example: every pinned name passed ([`check_pinned_example_tests`]) and the run
@@ -343,6 +550,303 @@ mod tests {
             "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n",
         );
         out
+    }
+
+    /// The `cargo metadata` text of every pinned package, one manifest each.
+    fn fixture_metadata() -> String {
+        let entries: Vec<String> = packages()
+            .map(|package| {
+                format!(
+                    "{{\"name\":\"{package}\",\"version\":\"0.1.0\",\"manifest_path\":\"C:/w/examples/{package}/Cargo.toml\"}}"
+                )
+            })
+            .collect();
+        format!("{{\"packages\":[{}]}}", entries.join(","))
+    }
+
+    /// One `compiler-artifact` line of a test build of `package`.
+    fn test_build(package: &str, kind: &str, name: &str) -> String {
+        format!(
+            "{{\"reason\":\"compiler-artifact\",\"manifest_path\":\"C:/w/examples/{package}/Cargo.toml\",\"target\":{{\"kind\":[\"{kind}\"],\"name\":\"{name}\",\"src_path\":\"C:/w/examples/{package}/src/{name}.rs\"}},\"profile\":{{\"test\":true}},\"executable\":\"C:/w/target/debug/deps/{name}-{package}.exe\"}}"
+        )
+    }
+
+    /// The build output in which every package has its unit tests and `batch-basics` also an integration target.
+    fn fixture_build() -> String {
+        let mut lines: Vec<String> = packages()
+            .map(|package| test_build(package, "bin", package))
+            .collect();
+        lines.push(test_build("batch-basics", "test", "encode"));
+        lines.join("\n")
+    }
+
+    /// A finished job whose standard output reports `names` ok and `passed` passed tests.
+    fn finished_with(names: &[&str], passed: usize) -> Option<JobOutput> {
+        let mut stdout = String::new();
+        for name in names {
+            stdout.push_str(&format!("test {name} ... ok\n"));
+        }
+        stdout.push_str(&format!(
+            "test result: ok. {passed} passed; 0 failed; 1 ignored; 0 measured; 0 filtered out\n"
+        ));
+        Some(JobOutput {
+            success: true,
+            status: "exit 0".to_owned(),
+            stdout,
+            stderr: String::new(),
+        })
+    }
+
+    /// Results in which every job of `jobs` passed its package's pinned tests (a package's tests split over its jobs).
+    fn passing_results(jobs: &[ExampleJob]) -> Vec<Option<JobOutput>> {
+        jobs.iter()
+            .map(|job| {
+                let pinned = pinned_tests(job.package).unwrap();
+                let split = jobs.iter().filter(|other| other.package == job.package);
+                let (position, count) = (
+                    split
+                        .clone()
+                        .position(|other| other.executable == job.executable)
+                        .unwrap(),
+                    split.count(),
+                );
+                let share: Vec<&str> = pinned
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .filter(|(index, _)| index % count == position)
+                    .map(|(_, name)| name)
+                    .collect();
+                finished_with(&share, share.len())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_job_list_is_every_package_in_table_order_with_its_executables() {
+        let jobs = example_jobs(&fixture_metadata(), &fixture_build()).unwrap();
+        let names: Vec<&str> = jobs.iter().map(|job| job.package).collect();
+        let mut expected: Vec<&str> = packages().collect();
+        let at = expected
+            .iter()
+            .position(|name| *name == "batch-basics")
+            .unwrap();
+        expected.insert(at, "batch-basics");
+        assert_eq!(
+            names, expected,
+            "one job per executable, packages in table order"
+        );
+        let batch: Vec<&str> = jobs
+            .iter()
+            .filter(|job| job.package == "batch-basics")
+            .map(|job| job.executable.name.as_str())
+            .collect();
+        assert_eq!(
+            batch,
+            ["batch-basics", "encode"],
+            "unit tests, then integration targets"
+        );
+        assert!(
+            jobs[0]
+                .environment
+                .environment
+                .contains(&("CARGO_PKG_NAME", "atomic-counter".to_owned()))
+        );
+        // A package with no test executable (a stale or missing build) is named.
+        let without: String = fixture_build()
+            .lines()
+            .filter(|line| !line.contains("examples/hash-rng/"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let error = example_jobs(&fixture_metadata(), &without).unwrap_err();
+        assert!(error.starts_with("hash-rng: "), "{error}");
+        let calls: Vec<Vec<String>> = build_groups()
+            .iter()
+            .map(|group| example_build_call(group))
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .all(|call| call.contains(&"--no-run".to_owned()))
+        );
+    }
+
+    #[test]
+    fn jobs_start_with_the_packages_that_pin_the_most_tests() {
+        let jobs = example_jobs(&fixture_metadata(), &fixture_build()).unwrap();
+        let order = example_start_order(&jobs);
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..jobs.len()).collect::<Vec<_>>(), "a permutation");
+        let pinned = |index: usize| pinned_tests(jobs[order[index]].package).unwrap().len();
+        assert!((1..order.len()).all(|index| pinned(index - 1) >= pinned(index)));
+    }
+
+    #[test]
+    fn finished_jobs_are_judged_by_package_with_the_pinned_guards() {
+        let jobs = example_jobs(&fixture_metadata(), &fixture_build()).unwrap();
+        let total: usize = packages()
+            .map(|name| pinned_tests(name).unwrap().len())
+            .sum();
+        let results = passing_results(&jobs);
+        assert_eq!(judge_example_jobs(&jobs, &results), Ok(total as u64));
+        // A pinned name that is not reported ok fails and names its package, whichever job should have run it.
+        let mut renamed = results.clone();
+        let output = renamed[3].as_mut().unwrap();
+        output.stdout = output.stdout.replacen("test app::", "test other::", 1);
+        let error = judge_example_jobs(&jobs, &renamed).unwrap_err();
+        assert!(error.contains("did not run and pass"), "{error}");
+        // An extra passing test is a count mismatch.
+        let mut extra = results.clone();
+        let output = extra[0].as_mut().unwrap();
+        output.stdout = output.stdout.replace("1 passed", "2 passed");
+        let error = judge_example_jobs(&jobs, &extra).unwrap_err();
+        assert!(
+            error.contains("2 ignored test(s) passed, 1 are pinned"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_failed_job_fails_the_run_and_names_the_executable_and_the_jobs_never_started() {
+        let jobs = example_jobs(&fixture_metadata(), &fixture_build()).unwrap();
+        let mut results = passing_results(&jobs);
+        let last = results.len() - 1;
+        results[1].as_mut().unwrap().success = false;
+        results[1].as_mut().unwrap().status = "exit 101".to_owned();
+        results[last] = None;
+        let error = judge_example_jobs(&jobs, &results).unwrap_err();
+        assert!(error.contains("the example packages failed"), "{error}");
+        assert!(error.contains("exit 101"), "{error}");
+        assert!(error.contains("1 job(s) were not started"), "{error}");
+        assert!(
+            error.contains(&jobs[1].executable.path.display().to_string()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_gpu_jobs_option_is_a_whole_number_of_at_least_one() {
+        let run = |width| Ok(GpuMode::Run { width });
+        assert_eq!(parse_gpu_args(&[]), run(DEFAULT_EXAMPLE_JOBS));
+        assert_eq!(parse_gpu_args(&owned(&["--gpu-jobs", "1"])), run(1));
+        assert_eq!(parse_gpu_args(&owned(&["--gpu-jobs", "5"])), run(5));
+        assert_eq!(
+            parse_gpu_args(&owned(&["--prebuild"])),
+            Ok(GpuMode::Prebuild)
+        );
+        for bad in [
+            &["--gpu-jobs", "0"][..],
+            &["--gpu-jobs", "x"],
+            &["--gpu-jobs"],
+            &["--jobs", "2"],
+            &["--gpu-jobs", "2", "3"],
+            &["--prebuild", "--gpu-jobs", "2"],
+        ] {
+            assert!(parse_gpu_args(&owned(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    /// The `features = [..]` of the dependency `name` in a manifest (`Some("")` when it has none, `None` when the
+    /// manifest does not depend on it).
+    fn dependency_features(manifest: &str, name: &str) -> Option<String> {
+        let line = manifest.lines().find(|line| {
+            line.strip_prefix(name)
+                .is_some_and(|rest| rest.starts_with(['.', ' ', '=']))
+        })?;
+        Some(
+            line.split_once("features")
+                .and_then(|(_, rest)| rest.split_once('['))
+                .and_then(|(_, rest)| rest.split_once(']'))
+                .map(|(features, _)| features.split_whitespace().collect::<String>())
+                .unwrap_or_default(),
+        )
+    }
+
+    #[test]
+    fn the_packages_of_one_build_call_declare_the_same_features_on_the_gust_crates() {
+        let root = workspace_root().unwrap();
+        let features = |package: &str, name: &str| {
+            let manifest =
+                fs::read_to_string(root.join("examples").join(package).join("Cargo.toml")).unwrap();
+            dependency_features(&manifest, name)
+        };
+        for group in build_groups() {
+            for name in ["gust", "gust-wgpu", "gust-algo"] {
+                let declared: Vec<(&str, String)> = group
+                    .iter()
+                    .filter_map(|package| Some((*package, features(package, name)?)))
+                    .collect();
+                assert!(
+                    declared.windows(2).all(|pair| pair[0].1 == pair[1].1),
+                    "{name}: the packages of one cargo call (features are unified across them) declare different features: {declared:?}; give the odd one an entry of OWN_BUILD"
+                );
+            }
+        }
+        // The groups together are every pinned package, once, and an own build is pinned.
+        let mut all: Vec<&str> = build_groups().concat();
+        all.sort_unstable();
+        let mut pinned: Vec<&str> = packages().collect();
+        pinned.sort_unstable();
+        assert_eq!(all, pinned);
+        for own in OWN_BUILD {
+            assert!(pinned_tests(own).is_some(), "{own} is not pinned");
+        }
+    }
+
+    #[test]
+    fn the_dependency_features_are_read_from_the_manifest_line() {
+        let manifest = "[dependencies]\ngust.workspace = true\ngust-wgpu = { workspace = true, features = [\"slang-runtime\"] }\ngust-algo = { path = \"x\", features = [ \"a\", \"b\" ] }\n";
+        assert_eq!(dependency_features(manifest, "gust"), Some(String::new()));
+        assert_eq!(
+            dependency_features(manifest, "gust-wgpu"),
+            Some("\"slang-runtime\"".to_owned())
+        );
+        assert_eq!(
+            dependency_features(manifest, "gust-algo"),
+            Some("\"a\",\"b\"".to_owned())
+        );
+        assert_eq!(dependency_features(manifest, "gust-macros"), None);
+    }
+
+    #[test]
+    fn no_example_library_has_a_doc_test() {
+        // The step runs test executables only, never rustdoc (which would compile under the lock), so a doc test in
+        // the library of an example (a fenced block in a doc comment) would not be run by it.
+        let root = workspace_root().unwrap();
+        let mut libraries = 0;
+        for package in packages() {
+            let source = root.join("examples").join(package).join("src");
+            if !source.join("lib.rs").is_file() {
+                continue;
+            }
+            libraries += 1;
+            for entry in fs::read_dir(&source).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().is_none_or(|extension| extension != "rs") {
+                    continue;
+                }
+                let text = fs::read_to_string(&path).unwrap();
+                assert!(
+                    !text.contains("```"),
+                    "{} has a fenced block: the doc tests of an example library are not run by check-examples --gpu",
+                    path.display()
+                );
+            }
+        }
+        assert!(libraries > 0, "no example library was found to scan");
+    }
+
+    #[test]
+    fn a_compilation_in_the_listing_is_seen_through_colours() {
+        use crate::gpu_jobs::compiling_line;
+        assert_eq!(compiling_line("   Finished `test` profile in 0.1s\n"), None);
+        assert_eq!(
+            compiling_line(
+                "\u{1b}[1m\u{1b}[92m   Compiling\u{1b}[0m vector-add v0.1.0\n   Finished x\n"
+            ),
+            Some("Compiling vector-add v0.1.0".to_owned())
+        );
     }
 
     #[test]

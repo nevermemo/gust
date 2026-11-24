@@ -10,6 +10,7 @@ mod difftest;
 mod docs;
 mod examples_gpu;
 mod gallery;
+mod gpu_jobs;
 mod json;
 mod lint;
 mod precompiled;

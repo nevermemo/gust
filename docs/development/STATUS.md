@@ -1204,6 +1204,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       the pin check), a GPU test counting the staging retirement in `finish_if_ran`, and re-recording only the
       parameters that changed in the encode form. Radeon 890M only; the RTX 5090 run is owed. Opus review: merge
       after fixes; fixed, re-checked (merge).
+    - m14.s8g (faster gates): the Gpu suite takes `--gpu-jobs <n>` (default 3; 1 keeps the old single call). One
+      `cargo test --no-run` lists gust-compute-wgpu's test executables; the runner starts them longest first, three
+      at a time, each with the package environment cargo would give it (inherited package variables removed; a
+      build script is refused with a pointer to `--gpu-jobs 1`), prints each job's output as one block in job
+      order, also every finished job's block after an early stop, and kills the running jobs on a failure or the
+      900 s job limit. 890M: 302 s with one call, 169, 187 and 209 s with three jobs; 650 passed over 67 on its
+      base, 652 with m14.mapw2. A fix-round run took 260 s while another lane's Unit suite shared the CPU and the
+      lane's `--no-run` built two crates under the lock; not a regression. The RTX 5090 run is owed. Opus review:
+      merge after fixes; fixed, re-checked twice (merge).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

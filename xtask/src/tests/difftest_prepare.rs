@@ -1,8 +1,9 @@
-use std::{ffi::OsString, fs, path::Path};
+use std::{ffi::OsString, fs, path::Path, time::Duration};
 
 use super::{
-    BUILD_ORDER, DifftestStep, Mode, Options, Prepared, ROUTE_VARIABLE, Stage, check_prepared,
-    profile_batch_args, refuse_route_split, source_state, stamp_refusal, steps,
+    BUILD_ORDER, Console, DifftestStep, Judgement, Mode, Options, Part, PartWork, Prepared,
+    ROUTE_VARIABLE, Stage, batch_paths, check_prepared, collect_part, profile_batch_args,
+    refuse_route_split, run_parts, settle, source_state, stamp_refusal, steps,
 };
 use crate::workspace::workspace_root;
 
@@ -211,4 +212,192 @@ fn runs_only_refuses_without_a_stamp_and_with_one_that_differs_from_now() {
         "{error}"
     );
     let _ = fs::remove_dir_all(&target);
+}
+
+fn part(name: &'static str, block: &str, outcome: Result<Vec<&str>, &str>) -> Part {
+    Part {
+        name,
+        block: block.to_owned(),
+        outcome: outcome
+            .map(|problems| Judgement {
+                problems: problems.into_iter().map(str::to_owned).collect(),
+                summary: vec![format!("summary of {name}")],
+            })
+            .map_err(str::to_owned),
+    }
+}
+
+/// How long a part waits for another before the test fails (a hang would be a lock-up of the gate).
+const BOUND: Duration = Duration::from_secs(10);
+
+fn judged(console: &mut Console, text: &str) -> Result<Judgement, String> {
+    console.line(text);
+    Ok(Judgement {
+        problems: Vec::new(),
+        summary: vec![text.to_owned()],
+    })
+}
+
+/// Each part keeps its own judgement, in the order given.
+#[test]
+fn every_part_keeps_its_own_judgement_in_order() {
+    let [batch, short, subgroups] = settle([
+        part("batch", "", Ok(vec![])),
+        part("short", "", Ok(vec!["short: bad"])),
+        part("subgroups", "", Ok(vec![])),
+    ]);
+    assert!(batch.problems.is_empty());
+    assert_eq!(short.problems, ["short: bad"]);
+    assert_eq!(subgroups.summary, ["summary of subgroups"]);
+}
+
+/// A part that could not run is named and the parts after it are judged all the same: the caller turns the problems
+/// into an error only when all three are done.
+#[test]
+fn a_part_that_could_not_run_is_named_and_the_others_are_still_judged() {
+    let [first, second, third] = settle([
+        part("the dev batch", "", Ok(vec![])),
+        part("the short_circuit test", "", Err("no cargo")),
+        part("the dev+subgroups batch", "", Ok(vec!["late problem"])),
+    ]);
+    assert!(first.problems.is_empty());
+    assert_eq!(
+        second.problems,
+        ["the short_circuit test could not run: no cargo"]
+    );
+    assert!(second.summary.is_empty());
+    assert_eq!(third.problems, ["late problem"]);
+}
+
+/// A part's console collects what it prints, in order, whether the part judged or failed, and prints nothing itself.
+#[test]
+fn a_block_console_collects_lines_and_text_in_order_even_for_a_failing_part() {
+    let done = collect_part(
+        "one",
+        Box::new(|console: &mut Console| {
+            console.text("-- header\n");
+            judged(console, "body")
+        }),
+    );
+    assert_eq!(done.block, "-- header\nbody\n");
+    assert!(done.outcome.is_ok());
+    let failed = collect_part(
+        "two",
+        Box::new(|console: &mut Console| {
+            console.line("-- header");
+            Err("could not launch".to_owned())
+        }),
+    );
+    assert_eq!(failed.block, "-- header\n");
+    assert_eq!(failed.outcome.err().as_deref(), Some("could not launch"));
+}
+
+/// The parts end in the reverse order (each waits for the next one to finish, by channel, not by time), yet they are
+/// joined and handed to the printer in the order given, each block whole.
+#[test]
+fn parts_that_end_in_reverse_are_joined_and_printed_in_the_order_given() {
+    let (tell_first, first_done) = std::sync::mpsc::channel::<()>();
+    let (tell_second, second_done) = std::sync::mpsc::channel::<()>();
+    let work: [(&'static str, PartWork<'_>); 3] = [
+        (
+            "one",
+            Box::new(move |console: &mut Console| {
+                second_done
+                    .recv_timeout(BOUND)
+                    .expect("the parts must run at once");
+                judged(console, "block one")
+            }),
+        ),
+        (
+            "two",
+            Box::new(move |console: &mut Console| {
+                first_done
+                    .recv_timeout(BOUND)
+                    .expect("the parts must run at once");
+                let judgement = judged(console, "block two");
+                tell_second.send(()).unwrap();
+                judgement
+            }),
+        ),
+        (
+            "three",
+            Box::new(move |console: &mut Console| {
+                let judgement = judged(console, "block three");
+                tell_first.send(()).unwrap();
+                judgement
+            }),
+        ),
+    ];
+    let mut printed = Vec::new();
+    let parts = run_parts(work, |part| printed.push(part.block.clone()));
+    assert_eq!(printed, ["block one\n", "block two\n", "block three\n"]);
+    assert_eq!(parts.map(|part| part.name), ["one", "two", "three"]);
+}
+
+/// A block is printed while a later part is still running: part two ends only after the printer has seen block one.
+#[test]
+fn a_block_is_printed_while_a_later_part_is_still_running() {
+    let (tell, seen_one) = std::sync::mpsc::channel::<()>();
+    let work: [(&'static str, PartWork<'_>); 2] = [
+        (
+            "one",
+            Box::new(|console: &mut Console| judged(console, "block one")),
+        ),
+        (
+            "two",
+            Box::new(move |console: &mut Console| {
+                seen_one
+                    .recv_timeout(BOUND)
+                    .expect("block one is out before part two ends");
+                judged(console, "block two")
+            }),
+        ),
+    ];
+    let mut printed = Vec::new();
+    let parts = run_parts(work, |part| {
+        printed.push(part.block.clone());
+        if part.name == "one" {
+            tell.send(()).unwrap();
+        }
+    });
+    assert_eq!(printed, ["block one\n", "block two\n"]);
+    assert!(parts.iter().all(|part| part.outcome.is_ok()));
+}
+
+/// A part that panics fails the command (it is a part that could not run) and the others are still reported.
+#[test]
+fn a_panicking_part_is_named_and_the_others_are_still_reported() {
+    let work: [(&'static str, PartWork<'_>); 3] = [
+        (
+            "one",
+            Box::new(|console: &mut Console| judged(console, "block one")),
+        ),
+        (
+            "two",
+            Box::new(|_: &mut Console| panic!("a part went wrong")),
+        ),
+        (
+            "three",
+            Box::new(|console: &mut Console| judged(console, "block three")),
+        ),
+    ];
+    let mut printed = Vec::new();
+    let parts = run_parts(work, |part| printed.push(part.block.clone()));
+    assert_eq!(printed, ["block one\n", "", "block three\n"]);
+    let [one, two, three] = settle(parts);
+    assert!(one.problems.is_empty() && three.problems.is_empty());
+    assert_eq!(two.problems, ["two could not run: its thread panicked"]);
+}
+
+/// The two batches that run at once must not share the harness's state directory (they would share `out/` and
+/// `run.log`) nor a report; the state of the `dev+subgroups` batch lies under the target.
+#[test]
+fn the_two_batches_that_run_at_once_get_different_state_directories_and_reports() {
+    let (target, report) = (Path::new("t"), Path::new("t/r.json"));
+    let [dev, subgroups] = batch_paths(target, report);
+    assert_eq!((dev.profile, subgroups.profile), ("dev", "dev+subgroups"));
+    assert_ne!(dev.state, subgroups.state);
+    assert_ne!(dev.report, subgroups.report);
+    assert!(subgroups.state.starts_with(target));
+    assert_eq!(dev.report, report);
 }

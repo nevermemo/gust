@@ -21,9 +21,12 @@
 //! its test executable, `difftest-run --prepare-exe`), copies each executable to `<target>/difftest-prepared/` (the build of
 //! one profile does not survive the build of the other) and writes a stamp there: HEAD and a hash of the working tree
 //! (read before the builds), the seeds, the record directories' name and the sha256 of each executable; it also builds the
-//! `short_circuit` test. `--runs-only` refuses without a stamp or when any of these differ, and otherwise runs the batches, the
-//! `short_circuit` test and the comparison of the exported records on the prepared executables (`--run-exe`: no cargo, no
-//! build). Both take the grid run (no `--cpu-only`, `random:N` or `--shapes grid,pixel`), and `--runs-only` names the same seeds.
+//! `short_circuit` test. `--runs-only` refuses without a stamp or when any of these differ, and otherwise runs the two
+//! batches and the `short_circuit` test at once (each with its own report and its own state directory; each part's output
+//! is printed as one block, in the order of a serial run, as soon as that part ends), then the comparison of the
+//! exported records, on the prepared executables (`--run-exe`: no cargo build). A whole run keeps the serial order,
+//! because it builds. Both take the grid run (no `--cpu-only`, `random:N` or `--shapes grid,pixel`), and `--runs-only`
+//! names the same seeds.
 //!
 //! `--shapes grid,pixel` (slice mx.p1c) has the harness give every generated program a second kernel, its pixel form,
 //! and compare it with the grid run: bit for bit for integers and booleans, and for `f32` through each shape's interval,
@@ -44,7 +47,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Stdio,
+    process::{Command, ExitStatus, Stdio},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -1633,6 +1636,230 @@ fn build_batches(
     ))
 }
 
+/// Where one part of the Gpu tier writes what it prints: the terminal as it goes (a part that runs alone), or a block
+/// that is printed once every part has finished (parts that run at once: their output must not interleave).
+pub(crate) enum Console {
+    Terminal,
+    Block(String),
+}
+
+impl Console {
+    fn text(&mut self, text: &str) {
+        match self {
+            Self::Terminal => print!("{text}"),
+            Self::Block(block) => block.push_str(text),
+        }
+    }
+
+    fn line(&mut self, text: &str) {
+        self.text(&format!("{text}\n"));
+    }
+
+    /// What a child's stderr goes to: the terminal, or a pipe that the caller hands to [`Console::text`].
+    fn stderr(&self) -> Stdio {
+        match self {
+            Self::Terminal => Stdio::inherit(),
+            Self::Block(_) => Stdio::piped(),
+        }
+    }
+
+    /// Runs `command` to the end with its output going where this console does (in a block: stderr, then stdout).
+    fn run(&mut self, command: &mut Command) -> std::io::Result<ExitStatus> {
+        if matches!(self, Self::Terminal) {
+            return command
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status();
+        }
+        let output = command.output()?;
+        self.text(&String::from_utf8_lossy(&output.stderr));
+        self.text(&String::from_utf8_lossy(&output.stdout));
+        Ok(output.status)
+    }
+}
+
+/// What one part of a `--runs-only` call leaves: the text it printed and what it judged (or why it could not run).
+pub(crate) struct Part {
+    pub(crate) name: &'static str,
+    pub(crate) block: String,
+    pub(crate) outcome: Result<Judgement, String>,
+}
+
+/// Runs `work` on a console that collects its output.
+fn collect_part(name: &'static str, work: PartWork<'_>) -> Part {
+    let mut console = Console::Block(String::new());
+    let outcome = work(&mut console);
+    let block = match console {
+        Console::Block(block) => block,
+        Console::Terminal => String::new(),
+    };
+    Part {
+        name,
+        block,
+        outcome,
+    }
+}
+
+/// The work of one part: it prints through the console it is given.
+type PartWork<'a> = Box<dyn FnOnce(&mut Console) -> Result<Judgement, String> + Send + 'a>;
+
+/// Starts every part at once, then joins them in the order given and calls `joined` with each part as soon as it is
+/// joined, so that the block of an earlier part is out before a later part ends. A part that panics is a part that
+/// could not run; the others are still joined.
+fn run_parts<'a, const N: usize>(
+    parts: [(&'static str, PartWork<'a>); N],
+    mut joined: impl FnMut(&Part),
+) -> [Part; N] {
+    std::thread::scope(|scope| {
+        let handles =
+            parts.map(|(name, work)| (name, scope.spawn(move || collect_part(name, work))));
+        handles.map(|(name, handle)| {
+            let part = handle.join().unwrap_or_else(|_| Part {
+                name,
+                block: String::new(),
+                outcome: Err("its thread panicked".to_owned()),
+            });
+            joined(&part);
+            part
+        })
+    })
+}
+
+/// One judgement for each part, in the order given. A part that could not run is named in a problem of its own; the
+/// parts after it are judged all the same.
+pub(crate) fn settle<const N: usize>(parts: [Part; N]) -> [Judgement; N] {
+    parts.map(|part| {
+        part.outcome.unwrap_or_else(|error| Judgement {
+            problems: vec![format!("{} could not run: {error}", part.name)],
+            summary: Vec::new(),
+        })
+    })
+}
+
+/// The problems of the `dev+subgroups` batch, each tagged with its profile.
+fn tag_profile(judgement: Judgement) -> Judgement {
+    Judgement {
+        problems: judgement
+            .problems
+            .into_iter()
+            .map(|problem| format!("[{SUBGROUPS_PROFILE}] {problem}"))
+            .collect(),
+        summary: judgement.summary,
+    }
+}
+
+/// Compares the exported records of the two batches, adds the differences to `problems` and returns how many record
+/// files the `dev` batch wrote.
+fn compare_records(
+    dev_dir: &Path,
+    subgroups_dir: &Path,
+    problems: &mut Vec<String>,
+) -> Result<usize, String> {
+    let (dev, subgroups) = (record_tree(dev_dir)?, record_tree(subgroups_dir)?);
+    problems.extend(record_problems(&dev, &subgroups));
+    Ok(dev.len())
+}
+
+/// The directory (under the target) that the `dev+subgroups` batch gives the harness as its `--target-dir` when it runs
+/// beside the `dev` batch: both run crates have the same name, so under one target directory they would share their
+/// `out/` and `run.log`.
+const SUBGROUPS_STATE_DIR: &str = "difftest-subgroups-state";
+
+/// What one batch part of `--runs-only` is given besides the executable: the profile, the harness's `--target-dir` (the
+/// directory that holds the run crate's `out/` and `run.log`) and the report.
+struct BatchPaths {
+    profile: &'static str,
+    state: PathBuf,
+    report: PathBuf,
+}
+
+/// The paths of the `dev` and the `dev+subgroups` batch when they run at once: both run crates have the same name, so
+/// the two batches must not share a state directory (they would share `out/` and `run.log`), nor a report.
+fn batch_paths(target: &Path, report_path: &Path) -> [BatchPaths; 2] {
+    [
+        BatchPaths {
+            profile: "dev",
+            state: target.to_path_buf(),
+            report: report_path.to_path_buf(),
+        },
+        BatchPaths {
+            profile: SUBGROUPS_PROFILE,
+            state: target.join(SUBGROUPS_STATE_DIR),
+            report: subgroups_report_path(report_path),
+        },
+    ]
+}
+
+/// The three parts of `--runs-only` at once: the `dev` batch, the `short_circuit` test and the `dev+subgroups` batch, in
+/// that order. The batches run a prepared executable (no build) with their own report and their own state directory
+/// for the harness ([`batch_paths`]); the `short_circuit` test is `cargo test`, which builds its own run crate when that
+/// is stale. The parts write no common file. One line says so first, and each block is printed as its part is joined.
+fn run_together(
+    options: &Options,
+    root: &Path,
+    target: &Path,
+    report_path: &Path,
+    prepared: &Prepared,
+) -> [Part; 3] {
+    let (dev_records, subgroups_records) = prepared.records();
+    let (dev_exe, subgroups_exe) = (prepared.exe("dev"), prepared.exe(SUBGROUPS_PROFILE));
+    let [dev, subgroups] = batch_paths(target, report_path);
+    println!(
+        "-- the dev batch, the short_circuit test and the dev+subgroups batch run at once; each part's output follows when it ends, in this order"
+    );
+    run_parts(
+        [
+            (
+                "the dev batch",
+                Box::new(|console: &mut Console| {
+                    run_batch(
+                        options,
+                        root,
+                        target,
+                        &dev.state,
+                        &dev.report,
+                        dev.profile,
+                        Some(&dev_records),
+                        Some(&dev_exe),
+                        console,
+                    )
+                }) as PartWork<'_>,
+            ),
+            (
+                "the short_circuit test",
+                Box::new(|console: &mut Console| {
+                    console.line("-- short_circuit (GPU, --ignored)");
+                    run_short_circuit(root, target, console).map(|problems| Judgement {
+                        problems,
+                        summary: Vec::new(),
+                    })
+                }),
+            ),
+            (
+                "the dev+subgroups batch",
+                Box::new(|console: &mut Console| {
+                    console.line(&format!(
+                        "-- difftest-run under GUST_PROFILE={SUBGROUPS_PROFILE}"
+                    ));
+                    run_batch(
+                        options,
+                        root,
+                        target,
+                        &subgroups.state,
+                        &subgroups.report,
+                        subgroups.profile,
+                        Some(&subgroups_records),
+                        Some(&subgroups_exe),
+                        console,
+                    )
+                    .map(tag_profile)
+                }),
+            ),
+        ],
+        |part| print!("{}", part.block),
+    )
+}
+
 fn run_steps(
     options: &Options,
     root: &Path,
@@ -1662,8 +1889,6 @@ fn run_steps(
         }
         Stage::Whole | Stage::Prepare => None,
     };
-    // The prepared executable of a profile, when this call runs one instead of building it.
-    let prebuilt = |profile: &str| prepared.as_ref().map(|prepared| prepared.exe(profile));
     // The record directories are named before the first step: the `dev` batch exports into one of them, the
     // `dev+subgroups` batch into the other, and the last step compares the two. The prepared builds wrote theirs.
     let records = match &prepared {
@@ -1674,51 +1899,66 @@ fn run_steps(
     };
     let mut compared = None;
     let mut subgroups_timing = None;
-    for step in all_steps {
-        match step {
-            DifftestStep::Batch => {
-                let export = records.as_ref().map(|dirs| dirs.0.as_path());
-                let judgement = run_batch(
-                    options,
-                    root,
-                    target,
-                    report_path,
-                    "dev",
-                    export,
-                    prebuilt("dev").as_deref(),
-                )?;
-                problems.extend(judgement.problems);
-                summary = judgement.summary;
-            }
-            DifftestStep::ShortCircuitGpu => {
-                println!("-- short_circuit (GPU, --ignored)");
-                problems.extend(run_short_circuit(root, target)?);
-            }
-            DifftestStep::ProfileArtifacts => {
-                let (dev_dir, subgroups_dir) = records
-                    .as_ref()
-                    .ok_or("check-difftest: the profile step has no record directories")?;
-                println!("-- difftest-run under GUST_PROFILE={SUBGROUPS_PROFILE}");
-                let judgement = run_batch(
-                    options,
-                    root,
-                    target,
-                    &subgroups_report_path(report_path),
-                    SUBGROUPS_PROFILE,
-                    Some(subgroups_dir),
-                    prebuilt(SUBGROUPS_PROFILE).as_deref(),
-                )?;
-                // The last summary line of a passing batch is its harness timing (cargo build, cargo run).
-                subgroups_timing = judgement.summary.last().cloned();
-                problems.extend(
-                    judgement
-                        .problems
-                        .into_iter()
-                        .map(|problem| format!("[{SUBGROUPS_PROFILE}] {problem}")),
-                );
-                let (dev, subgroups) = (record_tree(dev_dir)?, record_tree(subgroups_dir)?);
-                problems.extend(record_problems(&dev, &subgroups));
-                compared = Some(dev.len());
+    if let Some(prepared) = &prepared {
+        // `--runs-only`: the three parts run on prepared executables and write no common file, so they run at once.
+        // They are the three steps of the Gpu tier; a fourth step would have to be added to `run_together` too.
+        debug_assert_eq!(all_steps, steps(Mode::Gpu));
+        let [batch, short_circuit, subgroups] =
+            settle(run_together(options, root, target, report_path, prepared));
+        problems.extend(batch.problems);
+        summary = batch.summary;
+        problems.extend(short_circuit.problems);
+        subgroups_timing = subgroups.summary.last().cloned();
+        problems.extend(subgroups.problems);
+        let (dev_dir, subgroups_dir) = prepared.records();
+        match compare_records(&dev_dir, &subgroups_dir, &mut problems) {
+            Ok(count) => compared = Some(count),
+            Err(error) => problems.push(error),
+        }
+    } else {
+        for step in all_steps {
+            match step {
+                DifftestStep::Batch => {
+                    let export = records.as_ref().map(|dirs| dirs.0.as_path());
+                    let judgement = run_batch(
+                        options,
+                        root,
+                        target,
+                        target,
+                        report_path,
+                        "dev",
+                        export,
+                        None,
+                        &mut Console::Terminal,
+                    )?;
+                    problems.extend(judgement.problems);
+                    summary = judgement.summary;
+                }
+                DifftestStep::ShortCircuitGpu => {
+                    println!("-- short_circuit (GPU, --ignored)");
+                    problems.extend(run_short_circuit(root, target, &mut Console::Terminal)?);
+                }
+                DifftestStep::ProfileArtifacts => {
+                    let (dev_dir, subgroups_dir) = records
+                        .as_ref()
+                        .ok_or("check-difftest: the profile step has no record directories")?;
+                    println!("-- difftest-run under GUST_PROFILE={SUBGROUPS_PROFILE}");
+                    let judgement = tag_profile(run_batch(
+                        options,
+                        root,
+                        target,
+                        target,
+                        &subgroups_report_path(report_path),
+                        SUBGROUPS_PROFILE,
+                        Some(subgroups_dir),
+                        None,
+                        &mut Console::Terminal,
+                    )?);
+                    // The last summary line of a passing batch is its harness timing (cargo build, cargo run).
+                    subgroups_timing = judgement.summary.last().cloned();
+                    problems.extend(judgement.problems);
+                    compared = Some(compare_records(dev_dir, subgroups_dir, &mut problems)?);
+                }
             }
         }
     }
@@ -1775,15 +2015,20 @@ fn subgroups_report_path(report_path: &Path) -> PathBuf {
 
 /// One `difftest-run` batch under `profile`, exporting its records to `export` when that is given (a profile other
 /// than `dev` needs it: the arguments that choose the profile are the ones that name the record directory). With
-/// `prebuilt` the harness runs that executable of `--prepare` and builds nothing.
+/// `prebuilt` the harness runs that executable of `--prepare` and builds nothing. `state` is the `--target-dir` of the
+/// harness: the directory that holds the run crate's `out/` and `run.log` of this batch (cargo itself always uses
+/// `target`).
+#[allow(clippy::too_many_arguments)]
 fn run_batch(
     options: &Options,
     root: &Path,
     target: &Path,
+    state: &Path,
     report_path: &Path,
     profile: &str,
     export: Option<&Path>,
     prebuilt: Option<&Path>,
+    console: &mut Console,
 ) -> Result<Judgement, String> {
     // A report left by an earlier run must not be able to pass this one.
     match fs::remove_file(report_path) {
@@ -1804,7 +2049,7 @@ fn run_batch(
         .map_err(|error| format!("check-difftest: {}: {error}", target.display()))?;
     let args = profile_batch_args(
         options,
-        target,
+        state,
         report_path,
         profile,
         export,
@@ -1817,21 +2062,19 @@ fn run_batch(
     if let Some(log) = &route_log {
         remove_stale_log(log)?;
     }
-    println!("-- cargo {}", args.join(" "));
+    console.line(&format!("-- cargo {}", args.join(" ")));
     let mut command = workspace_command("cargo");
     command
         .args(&args)
         .current_dir(root)
         .envs(route)
         .env("CARGO_TARGET_DIR", target)
-        .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stdin(Stdio::null());
     if let Some(log) = &route_log {
         command.env(ROUTE_LOG_VARIABLE, log);
     }
-    let status = command
-        .status()
+    let status = console
+        .run(&mut command)
         .map_err(|error| format!("check-difftest: could not launch cargo: {error}"))?;
     let report = fs::read_to_string(report_path)
         .map_err(|error| format!("{}: {error}", report_path.display()));
@@ -1862,9 +2105,13 @@ fn run_batch(
     Ok(judgement)
 }
 
-fn run_short_circuit(root: &Path, target: &Path) -> Result<Vec<String>, String> {
+fn run_short_circuit(
+    root: &Path,
+    target: &Path,
+    console: &mut Console,
+) -> Result<Vec<String>, String> {
     let args = short_circuit_args();
-    println!("-- cargo {}", args.join(" "));
+    console.line(&format!("-- cargo {}", args.join(" ")));
     let route = route_environment(|name| std::env::var_os(name))?;
     // CARGO_TARGET_DIR is what the test reads to build its run crate beside the batch's (without it the test builds
     // the whole dependency tree again under its own `target/tmp`).
@@ -1879,13 +2126,16 @@ fn run_short_circuit(root: &Path, target: &Path) -> Result<Vec<String>, String> 
         .env("CARGO_TARGET_DIR", target)
         .envs(route)
         .stdin(Stdio::null())
-        .stderr(Stdio::inherit());
+        .stderr(console.stderr());
     if let Some(log) = &route_log {
         command.env(ROUTE_LOG_VARIABLE, log);
     }
     let output = run_capture_in(&mut command, "check-difftest", "cargo")?;
+    // On the terminal cargo's stderr went there live and nothing is left here; in a block it comes first, as it would
+    // have on the terminal, and the test's own output after it.
+    console.text(&String::from_utf8_lossy(&output.stderr));
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    print!("{stdout}");
+    console.text(&stdout);
     let mut problems = short_circuit_problems(&args, &stdout);
     if let Some(log) = &route_log {
         problems.extend(route_log_problems(

@@ -4,6 +4,7 @@ use crate::{
     cpu_target::check_cpu_target,
     difftest::check_difftest,
     docs::docs_check,
+    gpu_jobs::{DEFAULT_GPU_JOBS, run_parallel_gpu_suite},
     lint::lint,
     process::{
         require_command, run_cargo_test_captured_under, run_counted, run_counted_tool_free,
@@ -710,8 +711,12 @@ impl Step {
 /// What `cargo xtask test` was asked to run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TestRequest {
-    /// A whole suite, with or without `--skip-difftest`.
-    Suite { suite: Suite, skip_difftest: bool },
+    /// A whole suite, with or without `--skip-difftest`, and for the Gpu suite with the `--gpu-jobs` it was given.
+    Suite {
+        suite: Suite,
+        skip_difftest: bool,
+        gpu_jobs: Option<usize>,
+    },
     /// One gust-wgpu test target of the Gpu suite under a `GUST_PROFILE` (m8.w2): `--suite Gpu --profile <p> --test <t>`.
     Target { profile: String, target: String },
     /// The pinned gust-wgpu targets and then `gust-algo`, all under a `GUST_PROFILE` (m8.x1): `--suite Gpu --profile <p>`.
@@ -723,7 +728,7 @@ pub(crate) enum TestRequest {
 pub(crate) fn parse_test_args(args: &[String]) -> Result<TestRequest, String> {
     let usage = || {
         format!(
-            "usage: cargo xtask test --suite {} [--skip-difftest]\n       cargo xtask test --suite Gpu --profile <dev|dev+capability> [--test <gust-wgpu test target>]",
+            "usage: cargo xtask test --suite {} [--skip-difftest] [--gpu-jobs <n> (Gpu only)]\n      cargo xtask test --suite Gpu --profile <dev|dev+capability> [--test <gust-wgpu test target>]",
             Suite::names().join("|")
         )
     };
@@ -738,16 +743,6 @@ pub(crate) fn parse_test_args(args: &[String]) -> Result<TestRequest, String> {
         }
     };
     match args {
-        [flag, name] if flag == "--suite" => Ok(TestRequest::Suite {
-            suite: Suite::parse(name)?,
-            skip_difftest: false,
-        }),
-        [flag, name, skip] if flag == "--suite" && skip == "--skip-difftest" => {
-            Ok(TestRequest::Suite {
-                suite: Suite::parse(name)?,
-                skip_difftest: true,
-            })
-        }
         [flag, name, profile_flag, profile, test_flag, target]
             if flag == "--suite" && profile_flag == "--profile" && test_flag == "--test" =>
         {
@@ -766,8 +761,50 @@ pub(crate) fn parse_test_args(args: &[String]) -> Result<TestRequest, String> {
                 profile: profile.clone(),
             })
         }
+        [flag, name, flags @ ..] if flag == "--suite" => {
+            let suite = Suite::parse(name)?;
+            let (skip_difftest, gpu_jobs) = parse_suite_flags(flags).ok_or_else(usage)??;
+            if gpu_jobs.is_some() && suite != Suite::Gpu {
+                return Err(format!(
+                    "--gpu-jobs sets how many test binaries of the Gpu suite run at a time and exists for --suite Gpu only, not {}",
+                    suite.name()
+                ));
+            }
+            Ok(TestRequest::Suite {
+                suite,
+                skip_difftest,
+                gpu_jobs,
+            })
+        }
         _ => Err(usage()),
     }
+}
+
+/// The flags that follow `--suite <name>` in the whole-suite form, in any order and each once: `--skip-difftest` and
+/// `--gpu-jobs <n>`. `None` is a flag it does not know, a repeated one or a missing value (the usage error); the inner
+/// error is a value that is not a number of at least 1.
+fn parse_suite_flags(flags: &[String]) -> Option<Result<(bool, Option<usize>), String>> {
+    let mut skip_difftest = false;
+    let mut gpu_jobs = None;
+    let mut rest = flags.iter();
+    while let Some(flag) = rest.next() {
+        match flag.as_str() {
+            "--skip-difftest" if !skip_difftest => skip_difftest = true,
+            "--gpu-jobs" if gpu_jobs.is_none() => {
+                let value = rest.next()?;
+                match value.parse::<usize>() {
+                    Ok(count) if count >= 1 => gpu_jobs = Some(count),
+                    _ => {
+                        return Some(Err(format!(
+                            "--gpu-jobs takes a whole number of at least 1, not `{value}`"
+                        )));
+                    }
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(Ok((skip_difftest, gpu_jobs)))
 }
 
 /// `cargo xtask test --suite <Unit|Cpu|Slangc|Spirv|Reflect|Gpu|Full> [--skip-difftest]`, or
@@ -781,7 +818,8 @@ pub(crate) fn test_command(args: &[String]) -> Result<(), String> {
         TestRequest::Suite {
             suite,
             skip_difftest,
-        } => run_suite(suite, skip_difftest),
+            gpu_jobs,
+        } => run_suite(suite, skip_difftest, gpu_jobs.unwrap_or(DEFAULT_GPU_JOBS)),
         TestRequest::Target { profile, target } => run_profile_target(&profile, &target),
         TestRequest::Profile { profile } => run_profile_suite(&profile),
     }
@@ -855,7 +893,19 @@ pub(crate) fn plan_suite(
     Ok((run, skipped))
 }
 
-fn run_suite(suite: Suite, skip_difftest: bool) -> Result<(), String> {
+/// The step [`Step::GpuSuite`] as one `cargo test` call (`gpu_jobs` of 1: exactly [`GPU_SUITE_CALL`]) or as its test
+/// binaries and doc tests, `gpu_jobs` at a time ([`run_parallel_gpu_suite`]); every other step runs as it is.
+fn run_step(step: Step, gpu_jobs: usize) -> Result<(), String> {
+    if step == Step::GpuSuite && gpu_jobs > 1 {
+        println!(
+            "   the test binaries and the doc tests, {gpu_jobs} at a time (--gpu-jobs 1: one cargo call)"
+        );
+        return run_parallel_gpu_suite(&workspace_root()?, gpu_jobs);
+    }
+    step.run()
+}
+
+fn run_suite(suite: Suite, skip_difftest: bool, gpu_jobs: usize) -> Result<(), String> {
     let name = suite.name();
     let (steps, skipped) = plan_suite(suite, skip_difftest)?;
     println!("== suite {name}");
@@ -869,7 +919,7 @@ fn run_suite(suite: Suite, skip_difftest: bool) -> Result<(), String> {
     }
     for step in steps {
         println!("-- {}", step.label());
-        step.run()
+        run_step(step, gpu_jobs)
             .map_err(|error| format!("suite {name} failed at `{}`: {error}", step.label()))?;
     }
     if skipped.is_empty() {

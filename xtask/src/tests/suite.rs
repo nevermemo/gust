@@ -2,6 +2,10 @@ use super::{
     DIFFTEST_FMT, DIFFTEST_UNIT_STEPS, NamedTests, Step, Suite, TestRequest, parse_test_args,
     plan_suite, test_command,
 };
+use crate::gpu_jobs::{
+    Job, JobOutput, block, judge, library_path, package_of, plan_jobs, run_in_order,
+    test_executables,
+};
 use crate::{
     checks::{CPU_TESTS, GPU_SEMANTICS_TESTS, REFLECTION_TESTS},
     cpu_target::{Dirs, all_calls},
@@ -501,7 +505,8 @@ fn skip_difftest_leaves_out_the_batch_of_the_gpu_suite_and_nothing_else() {
         .unwrap(),
         TestRequest::Suite {
             suite: Suite::Gpu,
-            skip_difftest: true
+            skip_difftest: true,
+            gpu_jobs: None
         }
     );
 }
@@ -1402,14 +1407,16 @@ fn the_profile_argument_is_parsed_checked_and_only_for_the_gpu_suite() {
         parse_test_args(&strings(&["--suite", "Unit", "--skip-difftest"])),
         Ok(TestRequest::Suite {
             suite: Suite::Unit,
-            skip_difftest: true
+            skip_difftest: true,
+            gpu_jobs: None
         })
     );
     assert_eq!(
         parse_test_args(&strings(&["--suite", "Gpu"])),
         Ok(TestRequest::Suite {
             suite: Suite::Gpu,
-            skip_difftest: false
+            skip_difftest: false,
+            gpu_jobs: None
         })
     );
     // Another suite: refused, naming the suite.
@@ -2194,4 +2201,385 @@ fn doc_test_skip_paths_name_items_of_the_crate() {
             "`{stale}` must not name an item"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The parallel run of the Gpu suite's gust-compute-wgpu call (m14.s8g): the pure parts. No adapter is opened.
+
+/// The `--gpu-jobs` flag: any order with `--skip-difftest`, a count of at least 1, refused for a suite other than Gpu
+/// and without a second value, and refused by name when the value is not a count.
+#[test]
+fn the_gpu_jobs_flag_is_parsed_and_only_for_the_gpu_suite() {
+    let request = |args: &[&str]| parse_test_args(&strings(args));
+    let gpu = |skip_difftest, gpu_jobs| {
+        Ok(TestRequest::Suite {
+            suite: Suite::Gpu,
+            skip_difftest,
+            gpu_jobs,
+        })
+    };
+    assert_eq!(
+        request(&["--suite", "Gpu", "--gpu-jobs", "3"]),
+        gpu(false, Some(3))
+    );
+    assert_eq!(
+        request(&["--suite", "Gpu", "--gpu-jobs", "1"]),
+        gpu(false, Some(1))
+    );
+    assert_eq!(
+        request(&["--suite", "Gpu", "--skip-difftest", "--gpu-jobs", "2"]),
+        gpu(true, Some(2))
+    );
+    assert_eq!(
+        request(&["--suite", "Gpu", "--gpu-jobs", "2", "--skip-difftest"]),
+        gpu(true, Some(2))
+    );
+    assert_eq!(
+        request(&["--suite", "gpu", "--skip-difftest"]),
+        gpu(true, None)
+    );
+    // Another suite: refused, naming the suite, with or without the other flag.
+    for args in [
+        &["--suite", "Unit", "--gpu-jobs", "2"][..],
+        &["--suite", "Slangc", "--skip-difftest", "--gpu-jobs", "2"][..],
+    ] {
+        let error = request(args).unwrap_err();
+        assert!(error.contains("--suite Gpu only, not"), "{args:?}: {error}");
+    }
+    // A value that is not a count of at least 1 is named.
+    for value in ["0", "-1", "two", "", "1.5"] {
+        let error = request(&["--suite", "Gpu", "--gpu-jobs", value]).unwrap_err();
+        assert!(
+            error.contains("--gpu-jobs") && error.contains("at least 1"),
+            "{value}: {error}"
+        );
+    }
+    // A missing value, a repeated flag and an unknown flag are the usage error, which names the flag.
+    for args in [
+        &["--suite", "Gpu", "--gpu-jobs"][..],
+        &["--suite", "Gpu", "--gpu-jobs", "2", "--gpu-jobs", "3"][..],
+        &["--suite", "Gpu", "--skip-difftest", "--skip-difftest"][..],
+        &["--suite", "Gpu", "--jobs", "2"][..],
+        &["--suite", "Gpu", "--profile", "dev", "--gpu-jobs", "2"][..],
+    ] {
+        let error = request(args).unwrap_err();
+        assert!(
+            error.contains("usage:") && error.contains("--gpu-jobs"),
+            "{args:?}: {error}"
+        );
+    }
+}
+
+/// One line of `cargo ... --message-format=json` for a `compiler-artifact`.
+fn artifact(
+    manifest: &str,
+    kind: &str,
+    name: &str,
+    source: &str,
+    executable: Option<&str>,
+    test: bool,
+) -> String {
+    let executable = executable.map_or("null".to_owned(), |path| format!("\"{path}\""));
+    format!(
+        "{{\"reason\":\"compiler-artifact\",\"package_id\":\"x\",\"manifest_path\":\"{manifest}\",\"target\":{{\"kind\":[\"{kind}\"],\"name\":\"{name}\",\"src_path\":\"{source}\"}},\"profile\":{{\"opt_level\":\"0\",\"test\":{test}}},\"executable\":{executable},\"fresh\":true}}"
+    )
+}
+
+const PACKAGE_DIR: &str = "C:/work/crates/wgpu";
+const PACKAGE_MANIFEST: &str = "C:/work/crates/wgpu/Cargo.toml";
+
+fn cargo_output() -> String {
+    [
+        // Cargo's order of completion is not its run order; the library's own build is not a test build.
+        artifact(
+            PACKAGE_MANIFEST,
+            "test",
+            "zeta",
+            "C:/work/crates/wgpu/tests/zeta.rs",
+            Some("C:/work/target/debug/deps/zeta-1.exe"),
+            true,
+        ),
+        artifact(
+            PACKAGE_MANIFEST,
+            "lib",
+            "gust_wgpu",
+            "C:/work/crates/wgpu/src/lib.rs",
+            None,
+            false,
+        ),
+        artifact(
+            PACKAGE_MANIFEST,
+            "test",
+            "alpha",
+            "C:/work/crates/wgpu/tests/alpha.rs",
+            Some("C:/work/target/debug/deps/alpha-2.exe"),
+            true,
+        ),
+        // Another package's test build, a build script and a non-JSON line are not ours.
+        artifact(
+            "C:/work/crates/other/Cargo.toml",
+            "test",
+            "beta",
+            "C:/work/crates/other/tests/beta.rs",
+            Some("C:/work/target/debug/deps/beta-3.exe"),
+            true,
+        ),
+        artifact(
+            PACKAGE_MANIFEST,
+            "custom-build",
+            "build-script-build",
+            "C:/work/crates/wgpu/build.rs",
+            Some("C:/work/target/debug/build/b.exe"),
+            false,
+        ),
+        "   Finished `test` profile [unoptimized + debuginfo] target(s) in 0.1s".to_owned(),
+        "{\"reason\":\"build-finished\",\"success\":true}".to_owned(),
+        artifact(
+            PACKAGE_MANIFEST,
+            "lib",
+            "gust_wgpu",
+            "C:/work/crates/wgpu/src/lib.rs",
+            Some("C:/work/target/debug/deps/gust_wgpu-4.exe"),
+            true,
+        ),
+        // The same executable named twice counts once.
+        artifact(
+            PACKAGE_MANIFEST,
+            "test",
+            "alpha",
+            "C:/work/crates/wgpu/tests/alpha.rs",
+            Some("C:/work/target/debug/deps/alpha-2.exe"),
+            true,
+        ),
+    ]
+    .join("\n")
+}
+
+/// The executables are those of the package's test builds, once each, in cargo's order: the unit tests, then the
+/// integration targets by name; the doc tests are the last job. A header names the source like cargo's `Running` line.
+#[test]
+fn the_test_executables_are_read_from_cargos_json_in_cargos_order() {
+    let found = test_executables(&cargo_output(), Path::new(PACKAGE_DIR)).unwrap();
+    let names: Vec<&str> = found
+        .iter()
+        .map(|executable| executable.name.as_str())
+        .collect();
+    assert_eq!(names, ["gust_wgpu", "alpha", "zeta"]);
+    assert_eq!(
+        found[0].header,
+        "     Running unittests src/lib.rs (C:/work/target/debug/deps/gust_wgpu-4.exe)"
+    );
+    assert_eq!(
+        found[1].header,
+        "     Running tests/alpha.rs (C:/work/target/debug/deps/alpha-2.exe)"
+    );
+    assert_eq!(
+        found[2].path,
+        Path::new("C:/work/target/debug/deps/zeta-1.exe")
+    );
+    let jobs = plan_jobs(found);
+    assert_eq!(jobs.len(), 4);
+    assert_eq!(jobs[3], Job::Doc);
+    assert_eq!(jobs[3].header(), "   Doc-tests gust_wgpu");
+    // No executable at all is an error, so a changed format cannot make the suite a run of nothing.
+    let error = test_executables(
+        "{\"reason\":\"build-finished\"}\nnot json",
+        Path::new(PACKAGE_DIR),
+    )
+    .unwrap_err();
+    assert!(error.contains("no test executable"), "{error}");
+    let error = test_executables(&cargo_output(), Path::new("C:/elsewhere")).unwrap_err();
+    assert!(error.contains("no test executable"), "{error}");
+}
+
+const METADATA: &str = r#"{"packages":[
+  {"name":"other","version":"9.9.9","manifest_path":"C:/work/crates/other/Cargo.toml"},
+  {"name":"gust-compute-wgpu","version":"1.2.3-rc.1+build.5","authors":["A <a@x>","B"],"description":"d",
+   "homepage":null,"repository":"https://example.test/r","license":"MIT","license_file":null,"rust_version":"1.90",
+   "readme":"README.md","manifest_path":"C:/work/crates/wgpu/Cargo.toml"}]}"#;
+
+/// The environment of a test run is read from `cargo metadata`: the directory, every `CARGO_PKG_*` variable (empty when
+/// the manifest has no value, as in cargo) and the primary-package marker.
+#[test]
+fn the_package_environment_comes_from_cargo_metadata() {
+    let package = package_of(METADATA, "gust-compute-wgpu").unwrap();
+    assert_eq!(package.manifest_dir, Path::new(PACKAGE_DIR));
+    let value = |name: &str| {
+        package
+            .environment
+            .iter()
+            .find_map(|(key, value)| (*key == name).then_some(value.as_str()))
+            .unwrap_or_else(|| panic!("{name} is not set"))
+    };
+    assert_eq!(value("CARGO_MANIFEST_DIR"), PACKAGE_DIR);
+    assert_eq!(value("CARGO_PKG_NAME"), "gust-compute-wgpu");
+    assert_eq!(value("CARGO_PKG_VERSION"), "1.2.3-rc.1+build.5");
+    assert_eq!(
+        [
+            value("CARGO_PKG_VERSION_MAJOR"),
+            value("CARGO_PKG_VERSION_MINOR"),
+            value("CARGO_PKG_VERSION_PATCH"),
+            value("CARGO_PKG_VERSION_PRE")
+        ],
+        ["1", "2", "3", "rc.1"]
+    );
+    assert_eq!(value("CARGO_PKG_AUTHORS"), "A <a@x>:B");
+    assert_eq!(value("CARGO_PKG_HOMEPAGE"), "");
+    assert_eq!(value("CARGO_PKG_LICENSE_FILE"), "");
+    assert_eq!(value("CARGO_PKG_RUST_VERSION"), "1.90");
+    assert_eq!(value("CARGO_PKG_README"), "README.md");
+    assert_eq!(value("CARGO_PRIMARY_PACKAGE"), "1");
+    let error = package_of(METADATA, "missing").unwrap_err();
+    assert!(error.contains("no package `missing`"), "{error}");
+    assert!(package_of("{", "x").is_err());
+}
+
+/// The executable's `deps` directory and its parent go in front of the existing `PATH`.
+#[test]
+fn the_library_path_puts_the_deps_directory_and_its_parent_first() {
+    let existing = std::env::join_paths(["first", "second"]).unwrap();
+    let joined = library_path(Path::new("target/debug/deps/t-1.exe"), Some(existing)).unwrap();
+    let folders: Vec<_> = std::env::split_paths(&joined).collect();
+    assert_eq!(
+        folders,
+        [
+            Path::new("target/debug/deps"),
+            Path::new("target/debug"),
+            Path::new("first"),
+            Path::new("second")
+        ]
+    );
+    // No existing PATH: the two folders alone. No parent directories: nothing to add.
+    let alone = library_path(Path::new("target/debug/deps/t-1.exe"), None).unwrap();
+    assert_eq!(std::env::split_paths(&alone).count(), 3);
+    assert_eq!(library_path(Path::new("t.exe"), None), None);
+}
+
+fn finished(success: bool, stdout: &str, stderr: &str) -> JobOutput {
+    JobOutput {
+        success,
+        status: if success { "exit 0" } else { "exit 101" }.to_owned(),
+        stdout: stdout.to_owned(),
+        stderr: stderr.to_owned(),
+    }
+}
+
+/// A block is the header, the whole standard output and then standard error, each ending in a newline, so two blocks
+/// never run together; the judged text is the headers and the standard outputs of the jobs that ran, in job order, and
+/// a failure names every failing binary and the jobs that never started.
+#[test]
+fn the_output_of_the_jobs_is_assembled_in_job_order_and_a_failure_names_the_binary() {
+    let jobs = plan_jobs(test_executables(&cargo_output(), Path::new(PACKAGE_DIR)).unwrap());
+    let ok = |text: &str| finished(true, text, "");
+    assert_eq!(
+        block(
+            &jobs[1],
+            &finished(true, "test result: ok. 2 passed", "warning\n")
+        ),
+        format!("{}\ntest result: ok. 2 passed\nwarning\n", jobs[1].header())
+    );
+    let results = vec![
+        Some(ok("test result: ok. 1 passed; 0 failed; 0 ignored\n")),
+        Some(ok("test result: ok. 2 passed; 0 failed; 0 ignored")),
+        Some(ok("test result: ok. 3 passed; 0 failed; 0 ignored\n")),
+        Some(ok("test result: ok. 4 passed; 0 failed; 0 ignored\n")),
+    ];
+    let counted = judge(&jobs, &results).unwrap();
+    let headers: Vec<_> = counted
+        .lines()
+        .filter(|line| line.trim_start().starts_with("Running") || line.contains("Doc-tests"))
+        .collect();
+    assert_eq!(headers.len(), 4);
+    // The judge of the single call reads the concatenation: one line per job, the sum of the passed tests.
+    let totals = sum_test_results(&counted);
+    assert_eq!((totals.summaries, totals.passed, totals.failed), (4, 10, 0));
+    // A failure names the binary and its exit; later jobs that never started are counted.
+    let mut failed = results.clone();
+    failed[1] = Some(finished(
+        false,
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored\n",
+        "",
+    ));
+    failed[3] = None;
+    let error = judge(&jobs, &failed).unwrap_err();
+    assert!(
+        error.contains("tests/alpha.rs")
+            && error.contains("exit 101")
+            && error.contains("1 job(s) were not started"),
+        "{error}"
+    );
+    assert!(
+        !error.contains("zeta") && !error.contains("Doc-tests"),
+        "{error}"
+    );
+}
+
+/// The scheduler runs at most `width` jobs at a time, hands the results to `emit` in job order whatever the order of
+/// completion, and starts no job after a failure.
+#[test]
+fn the_scheduler_keeps_the_width_and_the_order_and_stops_after_a_failure() {
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        thread::sleep,
+        time::Duration,
+    };
+    let jobs: Vec<u64> = (0..8).collect();
+    let running = AtomicUsize::new(0);
+    let widest = AtomicUsize::new(0);
+    let mut emitted = Vec::new();
+    // Earlier jobs take longer, so completion order is the reverse of job order.
+    let results = run_in_order(
+        &jobs,
+        3,
+        &|job: &u64| {
+            let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+            widest.fetch_max(now, Ordering::SeqCst);
+            sleep(Duration::from_millis(5 * (8 - job)));
+            running.fetch_sub(1, Ordering::SeqCst);
+            *job * 10
+        },
+        &|_: &u64| false,
+        |index, result| emitted.push((index, *result)),
+    );
+    assert_eq!(
+        emitted,
+        (0..8).map(|n| (n, n as u64 * 10)).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        results,
+        (0..8).map(|n| Some(n as u64 * 10)).collect::<Vec<_>>()
+    );
+    assert!((1..=3).contains(&widest.load(Ordering::SeqCst)));
+    // One at a time: job 2 fails, jobs 3 and later never start.
+    let started = AtomicUsize::new(0);
+    let mut seen = Vec::new();
+    let results = run_in_order(
+        &jobs,
+        1,
+        &|job: &u64| {
+            started.fetch_add(1, Ordering::SeqCst);
+            *job
+        },
+        &|result: &u64| *result == 2,
+        |index, _| seen.push(index),
+    );
+    assert_eq!(started.load(Ordering::SeqCst), 3);
+    assert_eq!(seen, [0, 1, 2]);
+    assert_eq!(results[..3], [Some(0), Some(1), Some(2)]);
+    assert!(results[3..].iter().all(Option::is_none));
+    // No job at all, and a width above the number of jobs, are fine.
+    assert!(
+        run_in_order(
+            &[] as &[u64],
+            4,
+            &|job: &u64| *job,
+            &|_: &u64| false,
+            |_, _| {}
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        run_in_order(&[7u64], 9, &|job: &u64| *job, &|_: &u64| false, |_, _| {}),
+        [Some(7)]
+    );
 }

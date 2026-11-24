@@ -158,14 +158,17 @@ fn the_spawned_child_has_no_rustflags_variable_but_the_cfg_on_the_cfg_steps() {
         ]
     );
     let os = |text: &str| OsString::from(text);
-    // Every step, cfg or not, removes the three rustflags variables and `CARGO_TERM_QUIET` (absent, not inherited) ...
+    // Every step, cfg or not, removes the three rustflags variables (absent, not inherited) and sets cargo's quiet and
+    // verbose terminal settings to false (which overrides a cargo config file too) ...
     let removed = |name: &str| (os(name), None);
+    let off = |name: &str| (os(name), Some(os("false")));
     // ... and builds the workspace under the `dev` profile whatever the parent has (R4.2).
     let profile = (os("GUST_PROFILE"), Some(os("dev")));
     let without_cfg = vec![
         removed("CARGO_BUILD_RUSTFLAGS"),
         removed("CARGO_ENCODED_RUSTFLAGS"),
-        removed("CARGO_TERM_QUIET"),
+        off("CARGO_TERM_QUIET"),
+        off("CARGO_TERM_VERBOSE"),
         profile.clone(),
         removed("RUSTFLAGS"),
     ];
@@ -176,7 +179,8 @@ fn the_spawned_child_has_no_rustflags_variable_but_the_cfg_on_the_cfg_steps() {
             os("CARGO_ENCODED_RUSTFLAGS"),
             Some(os("--cfg\u{1f}gust_dual")),
         ),
-        removed("CARGO_TERM_QUIET"),
+        off("CARGO_TERM_QUIET"),
+        off("CARGO_TERM_VERBOSE"),
         profile,
         removed("RUSTFLAGS"),
     ];
@@ -190,7 +194,7 @@ fn the_spawned_child_has_no_rustflags_variable_but_the_cfg_on_the_cfg_steps() {
         if step.id == "E4-routed" {
             // The route variable of E4 is the one addition, and it sorts between the profile and RUSTFLAGS.
             let mut routed = without_cfg.clone();
-            routed.insert(4, (os("GUST_ROUTE__kernel_lib__physics"), Some(os("cpu"))));
+            routed.insert(5, (os("GUST_ROUTE__kernel_lib__physics"), Some(os("cpu"))));
             assert_eq!(envs, routed, "{}", step.id);
             continue;
         }
@@ -1364,19 +1368,26 @@ fn run_status_lines_are_the_compiling_lines_then_the_finished_line() {
 fn warm_build_has_a_finished_line_and_no_compiling_line() {
     assert!(compile_lines(WARM_STDERR).is_empty());
     assert_eq!(finished_lines(WARM_STDERR).len(), 1);
-    assert!(missing_finished_problem("run-x", WARM_STDERR).is_none());
+    assert!(missing_finished_problem("run-x", &run_status_lines(WARM_STDERR)).is_none());
+}
+
+#[test]
+fn coloured_stderr_with_a_finished_line_is_accepted() {
+    let coloured = "\u{1b}[1m\u{1b}[92m    Finished\u{1b}[0m `dev` profile in 1.00s\n";
+    assert!(missing_finished_problem("run-x", &run_status_lines(coloured)).is_none());
 }
 
 #[test]
 fn stderr_without_a_finished_line_is_refused() {
+    let lines = run_status_lines("     Running `target/dual/debug/vector-add`\n");
     let problem =
-        missing_finished_problem("run-x", "     Running `target/dual/debug/vector-add`\n")
-            .expect("no Finished line must be refused");
+        missing_finished_problem("run-x", &lines).expect("no Finished line must be refused");
     assert!(
         problem.contains("run-x") && problem.contains("no `Finished` line"),
         "{problem}"
     );
-    assert!(missing_finished_problem("run-x", "").is_some());
+    assert!(!problem.contains("CARGO_TERM_QUIET set?"), "{problem}");
+    assert!(missing_finished_problem("run-x", &[]).is_some());
 }
 
 #[test]
@@ -1394,7 +1405,7 @@ fn lines_after_cargos_running_line_are_the_examples_own() {
     assert!(
         missing_finished_problem(
             "run-x",
-            "     Running `target/dual/debug/vector-add`\nFinished the frame\n"
+            &run_status_lines("     Running `target/dual/debug/vector-add`\nFinished the frame\n")
         )
         .is_some()
     );

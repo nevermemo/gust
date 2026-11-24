@@ -1199,7 +1199,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "check-cpu: `cargo test --locked` of the examples with a CPU twin (vector-add, polynomial, signal-pipeline, particle-step, typed-pipeline, atomic-counter, staged-graph, component-pool, map-chain, texture-threshold, shape-bench, hash-rng, polar-transform, buffer-handoff, mc-histogram, field-relax, cell-bins, walker-steer, walker-transport, walker-life, event-drain, task-basics, batch-basics), running the non-ignored twin tests against the host references (a package that runs no test fails, and each package's twin tests and derivation-domain guard must be reported `ok` by name); needs neither slangc nor a GPU; a step of the Unit suite"
         }
         "check-dual" => {
-            "check-dual: the dual test build (`--cfg gust_dual`, D26) and its cross-crate proof, with one target directory per build state (<target>/dual with the cfg, <target>/dual-nocfg without it, <target>/dual-native for E5): tests/dual is formatted (`cargo fmt --check`) and passes clippy with -D warnings (the root fmt and CI clippy do not reach that workspace), as do vector-add and polynomial with the cfg (CI's clippy compiles their dual code out); the workspace builds with the cfg; in tests/dual a consumer's test (E1) and production binary (E3) each fail with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib` without the cfg, and with it (E2) the test passes; a production binary that dispatches a module routed to the CPU (E4: `GUST_ROUTE__kernel_lib__physics=cpu`, no cfg) builds and runs on `gust::cpu::CpuDevice`, and the same source without the route fails with exactly one E0277 (E4-control). Without `--check-only` it then runs `cargo run` of vector-add and polynomial with the cfg, which must print the `CPU twin: matches (N elements, max ULP k)` line (polynomial also the twin's time beside run_cpu's), and of vector-add without the cfg, which must not mention the twin; that part needs a Vulkan GPU, and `check-full` runs it; `--check-only` builds those three binaries in the same states first, so `--runs-only` (only the three runs, not combinable with `--check-only`) compiles nothing and prints any `Compiling` line it does see, then cargo's `Finished` line. Refuses to run while RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS or CARGO_BUILD_RUSTFLAGS is set (it delivers the cfg through CARGO_ENCODED_RUSTFLAGS). `--check-only` is the CPU-only mode CI runs; it needs cargo only"
+            "check-dual: the dual test build (`--cfg gust_dual`, D26) and its cross-crate proof, with one target directory per build state (<target>/dual with the cfg, <target>/dual-nocfg without it, <target>/dual-native for E5): tests/dual is formatted (`cargo fmt --check`) and passes clippy with -D warnings (the root fmt and CI clippy do not reach that workspace), as do vector-add and polynomial with the cfg (CI's clippy compiles their dual code out); the workspace builds with the cfg; in tests/dual a consumer's test (E1) and production binary (E3) each fail with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib` without the cfg, and with it (E2) the test passes; a production binary that dispatches a module routed to the CPU (E4: `GUST_ROUTE__kernel_lib__physics=cpu`, no cfg) builds and runs on `gust::cpu::CpuDevice`, and the same source without the route fails with exactly one E0277 (E4-control). Without `--check-only` it then runs `cargo run` of vector-add and polynomial with the cfg, which must print the `CPU twin: matches (N elements, max ULP k)` line (polynomial also the twin's time beside run_cpu's), and of vector-add without the cfg, which must not mention the twin; that part needs a Vulkan GPU, and `check-full` runs it; `--check-only` builds those three binaries in the same states first, so `--runs-only` (only the three runs, not combinable with `--check-only`) compiles nothing and prints any `Compiling` line it does see, then cargo's `Finished` line; a run whose cargo prints no `Finished` line fails the step (each step sets CARGO_TERM_QUIET and CARGO_TERM_VERBOSE to false). Refuses to run while RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS or CARGO_BUILD_RUSTFLAGS is set (it delivers the cfg through CARGO_ENCODED_RUSTFLAGS). `--check-only` is the CPU-only mode CI runs; it needs cargo only"
         }
         "check-cpu-target" => {
             "check-cpu-target: the production CPU target (D21, D51) on the fixture workspace tests/cpu-target, with cargo only (no slangc, no GPU), in <target>/cpu-target, cpu-target-dual and cpu-target-flip: E-a builds `app` in release under GUST_PROFILE=cpu and runs it (one `CPU target: matches` line per kernel, the `CPU target: map calls match (..)` line of the map case (which includes the parallel map of m7.c) and the `CPU target: par_for calls match (..)` line of the par_for case, each exactly once, the final line); E-b scans that binary for slangc, gust-slang-reflect, wgpu and vulkan (any letter case, with a control string) and reads `cargo tree -e features -p app`; E-c builds and runs it under cpu with --cfg gust_dual; E-d to E-g judge the four refusals on tests/cpu-target/e-*-expected.txt (E-e is the E0080 of gust-wgpu's require_gpu_target); E-h flips the profile cpu, unset, cpu, unset, cpu, unset in one directory; E-i runs cargo test -p kernels under cpu. Stops at the first failing step and names it. The Cpu suite is this command; CI's unit job runs it"
@@ -2063,11 +2063,11 @@ fn run_status_lines(stderr: &str) -> Vec<String> {
     lines
 }
 
-/// The reason to refuse a successful `cargo run` whose standard error has no `Finished` line.
-fn missing_finished_problem(id: &str, stderr: &str) -> Option<String> {
-    finished_lines(&without_colors(stderr)).is_empty().then(|| {
+/// The reason to refuse a successful `cargo run` whose [`run_status_lines`] hold no `Finished` line.
+fn missing_finished_problem(id: &str, status_lines: &[String]) -> Option<String> {
+    (!status_lines.iter().any(|line| line.starts_with("Finished "))).then(|| {
         format!(
-            "check-dual {id}: cargo printed no `Finished` line, so the absence of `Compiling` lines proves nothing; is CARGO_TERM_QUIET set?"
+            "check-dual {id}: cargo printed no `Finished` line, so the absence of `Compiling` lines proves nothing; the step forces cargo's quiet and verbose terminal settings off, so cargo's output format may have changed"
         )
     })
 }
@@ -2218,8 +2218,11 @@ pub(crate) fn dual_command(root: &Path, step: &DualStep) -> Command {
     for name in RUSTFLAGS_VARIABLES {
         command.env_remove(name);
     }
-    // A quiet cargo prints no `Compiling` and no `Finished` line, which the `Runs` steps rely on to show a compile.
-    command.env_remove("CARGO_TERM_QUIET");
+    // A quiet cargo prints no `Compiling` and no `Finished` line, which the `Runs` steps rely on to show a compile, and
+    // a verbose one prints `Running` lines among them. The environment overrides `term.quiet` and `term.verbose` of
+    // any cargo config file.
+    command.env("CARGO_TERM_QUIET", "false");
+    command.env("CARGO_TERM_VERBOSE", "false");
     // The workspace builds under `dev` whatever the parent has (R4.2); a step's own environment, applied next, may
     // still choose another profile (the strict-plus-dual gate of m4.e2 does).
     set_workspace_profile(&mut command);
@@ -2404,10 +2407,12 @@ pub(crate) fn run_dual_step(root: &Path, step: &DualStep) -> Result<(), String> 
             // A compile here, under the adapter's lock, would be invisible otherwise: print cargo's `Compiling` lines,
             // and its `Finished` line to show that cargo ran.
             let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-            for line in run_status_lines(&stderr) {
+            let status_lines = run_status_lines(&stderr);
+            for line in &status_lines {
                 println!("  {line}");
             }
-            if let Some(problem) = missing_finished_problem(id, &stderr) {
+            if let Some(problem) = missing_finished_problem(id, &status_lines) {
+                eprint!("{stderr}");
                 return Err(problem);
             }
             // The whole output of an example is long (the generated Slang); the lines about the twin are the point.

@@ -1262,6 +1262,10 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       The test now selects the body and its split through the manifest's `split_of`, asserts exactly one of each,
       and runs the unchanged layout checks on both. Not closed: nothing automated runs this crate's tests or
       `cargo gust check` on `bench/gust-bench-pre`. Opus review: merge.
+    - Gate t22 (dev `b15fb30b`, Radeon 890M, every check green): the first gate with the fixture goldens outside
+      the lock (57 s) and without building the example binaries ahead (R3 killed: check-artifacts took 203 s and
+      222 s with it, 210 s without, 165 s here). The 890M lock was held 647 s after a 415 s wait behind other holders, the
+      both-lock gallery step 67 s; about 44 minutes wall. Owner rulings D263 to D267 recorded after it.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

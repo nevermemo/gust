@@ -499,4 +499,6 @@ bit-equal at 2^18 walkers). Wall clock per step after 60 warm-up steps, 600 coun
 The pre-registered rule (two signals at 2^20 on the Radeon 890M: median at most 4.0 ms, p95 at most 8.0 ms) failed;
 2^18 fits. The rule is not moved after the miss, and the movement kernel is not tuned toward one adapter. The scale
 knobs are the walker count, the number of signals and the grid size; on the 890M the two-signal sense-and-move kernel
-takes about two thirds of the kernel time at 2^20. Shared machine, not publishable.
+takes about two thirds of the kernel time at 2^20. Shared machine, not publishable. The run did not control which
+variant was created first; on the Radeon 890M the first-created of several variants in one process can run several
+times slower, so the 890M rows may not compare directly (D267).

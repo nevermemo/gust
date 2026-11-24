@@ -1232,6 +1232,17 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       its own kernels keeps its own group, stale executables are refused, each example's run is bounded and each
       group's output prints as one block. 890M, interleaved: 117 s median before, 43 s after; the same 92 test
       names and passed line. The RTX 5090 run is owed. Opus review: merge after fixes; fixed, re-checked (merge).
+    - m14.s2cf (frames in flight, the open items of m14.s2c's review): a frame recorded into a caller's encoder
+      records again only the extent records of the stages whose parameters were set in it or left stale by an
+      earlier such frame, and a frame made by `submit()` clears that list (this narrows m14.s2c's "re-records every
+      parameter"); a hidden counter (`Batch::extent_records`, test support, D111) lets tests see it. A dropped CPU
+      frame whose submission failed after its records ran marks its parameters stale. The ten CPU twin tests are
+      required by `check-cpu`, whose pin check reads a package's `tests/` folder (a renamed test failed it); a GPU test
+      counts the staging retirement. Not closed: in a stream of encoded frames only (Breeze's steady form) the list
+      never empties, so those frames keep re-recording every parameter ever set; a follow-up clears it by the
+      encoder's confirmation (measure first). One early mutation run passed without a recorded cause; the tests in the
+      final tree catch the plausible edits (read, not run). Radeon 890M only; the RTX 5090 run is owed. Opus review:
+      merge after fixes; fixed, re-checked (merge).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -160,8 +160,158 @@ pub(crate) fn verify(mode: VerifyMode, record: bool) -> Result<(), String> {
     verify_with(mode, record, false)
 }
 
-/// [`verify`] with `--skip-web`. Only the Full mode takes it ([`VerifyCommand::parse`] refuses it elsewhere).
+/// What a run leaves out on request: the browser check of the Full mode (`--skip-web`) and the fixture goldens of
+/// `check-artifacts` (`--skip-goldens`). Only the Full mode takes the first ([`VerifyCommand::parse`] refuses it
+/// elsewhere); the second is `check-artifacts` alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RunSkips {
+    pub(crate) web: bool,
+    pub(crate) goldens: bool,
+}
+
+/// [`verify`] with `--skip-web`.
 pub(crate) fn verify_with(mode: VerifyMode, record: bool, skip_web: bool) -> Result<(), String> {
+    verify_run(
+        mode,
+        record,
+        RunSkips {
+            web: skip_web,
+            goldens: false,
+        },
+    )
+}
+
+/// The flag that makes `check-artifacts` compile and validate the fixture goldens only: no example runs, no adapter.
+pub(crate) const GOLDENS_ONLY_FLAG: &str = "--goldens-only";
+
+/// The flag that makes `check-artifacts` run the examples and validate their own SPIR-V files only.
+pub(crate) const SKIP_GOLDENS_FLAG: &str = "--skip-goldens";
+
+/// The name of the left-out half in the closing line of a `--skip-goldens` run (see [`closing_line`]).
+pub(crate) const SKIPPED_GOLDENS: &str = "the fixture goldens of check-artifacts (--skip-goldens)";
+
+/// The name of the left-out half in the closing line of a `--goldens-only` run.
+pub(crate) const SKIPPED_EXAMPLES: &str = "the examples part of check-artifacts (--goldens-only)";
+
+/// The line a `--skip-goldens` run prints where it leaves the goldens out, as `--skip-web` prints its skip.
+pub(crate) fn skipped_goldens_notice() -> String {
+    format!(
+        "check-artifacts: the fixture goldens are SKIPPED on request ({SKIP_GOLDENS_FLAG}); \
+         `cargo xtask check-artifacts {GOLDENS_ONLY_FLAG}` checks them and needs no adapter. \
+         This run is not the full artifact check"
+    )
+}
+
+/// The line a `--goldens-only` run prints at its start: the examples part was not run.
+pub(crate) fn skipped_examples_notice() -> String {
+    format!(
+        "check-artifacts: the examples part is NOT RUN ({GOLDENS_ONLY_FLAG}); \
+         `cargo xtask check-artifacts {SKIP_GOLDENS_FLAG}` runs the examples and needs an adapter. \
+         This run is not the full artifact check"
+    )
+}
+
+/// Which part of `check-artifacts` the command line names. The three parts are told apart by the type, so the adapter
+/// path ([`verify_run`]) can never be handed `--goldens-only`: [`check_artifacts`] sends each part to its own function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArtifactPart {
+    /// Both parts in one call, as `check-artifacts` without a flag and the Full mode do.
+    Both,
+    /// The fixture goldens of [`GOLDEN_SPIRV_SETS`] only (`--goldens-only`).
+    GoldensOnly,
+    /// The examples' runs and the validation of their own `.spv` files only (`--skip-goldens`).
+    SkipGoldens,
+}
+
+impl ArtifactPart {
+    pub(crate) fn parse(args: &[String]) -> Result<Self, String> {
+        match args {
+            [] => Ok(Self::Both),
+            [flag] if flag == GOLDENS_ONLY_FLAG => Ok(Self::GoldensOnly),
+            [flag] if flag == SKIP_GOLDENS_FLAG => Ok(Self::SkipGoldens),
+            _ => Err(format!(
+                "check-artifacts takes no argument, {GOLDENS_ONLY_FLAG} or {SKIP_GOLDENS_FLAG} (not both)"
+            )),
+        }
+    }
+}
+
+/// `cargo xtask check-artifacts [--goldens-only | --skip-goldens]`. The check writes no `.ai/VALIDATION.json` in any
+/// form, so a split run never replaces the record of a full one.
+pub(crate) fn check_artifacts(args: &[String]) -> Result<(), String> {
+    match ArtifactPart::parse(args)? {
+        ArtifactPart::Both => verify_run(VerifyMode::Artifacts, false, RunSkips::default()),
+        ArtifactPart::SkipGoldens => verify_run(
+            VerifyMode::Artifacts,
+            false,
+            RunSkips {
+                web: false,
+                goldens: true,
+            },
+        ),
+        ArtifactPart::GoldensOnly => check_goldens_only(),
+    }
+}
+
+/// The goldens part of `check-artifacts` alone. Its child processes are `slangc` (`-version`, and one compile per
+/// golden entry), `spirv-val` (`--version`, and one validation per file) and `spirv-dis` (the `OpCopyLogical` count of
+/// each file, in `copy_logical_note`), plus the `/?` probes of `require_command`. It runs no cargo call, no
+/// `adapter_info`, no example and no browser, and no code that creates a wgpu instance or device, so it needs no
+/// adapter on any backend. The Slang pin is checked as in `verify_inner`; the reflection helper is not needed (the
+/// goldens are compiled with `slangc` directly) and is not built.
+fn check_goldens_only() -> Result<(), String> {
+    let root = workspace_root()?;
+    require_command("slangc")?;
+    require_command("spirv-val")?;
+    println!("{}", skipped_examples_notice());
+    let mut checks = Vec::new();
+    let mut artifacts = Vec::new();
+    run_checked(&root, &mut checks, "slangc", &["-version"])?;
+    let slangc_output = checks.last().map(printed_text).unwrap_or_default();
+    check_slangc_pin(&slangc_output, &pin_rule(&root)?)?;
+    run_checked(&root, &mut checks, "spirv-val", &["--version"])?;
+    let mut goldens = Vec::new();
+    for (area, stems, expected) in GOLDEN_SPIRV_SETS {
+        goldens.extend(compile_golden_spirv(&root, area, stems, expected)?);
+    }
+    validate_spirv_files(&root, &mut checks, &mut artifacts, goldens)?;
+    println!("{}", closing_line(&[SKIPPED_EXAMPLES.to_owned()]));
+    Ok(())
+}
+
+/// `spirv-val` for Vulkan 1.2 on each file, in order, with the artifact record (name and SHA-256), the `Validated`
+/// line and the `OpCopyLogical` note of each.
+fn validate_spirv_files(
+    root: &Path,
+    checks: &mut Vec<CheckRecord>,
+    artifacts: &mut Vec<ArtifactRecord>,
+    files: Vec<PathBuf>,
+) -> Result<(), String> {
+    for artifact in files {
+        let path = artifact.to_string_lossy().into_owned();
+        run_checked(
+            root,
+            checks,
+            "spirv-val",
+            &["--target-env", "vulkan1.2", &path],
+        )?;
+        let file = artifact
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("<invalid>")
+            .to_owned();
+        let bytes = fs::read(&artifact).map_err(|error| error.to_string())?;
+        artifacts.push(ArtifactRecord {
+            file: file.clone(),
+            sha256: sha256_hex(&bytes),
+        });
+        println!("Validated {file}");
+        println!("  {}", copy_logical_note(&artifact));
+    }
+    Ok(())
+}
+
+fn verify_run(mode: VerifyMode, record: bool, skips: RunSkips) -> Result<(), String> {
     let root = workspace_root()?;
     let started = now_utc();
     // Taken before the checks run: the record names the tree they ran against.
@@ -173,7 +323,7 @@ pub(crate) fn verify_with(mode: VerifyMode, record: bool, skip_web: bool) -> Res
     let result = verify_inner(
         &root,
         mode,
-        skip_web,
+        skips,
         &mut checks,
         &mut artifacts,
         &mut adapter,
@@ -281,12 +431,13 @@ fn run_integration(
 fn verify_inner(
     root: &Path,
     mode: VerifyMode,
-    skip_web: bool,
+    skips: RunSkips,
     checks: &mut Vec<CheckRecord>,
     artifacts: &mut Vec<ArtifactRecord>,
     adapter: &mut Option<AdapterRecord>,
     skipped: &mut Vec<String>,
 ) -> Result<(), String> {
+    let skip_web = skips.web;
     // Before anything else: a missing tool of check-web must not show up after the long steps.
     web_preflight(mode, skip_web, preflight_tools)?;
     // Cheapest checks first; they need only git, and check-ui needs cargo (no slangc, no GPU).
@@ -380,30 +531,16 @@ fn verify_inner(
         // uniform, and the M7 kernels are exported by tests and libraries, so nothing else covers their SPIR-V. A
         // golden of several kernels is compiled one section at a time (shader::golden_sections). Their expected names
         // are kept apart from EXPECTED_SPIRV.
-        for (area, stems, expected) in GOLDEN_SPIRV_SETS {
-            spv.extend(compile_golden_spirv(root, area, stems, expected)?);
+        // `--skip-goldens` leaves them to a `--goldens-only` call (which needs no adapter), says so and records it.
+        if skips.goldens {
+            println!("{}", skipped_goldens_notice());
+            skipped.push(SKIPPED_GOLDENS.to_owned());
+        } else {
+            for (area, stems, expected) in GOLDEN_SPIRV_SETS {
+                spv.extend(compile_golden_spirv(root, area, stems, expected)?);
+            }
         }
-        for artifact in spv {
-            let path = artifact.to_string_lossy().into_owned();
-            run_checked(
-                root,
-                checks,
-                "spirv-val",
-                &["--target-env", "vulkan1.2", &path],
-            )?;
-            let file = artifact
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("<invalid>")
-                .to_owned();
-            let bytes = fs::read(&artifact).map_err(|error| error.to_string())?;
-            artifacts.push(ArtifactRecord {
-                file: file.clone(),
-                sha256: sha256_hex(&bytes),
-            });
-            println!("Validated {file}");
-            println!("  {}", copy_logical_note(&artifact));
-        }
+        validate_spirv_files(root, checks, artifacts, spv)?;
     }
     // Last: the slowest checks, and the ones that need the most (a registry download, Chrome with a WebGPU adapter).
     for step in integration_checks(mode, skip_web) {

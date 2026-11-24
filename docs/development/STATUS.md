@@ -1266,6 +1266,16 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       the lock (57 s) and without building the example binaries ahead (R3 killed: check-artifacts took 203 s and
       222 s with it, 210 s without, 165 s here). The 890M lock was held 647 s after a 415 s wait behind other holders, the
       both-lock gallery step 67 s; about 44 minutes wall. Owner rulings D263 to D267 recorded after it.
+    - m14.uigroup (faster gates): check-ui runs two or more fixtures that share an env.txt in one `cargo check
+      --keep-going` call, as it already did for the fixtures without one; fixtures with
+      features or a `build-error:` expectation keep their own call. 281 fixtures: 240 in the shared call, 15 own
+      calls (groups of 23, 3 and 3; 5 single-env fixtures; 7 `build-error:` fixtures). Every call carries a label,
+      so a failure names its call. Warm check-ui 89 s before, 49 s after. The verdict set over all fixtures is the
+      same as dev's. A mutation (one fixture's expected line changed) failed and named only that fixture, but it
+      ran before a last edit of `ui.rs`; the final tree passed check-ui and was not mutated again. Not closed:
+      README.md says each set of variables shares one call, but a set of one fixture runs alone; one doc line in
+      `ui_stream.rs` is 129 columns wide.
+      Opus review: merge after fixes; fixed, re-checked (merge).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -7,9 +7,10 @@ use std::{
 use super::{
     CHECK_FULL_SKIP, CHECK_GALLERY_SKIP, ENTRIES, LISTINGS, Listing, Parts, TWIN_RULES, WEB_HELLO,
     adapter_name, anchor_names, anchored_region, browser_skipped_line, check_entry_tests,
-    check_listings, folder_holds, lf_line_ends, listing_matches, no_slang_environment,
-    output_has_line, parse_arguments, required_files, shared_folder_problems, slang_home_problem,
-    slangc_cannot_be_found, tail, tree_difference, tree_has_slang_runtime, workspace_members,
+    check_listings, copy_gallery, folder_holds, lf_line_ends, listing_matches,
+    no_slang_environment, output_has_line, parse_arguments, require_no_artifacts, required_files,
+    shared_folder_problems, slang_home_problem, slangc_cannot_be_found, tail, tree_difference,
+    tree_has_slang_runtime, workspace_members,
 };
 use crate::{
     precompiled::{StripReport, child_environment, directory_has_slang_tool, slang_free_problems},
@@ -1232,4 +1233,78 @@ fn the_rules_match_the_twin_tests_the_gallery_sources_declare() {
         let ignored = text.matches("#[ignore").count();
         assert_eq!(ignored, rule.ignored, "{}: ignored attributes", rule.dir);
     }
+}
+
+#[test]
+fn the_scratch_copy_leaves_out_artifacts_and_targets_and_sees_the_repository_crates_and_cargo_config()
+ {
+    let root = scratch("copy-root");
+    let source = root.join("gallery");
+    let entry = source.join("one");
+    fs::create_dir_all(entry.join("src")).unwrap();
+    fs::create_dir_all(entry.join("gust-artifacts")).unwrap();
+    fs::create_dir_all(entry.join("target")).unwrap();
+    fs::create_dir_all(root.join(".cargo")).unwrap();
+    write(&entry, "gust-artifacts/x", "committed");
+    write(&entry, "target/y", "build output");
+    write(&entry, "src/main.rs", "fn main() {}\n");
+    write(
+        &entry,
+        "Cargo.toml",
+        "[dependencies]\ngust = { path = \"../../crates/gust\" }\n",
+    );
+    write(&root, ".cargo/config.toml", "[alias]\nxtask = \"x\"\n");
+    let destination = scratch("copy-destination");
+    copy_gallery(&root, &source, &destination).unwrap();
+    let copied = destination.join("one");
+    assert!(
+        !copied.join("gust-artifacts").exists(),
+        "artifacts are left out"
+    );
+    assert!(
+        !copied.join("target").exists(),
+        "target folders are left out"
+    );
+    assert_eq!(
+        fs::read_to_string(copied.join("src/main.rs")).unwrap(),
+        "fn main() {}\n"
+    );
+    let manifest = fs::read_to_string(copied.join("Cargo.toml")).unwrap();
+    let crates = format!("{}/crates/gust", root.to_string_lossy().replace('\\', "/"));
+    assert!(
+        manifest.contains(&crates),
+        "the manifest names the repository crates: {manifest}"
+    );
+    assert!(!manifest.contains("../../crates/"));
+    assert_eq!(
+        fs::read_to_string(destination.join(".cargo/config.toml")).unwrap(),
+        "[alias]\nxtask = \"x\"\n",
+        "the cargo configuration of the repository is copied to the root of the copy"
+    );
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&destination);
+}
+
+#[test]
+fn a_repository_without_a_cargo_config_copies_none_and_succeeds() {
+    let root = scratch("copy-no-config");
+    fs::create_dir_all(root.join("gallery")).unwrap();
+    let destination = scratch("copy-no-config-destination");
+    copy_gallery(&root, &root.join("gallery"), &destination).unwrap();
+    assert!(!destination.join(".cargo").exists(), "nothing to copy");
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&destination);
+}
+
+#[test]
+fn a_fresh_build_may_not_start_with_artifacts_in_the_copy() {
+    let root = scratch("guard");
+    let artifacts = root.join("one").join("gust-artifacts");
+    assert_eq!(require_no_artifacts(&artifacts), Ok(()));
+    fs::create_dir_all(&artifacts).unwrap();
+    let error = require_no_artifacts(&artifacts).unwrap_err();
+    assert!(error.contains("one"), "the entry is named: {error}");
+    assert!(error.contains("gust-artifacts"), "{error}");
+    assert!(error.contains("stale artifact"), "{error}");
+    let _ = fs::remove_dir_all(&root);
 }

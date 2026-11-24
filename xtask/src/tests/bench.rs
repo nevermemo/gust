@@ -4,10 +4,10 @@ use std::{
 };
 
 use super::{
-    ATTESTATION, BUDGET_KIT_ROWS, BUDGET_KIT_SUMMARY, DOCS_PAGE, HEADER, JUDGE_SOURCE, MIRROR_DIR,
-    MIRROR_PREFIX, Options, RESULTS_DIR, block_of, budget_kit_verdict, check_mirrors,
-    functional_verdict, load_results, render, render_tables, replace_block, sample_limits, slugify,
-    thresholds_block,
+    ATTESTATION, BUDGET_KIT_ARGS, BUDGET_KIT_ROWS, BUDGET_KIT_SUMMARY, DOCS_PAGE, FUNCTIONAL_ARGS,
+    HEADER, JUDGE_SOURCE, MIRROR_DIR, MIRROR_PREFIX, Options, RESULTS_DIR, block_of,
+    budget_kit_verdict, check_mirrors, functional_verdict, load_results, render, render_tables,
+    replace_block, sample_limits, slugify, thresholds_block,
 };
 use crate::workspace::workspace_root;
 
@@ -95,6 +95,38 @@ fn options_need_exactly_one_mode() {
     assert_eq!(options.results.as_deref(), Some("d"));
     assert!(Options::parse(&args(&["--render", "--bogus"])).is_err());
     assert!(Options::parse(&args(&["--render", "--results"])).is_err());
+}
+
+#[test]
+fn only_the_functional_run_builds_in_the_functional_profile() {
+    assert!(
+        FUNCTIONAL_ARGS
+            .windows(2)
+            .any(|pair| pair == ["--profile", "functional"])
+    );
+    assert!(!FUNCTIONAL_ARGS.contains(&"--release"));
+    assert!(BUDGET_KIT_ARGS.contains(&"--release"));
+    assert!(!BUDGET_KIT_ARGS.contains(&"functional"));
+}
+
+#[test]
+fn the_functional_profile_overrides_only_lto_and_codegen_units_of_release() {
+    let root = workspace_root().expect("the repository root");
+    let manifest = fs::read_to_string(root.join("bench/Cargo.toml")).expect("bench/Cargo.toml");
+    let table: Vec<&str> = manifest
+        .lines()
+        .skip_while(|line| line.trim() != "[profile.functional]")
+        .skip(1)
+        .take_while(|line| !line.trim_start().starts_with('['))
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    assert!(table.contains(&"inherits = \"release\""), "{table:?}");
+    let keys: Vec<&str> = table
+        .iter()
+        .map(|line| line.split('=').next().unwrap().trim())
+        .collect();
+    assert_eq!(keys, ["inherits", "lto", "codegen-units"], "{table:?}");
 }
 
 #[test]

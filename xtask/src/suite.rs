@@ -4,7 +4,7 @@ use crate::{
     cpu_target::check_cpu_target,
     difftest::check_difftest,
     docs::docs_check,
-    gpu_jobs::{DEFAULT_GPU_JOBS, run_parallel_gpu_suite},
+    gpu_jobs::{DEFAULT_GPU_JOBS, run_parallel_gpu_suite, step_label},
     lint::lint,
     process::{
         require_command, run_cargo_test_captured_under, run_counted, run_counted_tool_free,
@@ -807,7 +807,8 @@ fn parse_suite_flags(flags: &[String]) -> Option<Result<(bool, Option<usize>), S
     Some(Ok((skip_difftest, gpu_jobs)))
 }
 
-/// `cargo xtask test --suite <Unit|Cpu|Slangc|Spirv|Reflect|Gpu|Full> [--skip-difftest]`, or
+/// `cargo xtask test --suite <Unit|Cpu|Slangc|Spirv|Reflect|Gpu|Full> [--skip-difftest] [--gpu-jobs <n>]` (the last for
+/// Gpu only: how many parts of the `gust-compute-wgpu` call run at a time, 1 being the single call), or
 /// `cargo xtask test --suite Gpu --profile <dev|dev+capability> --test <target>` (m8.w2): one test target of
 /// gust-compute-wgpu on the adapter under that `GUST_PROFILE`, counted against `GPU_TARGET_PINS`. m8.s runs
 /// `--profile dev+subgroups --test subgroup`; the whole Gpu suite (its pin, `GPU_SUITE_PIN`, describes `dev`) is
@@ -893,16 +894,44 @@ pub(crate) fn plan_suite(
     Ok((run, skipped))
 }
 
-/// The step [`Step::GpuSuite`] as one `cargo test` call (`gpu_jobs` of 1: exactly [`GPU_SUITE_CALL`]) or as its test
-/// binaries and doc tests, `gpu_jobs` at a time ([`run_parallel_gpu_suite`]); every other step runs as it is.
-fn run_step(step: Step, gpu_jobs: usize) -> Result<(), String> {
-    if step == Step::GpuSuite && gpu_jobs > 1 {
-        println!(
-            "   the test binaries and the doc tests, {gpu_jobs} at a time (--gpu-jobs 1: one cargo call)"
-        );
-        return run_parallel_gpu_suite(&workspace_root()?, gpu_jobs);
+/// Whether `step` runs as parts, `gpu_jobs` at a time, rather than as the step's own call: only the Gpu suite's
+/// `gust-compute-wgpu` call does, and not with `--gpu-jobs 1`.
+fn runs_in_parts(step: Step, gpu_jobs: usize) -> bool {
+    step == Step::GpuSuite && gpu_jobs > 1
+}
+
+/// What the log and a failure call `step` when it runs with `gpu_jobs`: its own label, or the parallel form's.
+fn run_label(step: Step, gpu_jobs: usize) -> String {
+    if runs_in_parts(step, gpu_jobs) {
+        step_label(gpu_jobs)
+    } else {
+        step.label()
     }
-    step.run()
+}
+
+/// Runs `step`: the Gpu suite's call as its test binaries and doc tests, `gpu_jobs` at a time (`in_parts`, given the
+/// number), unless `gpu_jobs` is 1, which is exactly [`GPU_SUITE_CALL`] (`whole`, the step's own run, the rollback);
+/// every other step runs as it is.
+fn run_step_with(
+    step: Step,
+    gpu_jobs: usize,
+    in_parts: &dyn Fn(usize) -> Result<(), String>,
+    whole: &dyn Fn(Step) -> Result<(), String>,
+) -> Result<(), String> {
+    if runs_in_parts(step, gpu_jobs) {
+        in_parts(gpu_jobs)
+    } else {
+        whole(step)
+    }
+}
+
+fn run_step(step: Step, gpu_jobs: usize) -> Result<(), String> {
+    run_step_with(
+        step,
+        gpu_jobs,
+        &|width| run_parallel_gpu_suite(&workspace_root()?, width),
+        &|step| step.run(),
+    )
 }
 
 fn run_suite(suite: Suite, skip_difftest: bool, gpu_jobs: usize) -> Result<(), String> {
@@ -918,9 +947,10 @@ fn run_suite(suite: Suite, skip_difftest: bool, gpu_jobs: usize) -> Result<(), S
         );
     }
     for step in steps {
-        println!("-- {}", step.label());
+        let label = run_label(step, gpu_jobs);
+        println!("-- {label}");
         run_step(step, gpu_jobs)
-            .map_err(|error| format!("suite {name} failed at `{}`: {error}", step.label()))?;
+            .map_err(|error| format!("suite {name} failed at `{label}`: {error}"))?;
     }
     if skipped.is_empty() {
         println!(

@@ -9,28 +9,43 @@
 //! failure stays visible to the same pin.
 //!
 //! Each executable runs the way cargo runs a test: in the package's directory, with the `CARGO_MANIFEST_DIR` and
-//! `CARGO_PKG_*` variables read from `cargo metadata`, `CARGO_PRIMARY_PACKAGE`, the `GUST_PROFILE` and helper variables of
-//! every workspace cargo child, and, for the dynamic libraries Windows loads through `PATH`, the executable's `deps`
-//! directory and its parent in front of `PATH`. The variables that only the compiler reads (`CARGO_CRATE_NAME`,
-//! `CARGO_TARGET_TMPDIR`, `CARGO_BIN_EXE_*`) reach a test through `env!`, which the executable already carries.
+//! `CARGO_PKG_*` and `CARGO_MANIFEST_PATH` variables read from `cargo metadata`, the `GUST_PROFILE` and helper variables
+//! of every workspace cargo child, and, for the dynamic libraries Windows loads through `PATH`, the executable's `deps`
+//! directory and its parent in front of `PATH`. The package variables xtask itself inherited from `cargo xtask` are
+//! removed first, so a test never sees xtask's values. The variables that only the compiler reads
+//! (`CARGO_PRIMARY_PACKAGE`, `CARGO_CRATE_NAME`, `CARGO_TARGET_TMPDIR`, `CARGO_BIN_EXE_*`) reach a test through `env!`,
+//! which the executable already carries, and are not set. A package with a build script is refused (cargo would pass the
+//! script's variables to its tests), as is a call with `--` arguments; `--gpu-jobs 1` runs those as one cargo call.
+//!
+//! A job that runs longer than [`JOB_TIME_LIMIT`] is killed with its child processes and named in the error; after any
+//! failure or time-out the jobs still running are killed too, so no GPU test process outlives the run.
 
 use std::{
     ffi::OsString,
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
+    time::{Duration, Instant},
 };
 
 use crate::{
     json::{self, Json},
-    process::{cargo_program, cargo_test_command, exit_code, set_workspace_profile},
+    process::{exit_code, set_workspace_profile, workspace_command},
     verify::{GPU_SUITE_CALL, GPU_SUITE_PIN, check_gpu_suite_counts},
 };
+
+/// How long one job may run. The slowest test executable takes about a minute and a quarter on the Radeon 890M, so this
+/// is generous; a hang is killed and named instead of waiting for the outer time limit of the gate.
+pub(crate) const JOB_TIME_LIMIT: Duration = Duration::from_secs(900);
+
+/// How often a running job is checked for its end, the time limit and a cancellation.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The package whose tests the Gpu suite runs.
 const PACKAGE: &str = "gust-compute-wgpu";
@@ -132,6 +147,26 @@ pub(crate) fn package_of(metadata: &str, name: &str) -> Result<Package, String> 
         .filter(|dir| !dir.as_os_str().is_empty())
         .ok_or_else(|| format!("cargo metadata gives no manifest path for `{name}`"))?
         .to_path_buf();
+    let has_build_script = package
+        .get("targets")
+        .and_then(Json::as_array)
+        .is_some_and(|targets| {
+            targets.iter().any(|target| {
+                target
+                    .get("kind")
+                    .and_then(Json::as_array)
+                    .is_some_and(|kinds| {
+                        kinds
+                            .iter()
+                            .any(|kind| kind.as_str() == Some("custom-build"))
+                    })
+            })
+        });
+    if has_build_script {
+        return Err(format!(
+            "{name} has a build script, whose variables cargo passes to its tests and this runner does not; use --gpu-jobs 1"
+        ));
+    }
     let authors = package
         .get("authors")
         .and_then(Json::as_array)
@@ -147,6 +182,7 @@ pub(crate) fn package_of(metadata: &str, name: &str) -> Result<Package, String> 
     let [major, minor, patch, pre] = version_parts(&version);
     let environment = vec![
         ("CARGO_MANIFEST_DIR", manifest_dir.display().to_string()),
+        ("CARGO_MANIFEST_PATH", manifest.display().to_string()),
         ("CARGO_PKG_NAME", text("name")),
         ("CARGO_PKG_VERSION", version),
         ("CARGO_PKG_VERSION_MAJOR", major),
@@ -161,7 +197,6 @@ pub(crate) fn package_of(metadata: &str, name: &str) -> Result<Package, String> 
         ("CARGO_PKG_LICENSE_FILE", text("license_file")),
         ("CARGO_PKG_RUST_VERSION", text("rust_version")),
         ("CARGO_PKG_README", text("readme")),
-        ("CARGO_PRIMARY_PACKAGE", "1".to_owned()),
     ];
     Ok(Package {
         manifest_dir,
@@ -249,6 +284,31 @@ pub(crate) fn plan_jobs(executables: Vec<TestExecutable>) -> Vec<Job> {
         .collect()
 }
 
+/// The order in which jobs are started: the doc tests first (a rustdoc build and a run that lasts about as long as the
+/// slowest executable), then the rest in print order. Printing stays in job order; a permutation of `0..jobs.len()`.
+pub(crate) fn start_order(jobs: &[Job]) -> Vec<usize> {
+    let (doc, rest): (Vec<usize>, Vec<usize>) =
+        (0..jobs.len()).partition(|&index| jobs[index] == Job::Doc);
+    doc.into_iter().chain(rest).collect()
+}
+
+/// Whether `name` is a variable cargo sets for the package under test (so a value inherited from the `cargo xtask`
+/// process, which describes xtask, is wrong for a test of another package).
+pub(crate) fn is_package_variable(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    name.starts_with("CARGO_PKG_")
+        || name.starts_with("CARGO_BIN_EXE_")
+        || matches!(
+            name.as_str(),
+            "CARGO_MANIFEST_DIR"
+                | "CARGO_MANIFEST_PATH"
+                | "CARGO_PRIMARY_PACKAGE"
+                | "CARGO_CRATE_NAME"
+                | "CARGO_BIN_NAME"
+                | "CARGO_TARGET_TMPDIR"
+        )
+}
+
 /// `PATH` for a test executable: the `deps` directory it lies in and that directory's parent (where cargo puts the
 /// libraries a test may load) in front of `existing`. `None` when the executable has no such directories or the result
 /// cannot be joined.
@@ -264,13 +324,19 @@ pub(crate) fn library_path(executable: &Path, existing: Option<OsString>) -> Opt
     .ok()
 }
 
-/// One job's block: its header line and its whole output, standard output then standard error.
+/// One job's block: its header line and its whole output, standard output then standard error. The doc-test call's own
+/// `Doc-tests` line on standard error is left out, so the header is the only one.
 pub(crate) fn block(job: &Job, output: &JobOutput) -> String {
+    let header = job.header();
+    let stderr: String = output
+        .stderr
+        .split_inclusive('\n')
+        .filter(|line| *job != Job::Doc || line.trim() != header.trim())
+        .collect();
     format!(
-        "{}\n{}{}",
-        job.header(),
+        "{header}\n{}{}",
         terminated(&output.stdout),
-        terminated(&output.stderr)
+        terminated(&stderr)
     )
 }
 
@@ -307,12 +373,14 @@ pub(crate) fn judge(jobs: &[Job], results: &[Option<JobOutput>]) -> Result<Strin
     ))
 }
 
-/// Runs `run` on every job of `jobs`, at most `width` at a time, in the order of `jobs`, and calls `emit` with each
-/// result on the calling thread in that same order as soon as it and all earlier results exist (so output is never
-/// interleaved and appears while later jobs still run). After a result for which `failed` is true no further job starts;
-/// the ones running finish. The results are returned in the order of `jobs`, `None` where a job never started.
+/// Runs `run` on every job of `jobs`, at most `width` at a time, starting them in the order `starts` (a permutation of
+/// the job indices), and calls `emit` with each result on the calling thread in the order of `jobs` as soon as it and all
+/// earlier results exist (so output is never interleaved and appears while later jobs still run). After a result for
+/// which `failed` is true no further job starts; the ones running are awaited. The results are returned in the order of
+/// `jobs`, `None` where a job never started.
 pub(crate) fn run_in_order<J: Sync, R: Send>(
     jobs: &[J],
+    starts: &[usize],
     width: usize,
     run: &(impl Fn(&J) -> R + Sync),
     failed: &(impl Fn(&R) -> bool + Sync),
@@ -329,7 +397,10 @@ pub(crate) fn run_in_order<J: Sync, R: Send>(
             let (next, stop) = (&next, &stop);
             scope.spawn(move || {
                 while !stop.load(Ordering::SeqCst) {
-                    let index = next.fetch_add(1, Ordering::SeqCst);
+                    let slot = next.fetch_add(1, Ordering::SeqCst);
+                    let Some(&index) = starts.get(slot) else {
+                        break;
+                    };
                     let Some(job) = jobs.get(index) else {
                         break;
                     };
@@ -351,13 +422,165 @@ pub(crate) fn run_in_order<J: Sync, R: Send>(
                 emitted += 1;
             }
         }
+        // A run that stopped early leaves gaps: print what finished after them too, in job order.
+        for (index, result) in results.iter().enumerate().skip(emitted) {
+            if let Some(result) = result {
+                emit(index, result);
+            }
+        }
     });
     results
 }
 
+/// The header of the suite step when it runs as parts, `width` at a time (the single call has its own, `--gpu-jobs 1`).
+pub(crate) fn step_label(width: usize) -> String {
+    format!(
+        "cargo {} as its test binaries and doc tests, {width} at a time",
+        GPU_SUITE_CALL.join(" ")
+    )
+}
+
+/// [`GPU_SUITE_CALL`] with `extra` arguments after it: the one source of the arguments of the calls this module makes.
+pub(crate) fn call_with(extra: &[&str]) -> Vec<String> {
+    GPU_SUITE_CALL
+        .iter()
+        .chain(extra)
+        .map(|argument| (*argument).to_owned())
+        .collect()
+}
+
+/// An error when a call cannot be run as parts: one with `--` arguments (a filter, `--nocapture`, `--include-ignored`)
+/// would lose them in the doc-test call or in the executables, so it stays one cargo call.
+pub(crate) fn refuse_call(call: &[&str]) -> Result<(), String> {
+    if call.contains(&"--") {
+        return Err(format!(
+            "cargo {} has arguments for the test binaries, which the parallel run does not pass on; use --gpu-jobs 1",
+            call.join(" ")
+        ));
+    }
+    Ok(())
+}
+
+/// A process that [`supervise`] watches.
+pub(crate) trait Process {
+    type Exit;
+    /// The way it ended, once it has.
+    fn exit(&mut self) -> Option<Self::Exit>;
+    /// Stops it and everything it started.
+    fn kill(&mut self);
+}
+
+/// How a supervised process ended.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum End<T> {
+    Finished(T),
+    TimedOut,
+    Cancelled,
+}
+
+/// Waits for `process`, checking it every `poll`: it ends by itself, or is killed after `limit` or as soon as `cancel`
+/// is set.
+pub(crate) fn supervise<P: Process>(
+    process: &mut P,
+    limit: Duration,
+    poll: Duration,
+    cancel: &AtomicBool,
+) -> End<P::Exit> {
+    let started = Instant::now();
+    loop {
+        if let Some(exit) = process.exit() {
+            return End::Finished(exit);
+        }
+        if cancel.load(Ordering::SeqCst) {
+            process.kill();
+            return End::Cancelled;
+        }
+        if started.elapsed() >= limit {
+            process.kill();
+            return End::TimedOut;
+        }
+        thread::sleep(poll);
+    }
+}
+
+/// Ends `child` and, on Windows, everything it started (`taskkill /T`; killing `cargo` alone leaves its test processes
+/// running), then reaps it.
+fn kill_tree(child: &mut Child) {
+    if cfg!(windows) {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// A child process of a job as [`supervise`] sees it.
+struct ChildProcess(Child);
+
+impl Process for ChildProcess {
+    /// Whether it succeeded, and how it ended for a message.
+    type Exit = (bool, String);
+
+    fn exit(&mut self) -> Option<Self::Exit> {
+        match self.0.try_wait() {
+            Ok(Some(status)) => Some((status.success(), format!("exit {}", exit_code(status)))),
+            Ok(None) => None,
+            Err(error) => {
+                self.kill();
+                Some((false, format!("could not wait for it: {error}")))
+            }
+        }
+    }
+
+    fn kill(&mut self) {
+        kill_tree(&mut self.0);
+    }
+}
+
+/// What one pipe of a child has delivered so far, filled by a thread of its own so that a full pipe never stops the child.
+struct Capture {
+    buffer: Arc<Mutex<Vec<u8>>>,
+    reader: thread::JoinHandle<()>,
+}
+
+impl Capture {
+    fn start(mut pipe: impl Read + Send + 'static) -> Self {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let shared = Arc::clone(&buffer);
+        let reader = thread::spawn(move || {
+            let mut chunk = [0_u8; 8192];
+            while let Ok(read) = pipe.read(&mut chunk) {
+                if read == 0 {
+                    break;
+                }
+                if let Ok(mut buffer) = shared.lock() {
+                    buffer.extend_from_slice(&chunk[..read]);
+                }
+            }
+        });
+        Self { buffer, reader }
+    }
+
+    /// The text so far. With `complete` the reader is awaited first (the child ended and closed its pipe); without it
+    /// (the child was killed, and a grandchild may still hold the pipe) nothing is awaited.
+    fn text(self, complete: bool) -> String {
+        if complete {
+            let _ = self.reader.join();
+        }
+        self.buffer.lock().map_or_else(
+            |_| String::new(),
+            |bytes| String::from_utf8_lossy(&bytes).into_owned(),
+        )
+    }
+}
+
 /// `cargo metadata --format-version 1 --locked --no-deps` in `root`.
 fn read_package(root: &Path) -> Result<Package, String> {
-    let output = Command::new(cargo_program())
+    let output = workspace_command("cargo")
         .args(["metadata", "--format-version", "1", "--locked", "--no-deps"])
         .current_dir(root)
         .stdin(Stdio::null())
@@ -373,18 +596,12 @@ fn read_package(root: &Path) -> Result<Package, String> {
     package_of(&String::from_utf8_lossy(&output.stdout), PACKAGE)
 }
 
-/// The jobs of the call: the executables `cargo test --locked -p gust-compute-wgpu --no-run --message-format=json` names
-/// (its standard error is shown, so a build that happens under the lock is in the log) and the doc tests.
+/// The jobs of the call: the executables `cargo <GPU_SUITE_CALL> --no-run --message-format=json` names (its standard
+/// error is shown, so a build that happens under the lock is in the log) and the doc tests.
 fn read_jobs(root: &Path, package: &Package) -> Result<Vec<Job>, String> {
-    let output = cargo_test_command(None)
-        .args([
-            "test",
-            "--locked",
-            "-p",
-            PACKAGE,
-            "--no-run",
-            "--message-format=json",
-        ])
+    let call = call_with(&["--no-run", "--message-format=json"]);
+    let output = workspace_command("cargo")
+        .args(&call)
         .current_dir(root)
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
@@ -392,7 +609,8 @@ fn read_jobs(root: &Path, package: &Package) -> Result<Vec<Job>, String> {
         .map_err(|error| format!("could not launch cargo: {error}"))?;
     if !output.status.success() {
         return Err(format!(
-            "cargo test --locked -p {PACKAGE} --no-run failed (exit {})",
+            "cargo {} failed (exit {})",
+            call.join(" "),
             exit_code(output.status)
         ));
     }
@@ -410,6 +628,11 @@ fn job_command(root: &Path, package: &Package, job: &Job) -> Command {
             let mut command = Command::new(&executable.path);
             set_workspace_profile(&mut command);
             command.current_dir(&package.manifest_dir);
+            for (name, _) in std::env::vars_os() {
+                if name.to_str().is_some_and(is_package_variable) {
+                    command.env_remove(name);
+                }
+            }
             for (name, value) in &package.environment {
                 command.env(name, value);
             }
@@ -419,51 +642,100 @@ fn job_command(root: &Path, package: &Package, job: &Job) -> Command {
             command
         }
         Job::Doc => {
-            let mut command = cargo_test_command(None);
-            command
-                .args(["test", "--locked", "-p", PACKAGE, "--doc"])
-                .current_dir(root);
+            let mut command = workspace_command("cargo");
+            command.args(call_with(&["--doc"])).current_dir(root);
             command
         }
     }
 }
 
-/// Runs one job to its end and captures its output.
-fn run_job(root: &Path, package: &Package, job: &Job) -> JobOutput {
-    match job_command(root, package, job)
+/// A job that did not run to its end.
+fn unfinished(status: String, stdout: String, stderr: String) -> JobOutput {
+    JobOutput {
+        success: false,
+        status,
+        stdout,
+        stderr,
+    }
+}
+
+/// Runs one job to its end, killing it (and what it started) after [`JOB_TIME_LIMIT`] or when `cancel` is set, and
+/// captures its output.
+fn run_job(root: &Path, package: &Package, job: &Job, cancel: &AtomicBool) -> JobOutput {
+    let mut command = job_command(root, package, job);
+    let mut child = match command
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
     {
-        Ok(output) => JobOutput {
-            success: output.status.success(),
-            status: format!("exit {}", exit_code(output.status)),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        Ok(child) => child,
+        Err(error) => {
+            return unfinished(
+                "did not start".to_owned(),
+                String::new(),
+                format!("could not launch the job: {error}"),
+            );
+        }
+    };
+    let stdout = child.stdout.take().map(Capture::start);
+    let stderr = child.stderr.take().map(Capture::start);
+    let end = supervise(
+        &mut ChildProcess(child),
+        JOB_TIME_LIMIT,
+        POLL_INTERVAL,
+        cancel,
+    );
+    let complete = matches!(end, End::Finished(_));
+    let stdout = stdout.map_or_else(String::new, |capture| capture.text(complete));
+    let stderr = stderr.map_or_else(String::new, |capture| capture.text(complete));
+    match end {
+        End::Finished((success, status)) => JobOutput {
+            success,
+            status,
+            stdout,
+            stderr,
         },
-        Err(error) => JobOutput {
-            success: false,
-            status: "did not start".to_owned(),
-            stdout: String::new(),
-            stderr: format!("could not launch the job: {error}"),
-        },
+        End::TimedOut => unfinished(
+            format!(
+                "timed out after {} s and was killed",
+                JOB_TIME_LIMIT.as_secs()
+            ),
+            stdout,
+            stderr,
+        ),
+        End::Cancelled => unfinished(
+            "killed because another job failed".to_owned(),
+            stdout,
+            stderr,
+        ),
     }
 }
 
 /// The Gpu suite's call of [`GPU_SUITE_CALL`] as its parts, `width` at a time (see the module text), judged against
-/// [`GPU_SUITE_PIN`] like the single call. A failing job is named.
+/// [`GPU_SUITE_PIN`] like the single call. A failing or timed-out job is named, and the jobs still running are killed.
 pub(crate) fn run_parallel_gpu_suite(root: &Path, width: usize) -> Result<(), String> {
+    refuse_call(&GPU_SUITE_CALL)?;
     let package = read_package(root)?;
     let jobs = read_jobs(root, &package)?;
     println!(
-        "   {} job(s) ({} test executable(s) and the doc tests), {width} at a time",
+        "   {} job(s): {} test executable(s) and the doc tests",
         jobs.len(),
         jobs.len() - 1
     );
+    let cancel = AtomicBool::new(false);
     let results = run_in_order(
         &jobs,
+        &start_order(&jobs),
         width,
-        &|job| run_job(root, &package, job),
-        &|output| !output.success,
+        &|job| run_job(root, &package, job, &cancel),
+        &|output| {
+            let failed = !output.success;
+            if failed {
+                cancel.store(true, Ordering::SeqCst);
+            }
+            failed
+        },
         |index, output| {
             let mut stdout = io::stdout().lock();
             // Echoing is best effort; the captured copy is what the guard reads.

@@ -1370,6 +1370,8 @@ pub mod parallel;
 
 mod batch;
 
+pub use batch::CpuEncoder;
+
 pub mod texture;
 
 #[cfg(test)]

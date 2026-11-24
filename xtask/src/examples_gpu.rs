@@ -181,6 +181,18 @@ const EXAMPLE_GPU_TESTS: &[(&str, &[&str])] = &[
             "app::tests::gpu_a_frame_is_one_submission_at_submit_and_none_before",
             "app::tests::gpu_a_dropped_frame_is_not_submitted_and_the_next_one_is_exact",
             "app::tests::gpu_and_the_cpu_twin_agree_on_every_output",
+            "gpu_frame_n_is_pending_when_n_plus_1_is_submitted",
+            "gpu_dropped_frames_and_claims",
+            "gpu_overlapping_frames_are_exact",
+            "gpu_a_ticket_resolves_in_a_bounded_number_of_polls",
+            "gpu_a_ticket_polled_on_another_thread_resolves_too",
+            "gpu_encode_then_submitted_equals_submit_and_the_twin",
+            "gpu_encode_works_for_each_frame_in_flight",
+            "gpu_the_three_refusals_are_not_submitted",
+            "gpu_a_refused_set_holds",
+            "gpu_a_refused_set_is_not_mixed_with_the_next_one",
+            "gpu_a_refused_write_is_lost",
+            "gpu_a_dropped_encoded_retires_its_staging_and_the_next_frame_is_exact",
             "app::tests::gpu_matches_the_host",
         ],
     ),
@@ -487,12 +499,22 @@ mod tests {
     /// The names of the `#[ignore]`d tests of the sources of one example package: the `fn` that follows each attribute.
     fn ignored_functions(root: &Path, package: &str) -> Vec<String> {
         let mut names = Vec::new();
-        let src = root.join("examples").join(package).join("src");
-        let mut files = fs::read_dir(&src)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
-            .collect::<Vec<_>>();
+        let mut files = Vec::new();
+        // The sources of the binary and, where an example has them, its integration tests.
+        for sub_dir in ["src", "tests"] {
+            let dir = root.join("examples").join(package).join(sub_dir);
+            // `src` must exist, so that a wrong package path cannot pass silently; `tests` is optional.
+            let entries = match fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(_) if sub_dir == "tests" => continue,
+                Err(error) => panic!("{}: {error}", dir.display()),
+            };
+            files.extend(
+                entries
+                    .map(|entry| entry.unwrap().path())
+                    .filter(|path| path.extension().is_some_and(|ext| ext == "rs")),
+            );
+        }
         files.sort();
         for file in files {
             let text = fs::read_to_string(&file).unwrap();

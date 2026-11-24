@@ -17,7 +17,7 @@
 //! only what the block does not declare. The body is lowered by [`crate::task`] (a 2-D index `h[(x, y)]` over the
 //! handle's width, `p.get()` as the scalar); this file does the reading of the block.
 //!
-//! The diagnostics are GUST-E1005 (a form the macro cannot track or this release does not have: `in_flight` above 1,
+//! The diagnostics are GUST-E1005 (a form the macro cannot track or this release does not have: `in_flight` outside 1 to 4,
 //! a stage inside a closure or a function, a host slice, a name of a type it cannot see) and GUST-E1006 (a body shape a
 //! batch stage does not take), the latter raised by [`crate::task`].
 
@@ -42,15 +42,19 @@ struct Input {
     name: syn::LitStr,
     device: Option<syn::Expr>,
     krate: Option<syn::Path>,
+    in_flight: u32,
     builder: syn::Ident,
     stmts: Vec<syn::Stmt>,
 }
+
+/// The most frames in flight a batch takes: `in_flight(4)`.
+const MAX_IN_FLIGHT: u32 = 4;
 
 impl Parse for Input {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let name: syn::LitStr = input.parse()?;
         input.parse::<Token![,]>()?;
-        let (mut device, mut krate) = (None, None);
+        let (mut device, mut krate, mut in_flight) = (None, None, None);
         while let Some((keyword, _)) = input.cursor().ident() {
             if !input.peek2(syn::token::Paren) {
                 break;
@@ -74,19 +78,20 @@ impl Parse for Input {
                         batch_form(&keyword, "`in_flight(..)` takes a number: `in_flight(1)`")
                     })?;
                     input.parse::<Token![;]>()?;
+                    if in_flight.is_some() {
+                        return Err(batch_form(&keyword, "`in_flight(..)` given twice"));
+                    }
                     match count.base10_parse::<u32>() {
-                        Ok(1) => {}
-                        Ok(0) | Err(_) => {
-                            return Err(batch_form(
-                                &count,
-                                "`in_flight(..)` is at least 1; this release has `in_flight(1)`",
-                            ));
+                        Ok(count) if (1..=MAX_IN_FLIGHT).contains(&count) => {
+                            in_flight = Some(count);
                         }
-                        Ok(_) => {
+                        _ => {
                             return Err(batch_form(
                                 &count,
-                                "`in_flight` above 1 is not in this release: a batch has one frame in flight, \
-                                 `in_flight(1)`",
+                                format!(
+                                    "`in_flight(..)` is from 1 to {MAX_IN_FLIGHT} frames: `in_flight(2)` keeps \
+                                     two in flight"
+                                ),
                             ));
                         }
                     }
@@ -151,6 +156,7 @@ impl Parse for Input {
             name,
             device,
             krate,
+            in_flight: in_flight.unwrap_or(1),
             builder,
             stmts,
         })
@@ -667,6 +673,7 @@ fn expand(
         name,
         device,
         krate: written,
+        in_flight,
         builder,
         mut stmts,
     } = parsed;
@@ -729,6 +736,7 @@ fn expand(
         ::gust::batch::build(
             #name,
             &(#device),
+            #in_flight,
             |#builder: &::gust::batch::Builder<_>| {
                 #(#stmts)*
                 #(#builder.expose(&#exposed);)*

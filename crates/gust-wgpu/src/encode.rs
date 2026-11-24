@@ -19,16 +19,39 @@ pub(crate) fn encode_upload(
     bytes: &[u8],
     label: &str,
 ) -> Option<wgpu::Buffer> {
+    let staging = stage_upload(device, bytes, label)?;
+    record_upload_copy(encoder, &staging, target.buffer(), bytes.len() as u64);
+    Some(staging)
+}
+
+/// The first step of an upload: a fresh staging buffer that holds `bytes`. An empty upload makes none. A caller that
+/// records the copy later (a batch frame, which collects its copies while it is written) calls this, then
+/// [`record_upload_copy`].
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn stage_upload(
+    device: &wgpu::Device,
+    bytes: &[u8],
+    label: &str,
+) -> Option<wgpu::Buffer> {
     if bytes.is_empty() {
         return None;
     }
-    let staging = device.create_buffer_init(&BufferInitDescriptor {
+    Some(device.create_buffer_init(&BufferInitDescriptor {
         label: Some(label),
         contents: bytes,
         usage: wgpu::BufferUsages::COPY_SRC,
-    });
-    encoder.copy_buffer_to_buffer(&staging, 0, target.buffer(), 0, bytes.len() as u64);
-    Some(staging)
+    }))
+}
+
+/// The second step of an upload: record the copy of `bytes` bytes of `staging` into `target`.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn record_upload_copy(
+    encoder: &mut wgpu::CommandEncoder,
+    staging: &wgpu::Buffer,
+    target: &wgpu::Buffer,
+    bytes: u64,
+) {
+    encoder.copy_buffer_to_buffer(staging, 0, target, 0, bytes);
 }
 
 /// Copy `source` into a pooled mappable staging buffer holding at least `source.byte_len()` bytes (the logical length

@@ -445,6 +445,8 @@ impl PoolState {
 
 struct PoolShared {
     state: Mutex<PoolState>,
+    /// The 4-byte source of the batch's epoch word, made on first use and shared by every frame of the device.
+    epoch: std::sync::OnceLock<wgpu::Buffer>,
 }
 
 impl PoolShared {
@@ -502,6 +504,21 @@ pub struct BufferPool {
 }
 
 impl BufferPool {
+    /// The `COPY_SRC` buffer that holds `word`, one per device: a frame recorded into a caller's encoder copies it into
+    /// its own epoch buffer. The first call fixes the word; every caller of one device passes the same one.
+    pub(crate) fn epoch_source(&self, device: &wgpu::Device, word: [u8; 4]) -> wgpu::Buffer {
+        self.shared
+            .epoch
+            .get_or_init(|| {
+                device.create_buffer_init(&BufferInitDescriptor {
+                    label: Some("GUST batch epoch word"),
+                    contents: &word,
+                    usage: wgpu::BufferUsages::COPY_SRC,
+                })
+            })
+            .clone()
+    }
+
     // The pool is shared by clones on one thread on wasm32, where wgpu's types are not `Send`; the `Arc` is still right
     // on native, and one definition serves both.
     #[allow(clippy::arc_with_non_send_sync)]
@@ -515,6 +532,7 @@ impl BufferPool {
                     tick: 0,
                     stats: PoolStats::default(),
                 }),
+                epoch: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -632,7 +650,7 @@ impl Lease {
 
     /// Never put the buffer back: a command recorded into an encoder of the caller's still uses it, and nothing says
     /// when that command runs. Dropping the lease counts it as retired.
-    fn retire(mut self) {
+    pub(crate) fn retire(mut self) {
         self.retired = true;
     }
 
@@ -1025,6 +1043,51 @@ impl<T: GpuPod> PooledReadback<T> {
         };
         lease.recycle(true);
         Ok(values)
+    }
+}
+
+impl<T: GpuPod> PooledReadback<T> {
+    /// Like [`finish`](Self::finish), but the values are only good when `ran` says the copy into the staging buffer ran.
+    /// When it says it did not (or fails to say), the staging buffer is retired, not recycled: the caller's encoder
+    /// that holds the copy may still be submitted, and a pooled buffer must not be written by a command that nobody
+    /// accounts for. Returns `None` for a copy that did not run.
+    pub(crate) async fn finish_if_ran(
+        mut self,
+        device: &wgpu::Device,
+        ran: impl core::future::Future<Output = Result<bool, Error>>,
+    ) -> Result<Option<Vec<T>>, Error> {
+        let Some(mapped) = self.mapped.take() else {
+            return Ok(ran.await?.then(Vec::new));
+        };
+        MappingReady { device, mapped }.await?;
+        let lease = self
+            .slot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .lease
+            .take()
+            .expect("a finished mapping leaves its staging buffer in the slot");
+        match ran.await {
+            Ok(true) => {
+                let values = {
+                    let view = lease
+                        .buffer()
+                        .get_mapped_range(0..self.bytes)
+                        .map_err(|error| Error::Map(error.to_string()))?;
+                    pod_vec_from_bytes(&view)?
+                };
+                lease.recycle(true);
+                Ok(Some(values))
+            }
+            Ok(false) => {
+                lease.retire();
+                Ok(None)
+            }
+            Err(error) => {
+                lease.retire();
+                Err(error)
+            }
+        }
     }
 }
 

@@ -276,7 +276,7 @@ pub fn gpu_task(input: TokenStream) -> TokenStream {
 /// ```
 ///
 /// The first part is the batch's name, then the options, each ending in `;`: `on(<device>);` (required: an
-/// `Arc<Device>` or a reference to one), `in_flight(1);` (the only value in this release) and `crate(<path>);`. The
+/// `Arc<Device>` or a reference to one), `in_flight(n);` (1 to 4 frames in flight; 1 when left out) and `crate(<path>);`. The
 /// last part is the build block `|b| { .. }`: `b.input::<T>(shape)` is a buffer the frames write, `b.param::<T>(v)` a
 /// scalar they set, and each `gpu_task!` is a stage that reads the handles and parameters the block declared by name
 /// (no capture list for them; a host scalar is still listed). The block's last expression is returned with the

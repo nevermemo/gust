@@ -545,7 +545,7 @@ codes! {
     /// A `bool` as the element of a stage of a batch: a `Stage<bool>` the stage reads or writes, or a `bool` result
     /// type. A buffer holds a `bool` as a `u32` word, so the element is a `u32`.
     BatchElementBool = 1004 => "GUST-E1004";
-    /// A `gpu_batch!` that is not one of its forms: `in_flight` above 1, a stage the macro cannot track (inside a host
+    /// A `gpu_batch!` that is not one of its forms: `in_flight` outside 1 to 4, a stage the macro cannot track (inside a host
     /// closure, or a capture whose type it cannot see), a host-slice capture.
     BatchForm = 1005 => "GUST-E1005";
     /// A construct a stage of a batch does not have yet: `.late()`, a `match`, an index of rank 3; and a stage inside an

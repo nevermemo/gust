@@ -2045,11 +2045,11 @@ Decision: D157 as amended by D222 and D244, plan m14.s2, slice s2e.
 
 ### GUST-E1005 `gpu_batch!` form this release does not have, or a stage the macro cannot read
 
-A `gpu_batch!` is `gpu_batch!("name", on(&device); [in_flight(1);] |b| { .. })`, and its stages are `gpu_task!` calls written directly in the block. The macro reads the block's `let`s to learn the type of each handle and parameter (`b.input::<T>(..)`, `b.param::<T>(..)`, a stage's `-> T`, an in-place target), so a stage names them with no capture list entry. It refuses: `in_flight` above 1 (this release has one frame in flight; the message says "not in this release"), a call with no `on(..)`, a `gpu_task!` inside a closure or a function of the block, a block-declared name of a type the macro cannot see used in a stage (list it as a scalar, or give the `let` a turbofish or an annotation), a host slice in a stage's list (upload it into an `input`), `on(..)` on a stage (the stage runs on the batch's device), and a `(u32, u32)` parameter read in a body (it sizes stages; read the two numbers from scalars).
+A `gpu_batch!` is `gpu_batch!("name", on(&device); [in_flight(n);] |b| { .. })`, and its stages are `gpu_task!` calls written directly in the block. The macro reads the block's `let`s to learn the type of each handle and parameter (`b.input::<T>(..)`, `b.param::<T>(..)`, a stage's `-> T`, an in-place target), so a stage names them with no capture list entry. It refuses: `in_flight` outside 1 to 4 (the message says "from 1 to 4 frames"), a call with no `on(..)`, a `gpu_task!` inside a closure or a function of the block, a block-declared name of a type the macro cannot see used in a stage (list it as a scalar, or give the `let` a turbofish or an annotation), a host slice in a stage's list (upload it into an `input`), `on(..)` on a stage (the stage runs on the batch's device), and a `(u32, u32)` parameter read in a body (it sizes stages; read the two numbers from scalars).
 Reached through `#[gpu_module]`, raised by `gpu_batch!` and by `gpu_task!` written inside one (the function-like macros that share the validator of `#[gpu_module]`).
-Rejected: `in_flight(2);`, `let x = make(); gpu_task!(n, |i| -> f32 { x })`, `gpu_task!(n, [a: &[f32]], |i| -> f32 { a[i] })` in a block, `gpu_task!(on(&d); n, |i| -> u32 { i })` in a block.
+Rejected: `in_flight(5);`, `let x = make(); gpu_task!(n, |i| -> f32 { x })`, `gpu_task!(n, [a: &[f32]], |i| -> f32 { a[i] })` in a block, `gpu_task!(on(&d); n, |i| -> u32 { i })` in a block.
 Fixture: `tests/ui/batch-form`.
-Write instead: `in_flight(1);`, handles declared with `b.input::<T>(..)`, and the stage written in the block itself.
+Write instead: `in_flight(2);`, handles declared with `b.input::<T>(..)`, and the stage written in the block itself.
 Decision: plan m14.s2, slice s2a2.
 
 ### GUST-E1006 body of a batch stage that is not in this release

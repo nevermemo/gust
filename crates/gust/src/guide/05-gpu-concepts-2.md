@@ -28,7 +28,9 @@ that frames set, and each `gpu_task!` in the block is a stage that reads the han
 batch is sealed: the structure is frozen, the data stays writable. A frame is `batch.begin().await?`, then
 `write`, `set` and `ticket`, then `submit()` (one queue submission on the GPU device, however many stages and tickets),
 then `ticket.await`. A frame dropped before `submit` makes no submission and gives `Err(NotSubmitted)` to its tickets.
-This release has one frame in flight; `in_flight` above 1 is GUST-E1005. `examples/batch-basics` has a three-stage
+`in_flight(n)` (1 to 4; 1 when left out) lets `begin` return while up to n-1 earlier frames still run; outside 1 to 4 it
+is GUST-E1005. The frames share one set of buffers, so the data persists from frame to frame: an input or parameter that a
+frame does not write or set holds the value of the last frame that reached the queue, whatever n is. `examples/batch-basics` has a three-stage
 batch (1-D, 2-D and in place) with two tickets, and GUST-E1005 and E1006 are the diagnostics of the form.
 
 ## Workgroup memory and barriers

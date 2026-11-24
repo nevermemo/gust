@@ -1,1 +1,2 @@
-//! Slot reuse of a batch (a later slice of m14.s2): more than one frame in flight, with a ring of per-frame buffers.
+//! Slots: a stage that can be replaced between frames (slice s2d). Frames in flight share the batch's buffers (D258); a
+//! replaced stage's buffers live until the frames begun before the replacement have completed.

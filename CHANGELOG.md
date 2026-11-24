@@ -25,7 +25,7 @@ breaks existing code bumps the minor version, and the promise is described in th
   `set`, `ticket`, `submit()` (one queue submission on the GPU device) and `ticket.await`. New public names:
   `gust::{Batch, FrameRun, Submitted, Ticket}` and, in `gust::batch`, `Builder`, `Stage`, `Param`, `StageInfo`,
   `Report`, `D1`, `D2`, `Rank`, `IntoShape`, `ParamType`, `BoxFuture`, `Error` (with `NotInput` and `FrameLive`) and the
-  native `Blocking` (`dispatch()`, whose every `read` is a submission of its own). `in_flight` above 1 is GUST-E1005;
+  native `Blocking` (`dispatch()`, whose every `read` is a submission of its own). `in_flight` above 4 is GUST-E1005;
   GUST-E1006 refuses a body or a place a batch stage does not take. Runs on `CpuDevice` and `HeadlessDevice`.
 - In the unpublished `gust-algo` (m14.s2f1, D259): owned `'static` plans (`reduce::ReducePlan`, `SumWrappingPlan`,
   `scan::ScanPlan`, `compact::CountPlan`, `CompactPlan`) whose `append` takes borrowed operands of any
@@ -36,6 +36,15 @@ breaks existing code bumps the minor version, and the promise is described in th
   under the `dev` profile only: the strict web profile refuses it, because its kernels need precompiled artifacts the
   crate does not include yet, so nothing runs there (the immediate functions, `timed` and `evidence` are
   native-only). Checked on the Radeon 890M only; RTX 5090: owed.
+- Frames in flight above one and the caller's encoder (m14.s2c, m14.s2a2e). `in_flight(n)` takes 1 to 4: `begin`
+  waits only when `n` frames are in flight, for the oldest; above 4 is GUST-E1005. `FrameRun::encode(&mut encoder)`
+  records a frame into the caller's encoder (`wgpu::CommandEncoder` on the GPU device) and
+  `Encoded::submitted(&token)` reports the caller's submission, which makes the tickets live; a ticket of a frame that
+  never ran resolves to `Error::NotSubmitted`. A batch has one set of buffers whatever `n` is (D258): an input or
+  parameter that a frame does not write or set holds the value of the last frame that reached the queue; a frame
+  recorded into a caller's encoder counts by its report (a reported frame's `set`s hold, a dropped frame's are
+  discarded). No speed claim for `in_flight` above 1 yet: SB1p on the Radeon 890M gave 1.462 at 2^10 (likely
+  clock-bound), 1.292 at 2^16 and 0.997 at 2^20; the RTX 5090 half is owed.
 
 - Capture one GPU call and replay chosen invocations on the CPU twin (g2.cap). Every kernel with a twin gets a generated
   `capture(&gpu, &call)` (test builds and `--cfg gust_dual`) returning a `gust::capture::Captured` with

@@ -30,7 +30,7 @@ enum TicketState<T> {
     /// The frame has not been submitted; holds the waker of the last poll.
     Reserved(Option<Waker>),
     /// The frame was submitted: the read-back.
-    Running(BoxFuture<Result<Vec<T>, map::Error>>),
+    Running(BoxFuture<Result<Option<Vec<T>>, map::Error>>),
     /// The frame was never submitted.
     Failed,
     /// The result was handed out.
@@ -48,7 +48,7 @@ impl<T> TicketCell<T> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn start(&self, read: BoxFuture<Result<Vec<T>, map::Error>>) {
+    fn start(&self, read: BoxFuture<Result<Option<Vec<T>>, map::Error>>) {
         let waker = {
             let mut state = self.lock();
             let TicketState::Reserved(waker) = &mut *state else {
@@ -97,7 +97,14 @@ impl<T> Future for Ticket<T> {
             TicketState::Running(read) => match read.as_mut().poll(cx) {
                 Poll::Ready(result) => {
                     *state = TicketState::Taken;
-                    Poll::Ready(result.map_err(Error::Device))
+                    Poll::Ready(match result {
+                        Ok(Some(values)) => Ok(values),
+                        // The copy never ran: the encoder it was recorded into was not submitted.
+                        Ok(None) => Err(Error::NotSubmitted {
+                            batch: self.cell.batch.clone(),
+                        }),
+                        Err(error) => Err(Error::Device(error)),
+                    })
                 }
                 Poll::Pending => Poll::Pending,
             },
@@ -121,8 +128,8 @@ const _: () = {
 
 /// A reserved read-back, with its element type erased so that a frame holds a list of them.
 trait ReadSlot<D: BatchDevice> {
-    /// Record the copy into the frame, after the stages.
-    fn record(&mut self, device: &D, frame: &mut D::Frame);
+    /// Record the copy into the encoder, after the stages.
+    fn record(&mut self, device: &D, encoder: &mut D::Encoder);
     /// The frame was submitted: start the read-back.
     fn start(self: Box<Self>, device: &D, submission: &D::Submission);
     /// The frame was not submitted.
@@ -135,8 +142,8 @@ struct Reserved<D: BatchDevice, T: GpuPod> {
 }
 
 impl<D: BatchDevice, T: GpuPod + Send> ReadSlot<D> for Reserved<D, T> {
-    fn record(&mut self, device: &D, frame: &mut D::Frame) {
-        device.frame_read(frame, &mut self.read);
+    fn record(&mut self, device: &D, encoder: &mut D::Encoder) {
+        device.frame_read(encoder, &mut self.read);
     }
 
     fn start(self: Box<Self>, device: &D, submission: &D::Submission) {
@@ -160,6 +167,8 @@ pub struct FrameRun<D: BatchDevice> {
     frame: Option<D::Frame>,
     pending: Vec<(usize, Value)>,
     reads: Vec<Box<dyn ReadSlot<D>>>,
+    /// The frame was recorded into a caller's encoder (`encode`): the host cannot tell whether that encoder ran.
+    encoded: bool,
     /// The frame was handed to `submit`'s last step: nothing is left for `Drop` to undo.
     done: bool,
 }
@@ -178,15 +187,15 @@ fn device_error<D: BatchDevice>(error: D::Error) -> Error {
 }
 
 impl<D: BatchDevice> super::Batch<D> {
-    /// Start a frame. With one frame in flight this waits until the frame before it has run (it never waits for a
-    /// frame that was dropped).
+    /// Start a frame. It waits only when the batch already has `in_flight(n)` frames in flight: then it waits until
+    /// the oldest of them has run (it never waits for a frame that was dropped).
     ///
     /// # Errors
     ///
     /// [`Error::FrameLive`] when the frame before is neither submitted nor dropped; the device's failures.
     pub async fn begin(&mut self) -> Result<FrameRun<D>, Error> {
         let core = &self.core;
-        let last = {
+        let oldest = {
             let mut run = core.run.lock().unwrap_or_else(PoisonError::into_inner);
             if run.live {
                 return Err(Error::FrameLive {
@@ -194,17 +203,24 @@ impl<D: BatchDevice> super::Batch<D> {
                 });
             }
             run.live = true;
-            run.last.take()
+            if run.pending.len() >= run.depth {
+                run.pending.pop_front()
+            } else {
+                None
+            }
         };
         let mut claim = Claim {
             core,
             armed: true,
-            last,
+            oldest,
         };
-        if let Some(last) = claim.last.as_ref() {
-            core.device.completion(last).await.map_err(Error::Device)?;
+        if let Some(oldest) = claim.oldest.as_ref() {
+            core.device
+                .completion(oldest)
+                .await
+                .map_err(Error::Device)?;
         }
-        claim.last = None;
+        claim.oldest = None;
         let frame = core.device.begin_frame().map_err(device_error::<D>)?;
         claim.armed = false;
         Ok(FrameRun {
@@ -212,6 +228,7 @@ impl<D: BatchDevice> super::Batch<D> {
             frame: Some(frame),
             pending: Vec::new(),
             reads: Vec::new(),
+            encoded: false,
             done: false,
         })
     }
@@ -222,18 +239,19 @@ impl<D: BatchDevice> super::Batch<D> {
 struct Claim<'a, D: BatchDevice> {
     core: &'a Core<D>,
     armed: bool,
-    last: Option<D::Submission>,
+    oldest: Option<D::Submission>,
 }
 
 impl<D: BatchDevice> Drop for Claim<'_, D> {
     fn drop(&mut self) {
         if self.armed {
-            if let Some(last) = self.last.take() {
+            if let Some(oldest) = self.oldest.take() {
                 self.core
                     .run
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
-                    .last = Some(last);
+                    .pending
+                    .push_front(oldest);
             }
             release(self.core);
         }
@@ -345,47 +363,77 @@ impl<D: BatchDevice> FrameRun<D> {
     ///
     /// The device's failures. The frame's tickets then resolve to [`Error::NotSubmitted`].
     pub fn submit(mut self) -> Result<Submitted<D>, Error> {
-        let frame = self.encode()?;
-        let submission = self
-            .core
+        let core = Arc::clone(&self.core);
+        let mut encoder = core.device.new_encoder();
+        let frame = self.record(&mut encoder)?;
+        let submission = core
             .device
-            .submit_frame(frame)
+            .submit_frame(frame, encoder)
             .map_err(device_error::<D>)?;
         Ok(self.mark_submitted(submission))
     }
 
-    /// First step of `submit`: the extent records that a `set` changed, the stages in order, then the copies of the
-    /// tickets.
-    fn encode(&mut self) -> Result<D::Frame, Error> {
+    /// Record the frame into the caller's encoder instead of making a submission: the writes, the extent records of
+    /// the parameters that changed, the stages in order and the copies of the tickets. Nothing runs until the caller
+    /// submits the encoder and reports it with [`Encoded::submitted`]; one queue submission can then carry the frame
+    /// and the caller's own passes. Returns at once.
+    ///
+    /// The frame stays live until it is reported or dropped, and its tickets resolve only after the report. Frames
+    /// run in the order of the caller's submissions, so with `in_flight(n)` each of the `n` frames can be encoded
+    /// this way, as long as the caller submits them in the order it began them (decision D258; GUST does not check the
+    /// order, and results are wrong if it is broken).
+    ///
+    /// # Errors
+    ///
+    /// The device's failures. The frame is then gone (its tickets resolve to [`Error::NotSubmitted`], the batch can
+    /// begin a new frame), and `encoder` holds whatever was recorded before the failure: on the GPU the copies and the
+    /// passes of the stages that came before the one that failed, and nothing of the stage that failed. Discard the
+    /// encoder; do not submit it.
+    pub fn encode(mut self, encoder: &mut D::Encoder) -> Result<Encoded<D>, Error> {
+        let core = Arc::clone(&self.core);
+        let frame = self.record(encoder)?;
+        let encoded = core
+            .device
+            .encoded_frame(frame, encoder)
+            .map_err(device_error::<D>)?;
+        self.encoded = true;
+        Ok(Encoded { run: self, encoded })
+    }
+
+    /// First step of `submit` and of `encode`: the writes, the extent records that a `set` changed, the stages in
+    /// order, then the copies of the tickets, all into `encoder`.
+    fn record(&mut self, encoder: &mut D::Encoder) -> Result<D::Frame, Error> {
         let core = Arc::clone(&self.core);
         let device = &*core.device;
         let mut frame = self.frame.take().expect("a live frame holds its recorder");
-        let mut values = core
-            .run
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .values
-            .clone();
+        let (mut values, resync) = {
+            let run = core.run.lock().unwrap_or_else(PoisonError::into_inner);
+            (run.values.clone(), run.resync)
+        };
         for (id, value) in &self.pending {
             values[*id] = *value;
         }
         let values = Values(values);
         for stage in &core.stages {
-            let changed = stage
-                .params
-                .iter()
-                .any(|id| self.pending.iter().any(|(set, _)| set == id));
+            let changed = resync
+                || stage
+                    .params
+                    .iter()
+                    .any(|id| self.pending.iter().any(|(set, _)| set == id));
             if let (true, Some(update)) = (changed, &stage.update) {
                 update(device, &mut frame, &values).map_err(device_error::<D>)?;
             }
         }
+        device
+            .frame_uploads(&mut frame, encoder)
+            .map_err(device_error::<D>)?;
         for stage in &core.stages {
             device
-                .frame_stage(&mut frame, &stage.prepared)
+                .frame_stage(encoder, &stage.prepared)
                 .map_err(device_error::<D>)?;
         }
         for slot in &mut self.reads {
-            slot.record(device, &mut frame);
+            slot.record(device, encoder);
         }
         Ok(frame)
     }
@@ -402,8 +450,11 @@ impl<D: BatchDevice> FrameRun<D> {
             for (id, value) in self.pending.drain(..) {
                 run.values[id] = value;
             }
+            // A frame that re-recorded every parameter leaves nothing to resync, unless it is itself a caller's: its
+            // encoder may not have run.
+            run.resync = self.encoded;
             run.live = false;
-            run.last = Some(submission.clone());
+            run.pending.push_back(submission.clone());
         }
         self.done = true;
         Submitted { core, submission }
@@ -418,7 +469,59 @@ impl<D: BatchDevice> Drop for FrameRun<D> {
         for slot in self.reads.drain(..) {
             slot.abandon();
         }
+        if self.encoded {
+            // The caller may still submit the encoder: the device can hold this frame's parameters and writes.
+            self.core
+                .run
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .resync = true;
+        }
         release(&self.core);
+    }
+}
+
+/// A frame recorded into a caller's encoder by [`FrameRun::encode`], waiting for the caller's submission. Submit the
+/// encoder, then report it with [`submitted`](Self::submitted).
+///
+/// Dropping it without that report, or reporting a submission that did not carry the encoder (the encoder was dropped
+/// or never submitted), makes no frame: its tickets resolve to [`Error::NotSubmitted`], never to bytes an earlier frame
+/// left behind. What the next frame sees follows the rule of the batch (decision D258: data holds the value of the last
+/// frame that reached the queue), with these cases, which the host cannot tell apart from the outside:
+///
+/// * An input: the `write`s of a frame that never reached the queue are lost (the host keeps no bytes), so the next
+///   frame sees the input as the last frame that did reach the queue left it. If the caller still submits the encoder
+///   of a dropped `Encoded`, its writes do land in the device.
+/// * A parameter: the `set`s of a reported frame hold for the later frames whether or not its encoder ran (the next
+///   frame records every parameter again, so the device follows the host); the `set`s of a dropped `Encoded` are
+///   discarded, and the next frame records the values from before it, even if the caller submitted its encoder.
+///
+/// An encoder whose frame was reported with a submission that did not carry it, or was dropped, must be dropped, never
+/// submitted later: it would write the batch's buffers out of order with the frames after it.
+#[must_use = "submit the encoder, then report it with `submitted`"]
+pub struct Encoded<D: BatchDevice> {
+    run: FrameRun<D>,
+    encoded: D::Encoded,
+}
+
+impl<D: BatchDevice> core::fmt::Debug for Encoded<D> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Encoded")
+            .field("batch", &self.run.core.name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<D: BatchDevice> Encoded<D> {
+    /// The caller submitted the encoder: `token` is what the submission returned (on the GPU, the index of the queue
+    /// submission). Call it right after the submission and before any later one, so that waiting for the frame does not
+    /// also wait for work submitted after it. The tickets are live from here, and the batch keeps the frame as one of
+    /// the frames in flight. Submit the encoder first: reporting a submission that has not been made is an error of the
+    /// device (a validation error on the GPU).
+    pub fn submitted(self, token: &D::Token) -> Submitted<D> {
+        let Self { run, encoded } = self;
+        let submission = run.core.device.encoded_submitted(encoded, token);
+        run.mark_submitted(submission)
     }
 }
 

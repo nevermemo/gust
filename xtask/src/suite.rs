@@ -831,7 +831,9 @@ fn run_profile_target(profile: &str, target: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The steps a run executes and the steps `--skip-difftest` leaves out (those of [`DIFFTEST_UNIT_STEPS`]). The flag on
+/// The steps a run executes and the steps `--skip-difftest` leaves out (those of [`DIFFTEST_UNIT_STEPS`], and the batch of
+/// the Gpu suite, [`DIFFTEST_GPU`], which `check-difftest --prepare` and `--runs-only` can run outside and inside the GPU
+/// lock instead). The flag on
 /// a suite that has none of them is an error, so it can never be a silent no-op.
 pub(crate) fn plan_suite(
     suite: Suite,
@@ -843,10 +845,10 @@ pub(crate) fn plan_suite(
     }
     let (skipped, run): (Vec<Step>, Vec<Step>) = steps
         .into_iter()
-        .partition(|step| DIFFTEST_UNIT_STEPS.contains(step));
+        .partition(|step| DIFFTEST_UNIT_STEPS.contains(step) || *step == DIFFTEST_GPU);
     if skipped.is_empty() {
         return Err(format!(
-            "--skip-difftest: suite {} has no differential-test step to skip (only Unit and Slangc have)",
+            "--skip-difftest: suite {} has no differential-test step to skip (only Unit, Slangc and Gpu have)",
             suite.name()
         ));
     }
@@ -861,7 +863,7 @@ fn run_suite(suite: Suite, skip_difftest: bool) -> Result<(), String> {
     println!("   does not cover: {}", suite.not_covered());
     for step in &skipped {
         println!(
-            "-- SKIPPED by --skip-difftest (left to the CI job `difftest`): {}",
+            "-- SKIPPED by --skip-difftest (left to the CI job `difftest`, or to `check-difftest --runs-only` for the Gpu batch): {}",
             step.label()
         );
     }

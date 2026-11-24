@@ -431,3 +431,63 @@ fn the_tool_dependency_of_e6j_is_a_normal_path_dependency_on_cargo_gust() {
     assert_eq!(app.matches("cargo-gust = ").count(), 1);
     assert!(with_tool_dependency("[dependencies]", "C:/repo").is_err());
 }
+
+fn fixture_at(target: &Path) -> Fixture {
+    Fixture {
+        root: target.join("repo"),
+        target: target.to_path_buf(),
+        target_dir: target.join("precompiled"),
+        scratch: target.join("precompiled-scratch"),
+        cargo: std::ffi::OsString::from("cargo"),
+        environment: Vec::new(),
+        report: crate::precompiled::StripReport::default(),
+    }
+}
+
+#[test]
+fn e6_target_directories_follow_the_configuration_and_keep_clear_of_the_copies() {
+    let fixture = fixture_at(Path::new("target-dir"));
+    let cases = e6_cases();
+    for case in &cases {
+        let directory = e6_target_dir(&fixture, case);
+        assert_eq!(
+            directory.parent(),
+            Some(fixture.scratch.as_path()),
+            "{}",
+            case.id
+        );
+        assert_ne!(directory, fixture.scratch_target_dir(), "{}", case.id);
+        let name = directory
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        for taken in [
+            "e3",
+            "e4",
+            "e6c",
+            "e6j",
+            "e7-expand",
+            "e7-gust",
+            "e7-target",
+            "e7-gust-target",
+        ] {
+            assert_ne!(name, taken, "{}", case.id);
+        }
+    }
+    for (one, other) in cases
+        .iter()
+        .flat_map(|one| cases.iter().map(move |other| (one, other)))
+    {
+        let same_configuration = one.profile == other.profile
+            && one.release == other.release
+            && one.workspace == other.workspace;
+        assert_eq!(
+            e6_target_dir(&fixture, one) == e6_target_dir(&fixture, other),
+            same_configuration,
+            "{} and {}",
+            one.id,
+            other.id
+        );
+    }
+}

@@ -73,6 +73,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    time::Instant,
 };
 
 use crate::{process::PROFILE_VARIABLE, validation::sha256_hex, workspace::workspace_root};
@@ -128,8 +129,8 @@ pub(crate) enum Mode {
     Full,
     /// `--check-only`: skip what needs an adapter (the runs of E1, E3 and E8) and Slang (the second half of E7).
     CheckOnly,
-    /// `--prepare`: no adapter, but Slang: every step but the three runs, E7b included; E8's consumer is copied out of
-    /// its temporary directory to `<target>/precompiled-dist`; then a stamp (HEAD, a hash of the working tree and a
+    /// `--prepare`: no adapter, but Slang: every step but the three runs, E7b included; E8's consumer builds in
+    /// `<target>/precompiled-dist-target` and is copied to `<target>/precompiled-dist`; then a stamp (HEAD, a hash of the working tree and a
     /// hash of each of the three binaries) that `AdapterRuns` reads.
     Prepare,
     /// `--adapter-runs`: only the three runs of E1, E3 and E8, on the binaries `Prepare` left and only if the stamp
@@ -339,6 +340,17 @@ pub(crate) fn check_precompiled(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Runs the E step `step` and prints its whole seconds, also when it fails.
+fn timed<T>(step: &str, run: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let started = Instant::now();
+    let outcome = run();
+    println!(
+        "check-precompiled {step}: took {} s",
+        started.elapsed().as_secs()
+    );
+    outcome
+}
+
 /// [`check_precompiled`] returning the pass summary (the E steps and the adapter they ran on) instead of printing
 /// it, so `verify --mode full` can record it.
 pub(crate) fn check_precompiled_report(args: &[String]) -> Result<String, String> {
@@ -366,15 +378,15 @@ pub(crate) fn check_precompiled_report(args: &[String]) -> Result<String, String
         None
     };
 
-    let report = e1_stripped_build_and_run(&fixture, options.mode)?;
-    let binary = e2_binary_and_features(&fixture)?;
-    let identity = e3_mutated_artifact(&fixture, options.mode)?;
-    let located = e4_missing_artifact(&fixture)?;
-    let strict_dual = e5_strict_plus_dual(&fixture)?;
-    let refusals = e6_refusals(&fixture)?;
-    let reexpanded = e7_reexpansion(&fixture)?;
-    let reproducible = e7_build_twice(&fixture, options.mode)?;
-    let distribution = e8_distribution(&fixture, &options)?;
+    let report = timed("E1", || e1_stripped_build_and_run(&fixture, options.mode))?;
+    let binary = timed("E2", || e2_binary_and_features(&fixture))?;
+    let identity = timed("E3", || e3_mutated_artifact(&fixture, options.mode))?;
+    let located = timed("E4", || e4_missing_artifact(&fixture))?;
+    let strict_dual = timed("E5", || e5_strict_plus_dual(&fixture))?;
+    let refusals = timed("E6", || e6_refusals(&fixture))?;
+    let reexpanded = timed("E7a", || e7_reexpansion(&fixture))?;
+    let reproducible = timed("E7b", || e7_build_twice(&fixture, options.mode))?;
+    let distribution = timed("E8", || e8_distribution(&fixture, &options))?;
 
     let headline = match prepared {
         Some((head, tree)) => {

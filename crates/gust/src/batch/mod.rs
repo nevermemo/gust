@@ -32,6 +32,14 @@
 //! later frame records again, until a frame made by `submit` clears it. A frame's tickets read that frame's results; a
 //! later frame's writes never reach an earlier frame. A shape cannot change after the seal (a `set` that would is
 //! [`Error::ShapeMismatch`]).
+//!
+//! A caller reads a batch's buffers on the GPU through a [`View`] ([`Batch::view`], decision D261): the batch's own
+//! buffer, kept alive by the view, with the batch's [`generation`](Batch::generation). What a reader sees follows the
+//! queue order of D258: a pass recorded into the same encoder after [`FrameRun::encode`] returned reads that frame, a
+//! pass recorded before `encode` reads the frame before it, and a pass in a later submission reads the last frame
+//! submitted before it; a view carries no check that a frame ran. Bind a view as read-only storage (a documented rule,
+//! not a check). A zero-length buffer keeps one placeholder element, as GUST's own bindings of an empty buffer do, so a
+//! reader uses [`View::len`] and not the shader's `arrayLength`.
 
 use core::any::Any;
 use core::cell::{Cell, RefCell};
@@ -51,6 +59,7 @@ mod frame;
 mod ops;
 mod shape;
 mod slot;
+mod view;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use frame::Blocking;
@@ -58,6 +67,7 @@ pub use frame::{Encoded, FrameRun, Submitted, Ticket};
 pub use shape::{D1, D2, IntoShape, ParamType, Rank};
 #[doc(hidden)]
 pub use shape::{ShapeSource, Value, Values};
+pub use view::View;
 
 /// A boxed future: `Send` on native targets, where a [`Ticket`] must be, and not on `wasm32`, whose handles are not.
 #[cfg(not(target_arch = "wasm32"))]
@@ -598,6 +608,8 @@ pub(crate) struct Core<D: BatchDevice> {
     pub(crate) stages: Vec<StageRec<D>>,
     pub(crate) params: Vec<ParamEntry>,
     pub(crate) exposed: Vec<bool>,
+    /// One counter per batch: moves when a buffer behind a handle is replaced (see [`Batch::generation`]).
+    pub(crate) generation: AtomicU64,
     pub(crate) run: Mutex<RunState<D>>,
 }
 
@@ -1284,6 +1296,7 @@ pub fn build<D: BatchDevice, H: DeviceRef<Device = D>, O>(
         stages: core::mem::take(&mut state.stages),
         params,
         exposed,
+        generation: AtomicU64::new(0),
         run: Mutex::new(RunState {
             values,
             live: false,

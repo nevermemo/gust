@@ -200,7 +200,7 @@ impl<'a> BufferBinding<'a> {
             independent_length: false,
             indirect: buffer.indirect,
             kind: BindingKind::Storage,
-            bytes: logical_bytes(buffer),
+            bytes: buffer.logical_bytes(),
             texture: None,
         }
     }
@@ -254,14 +254,6 @@ impl<'a> BufferBinding<'a> {
     pub(crate) fn byte_len(&self) -> u64 {
         self.len as u64 * u64::from(self.layout.stride)
     }
-}
-
-/// The bytes a binding of `buffer` exposes: `len` elements (one element for an empty buffer, whose allocation holds
-/// a placeholder), capped by the allocation. For every buffer that is not pooled this is the whole allocation, which
-/// is what `as_entire_binding` bound before; for a pooled buffer it is the logical length, not the class size.
-fn logical_bytes<T>(buffer: &GpuBuffer<T>) -> u64 {
-    let wanted = (buffer.len.max(1) as u64).saturating_mul(u64::from(buffer.layout.stride));
-    wanted.min(buffer.raw.size())
 }
 
 #[allow(deprecated)]

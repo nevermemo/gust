@@ -1367,9 +1367,13 @@ pub(crate) struct GpuSuitePin {
 /// Slice m14.mapw2: 650 over 67 became 652 over 67 (the lane counted 647 to 649 on its older base). The wide-field
 /// slice adds two GPU tests to `tests/map.rs` (a struct with a `Vec4` and a `Mat4` field, a struct that holds it), on
 /// an existing line. Checked by a full Gpu suite run on the Radeon 890M at the merge; the RTX 5090 run is owed.
+///
+/// Slice m14.s2v: 652 over 67 became 657 over 68. The batch view slice adds the new test file `tests/batch_view.rs`
+/// (five GPU tests, one `test result:` line). Checked by a full Gpu suite run on the Radeon 890M (lane); the RTX 5090
+/// run is owed.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 652,
-    result_lines: 67,
+    passed: 657,
+    result_lines: 68,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

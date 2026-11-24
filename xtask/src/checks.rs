@@ -556,6 +556,12 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "twin_encode_equals_submit",
             "twin_overlapping_frames_are_exact",
             "twin_the_three_refusals_are_not_submitted",
+            // `tests/view.rs`: a caller's view of a batch's buffers (m14.s2v).
+            "twin_a_two_dimensional_view_keeps_its_extents",
+            "twin_a_view_is_after_encode_the_frame_and_before_it_the_frame_before",
+            "twin_a_view_of_an_input_and_of_a_stage_holds_what_the_frame_left",
+            "twin_a_view_refuses_a_foreign_handle_and_one_the_block_did_not_return",
+            "twin_the_generation_is_equal_across_three_frames_and_with_two_in_flight",
         ],
     ),
 ];

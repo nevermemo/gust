@@ -12,6 +12,13 @@
 //! does not write holds the value of the last frame that reached the queue, for every `n`. A frame recorded into a
 //! caller's encoder follows `gust::batch::Encoded`: a reported frame's `set`s hold, a dropped frame's are discarded.
 //!
+//! A caller reads a batch's buffers on the GPU through `gust::batch::View` (`Batch::view`, decision D261): the batch's
+//! own [`GpuBuffer`], bound with [`GpuBuffer::as_binding`] (the live elements, not the size class), as read-only
+//! storage. A reader sees what the last frame recorded before its place in queue order left there: a pass recorded
+//! into the same encoder after `FrameRun::encode` returned reads that frame, one recorded before `encode` reads the
+//! frame before it, and one in a later submission reads the last frame submitted before it. A view carries no check
+//! that a frame ran, so an encoder of a failed, dropped or misreported frame is dropped with its passes.
+//!
 //! The pieces are by concern: [`build`] seals a stage, [`frame`] records a frame and submits it, [`ticket`] reserves
 //! and starts the read-backs. `shape` and `ops` hold what later slices add.
 

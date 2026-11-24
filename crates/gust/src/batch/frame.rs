@@ -380,10 +380,15 @@ impl<D: BatchDevice> FrameRun<D> {
     /// [`Encoded::submitted`]; one queue submission can then carry the frame and the caller's own passes. Returns at
     /// once.
     ///
-    /// The frame stays live until it is reported or dropped, and its tickets resolve only after the report. Frames
-    /// run in the order of the caller's submissions, so with `in_flight(n)` each of the `n` frames can be encoded
-    /// this way, as long as the caller submits them in the order it began them (decision D258; GUST does not check the
-    /// order, and results are wrong if it is broken).
+    /// A pass the caller records into `encoder` after this call reads this frame's results through a
+    /// [`View`](super::View), and a pass recorded before it reads the frame before (see
+    /// [`Batch::view`](super::Batch::view) for the rule).
+    ///
+    /// The frame stays live until it is reported as submitted (`Encoded::submitted`) or dropped, `begin` refuses a
+    /// new frame while one is live, and its tickets resolve only after the report. Frames run in the order of the
+    /// caller's submissions, so with `in_flight(n)` up to `n` reported frames may still be running on the GPU while the
+    /// next one is encoded, as long as the caller submits them in the order it began them (decision D258; GUST does
+    /// not check the order, and results are wrong if it is broken).
     ///
     /// # Errors
     ///

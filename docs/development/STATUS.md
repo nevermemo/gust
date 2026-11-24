@@ -1114,6 +1114,30 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       abandon) caught on the GPU and the twin. SB1 host-span ratios (0.74-0.83) are from a fixed-order harness and
       light 890M kernels may measure the clock state (Breeze); not a speed claim. Opus review: merge after fixes;
       fixed, re-checked (merge).
+    - m14.s5c (gates S5c): the golden SPIR-V compiles of `check-artifacts` (and of `check-feature vectors` and
+      `uniforms`) run in a bounded pool of slangc processes; results are collected in job order, so the first error
+      and the file names are the serial run's, and two jobs that would write one output file are refused before any
+      compile. Golden phase 113 s to 33 s on the 890M; check-artifacts about 330 s to 270 s. Opus review: merge after
+      fixes; fixed, re-checked (merge).
+    - m14.s8b1 (gates S8b): more threads for the host work of the two slowest gust-wgpu GPU test binaries:
+      naga_layout's shader compiles use half the hardware threads (4 to 8, was at most 4) and pixel builds its host
+      reference on scoped threads with the same cap. 890M: naga_layout 26.8 s to 17.0 s, pixel 31.4 s to 12.0 s;
+      uncapped runs were slower. The RTX 5090 run is owed (no-5090 window). Opus review: merge after fixes; fixed,
+      re-checked (merge).
+    - m14.dualf (gates): each `check-dual --runs-only` step prints cargo's `Finished` line beside any `Compiling`
+      line, reads only up to cargo's first `Running` line, and fails when no `Finished` line appears, since a quiet
+      cargo would otherwise prove nothing; m14.dualf2 forces cargo's quiet and verbose settings off for every
+      check-dual step, so a cargo config cannot hide or cut those lines. Live 890M runs: one `Finished` and no
+      `Compiling` line per step. Opus review: merge after fixes; fixed, re-checked twice (merge).
+    - m14.s2e part 1 (Breeze): in a stage of a `gpu_batch!`, a `Stage<bool>` entry or a `bool` result type is
+      GUST-E1004 (a buffer holds a `bool` as a `u32` word); a stand-alone `gpu_task!`, `map` and `par_for!` are
+      unchanged. UI fixture batch-bool (pin 281). Enum elements (part 2) follow s2c. Opus review: merge after fixes;
+      fixed, re-checked (merge).
+    - m14.s8f (gates S8f): `cargo xtask check-bench --functional` builds gust-bench in a new `functional` profile
+      (release settings without cross-crate LTO, 16 codegen units); publishable runs keep `release`. The rebuild a
+      merge gate pays fell from about 115 s to 53.5 s on the 890M, with identical functional results; the merge
+      gate's prebuild builds the same profile. The RTX 5090 run is owed. Opus review: merge after fixes; fixed,
+      re-checked (merge).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

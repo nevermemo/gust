@@ -8,6 +8,7 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     process::{Command, Output},
+    time::Instant,
 };
 
 use super::{
@@ -101,8 +102,8 @@ pub(crate) fn section_version(manifest: &str, section: &str) -> Option<String> {
 /// sit beside the consumer as `../unpacked/<name>-<version>`. `versions` has the version of each of
 /// [`E8_PACKAGES`], in its order.
 pub(crate) fn consumer_manifest(versions: &[String; 4]) -> String {
-    let mut text = String::from(
-        "# The relocated consumer of E8 in `cargo xtask check-precompiled`: registry-style dependencies, patched onto the\n# unpacked packages.\n[package]\nname = \"dist-consumer\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\n",
+    let mut text = format!(
+        "# The relocated consumer of E8 in `cargo xtask check-precompiled`: registry-style dependencies, patched onto the\n# unpacked packages.\n[package]\nname = \"{CONSUMER_NAME}\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\n",
     );
     for (spec, version) in E8_PACKAGES.iter().zip(versions) {
         if spec.name != "gust-compute-macros" {
@@ -329,15 +330,29 @@ pub(crate) fn kernels_patch_configs(root: &Path) -> Result<[String; 2], String> 
     ])
 }
 
+/// The package name of the consumer that [`consumer_manifest`] writes.
+const CONSUMER_NAME: &str = "dist-consumer";
+
+/// The target directory of the consumer build of E8: `<target>/precompiled-dist-target`, outside the work directory,
+/// so that the dependency tree from crates.io (wgpu, naga and the rest) stays built between runs. What E8 judges (the
+/// unused-patch lines, the lock, the run of the built consumer) does not depend on those objects being cold. The
+/// packaging target directories stay in the work directory: they hold the `.crate` files and must be fresh. The clean
+/// before the build bounds the growth per run only; a change of toolchain or lock leaves the old crates.io copy
+/// behind, as in any target directory.
+fn consumer_target(fixture: &Fixture) -> PathBuf {
+    fixture.target.join("precompiled-dist-target")
+}
+
 /// The directory under the cargo target directory where `--prepare` keeps the consumer of E8.
 const KEPT_CONSUMER_DIR: &str = "precompiled-dist";
 
-/// Where `--prepare` keeps the built consumer of E8, whose work directory is deleted.
+/// Where `--prepare` keeps the built consumer of E8: the next run's `cargo clean -p dist-consumer` removes the built
+/// one.
 pub(super) fn kept_consumer(fixture: &Fixture) -> PathBuf {
     fixture
         .target
         .join(KEPT_CONSUMER_DIR)
-        .join(format!("dist-consumer{EXE_SUFFIX}"))
+        .join(format!("{CONSUMER_NAME}{EXE_SUFFIX}"))
 }
 
 /// The run half of E8: the built consumer on the adapter. Returns what it printed.
@@ -599,9 +614,32 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
         ));
     }
 
-    // 4b. The release build under `native` in the stripped environment of E1.
-    let target = work.join("target");
+    // 4b. The release build under `native` in the stripped environment of E1. Its target directory outlives the work
+    // directory, so the third-party objects are built once; the objects of the five path packages are removed first,
+    // because the unpacked trees sit at a new path every run and would pile up under new hashes (and under a reused
+    // `--work-dir` the hashes repeat, so the clean is also what forces these packages to be built again).
+    let target = consumer_target(fixture);
     let target_arg = Fixture::target_dir_arg(&target)?;
+    let mut clean = vec!["clean", "--release", "--locked", "--color", "never"];
+    for name in E8_PACKAGES
+        .iter()
+        .map(|spec| spec.name)
+        .chain([CONSUMER_NAME])
+    {
+        clean.extend(["-p", name]);
+    }
+    clean.extend([
+        "--manifest-path",
+        consumer_manifest_arg,
+        "--target-dir",
+        target_arg,
+    ]);
+    run_step(
+        "E8",
+        "cargo clean --release (the path packages of the consumer)",
+        fixture.cargo_in(&consumer, &clean),
+    )?;
+    let started = Instant::now();
     let output = run_step(
         "E8",
         "cargo build --release (the consumer)",
@@ -620,6 +658,10 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
             ],
         ),
     )?;
+    println!(
+        "check-precompiled E8: the consumer built in release in {} s",
+        started.elapsed().as_secs()
+    );
     unused.extend(unused_patch_lines(&String::from_utf8_lossy(&output.stderr)));
     problems.extend(
         unused
@@ -637,9 +679,10 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
 
     // 4c. Run it.
     let built = Fixture::app_binary(&target);
-    let built = built.with_file_name(format!("dist-consumer{EXE_SUFFIX}"));
+    let built = built.with_file_name(format!("{CONSUMER_NAME}{EXE_SUFFIX}"));
     if options.mode == Mode::Prepare {
-        // The work directory is deleted when this step ends; `--adapter-runs` runs the kept copy.
+        // The next run's clean removes the built binary, and the stamp hashes the fixed kept path, so
+        // `--adapter-runs` runs this copy.
         let kept = kept_consumer(fixture);
         fs::create_dir_all(fixture.target.join(KEPT_CONSUMER_DIR))
             .and_then(|()| fs::copy(&built, &kept))

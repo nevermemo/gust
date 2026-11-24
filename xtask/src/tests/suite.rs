@@ -478,14 +478,37 @@ fn only_the_two_tool_free_doc_steps_run_in_the_tool_free_environment() {
 }
 
 #[test]
+fn skip_difftest_leaves_out_the_batch_of_the_gpu_suite_and_nothing_else() {
+    let gpu = Suite::Gpu.steps();
+    let batch = Step::CheckDifftest(&[]);
+    assert_eq!(
+        gpu.last(),
+        Some(&batch),
+        "the default Gpu suite ends with the batch"
+    );
+    let (run, skipped) = plan_suite(Suite::Gpu, true).unwrap();
+    assert_eq!(skipped, vec![batch]);
+    assert_eq!(run, gpu[..gpu.len() - 1].to_vec());
+    assert_eq!(batch.label(), "cargo xtask check-difftest");
+    // Without the flag nothing is left out, and the flag after the suite name parses for Gpu as it does for Unit.
+    assert_eq!(plan_suite(Suite::Gpu, false).unwrap(), (gpu, Vec::new()));
+    assert_eq!(
+        parse_test_args(&[
+            "--suite".to_owned(),
+            "Gpu".to_owned(),
+            "--skip-difftest".to_owned()
+        ])
+        .unwrap(),
+        TestRequest::Suite {
+            suite: Suite::Gpu,
+            skip_difftest: true
+        }
+    );
+}
+
+#[test]
 fn skip_difftest_is_an_error_where_there_is_nothing_to_skip_and_a_flag_after_the_suite() {
-    for suite in [
-        Suite::Cpu,
-        Suite::Spirv,
-        Suite::Reflect,
-        Suite::Gpu,
-        Suite::Full,
-    ] {
+    for suite in [Suite::Cpu, Suite::Spirv, Suite::Reflect, Suite::Full] {
         let error = plan_suite(suite, true).unwrap_err();
         assert!(error.contains("--skip-difftest"), "{error}");
     }

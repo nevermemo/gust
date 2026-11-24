@@ -238,7 +238,13 @@ fn stamp_text(fixture: &Fixture, head: &str, tree: &str) -> Result<String, Strin
 }
 
 /// The first line of the stamp `now` that the stamp of `--prepare` does not have, as a refusal naming both values.
-fn stamp_refusal(prepared: &str, now: &str) -> Option<String> {
+/// `what` is the noun of the prepared files and `command` the one that prepares them (`check-difftest` shares this).
+pub(crate) fn stamp_refusal(
+    prepared: &str,
+    now: &str,
+    what: &str,
+    command: &str,
+) -> Option<String> {
     let line = now
         .lines()
         .find(|line| !prepared.lines().any(|p| p == *line))?;
@@ -248,13 +254,13 @@ fn stamp_refusal(prepared: &str, now: &str) -> Option<String> {
         .find_map(|p| p.strip_prefix(key)?.strip_prefix('='))
         .unwrap_or("(none)");
     Some(format!(
-        "the prepared binaries are stale: {key} was {before} when `--prepare` ran and is {value} now; run `cargo xtask check-precompiled --prepare` again"
+        "the prepared {what} are stale: {key} was {before} when `--prepare` ran and is {value} now; run `cargo xtask {command} --prepare` again"
     ))
 }
 
 /// HEAD and a hash of the working tree's state (status, the binary diff against HEAD, and the path, length and bytes of
 /// each untracked file).
-fn source_state(root: &Path) -> Result<(String, String), String> {
+pub(crate) fn source_state(root: &Path) -> Result<(String, String), String> {
     let git = |args: &[&str]| -> Result<Vec<u8>, String> {
         let output = Command::new("git")
             .args(args)
@@ -313,7 +319,7 @@ fn adapter_runs(fixture: &Fixture) -> Result<String, String> {
             "{error}; run `cargo xtask check-precompiled --prepare` again"
         ))
     })?;
-    if let Some(message) = stamp_refusal(&prepared, &now) {
+    if let Some(message) = stamp_refusal(&prepared, &now, "binaries", "check-precompiled") {
         return Err(refuse(message));
     }
     check_slang_free(fixture)?;

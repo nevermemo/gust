@@ -1425,7 +1425,7 @@ rerun a failure with `--seeds <the printed list>`.
 | Gate | Command | Seeds | Programs | Parties |
 | --- | --- | --- | --- | --- |
 | Unit suite (local), CI job `difftest` | `check-difftest --cpu-only --seeds 1-4`, after the harness crate's fmt, clippy and tests | 1 to 4 | 68 | interpreter, CPU twin |
-| Gpu suite | `check-difftest` | 1 to 8 | 136 and the `short_circuit` GPU test | interpreter, CPU twin, GPU |
+| Gpu suite (`--skip-difftest` leaves it out) | `check-difftest`, or `--prepare` then `--runs-only` | 1 to 8 | 136 and the `short_circuit` GPU test | interpreter, CPU twin, GPU |
 | `check-full`, last integration check | `check-difftest --seeds 1-8 --shapes grid,pixel` | 1 to 8 | 136 (104 also as a `pixel` kernel, 32 grid-only) and the `short_circuit` GPU test | the same, GPU on the hardware adapter, and the pixel kernel against the grid kernel |
 | `gpu-software`, pull request list | `check-difftest --seeds 1-2` | 1 to 2 | 34 and the `short_circuit` GPU test | the same, GPU on lavapipe |
 | `gpu-software`, nightly list | `check-difftest --seeds 1-72` | 1 to 72 | 1224 and the `short_circuit` GPU test | the same, GPU on lavapipe |

@@ -13,8 +13,17 @@
 //! `gust-algo` evidence tests and `examples/subgroup-reduce` cover that case.
 //!
 //! ```text
-//! cargo xtask check-difftest [--seeds <list|range|random:N>] [--shapes grid,pixel] [--cpu-only] [--report PATH]
+//! cargo xtask check-difftest [--seeds <list|range|random:N>] [--shapes grid,pixel] [--cpu-only] [--prepare | --runs-only] [--report PATH]
 //! ```
+//!
+//! `--prepare` and `--runs-only` split the GPU tier in two, so that the part that opens no adapter can run outside the
+//! GPU lock. `--prepare` does, for both batches, what needs no adapter (the generation of the run crate and the build of
+//! its test executable, `difftest-run --prepare-exe`), copies each executable to `<target>/difftest-prepared/` (the build of
+//! one profile does not survive the build of the other) and writes a stamp there: HEAD and a hash of the working tree
+//! (read before the builds), the seeds, the record directories' name and the sha256 of each executable; it also builds the
+//! `short_circuit` test. `--runs-only` refuses without a stamp or when any of these differ, and otherwise runs the batches, the
+//! `short_circuit` test and the comparison of the exported records on the prepared executables (`--run-exe`: no cargo, no
+//! build). Both take the grid run (no `--cpu-only`, `random:N` or `--shapes grid,pixel`), and `--runs-only` names the same seeds.
 //!
 //! `--shapes grid,pixel` (slice mx.p1c) has the harness give every generated program a second kernel, its pixel form,
 //! and compare it with the grid run: bit for bit for integers and booleans, and for `f32` through each shape's interval,
@@ -45,7 +54,9 @@ use crate::{
         self, Json,
         report::{array, field, float, text, uint},
     },
+    precompiled::{source_state, stamp_refusal},
     process::{require_tests_ran, run_capture_in, sum_test_results, workspace_command},
+    validation::sha256_hex,
     workspace::{cargo_target_dir, workspace_root},
 };
 
@@ -285,7 +296,7 @@ const MAX_RANDOM_SEEDS: usize = 64;
 /// A range such as `1-4` may span at most this many seeds (the harness refuses larger ones too).
 const MAX_RANGE: u64 = 4096;
 
-const USAGE: &str = "usage: cargo xtask check-difftest [--seeds <list|range|random:N>] [--shapes grid,pixel] [--cpu-only] [--report PATH]";
+const USAGE: &str = "usage: cargo xtask check-difftest [--seeds <list|range|random:N>] [--shapes grid,pixel] [--cpu-only] [--prepare | --runs-only] [--report PATH]";
 
 /// The `GUST_PROFILE` of the batch that proves the capability changes no artifact of the corpus ([`DifftestStep::ProfileArtifacts`]).
 pub(crate) const SUBGROUPS_PROFILE: &str = "dev+subgroups";
@@ -325,6 +336,17 @@ pub(crate) enum DifftestStep {
     ProfileArtifacts,
 }
 
+/// How much of the Gpu tier a call runs (the part that needs no adapter can run outside the GPU lock).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stage {
+    /// No flag: everything, builds and runs, as it always was.
+    Whole,
+    /// `--prepare`: [`build_batches`] and a stamp, nothing that needs an adapter.
+    Prepare,
+    /// `--runs-only`: the steps of the Gpu tier on the executables `--prepare` left, only if its stamp is current; no build.
+    RunsOnly,
+}
+
 /// The steps of a mode. The GPU test belongs to the adapter run and to nothing else.
 pub(crate) fn steps(mode: Mode) -> Vec<DifftestStep> {
     match mode {
@@ -346,6 +368,8 @@ pub(crate) struct Options {
     pub(crate) random: bool,
     /// `--shapes grid,pixel`: every program also runs as a pixel kernel (`grid` always runs: it is the oracle).
     pub(crate) pixel: bool,
+    /// `--prepare` or `--runs-only`: which part of the Gpu tier this call runs.
+    pub(crate) stage: Stage,
 }
 
 /// Parses the value of `--shapes`: `grid` or `grid,pixel` (either order, each once). `grid` is the shape every other one
@@ -383,6 +407,7 @@ impl Options {
     pub(crate) fn parse_with(args: &[String], entropy: u64) -> Result<Self, String> {
         let mut spec: Option<String> = None;
         let mut cpu_only = false;
+        let mut stage = Stage::Whole;
         let mut shapes: Option<String> = None;
         let mut report = None;
         let mut iter = args.iter();
@@ -395,6 +420,19 @@ impl Options {
                     }
                 }
                 "--cpu-only" => cpu_only = true,
+                "--prepare" | "--runs-only" => {
+                    let asked = if arg == "--prepare" {
+                        Stage::Prepare
+                    } else {
+                        Stage::RunsOnly
+                    };
+                    if std::mem::replace(&mut stage, asked) != Stage::Whole {
+                        return Err(format!(
+                            "--prepare and --runs-only exclude each other and can be given once
+{USAGE}"
+                        ));
+                    }
+                }
                 "--shapes" => {
                     let value = iter.next().ok_or("--shapes needs a value")?;
                     if shapes.replace(value.clone()).is_some() {
@@ -420,12 +458,18 @@ impl Options {
             .map(parse_shapes)
             .transpose()?
             .unwrap_or(false);
+        if stage != Stage::Whole && (cpu_only || random || pixel) {
+            return Err(format!(
+                "--prepare and --runs-only split the Gpu tier of the grid run on seeds that stay the same between the two calls: they take no --cpu-only, no random:N and no --shapes grid,pixel\n{USAGE}"
+            ));
+        }
         Ok(Self {
             seeds,
             mode: if cpu_only { Mode::CpuOnly } else { Mode::Gpu },
             report,
             random,
             pixel,
+            stage,
         })
     }
 
@@ -1388,7 +1432,205 @@ fn difftest_summary(args: &[String]) -> Result<String, String> {
             .map_err(|error| format!("check-difftest: --report {}: {error}", path.display()))?,
         None => target.join("difftest-report.json"),
     };
+    if options.stage == Stage::Prepare {
+        return build_batches(&options, &root, &target, &report_path);
+    }
     run_steps(&options, &root, &target, &report_path)
+}
+
+/// The profiles of the two batches of the Gpu tier, in the order `--prepare` builds them: the `dev` build goes last, so
+/// that the build state the `short_circuit` test finds is its own, as after the batches of a whole run.
+const BUILD_ORDER: [&str; 2] = [SUBGROUPS_PROFILE, "dev"];
+
+/// What `--prepare` leaves in `<target>/difftest-prepared/` for `--runs-only`: the test executable of each batch (one
+/// build state does not survive the other profile's build, so each is copied out), the record directories their builds
+/// wrote (a new name for each `--prepare`, as for a whole run, because cargo re-expands the run crate only when
+/// `GUST_EXPORT_DIR` changes), and the stamp.
+struct Prepared {
+    dir: PathBuf,
+    nonce: String,
+}
+
+impl Prepared {
+    fn new(target: &Path, nonce: String) -> Self {
+        Self {
+            dir: target.join("difftest-prepared"),
+            nonce,
+        }
+    }
+
+    fn exe(&self, profile: &str) -> PathBuf {
+        self.dir.join(format!("{profile}.exe"))
+    }
+
+    /// The record directories of the `dev` and the `dev+subgroups` batch.
+    fn records(&self) -> (PathBuf, PathBuf) {
+        let base = self.dir.join("records").join(&self.nonce);
+        (base.join("dev"), base.join("dev-subgroups"))
+    }
+
+    fn stamp_file(&self) -> PathBuf {
+        self.dir.join("stamp")
+    }
+
+    /// The stamp: HEAD and the working tree (`state`, read before the builds), the seeds, the name of the record
+    /// directories and the sha256 of each executable, one `key=value` line each.
+    fn stamp_text(&self, options: &Options, state: &(String, String)) -> Result<String, String> {
+        let mut text = format!(
+            "head={}\ntree={}\nseeds={}\nrecords={}\n",
+            state.0,
+            state.1,
+            seed_list(&options.seeds),
+            self.nonce
+        );
+        for profile in BUILD_ORDER {
+            let exe = self.exe(profile);
+            let bytes = fs::read(&exe).map_err(|error| {
+                format!("cannot read the executable {}: {error}", exe.display())
+            })?;
+            text.push_str(&format!(
+                "sha256 of the {profile} executable={}\n",
+                sha256_hex(&bytes)
+            ));
+        }
+        Ok(text)
+    }
+}
+
+/// The prepared executables of `--runs-only`, if their stamp is current.
+fn check_prepared(options: &Options, root: &Path, target: &Path) -> Result<Prepared, String> {
+    let file = Prepared::new(target, String::new()).stamp_file();
+    let before = fs::read_to_string(&file).map_err(|error| {
+        format!(
+            "check-difftest --runs-only: no stamp at {} ({error}); run `cargo xtask check-difftest --prepare` first",
+            file.display()
+        )
+    })?;
+    let nonce = before
+        .lines()
+        .find_map(|line| line.strip_prefix("records="));
+    let prepared = Prepared::new(target, nonce.unwrap_or_default().to_owned());
+    let now = prepared
+        .stamp_text(options, &source_state(root)?)
+        .map_err(|error| {
+            format!(
+                "check-difftest --runs-only: {error}; run `cargo xtask check-difftest --prepare` again"
+            )
+        })?;
+    match stamp_refusal(&before, &now, "executables", "check-difftest") {
+        Some(message) => Err(format!("check-difftest --runs-only: {message}")),
+        None => Ok(prepared),
+    }
+}
+
+/// The split runs the grid batches with no route: a route run builds under flags that the stamp does not hold.
+fn refuse_route_split(lookup: impl Fn(&str) -> Option<std::ffi::OsString>) -> Result<(), String> {
+    if route_environment(lookup)?.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "check-difftest: --prepare and --runs-only do not take {ROUTE_VARIABLE}=1; run the whole check"
+    ))
+}
+
+/// The arguments of the cargo call of one batch under `profile`: [`batch_args`], the export directory (a profile other
+/// than `dev` needs it, because the arguments that choose the profile are the ones that name the record directory) and
+/// the split's flag with the executable it builds (`--prepare-exe`) or runs (`--run-exe`).
+fn profile_batch_args(
+    options: &Options,
+    target: &Path,
+    report_path: &Path,
+    profile: &str,
+    export: Option<&Path>,
+    exe: Option<(&str, &Path)>,
+) -> Result<Vec<String>, String> {
+    let mut args = batch_args(options, target, report_path);
+    match export {
+        Some(dir) => args.extend(export_args(profile, dir)),
+        None if profile != "dev" => {
+            return Err(format!(
+                "check-difftest: a batch under the profile `{profile}` needs a record directory"
+            ));
+        }
+        None => {}
+    }
+    if let Some((flag, exe)) = exe {
+        args.push(flag.to_owned());
+        args.push(exe.to_string_lossy().into_owned());
+    }
+    Ok(args)
+}
+
+/// Runs `cargo args` in `root` for `--prepare`, with the output shown.
+fn prepare_cargo(root: &Path, target: &Path, args: &[String], what: &str) -> Result<(), String> {
+    println!("-- cargo {}", args.join(" "));
+    let status = workspace_command("cargo")
+        .args(args)
+        .current_dir(root)
+        .env("CARGO_TARGET_DIR", target)
+        .stdin(Stdio::null())
+        .status()
+        .map_err(|error| format!("check-difftest: could not launch cargo: {error}"))?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(format!(
+        "check-difftest --prepare: {what} failed ({status})"
+    ))
+}
+
+/// `--prepare`: for each profile batch, `difftest-run --prepare-exe` (the run crate and its test executable, no program
+/// run), the build of the `short_circuit` test, and the stamp at the end. HEAD and the tree are read before the builds.
+/// The directory of an earlier prepare goes first, so that a failed prepare leaves no stamp.
+fn build_batches(
+    options: &Options,
+    root: &Path,
+    target: &Path,
+    report_path: &Path,
+) -> Result<String, String> {
+    refuse_route_split(|name| std::env::var_os(name))?;
+    let started = Instant::now();
+    let state = source_state(root)?;
+    let prepared = Prepared::new(target, format!("{:016x}", clock_entropy()));
+    let _ = fs::remove_dir_all(&prepared.dir);
+    fs::create_dir_all(&prepared.dir)
+        .map_err(|error| format!("check-difftest: {}: {error}", prepared.dir.display()))?;
+    let (dev_records, subgroups_records) = prepared.records();
+    for profile in BUILD_ORDER {
+        let records = if profile == "dev" {
+            &dev_records
+        } else {
+            &subgroups_records
+        };
+        let exe = prepared.exe(profile);
+        let args = profile_batch_args(
+            options,
+            target,
+            report_path,
+            profile,
+            Some(records),
+            Some(("--prepare-exe", &exe)),
+        )?;
+        prepare_cargo(root, target, &args, &format!("the {profile} build"))?;
+    }
+    // The test of the harness crate that runs under the lock builds its own run crate, but not itself.
+    let mut build_short_circuit: Vec<String> = short_circuit_args()
+        .into_iter()
+        .take_while(|arg| arg != "--")
+        .collect();
+    build_short_circuit.push("--no-run".to_owned());
+    prepare_cargo(
+        root,
+        target,
+        &build_short_circuit,
+        "the short_circuit build",
+    )?;
+    fs::write(prepared.stamp_file(), prepared.stamp_text(options, &state)?)
+        .map_err(|error| format!("check-difftest --prepare: could not write the stamp: {error}"))?;
+    Ok(format!(
+        "check-difftest --prepare passed in {:.1} s (the run crates of both profile batches and the short_circuit test built and their test executables kept; no program ran, no adapter opened)",
+        started.elapsed().as_secs_f64()
+    ))
 }
 
 fn run_steps(
@@ -1413,18 +1655,38 @@ fn run_steps(
     let mut problems = Vec::new();
     let mut summary = Vec::new();
     let all_steps = steps(options.mode);
+    let prepared = match options.stage {
+        Stage::RunsOnly => {
+            refuse_route_split(|name| std::env::var_os(name))?;
+            Some(check_prepared(options, root, target)?)
+        }
+        Stage::Whole | Stage::Prepare => None,
+    };
+    // The prepared executable of a profile, when this call runs one instead of building it.
+    let prebuilt = |profile: &str| prepared.as_ref().map(|prepared| prepared.exe(profile));
     // The record directories are named before the first step: the `dev` batch exports into one of them, the
-    // `dev+subgroups` batch into the other, and the last step compares the two.
-    let records = all_steps
-        .contains(&DifftestStep::ProfileArtifacts)
-        .then(|| fresh_record_dirs(target));
+    // `dev+subgroups` batch into the other, and the last step compares the two. The prepared builds wrote theirs.
+    let records = match &prepared {
+        Some(prepared) => Some(prepared.records()),
+        None => all_steps
+            .contains(&DifftestStep::ProfileArtifacts)
+            .then(|| fresh_record_dirs(target)),
+    };
     let mut compared = None;
     let mut subgroups_timing = None;
     for step in all_steps {
         match step {
             DifftestStep::Batch => {
                 let export = records.as_ref().map(|dirs| dirs.0.as_path());
-                let judgement = run_batch(options, root, target, report_path, "dev", export)?;
+                let judgement = run_batch(
+                    options,
+                    root,
+                    target,
+                    report_path,
+                    "dev",
+                    export,
+                    prebuilt("dev").as_deref(),
+                )?;
                 problems.extend(judgement.problems);
                 summary = judgement.summary;
             }
@@ -1444,6 +1706,7 @@ fn run_steps(
                     &subgroups_report_path(report_path),
                     SUBGROUPS_PROFILE,
                     Some(subgroups_dir),
+                    prebuilt(SUBGROUPS_PROFILE).as_deref(),
                 )?;
                 // The last summary line of a passing batch is its harness timing (cargo build, cargo run).
                 subgroups_timing = judgement.summary.last().cloned();
@@ -1473,7 +1736,12 @@ fn run_steps(
         return Err(message);
     }
     let mut passed = format!(
-        "check-difftest passed in {seconds:.1} s{}:\n{}",
+        "check-difftest{} passed in {seconds:.1} s{}:\n{}",
+        if options.stage == Stage::RunsOnly {
+            " --runs-only"
+        } else {
+            ""
+        },
         if options.mode == Mode::Gpu {
             " (the batch, the short_circuit GPU test and the dev+subgroups batch)"
         } else {
@@ -1506,7 +1774,8 @@ fn subgroups_report_path(report_path: &Path) -> PathBuf {
 }
 
 /// One `difftest-run` batch under `profile`, exporting its records to `export` when that is given (a profile other
-/// than `dev` needs it: the arguments that choose the profile are the ones that name the record directory).
+/// than `dev` needs it: the arguments that choose the profile are the ones that name the record directory). With
+/// `prebuilt` the harness runs that executable of `--prepare` and builds nothing.
 fn run_batch(
     options: &Options,
     root: &Path,
@@ -1514,6 +1783,7 @@ fn run_batch(
     report_path: &Path,
     profile: &str,
     export: Option<&Path>,
+    prebuilt: Option<&Path>,
 ) -> Result<Judgement, String> {
     // A report left by an earlier run must not be able to pass this one.
     match fs::remove_file(report_path) {
@@ -1532,14 +1802,14 @@ fn run_batch(
     }
     fs::create_dir_all(target)
         .map_err(|error| format!("check-difftest: {}: {error}", target.display()))?;
-    let mut args = batch_args(options, target, report_path);
-    if let Some(dir) = export {
-        args.extend(export_args(profile, dir));
-    } else if profile != "dev" {
-        return Err(format!(
-            "check-difftest: a batch under the profile `{profile}` needs a record directory"
-        ));
-    }
+    let args = profile_batch_args(
+        options,
+        target,
+        report_path,
+        profile,
+        export,
+        prebuilt.map(|exe| ("--run-exe", exe)),
+    )?;
     let route = route_environment(|name| std::env::var_os(name))?;
     // With the route on, every kernel the batch builds appends its route to a log beside the report, and the log is
     // judged below (Opus S1 of m9.rt2): a silent fallback to WGSL must not pass as route evidence.
@@ -1642,6 +1912,10 @@ fn run_short_circuit(root: &Path, target: &Path) -> Result<Vec<String>, String> 
 #[cfg(test)]
 #[path = "tests/difftest.rs"]
 mod difftest_tests;
+
+#[cfg(test)]
+#[path = "tests/difftest_prepare.rs"]
+mod prepare_tests;
 
 /// Tests of the shape rows of the summary (slice m9.d1b, round r1; the shared test file is another lane's).
 #[cfg(test)]

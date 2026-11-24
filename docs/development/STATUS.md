@@ -1192,6 +1192,18 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       binary hashes differ between runs of the same code, so a hash comparison was void, not passed. Follow-ups:
       fold the refusal-only E6 directories, and read CI's cold `precompiled` job after the push. The RTX 5090 run
       is owed. Opus review: merge; should-fix wording and a unit test of the directory choice done.
+    - m14.s2c (frames in flight, D258): `in_flight(n)` takes 1 to 4 over the batch's one set of buffers, kept apart
+      by queue order; `begin` waits only when `n` frames are in flight, for the oldest. `FrameRun::encode` records a
+      frame into the caller's encoder and `Encoded::submitted` reports the caller's submission; a frame recorded
+      that way counts by its report (a reported frame's `set`s hold, a dropped frame's are discarded and the next
+      frame re-records every parameter). Twin and GPU tests for the persistence rule, refused sets and writes,
+      dropped encoded frames and staging-lease retirement; a removed `Claim` requeue failed its test. SB1p
+      (`in_flight(2)` against 1, Radeon 890M): 1.462 at 2^10 (likely clock-bound), 1.292 at 2^16, 0.997 at 2^20; no
+      speed claim. Breeze's harness found `in_flight(2)` at 100 % activity slow and unsteady on the 890M (its D4b,
+      measured, cause open). Follow-ups: pin the eight `twin_*` tests in `CPU_REQUIRED_TESTS` (and read `tests/` in
+      the pin check), a GPU test counting the staging retirement in `finish_if_ran`, and re-recording only the
+      parameters that changed in the encode form. Radeon 890M only; the RTX 5090 run is owed. Opus review: merge
+      after fixes; fixed, re-checked (merge).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

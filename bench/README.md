@@ -501,4 +501,8 @@ The pre-registered rule (two signals at 2^20 on the Radeon 890M: median at most 
 knobs are the walker count, the number of signals and the grid size; on the 890M the two-signal sense-and-move kernel
 takes about two thirds of the kernel time at 2^20. Shared machine, not publishable. The run did not control which
 variant was created first; on the Radeon 890M the first-created of several variants in one process can run several
-times slower, so the 890M rows may not compare directly (D267).
+times slower, so the 890M rows may not compare directly (D267). A later measurement outside this repository found a
+step on the Radeon 890M: a frame that touches more than about 1.5 to 4 million u32 elements costs about 6 ns more per
+element, whatever its arithmetic or dispatch count, and splitting the frame into smaller dispatches does not avoid it.
+The gap between two signals and one signal at 2^20 (6.4 ms) is about that step's size, so it may come from the bytes
+the frame touches rather than from the second signal's work; this was not measured.

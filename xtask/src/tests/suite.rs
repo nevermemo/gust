@@ -1,6 +1,6 @@
 use super::{
     DIFFTEST_FMT, DIFFTEST_UNIT_STEPS, NamedTests, Step, Suite, TestRequest, parse_test_args,
-    plan_suite, run_label, run_step_with, test_command,
+    plan_suite, run_label, run_step_with, step_time_line, test_command, timing_summary,
 };
 use crate::gpu_jobs::{
     End, JOB_TIME_LIMIT, Job, JobOutput, Process, block, call_with, is_package_variable, judge,
@@ -2921,4 +2921,49 @@ fn a_run_that_stops_early_still_emits_every_finished_job_in_job_order() {
     );
     assert_eq!(emitted, [0, 3]);
     assert_eq!(results, [Some(0), None, None, Some(3)]);
+}
+
+#[test]
+fn step_time_line_shows_one_decimal_and_the_label() {
+    assert_eq!(
+        step_time_line("cargo fmt", std::time::Duration::from_millis(12_349)),
+        "   step 12.3 s: cargo fmt"
+    );
+}
+
+#[test]
+fn timing_summary_lists_five_slowest_first_with_ties_in_step_order_then_the_sum() {
+    use std::time::Duration;
+    let secs = |label: &str, s: u64| (label.to_string(), Duration::from_secs(s));
+    let timings = [
+        secs("a", 2),
+        secs("b", 9),
+        secs("c", 2),
+        secs("d", 5),
+        secs("e", 2),
+        secs("f", 7),
+        secs("g", 1),
+    ];
+    let lines = timing_summary(&timings, Duration::from_secs(30));
+    assert_eq!(
+        lines,
+        [
+            "   slowest: 9.0 s b",
+            "   slowest: 7.0 s f",
+            "   slowest: 5.0 s d",
+            "   slowest: 2.0 s a",
+            "   slowest: 2.0 s c",
+            "   steps 28.0 s of 30.0 s",
+        ]
+    );
+}
+
+#[test]
+fn timing_summary_of_few_steps_lists_all_of_them() {
+    use std::time::Duration;
+    let timings = [("only".to_string(), Duration::from_millis(1500))];
+    assert_eq!(
+        timing_summary(&timings, Duration::from_secs(2)),
+        ["   slowest: 1.5 s only", "   steps 1.5 s of 2.0 s"]
+    );
 }

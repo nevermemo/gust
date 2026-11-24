@@ -1183,13 +1183,38 @@ fn the_profile_step_exports_the_dev_batch_and_compares_the_two_trees() {
     for needle in [
         "fresh_record_dirs(target)",
         "let export = records.as_ref().map(|dirs| dirs.0.as_path());",
-        "prebuilt(\"dev\").as_deref()",
-        "prebuilt(SUBGROUPS_PROFILE).as_deref()",
         "SUBGROUPS_PROFILE,",
-        "record_problems(&dev, &subgroups)",
+        "compare_records(dev_dir, subgroups_dir, &mut problems)",
+        "compare_records(&dev_dir, &subgroups_dir, &mut problems)",
     ] {
         assert!(run.contains(needle), "{needle}");
     }
+    // The prepared executables of `--runs-only` go to the parts that run at once, and the records are compared.
+    let together = source
+        .split("fn run_together(")
+        .nth(1)
+        .and_then(|rest| rest.split("\nfn run_steps").next())
+        .expect("run_together");
+    for needle in [
+        "prepared.exe(\"dev\")",
+        "prepared.exe(SUBGROUPS_PROFILE)",
+        "Some(&dev_records)",
+        "Some(&subgroups_records)",
+        "Some(&dev_exe)",
+        "Some(&subgroups_exe)",
+        "&subgroups.state",
+    ] {
+        assert!(together.contains(needle), "{needle}");
+    }
+    // The part order of the serial run.
+    let order = [
+        "\"the dev batch\"",
+        "\"the short_circuit test\"",
+        "\"the dev+subgroups batch\"",
+    ]
+    .map(|name| together.find(name).unwrap());
+    assert!(order[0] < order[1] && order[1] < order[2]);
+    assert!(source.contains("record_problems(&dev, &subgroups)"));
     let batch = run.find("DifftestStep::Batch =>").unwrap();
     let short = run.find("DifftestStep::ShortCircuitGpu =>").unwrap();
     let profile = run.find("DifftestStep::ProfileArtifacts =>").unwrap();
@@ -1279,6 +1304,7 @@ fn every_batch_is_judged_by_the_capabilities_and_the_second_one_prints_its_timin
         .and_then(|rest| rest.split("\nfn run_batch").next())
         .expect("run_steps");
     assert!(run.contains("subgroups_timing = judgement.summary.last().cloned()"));
+    assert!(run.contains("subgroups_timing = subgroups.summary.last().cloned()"));
     assert!(run.contains("{SUBGROUPS_PROFILE} batch: {}"));
 }
 

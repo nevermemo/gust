@@ -445,24 +445,41 @@ mod tests {
         assert_eq!(pair.size as usize, ACCEL_WORDS * 4);
     }
 
-    /// N6: the committed Slang reflection of the step kernel (`gust-bench-pre/gust-artifacts`, the layout the shader compiler
-    /// itself produced) says what the macro-derived layout and the hand shader assume: stride 28 and these offsets.
+    /// N6: the committed Slang reflections of the step kernel (`gust-bench-pre/gust-artifacts`, the layout the shader compiler
+    /// itself produced) say what the macro-derived layout and the hand shader assume: stride 28 and these offsets. The
+    /// manifest names the kernel's artifacts: the body, and the split form that D209 adds for a `grid` kernel (its
+    /// `split_of` is the body's key); both are checked, each found by identity, never by counting `entryPoint` matches.
     #[test]
     fn the_committed_reflection_of_the_step_kernel_has_the_layout_the_hand_shader_assumes() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../gust-bench-pre/gust-artifacts");
-        let mut found = 0;
-        for entry in std::fs::read_dir(&dir).expect("the committed artifacts") {
-            let path = entry.unwrap().path();
-            if !path.to_string_lossy().ends_with(".reflection.json") {
-                continue;
-            }
-            let json: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-            if json["entryPoint"] != "gpu_kernel_step" {
-                continue;
-            }
-            found += 1;
+        let read = |name: &str| -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(dir.join(name)).expect("a committed artifact file"))
+                .expect("JSON")
+        };
+        let manifest = read("manifest.json");
+        let steps = manifest["kernels"]
+            .as_array()
+            .expect("the manifest's kernels")
+            .iter()
+            .filter(|k| k["module"] == "kernel" && k["name"] == "step")
+            .collect::<Vec<_>>();
+        let bodies = steps
+            .iter()
+            .filter(|k| k.get("split_of").is_none())
+            .collect::<Vec<_>>();
+        assert_eq!(bodies.len(), 1, "one body artifact for the step kernel");
+        let body_key = bodies[0]["key"].as_str().unwrap();
+        let splits = steps
+            .iter()
+            .filter(|k| k["split_of"] == body_key)
+            .collect::<Vec<_>>();
+        assert_eq!(splits.len(), 1, "one split artifact of the step body");
+        assert_eq!(steps.len(), 2, "no other step artifact");
+        for kernel in [bodies[0], splits[0]] {
+            let key = kernel["key"].as_str().unwrap();
+            let json = read(&format!("{key}.wgsl.reflection.json"));
+            assert_eq!(json["entryPoint"], "gpu_kernel_step");
             let input = &json["parameters"][0]["type"]["resultType"];
             assert_eq!(
                 (
@@ -494,7 +511,6 @@ mod tests {
             .map(|(n, o, s)| (n.to_owned(), o, s));
             assert_eq!(fields, want);
         }
-        assert_eq!(found, 1, "one committed reflection for the step kernel");
     }
 
     #[test]

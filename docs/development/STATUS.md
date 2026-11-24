@@ -1213,6 +1213,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       base, 652 with m14.mapw2. A fix-round run took 260 s while another lane's Unit suite shared the CPU and the
       lane's `--no-run` built two crates under the lock; not a regression. The RTX 5090 run is owed. Opus review:
       merge after fixes; fixed, re-checked twice (merge).
+    - m14.difftpar (faster gates): `check-difftest --runs-only` runs its three parts at once on the prepared
+      executables: the dev batch, the `short_circuit` test and the dev+subgroups batch, each with its own report and
+      state directory (the two batches get distinct run paths). Parts are joined in the serial order and each part's
+      output is printed as one block when it ends; a failing or panicking part fails the step after all three
+      finished, and the exported-record comparison follows both batches as before. A whole run keeps the serial
+      order, because it builds. 890M: 181 s median before, 87 s after; every judged line identical (136 programs,
+      the `short_circuit` verdict, 544 exported records). The RTX 5090 run is owed. Opus review: merge after fixes;
+      fixed in two rounds, re-checked (merge).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

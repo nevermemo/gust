@@ -1164,6 +1164,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       scratch-artifacts guard have tests. 890M: Slang part 905 to 1010 s before, 73 to 101 s warm after, all ten
       entries byte-identical; `--no-slang` 70 s; the RTX 5090 run is owed. Opus review: merge after fixes; fixed,
       re-checked (merge), plus a follow-up so the config copy is skipped when the repository has none.
+    - m14.mapw2 (wide fields in `map`): two GPU tests in `crates/gust-wgpu/tests/map.rs` run `map` over a struct with
+      `u32`, `Vec4`, `Mat4` and fill fields and over a struct that holds it, every field compared exactly against a
+      host reference; at every size no matrix is symmetric and each matrix times its `dir` differs from its transpose
+      times `dir`, so a wrong orientation would show in the values. The fixture gains `frame_mix` and `slot_step`
+      (golden reblessed), the CPU target gains `map_case.rs`, and `naga_layout` covers the struct-matrix arm. A layout
+      mutation (`row_major float4x4`) was caught by the run-time reflection check before any value comparison; the
+      value check alone was not shown on the GPU. `GPU_SUITE_PIN` 650 to 652 at the merge. Radeon 890M only; the
+      RTX 5090 run is owed. Opus review: merge after fixes; fixed, re-checked (merge), plus the orientation check.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

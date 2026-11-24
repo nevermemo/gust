@@ -6,6 +6,7 @@
 //! verification, on the adapter the environment selects. The twin tests run the same refusals on the CPU device, whose
 //! "encoder" is a list of steps that the caller runs.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use batch_basics::app::{block_on, ready_now};
@@ -166,6 +167,7 @@ fn gpu_the_three_refusals_are_not_submitted() {
         assert_eq!(block_on(ticket).unwrap(), reference(&x, gain));
     }
     let before = device.gust_submissions();
+    let retired = device.buffer_pool_stats().retired;
 
     // 1. A dropped FrameRun.
     let ticket = {
@@ -175,7 +177,8 @@ fn gpu_the_three_refusals_are_not_submitted() {
     };
     assert!(matches!(block_on(ticket), Err(Error::NotSubmitted { .. })));
 
-    // 2. A dropped Encoded, and its encoder with it: nothing of the frame runs.
+    // 2. A dropped Encoded, and its encoder with it: nothing of the frame runs, and the staging buffer of its ticket
+    // is retired, never given back to the pool.
     let mut encoder = gpu_encoder(&device);
     let mut frame = block_on(batch.begin()).unwrap();
     frame.set(&h.gain, 8).unwrap();
@@ -183,6 +186,11 @@ fn gpu_the_three_refusals_are_not_submitted() {
     drop(frame.encode(&mut encoder).unwrap());
     drop(encoder);
     assert!(matches!(block_on(ticket), Err(Error::NotSubmitted { .. })));
+    assert_eq!(
+        device.buffer_pool_stats().retired,
+        retired + 1,
+        "the dropped Encoded retired its ticket's staging buffer, the dropped FrameRun none"
+    );
 
     // 3. An Encoded marked submitted whose encoder was dropped: the index is of another submission.
     let unrelated = submit_caller(&device, gpu_encoder(&device));
@@ -196,6 +204,11 @@ fn gpu_the_three_refusals_are_not_submitted() {
     assert!(
         matches!(block_on(ticket), Err(Error::NotSubmitted { .. })),
         "a ticket of an encoder that never ran must not return the bytes of an earlier frame"
+    );
+    assert_eq!(
+        device.buffer_pool_stats().retired,
+        retired + 2,
+        "a reported frame whose encoder never ran retired its ticket's staging buffer"
     );
     assert_eq!(
         device.gust_submissions(),
@@ -412,7 +425,7 @@ where
 }
 
 /// The next frame sets only the other parameter of the stage: the refused `set` is not lost, nor taken from the device.
-fn a_refused_set_is_not_mixed_with_the_next_one<D: Caller>(
+fn a_refused_set_holds_when_the_next_frame_sets_the_other_parameter<D: Caller>(
     device: &D,
     mut batch: Batch<D>,
     h: &Handles2,
@@ -475,10 +488,10 @@ fn twin_a_refused_set_holds() {
 }
 
 #[test]
-fn twin_a_refused_set_is_not_mixed_with_the_next_one() {
+fn twin_a_refused_set_holds_when_the_next_frame_sets_the_other_parameter() {
     let cpu = Arc::new(CpuDevice::new());
     let (batch, h) = build2_cpu(&cpu).unwrap();
-    a_refused_set_is_not_mixed_with_the_next_one(&*cpu, batch, &h);
+    a_refused_set_holds_when_the_next_frame_sets_the_other_parameter(&*cpu, batch, &h);
 }
 
 #[test]
@@ -505,10 +518,10 @@ fn gpu_a_refused_set_holds() {
 
 #[test]
 #[ignore = "example validation runs only in full verification"]
-fn gpu_a_refused_set_is_not_mixed_with_the_next_one() {
+fn gpu_a_refused_set_holds_when_the_next_frame_sets_the_other_parameter() {
     let device = private_device();
     let (batch, h) = build2_gpu(&device).unwrap();
-    a_refused_set_is_not_mixed_with_the_next_one(&*device, batch, &h);
+    a_refused_set_holds_when_the_next_frame_sets_the_other_parameter(&*device, batch, &h);
 }
 
 #[test]
@@ -533,4 +546,166 @@ fn gpu_a_dropped_encoded_retires_its_staging_and_the_next_frame_is_exact() {
         retired + 1,
         "the one ticket of the dropped Encoded retired its staging buffer"
     );
+}
+
+// ---- the encode form re-records only what changed (m14.s2cf) ----
+//
+// Two stages with one parameter each: `y = x * 3 + gain`, then `z = y * 2 + offset`. `Batch::extent_records` counts the
+// extent records the frames recorded, so a frame's cost shows as a difference.
+
+struct Handles3 {
+    gain: Param<u32>,
+    offset: Param<u32>,
+    x: Stage<u32, D1>,
+    z: Stage<u32, D1>,
+}
+
+macro_rules! define_build3 {
+    ($build:ident, $device:ty) => {
+        fn $build(device: &Arc<$device>) -> Result<(Batch<$device>, Handles3), Error> {
+            gpu_batch!("encoded3", on(device); in_flight(2); |b| {
+                let offset = b.param::<u32>(1);
+                let gain = b.param::<u32>(1);
+                let x = b.input::<u32>(N);
+                let y = gpu_task!(N, |i| -> u32 { x[i] * 3u32 + gain.get() });
+                let z = gpu_task!(N, |i| -> u32 { y[i] * 2u32 + offset.get() });
+                Handles3 { gain, offset, x, z }
+            })
+        }
+    };
+}
+
+define_build3!(build3_cpu, CpuDevice);
+define_build3!(build3_gpu, HeadlessDevice);
+
+fn reference3(x: &[u32], gain: u32, offset: u32) -> Vec<u32> {
+    x.iter().map(|v| (v * 3 + gain) * 2 + offset).collect()
+}
+
+/// One frame, recorded into the caller's encoder and reported: its values, and how many extent records it recorded.
+fn encoded_frame<D: Caller>(
+    device: &D,
+    batch: &mut Batch<D>,
+    h: &Handles3,
+    record: impl FnOnce(&mut FrameRun<D>),
+) -> (Vec<u32>, u64)
+where
+    D::Buffer<u32>: 'static,
+{
+    let before = batch.extent_records();
+    let mut encoder = BatchDevice::new_encoder(device);
+    let mut frame = block_on(batch.begin()).unwrap();
+    record(&mut frame);
+    let ticket = frame.ticket(&h.z).unwrap();
+    let encoded = frame.encode(&mut encoder).unwrap();
+    let token = device.run_encoder(encoder);
+    let _submitted = encoded.submitted(&token);
+    let recorded = batch.extent_records() - before;
+    (block_on(ticket).unwrap(), recorded)
+}
+
+/// The same frame made by `submit`.
+fn submitted_frame<D: BatchDevice>(
+    batch: &mut Batch<D>,
+    h: &Handles3,
+    record: impl FnOnce(&mut FrameRun<D>),
+) -> (Vec<u32>, u64)
+where
+    D::Buffer<u32>: 'static,
+{
+    let before = batch.extent_records();
+    let mut frame = block_on(batch.begin()).unwrap();
+    record(&mut frame);
+    let ticket = frame.ticket(&h.z).unwrap();
+    let _submitted = frame.submit().unwrap();
+    let recorded = batch.extent_records() - before;
+    (block_on(ticket).unwrap(), recorded)
+}
+
+/// After an encoded frame sets `gain`, only the stage of `gain` is recorded again, by the later encoded frames and by
+/// the first frame `submit` makes (which clears the list); the stage of `offset` is not, and every value is exact.
+fn an_unchanged_stage_is_not_re_recorded<D: Caller>(device: &D, mut batch: Batch<D>, h: &Handles3)
+where
+    D::Buffer<u32>: 'static,
+{
+    let x = data(12);
+    let (values, recorded) = submitted_frame(&mut batch, h, |frame| {
+        frame.write(&h.x, &x).unwrap();
+        frame.set(&h.gain, 1).unwrap();
+        frame.set(&h.offset, 2).unwrap();
+    });
+    assert_eq!(values, reference3(&x, 1, 2));
+    assert_eq!(recorded, 2, "a first frame records both stages");
+
+    let (values, recorded) = encoded_frame(device, &mut batch, h, |frame| {
+        frame.set(&h.gain, 3).unwrap()
+    });
+    assert_eq!(values, reference3(&x, 3, 2));
+    assert_eq!(recorded, 1, "only the stage of `gain` changed");
+
+    let (values, recorded) = encoded_frame(device, &mut batch, h, |_| {});
+    assert_eq!(values, reference3(&x, 3, 2));
+    assert_eq!(
+        recorded, 1,
+        "`gain` is still stale (the host cannot tell whether the encoder ran); the stage of `offset` is left alone"
+    );
+
+    let (values, recorded) = encoded_frame(device, &mut batch, h, |frame| {
+        frame.set(&h.offset, 5).unwrap()
+    });
+    assert_eq!(values, reference3(&x, 3, 5));
+    assert_eq!(recorded, 2, "the stale `gain` and the `offset` set now");
+
+    let (values, recorded) = submitted_frame(&mut batch, h, |_| {});
+    assert_eq!(values, reference3(&x, 3, 5));
+    assert_eq!(
+        recorded, 2,
+        "a submitted frame records what is stale, then clears it"
+    );
+
+    let (values, recorded) = encoded_frame(device, &mut batch, h, |_| {});
+    assert_eq!(values, reference3(&x, 3, 5));
+    assert_eq!(recorded, 0, "nothing is stale and nothing is set");
+}
+
+#[test]
+fn twin_an_unchanged_stage_is_not_re_recorded() {
+    let cpu = Arc::new(CpuDevice::new());
+    let (batch, h) = build3_cpu(&cpu).unwrap();
+    an_unchanged_stage_is_not_re_recorded(&*cpu, batch, &h);
+}
+
+/// The CPU twin checks overflow (a panic in a debug build): a `submit` whose stage fails after the extent record of `gain` ran leaves that value on
+/// the device. The host discards the `set`, so the next frame, which sets only `offset`, must record `gain` again.
+#[test]
+fn twin_a_failed_submission_leaves_no_discarded_set() {
+    let cpu = Arc::new(CpuDevice::new());
+    let (mut batch, h) = build3_cpu(&cpu).unwrap();
+    let x = data(13);
+    let (values, _) = submitted_frame(&mut batch, &h, |frame| {
+        frame.write(&h.x, &x).unwrap();
+        frame.set(&h.gain, 1).unwrap();
+        frame.set(&h.offset, 2).unwrap();
+    });
+    assert_eq!(values, reference3(&x, 1, 2));
+
+    let mut frame = block_on(batch.begin()).unwrap();
+    frame.set(&h.gain, u32::MAX).unwrap();
+    let outcome = catch_unwind(AssertUnwindSafe(|| frame.submit().map(|_| ())));
+    assert!(!matches!(outcome, Ok(Ok(()))), "x * 3 + u32::MAX overflows");
+
+    let (values, _) = submitted_frame(&mut batch, &h, |frame| frame.set(&h.offset, 5).unwrap());
+    assert_eq!(
+        values,
+        reference3(&x, 1, 5),
+        "`gain` is the host's 1, not the failed frame's"
+    );
+}
+
+#[test]
+#[ignore = "example validation runs only in full verification"]
+fn gpu_an_unchanged_stage_is_not_re_recorded() {
+    let device = private_device();
+    let (batch, h) = build3_gpu(&device).unwrap();
+    an_unchanged_stage_is_not_re_recorded(&*device, batch, &h);
 }

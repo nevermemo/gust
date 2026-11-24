@@ -68,12 +68,13 @@ fn parse_tests(prefix: &str, text: &str) -> Vec<SourceTest> {
 /// The `#[test]` functions of `examples/<package>/src`, named as libtest prints them. The convention this relies on
 /// (and that the required names then check): the tests of `app.rs` (or any other module file) sit in a top-level
 /// `mod tests`, so they are `<file>::tests::<fn>`, and those of `main.rs` and `lib.rs` (the crate root) are
-/// `tests::<fn>`. A test elsewhere gets a wrong name here, so a required one is "not found" and fails.
+/// `tests::<fn>`. A test elsewhere gets a wrong name here, so a required one is "not found" and fails. The package's
+/// `tests/` folder, when it has one, is read too: libtest names an integration test by its bare function name.
 fn source_tests(package: &str) -> Vec<SourceTest> {
     let root = workspace_root().unwrap();
-    let src = root.join("examples").join(package).join("src");
+    let example = root.join("examples").join(package);
     let mut files = Vec::new();
-    rust_files(&src, &mut files);
+    rust_files(&example.join("src"), &mut files);
     let mut tests = Vec::new();
     for file in files {
         let stem = file.file_stem().unwrap().to_string_lossy().into_owned();
@@ -84,6 +85,14 @@ fn source_tests(package: &str) -> Vec<SourceTest> {
         };
         let text = fs::read_to_string(&file).unwrap();
         tests.extend(parse_tests(&prefix, &text));
+    }
+    let integration = example.join("tests");
+    if integration.is_dir() {
+        let mut files = Vec::new();
+        rust_files(&integration, &mut files);
+        for file in files {
+            tests.extend(parse_tests("", &fs::read_to_string(&file).unwrap()));
+        }
     }
     tests
 }

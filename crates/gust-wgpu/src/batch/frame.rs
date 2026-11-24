@@ -10,11 +10,8 @@ use gust::{Access, GpuPod, LengthRule, Resource, pod_slice_as_bytes};
 
 use super::{GpuStage, map_error};
 use crate::encode::{record_upload_copy, stage_upload};
+use crate::pool::EPOCH;
 use crate::{Error, GpuBuffer, HeadlessDevice};
-
-/// The word that a frame recorded into a caller's encoder copies into its epoch buffer: nonzero, so that the zeroed
-/// buffer of an encoder that never ran differs from it.
-const EPOCH: u32 = 0x4755_5354;
 
 /// A copy that a frame will record: the staging buffer that holds the bytes (made when the frame is written), and the
 /// buffer it goes into.
@@ -164,7 +161,7 @@ impl HeadlessDevice {
         encoder: &mut wgpu::CommandEncoder,
     ) -> GpuEncoded {
         // One source buffer per device; only the buffer the encoder copies it into is the frame's own.
-        let source = self.pool.epoch_source(&self.device, EPOCH.to_le_bytes());
+        let source = self.pool.epoch_source(&self.device);
         let epoch = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("GUST batch epoch readback"),
             size: 4,

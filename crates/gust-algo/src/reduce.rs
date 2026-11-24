@@ -24,12 +24,15 @@
 //! the device's storage binding limit is `Error::Device(DeviceLimit)` before any buffer is taken or dispatch is made.
 
 use gust::{GpuPod, Independent};
-use gust_wgpu::{BufferDispatch, GpuVec, HeadlessDevice};
+use gust_wgpu::{DeviceHandle, GpuVec};
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::variant::shipped;
 use crate::{
     Error, kernels, limits,
+    record::{Operand, Sink, Stage},
     schedule::{BlockSchedule, Schedule},
-    variant::{Operation, Variant, shipped},
+    variant::{Operation, Variant},
 };
 
 /// The reduction a call performs.
@@ -38,6 +41,30 @@ pub enum Op {
     Sum,
     Min,
     Max,
+}
+
+impl Op {
+    /// The value of the reduction over an empty input: `Some(0)` for the sum (and, as a sum of flags, for the count
+    /// of [`compact`](crate::compact)), `None` for `min` and `max`, which have no value there. The plans refuse an
+    /// empty input with [`Error::Empty`]; a caller that must still write a result for one (a batch whose length can
+    /// reach zero) writes this value, and refuses the operation when it is `None`. The wrapping sum of
+    /// `sum_wrapping` has the identity of [`Op::Sum`] for `u32`.
+    #[must_use]
+    pub fn identity<T: Element>(self) -> Option<T> {
+        match self {
+            Self::Sum => Some(T::ZERO),
+            Self::Min | Self::Max => None,
+        }
+    }
+
+    /// The [`Operation`] whose shipped variant the reduction runs.
+    pub(crate) const fn operation(self) -> Operation {
+        match self {
+            Self::Sum => Operation::Sum,
+            Self::Min => Operation::Min,
+            Self::Max => Operation::Max,
+        }
+    }
 }
 
 mod sealed {
@@ -49,29 +76,29 @@ pub trait Element: GpuPod + sealed::Sealed + Copy + PartialOrd + 'static {
     /// The additive identity, the sum of an empty input.
     const ZERO: Self;
 
-    /// Run the passes of `schedule` for `op` over `input` as one batch: pass `j` reads the previous level and writes
+    /// Append the passes of `schedule` for `op` over `input` to `sink`: pass `j` reads the previous level and writes
     /// `partials[j]`, the terminal kernel writes `out[0]`.
     #[doc(hidden)]
-    fn run(
+    fn plan<'s, I: Operand<Self>, O: Operand<Self>>(
         op: Op,
-        device: &HeadlessDevice,
+        sink: &mut Sink<'s>,
         schedule: &Schedule,
-        input: &GpuVec<Self>,
-        partials: &[GpuVec<Self>],
-        out: &GpuVec<Self>,
-    ) -> Result<(), gust_wgpu::Error>;
+        input: &'s I,
+        partials: &'s [GpuVec<Self>],
+        out: &'s O,
+    );
 
     /// The v1 chain (plan section 5.5): pass `j` of `schedule` reads the previous level and writes `partials[j]`, the
     /// last pass (one workgroup) writes `out[0]`. There is no CPU form: the block kernels are `cpu = "unsupported"`.
     #[doc(hidden)]
-    fn run_v1(
+    fn plan_v1<'s, I: Operand<Self>, O: Operand<Self>>(
         op: Op,
-        device: &HeadlessDevice,
+        sink: &mut Sink<'s>,
         schedule: &BlockSchedule,
-        input: &GpuVec<Self>,
-        partials: &[GpuVec<Self>],
-        out: &GpuVec<Self>,
-    ) -> Result<(), gust_wgpu::Error>;
+        input: &'s I,
+        partials: &'s [GpuVec<Self>],
+        out: &'s O,
+    );
 
     /// The same chain on the CPU twins of the kernels (`gust::cpu::CpuDevice`), in test and dual builds.
     #[cfg(any(test, gust_dual))]
@@ -86,49 +113,74 @@ pub trait Element: GpuPod + sealed::Sealed + Copy + PartialOrd + 'static {
     ) -> Result<(), gust::cpu::Error>;
 }
 
-/// The passes of one `(op, type)` pair as typed calls in one batch.
+/// The passes of one `(op, type)` pair as typed calls appended to a sink. The input and the result are any operands and
+/// the partials are the plan's own `GpuVec`s, so the first pass and the terminal kernel are written out for their types.
 macro_rules! gpu_chain {
-    ($pass:ident, $terminal:ident, $device:expr, $schedule:expr, $input:expr, $partials:expr, $out:expr) => {{
-        let mut calls = Vec::with_capacity($schedule.passes().len());
-        let mut source = $input;
-        for (pass, destination) in $schedule.passes().iter().zip($partials) {
-            calls.push(kernels::$pass::call(
-                pass.partials(),
-                Independent(source),
-                destination,
-            ));
-            source = destination;
+    ($pass:ident, $terminal:ident, $sink:expr, $schedule:expr, $input:expr, $partials:expr, $out:expr) => {{
+        let passes = $schedule.passes();
+        for (index, (pass, destination)) in passes.iter().zip($partials).enumerate() {
+            if index == 0 {
+                $sink.push(&kernels::$pass::call(
+                    pass.partials(),
+                    Independent($input),
+                    destination,
+                ));
+            } else {
+                $sink.push(&kernels::$pass::call(
+                    pass.partials(),
+                    Independent(&$partials[index - 1]),
+                    destination,
+                ));
+            }
         }
-        let last = kernels::$terminal::call(1, Independent(source), $out);
-        let mut batch: Vec<BufferDispatch<'_>> = calls.iter().map(BufferDispatch::from).collect();
-        batch.push(BufferDispatch::from(&last));
-        crate::timing::dispatch_batch_in_scope($device, &batch)
+        if let Some(last) = passes.len().checked_sub(1) {
+            $sink.push(&kernels::$terminal::call(
+                1,
+                Independent(&$partials[last]),
+                $out,
+            ));
+        } else {
+            $sink.push(&kernels::$terminal::call(1, Independent($input), $out));
+        }
     }};
 }
 
-/// The block passes of one `(op, type)` pair as typed calls in one batch: every pass but the last writes its own
+/// The block passes of one `(op, type)` pair as typed calls appended to a sink: every pass but the last writes its own
 /// partials, the last (one workgroup) writes the result. The outputs hold one value per workgroup, not per invocation,
 /// so they are `Independent`.
 macro_rules! gpu_block_chain {
-    ($block:ident, $device:expr, $schedule:expr, $input:expr, $partials:expr, $out:expr) => {{
+    ($block:ident, $sink:expr, $schedule:expr, $input:expr, $partials:expr, $out:expr) => {{
         let passes = $schedule.passes();
-        let mut calls = Vec::with_capacity(passes.len());
-        let mut source = $input;
         for (index, pass) in passes.iter().enumerate() {
-            let destination = if index + 1 == passes.len() {
-                $out
+            let first = index == 0;
+            let last = index + 1 == passes.len();
+            let invocations = pass.invocations();
+            if first && last {
+                $sink.push(&kernels::$block::call(
+                    invocations,
+                    Independent($input),
+                    Independent($out),
+                ));
+            } else if first {
+                $sink.push(&kernels::$block::call(
+                    invocations,
+                    Independent($input),
+                    Independent(&$partials[index]),
+                ));
+            } else if last {
+                $sink.push(&kernels::$block::call(
+                    invocations,
+                    Independent(&$partials[index - 1]),
+                    Independent($out),
+                ));
             } else {
-                &$partials[index]
-            };
-            calls.push(kernels::$block::call(
-                pass.invocations(),
-                Independent(source),
-                Independent(destination),
-            ));
-            source = destination;
+                $sink.push(&kernels::$block::call(
+                    invocations,
+                    Independent(&$partials[index - 1]),
+                    Independent(&$partials[index]),
+                ));
+            }
         }
-        let batch: Vec<BufferDispatch<'_>> = calls.iter().map(BufferDispatch::from).collect();
-        crate::timing::dispatch_batch_in_scope($device, &batch)
     }};
 }
 
@@ -157,39 +209,39 @@ macro_rules! element {
         impl Element for $ty {
             const ZERO: Self = $zero;
 
-            fn run(
+            fn plan<'s, I: Operand<Self>, O: Operand<Self>>(
                 op: Op,
-                device: &HeadlessDevice,
+                sink: &mut Sink<'s>,
                 schedule: &Schedule,
-                input: &GpuVec<Self>,
-                partials: &[GpuVec<Self>],
-                out: &GpuVec<Self>,
-            ) -> Result<(), gust_wgpu::Error> {
+                input: &'s I,
+                partials: &'s [GpuVec<Self>],
+                out: &'s O,
+            ) {
                 match op {
-                    Op::Sum => gpu_chain!(
-                        $sum_pass, $sum_final, device, schedule, input, partials, out
-                    ),
-                    Op::Min => gpu_chain!(
-                        $min_pass, $min_final, device, schedule, input, partials, out
-                    ),
-                    Op::Max => gpu_chain!(
-                        $max_pass, $max_final, device, schedule, input, partials, out
-                    ),
+                    Op::Sum => {
+                        gpu_chain!($sum_pass, $sum_final, sink, schedule, input, partials, out)
+                    }
+                    Op::Min => {
+                        gpu_chain!($min_pass, $min_final, sink, schedule, input, partials, out)
+                    }
+                    Op::Max => {
+                        gpu_chain!($max_pass, $max_final, sink, schedule, input, partials, out)
+                    }
                 }
             }
 
-            fn run_v1(
+            fn plan_v1<'s, I: Operand<Self>, O: Operand<Self>>(
                 op: Op,
-                device: &HeadlessDevice,
+                sink: &mut Sink<'s>,
                 schedule: &BlockSchedule,
-                input: &GpuVec<Self>,
-                partials: &[GpuVec<Self>],
-                out: &GpuVec<Self>,
-            ) -> Result<(), gust_wgpu::Error> {
+                input: &'s I,
+                partials: &'s [GpuVec<Self>],
+                out: &'s O,
+            ) {
                 match op {
-                    Op::Sum => gpu_block_chain!($sum_block, device, schedule, input, partials, out),
-                    Op::Min => gpu_block_chain!($min_block, device, schedule, input, partials, out),
-                    Op::Max => gpu_block_chain!($max_block, device, schedule, input, partials, out),
+                    Op::Sum => gpu_block_chain!($sum_block, sink, schedule, input, partials, out),
+                    Op::Min => gpu_block_chain!($min_block, sink, schedule, input, partials, out),
+                    Op::Max => gpu_block_chain!($max_block, sink, schedule, input, partials, out),
                 }
             }
 
@@ -240,11 +292,13 @@ element!(
     block: (sum_f32_block, min_f32_block, max_f32_block)
 );
 
-/// The sum of all elements, read back to the host. The sum of an empty input is `0`.
+/// The sum of all elements, read back to the host. The sum of an empty input is `0`. Not available on `wasm32`
+/// (it blocks on the readback; the recorded form is [`Recording::sum`](crate::record::Recording::sum)).
 ///
 /// # Errors
 ///
 /// `Error::Device` for a device failure or an input past the storage binding limit.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn sum<T: Element>(input: &GpuVec<T>) -> Result<T, Error> {
     sum_with(shipped(Operation::Sum), input)
 }
@@ -254,6 +308,7 @@ pub fn sum<T: Element>(input: &GpuVec<T>) -> Result<T, Error> {
 /// # Errors
 ///
 /// As for [`sum`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn sum_with<T: Element>(variant: Variant, input: &GpuVec<T>) -> Result<T, Error> {
     if input.is_empty() {
         return Ok(T::ZERO);
@@ -266,6 +321,7 @@ pub fn sum_with<T: Element>(variant: Variant, input: &GpuVec<T>) -> Result<T, Er
 /// # Errors
 ///
 /// `Error::Empty`, or `Error::Device` as for [`sum`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn min<T: Element>(input: &GpuVec<T>) -> Result<T, Error> {
     min_with(shipped(Operation::Min), input)
 }
@@ -275,6 +331,7 @@ pub fn min<T: Element>(input: &GpuVec<T>) -> Result<T, Error> {
 /// # Errors
 ///
 /// As for [`min`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn min_with<T: Element>(variant: Variant, input: &GpuVec<T>) -> Result<T, Error> {
     if input.is_empty() {
         return Err(Error::Empty);
@@ -287,6 +344,7 @@ pub fn min_with<T: Element>(variant: Variant, input: &GpuVec<T>) -> Result<T, Er
 /// # Errors
 ///
 /// `Error::Empty`, or `Error::Device` as for [`sum`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn max<T: Element>(input: &GpuVec<T>) -> Result<T, Error> {
     max_with(shipped(Operation::Max), input)
 }
@@ -296,6 +354,7 @@ pub fn max<T: Element>(input: &GpuVec<T>) -> Result<T, Error> {
 /// # Errors
 ///
 /// As for [`max`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn max_with<T: Element>(variant: Variant, input: &GpuVec<T>) -> Result<T, Error> {
     if input.is_empty() {
         return Err(Error::Empty);
@@ -309,6 +368,7 @@ pub fn max_with<T: Element>(variant: Variant, input: &GpuVec<T>) -> Result<T, Er
 /// # Errors
 ///
 /// As for [`sum`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn sum_on_device<T: Element>(input: &GpuVec<T>) -> Result<GpuVec<T>, Error> {
     sum_on_device_with(shipped(Operation::Sum), input)
 }
@@ -318,6 +378,7 @@ pub fn sum_on_device<T: Element>(input: &GpuVec<T>) -> Result<GpuVec<T>, Error> 
 /// # Errors
 ///
 /// As for [`sum`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn sum_on_device_with<T: Element>(
     variant: Variant,
     input: &GpuVec<T>,
@@ -328,85 +389,25 @@ pub fn sum_on_device_with<T: Element>(
     reduce_on_device(variant, Op::Sum, input)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn read_one<T: Element>(result: &GpuVec<T>) -> Result<T, Error> {
     let values = result.to_vec()?;
     Ok(values[0])
 }
 
 /// One reduction of a non-empty input: the limit checks, the pooled buffers, one `dispatch_batch`.
+#[cfg(not(target_arch = "wasm32"))]
 fn reduce_on_device<T: Element>(
     variant: Variant,
     op: Op,
     input: &GpuVec<T>,
 ) -> Result<GpuVec<T>, Error> {
-    if let Some(schedule) = block_schedule_for(variant, input) {
-        return reduce_blocks(input, &schedule, |device, schedule, partials, out| {
-            T::run_v1(op, device, schedule, input, partials, out)
-        });
-    }
-    reduce_with(input, |device, schedule, partials, out| {
-        T::run(op, device, schedule, input, partials, out)
-    })
-}
-
-/// The v1 schedule of `input` when `variant` asks for v1 and the device admits it (storage binding, workgroup
-/// memory; a first dispatch past the workgroup limit is split by the host, D211), else `None` (v0 runs and reports
-/// whatever limit it hits).
-fn block_schedule_for<T: Element>(variant: Variant, input: &GpuVec<T>) -> Option<BlockSchedule> {
-    if variant != Variant::V1 {
-        return None;
-    }
-    let schedule = BlockSchedule::new(input.len())?;
-    limits::admits(input.device(), input.len(), size_of::<T>()).then_some(schedule)
-}
-
-/// The shared frame of a v1 reduction (the device is already known to admit it): one pooled `GpuVec` per pass but the
-/// last, and one for the result, which `run` fills with its batch.
-fn reduce_blocks<T: Element>(
-    input: &GpuVec<T>,
-    schedule: &BlockSchedule,
-    run: impl FnOnce(
-        &HeadlessDevice,
-        &BlockSchedule,
-        &[GpuVec<T>],
-        &GpuVec<T>,
-    ) -> Result<(), gust_wgpu::Error>,
-) -> Result<GpuVec<T>, Error> {
     let device = input.device();
-    let passes = schedule.passes();
-    let partials = passes[..passes.len() - 1]
-        .iter()
-        .map(|pass| GpuVec::<T>::zeroed_on(device, pass.workgroups))
-        .collect::<Result<Vec<_>, _>>()?;
+    let parts = Parts::<T>::new(device, variant, input.len())?;
     let out = GpuVec::<T>::zeroed_on(device, 1)?;
-    run(device, schedule, &partials, &out)?;
-    Ok(out)
-}
-
-/// The shared frame of a reduction of a non-empty `input`: the limit checks, then one pooled `GpuVec` per pass and one
-/// for the result, which `run` fills with its batch.
-fn reduce_with<T: Element>(
-    input: &GpuVec<T>,
-    run: impl FnOnce(
-        &HeadlessDevice,
-        &Schedule,
-        &[GpuVec<T>],
-        &GpuVec<T>,
-    ) -> Result<(), gust_wgpu::Error>,
-) -> Result<GpuVec<T>, Error> {
-    let schedule = Schedule::new(input.len()).expect("the input is not empty");
-    let device = input.device();
-    // Only the storage binding is checked: a first pass past the workgroup limit is split by the host (D211, D208).
-    limits::check(device, "gust_algo::reduce", input.len(), size_of::<T>())?;
-    // Every lane writes its slot, so the zero fill is not needed for correctness; `GpuVec` has no public constructor
-    // without it (a recycled buffer costs one clearing submission), and `gust-wgpu` is not this slice's to change.
-    let partials = schedule
-        .passes()
-        .iter()
-        .map(|pass| GpuVec::<T>::zeroed_on(device, pass.partials()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let out = GpuVec::<T>::zeroed_on(device, 1)?;
-    run(device, &schedule, &partials, &out)?;
+    let mut sink = Sink::new();
+    parts.plan(op, &mut sink, input, &out);
+    sink.dispatch(device)?;
     Ok(out)
 }
 
@@ -420,6 +421,7 @@ fn reduce_with<T: Element>(
 /// # Errors
 ///
 /// As for [`sum`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn sum_wrapping(input: &GpuVec<u32>) -> Result<u32, Error> {
     sum_wrapping_with(shipped(Operation::SumWrapping), input)
 }
@@ -429,33 +431,305 @@ pub fn sum_wrapping(input: &GpuVec<u32>) -> Result<u32, Error> {
 /// # Errors
 ///
 /// As for [`sum`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn sum_wrapping_with(variant: Variant, input: &GpuVec<u32>) -> Result<u32, Error> {
     if input.is_empty() {
         return Ok(0);
     }
-    let result = if let Some(schedule) = block_schedule_for(variant, input) {
-        reduce_blocks(input, &schedule, |device, schedule, partials, out| {
-            gpu_block_chain!(
-                sum_wrapping_u32_block,
-                device,
-                schedule,
-                input,
+    let device = input.device();
+    let parts = Parts::<u32>::new(device, variant, input.len())?;
+    let out = GpuVec::<u32>::zeroed_on(device, 1)?;
+    let mut sink = Sink::new();
+    parts.plan_wrapping(&mut sink, input, &out);
+    sink.dispatch(device)?;
+    read_one(&out)
+}
+
+/// The schedule of one reduction and the pooled buffers it needs besides its input and result.
+pub(crate) struct Parts<T: Element> {
+    plan: Plan,
+    partials: Vec<GpuVec<T>>,
+}
+
+/// The v1 block passes, or the v0 block-strided passes and the terminal kernel.
+enum Plan {
+    Blocks(BlockSchedule),
+    Strided(Schedule),
+}
+
+impl<T: Element> Parts<T> {
+    /// The schedule for a non-empty input of `len` elements and the pooled partials: v1 when `variant` asks for it and
+    /// the device admits it (storage binding, workgroup memory; a first dispatch past the workgroup limit is split by
+    /// the host, D211), else v0, which checks the storage binding and reports whatever limit it hits.
+    pub(crate) fn new(device: &DeviceHandle, variant: Variant, len: u32) -> Result<Self, Error> {
+        let v1 = (variant == Variant::V1)
+            .then(|| BlockSchedule::new(len))
+            .flatten()
+            .filter(|_| limits::admits(device, len, size_of::<T>()));
+        if let Some(schedule) = v1 {
+            // Every pass but the last writes its own partials; the last (one workgroup) writes the result.
+            let passes = schedule.passes();
+            let partials = passes[..passes.len() - 1]
+                .iter()
+                .map(|pass| GpuVec::<T>::zeroed_on(device, pass.workgroups))
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(Self {
+                plan: Plan::Blocks(schedule),
                 partials,
-                out
-            )
-        })?
-    } else {
-        reduce_with(input, |device, schedule, partials, out| {
-            gpu_chain!(
+            });
+        }
+        let schedule = Schedule::new(len).expect("the input is not empty");
+        // Only the storage binding is checked: a first pass past the workgroup limit is split by the host (D211, D208).
+        limits::check(device, "gust_algo::reduce", len, size_of::<T>())?;
+        // Every lane writes its slot, so the zero fill is not needed for correctness; `GpuVec` has no public
+        // constructor without it (a recycled buffer costs one clearing submission), and `gust-wgpu` is not this
+        // slice's to change.
+        let partials = schedule
+            .passes()
+            .iter()
+            .map(|pass| GpuVec::<T>::zeroed_on(device, pass.partials()))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            plan: Plan::Strided(schedule),
+            partials,
+        })
+    }
+
+    /// Append the passes of reduction `op` of `input` into the one-element `out`.
+    pub(crate) fn plan<'s, I: Operand<T>, O: Operand<T>>(
+        &'s self,
+        op: Op,
+        sink: &mut Sink<'s>,
+        input: &'s I,
+        out: &'s O,
+    ) {
+        match &self.plan {
+            Plan::Blocks(schedule) => T::plan_v1(op, sink, schedule, input, &self.partials, out),
+            Plan::Strided(schedule) => T::plan(op, sink, schedule, input, &self.partials, out),
+        }
+    }
+}
+
+impl Parts<u32> {
+    /// Append the passes of the wrapping sum of `input` into the one-element `out`.
+    pub(crate) fn plan_wrapping<'s, I: Operand<u32>, O: Operand<u32>>(
+        &'s self,
+        sink: &mut Sink<'s>,
+        input: &'s I,
+        out: &'s O,
+    ) {
+        match &self.plan {
+            Plan::Blocks(schedule) => {
+                gpu_block_chain!(
+                    sum_wrapping_u32_block,
+                    sink,
+                    schedule,
+                    input,
+                    self.partials,
+                    out
+                );
+            }
+            Plan::Strided(schedule) => gpu_chain!(
                 sum_wrapping_u32_pass,
                 sum_wrapping_u32_final,
-                device,
+                sink,
                 schedule,
                 input,
-                partials,
+                &self.partials,
                 out
-            )
-        })?
-    };
-    read_one(&result)
+            ),
+        }
+    }
+}
+
+/// The dispatches of one reduction of `len` elements, made once and appended over any operands of that length (see
+/// [`Sink`]): the schedule and the pooled partial buffers, owned, with no borrow of an input or a result and no
+/// lifetime, so a plan can be kept for as long as the shape it was made for lasts (in a `Box<dyn Any>`, say).
+///
+/// **A plan must outlive the GPU work of every dispatch appended from it**: dropping it returns its partial buffers
+/// to the device's pool, and a new owner may then write them while those dispatches still run. The plan may be
+/// appended more than once (to other buffers of the same length, or the same ones again); the appended runs share the
+/// partials, so two of them must not be in flight at the same time.
+///
+/// The result is one element and every run writes it whole, so it can be reused from run to run. An empty input has
+/// no plan ([`Error::Empty`]); the value of the reduction over it is [`Op::identity`]. The wrapping sum has its own
+/// plan, [`SumWrappingPlan`].
+pub struct ReducePlan<T: Element> {
+    parts: Parts<T>,
+    op: Op,
+    len: u32,
+}
+
+impl<T: Element> ReducePlan<T> {
+    /// The plan of reduction `op` over `len` elements on `device`, with the kernels of `variant` (v1 falls back to
+    /// v0 for an input its launch cannot take).
+    ///
+    /// # Errors
+    ///
+    /// `Error::Empty` for `len == 0`, `Error::Device` for a length past the device's storage binding limit or a
+    /// failed allocation.
+    pub fn new(device: &DeviceHandle, variant: Variant, op: Op, len: u32) -> Result<Self, Error> {
+        non_empty(len)?;
+        Ok(Self {
+            parts: Parts::new(device, variant, len)?,
+            op,
+            len,
+        })
+    }
+
+    /// The number of elements of the input the plan was made for.
+    #[must_use]
+    pub fn len(&self) -> u32 {
+        self.len
+    }
+
+    /// A plan is never for an empty input, so this is `false`.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+
+    /// Append the dispatches of the reduction of `input` into the one-element `out` to `sink`.
+    ///
+    /// # Errors
+    ///
+    /// `Error::Length` when `input` does not hold the plan's length or `out` does not hold one element; nothing is
+    /// appended then. An operand of another device is refused later, by the dispatch.
+    pub fn append<'s, I: Operand<T>, O: Operand<T>>(
+        &'s self,
+        sink: &mut Sink<'s>,
+        input: &'s I,
+        out: &'s O,
+    ) -> Result<(), Error> {
+        check_len(self.len, input.operand_len())?;
+        check_len(1, out.operand_len())?;
+        self.parts.plan(self.op, sink, input, out);
+        Ok(())
+    }
+}
+
+/// The plan of the wrapping sum of a `u32` input (modulo 2^32, the `sum_wrapping` function): as [`ReducePlan`], with
+/// the same lifetime rule, length checks and `Error::Empty` for an empty input. Its empty-input value is that of
+/// [`Op::Sum`], `Some(0)`.
+pub struct SumWrappingPlan {
+    parts: Parts<u32>,
+    len: u32,
+}
+
+impl SumWrappingPlan {
+    /// The plan of the wrapping sum over `len` elements on `device`, with the kernels of `variant`.
+    ///
+    /// # Errors
+    ///
+    /// As for [`ReducePlan::new`].
+    pub fn new(device: &DeviceHandle, variant: Variant, len: u32) -> Result<Self, Error> {
+        non_empty(len)?;
+        Ok(Self {
+            parts: Parts::new(device, variant, len)?,
+            len,
+        })
+    }
+
+    /// The number of elements of the input the plan was made for.
+    #[must_use]
+    pub fn len(&self) -> u32 {
+        self.len
+    }
+
+    /// A plan is never for an empty input, so this is `false`.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+
+    /// Append the dispatches of the wrapping sum of `input` into the one-element `out` to `sink`.
+    ///
+    /// # Errors
+    ///
+    /// As for [`ReducePlan::append`].
+    pub fn append<'s, I: Operand<u32>, O: Operand<u32>>(
+        &'s self,
+        sink: &mut Sink<'s>,
+        input: &'s I,
+        out: &'s O,
+    ) -> Result<(), Error> {
+        check_len(self.len, input.operand_len())?;
+        check_len(1, out.operand_len())?;
+        self.parts.plan_wrapping(sink, input, out);
+        Ok(())
+    }
+}
+
+/// `Error::Empty` for a length of zero.
+pub(crate) fn non_empty(len: u32) -> Result<(), Error> {
+    if len == 0 { Err(Error::Empty) } else { Ok(()) }
+}
+
+/// `actual` is the length `expected`, as a plan or a recording needs.
+pub(crate) fn check_len(expected: u32, actual: u32) -> Result<(), Error> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(Error::Length { expected, actual })
+    }
+}
+
+/// A recorded reduction of a non-empty `input` into the one-element `out`.
+pub(crate) struct Reduce<'a, T: Element> {
+    plan: ReducePlan<T>,
+    input: &'a GpuVec<T>,
+    out: &'a GpuVec<T>,
+}
+
+impl<'a, T: Element> Reduce<'a, T> {
+    /// `Error::Empty` for an empty `input`, `Error::Length` for an `out` that is not one element.
+    pub(crate) fn new(
+        device: &DeviceHandle,
+        variant: Variant,
+        op: Op,
+        input: &'a GpuVec<T>,
+        out: &'a GpuVec<T>,
+    ) -> Result<Self, Error> {
+        let plan = ReducePlan::new(device, variant, op, input.len())?;
+        // The same check the append makes: a list never holds an operand pair its plan would refuse.
+        check_len(1, out.len())?;
+        Ok(Self { plan, input, out })
+    }
+}
+
+impl<T: Element> Stage for Reduce<'_, T> {
+    fn prepare<'s>(&'s self, sink: &mut Sink<'s>) {
+        self.plan
+            .append(sink, self.input, self.out)
+            .expect("the operands were checked when the plan was made");
+    }
+}
+
+/// A recorded wrapping sum of a non-empty `u32` input into the one-element `out`.
+pub(crate) struct SumWrapping<'a> {
+    plan: SumWrappingPlan,
+    input: &'a GpuVec<u32>,
+    out: &'a GpuVec<u32>,
+}
+
+impl<'a> SumWrapping<'a> {
+    /// `Error::Empty` for an empty `input`, `Error::Length` for an `out` that is not one element.
+    pub(crate) fn new(
+        device: &DeviceHandle,
+        variant: Variant,
+        input: &'a GpuVec<u32>,
+        out: &'a GpuVec<u32>,
+    ) -> Result<Self, Error> {
+        let plan = SumWrappingPlan::new(device, variant, input.len())?;
+        check_len(1, out.len())?;
+        Ok(Self { plan, input, out })
+    }
+}
+
+impl Stage for SumWrapping<'_> {
+    fn prepare<'s>(&'s self, sink: &mut Sink<'s>) {
+        self.plan
+            .append(sink, self.input, self.out)
+            .expect("the operands were checked when the plan was made");
+    }
 }

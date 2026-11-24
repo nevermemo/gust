@@ -1,10 +1,14 @@
 //! Opt-in GPU timestamps (D194): [`timed`] runs a closure of gust-algo calls and of [`dispatch_batch_in_scope`] calls
 //! and reports the GPU time of the batches they dispatched.
 //!
-//! Every public GPU operation of this crate submits its dispatches as one or more batches through
+//! Every public GPU operation of this crate that dispatches itself submits its dispatches as one or more batches through
 //! [`dispatch_batch_in_scope`] below, which a caller's own batches can use too. Outside a [`timed`] scope that is
 //! exactly `HeadlessDevice::dispatch_batch`; inside one it is `HeadlessDevice::dispatch_batch_timed`, and the result
 //! is added to the scope's accumulator.
+//! The exception is [`Recording::with_dispatches`](crate::record::Recording::with_dispatches), which hands its
+//! dispatches to the caller instead.
+//!
+//! Native only: the batches it counts go through the blocking `dispatch_batch`, which `wasm32` does not have.
 
 use std::cell::RefCell;
 use std::time::Duration;
@@ -213,8 +217,6 @@ pub fn timed<R>(run: impl FnOnce() -> Result<R, Error>) -> Result<Timed<R>, Erro
     Ok(Timed { value, time })
 }
 
-// NOTE: `dispatch_batch_timed` is native-only; if gust-algo ever targets wasm32 this wrapper needs the same
-// `#[cfg(not(target_arch = "wasm32"))]` gate as `HeadlessDevice::dispatch_batch` and `dispatch_batch_timed`.
 /// Dispatch one batch of your own kernels, counted in the enclosing [`timed`] scope: a caller's own kernels can be
 /// timed in the same scope as gust-algo calls.
 ///

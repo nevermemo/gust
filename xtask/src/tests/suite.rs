@@ -1341,8 +1341,18 @@ fn the_algo_gpu_step_requires_every_adapter_test_by_name_and_no_other() {
     // One more than pinned: the list must change in the same commit.
     let mut more = ALGO_GPU_TESTS.to_vec();
     more.push("tests::gpu::gpu_a_new_test");
+    let mut more_in_record = ALGO_GPU_TESTS.to_vec();
+    more_in_record.push("tests::record::gpu_a_new_test");
     let error = Step::AlgoGpuSuite
         .run_in(root, &recording_runner(&calls, algo_output(&more)))
+        .unwrap_err();
+    assert!(error.contains("the pinned number"), "{error}");
+    // The recording form's adapter tests are counted too (an unpinned `tests::record::gpu_` test fails the same way).
+    let error = Step::AlgoGpuSuite
+        .run_in(
+            root,
+            &recording_runner(&calls, algo_output(&more_in_record)),
+        )
         .unwrap_err();
     assert!(error.contains("the pinned number"), "{error}");
     // Nothing ran at all.

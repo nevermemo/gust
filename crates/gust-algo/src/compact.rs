@@ -12,8 +12,11 @@
 //! * [`count`] is the number of set flags: one element, on the device (`reduce::sum_on_device` of the mask).
 //! * [`indices`] returns `(indices, count)`. `indices` is `flags.len()` long (the most a compaction can produce); its
 //!   first `count` elements are the positions of the set flags in increasing order, and **every element from `count`
-//!   on is `0`** (the buffer is created zeroed and only the first `count` slots are written). The tail is not a
-//!   sentinel: `0` is also a valid index, so a consumer must use the count, which is what the gathers do. The indices
+//!   on is `0`** (the buffer is created zeroed and only the first `count` slots are written). That zero tail is the
+//!   promise of this immediate function alone: the recording form ([`record`](crate::record)) writes the same first
+//!   `count` elements into a buffer of the caller's, and past `count` its contents are unspecified once a list has run
+//!   more than once. The tail is not a sentinel: `0` is also a valid index, so a consumer must use the count, which is
+//!   what the gathers do. The indices
 //!   come from the exclusive scan of the mask: output slot `scan[i]` belongs to element `i` alone, so the scatter
 //!   `indices[scan[i]] = i` has one writer per slot.
 //! * The **gathers** compute `out[j] = values[indices[j]]` for `j < count[0]`. The output is `indices.len()` long,
@@ -36,10 +39,21 @@
 //! index past the values is then skipped, not read out of bounds). `src/tests/struct_gather.rs` holds a worked,
 //! tested example (`out[j] = particles[indices[j]]` for a struct of a `u32` and an `f32`).
 
-use gust::{GpuPod, Independent};
-use gust_wgpu::{BufferDispatch, GpuVec, HeadlessDevice};
+#[cfg(not(target_arch = "wasm32"))]
+use gust::GpuPod;
+use gust::Independent;
+#[cfg(not(target_arch = "wasm32"))]
+use gust_wgpu::{BufferDispatch, HeadlessDevice};
+use gust_wgpu::{DeviceHandle, GpuVec};
 
-use crate::{Error, compact_kernels, limits, reduce, scan, schedule::Pass};
+use crate::{
+    Error, Variant, compact_kernels, limits,
+    record::{Operand, Sink, Stage},
+    reduce::{self, Op, check_len, non_empty},
+    scan,
+    schedule::Pass,
+    variant::{Operation, shipped},
+};
 
 /// The name the limit errors carry.
 const KERNEL: &str = "gust_algo::compact";
@@ -50,6 +64,7 @@ const KERNEL: &str = "gust_algo::compact";
 /// # Errors
 ///
 /// `Error::Device` for a device failure or an input past the device's limits.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn count(flags: &GpuVec<u32>) -> Result<GpuVec<u32>, Error> {
     if flags.is_empty() {
         return Ok(GpuVec::zeroed_on(flags.device(), 1)?);
@@ -59,11 +74,13 @@ pub fn count(flags: &GpuVec<u32>) -> Result<GpuVec<u32>, Error> {
 
 /// The positions of the set (non-zero) flags and their number: `(indices, count)`, both on the device of `flags`, no
 /// readback. `indices` is `flags.len()` long; its first `count` elements are the increasing positions of the set flags
-/// and the rest are `0` (see the module documentation). `count` has one element.
+/// and the rest are `0` (see the module documentation; the recording form does not promise the zero tail). `count` has
+/// one element.
 ///
 /// # Errors
 ///
 /// As for [`count`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn indices(flags: &GpuVec<u32>) -> Result<(GpuVec<u32>, GpuVec<u32>), Error> {
     let device = flags.device();
     if flags.is_empty() {
@@ -73,35 +90,262 @@ pub fn indices(flags: &GpuVec<u32>) -> Result<(GpuVec<u32>, GpuVec<u32>), Error>
     let positions = scan::exclusive(&mask)?;
     let total = reduce::sum_on_device(&mask)?;
     let indices = GpuVec::<u32>::zeroed_on(device, flags.len())?;
-    let call = compact_kernels::scatter_indices_u32::call(
-        Pass::over(flags.len()).partials(),
-        Independent(&mask),
-        Independent(&positions),
-        Independent(&indices),
-    );
-    crate::timing::dispatch_batch_in_scope(device, &[BufferDispatch::from(&call)])?;
+    let mut sink = Sink::new();
+    plan_scatter(&mut sink, flags.len(), &mask, &positions, &indices);
+    sink.dispatch(device)?;
     Ok((indices, total))
 }
 
 /// The 0/1 mask of `flags` (1 where the flag is not zero), after the limit checks.
+#[cfg(not(target_arch = "wasm32"))]
 fn mask_of(flags: &GpuVec<u32>) -> Result<GpuVec<u32>, Error> {
     let device = flags.device();
-    let pass = Pass::over(flags.len());
     limits::check(device, KERNEL, flags.len(), size_of::<u32>())?;
     // Every element is written, so the zero fill is not needed for correctness; `GpuVec` has no public constructor
     // without it (see `reduce`).
     let mask = GpuVec::<u32>::zeroed_on(device, flags.len())?;
-    let call = compact_kernels::flags_to_mask_u32::call(
-        pass.partials(),
-        Independent(flags),
-        Independent(&mask),
-    );
-    crate::timing::dispatch_batch_in_scope(device, &[BufferDispatch::from(&call)])?;
+    let mut sink = Sink::new();
+    plan_mask(&mut sink, flags.len(), flags, &mask);
+    sink.dispatch(device)?;
     Ok(mask)
+}
+
+/// Append the dispatch that turns the `len` flags of `flags` into the 0/1 `mask`.
+fn plan_mask<'s, F: Operand<u32>>(
+    sink: &mut Sink<'s>,
+    len: u32,
+    flags: &'s F,
+    mask: &'s GpuVec<u32>,
+) {
+    sink.push(&compact_kernels::flags_to_mask_u32::call(
+        Pass::over(len).partials(),
+        Independent(flags),
+        Independent(mask),
+    ));
+}
+
+/// Append the dispatch that writes `indices[positions[i]] = i` for every set element `i` of the `len`-element `mask`.
+fn plan_scatter<'s, O: Operand<u32>>(
+    sink: &mut Sink<'s>,
+    len: u32,
+    mask: &'s GpuVec<u32>,
+    positions: &'s GpuVec<u32>,
+    indices: &'s O,
+) {
+    sink.push(&compact_kernels::scatter_indices_u32::call(
+        Pass::over(len).partials(),
+        Independent(mask),
+        Independent(positions),
+        Independent(indices),
+    ));
+}
+
+/// The dispatches of one `count` of `len` flags, made once and appended over any operands of that length (see
+/// [`Sink`]): the mask and the reduction of the mask, owned, with no borrow of the flags or the result and no
+/// lifetime.
+///
+/// **A plan must outlive the GPU work of every dispatch appended from it**: dropping it returns its mask and partials
+/// to the device's pool, and a new owner may then write them while those dispatches still run. The plan may be
+/// appended more than once; the appended runs share the scratch, so two of them must not be in flight at the same
+/// time. The count of no flags is `0` ([`Op::identity`]); an empty input has no plan ([`Error::Empty`]).
+pub struct CountPlan {
+    mask: GpuVec<u32>,
+    total: reduce::Parts<u32>,
+    len: u32,
+}
+
+impl CountPlan {
+    /// The plan of the count of `len` flags on `device`. `variant` overrides the shipped one of the sum of the mask.
+    ///
+    /// # Errors
+    ///
+    /// `Error::Empty` for `len == 0`, `Error::Device` for a length past the device's storage binding limit or a
+    /// failed allocation.
+    pub fn new(device: &DeviceHandle, variant: Option<Variant>, len: u32) -> Result<Self, Error> {
+        non_empty(len)?;
+        limits::check(device, KERNEL, len, size_of::<u32>())?;
+        let mask = GpuVec::<u32>::zeroed_on(device, len)?;
+        let total = reduce::Parts::new(device, variant.unwrap_or(shipped(Operation::Sum)), len)?;
+        Ok(Self { mask, total, len })
+    }
+
+    /// The number of flags the plan was made for.
+    #[must_use]
+    pub fn len(&self) -> u32 {
+        self.len
+    }
+
+    /// A plan is never for an empty input, so this is `false`.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+
+    /// Append the dispatches of the count of `flags` into the one-element `count` to `sink`: the mask, then the sum.
+    ///
+    /// # Errors
+    ///
+    /// `Error::Length` when `flags` does not hold the plan's length or `count` does not hold one element; nothing is
+    /// appended then.
+    pub fn append<'s, F: Operand<u32>, C: Operand<u32>>(
+        &'s self,
+        sink: &mut Sink<'s>,
+        flags: &'s F,
+        count: &'s C,
+    ) -> Result<(), Error> {
+        check_len(self.len, flags.operand_len())?;
+        check_len(1, count.operand_len())?;
+        plan_mask(sink, self.len, flags, &self.mask);
+        self.total.plan(Op::Sum, sink, &self.mask, count);
+        Ok(())
+    }
+}
+
+/// The dispatches of one `indices` of `len` flags, made once and appended over any operands of that length: the mask,
+/// its exclusive scan, its sum and the scatter, in the order of the immediate functions, with the same ownership,
+/// lifetime rule and empty-input rule as [`CountPlan`].
+///
+/// A run writes `count` whole and the first `count` elements of `indices`; **past `count` the contents of `indices`
+/// are unspecified once the plan has run more than once** (a buffer made with `GpuVec::zeroed_on` shows the zero
+/// tail of the immediate function on its first run). A consumer uses the count.
+pub struct CompactPlan {
+    counted: CountPlan,
+    scan: scan::Parts,
+    positions: GpuVec<u32>,
+}
+
+impl CompactPlan {
+    /// The plan of the compaction of `len` flags on `device`. `variant` overrides the shipped one of the scan and the
+    /// sum.
+    ///
+    /// # Errors
+    ///
+    /// As for [`CountPlan::new`].
+    pub fn new(device: &DeviceHandle, variant: Option<Variant>, len: u32) -> Result<Self, Error> {
+        let counted = CountPlan::new(device, variant, len)?;
+        let scan = scan::Parts::new(
+            device,
+            variant.unwrap_or(shipped(Operation::Exclusive)),
+            len,
+        )?
+        .expect("the mask is not empty");
+        let positions = GpuVec::<u32>::zeroed_on(device, len)?;
+        Ok(Self {
+            counted,
+            scan,
+            positions,
+        })
+    }
+
+    /// The number of flags the plan was made for.
+    #[must_use]
+    pub fn len(&self) -> u32 {
+        self.counted.len
+    }
+
+    /// A plan is never for an empty input, so this is `false`.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+
+    /// Append the dispatches of the compaction of `flags` into `indices` and the one-element `count` to `sink`: the
+    /// mask, the exclusive scan of the mask, the sum of the mask and the scatter.
+    ///
+    /// # Errors
+    ///
+    /// `Error::Length` when `flags` or `indices` does not hold the plan's length or `count` does not hold one
+    /// element; nothing is appended then.
+    pub fn append<'s, F: Operand<u32>, I: Operand<u32>, C: Operand<u32>>(
+        &'s self,
+        sink: &mut Sink<'s>,
+        flags: &'s F,
+        indices: &'s I,
+        count: &'s C,
+    ) -> Result<(), Error> {
+        let len = self.counted.len;
+        check_len(len, flags.operand_len())?;
+        check_len(len, indices.operand_len())?;
+        check_len(1, count.operand_len())?;
+        let mask = &self.counted.mask;
+        plan_mask(sink, len, flags, mask);
+        self.scan.plan(sink, mask, &self.positions, true);
+        self.counted.total.plan(Op::Sum, sink, mask, count);
+        plan_scatter(sink, len, mask, &self.positions, indices);
+        Ok(())
+    }
+}
+
+/// A recorded `count` of non-empty flags.
+pub(crate) struct Count<'a> {
+    plan: CountPlan,
+    flags: &'a GpuVec<u32>,
+    count: &'a GpuVec<u32>,
+}
+
+impl<'a> Count<'a> {
+    /// `Error::Length` for a `count` that is not one element, `Error::Empty` for empty `flags`.
+    pub(crate) fn new(
+        device: &DeviceHandle,
+        variant: Option<Variant>,
+        flags: &'a GpuVec<u32>,
+        count: &'a GpuVec<u32>,
+    ) -> Result<Self, Error> {
+        check_len(1, count.len())?;
+        let plan = CountPlan::new(device, variant, flags.len())?;
+        Ok(Self { plan, flags, count })
+    }
+}
+
+impl Stage for Count<'_> {
+    fn prepare<'s>(&'s self, sink: &mut Sink<'s>) {
+        self.plan
+            .append(sink, self.flags, self.count)
+            .expect("the operands were checked when the plan was made");
+    }
+}
+
+/// A recorded `indices` of non-empty flags.
+pub(crate) struct Compact<'a> {
+    plan: CompactPlan,
+    flags: &'a GpuVec<u32>,
+    indices: &'a GpuVec<u32>,
+    count: &'a GpuVec<u32>,
+}
+
+impl<'a> Compact<'a> {
+    /// `Error::Length` for an `indices` that is not as long as `flags` or a `count` that is not one element,
+    /// `Error::Empty` for empty `flags`.
+    pub(crate) fn new(
+        device: &DeviceHandle,
+        variant: Option<Variant>,
+        flags: &'a GpuVec<u32>,
+        indices: &'a GpuVec<u32>,
+        count: &'a GpuVec<u32>,
+    ) -> Result<Self, Error> {
+        check_len(1, count.len())?;
+        check_len(flags.len(), indices.len())?;
+        let plan = CompactPlan::new(device, variant, flags.len())?;
+        Ok(Self {
+            plan,
+            flags,
+            indices,
+            count,
+        })
+    }
+}
+
+impl Stage for Compact<'_> {
+    fn prepare<'s>(&'s self, sink: &mut Sink<'s>) {
+        self.plan
+            .append(sink, self.flags, self.indices, self.count)
+            .expect("the operands were checked when the plan was made");
+    }
 }
 
 /// The shared frame of the gathers: the count and device checks, the limit checks, the zeroed output of
 /// `indices.len()` elements, which `run` fills (it is given the device, the invocation count and the output).
+#[cfg(not(target_arch = "wasm32"))]
 fn gather_with<T: GpuPod>(
     values: &GpuVec<T>,
     indices: &GpuVec<u32>,
@@ -137,6 +381,7 @@ macro_rules! gather {
         ///
         /// `Error::Count` if `count` does not hold exactly one element; `Error::Device` for a device failure, a buffer
         /// of another device, or a buffer past the device's limits.
+        #[cfg(not(target_arch = "wasm32"))]
         pub fn $name(
             values: &GpuVec<$ty>,
             indices: &GpuVec<u32>,

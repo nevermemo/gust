@@ -133,7 +133,7 @@ fn counted() -> Turn {
     LANE.enter()
 }
 
-fn device() -> DeviceHandle {
+pub(super) fn device() -> DeviceHandle {
     let device =
         default_device().expect("a Vulkan adapter is required; these tests must not silently skip");
     eprintln!("gust-algo gpu adapter: {:?}", device.adapter_info());

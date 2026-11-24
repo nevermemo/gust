@@ -4,11 +4,13 @@ use std::fmt;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// `min` or `max` of an empty input: there is no value to return. (`sum` of an empty input is the identity.)
+    /// There is nothing to compute: `min` or `max` of an empty input has no value, and a recording or a plan refuses an
+    /// empty input (the immediate `sum` and `count` return the identity instead).
     Empty,
     /// The count buffer of a gather holds this many elements; it must hold exactly one.
     Count(u32),
-    /// The output buffer given to a `_into` call holds `actual` elements; it must hold `expected`, the input's length.
+    /// A buffer given to an `_into` call, a recording or a plan holds `actual` elements; it must hold `expected` (the
+    /// input's length, or one element for a reduction's result).
     Length {
         /// The number of elements the output must hold.
         expected: u32,
@@ -23,7 +25,9 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Empty => formatter.write_str("min or max of an empty input"),
+            Self::Empty => {
+                formatter.write_str("an empty input has no min or max, and nothing to record")
+            }
             Self::Count(len) => write!(
                 formatter,
                 "the count buffer of a gather holds {len} elements, it must hold exactly one"

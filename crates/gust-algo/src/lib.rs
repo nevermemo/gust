@@ -36,6 +36,13 @@
 //! [`evidence`] is the subgroup form of the reduction's block step, kept as measured evidence: not for users, and not part
 //! of what this crate promises (see `docs/development/VALIDATION.md`, "Subgroup evidence").
 //!
+//! [`record`] is the recording form (slice m14.s2f1, D259): owned plans of the reductions, scans and compactions that
+//! append their dispatches over borrowed operands to a [`record::Sink`], and [`record::Recording`], a list of them for a
+//! caller with `GpuVec`s, with results in buffers of the caller's; the list runs as one `dispatch_batch` (or its
+//! dispatches go to a batch of the caller's). The crate compiles for `wasm32` (what blocks there, the immediate
+//! functions, `timed`, `evidence` and `Recording::dispatch`, is compiled out), but its kernels need artifacts the crate
+//! does not ship, so nothing runs there yet.
+//!
 //! Kernels are compiled at run time through gust-wgpu's `slang-runtime` feature (enable this crate's feature of the
 //! same name); the crate ships no precompiled artifacts.
 
@@ -45,17 +52,21 @@ pub mod compact_kernels;
 #[cfg(any(test, gust_dual))]
 pub mod cpu;
 mod error;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod evidence;
 pub mod kernels;
 mod limits;
+pub mod record;
 pub mod reduce;
 pub mod scan;
 pub mod scan_kernels;
 pub mod schedule;
+#[cfg(not(target_arch = "wasm32"))]
 mod timing;
 pub mod variant;
 
 pub use error::Error;
+#[cfg(not(target_arch = "wasm32"))]
 pub use timing::{GpuTime, Timed, dispatch_batch_in_scope, timed};
 pub use variant::Variant;
 

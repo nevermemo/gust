@@ -9,6 +9,7 @@ mod bound;
 mod common;
 mod golden;
 mod gpu;
+mod record;
 mod schedule;
 mod struct_gather;
 mod timing;

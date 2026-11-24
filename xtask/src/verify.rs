@@ -980,10 +980,11 @@ pub(crate) const GPU_SUITE_CALL: [&str; 4] = ["test", "--locked", "-p", "gust-co
 /// adapter. Run after [`GPU_SUITE_CALL`] in the Gpu mode and by the Gpu suite, so the lavapipe job runs it too.
 pub(crate) const ALGO_GPU_CALL: [&str; 4] = ["test", "--locked", "-p", "gust-algo"];
 
-/// The `gpu::` tests of `gust-algo`, by name: each must be reported `ok`, and no other `tests::gpu::` test may exist
-/// ([`check_algo_gpu_counts`]), so a deleted or an unpinned adapter test fails the gate. The twins would still satisfy
-/// a plain "at least one test ran". Adding or removing a `gpu::` test changes this list in the same commit.
-pub(crate) const ALGO_GPU_TESTS: [&str; 63] = [
+/// The adapter tests of `gust-algo`, by name: the `gpu::` tests of `tests::gpu` and the `gpu_` tests of `tests::record` (the
+/// recording form on an adapter). Each must be reported `ok`, and no other test of those two modules whose name starts
+/// `gpu` may exist ([`check_algo_gpu_counts`]), so a deleted or an unpinned adapter test fails the gate. The twins would
+/// still satisfy a plain "at least one test ran". Adding or removing such a test changes this list in the same commit.
+pub(crate) const ALGO_GPU_TESTS: [&str; 70] = [
     "tests::gpu::gpu_a_compaction_chain_runs_on_the_device_with_the_device_count",
     "tests::gpu::gpu_a_compaction_past_a_lowered_workgroup_limit_is_split_and_equals_the_host_reference",
     "tests::gpu::gpu_a_compaction_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch",
@@ -1047,6 +1048,13 @@ pub(crate) const ALGO_GPU_TESTS: [&str; 63] = [
     "tests::gpu::gpu_v1_wrapping_sums_are_defined_modulo_2_32_for_every_input",
     "tests::gpu::gpu_variants_leave_the_input_alone_and_return_their_buffers",
     "tests::gpu::gpu_wrapping_sums_are_defined_modulo_2_32_for_every_input",
+    "tests::record::gpu_a_plan_held_without_a_borrow_appends_over_any_operand",
+    "tests::record::gpu_a_recorded_compaction_list_equals_the_immediate_results",
+    "tests::record::gpu_a_recorded_list_runs_in_order_and_runs_again",
+    "tests::record::gpu_a_recorded_reduction_list_equals_the_immediate_results",
+    "tests::record::gpu_a_recorded_scan_list_equals_the_immediate_results",
+    "tests::record::gpu_plans_refuse_operands_of_the_wrong_length_and_empty_shapes",
+    "tests::record::gpu_recording_refuses_what_it_cannot_record",
 ];
 
 /// The shape of [`GPU_SUITE_CALL`]'s output: `passed` is the sum over every `test result:` line, `result_lines`
@@ -1549,7 +1557,7 @@ pub(crate) fn name_adapter(root: &Path) -> Result<String, String> {
 }
 
 /// The guard for [`ALGO_GPU_CALL`] on its captured `stdout`: tests ran and none failed or was ignored, every test of
-/// [`ALGO_GPU_TESTS`] is reported `ok`, and no `tests::gpu::` test outside the list ran.
+/// [`ALGO_GPU_TESTS`] is reported `ok`, and no `tests::gpu::` or `tests::record::gpu_` test outside the list ran.
 pub(crate) fn check_algo_gpu_counts(call: &[String], stdout: &str) -> Result<(), String> {
     let plain = without_colors(stdout);
     let totals = sum_test_results(&plain);
@@ -1569,7 +1577,8 @@ pub(crate) fn check_algo_gpu_counts(call: &[String], stdout: &str) -> Result<(),
         .lines()
         .filter(|line| {
             let line = line.trim();
-            line.starts_with("test tests::gpu::") && line.ends_with("... ok")
+            (line.starts_with("test tests::gpu::") || line.starts_with("test tests::record::gpu_"))
+                && line.ends_with("... ok")
         })
         .count();
     if ran != ALGO_GPU_TESTS.len() {

@@ -1225,6 +1225,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       it returns (also a failing step, before the error), and a passing run prints its five slowest steps and the
       summed step seconds against the wall. No step, order or exit code changes. One cold Unit run put check-cpu
       and check-ui first (builds included); the merge gates' Unit logs give the warm split. Opus review: merge.
+    - m14.expar (faster gates): `cargo xtask check-examples --gpu` builds every example's test executables first
+      (`cargo test --no-run`; `--prebuild` does only that, so a gate can build them before it takes the GPU lock)
+      and runs them three at a time through the shared GPU job runner instead of one `cargo test` per example in a
+      row. Examples keep their feature sets (a test checks each group's manifest features), an example that builds
+      its own kernels keeps its own group, stale executables are refused, each example's run is bounded and each
+      group's output prints as one block. 890M, interleaved: 117 s median before, 43 s after; the same 92 test
+      names and passed line. The RTX 5090 run is owed. Opus review: merge after fixes; fixed, re-checked (merge).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

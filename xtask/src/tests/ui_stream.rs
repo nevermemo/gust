@@ -1,8 +1,8 @@
 use super::{PackageStream, fixture_of, shared_cause, split_by_package, stderr_of};
 use crate::ui::{
-    Case, Expectation, group_args, group_by_env, group_command, group_label, groups_call,
-    judge_shared, manifest_sets_features, parse_expectation, parse_expected, shared_args,
-    shared_command, shares_call,
+    Case, Expectation, group_args, group_by_env, group_call, group_command, group_label,
+    groups_call, judge_shared, manifest_sets_features, parse_expectation, parse_expected,
+    shared_args, shared_command, shares_call,
 };
 
 const ROOT: &str = "C:/work/repo";
@@ -458,4 +458,19 @@ fn a_group_failure_names_its_group_and_not_the_shared_call() {
         cause.starts_with(&format!("tests/ui: {label} did not reach every fixture")),
         "{cause}"
     );
+}
+
+#[test]
+fn a_group_call_carries_its_label_and_the_env_cargo_program() {
+    let mut a = compiles("a");
+    a.env = vec![
+        ("GUST_PROFILE".to_owned(), "cpu".to_owned()),
+        ("A".to_owned(), "1".to_owned()),
+    ];
+    let mut b = compiles("b");
+    b.env = a.env.clone();
+    let call = group_call(std::path::Path::new(ROOT), &[&a, &b]);
+    assert_eq!(call.program, "env A=1 GUST_PROFILE=cpu cargo");
+    assert_eq!(call.label, group_label(&a.env));
+    assert_eq!(call.arguments, group_args(&["a", "b"]));
 }

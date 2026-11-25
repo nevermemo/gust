@@ -147,14 +147,7 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
         match group.as_slice() {
             [case] => run_alone(root, case, checks, &mut problems),
             _ => {
-                let names: Vec<&str> = group.iter().map(|case| case.name.as_str()).collect();
-                let call = KeepGoingCall {
-                    command: group_command(root, &names, &group[0].env),
-                    program: format!("env {} cargo", env_text(&group[0].env)),
-                    arguments: group_args(&names),
-                    label: group_label(&group[0].env),
-                };
-                run_keep_going(call, &group, checks, &mut problems);
+                run_keep_going(group_call(root, &group), &group, checks, &mut problems);
             }
         }
     }
@@ -320,11 +313,23 @@ pub(crate) fn group_label(env: &[(String, String)]) -> String {
 
 /// One `cargo check --keep-going` to run: the child, the program and arguments its record shows, and the label its
 /// problems name.
-struct KeepGoingCall {
+pub(crate) struct KeepGoingCall {
     command: Command,
-    program: String,
-    arguments: Vec<String>,
-    label: String,
+    pub(crate) program: String,
+    pub(crate) arguments: Vec<String>,
+    pub(crate) label: String,
+}
+
+/// The [`KeepGoingCall`] of one group of [`group_by_env`] (the fixtures of `group` share their `env.txt`): the record
+/// shows `env <variables> cargo`, and the label names the group.
+pub(crate) fn group_call(root: &Path, group: &[&Case]) -> KeepGoingCall {
+    let names: Vec<&str> = group.iter().map(|case| case.name.as_str()).collect();
+    KeepGoingCall {
+        command: group_command(root, &names, &group[0].env),
+        program: format!("env {} cargo", env_text(&group[0].env)),
+        arguments: group_args(&names),
+        label: group_label(&group[0].env),
+    }
 }
 
 /// One [`KeepGoingCall`] of the `cases` (the fixtures that [`shares_call`], or one group of [`group_by_env`]), judged

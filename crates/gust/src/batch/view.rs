@@ -77,8 +77,8 @@ impl<D: BatchDevice, T: GpuPod> View<D, T> {
     }
 
     /// The number of live elements (`width * height`), not the size of the allocation. A buffer of no element still has
-    /// an allocation of one placeholder element, as GUST's own bindings of an empty buffer do, so a shader that binds
-    /// it must take its length from this value (`0`), not from `arrayLength` (which reports the placeholder).
+    /// an allocation of one placeholder element, as GUST's own bindings of an empty buffer do, so the caller reads the
+    /// count here (`0`), not from the shader's `arrayLength` (`1`).
     #[must_use]
     pub const fn len(&self) -> usize {
         self.dims[0] as usize * self.dims[1] as usize

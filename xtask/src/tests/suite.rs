@@ -2750,6 +2750,20 @@ fn the_scheduler_runs_in_parallel_within_the_width_and_emits_in_job_order() {
     );
 }
 
+/// Waits until `count` jobs have started, for at most 5 s: a scheduler that never reaches the width ends the wait and
+/// fails the caller's asserts instead of hanging the test run.
+fn wait_for_started(started: &std::sync::atomic::AtomicUsize, count: usize) {
+    use std::{
+        sync::atomic::Ordering,
+        thread::sleep,
+        time::{Duration, Instant},
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while started.load(Ordering::SeqCst) < count && Instant::now() < deadline {
+        sleep(Duration::from_millis(1));
+    }
+}
+
 /// After a failure no job starts, and the jobs that were running are awaited and handed on, so every failure is
 /// there to be named and the judged result is an error: one at a time, and three at a time with two jobs still running
 /// when the first fails.
@@ -2789,10 +2803,8 @@ fn a_failure_stops_new_jobs_awaits_the_running_ones_and_names_every_failure() {
         &|job: &u64| {
             started.fetch_add(1, Ordering::SeqCst);
             if *job == 0 {
-                // Fail only once the other two are running.
-                while started.load(Ordering::SeqCst) < 3 {
-                    sleep(Duration::from_millis(1));
-                }
+                // Fail only once the other two are running (bounded; the asserts below report a serial scheduler).
+                wait_for_started(&started, 3);
             } else {
                 sleep(Duration::from_millis(150));
             }
@@ -2915,9 +2927,7 @@ fn a_run_that_stops_early_still_emits_every_finished_job_in_job_order() {
         &|job: &u64| {
             started.fetch_add(1, Ordering::SeqCst);
             if *job == 3 {
-                while started.load(Ordering::SeqCst) < 2 {
-                    sleep(Duration::from_millis(1));
-                }
+                wait_for_started(&started, 2);
             } else {
                 sleep(Duration::from_millis(100));
             }

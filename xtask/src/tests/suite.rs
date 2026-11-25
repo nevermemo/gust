@@ -1384,6 +1384,13 @@ fn the_algo_gpu_step_requires_every_adapter_test_by_name_and_no_other() {
         )
         .unwrap_err();
     assert!(error.contains("the pinned number"), "{error}");
+    // So are the adapter tests of the ops of a batch (an unpinned `tests::batch::gpu_` test fails the same way).
+    let mut more_in_batch = ALGO_GPU_TESTS.to_vec();
+    more_in_batch.push("tests::batch::gpu_a_new_test");
+    let error = Step::AlgoGpuSuite
+        .run_in(root, &recording_runner(&calls, algo_output(&more_in_batch)))
+        .unwrap_err();
+    assert!(error.contains("the pinned number"), "{error}");
     // Nothing ran at all.
     assert!(
         Step::AlgoGpuSuite

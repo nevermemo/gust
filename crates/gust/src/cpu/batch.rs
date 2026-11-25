@@ -188,3 +188,16 @@ impl BatchDevice for CpuDevice {
         Ok(())
     }
 }
+
+impl CpuDevice {
+    /// A stage that runs `step` at each frame, in order with the other stages: the CPU form of a library op of a batch
+    /// (gust-algo's reductions, scans and compaction are plain Rust over the buffers they captured). `step` owns what
+    /// it uses, so the stage keeps it for as long as it lives.
+    ///
+    /// Macro support, outside the pre-1.0 promise (D111).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn prepare_fn(&self, step: impl Fn(&Self) -> Result<(), Error> + 'static) -> CpuStage {
+        CpuStage(Rc::new(step))
+    }
+}

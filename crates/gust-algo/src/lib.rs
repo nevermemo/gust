@@ -43,9 +43,15 @@
 //! functions, `timed`, `evidence` and `Recording::dispatch`, is compiled out), but its kernels need artifacts the crate
 //! does not ship, so nothing runs there yet.
 //!
+//! `batch` (slice m14.s2f2a, hidden macro support, outside the pre-1.0 promise) is the route from a `gust::batch` to
+//! the same plans: op types that a build block records (`b.op(&["total"], Sum::of(&blocks))`), for the GPU device
+//! and, as a host form, for the CPU device. The forms users write arrive with the macro.
+//!
 //! Kernels are compiled at run time through gust-wgpu's `slang-runtime` feature (enable this crate's feature of the
 //! same name); the crate ships no precompiled artifacts.
 
+#[doc(hidden)]
+pub mod batch;
 pub mod bound;
 pub mod compact;
 pub mod compact_kernels;

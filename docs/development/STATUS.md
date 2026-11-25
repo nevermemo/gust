@@ -1320,6 +1320,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       refuses every other shape at its token. `Copy` and `PartialEq` come from the supertraits. Nothing in a batch uses
       it yet (s2e2b). Evidence: Unit, doc and ui tests; mutations caught (a wrong mapping, a dropped supertrait). Opus
       review: approve with fixes; one fix round.
+    - m14.s2c-web: `examples/web-batch-frames`, a second check-web page. A `gpu_batch!` with `in_flight(2)` in
+      headless Chrome records and submits frame N+1 while frame N's ticket is pending (its first `begin` must return at
+      once), a third `begin` must wait, and every ticket equals the host exactly. Mutations to `in_flight(1)` and
+      `in_flight(3)` fail with the page's own messages. Evidence: Gpu (WebGPU, Chrome 158.0.8127.37, nvidia blackwell),
+      the adapter Chrome picked. Opus review: merge after fixes; one fix round.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

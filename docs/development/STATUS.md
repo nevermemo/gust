@@ -1295,6 +1295,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       before `encode_frame` that reads frame A's outputs (the depth-2 ruling); a `write_buffer` mutation makes it
       fail on the Radeon 890M. The read view doc takes the ruled wording; xtask ui gains a `group_call` helper
       with a test. Passed on the Radeon 890M, the RTX 5090 and the CPU twin.
+    - m14.artex: `cargo xtask check-artifacts` runs its example mains three at a time by default
+      (`GUST_EXAMPLE_JOBS=1` runs them one after another). A pure function judges the batch: every main that failed
+      or never ran is named and later mains keep their records; the width is parsed before any GPU step. A soak on
+      the Radeon 890M saw no start-up failure of a main.
+    - m14.s2f2b (D262): the core rules of reductions in a batch. A stage sealed at length 0 follows its op's
+      rule before any upload: Identity writes the op's identity in the frame's encoder, Nothing skips the stage,
+      Refuse returns `Error::Empty` with nothing encoded. `StageRec::len` is the one place the length is read (the
+      seam for s2b); the hazard check covers every buffer an op writes and `Error::Overwrite` names a later stage
+      that writes an op output. Passed on the Radeon 890M, the RTX 5090 and the CPU device.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

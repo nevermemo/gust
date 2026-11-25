@@ -1332,6 +1332,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       `Error::ShapeMismatch` (D272: set the shape first); a resize that reaches a library op stage is
       `Error::OpResize` until s2b2. Radeon 890M and RTX 5090 (resize tests; the last wording round re-ran the 890M
       only), CPU device; mutations caught. Opus review: merge after fixes; three fix rounds.
+    - m14.judgeprof: the bench judge refuses a run built with a cargo profile other than `release` (from the s8f
+      review). `build.rs` derives the profile from `OUT_DIR` (`unknown` when the layout is not recognised), the run
+      file records it as `build.profile`, and the two `profile` fields no longer claim `release` for a `functional`
+      build. The judge checks the profile name, not its settings. Unit tests and a mutation; no GPU run. Opus review:
+      merge; one fix round. Found on the way: the bench workspace has no fmt or clippy check beyond `budget-kit`.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

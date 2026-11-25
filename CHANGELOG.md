@@ -63,6 +63,10 @@ breaks existing code bumps the minor version, and the promise is described in th
   does not keep the buffer's pool lease alive). What a pass sees follows the queue order of D258 (a pass recorded
   after `FrameRun::encode` reads that frame, one recorded before it the frame before) and is documented, and a view is
   to be bound as read-only storage (a documented rule, not a check). Verified on the Radeon 890M and the RTX 5090.
+- Groundwork for reductions in a batch (m14.s2f2a, D262): `HeadlessDevice::prepare_list` builds a batch stage
+  from a list of dispatches and `CpuDevice::prepare_fn` from a host step, and gust-algo's sum, min, max, reduce,
+  count, scan and compact plans can be recorded in a build block through hidden macro-support types. The
+  `gust::sum(..)` style forms arrive with the macro (s2f2c).
 
 - Capture one GPU call and replay chosen invocations on the CPU twin (g2.cap). Every kernel with a twin gets a generated
   `capture(&gpu, &call)` (test builds and `--cfg gust_dual`) returning a `gust::capture::Captured` with

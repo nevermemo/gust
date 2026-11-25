@@ -1283,6 +1283,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       not yet reported, so the test of two frames in flight is sequential, and that mutation is caught only at
       `in_flight(1)`. A CPU twin checks the before-and-after reads. Radeon 890M and RTX 5090: 5 of 5 view tests
       each. Opus review: merge after fixes; fixed, re-checked (merge; three doc nits fixed by the coordinator).
+    - m14.s2f2a (D262): the route from a batch to gust-algo's plans. `gust` declares the hidden op trait
+      (`Op`, `OpDraft`, `Outputs`, `Empty` in `batch/ops.rs`); gust-algo implements sum, sum-wrapping, min, max,
+      reduce, count, scan and compact for the GPU device (`HeadlessDevice::prepare_list`, plans built in the
+      build block) and as a host form for the CPU device (`CpuDevice::prepare_fn`). Builder-API tests run each
+      op on both devices, two frames in flight, an op reading another op's output, a wrapping sum past 2^32 and
+      a zero-length stage refused with its name; three mutations were each caught. The macro forms arrive with
+      s2f2c. Radeon 890M and RTX 5090: 147 + 6 gust-algo tests each. Opus review: merge after fixes; fixed,
+      re-checked (merge; doc wording on the CPU form's length and two line wraps fixed by the coordinator).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

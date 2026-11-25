@@ -33,6 +33,7 @@ mod batch_ops;
 mod diagnostics;
 mod expand;
 mod forward;
+mod gpu_enum;
 mod manifest;
 mod math_types;
 mod mul_impls;
@@ -292,6 +293,24 @@ pub fn gpu_task(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn gpu_batch(input: TokenStream) -> TokenStream {
     batch::gpu_batch(input.into()).into()
+}
+
+/// Implements `gust::GpuEnum` and `TryFrom<u32>` for a field-less `#[repr(u32)]` enum (plan m14.s2, slice s2e2a, D157):
+///
+/// ```text
+/// #[derive(Clone, Copy, PartialEq, gust::GpuEnum)]
+/// #[repr(u32)]
+/// enum Mode { Linear = 0, Curve = 1 }
+/// ```
+///
+/// The derive checks the shape as written and changes nothing about the enum: variants without data, `#[repr(u32)]`
+/// written, a discriminant that is an integer literal or left out, no generics.
+/// Each refusal is GUST-E1011, once, at the offending token. `Clone`, `Copy` and `PartialEq` are not checked (the derive
+/// list that names `GpuEnum` is not visible to it); the supertraits of `GpuEnum` (`Copy + PartialEq`) make rustc say so.
+/// The impls are a `match` over the discriminants, never a `transmute` or an `as` from a word.
+#[proc_macro_derive(GpuEnum)]
+pub fn gpu_enum(input: TokenStream) -> TokenStream {
+    gpu_enum::derive(input.into()).into()
 }
 
 /// The `Mul` and `MulAssign` impls of `gust::math`, generated from the product table that also drives the Slang

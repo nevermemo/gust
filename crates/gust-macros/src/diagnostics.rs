@@ -19,7 +19,7 @@
 //! | E07xx | macro entry and `#[kernel]` options |
 //! | E08xx | emitter-only rejections |
 //! | E09xx | reserved names and shadowing |
-//! | E10xx | stages and batches (`gpu_task!`, `gpu_batch!`) |
+//! | E10xx | stages and batches (`gpu_task!`, `gpu_batch!`, `#[derive(GpuEnum)]`) |
 //!
 //! Every error the crate creates goes through [`error`] (or [`wrap`] for a `syn` parse
 //! error), and every `syn` parse goes through [`parse2`], [`parse_args_with`] or
@@ -560,6 +560,10 @@ codes! {
     BatchOpForm = 1009 => "GUST-E1009";
     /// A library op in a `gpu_batch!` in a crate that has no `gust-algo` dependency.
     BatchOpCrate = 1010 => "GUST-E1010";
+    /// `#[derive(GpuEnum)]` on an item that is not a field-less `#[repr(u32)]` enum of literal or implicit discriminants,
+    /// or on an enum with generics, no variant, or a `u32` overflow. `Clone`, `Copy` and `PartialEq` are required but
+    /// enforced by the supertraits of `GpuEnum` (rustc's own error), and `cfg` on a variant is applied before the derive.
+    GpuEnumShape = 1011 => "GUST-E1011";
 }
 
 /// The error for `code` at `span`: the message prefixed with `[GUST-E....]`.
@@ -1396,6 +1400,10 @@ mod tests {
         (
             Code::ProfileRefusal,
             "the validator runs under the module's grid profile, which refuses no construct, and a pixel pin is checked by the classifier first (E0723); a test profile raises it",
+        ),
+        (
+            Code::GpuEnumShape,
+            "raised only by `#[derive(GpuEnum)]`, which checks an enum of its own and never reaches the validator of a module",
         ),
     ];
 

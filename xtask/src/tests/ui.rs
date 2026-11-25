@@ -1843,7 +1843,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 283] = [
+const PINNED_FIXTURES: [&str; 289] = [
     "array-barrier",
     "array-buffer-len",
     "array-const-len",
@@ -1907,6 +1907,12 @@ const PINNED_FIXTURES: [&str; 283] = [
     "generic-trait-method",
     "generic-turbofish",
     "generic-unbounded",
+    "gpu-enum-data-variant",
+    "gpu-enum-discriminant",
+    "gpu-enum-generic",
+    "gpu-enum-ok",
+    "gpu-enum-repr-missing",
+    "gpu-enum-repr-other",
     "gpupod-missing",
     "gpupod-present",
     "headless-cpu-kernel",

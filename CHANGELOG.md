@@ -7,6 +7,11 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- `#[derive(GpuEnum)]` and the `gust::GpuEnum` trait (m14.s2e2a): for a field-less `#[repr(u32)]` enum with literal or
+  implicit discriminants that fit in `u32`, the derive implements `from_word`, `to_word` and a validating
+  `TryFrom<u32>` (error `gust::EnumWordError`, which carries the word), each a `match` over the discriminants. The enum
+  must derive `Clone`, `Copy` and `PartialEq` itself (the supertraits of `GpuEnum` make rustc say so). Any other
+  shape is `GUST-E1011`. Nothing uses it yet: the stages of a batch take it in a later slice.
 - Reductions in a `gpu_batch!` (m14.s2f2c, D262): `gust::sum`, `sum_wrapping`, `min`, `max`, `reduce`, `count`, `scan`,
   `scan_exclusive` and `let (idx, n) = gust::compact(&flags);` written as the whole init of a `let` in the build block,
   each output a handle named by its `let`. They need a `gust-algo` dependency and the native `slang-runtime` build;

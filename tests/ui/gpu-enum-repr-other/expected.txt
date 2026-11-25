@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A derive error is a compile_error!: code none.
+code: none
+file: gpu-enum-repr-other/src/main.rs
+line: 7
+message: [GUST-E1011] a GPU enum is `#[repr(u32)]` and nothing else

@@ -38,3 +38,30 @@ impl HeadlessDevice {
         })
     }
 }
+
+impl HeadlessDevice {
+    /// Validate and prepare a list of dispatches as one stage, as `prepare_stage` does for one call:
+    /// the library ops of a batch (gust-algo's reductions, scans and compaction) are several dispatches in order.
+    ///
+    /// `keep` is moved into the stage and dropped with it, so it holds what the dispatches name for as long as the
+    /// stage lives: the pooled scratch buffers of a plan (which go back to the pool when it drops) and the operands the
+    /// bind groups refer to. The dispatches borrow what they name, so a caller that builds them over `keep` keeps a
+    /// second handle to it (an `Arc` clone) for the borrow and hands the first one here.
+    ///
+    /// Macro support, outside the pre-1.0 promise (D111).
+    ///
+    /// # Errors
+    ///
+    /// The refusal of the preparation: a buffer of another device, a binding the kernel does not take, a limit.
+    #[doc(hidden)]
+    pub fn prepare_list(
+        &self,
+        keep: impl Any,
+        dispatches: &[BufferDispatch<'_>],
+    ) -> Result<GpuStage, Error> {
+        Ok(GpuStage {
+            dispatches: self.prepare_extent_batch(dispatches)?,
+            _keep: Box::new(keep),
+        })
+    }
+}

@@ -128,7 +128,8 @@ fn an_enclosing_scope_counts_the_batches_of_an_inner_scope_that_failed() {
 /// `timing::dispatch_batch_in_scope`, so none of the other production modules may call the device's batch functions itself.
 #[test]
 fn no_module_but_timing_dispatches_a_batch_itself() {
-    let modules: [(&str, &str); 15] = [
+    let modules: [(&str, &str); 16] = [
+        ("batch.rs", include_str!("../batch.rs")),
         ("bound.rs", include_str!("../bound.rs")),
         ("compact.rs", include_str!("../compact.rs")),
         ("compact_kernels.rs", include_str!("../compact_kernels.rs")),

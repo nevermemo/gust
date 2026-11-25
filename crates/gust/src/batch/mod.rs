@@ -64,6 +64,7 @@ mod view;
 #[cfg(not(target_arch = "wasm32"))]
 pub use frame::Blocking;
 pub use frame::{Encoded, FrameRun, Submitted, Ticket};
+pub use ops::{Empty, Op, OpDraft, Outputs};
 pub use shape::{D1, D2, IntoShape, ParamType, Rank};
 #[doc(hidden)]
 pub use shape::{ShapeSource, Value, Values};

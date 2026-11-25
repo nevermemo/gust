@@ -5,6 +5,7 @@
 //! Every case has an independent reference (a sequential `f64` accumulation, an `i128` sum, `Iterator::min`), and the
 //! twin and the GPU are each compared with it, never with each other.
 
+mod batch;
 mod bound;
 mod common;
 mod golden;

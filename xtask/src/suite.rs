@@ -731,7 +731,7 @@ pub(crate) enum TestRequest {
 pub(crate) fn parse_test_args(args: &[String]) -> Result<TestRequest, String> {
     let usage = || {
         format!(
-            "usage: cargo xtask test --suite {} [--skip-difftest] [--gpu-jobs <n> (Gpu only)]\n      cargo xtask test --suite Gpu --profile <dev|dev+capability> [--test <gust-wgpu test target>]",
+            "usage: cargo xtask test --suite {} [--skip-difftest] [--gpu-jobs <n> (Gpu only)]\n       cargo xtask test --suite Gpu --profile <dev|dev+capability> [--test <gust-wgpu test target>]",
             Suite::names().join("|")
         )
     };

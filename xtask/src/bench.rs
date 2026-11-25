@@ -4,9 +4,9 @@
 //! - `--functional [--quick]`: builds `bench/gust-bench` in the `functional` profile of `bench/Cargo.toml` (release
 //!   settings without cross-crate LTO and with parallel codegen, so the build is quick) and runs it with
 //!   `run --functional --quick` into a scratch directory outside the work tree. The run checks every backend's output
-//!   against the CPU reference on whatever adapter is there
-//!   (lavapipe in CI); it times nothing for publication and is never publishable. The command fails unless the harness
-//!   exits 0, the file says `"functional": true` and `"publishable": false`, no cell failed and at least one check passed.
+//!   against the CPU reference on whatever adapter is there (lavapipe in CI); it times nothing for publication and is
+//!   never publishable. The command fails unless the harness exits 0, the file says `"functional": true` and
+//!   `"publishable": false`, no cell failed and at least one check passed.
 //! - `--budget-kit`: builds and runs `bench/budget-kit` with `--small` (a game-shaped design aid, not a benchmark: every
 //!   workload at its smallest size, each checked against the host) on whatever Vulkan adapter is there. A flag of its own
 //!   because the run needs a real GPU and takes minutes, where `--functional` also runs on lavapipe in CI. The command

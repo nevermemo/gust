@@ -390,8 +390,9 @@ pub(crate) fn judge_named(
 /// Runs `run` on every job of `jobs`, at most `width` at a time, starting them in the order `starts` (a permutation of
 /// the job indices), and calls `emit` with each result on the calling thread in the order of `jobs` as soon as it and all
 /// earlier results exist (so output is never interleaved and appears while later jobs still run). After a result for
-/// which `failed` is true no further job starts; the ones running are awaited. The results are returned in the order of
-/// `jobs`, `None` where a job never started.
+/// which `failed` is true no further job starts; the ones running are awaited. When the run ended early, the jobs never
+/// started leave gaps, so once every running job is done the results after the first gap are emitted too, in job order.
+/// The results are returned in the order of `jobs`, `None` where a job never started.
 pub(crate) fn run_in_order<J: Sync, R: Send>(
     jobs: &[J],
     starts: &[usize],

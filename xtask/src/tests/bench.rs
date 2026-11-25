@@ -140,6 +140,14 @@ fn the_functional_profile_overrides_only_lto_and_codegen_units_of_release() {
         .map(|line| line.split('=').next().unwrap().trim())
         .collect();
     assert_eq!(keys, ["inherits", "lto", "codegen-units"], "{table:?}");
+    // A sub-table such as `[profile.functional.package."*"]` would change release's settings for some crates behind
+    // the profile's back, so none may exist.
+    assert!(
+        !manifest
+            .lines()
+            .any(|line| line.trim_start().starts_with("[profile.functional.")),
+        "the functional profile has no sub-table"
+    );
 }
 
 #[test]

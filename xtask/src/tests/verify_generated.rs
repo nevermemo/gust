@@ -149,7 +149,7 @@ fn verify_inner_names_the_adapter_and_clears_before_its_cargo_calls() {
     let reflect = position("prepare_helper(root, Some(&slangc_output))?;");
     let adapter = position("*adapter = Some(record_adapter(root, checks)?);");
     let clear = position("clear_generated_output(root, mode)?;");
-    let calls = position("for args in cargo_calls(mode) {");
+    let calls = position("for step in cargo_steps(mode) {");
     let scan = position("fs::read_dir(root.join(GENERATED_DIR))");
     assert!(reflect < adapter && adapter < clear && clear < calls && calls < scan);
 }

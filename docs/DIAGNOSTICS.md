@@ -2079,3 +2079,22 @@ Rejected: `data[i] = data[i + 1u32];`, `data[i + 1u32] = 1.0;`, `data[i] = data[
 Fixture: `tests/ui/task-in-place-read`.
 Write instead: read the neighbour from a copy passed as a host-slice capture (`prev: &[T]`), or use two stages; give a new value a name other than the closure's parameter.
 Decision: plan m14.s2, slice s2a1.
+
+### GUST-E1009 library op of a `gpu_batch!` that is not the whole init of a `let` with its names
+
+The library ops `gust::sum`, `sum_wrapping`, `min`, `max`, `reduce`, `count`, `scan`, `scan_exclusive` and `compact` are written in a build block as the whole init of a `let`, and each output is a handle named by that `let`: `let total = gust::sum(&blocks);`, and for `compact` a tuple of two plain names, indices then count: `let (idx, n) = gust::compact(&flags);`. The macro refuses an op that is anything else: a statement, an operand of another expression, the block's tail, a `let` with `_`, `mut`, `ref` or any pattern other than the name (or, for `compact`, the two names), a tuple pattern on an op that gives one handle, the wrong number of arguments (`reduce` takes the operand and the operation: `gust::reduce(&values, Op::Max)`), and an op inside a closure, a function, an `async` block or a loop (the block records each op once, when it runs).
+Reached through `#[gpu_module]`, raised by `gpu_batch!` only (the function-like macro that shares the validator of `#[gpu_module]`).
+Rejected: `let indices = gust::compact(&flags);`, `let (a, b) = gust::sum(&s);`, `gust::sum(&s);`, `let t = gust::sum(&s) + 1;`, `let _ = gust::count(&flags);` and `for _ in 0..2 { let t = gust::sum(&s); }`.
+Fixture: `tests/ui/batch-op-form`.
+Write instead: bind the op to a name in the build block and use the name in a later stage (`gust::gpu_task!(.., |i| -> f32 { total[0u32] * x[i] })`), or in the block's tail.
+Decision: D262, plan m14.s2, slice s2f2c.
+
+### GUST-E1010 library op of a `gpu_batch!` in a crate without `gust-algo`
+
+The ops of a batch are implemented by the `gust-algo` crate, and the code the macro writes names it (`::gust_algo::batch::..`). The macro reads the expanding crate's `Cargo.toml` (as it does for `[package.metadata.gust]`) and refuses an op when `[dependencies]`, `[dev-dependencies]` or the same tables under `[target.*]` list no `gust-algo`. With `crate(<path>);` in the call, or a manifest the macro cannot read, there is no check and rustc reports the missing crate.
+The kernels of the ops are compiled at run time (gust-algo ships no precompiled artifacts), so a batch with an op builds only with `gust-wgpu`'s `slang-runtime` feature (the native profile); the `web` profile refuses gust-algo.
+Reached through `#[gpu_module]`, raised by `gpu_batch!` only (the function-like macro that shares the validator of `#[gpu_module]`).
+Rejected: `let total = gust::sum(&values);` in a crate that depends on `gust` alone.
+Fixture: `tests/ui/batch-op-crate`.
+Write instead: add `gust-algo` (with its `slang-runtime` feature) to the crate's dependencies.
+Decision: D262, plan m14.s2, slice s2f2c.

@@ -7,6 +7,10 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- Reductions in a `gpu_batch!` (m14.s2f2c, D262): `gust::sum`, `sum_wrapping`, `min`, `max`, `reduce`, `count`, `scan`,
+  `scan_exclusive` and `let (idx, n) = gust::compact(&flags);` written as the whole init of a `let` in the build block,
+  each output a handle named by its `let`. They need a `gust-algo` dependency and the native `slang-runtime` build;
+  `GUST-E1009` (an op that is not a named `let` init) and `GUST-E1010` (no `gust-algo`) refuse the rest.
 - A stage of a `gpu_batch!` refuses a `bool` element (m14.s2e part 1): a `Stage<bool>` it reads or writes, or a
   `bool` result type, is `GUST-E1004` with `u32` as the fix. `map`, `par_for!` and a stand-alone `gpu_task!` are
   unchanged.

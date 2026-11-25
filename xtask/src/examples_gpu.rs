@@ -213,6 +213,7 @@ const EXAMPLE_GPU_TESTS: &[(&str, &[&str])] = &[
             "gpu_a_refused_write_is_lost",
             "gpu_an_unchanged_stage_is_not_re_recorded",
             "gpu_a_dropped_encoded_retires_its_staging_and_the_next_frame_is_exact",
+            "gpu_macro_ops_equal_the_builder_api_and_the_host",
             "app::tests::gpu_matches_the_host",
         ],
     ),

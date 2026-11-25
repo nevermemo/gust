@@ -13,6 +13,10 @@ breaks existing code bumps the minor version, and the promise is described in th
   `Batch::generation`; no GPU pass counts anything. A `set` that would change a buffer the frame already wrote or read
   is `Error::ShapeMismatch`; a resize that reaches a library op stage is the new `Error::OpResize` (op stages follow
   in the next part). `Stage::shape` (macro support) is gone: an in-place stage takes `&target` as its shape.
+- Reductions in a `gpu_batch!` (m14.s2f2c, D262): `gust::sum`, `sum_wrapping`, `min`, `max`, `reduce`, `count`, `scan`,
+  `scan_exclusive` and `let (idx, n) = gust::compact(&flags);` written as the whole init of a `let` in the build block,
+  each output a handle named by its `let`. They need a `gust-algo` dependency and the native `slang-runtime` build;
+  `GUST-E1009` (an op that is not a named `let` init) and `GUST-E1010` (no `gust-algo`) refuse the rest.
 - A stage of a `gpu_batch!` refuses a `bool` element (m14.s2e part 1): a `Stage<bool>` it reads or writes, or a
   `bool` result type, is `GUST-E1004` with `u32` as the fix. `map`, `par_for!` and a stand-alone `gpu_task!` are
   unchanged.
@@ -50,8 +54,9 @@ breaks existing code bumps the minor version, and the promise is described in th
   never ran resolves to `Error::NotSubmitted`. A batch has one set of buffers whatever `n` is (D258): an input or
   parameter that a frame does not write or set holds the value of the last frame that reached the queue; a frame
   recorded into a caller's encoder counts by its report (a reported frame's `set`s hold, a dropped frame's are
-  discarded). No speed claim for `in_flight` above 1 yet: SB1p on the Radeon 890M gave 1.462 at 2^10 (likely
-  clock-bound), 1.292 at 2^16 and 0.997 at 2^20; the RTX 5090 half is owed. New public names: `gust::batch::Encoded`
+  discarded). SB1p (frames per second of `in_flight(2)` against `in_flight(1)`): Radeon 890M 1.462 at 2^10 (likely
+  clock-bound), 1.292 at 2^16 and 0.997 at 2^20; RTX 5090 1.74 to 1.80 at 2^10, 1.81 to 1.91 at 2^16 and 0.96 to
+  1.02 at 2^20 (three runs, D269). One-machine figures, not a speed claim (D189). New public names: `gust::batch::Encoded`
   and `gust::cpu::CpuEncoder`. Follow-up (m14.s2cf): a frame recorded into a caller's encoder records again only the
   extent records of the stages whose parameters were set in it or left stale by an earlier such frame (a frame made by
   `submit` clears the list), counted by a hidden counter for tests; the names of the eight CPU twin tests of the

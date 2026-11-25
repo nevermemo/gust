@@ -571,6 +571,9 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "cpu_a_view_taken_before_a_resize_is_stale_after_it",
             "cpu_an_encoded_resize_moves_the_generation_before_encode_returns",
             "cpu_resize_across_frames_is_exact",
+            // `tests/reduce.rs`: the library ops written in a build block (m14.s2f2c).
+            "twin_a_stage_writing_an_op_output_is_refused_at_the_seal",
+            "twin_macro_ops_equal_the_builder_api_and_the_host",
         ],
     ),
 ];

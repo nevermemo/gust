@@ -21,6 +21,8 @@
 //! a stage inside a closure or a function, a host slice, a name of a type it cannot see) and GUST-E1006 (a body shape a
 //! batch stage does not take), the latter raised by [`crate::task`].
 
+use std::path::Path;
+
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{
@@ -32,6 +34,7 @@ use syn::{
 };
 
 use crate::{
+    batch_ops,
     diagnostics::{self, Code},
     par_for::RawBinding,
     task::{batch_form, type_argument},
@@ -177,6 +180,8 @@ enum Kind {
 enum Init {
     Task,
     Builder,
+    /// A library op: `gust::sum(&s)` and the others of [`batch_ops`].
+    Op(batch_ops::Op),
     Other,
     None,
 }
@@ -287,6 +292,8 @@ struct Rewriter {
     unrecorded: Vec<&'static str>,
     /// Closures and functions the walk is inside.
     depth: usize,
+    /// The path of the first library op of the block, where a missing `gust-algo` dependency is reported.
+    first_op: Option<syn::Path>,
     error: Option<syn::Error>,
 }
 
@@ -321,6 +328,81 @@ impl Rewriter {
             .rev()
             .find(|(tracked, _)| tracked == name)
             .map(|(_, kind)| kind)
+    }
+
+    /// The element type of a `&handle` operand the block declares.
+    fn operand_element(&self, operand: &syn::Expr) -> Option<syn::Type> {
+        let syn::Expr::Reference(reference) = operand else {
+            return None;
+        };
+        let syn::Expr::Path(path) = &*reference.expr else {
+            return None;
+        };
+        match self.lookup(path.path.get_ident()?) {
+            Some(Kind::Handle(element)) => Some(element.clone()),
+            _ => None,
+        }
+    }
+
+    /// Lower the library op that is the init of `local`: the init becomes the builder call, and the names its
+    /// pattern binds are handles with the op's element type. `None` when the op could not be read (the error is
+    /// recorded).
+    fn op(
+        &mut self,
+        op: batch_ops::Op,
+        local: &mut syn::Local,
+        annotation: Option<&syn::Type>,
+    ) -> Option<Vec<(syn::Ident, Kind)>> {
+        let init = local.init.as_ref()?;
+        let syn::Expr::Call(call) = &*init.expr else {
+            unreachable!("the init is a call")
+        };
+        self.first_op.get_or_insert_with(|| match &*call.func {
+            syn::Expr::Path(path) => path.path.clone(),
+            _ => unreachable!("an op is called through a path"),
+        });
+        let misplaced = if self.depth > 0 {
+            Some("a closure or a function")
+        } else {
+            self.unrecorded.last().copied()
+        };
+        let error = if let Some(place) = misplaced {
+            Some(batch_ops::misplaced(call, op, place))
+        } else if init.diverge.is_some() {
+            Some(batch_ops::not_a_let(call, op))
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            self.fail(error);
+            return None;
+        }
+        let operand = call
+            .args
+            .first()
+            .and_then(|operand| self.operand_element(operand));
+        let lowered = match batch_ops::lower(op, call, &local.pat, &self.builder) {
+            Ok(lowered) => lowered,
+            Err(error) => {
+                self.fail(error);
+                return None;
+            }
+        };
+        let declared = annotation
+            .and_then(|ty| type_argument(ty, "Stage"))
+            .cloned();
+        let element = op.element(declared.or(operand));
+        *local.init.as_mut()?.expr = lowered.init;
+        Some(
+            lowered
+                .names
+                .into_iter()
+                .map(|name| {
+                    let kind = element.clone().map_or(Kind::Opaque, Kind::Handle);
+                    (name, kind)
+                })
+                .collect(),
+        )
     }
 
     fn is_builder_call(&self, call: &syn::ExprMethodCall, method: &str) -> bool {
@@ -471,6 +553,7 @@ impl VisitMut for Rewriter {
         let annotation = named.as_ref().and_then(|(_, ty)| ty.clone());
         let label = named.as_ref().map(|(ident, _)| ident.unraw().to_string());
         let mut kind = Kind::Opaque;
+        let mut bound = None;
         let mode = match local.init.as_ref().map(|init| &*init.expr) {
             Some(syn::Expr::Macro(mac)) if is_task(&mac.mac.path) => Init::Task,
             Some(syn::Expr::MethodCall(call))
@@ -478,6 +561,10 @@ impl VisitMut for Rewriter {
             {
                 Init::Builder
             }
+            Some(syn::Expr::Call(call)) => match batch_ops::recognise(call, self.krate.as_ref()) {
+                Some(op) => Init::Op(op),
+                None => Init::Other,
+            },
             Some(_) => Init::Other,
             None => Init::None,
         };
@@ -533,10 +620,13 @@ impl VisitMut for Rewriter {
                     });
                 }
             }
+            Init::Op(op) => bound = self.op(op, local, annotation.as_ref()),
             Init::Other => syn::visit_mut::visit_local_mut(self, local),
             Init::None => {}
         }
-        if let Some((ident, _)) = named {
+        if let Some(bound) = bound {
+            self.tracked.extend(bound);
+        } else if let Some((ident, _)) = named {
             self.tracked.push((ident, kind));
         } else {
             // A pattern the macro does not read: every name in it is a block-declared name of a type it cannot see.
@@ -546,6 +636,15 @@ impl VisitMut for Rewriter {
                 self.tracked.push((ident, Kind::Opaque));
             }
         }
+    }
+
+    fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
+        if let Some(op) = batch_ops::recognise(call, self.krate.as_ref()) {
+            // An op that is the init of a `let` never gets here: `visit_local_mut` takes it whole.
+            self.fail(batch_ops::not_a_let(call, op));
+            return;
+        }
+        syn::visit_mut::visit_expr_call_mut(self, call);
     }
 
     fn visit_macro_mut(&mut self, mac: &mut syn::Macro) {
@@ -628,11 +727,17 @@ fn collect_bindings(pat: &syn::Pat, out: &mut Vec<syn::Ident>) {
     }
 }
 
-/// `gpu_batch!` for the process.
+/// `gpu_batch!` for the process: the crate being compiled is the one whose manifest the ops are checked against.
 pub(crate) fn gpu_batch(input: TokenStream) -> TokenStream {
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR").map(std::path::PathBuf::from);
+    gpu_batch_in(input, manifest_dir.as_deref())
+}
+
+/// `gpu_batch!` for the crate in `manifest_dir`, when known.
+pub(crate) fn gpu_batch_in(input: TokenStream, manifest_dir: Option<&Path>) -> TokenStream {
     let mut krate = None;
     let mut device = None;
-    match expand(input, &mut krate, &mut device) {
+    match expand(input, &mut krate, &mut device, manifest_dir) {
         Ok(tokens) => match krate {
             Some(path) => crate::forward::forward_crate(tokens, &path),
             None => tokens,
@@ -667,6 +772,7 @@ fn expand(
     input: TokenStream,
     krate: &mut Option<syn::Path>,
     device_seen: &mut Option<TokenStream>,
+    manifest_dir: Option<&Path>,
 ) -> syn::Result<TokenStream> {
     let parsed = diagnostics::parse2::<Input>(Code::BatchForm, input)?;
     let Input {
@@ -704,12 +810,14 @@ fn expand(
         _ => None,
     };
 
+    let facade_given = written.is_some();
     let mut rewriter = Rewriter {
         builder: builder.clone(),
         krate: written,
         tracked: Vec::new(),
         unrecorded: Vec::new(),
         depth: 0,
+        first_op: None,
         error: None,
     };
     for statement in &mut stmts {
@@ -720,6 +828,12 @@ fn expand(
     }
     if let Some(error) = rewriter.error.take() {
         return Err(error);
+    }
+    // The ops are gust-algo's: with `crate(<path>)` rustc speaks, as it does for a manifest it cannot read.
+    if let Some(first) = &rewriter.first_op
+        && !facade_given
+    {
+        batch_ops::require_algo(manifest_dir, first)?;
     }
     let exposed: Vec<syn::Ident> = match &tail {
         Some(tail) => names_in(tail)

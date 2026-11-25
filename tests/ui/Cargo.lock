@@ -270,6 +270,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "batch-op-crate"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-op-form"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "batch-scope"
 version = "0.0.0"
 dependencies = [

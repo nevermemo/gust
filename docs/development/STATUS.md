@@ -1304,6 +1304,17 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       Refuse returns `Error::Empty` with nothing encoded. `StageRec::len` is the one place the length is read (the
       seam for s2b); the hazard check covers every buffer an op writes and `Error::Overwrite` names a later stage
       that writes an op output. Passed on the Radeon 890M, the RTX 5090 and the CPU device.
+    - m14.s2f2c (D262): reductions in a batch, the macro form. A build block's `let total = gust::sum(&x);` (and
+      `sum_wrapping`, `min`, `max`, `reduce`, `count`, `scan`, `scan_exclusive`, `let (idx, n) = gust::compact(&f);`)
+      records the gust-algo op as a stage; `GUST-E1009` refuses an op that is not the whole init of a named `let`,
+      `GUST-E1010` an op in a crate whose manifest names no `gust-algo` dependency (a renamed one does not count). The
+      macro form equals the builder API and the host, twin and GPU. Native only: the op kernels have no precompiled
+      artifacts, so a batch with an op needs `gust-wgpu`'s `slang-runtime`; in a browser batch they stay unavailable,
+      where the build block returns the run-time compile error. Passed on the Radeon 890M, the RTX 5090 and
+      the CPU device. Opus review: merge; two fix rounds.
+    - SB1p, the RTX 5090 half (D269): `in_flight(2)` against `in_flight(1)` at 2^10, 2^16 and 2^20 gave 1.74 to
+      1.80, 1.81 to 1.91 and 0.96 to 1.02 over three runs at 201b097e. By the rule registered before the run
+      (at least 1.3x on one adapter) frames in flight are kept as designed. No speed claim while D189 holds.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

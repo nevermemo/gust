@@ -29,6 +29,7 @@
 use proc_macro::TokenStream;
 
 mod batch;
+mod batch_ops;
 mod diagnostics;
 mod expand;
 mod forward;
@@ -282,7 +283,12 @@ pub fn gpu_task(input: TokenStream) -> TokenStream {
 /// (no capture list for them; a host scalar is still listed). The block's last expression is returned with the
 /// batch: the handles the frames use. The value is a `Result<(gust::batch::Batch<D>, O), gust::batch::Error>`.
 ///
-/// The diagnostics of the form itself are GUST-E1005 and GUST-E1006 (`docs/DIAGNOSTICS.md`).
+/// A library op is the whole init of a `let` in the block: `let total = gust::sum(&blocks);` (also `sum_wrapping`,
+/// `min`, `max`, `reduce`, `count`, `scan` and `scan_exclusive`) and `let (idx, n) = gust::compact(&flags);`. Each output
+/// is a handle named by its `let`. The ops are gust-algo's, so the crate depends on `gust-algo`.
+///
+/// The diagnostics of the form itself are GUST-E1005 and GUST-E1006, and GUST-E1009 and GUST-E1010 for the library ops
+/// (`docs/DIAGNOSTICS.md`).
 #[proc_macro]
 pub fn gpu_batch(input: TokenStream) -> TokenStream {
     batch::gpu_batch(input.into()).into()

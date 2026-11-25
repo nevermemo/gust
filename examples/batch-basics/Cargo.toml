@@ -13,5 +13,9 @@ default-run = "batch-basics"
 gust.workspace = true
 gust-wgpu = { workspace = true, features = ["slang-runtime"] }
 
+[dev-dependencies]
+# The library ops of a batch (`gust::sum`, `gust::compact`, ..) are gust-algo's: tests/reduce.rs.
+gust-algo = { path = "../../crates/gust-algo", features = ["slang-runtime"] }
+
 [lints]
 workspace = true

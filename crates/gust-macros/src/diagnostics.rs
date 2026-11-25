@@ -555,6 +555,11 @@ codes! {
     TaskIndexRank = 1007 => "GUST-E1007";
     /// A read of an in-place stage's target at any index but the stage's own.
     TaskInPlaceRead = 1008 => "GUST-E1008";
+    /// A library op of a `gpu_batch!` (`gust::sum`, `scan`, `compact` and the others) that is not the whole init of a
+    /// `let` with the name or names its outputs need, or that has the wrong number of arguments.
+    BatchOpForm = 1009 => "GUST-E1009";
+    /// A library op in a `gpu_batch!` in a crate that has no `gust-algo` dependency.
+    BatchOpCrate = 1010 => "GUST-E1010";
 }
 
 /// The error for `code` at `span`: the message prefixed with `[GUST-E....]`.
@@ -1419,6 +1424,7 @@ mod tests {
             || file.ends_with("src/tests/par_for.rs")
             || file.ends_with("src/tests/task.rs")
             || file.ends_with("src/tests/batch.rs")
+            || file.ends_with("src/batch_ops.rs")
             || file.ends_with("src/tests/manifest.rs")
             || file.ends_with("src/tests/variant.rs")
             || file.ends_with("src/tests/subgroup.rs")

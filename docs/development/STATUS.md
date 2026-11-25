@@ -1325,6 +1325,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       once), a third `begin` must wait, and every ticket equals the host exactly. Mutations to `in_flight(1)` and
       `in_flight(3)` fail with the page's own messages. Evidence: Gpu (WebGPU, Chrome 158.0.8127.37, nvidia blackwell),
       the adapter Chrome picked. Opus review: merge after fixes; one fix round.
+    - m14.s2b1 (D261, D272): a batch is resized between frames for kernel stages. `FrameRun::set` of a shape
+      parameter (or a `Derived` value: `p.map(..)`, `p.count()`) stages new zeroed buffers and re-prepared stages;
+      they commit, and `Batch::generation` moves, only when the device took the frame, so a failed or dropped frame
+      leaves the batch as it was. A `set` that would change a buffer the frame already wrote or reserved is
+      `Error::ShapeMismatch` (D272: set the shape first); a resize that reaches a library op stage is
+      `Error::OpResize` until s2b2. Radeon 890M and RTX 5090 (resize tests; the last wording round re-ran the 890M
+      only), CPU device; mutations caught. Opus review: merge after fixes; three fix rounds.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

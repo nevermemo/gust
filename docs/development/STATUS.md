@@ -1291,6 +1291,10 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       a zero-length stage refused with its name; three mutations were each caught. The macro forms arrive with
       s2f2c. Radeon 890M and RTX 5090: 147 + 6 gust-algo tests each. Opus review: merge after fixes; fixed,
       re-checked (merge; doc wording on the CPU form's length and two line wraps fixed by the coordinator).
+    - m14.nits1: leftover review nits from m14.s2v and m14.uigroup. Test 3 of `batch_view` now records a pass
+      before `encode_frame` that reads frame A's outputs (the depth-2 ruling); a `write_buffer` mutation makes it
+      fail on the Radeon 890M. The read view doc takes the ruled wording; xtask ui gains a `group_call` helper
+      with a test. Passed on the Radeon 890M, the RTX 5090 and the CPU twin.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

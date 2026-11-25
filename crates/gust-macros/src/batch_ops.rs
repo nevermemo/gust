@@ -292,8 +292,9 @@ pub(crate) fn require_algo(manifest_dir: Option<&Path>, at: &syn::Path) -> syn::
             Code::BatchOpCrate,
             at,
             format!(
-                "the ops of a batch are implemented by the `{ALGO}` crate, which this crate does not depend on: add \
-                 `{ALGO}` to its `[dependencies]` (or `[dev-dependencies]`)"
+                "the ops of a batch are implemented by the `{ALGO}` crate, which this crate does not depend on under that name (the macro writes \
+                 `::gust_algo`, so a renamed dependency does not do): add `{ALGO}` to its `[dependencies]` (or \
+                 `[dev-dependencies]`)"
             ),
         )),
         Some(true) | None => Ok(()),
@@ -571,6 +572,13 @@ mod tests {
             ("[build-dependencies]\ngust-algo = \"1\"", Some(false)),
             ("[workspace.dependencies]\ngust-algo = \"1\"", Some(false)),
             ("[dependencies]\ngust = \"1\"", Some(false)),
+            ("[dependencies]\ngust-algo.workspace = true", Some(true)),
+            ("[dependencies.gust-algo]\nworkspace = true", Some(true)),
+            ("[dependencies.algo]\npackage = \"gust-algo\"", Some(false)),
+            (
+                "[dependencies]\nalgo = { package = \"gust-algo\", version = \"1\" }",
+                Some(false),
+            ),
             ("[package]\nname = \"gust-algo\"", Some(false)),
             ("not toml [", None),
         ] {

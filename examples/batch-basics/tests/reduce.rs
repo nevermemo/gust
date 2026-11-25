@@ -65,7 +65,7 @@ macro_rules! define_macro_build {
                 let exclusive = gust::scan_exclusive(&values);
                 let (idx, n_set) = gust::compact(&flags);
                 let offset = gpu_task!(n, |i| -> u32 { values[i] + total[0] });
-                let gathered = gpu_task!(n, |i| -> u32 { values[idx[i]] });
+                let gathered = gpu_task!(n, |i| -> u32 { let v: u32 = if i < n_set[0u32] { values[idx[i]] } else { 0u32 }; v });
                 let shifted = gpu_task!(n, |i| -> f32 { floats[i] + ftotal[0] });
                 Handles {
                     values, floats, flags, total, wrapping, least, most, reduced, ftotal, count,
@@ -95,7 +95,7 @@ macro_rules! define_builder_build {
                 let exclusive = b.op(&["exclusive"], Scan::exclusive(&values));
                 let (idx, n_set) = b.op(&["idx", "n_set"], Compact::of(&flags));
                 let offset = gpu_task!(n, [total: Stage<u32>], |i| -> u32 { values[i] + total[0] });
-                let gathered = gpu_task!(n, [idx: Stage<u32>], |i| -> u32 { values[idx[i]] });
+                let gathered = gpu_task!(n, [idx: Stage<u32>, n_set: Stage<u32>], |i| -> u32 { let v: u32 = if i < n_set[0u32] { values[idx[i]] } else { 0u32 }; v });
                 let shifted = gpu_task!(n, [ftotal: Stage<f32>], |i| -> f32 { floats[i] + ftotal[0] });
                 for handle in [&total, &wrapping, &least, &most, &reduced, &count, &inclusive, &exclusive, &idx, &n_set] {
                     b.expose(handle);
@@ -174,6 +174,7 @@ fn frames(n: u32) -> [Frame; 3] {
     ]
 }
 
+/// The gather reads `idx` only below the count: past it the indices are unspecified (D259).
 /// What one frame gave, or what the host says it must give. `idx` and `gathered` hold the first `n_set` entries.
 #[derive(Debug, PartialEq)]
 struct Out {
@@ -319,6 +320,24 @@ fn check<D: BatchDevice>(
     }
     assert_eq!(stage(&stages, "idx").reads, ["flags"]);
     assert_eq!(stage(&stages, "total").reads, ["values"]);
+    // `compact` lists both outputs, `idx` then `n_set`, each with the op's reads, as the builder API does.
+    let listed: Vec<&str> = stages.iter().map(|stage| stage.name.as_str()).collect();
+    let at = listed.iter().position(|name| *name == "idx").unwrap();
+    assert_eq!(listed[at + 1], "n_set", "{listed:?}");
+    assert_eq!(stage(&stages, "n_set").dims, [1, 1]);
+    assert_eq!(stage(&stages, "n_set").reads, ["flags"]);
+    let summary = |stages: &[StageInfo]| -> Vec<(String, [u32; 2], Vec<String>)> {
+        stages
+            .iter()
+            .map(|stage| {
+                // The order a stage lists what it reads follows its written capture list: compare as sets.
+                let mut reads = stage.reads.clone();
+                reads.sort();
+                (stage.name.clone(), stage.dims, reads)
+            })
+            .collect()
+    };
+    assert_eq!(summary(&stages), summary(&builder_batch.0.stages()));
     let mut inputs = Inputs::default();
     for (round, frame) in frames(n).iter().enumerate() {
         if let Some(values) = &frame.values {
@@ -375,5 +394,24 @@ fn gpu_macro_ops_equal_the_builder_api_and_the_host() {
             builder_gpu(&device, n).unwrap(),
             n,
         );
+    }
+}
+
+/// A stage that writes an op's output is refused when the block seals: the macro path reaches `Error::Overwrite`.
+#[test]
+fn twin_a_stage_writing_an_op_output_is_refused_at_the_seal() {
+    let device = Arc::new(CpuDevice::new());
+    let result = gpu_batch!("overwrite", on(&device); in_flight(1); |b| {
+        let values = b.input::<u32>(8u32);
+        let sums = gust::scan(&values);
+        let _bump = gpu_task!(&mut sums, |i| { sums[i] += 1u32; });
+        sums
+    });
+    match result {
+        Err(Error::Overwrite { op, buffer, .. }) => {
+            assert_eq!((op.as_str(), buffer.as_str()), ("sums", "sums"))
+        }
+        Err(other) => panic!("another error: {other}"),
+        Ok(_) => panic!("a stage wrote an op's output and the batch was built"),
     }
 }

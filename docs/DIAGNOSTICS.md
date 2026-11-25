@@ -2091,8 +2091,8 @@ Decision: D262, plan m14.s2, slice s2f2c.
 
 ### GUST-E1010 library op of a `gpu_batch!` in a crate without `gust-algo`
 
-The ops of a batch are implemented by the `gust-algo` crate, and the code the macro writes names it (`::gust_algo::batch::..`). The macro reads the expanding crate's `Cargo.toml` (as it does for `[package.metadata.gust]`) and refuses an op when `[dependencies]`, `[dev-dependencies]` or the same tables under `[target.*]` list no `gust-algo`. With `crate(<path>);` in the call, or a manifest the macro cannot read, there is no check and rustc reports the missing crate.
-The kernels of the ops are compiled at run time (gust-algo ships no precompiled artifacts), so a batch with an op builds only with `gust-wgpu`'s `slang-runtime` feature (the native profile); the `web` profile refuses gust-algo.
+The ops of a batch are implemented by the `gust-algo` crate, and the code the macro writes names it (`::gust_algo::batch::..`). The macro reads the expanding crate's `Cargo.toml` (as it does for `[package.metadata.gust]`) and refuses an op when `[dependencies]`, `[dev-dependencies]` or the same tables under `[target.*]` list no dependency named `gust-algo` (a renamed one, `algo = { package = "gust-algo" }`, does not count: the emitted path is `::gust_algo`, so it would fail in rustc anyway). With `crate(<path>);` in the call, or a manifest the macro cannot read, there is no check and rustc reports the missing crate.
+The kernels of the ops are compiled at run time (gust-algo ships no precompiled artifacts), so a batch with an op builds only with `gust-wgpu`'s `slang-runtime` feature (the native profile); on the `web` profile (wasm32, where gust-algo compiles but has no run-time compiler) the build block returns the "run-time compile unavailable" error.
 Reached through `#[gpu_module]`, raised by `gpu_batch!` only (the function-like macro that shares the validator of `#[gpu_module]`).
 Rejected: `let total = gust::sum(&values);` in a crate that depends on `gust` alone.
 Fixture: `tests/ui/batch-op-crate`.

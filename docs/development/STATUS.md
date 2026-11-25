@@ -1312,6 +1312,9 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       artifacts, so a batch with an op needs `gust-wgpu`'s `slang-runtime`; in a browser batch they stay unavailable,
       where the build block returns the run-time compile error. Passed on the Radeon 890M, the RTX 5090 and
       the CPU device. Opus review: merge; two fix rounds.
+    - SB1p, the RTX 5090 half (D269): `in_flight(2)` against `in_flight(1)` at 2^10, 2^16 and 2^20 gave 1.74 to
+      1.80, 1.81 to 1.91 and 0.96 to 1.02 over three runs at 201b097e. By the rule registered before the run
+      (at least 1.3x on one adapter) frames in flight are kept as designed. No speed claim while D189 holds.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

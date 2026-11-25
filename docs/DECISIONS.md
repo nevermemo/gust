@@ -1,6 +1,6 @@
 # Decisions and boundaries
 
-Append-only log. Next id: **D269** (D249 is reserved for the M13 close). Add a row for every owner decision or
+Append-only log. Next id: **D270** (D249 is reserved for the M13 close). Add a row for every owner decision or
 durable technical decision, with its date and source; supersede an old row with a new one
 instead of editing it. D01–D18 were recorded 2026-09-07 from the owner's GUST handoff,
 earlier reflection deferral, and independent inspection. Chat research is design
@@ -268,6 +268,7 @@ input, not proof of code state.
 | D266 | The gallery's adapter-free control keeps its 7-day stamp expiry, and no control run takes place during an adapter quiet window (owner, 2026-11-24, "Your recommendation is fine.", item R5 of the faster-gates plan). | The control proves the gallery's CPU parts open no adapter; a week is short enough to catch a change and a window must stay quiet. |
 | D267 | The walker-step record in `bench/README.md` (m13.trail2rec) gets one line saying the run did not control which variant was created first; it is not rerun (owner, 2026-11-24: "Sure."). | On the Radeon 890M the first-created of several variants in one process can run several times slower, so a reader must know the rows may not compare directly. |
 | D268 | The merge gate's CPU stage runs as two chains (coordinator's gate script, the default since 2026-11-25; `--serial` gives the old order): the first CPU group alone, then chain A and chain B at once, one cargo job each at the gates' slot level, Breeze first as before. A skipped step has its own exit status, and a real failure in either chain fails the gate; no step that did not run can pass it. Kept on the rule registered before the trial: on a warm tree the CPU span is within 0.75 x the serial sum of the same steps (gate t24; the first trial, t23, followed a merge and was confounded by compile work, so it was rerun warm). Follow-ups: a shorter wait between slot tries for the gate's own stages, and the step that shares chain A's target directory moves into chain A. |
+| D269 | SB1p's RTX 5090 half (owed under D258) ran at dev 201b097e: three runs of the benchmark (`examples/batch-basics` bin `sb1p`, 20 warm-up frames, median of five runs each) under the RTX 5090 lock gave `in_flight(2)` against `in_flight(1)` 1.74 to 1.80 at 2^10, 1.81 to 1.91 at 2^16 and 0.96 to 1.02 at 2^20. Under the rule registered in plan m14.s2 before either half ran (at least 1.3x on one adapter), `in_flight` above 1 is kept as designed; D258's "documented with no speed claim until the RTX 5090 ran" ends. Public text still makes no speed claim while the release hold stands (D189). | The Radeon 890M figures alone (1.292 at 2^16, its best not clock-bound) gave the 1.1x to 1.3x band; the RTX 5090 is above 1.3x in all three runs at two sizes. At 2^20 the GPU work dominates and depth buys nothing, as expected with one queue. One shared machine (another project was compiling at the time), not a published figure. |
 
 ## Notes
 

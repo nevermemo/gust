@@ -48,8 +48,9 @@ breaks existing code bumps the minor version, and the promise is described in th
   never ran resolves to `Error::NotSubmitted`. A batch has one set of buffers whatever `n` is (D258): an input or
   parameter that a frame does not write or set holds the value of the last frame that reached the queue; a frame
   recorded into a caller's encoder counts by its report (a reported frame's `set`s hold, a dropped frame's are
-  discarded). No speed claim for `in_flight` above 1 yet: SB1p on the Radeon 890M gave 1.462 at 2^10 (likely
-  clock-bound), 1.292 at 2^16 and 0.997 at 2^20; the RTX 5090 half is owed. New public names: `gust::batch::Encoded`
+  discarded). SB1p (frames per second of `in_flight(2)` against `in_flight(1)`): Radeon 890M 1.462 at 2^10 (likely
+  clock-bound), 1.292 at 2^16 and 0.997 at 2^20; RTX 5090 1.74 to 1.80 at 2^10, 1.81 to 1.91 at 2^16 and 0.96 to
+  1.02 at 2^20 (three runs, D269). One-machine figures, not a speed claim (D189). New public names: `gust::batch::Encoded`
   and `gust::cpu::CpuEncoder`. Follow-up (m14.s2cf): a frame recorded into a caller's encoder records again only the
   extent records of the stages whose parameters were set in it or left stale by an earlier such frame (a frame made by
   `submit` clears the list), counted by a hidden counter for tests; the names of the eight CPU twin tests of the

@@ -71,6 +71,35 @@ that had run nowhere ran on the RTX 5090 and lavapipe. M8 is closed (D153).
 
 **Now: M13, tidy, then M14, the API surface** (D242, 2026-11-22), inside M11's design phase. M13 finishes the build and test speed work and the cleanup: the difftest cache, a quiet-machine rerun of the merged test binary, the Slang 2026.22.1 pin if its spike says GO, the remaining duplication and split candidates, and a close with `check-full` on both adapters after the M13 sanity check. M14 then settles the surface that Breeze and Hurricane code will use: `#[pad]` (D239), the runtime fixes of D223, `map` with structs and multiple outputs (D221), D240's debugging minimum; D243 puts the D237 rename first and the stage and batch surface (`gpu_task!`, `gpu_batch!`) second. Everything else in the old M14 list waits. Done in M13 so far: the rulings records, every example's GPU tests gated per adapter, SEMANTICS and DIAGNOSTICS consolidated (D241 keeps their size), shared helpers in the proc macro and the runtime tests, the Slang emitter split, `check-cfg`, `check-ui` from one shared cargo call, budget-kit in `bench/`, faster dev builds (line tables, `rust-lld` on Windows MSVC), and the trail-step record.
 
+**M14 performance track** (owner request, 2026-11-26, D273), from the comparison of GUST with hand-written kernels
+([BENCHMARKS](BENCHMARKS.md), outcome D, D188). Speed work comes first in the lane order, so these items take lanes
+ahead of the rest of M14, in this order:
+
+1. **Bind groups reused across the passes of a batch (pf.bg).** The per-pass bind group is the one confirmed
+   difference from the fastest hand path. The M14 batch frame path already prepares each stage's bind group once,
+   when the stage is sealed, and reuses it every frame (read in `gust-wgpu`'s `batch/build.rs` and `batch/frame.rs`,
+   not measured). The older `dispatch_batch` path, which outcome D measured, still creates one per pass. The slice adds
+   outcome D's cells on the batch frame path to gust-bench, then moves `dispatch_batch` onto prepared stages or retires
+   it. Reuse alone is not expected to close the gap: GUST is 1.09 to 1.15 times a hand version that also rebuilds its
+   bind group every pass.
+2. **How GUST opens the device (pf.dev), a pre-registered spike on the RTX 5090.** One factor per run (requested
+   features, limits, adapter options) against the hand path's device, three seeds, with a kill rule: if no single
+   factor moves the batched ratio by more than the control's spread, record "not the device options" and stop. The
+   probe that opened the hand kernel's device the way GUST does was 1.24 to 1.29 times slower, but it changed three
+   things at once.
+3. **Fusion of adjacent elementwise stages (pf.fuse).** Adjacent stages of a batch that are elementwise over one
+   extent become one dispatch. For tiny kernels the fixed cost of a dispatch dominates, and Breeze and Hurricane frames
+   are made of tiny kernels. It needs a plan first: when fusion is legal, the CPU twin's equivalence, the content hash,
+   and D251's one submission per frame. It starts once the stage surface (m14.s2) has settled.
+4. **An unchecked route for trusted kernels (pf.trust).** wgpu's runtime checks on WGSL cost about 20 to 30 % on
+   loop-heavy code (the W3 observation). The opt-in `spirv-route` feature (D172, D174) already runs slangc's SPIR-V as
+   a passthrough module on Vulkan, and wgpu can also create a WGSL module with its checks off. The slice makes one of
+   them an explicit, documented opt-in with its safety contract (an out-of-bounds access becomes undefined behaviour),
+   measured on W3 against the checked path.
+5. **Open question: the cost of CPU-equivalent float semantics (pf.fma).** Not yet measured: what keeping CPU
+   semantics (for example, no fused multiply-add) costs on compute-bound kernels, on both adapters. A spike reports
+   the cost; any change to the semantics contract is the owner's decision (D21, D22).
+
 **M11, realignment** (from 2026-11-17, D198; open while the joint review and the release hold last). The owner's joint review of the whole project: the review pack
 (decisions, misalignments with the owner's vision, drift between docs and code) is refreshed for the M10 close, the
 owner holds the session, and the rulings are recorded as decision rows and folded into this roadmap. The release hold
@@ -291,7 +320,7 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 | M10 Publication | Benchmarks against rayon, hand-written WGSL with wgpu, CubeCL and rust-gpu; a "Rust program to GPU" example gallery; docs and a book; the API stability pass toward 1.0; the crates.io releases after MR's first | done: closed 2026-11-17 (D185); plan adopted 2026-11-14 (D177 to D183) |
 | M11 Realignment | The owner's joint review of the whole project (D189, D198): its decisions, misalignments with the owner's vision, and drift between docs and code; the rulings recorded as decision rows and folded into the roadmap; the release hold lifted or kept by the owner. The milestones after M11 follow its rulings | active: from 2026-11-17 (D198) |
 | M13 Tidy | Build and test speed, duplication and file splits, gates for the runtime feature sets and wasm32, documentation consolidation, the Slang pin, closed with `check-full` on both adapters (D221 to D241, D242) | active: from 2026-11-22 |
-| M14 API surface | The D237 rename, the stage and batch surface, `#[pad]`, the runtime fixes of D223, `map` with structs and multiple outputs, the debugging minimum of D240; the rest of the maturity list after it (D242, D243); the stage and batch design is D244; device sharing for a renderer (D247) | planned |
+| M14 API surface | The D237 rename, the stage and batch surface, `#[pad]`, the runtime fixes of D223, `map` with structs and multiple outputs, the debugging minimum of D240; the rest of the maturity list after it (D242, D243); the stage and batch design is D244; device sharing for a renderer (D247); the performance track of D273 | planned |
 
 Order after M5 (owner, 2026-11-02, D75): M6, M7, MX (execution shapes and textures), MR (the first public
 crates.io release), then M8, M9 and M10. MX and MR keep letters so that the decisions naming M8 to M10 stay

@@ -562,6 +562,9 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "twin_a_view_of_an_input_and_of_a_stage_holds_what_the_frame_left",
             "twin_a_view_refuses_a_foreign_handle_and_one_the_block_did_not_return",
             "twin_the_generation_is_equal_across_three_frames_and_with_two_in_flight",
+            // `tests/reduce.rs`: the library ops written in a build block (m14.s2f2c).
+            "twin_a_stage_writing_an_op_output_is_refused_at_the_seal",
+            "twin_macro_ops_equal_the_builder_api_and_the_host",
         ],
     ),
 ];

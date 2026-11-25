@@ -167,6 +167,43 @@ pub(crate) fn read(text: &str) -> Result<Declarations, ManifestError> {
     Ok(declarations)
 }
 
+/// Whether the crate at `manifest_dir` lists `dependency` among its dependencies (batch ops need `gust-algo`, slice
+/// m14.s2f2c): `[dependencies]`, `[dev-dependencies]` and the same two tables under `[target.*]`, by the key `gust-algo`
+/// or `gust_algo` (the name the emitted path uses). `None` when the answer is unknown (no directory, no manifest, a
+/// file that cannot be read or is not TOML): rustc speaks then.
+pub(crate) fn depends_on(manifest_dir: Option<&Path>, dependency: &str) -> Option<bool> {
+    let text = fs::read_to_string(manifest_dir?.join(FILE)).ok()?;
+    dependency_in(&text, dependency)
+}
+
+/// [`depends_on`] over the text of a manifest.
+pub(crate) fn dependency_in(text: &str, dependency: &str) -> Option<bool> {
+    let document = DeTable::parse(text).ok()?;
+    let root = document.get_ref();
+    let underscored = dependency.replace('-', "_");
+    let in_tables = |table: &DeTable<'_>| {
+        ["dependencies", "dev-dependencies"].iter().any(|section| {
+            find(table, section)
+                .and_then(|(_, value)| value.get_ref().as_table())
+                .is_some_and(|section| {
+                    section
+                        .iter()
+                        .any(|(key, _)| name_of(key) == dependency || name_of(key) == underscored)
+                })
+        })
+    };
+    Some(
+        in_tables(root)
+            || find(root, "target")
+                .and_then(|(_, value)| value.get_ref().as_table())
+                .is_some_and(|targets| {
+                    targets
+                        .iter()
+                        .any(|(_, value)| value.get_ref().as_table().is_some_and(in_tables))
+                }),
+    )
+}
+
 /// The tokens that make cargo track the manifest: any edit of `Cargo.toml` re-expands the module (the declarations
 /// change what a module expands to, and cargo does not track a manifest that no `include_str!` names; plan section 1,
 /// S0 (g)). The path is the crate's directory read by the compiler, never a literal.

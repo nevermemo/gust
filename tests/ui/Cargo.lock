@@ -624,6 +624,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpu-enum-data-variant"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "gpu-enum-discriminant"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "gpu-enum-generic"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "gpu-enum-ok"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "gpu-enum-repr-missing"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "gpu-enum-repr-other"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "gpupod-missing"
 version = "0.0.0"
 dependencies = [

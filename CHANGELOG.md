@@ -67,6 +67,10 @@ breaks existing code bumps the minor version, and the promise is described in th
   from a list of dispatches and `CpuDevice::prepare_fn` from a host step, and gust-algo's sum, min, max, reduce,
   count, scan and compact plans can be recorded in a build block through hidden macro-support types. The
   `gust::sum(..)` style forms arrive with the macro (s2f2c).
+- Core rules for reductions in a batch (m14.s2f2b, D262): `gust::batch::Error::Empty` is returned by `submit` and
+  `encode` before anything is encoded for a `min` or `max` over zero elements, a sum or a count over none writes its
+  identity and a scan over none records nothing; `batch.stages()` lists one entry per output of an op; and a later
+  stage that writes an op's output is refused at build with the new `Error::Overwrite`. Radeon 890M and RTX 5090.
 
 - Capture one GPU call and replay chosen invocations on the CPU twin (g2.cap). Every kernel with a twin gets a generated
   `capture(&gpu, &call)` (test builds and `--cfg gust_dual`) returning a `gust::capture::Captured` with

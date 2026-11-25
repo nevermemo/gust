@@ -64,6 +64,7 @@ mod view;
 #[cfg(not(target_arch = "wasm32"))]
 pub use frame::Blocking;
 pub use frame::{Encoded, FrameRun, Submitted, Ticket};
+use ops::Plan;
 pub use ops::{Empty, Op, OpDraft, Outputs};
 pub use shape::{D1, D2, IntoShape, ParamType, Rank};
 #[doc(hidden)]
@@ -107,6 +108,25 @@ pub enum Error {
         stage: String,
         /// The buffer, by the name of its `let`.
         buffer: String,
+    },
+    /// A later stage writes a buffer that a library op made: the op's outputs are its alone to write.
+    Overwrite {
+        /// The batch.
+        batch: String,
+        /// The later stage that writes the buffer.
+        stage: String,
+        /// The stage of the op that made it.
+        op: String,
+        /// The buffer, by the name of its `let`.
+        buffer: String,
+    },
+    /// A library op that has no value over zero elements (`min`, `max`) ran over none: the frame was refused before
+    /// anything was encoded.
+    Empty {
+        /// The batch.
+        batch: String,
+        /// The stage of the op.
+        stage: String,
     },
     /// A data call does not fit the sealed shape: a `write` of another length, or a `set` that would change a shape.
     ShapeMismatch {
@@ -168,6 +188,19 @@ impl core::fmt::Display for Error {
             } => write!(
                 f,
                 "stage `{stage}` of batch `{batch}` binds `{buffer}` read-only and read-write"
+            ),
+            Self::Overwrite {
+                batch,
+                stage,
+                op,
+                buffer,
+            } => write!(
+                f,
+                "stage `{stage}` of batch `{batch}` writes `{buffer}`, which is an output of the op stage `{op}`"
+            ),
+            Self::Empty { batch, stage } => write!(
+                f,
+                "stage `{stage}` of batch `{batch}` is an operation over zero elements and has no value there"
             ),
             Self::ShapeMismatch {
                 batch,
@@ -566,11 +599,84 @@ type Update<D> = Box<
 
 pub(crate) struct StageRec<D: BatchDevice> {
     pub(crate) name: String,
-    pub(crate) prepared: D::Prepared,
+    /// What the frame dispatches: `None` for an op sealed over zero elements, where no plan can be made and the
+    /// stage's `empty` rule runs instead.
+    pub(crate) prepared: Option<D::Prepared>,
     pub(crate) update: Option<Update<D>>,
     pub(crate) params: Vec<usize>,
     pub(crate) reads: Vec<usize>,
+    /// The buffer the stage writes (an op's first output).
     pub(crate) write: usize,
+    /// The other buffers an op writes, in order.
+    pub(crate) also: Vec<usize>,
+    /// The number of elements the stage was sealed over (see [`len`](Self::len)).
+    len: usize,
+    /// An op's plan function, for the length it is called with; `Some` marks an op's stage, `None` a kernel stage.
+    /// Slice s2b calls it when a length changes.
+    pub(crate) plan: Option<Plan<D>>,
+    /// An op's rule for a length of zero (`None` for a kernel stage).
+    pub(crate) empty: Option<Empty<D>>,
+}
+
+impl<D: BatchDevice> StageRec<D> {
+    /// A kernel stage of `dims` extents.
+    fn kernel(
+        name: String,
+        prepared: D::Prepared,
+        update: Update<D>,
+        params: Vec<usize>,
+        reads: Vec<usize>,
+        write: usize,
+        dims: [u32; 2],
+    ) -> Self {
+        Self {
+            name,
+            prepared: Some(prepared),
+            update: Some(update),
+            params,
+            reads,
+            write,
+            also: Vec::new(),
+            len: usize::try_from(u64::from(dims[0]) * u64::from(dims[1])).unwrap_or(usize::MAX),
+            plan: None,
+            empty: None,
+        }
+    }
+
+    /// An op's stage: `len` is the length it was sealed for, and `prepared` is `None` at length 0.
+    pub(crate) fn op(
+        name: String,
+        prepared: Option<D::Prepared>,
+        reads: Vec<usize>,
+        written: &[(usize, [u32; 2])],
+        len: usize,
+        plan: Plan<D>,
+        empty: Empty<D>,
+    ) -> Self {
+        Self {
+            name,
+            prepared,
+            update: None,
+            params: Vec::new(),
+            reads,
+            write: written[0].0,
+            also: written[1..].iter().map(|(id, _)| *id).collect(),
+            len,
+            plan: Some(plan),
+            empty: Some(empty),
+        }
+    }
+
+    /// The number of elements the stage runs over. The one place the core reads a stage's length (slice s2b changes
+    /// it, when a length can change after the seal).
+    pub(crate) const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Every buffer the stage writes: `write`, then `also`.
+    pub(crate) fn written(&self) -> impl Iterator<Item = usize> + '_ {
+        core::iter::once(self.write).chain(self.also.iter().copied())
+    }
 }
 
 pub(crate) struct RunState<D: BatchDevice> {
@@ -675,20 +781,29 @@ impl<D: BatchDevice> Batch<D> {
         &self.core.name
     }
 
-    /// The stages in the order they run, by the name of their `let`.
+    /// The stages in the order they run, by the name of their `let`: one entry per buffer a stage writes (an op with
+    /// several outputs, such as `compact`, lists each by its own name, every one with the op's reads).
     #[must_use]
     pub fn stages(&self) -> Vec<StageInfo> {
+        let buffers = &self.core.buffers;
         self.core
             .stages
             .iter()
-            .map(|stage| StageInfo {
-                name: stage.name.clone(),
-                dims: self.core.buffers[stage.write].dims,
-                reads: stage
+            .flat_map(|stage| {
+                let reads: Vec<String> = stage
                     .reads
                     .iter()
-                    .map(|&id| self.core.buffers[id].name.clone())
-                    .collect(),
+                    .map(|&id| buffers[id].name.clone())
+                    .collect();
+                stage.written().enumerate().map(move |(k, id)| StageInfo {
+                    name: if k == 0 {
+                        stage.name.clone()
+                    } else {
+                        buffers[id].name.clone()
+                    },
+                    dims: buffers[id].dims,
+                    reads: reads.clone(),
+                })
             })
             .collect()
     }
@@ -976,6 +1091,21 @@ impl Error {
                 stage: stage.clone(),
                 buffer: buffer.clone(),
             },
+            Self::Overwrite {
+                batch,
+                stage,
+                op,
+                buffer,
+            } => Self::Overwrite {
+                batch: batch.clone(),
+                stage: stage.clone(),
+                op: op.clone(),
+                buffer: buffer.clone(),
+            },
+            Self::Empty { batch, stage } => Self::Empty {
+                batch: batch.clone(),
+                stage: stage.clone(),
+            },
             Self::ShapeMismatch {
                 batch,
                 stage,
@@ -1202,14 +1332,8 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
         };
         match state.device.prepare(keep, build) {
             Ok(prepared) => {
-                let rec = StageRec {
-                    name,
-                    prepared,
-                    update: Some(Box::new(update)),
-                    params,
-                    reads,
-                    write,
-                };
+                let rec =
+                    StageRec::kernel(name, prepared, Box::new(update), params, reads, write, dims);
                 state.stages.push(rec);
                 Stage::new(state.id, write, dims)
             }
@@ -1274,13 +1398,30 @@ pub fn build<D: BatchDevice, H: DeviceRef<Device = D>, O>(
     if let Some(error) = state.error.take() {
         return Err(error);
     }
-    for stage in &state.stages {
-        if stage.reads.contains(&stage.write) {
-            return Err(Error::Hazard {
-                batch: state.name.clone(),
-                stage: stage.name.clone(),
-                buffer: state.buffers[stage.write].name.clone(),
-            });
+    // The stage of the op that made each buffer: nothing later writes it.
+    let mut made_by: Vec<Option<usize>> = vec![None; state.buffers.len()];
+    for (index, stage) in state.stages.iter().enumerate() {
+        for id in stage.written() {
+            if stage.reads.contains(&id) {
+                return Err(Error::Hazard {
+                    batch: state.name.clone(),
+                    stage: stage.name.clone(),
+                    buffer: state.buffers[id].name.clone(),
+                });
+            }
+            if let Some(op) = made_by[id] {
+                return Err(Error::Overwrite {
+                    batch: state.name.clone(),
+                    stage: stage.name.clone(),
+                    op: state.stages[op].name.clone(),
+                    buffer: state.buffers[id].name.clone(),
+                });
+            }
+        }
+        if stage.plan.is_some() {
+            for id in stage.written() {
+                made_by[id] = Some(index);
+            }
         }
     }
     let mut exposed = vec![false; state.buffers.len()];

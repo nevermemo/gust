@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use super::{BatchDevice, BufEntry, Builder, D1, DeviceMessage, Error, Stage, StageRec, map};
+use super::{BatchDevice, BufEntry, Builder, D1, Error, Stage, StageRec, map};
 use crate::GpuPod;
 
 /// A library operation that records itself as one stage of a batch. Macro support, outside the pre-1.0 promise (D111).
@@ -25,17 +25,20 @@ pub trait Op<D: BatchDevice> {
 type Identity<D> =
     Box<dyn Fn(&D, &mut <D as BatchDevice>::Frame) -> Result<(), <D as crate::job::Device>::Error>>;
 
-/// What a stage does at a length of zero. Macro support, outside the pre-1.0 promise (D111).
-///
-/// Not applied yet: until slice s2f2b, [`OpDraft::seal`] refuses a length of zero as a device error whatever the op
-/// asks for, and the variants only record what the op will want then.
+/// The function that makes an op's prepared stage for a length.
+pub(crate) type Plan<D> = Box<
+    dyn Fn(&D, usize) -> Result<<D as BatchDevice>::Prepared, <D as crate::job::Device>::Error>,
+>;
+
+/// What a stage does at a length of zero, applied by every frame in `FrameRun::submit` and `encode` before anything
+/// is encoded. Macro support, outside the pre-1.0 promise (D111).
 #[doc(hidden)]
 pub enum Empty<D: BatchDevice> {
     /// Write the identity of the operation (a sum or a count of nothing) into the result, through the frame's writes.
     Identity(Identity<D>),
     /// Record nothing (a scan of nothing has nothing to write).
     Nothing,
-    /// The op has no value at length zero (`min`, `max`): refuse the frame.
+    /// The op has no value at length zero (`min`, `max`): refuse the frame with [`Error::Empty`].
     Refuse,
 }
 
@@ -219,15 +222,14 @@ impl<D: BatchDevice> OpDraft<'_, D> {
     /// The plan is built here, in the build block, so whatever it allocates and clears is submitted before the seal and
     /// a frame stays one submission (D251).
     ///
-    /// Interim rule, until s2f2b: a stage sealed at length 0 is refused here as a device error, and `empty` is not
-    /// applied. s2f2b replaces both with `Error::Empty` and the three rules of [`Empty`], raised by the frame.
+    /// A stage sealed over zero elements calls no plan (none can be made there) and keeps no prepared stage: each frame
+    /// applies `empty` instead, before anything is encoded (see [`Empty`]).
     ///
-    /// The core keeps nothing of `plan` yet: a stage record has no field for it, and adding one is s2f2b's edit of
-    /// `mod.rs`. What `plan` makes is valid for the sealed length only: the stage holds the operands (and, for scan and
-    /// compact, the outputs) of the sealed buffers, so a later resize cannot call it again to replace those outputs. On
-    /// the GPU device a call at another length returns a length error, never a panic; the CPU device's host form
-    /// ignores the length and runs over the sealed buffers. A resize will need the new buffers handed to the plan along
-    /// with the length.
+    /// The stage keeps `plan` and `empty`. What `plan` makes is valid for the sealed length only: the stage holds the
+    /// operands (and, for scan and compact, the outputs) of the sealed buffers, so a later resize cannot call it again
+    /// to replace those outputs. On the GPU device a call at another length returns a length error, never a panic; the
+    /// CPU device's host form ignores the length and runs over the sealed buffers. A resize will need the new buffers
+    /// handed to the plan along with the length (slice s2b).
     ///
     /// `plan` runs with the builder released, so it may use the device freely.
     ///
@@ -248,7 +250,7 @@ impl<D: BatchDevice> OpDraft<'_, D> {
             ok,
             ..
         } = self;
-        let mut state = builder.state.borrow_mut();
+        let state = builder.state.borrow_mut();
         let batch = state.id;
         if !ok {
             return H::dud(batch);
@@ -259,28 +261,25 @@ impl<D: BatchDevice> OpDraft<'_, D> {
             "an op makes as many results as it has handles"
         );
         let len = len.expect("an op reads an operand before it seals");
-        if len == 0 {
-            // Interim, s2f2b: the frame's `Empty` rules replace this refusal.
-            drop(empty);
-            state.fail(Error::Device(map::Error::device(DeviceMessage(format!(
-                "stage `{name}` is an operation over zero elements, which a batch cannot run yet"
-            )))));
-            return H::dud(batch);
-        }
         let device = Arc::clone(&state.device);
         drop(state);
-        let planned = plan(&device, len);
+        let planned = if len == 0 {
+            Ok(None)
+        } else {
+            plan(&device, len).map(Some)
+        };
         let mut state = builder.state.borrow_mut();
         match planned {
             Ok(prepared) => {
-                state.stages.push(StageRec {
+                state.stages.push(StageRec::op(
                     name,
                     prepared,
-                    update: None,
-                    params: Vec::new(),
                     reads,
-                    write: written[0].0,
-                });
+                    &written,
+                    len,
+                    Box::new(plan),
+                    empty,
+                ));
                 H::make(batch, &written)
             }
             Err(error) => {
@@ -288,5 +287,68 @@ impl<D: BatchDevice> OpDraft<'_, D> {
                 H::dud(batch)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cpu::CpuDevice;
+
+    /// An op of one result as long as its operand, that does nothing.
+    struct Fill<'a>(&'a Stage<u32, D1>);
+
+    impl Op<CpuDevice> for Fill<'_> {
+        type Out = Stage<u32, D1>;
+
+        fn record(self, mut draft: OpDraft<'_, CpuDevice>) -> Self::Out {
+            let Some((_, len)) = draft.read(self.0) else {
+                return draft.abandon();
+            };
+            if draft.result::<u32>(len).is_none() {
+                return draft.abandon();
+            }
+            draft.seal(
+                |device, _| Ok(device.prepare_fn(|_| Ok(()))),
+                Empty::Nothing,
+            )
+        }
+    }
+
+    /// The rule is the core's and holds for any device; a kernel stage that writes an op's output cannot be written
+    /// through `gpu_task!` yet (the macro does not see an op's type, slice s2f2c), so the `StageRec` is built by hand
+    /// until then, and `StageDraft::target` (the macro's way to name a written buffer) is not exercised here.
+    #[test]
+    fn a_later_stage_may_not_write_an_op_output() {
+        #[allow(clippy::arc_with_non_send_sync)]
+        let device = Arc::new(CpuDevice::new());
+        let result = crate::batch::build("overwrite", &device, 1, |b| {
+            let input = b.input::<u32, _>(4);
+            let made = b.op(&["made"], Fill(&input));
+            let rec = StageRec::kernel(
+                String::from("later"),
+                device.prepare_fn(|_| Ok(())),
+                Box::new(|_, _, _| Ok(())),
+                Vec::new(),
+                Vec::new(),
+                made.id,
+                [4, 1],
+            );
+            b.state.borrow_mut().stages.push(rec);
+            made
+        });
+        let Err(Error::Overwrite {
+            batch,
+            stage,
+            op,
+            buffer,
+        }) = result
+        else {
+            panic!("a later stage wrote an op's output and the batch was built");
+        };
+        assert_eq!(
+            (batch.as_str(), stage.as_str(), op.as_str(), buffer.as_str()),
+            ("overwrite", "later", "made", "made")
+        );
     }
 }

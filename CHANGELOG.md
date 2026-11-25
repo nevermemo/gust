@@ -7,6 +7,12 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- A batch can be resized between frames (m14.s2b part 1, kernel stages; Radeon 890M only, RTX 5090 pending):
+  `FrameRun::set` of a parameter that sizes an input or a stage (or a `Derived` value, new: `p.map(|v| -> T { .. })`
+  and `p.count()`) makes the new, zeroed buffers, prepares the stages that bind them again and moves
+  `Batch::generation`; no GPU pass counts anything. A `set` that would change a buffer the frame already wrote or read
+  is `Error::ShapeMismatch`; a resize that reaches a library op stage is the new `Error::OpResize` (op stages follow
+  in the next part). `Stage::shape` (macro support) is gone: an in-place stage takes `&target` as its shape.
 - A stage of a `gpu_batch!` refuses a `bool` element (m14.s2e part 1): a `Stage<bool>` it reads or writes, or a
   `bool` result type, is `GUST-E1004` with `u32` as the fix. `map`, `par_for!` and a stand-alone `gpu_task!` are
   unchanged.

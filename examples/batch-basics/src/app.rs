@@ -393,13 +393,14 @@ mod tests {
             frame.write(&pixels, &[1; 7]),
             Err(Error::ShapeMismatch { .. })
         ));
+        frame.write(&pixels, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        // A shape can change between frames (slice s2b), but not under a buffer the frame has already written.
         assert!(matches!(
             frame.set(&size, (8, 1)),
             Err(Error::ShapeMismatch { .. })
         ));
         // The same shape again is not a change.
         frame.set(&size, (4, 2)).unwrap();
-        frame.write(&pixels, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
         let ticket = frame.ticket(&doubled).unwrap();
         let _submitted = frame.submit().unwrap();
         assert_eq!(block_on(ticket).unwrap(), [2, 4, 6, 8, 10, 12, 14, 16]);

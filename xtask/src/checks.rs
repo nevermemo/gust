@@ -562,6 +562,15 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "twin_a_view_of_an_input_and_of_a_stage_holds_what_the_frame_left",
             "twin_a_view_refuses_a_foreign_handle_and_one_the_block_did_not_return",
             "twin_the_generation_is_equal_across_three_frames_and_with_two_in_flight",
+            // `tests/resize.rs`: a set of a size parameter resizes what depends on it (m14.s2b).
+            "cpu_a_dropped_resize_changes_nothing",
+            "cpu_a_resize_that_reaches_an_op_stage_is_refused",
+            "cpu_a_resize_with_a_frame_in_flight",
+            "cpu_a_shape_set_after_a_write_is_refused",
+            "cpu_a_shape_set_and_set_back_resizes_nothing",
+            "cpu_a_view_taken_before_a_resize_is_stale_after_it",
+            "cpu_an_encoded_resize_moves_the_generation_before_encode_returns",
+            "cpu_resize_across_frames_is_exact",
         ],
     ),
 ];

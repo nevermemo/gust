@@ -1539,13 +1539,36 @@ impl TaskPlan {
             let id = param_id(name);
             quote!(let #id = __gust_draft.param(#name);)
         });
+        // The number of each 2-D view's buffer, taken when the stage is recorded; the width is read from the frame's
+        // extents each time the record is made, so a resize changes it.
+        let width_ids = batch
+            .views
+            .iter()
+            .filter(|view| view.rank == 2)
+            .map(|view| {
+                let (name, id) = (
+                    &view.name,
+                    format_ident!("__gust_wid_{}", view.name.unraw()),
+                );
+                quote!(let #id = #name.index();)
+            });
         let width_lets = batch
             .views
             .iter()
             .filter(|view| view.rank == 2)
             .map(|view| {
-                let (name, width) = (&view.name, width_name(&view.name));
-                quote!(let #width = #name.width();)
+                let (width, id) = (
+                    width_name(&view.name),
+                    format_ident!("__gust_wid_{}", view.name.unraw()),
+                );
+                quote!(let #width = __gust_values.dims(#id)[0];)
+            });
+        let remade = plan
+            .buffers()
+            .enumerate()
+            .map(|(index, (_, _, element, _))| {
+                let element = &element.host;
+                quote!(__gust_layout.buffer::<__GustD, #element>(__gust_ids[#index]))
             });
         let scalar_fields = plan.scalars().map(|(name, scalar)| {
             let value = if batch.params.contains(name) {
@@ -1590,13 +1613,15 @@ impl TaskPlan {
                 let (__gust_x, __gust_y) = (__gust_dims[0], __gust_dims[1]);
                 #(#acquire)*
                 #(#param_ids)*
-                #(#width_lets)*
+                #(#width_ids)*
                 if !__gust_draft.ok() {
                     return __gust_draft.abandon();
                 }
                 let (#(#some_locals)*) = (#(#locals,)*) else {
                     return __gust_draft.abandon();
                 };
+                let __gust_write = __gust_draft.written();
+                let __gust_ids = __gust_draft.bound();
                 let __gust_extent = ::gust::Extent::new(__gust_x, __gust_y, 1u32);
                 #[cfg(not(target_arch = "wasm32"))]
                 {
@@ -1605,12 +1630,17 @@ impl TaskPlan {
                         return __gust_draft.abandon();
                     }
                 }
-                let __gust_record = move |__gust_values: &::gust::batch::Values| #record {
-                    __gust_ex: __gust_x,
-                    __gust_ey: __gust_y,
-                    __gust_ez: 1u32,
-                    #(#scalar_fields,)*
-                    #(#pads,)*
+                // The extent record is made from the frame's extents and parameters, so a resize changes it.
+                let __gust_record = move |__gust_values: &::gust::batch::Values| {
+                    let [__gust_x, __gust_y] = __gust_values.dims(__gust_write);
+                    #(#width_lets)*
+                    #record {
+                        __gust_ex: __gust_x,
+                        __gust_ey: __gust_y,
+                        __gust_ez: 1u32,
+                        #(#scalar_fields,)*
+                        #(#pads,)*
+                    }
                 };
                 let __gust_device = __gust_draft.device();
                 // The uniform is shared by the stage and its update; the CPU twin's is single-threaded.
@@ -1626,11 +1656,12 @@ impl TaskPlan {
                     }
                 };
                 let __gust_rewritten = ::std::sync::Arc::clone(&__gust_uniform);
+                let __gust_again = ::std::sync::Arc::clone(&__gust_uniform);
                 __gust_draft.finish::<#output_element, #output_rank, run, _, #count>(
-                    (__gust_uniform, #(#locals,)*),
-                    move |__gust_keep| {
-                        let (__gust_uniform, #(#locals,)*) = __gust_keep;
-                        run::call_extent(__gust_extent, &**__gust_uniform, #(#resources,)*)
+                    (__gust_uniform, __gust_extent, #(#locals,)*),
+                    |__gust_keep| {
+                        let (__gust_uniform, __gust_extent, #(#locals,)*) = __gust_keep;
+                        run::call_extent(*__gust_extent, &**__gust_uniform, #(#resources,)*)
                     },
                     move |__gust_device, __gust_frame, __gust_values| {
                         ::gust::batch::BatchDevice::frame_uniform(
@@ -1639,6 +1670,26 @@ impl TaskPlan {
                             &__gust_rewritten,
                             __gust_record(__gust_values),
                         )
+                    },
+                    // The same stage over the buffers of a resized frame: the new extent and the new buffers.
+                    move |__gust_layout| {
+                        let [__gust_nx, __gust_ny] = __gust_layout.dims(__gust_write);
+                        let __gust_extent = ::gust::Extent::new(__gust_nx, __gust_ny, 1u32);
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            if let ::core::result::Result::Err(__gust_error) =
+                                __gust_check_cap::<__GustD>(__gust_extent)
+                            {
+                                return ::core::result::Result::Err(
+                                    ::gust::batch::Error::Device(__gust_error),
+                                );
+                            }
+                        }
+                        ::core::result::Result::Ok((
+                            ::std::sync::Arc::clone(&__gust_again),
+                            __gust_extent,
+                            #(#remade,)*
+                        ))
                     },
                 )
             }
@@ -1657,7 +1708,8 @@ impl TaskPlan {
         let rank = rank_type(self.rank);
         let shape = match (&self.extent, &self.target) {
             (Extent::Shape(shape), _) => quote!(#shape),
-            (Extent::Target, Some((name, _))) => quote!(#name.shape()),
+            // The target's own shape (a rule that follows its buffer through a resize, not the extents it had at the seal).
+            (Extent::Target, Some((name, _))) => quote!(&#name),
             (Extent::Target, None) => unreachable!("an in-place stage has its target"),
         };
         let views = batch.views.iter().map(|view| &view.name);

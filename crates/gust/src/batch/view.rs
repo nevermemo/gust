@@ -15,8 +15,10 @@ use crate::GpuPod;
 /// keeps only the raw GPU buffer alive, not that lease. So **keep the view (and the batch) alive for as long as any
 /// bind group built over it**: if both are dropped while the bind group stays, the allocation goes back to the pool,
 /// another owner can take it, and the bind group then reads that owner's data. The view is the batch's buffer, not a
-/// copy: no frame makes a new one, so the caller keeps one view, and the bind group it built, for as long as
-/// [`Batch::generation`] stays what it was.
+/// copy: a frame makes a new one only when it resizes the batch, so the caller keeps one view, and the bind group it
+/// built, for as long as [`Batch::generation`] stays what it was. **After a resize** (the generation moved) a view taken
+/// before it still holds the old buffer, with its old data and extents, and a bind group built over it is stale: fetch the
+/// view again and build the bind group again.
 ///
 /// **What a reader sees.** The buffer is the batch's own (decision D258: one set, frames kept apart by queue order). A
 /// reader sees, at its place in queue order, what the last frame recorded before that place left there, whatever
@@ -133,18 +135,19 @@ impl<D: BatchDevice> Batch<D> {
     where
         D::Buffer<T>: 'static,
     {
-        let (id, buffer) = self.core.output(handle)?;
+        let (_, buffer, dims) = self.core.output(handle)?;
         Ok(View {
             buffer,
-            dims: self.core.buffers[id].dims,
+            dims,
             generation: self.generation(),
         })
     }
 
-    /// One counter per batch, constant until a buffer behind a handle is replaced (a resize, a slot replacement;
-    /// nothing replaces one yet, so it is `0` today). A caller keeps its views and bind groups, compares this once per
-    /// frame after `encode` or `submit` returns, and fetches its views again and rebuilds its bind groups only when it
-    /// moved. An older view stays valid memory with stale data.
+    /// One counter per batch, constant until a buffer behind a handle is replaced (a resize, or later a slot
+    /// replacement): a frame that resizes moves it, by the number of buffers it replaced, before `encode` or `submit`
+    /// returns. A caller keeps its views and bind groups, compares this once per frame after `encode` or `submit`
+    /// returns, and fetches its views again and rebuilds its bind groups only when it moved. An older view stays valid
+    /// memory with the data and extents it had; a bind group built over it is stale after a resize.
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.core.generation.load(Ordering::Relaxed)

@@ -446,7 +446,7 @@ fn the_strict_subgroups_run_is_one_locked_package_and_not_an_example_of_the_othe
 fn the_strict_subgroups_check_runs_in_the_examples_and_full_modes_after_the_cargo_calls() {
     let source = include_str!("../verify.rs").replace("\r\n", "\n");
     let body = &source[source.find("fn verify_inner(").expect("verify_inner")..];
-    let calls = body.find("for args in cargo_calls(mode) {").unwrap();
+    let calls = body.find("for step in cargo_steps(mode) {").unwrap();
     let strict = body
         .find("matches!(mode, VerifyMode::Examples | VerifyMode::Full)")
         .unwrap();
@@ -559,7 +559,7 @@ fn the_full_mode_runs_the_gpu_suite_under_dev_subgroups_after_the_plain_run() {
     let source = include_str!("../verify.rs").replace("\r\n", "\n");
     let body = &source[source.find("fn verify_inner(").expect("verify_inner")..];
     let body = &body[..body.find("\n}\n").expect("its end")];
-    let calls = body.find("for args in cargo_calls(mode) {").unwrap();
+    let calls = body.find("for step in cargo_steps(mode) {").unwrap();
     let strict = body.find("check_strict_subgroups_example(root)").unwrap();
     let gate = body
         .find("check_gpu_suite_under_profile(root, FULL_GPU_PROFILE)")
@@ -591,4 +591,209 @@ fn the_full_mode_runs_the_gpu_suite_under_dev_subgroups_after_the_plain_run() {
             "{mode:?}"
         );
     }
+}
+
+#[test]
+fn the_width_of_the_example_mains_defaults_to_three_and_takes_a_whole_number() {
+    use crate::gpu_jobs::example_jobs;
+    assert_eq!(example_jobs(None), Ok(3));
+    assert_eq!(example_jobs(Some("1")), Ok(1));
+    assert_eq!(example_jobs(Some(" 2 ")), Ok(2));
+    for bad in ["0", "", "-1", "two", "1.5"] {
+        let error = example_jobs(Some(bad)).expect_err(bad);
+        assert!(error.contains("GUST_EXAMPLE_JOBS"), "{error}");
+    }
+}
+
+#[test]
+fn the_example_mains_are_the_tail_of_the_calls_of_the_modes_that_run_them_together() {
+    for mode in ALL_MODES {
+        let calls = cargo_calls(mode);
+        let first = calls.iter().position(|call| super::is_example_run(call));
+        let mains = calls
+            .iter()
+            .filter(|call| super::is_example_run(call))
+            .count();
+        if let Some(first) = first {
+            // One batch at the first main is only right when the mains are the last calls.
+            assert_eq!(calls.len() - first, mains, "{mode:?}");
+        }
+        let together = super::runs_mains_together(mode);
+        assert_eq!(
+            together,
+            matches!(
+                mode,
+                VerifyMode::Examples | VerifyMode::Artifacts | VerifyMode::Full
+            ),
+            "{mode:?}"
+        );
+        if together {
+            assert_eq!(mains, EXAMPLES.len(), "{mode:?}");
+        }
+    }
+}
+
+#[test]
+fn the_step_line_starts_with_the_prefix_a_log_comparison_strips() {
+    let line =
+        crate::process::step_time_line(std::time::Duration::from_millis(1250), "cargo", "run -p x");
+    assert!(line.starts_with(crate::process::STEP_TIME_PREFIX), "{line}");
+    assert!(line.ends_with(": cargo run -p x"), "{line}");
+}
+
+fn fake_output(
+    success: bool,
+    status: &str,
+    stdout: &str,
+) -> (crate::gpu_jobs::JobOutput, std::time::Duration) {
+    (
+        crate::gpu_jobs::JobOutput {
+            success,
+            status: status.to_owned(),
+            stdout: stdout.to_owned(),
+            stderr: String::new(),
+        },
+        std::time::Duration::from_secs(1),
+    )
+}
+
+fn fake_calls() -> Vec<Vec<String>> {
+    ["a", "b", "c"]
+        .iter()
+        .map(|name| owned(&["run", "-p", name]))
+        .collect()
+}
+
+#[test]
+fn the_modes_that_run_mains_together_have_one_batch_step_after_the_other_calls() {
+    for mode in ALL_MODES {
+        let steps = super::cargo_steps(mode);
+        let batches = steps
+            .iter()
+            .filter(|step| matches!(step, super::CargoStep::Mains))
+            .count();
+        let others = cargo_calls(mode)
+            .into_iter()
+            .filter(|call| !super::is_example_run(call))
+            .map(super::CargoStep::Call)
+            .collect::<Vec<_>>();
+        if super::runs_mains_together(mode) {
+            assert_eq!(batches, 1, "{mode:?}");
+            assert_eq!(steps.last(), Some(&super::CargoStep::Mains), "{mode:?}");
+            assert_eq!(&steps[..steps.len() - 1], others.as_slice(), "{mode:?}");
+        } else {
+            assert_eq!(batches, 0, "{mode:?}");
+            let calls = cargo_calls(mode)
+                .into_iter()
+                .map(super::CargoStep::Call)
+                .collect::<Vec<_>>();
+            assert_eq!(steps, calls, "{mode:?}");
+        }
+    }
+}
+
+#[test]
+fn a_failing_main_in_the_middle_is_named_and_the_later_ones_keep_their_records() {
+    let calls = fake_calls();
+    let results = vec![
+        Some(fake_output(true, "exit 0", "one\n")),
+        Some(fake_output(false, "exit 101", "two\n")),
+        Some(fake_output(true, "exit 0", "three\n")),
+    ];
+    let (records, outcome) = super::judge_example_mains(&calls, results);
+    let error = outcome.expect_err("one main failed");
+    assert!(error.contains("run -p b"), "{error}");
+    assert!(error.contains("exit 101"), "{error}");
+    assert!(!error.contains("run -p a"), "{error}");
+    assert!(!error.contains("run -p c"), "{error}");
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[1].exit_code, Some(101));
+    assert_eq!(records[2].arguments, calls[2]);
+    assert_eq!(records[2].stdout, "three\n");
+    assert_eq!(records[0].exit_code, Some(0));
+}
+
+#[test]
+fn every_failing_main_is_named_and_a_clean_batch_has_no_error() {
+    let calls = fake_calls();
+    let results = vec![
+        Some(fake_output(false, "exit 2", "")),
+        Some(fake_output(true, "exit 0", "")),
+        Some(fake_output(false, "could not start", "")),
+    ];
+    let (records, outcome) = super::judge_example_mains(&calls, results);
+    let error = outcome.expect_err("two mains failed");
+    assert!(
+        error.contains("run -p a") && error.contains("run -p c"),
+        "{error}"
+    );
+    assert_eq!(records[2].exit_code, None);
+    let clean = vec![
+        Some(fake_output(true, "exit 0", "")),
+        Some(fake_output(true, "exit 0", "")),
+        Some(fake_output(true, "exit 0", "")),
+    ];
+    let (records, outcome) = super::judge_example_mains(&calls, clean);
+    assert_eq!(outcome, Ok(()));
+    assert_eq!(records.len(), 3);
+}
+
+#[test]
+fn a_main_that_never_started_is_a_failure_named_did_not_run() {
+    let calls = fake_calls();
+    let results = vec![
+        Some(fake_output(true, "exit 0", "")),
+        None,
+        Some(fake_output(true, "exit 0", "")),
+    ];
+    let (records, outcome) = super::judge_example_mains(&calls, results);
+    let error = outcome.expect_err("a main did not run");
+    assert!(error.contains("run -p b did not run"), "{error}");
+    assert_eq!(records.len(), 2);
+}
+
+#[test]
+fn calls_without_a_result_are_failures_named_did_not_run() {
+    let calls = fake_calls();
+    let results = vec![Some(fake_output(true, "exit 0", ""))];
+    let (records, outcome) = super::judge_example_mains(&calls, results);
+    let error = outcome.expect_err("two mains have no result");
+    assert!(error.contains("run -p b did not run"), "{error}");
+    assert!(error.contains("run -p c did not run"), "{error}");
+    assert!(!error.contains("run -p a"), "{error}");
+    assert_eq!(records.len(), 1);
+}
+
+#[test]
+fn a_bad_width_fails_in_the_modes_that_run_mains_together_and_is_ignored_in_the_others() {
+    for mode in ALL_MODES {
+        let result = super::mains_width(mode, Some("zero"));
+        if super::runs_mains_together(mode) {
+            let error = result.expect_err("bad width");
+            assert!(error.contains("GUST_EXAMPLE_JOBS"), "{error}");
+            assert_eq!(super::mains_width(mode, None), Ok(3), "{mode:?}");
+            assert_eq!(super::mains_width(mode, Some("1")), Ok(1), "{mode:?}");
+        } else {
+            assert!(result.is_ok(), "{mode:?}");
+        }
+    }
+}
+
+#[test]
+fn a_failing_call_does_not_stop_the_calls_after_it() {
+    // Real cargo, at width 1: the first call is refused at once, the second prints the version.
+    let calls = vec![
+        owned(&["--no-such-flag-for-xtask-test"]),
+        owned(&["--version"]),
+    ];
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut emitted = Vec::new();
+    let results = crate::gpu_jobs::run_example_calls(root, &calls, 1, |index, _| {
+        emitted.push(index);
+    });
+    assert_eq!(emitted, [0, 1]);
+    let (_, outcome) = super::judge_example_mains(&calls, results);
+    let error = outcome.expect_err("the first call failed");
+    assert!(error.contains("--no-such-flag-for-xtask-test"), "{error}");
+    assert!(!error.contains("--version"), "{error}");
 }

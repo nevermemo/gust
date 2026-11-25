@@ -4,6 +4,7 @@ use std::{
     path::Path,
     process::{Command, Output, Stdio},
     sync::Once,
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -114,6 +115,18 @@ pub(crate) fn run_capture_in(
     run_capture(command, program).map_err(|error| format!("{context}: {error}"))
 }
 
+/// The line printed after each step of a run (`run_checked`, and each example main of `check-artifacts`): how long it took.
+/// It starts with [`STEP_TIME_PREFIX`], so a comparison of two logs can leave the timings out.
+pub(crate) fn step_time_line(elapsed: Duration, program: &str, arguments: &str) -> String {
+    format!(
+        "{STEP_TIME_PREFIX}{:.1} s: {program} {arguments}",
+        elapsed.as_secs_f64()
+    )
+}
+
+/// What every line of [`step_time_line`] starts with.
+pub(crate) const STEP_TIME_PREFIX: &str = "step time ";
+
 pub(crate) struct CheckRecord {
     pub(crate) program: String,
     pub(crate) arguments: Vec<String>,
@@ -128,6 +141,7 @@ pub(crate) fn run_checked(
     program: &str,
     args: &[&str],
 ) -> Result<(), String> {
+    let started = Instant::now();
     let output = run_capture(
         workspace_command(program).args(args).current_dir(root),
         program,
@@ -136,6 +150,10 @@ pub(crate) fn run_checked(
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     print!("{stdout}");
     eprint!("{stderr}");
+    println!(
+        "{}",
+        step_time_line(started.elapsed(), program, &args.join(" "))
+    );
     let exit_code = output.status.code();
     checks.push(CheckRecord {
         program: program.to_owned(),

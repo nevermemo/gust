@@ -714,7 +714,7 @@ fn run_job(root: &Path, package: &Package, job: &Job, cancel: &AtomicBool) -> Jo
 }
 
 /// [`run_job`] for a command that is already built.
-fn run_command(mut command: Command, limit: Duration, cancel: &AtomicBool) -> JobOutput {
+pub(crate) fn run_command(mut command: Command, limit: Duration, cancel: &AtomicBool) -> JobOutput {
     let mut child = match command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -808,6 +808,53 @@ pub(crate) fn run_printed<J: Sync>(
             let _ = stdout.write_all(block(&job_of(&jobs[index]), output).as_bytes());
             let _ = stdout.flush();
         },
+    )
+}
+
+/// The environment variable that sets how many example mains `check-artifacts` (and the other modes that run the
+/// examples' mains) start at a time: a whole number from 1 (one after another) up; unset means [`DEFAULT_GPU_JOBS`].
+pub(crate) const EXAMPLE_JOBS_VARIABLE: &str = "GUST_EXAMPLE_JOBS";
+
+/// The width named by the value of [`EXAMPLE_JOBS_VARIABLE`] (`None` when it is unset).
+pub(crate) fn example_jobs(value: Option<&str>) -> Result<usize, String> {
+    let Some(text) = value else {
+        return Ok(DEFAULT_GPU_JOBS);
+    };
+    match text.trim().parse::<usize>() {
+        Ok(width) if width >= 1 => Ok(width),
+        _ => Err(format!(
+            "{EXAMPLE_JOBS_VARIABLE} must be a whole number of at least 1, got `{text}`"
+        )),
+    }
+}
+
+/// Runs each cargo call of `calls` (`cargo run` of one example main) in `root`, at most `width` at a time, and calls
+/// `emit` with each call's output and its own run time in the order of `calls`, as soon as it and the ones before it
+/// have ended (see [`run_in_order`]). A failing call does not stop the others: every call runs, so the log names every
+/// failure. A call is killed after [`JOB_TIME_LIMIT`]. The results are in the order of `calls`.
+pub(crate) fn run_example_calls(
+    root: &Path,
+    calls: &[Vec<String>],
+    width: usize,
+    emit: impl FnMut(usize, &(JobOutput, Duration)),
+) -> Vec<Option<(JobOutput, Duration)>> {
+    let never = AtomicBool::new(false);
+    let starts = (0..calls.len()).collect::<Vec<_>>();
+    run_in_order(
+        calls,
+        &starts,
+        width,
+        &|call| {
+            let started = Instant::now();
+            let mut command = workspace_command("cargo");
+            command.args(call).current_dir(root);
+            (
+                run_command(command, JOB_TIME_LIMIT, &never),
+                started.elapsed(),
+            )
+        },
+        &|_| false,
+        emit,
     )
 }
 

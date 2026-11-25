@@ -4,6 +4,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    time::Duration,
 };
 
 use crate::{
@@ -13,13 +14,14 @@ use crate::{
     difftest::check_difftest_report,
     docs::docs_check,
     gallery::check_gallery_gpu_report,
+    gpu_jobs::{EXAMPLE_JOBS_VARIABLE, JobOutput, example_jobs, run_example_calls},
     lint::lint,
     precompiled::check_precompiled_report,
     process::{
         CheckRecord, HELPER_VARIABLE, TestTotals, report_check, repository_helper, require_command,
         require_tests_ran, run_capture, run_cargo_test_captured, run_cargo_test_captured_under,
-        run_checked, run_checked_owned, run_direct_args, sum_test_results, without_colors,
-        workspace_command,
+        run_checked, run_checked_owned, run_direct_args, step_time_line, sum_test_results,
+        without_colors, workspace_command,
     },
     reflect::{BuildOptions, build_slang_reflect},
     release::check_release_report,
@@ -460,10 +462,19 @@ fn verify_inner(
     run_checked(root, checks, "slangc", &["-version"])?;
     let slangc_output = checks.last().map(printed_text).unwrap_or_default();
     prepare_helper(root, Some(&slangc_output))?;
+    // A bad width fails here, before any GPU step.
+    let example_width = mains_width(mode, env::var(EXAMPLE_JOBS_VARIABLE).ok().as_deref())?;
     // Before the first GPU step: no adapter, or one that cannot be named, fails the run here and the record says null.
     *adapter = Some(record_adapter(root, checks)?);
     clear_generated_output(root, mode)?;
-    for args in cargo_calls(mode) {
+    for step in cargo_steps(mode) {
+        let args = match step {
+            CargoStep::Mains => {
+                run_example_mains(root, mode, example_width, checks)?;
+                continue;
+            }
+            CargoStep::Call(args) => args,
+        };
         run_checked_owned(root, checks, "cargo", &args)?;
         if let Some(record) = checks.last_mut()
             && let Err(error) = guard_call(mode, &args, &record.stdout)
@@ -1050,15 +1061,143 @@ pub(crate) fn cargo_calls(mode: VerifyMode) -> Vec<Vec<String>> {
             calls.push(owned(&["test", "-p", example, "--", "--include-ignored"]));
         }
     }
-    let examples_to_run = match mode {
-        VerifyMode::Smoke => SMOKE_EXAMPLES,
-        VerifyMode::Examples | VerifyMode::Artifacts | VerifyMode::Full => EXAMPLES,
-        VerifyMode::Fast | VerifyMode::Gpu => &[],
-    };
-    for example in examples_to_run {
+    for example in examples_to_run(mode) {
         calls.push(owned(&example_run_args(example)));
     }
     calls
+}
+
+/// The examples whose mains a mode runs, in order (the last calls of [`cargo_calls`]).
+fn examples_to_run(mode: VerifyMode) -> &'static [&'static str] {
+    match mode {
+        VerifyMode::Smoke => SMOKE_EXAMPLES,
+        VerifyMode::Examples | VerifyMode::Artifacts | VerifyMode::Full => EXAMPLES,
+        VerifyMode::Fast | VerifyMode::Gpu => &[],
+    }
+}
+
+/// Whether a mode runs its example mains together ([`run_example_mains`]): the modes that check the artifacts or the
+/// whole examples. The smoke mode runs two and keeps them one after another.
+fn runs_mains_together(mode: VerifyMode) -> bool {
+    matches!(
+        mode,
+        VerifyMode::Examples | VerifyMode::Artifacts | VerifyMode::Full
+    )
+}
+
+/// Whether a cargo call is one [`example_run_args`] builds.
+fn is_example_run(call: &[String]) -> bool {
+    call.first().is_some_and(|name| name == "run")
+}
+
+/// One step of the cargo calls of a mode: a call of its own, or the example mains run together.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CargoStep {
+    Call(Vec<String>),
+    Mains,
+}
+
+/// The cargo calls of `mode` ([`cargo_calls`]) as steps: in the modes that run their mains together the example mains
+/// (the last calls) become one [`CargoStep::Mains`] at the place of the first of them; every other call stays a step.
+fn cargo_steps(mode: VerifyMode) -> Vec<CargoStep> {
+    let mut steps = Vec::new();
+    let mut mains_seen = false;
+    for call in cargo_calls(mode) {
+        if runs_mains_together(mode) && is_example_run(&call) {
+            if !mains_seen {
+                mains_seen = true;
+                steps.push(CargoStep::Mains);
+            }
+        } else {
+            steps.push(CargoStep::Call(call));
+        }
+    }
+    steps
+}
+
+/// The width at which `mode` runs its example mains for the value of [`EXAMPLE_JOBS_VARIABLE`]; a bad value is an error
+/// in the modes that run them together and ignored in the others.
+fn mains_width(mode: VerifyMode, value: Option<&str>) -> Result<usize, String> {
+    if runs_mains_together(mode) {
+        example_jobs(value)
+    } else {
+        Ok(1)
+    }
+}
+
+/// The example mains of `mode` as `cargo run` calls, at most `width` at a time (see [`EXAMPLE_JOBS_VARIABLE`]; 1 is
+/// one after another). The calls, arguments, environment and directory are the ones `run_checked` used. Each main's
+/// output is buffered and printed whole in the order of [`EXAMPLES`], then its step line, so the log reads as one after
+/// another. A main that fails does not stop the others: all run and print, each record is kept, and the error names
+/// every failure ([`judge_example_mains`]).
+fn run_example_mains(
+    root: &Path,
+    mode: VerifyMode,
+    width: usize,
+    checks: &mut Vec<CheckRecord>,
+) -> Result<(), String> {
+    let calls = examples_to_run(mode)
+        .iter()
+        .map(|example| {
+            example_run_args(example)
+                .iter()
+                .map(|argument| (*argument).to_owned())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let results = run_example_calls(root, &calls, width, |index, (output, elapsed)| {
+        print!("{}", output.stdout);
+        eprint!("{}", output.stderr);
+        println!(
+            "{}",
+            step_time_line(*elapsed, "cargo", &calls[index].join(" "))
+        );
+    });
+    let (records, outcome) = judge_example_mains(&calls, results);
+    checks.extend(records);
+    outcome
+}
+
+/// The records and the verdict for the example mains `calls` and their results (in the order of `calls`): one record
+/// per main that ran, with its exit code when the status has one, in order; the error names every main that failed and
+/// every one that did not run, and there is none when all passed.
+fn judge_example_mains(
+    calls: &[Vec<String>],
+    results: Vec<Option<(JobOutput, Duration)>>,
+) -> (Vec<CheckRecord>, Result<(), String>) {
+    let mut records = Vec::new();
+    let mut failures = Vec::new();
+    let mut results = results.into_iter();
+    for call in calls {
+        let Some((output, _)) = results.next().flatten() else {
+            failures.push(format!("cargo {} did not run", call.join(" ")));
+            continue;
+        };
+        let exit_code = output
+            .status
+            .strip_prefix("exit ")
+            .and_then(|code| code.parse::<i32>().ok());
+        if !output.success {
+            failures.push(format!(
+                "cargo {} failed ({})",
+                call.join(" "),
+                output.status
+            ));
+        }
+        records.push(CheckRecord {
+            program: "cargo".to_owned(),
+            arguments: call.clone(),
+            exit_code,
+            stdout: output.stdout,
+            stderr: output.stderr,
+        });
+    }
+    let outcome = if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    };
+    (records, outcome)
 }
 
 /// Whether a mode also runs `cargo xtask check-dual` (full mode, GPU): only the release gate does, after its cargo

@@ -891,6 +891,7 @@ fn run_inputs(
         samples: config.samples,
         group_is_publishable: group.is_table(),
         release_build: !cfg!(debug_assertions),
+        cargo_profile: meta::build_profile().to_owned(),
         tainting_features: meta::build_features()
             .into_iter()
             .filter(|feature| {
@@ -1401,6 +1402,7 @@ fn list() {
     println!("gpu runtime in this build: {}", cfg!(feature = "gpu"));
     println!("features: {:?}", meta::build_features());
     println!("GUST profile: {}", gust::profile::NAME);
+    println!("cargo profile: {}", meta::build_profile());
     println!("gust_dual (CPU twin built in): {}", cfg!(gust_dual));
 }
 

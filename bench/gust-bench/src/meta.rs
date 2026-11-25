@@ -38,9 +38,7 @@ pub fn smi_enabled() -> bool {
 
 /// `nvidia-smi` with `args` through [`capture`], or `None` without running it when the adapter is not an NVIDIA one.
 fn capture_smi(args: &[&str]) -> Option<String> {
-    smi_enabled()
-        .then(|| capture("nvidia-smi", args))
-        .flatten()
+    smi_enabled().then(|| capture("nvidia-smi", args)).flatten()
 }
 
 /// Runs `program args` and returns its trimmed stdout, or `None` when it cannot run or fails.
@@ -171,6 +169,15 @@ pub fn build_dirty_from(value: Option<&str>) -> Option<bool> {
     }
 }
 
+/// The cargo profile this binary was built with (`release`, `functional`, `debug`, ...), the name of its target
+/// directory as `build.rs` read it from `OUT_DIR`; `unknown` when it could not be derived. Debug assertions cannot tell
+/// `release` from `functional` (LTO and codegen units differ), so the publishable judgement reads this.
+pub fn build_profile() -> &'static str {
+    option_env!("GUST_BENCH_CARGO_PROFILE")
+        .filter(|profile| !profile.is_empty())
+        .unwrap_or("unknown")
+}
+
 /// The git state of the checkout this crate is built in.
 pub fn git_state() -> GitState {
     git_state_with(&|args| {
@@ -272,7 +279,7 @@ fn machine_common(rayon_threads: usize) -> serde_json::Map<String, Value> {
             "gust_bench": env!("CARGO_PKG_VERSION"),
         },
         "build": {
-            "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+            "profile": build_profile(),
             "gust_profile": gust::profile::NAME,
             "gust_dual": cfg!(gust_dual),
             "debug_assertions": cfg!(debug_assertions),
@@ -484,7 +491,7 @@ fn provenance_of(route: &str, adapter: Value, git: &GitState) -> Value {
         "route": route,
         "build": {
             "release": release,
-            "profile": if release { "release" } else { "debug" },
+            "profile": build_profile(),
             "gust_profile": gust::profile::NAME,
             "features": build_features(),
             "cfgs": cfgs,
@@ -494,6 +501,12 @@ fn provenance_of(route: &str, adapter: Value, git: &GitState) -> Value {
         "adapter": adapter,
     })
 }
+
+/// The build script's own derivation of the profile name, compiled here so a test can call it.
+#[cfg(test)]
+#[allow(dead_code)] // the build script's other functions run only as the build script
+#[path = "../build.rs"]
+mod build_script;
 
 #[cfg(test)]
 mod tests {
@@ -507,6 +520,37 @@ mod tests {
         for vendor in [0x1002, 0x8086, 0x10005] {
             assert!(!smi_describes_vendor(vendor), "vendor {vendor:#x}");
         }
+    }
+
+    /// `OUT_DIR` is `<target>[/<triple>]/<profile>/build/<package>-<hash>/out`; any other shape is `unknown`.
+    #[test]
+    fn the_cargo_profile_is_the_directory_above_build_or_unknown() {
+        use std::path::Path;
+        for (out_dir, want) in [
+            ("t/release/build/gust-bench-0123/out", "release"),
+            ("t/functional/build/gust-bench-0123/out", "functional"),
+            (
+                "t/x86_64-pc-windows-msvc/debug/build/gust-bench-0123/out",
+                "debug",
+            ),
+            ("t/release/gust-bench-0123/out", "unknown"),
+            ("t/debug/build/gust-bench/0123/out", "unknown"),
+            ("out", "unknown"),
+            ("", "unknown"),
+        ] {
+            assert_eq!(
+                build_script::profile_of_out_dir(Path::new(out_dir)),
+                want,
+                "{out_dir}"
+            );
+        }
+    }
+
+    /// Pins the wiring `build.rs` (prints the variable) to `option_env!`: a missing variable would make every run
+    /// non-publishable.
+    #[test]
+    fn the_build_script_supplies_the_cargo_profile() {
+        assert_ne!(build_profile(), "unknown");
     }
 
     #[test]
@@ -639,14 +683,7 @@ mod tests {
         assert_eq!(value["build"]["tree_dirty"], true);
         assert_eq!(value["route"], "wgsl");
         assert_eq!(value["build"]["release"], !cfg!(debug_assertions));
-        assert_eq!(
-            value["build"]["profile"],
-            if cfg!(debug_assertions) {
-                "debug"
-            } else {
-                "release"
-            }
-        );
+        assert_eq!(value["build"]["profile"], build_profile());
         assert_eq!(value["build"]["features"], json!(build_features()));
         assert_eq!(value["build"]["gust_profile"], gust::profile::NAME);
         assert_eq!(value["adapter"]["name"], "Test GPU");

@@ -445,6 +445,9 @@ pub struct RunInputs {
     pub samples: usize,
     pub group_is_publishable: bool,
     pub release_build: bool,
+    /// The cargo profile the binary was built with (`meta::build_profile`): only `release` is publishable, because
+    /// `functional` also has debug assertions off but links and optimises differently.
+    pub cargo_profile: String,
     pub tainting_features: Vec<String>,
     pub probe_backends: bool,
     pub sampler_enabled: bool,
@@ -493,6 +496,12 @@ pub fn run_blockers(input: &RunInputs) -> Vec<String> {
     }
     if !input.release_build {
         reasons.push("not a release build".to_owned());
+    }
+    if input.cargo_profile != "release" {
+        reasons.push(format!(
+            "built with the cargo profile `{}`, not `release`",
+            input.cargo_profile
+        ));
     }
     for feature in &input.tainting_features {
         reasons.push(format!("the `{feature}` feature changes what is measured"));
@@ -1029,6 +1038,7 @@ mod tests {
             samples: 30,
             group_is_publishable: true,
             release_build: true,
+            cargo_profile: "release".to_owned(),
             sampler_enabled: true,
             build_head: Some("0123456789abcdef".to_owned()),
             build_dirty: Some(false),
@@ -1145,6 +1155,20 @@ mod tests {
                 "not a release",
                 RunInputs {
                     release_build: false,
+                    ..clean_inputs()
+                },
+            ),
+            (
+                "cargo profile `functional`, not `release`",
+                RunInputs {
+                    cargo_profile: "functional".to_owned(),
+                    ..clean_inputs()
+                },
+            ),
+            (
+                "cargo profile `unknown`, not `release`",
+                RunInputs {
+                    cargo_profile: "unknown".to_owned(),
                     ..clean_inputs()
                 },
             ),

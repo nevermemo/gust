@@ -8,8 +8,14 @@
 //! branch ref, `packed-refs` or the git index change, and when anything under the repository's `crates/` or `bench/`
 //! (except `bench/target/`, which every build writes to) changes, so an edit, a build and a revert leave a binary
 //! marked dirty until it is rebuilt.
+//!
+//! It also records the cargo profile directory the build went to (`GUST_BENCH_CARGO_PROFILE`, from `OUT_DIR`; `unknown`
+//! when the path has another shape), because `debug_assertions` cannot tell `release` from `functional`.
 
-use std::{path::PathBuf, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default())
@@ -59,7 +65,25 @@ fn watch_sources() {
     }
 }
 
+/// The cargo profile directory of this build (`debug`, `release`, `functional`, ...), from `OUT_DIR`, which is
+/// `<target>[/<triple>]/<profile>/build/<package>-<hash>/out`: the name three levels above the package's own folder.
+/// `unknown` when the path has another shape (the harness's publishable judgement refuses it), never a guess.
+pub fn profile_of_out_dir(out_dir: &Path) -> String {
+    let mut ancestors = out_dir.ancestors().skip(2);
+    let build = ancestors.next().and_then(Path::file_name);
+    let profile = ancestors.next().and_then(Path::file_name);
+    match (build, profile) {
+        (Some(build), Some(profile)) if build == "build" => profile.to_string_lossy().into_owned(),
+        _ => "unknown".to_owned(),
+    }
+}
+
 fn main() {
+    let out_dir = std::env::var("OUT_DIR").unwrap_or_default();
+    println!(
+        "cargo:rustc-env=GUST_BENCH_CARGO_PROFILE={}",
+        profile_of_out_dir(Path::new(&out_dir))
+    );
     watch("HEAD");
     watch("packed-refs");
     watch("index");

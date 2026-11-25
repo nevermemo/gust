@@ -105,7 +105,8 @@ A run is one **group**, chosen by `--group publishable|spirv|ablation` (default 
   hand rows and the switches (no GUST row, and no `--with` probes), while the run file still says `route: spirv`.
 
 The route and the profile are properties of the build, not of a flag, so each build is its own result file, and a run
-names its build in the JSON: `route` (`wgsl`, `spirv` or `cpu`), `build.features`, `build.gust_profile`,
+names its build in the JSON: `route` (`wgsl`, `spirv` or `cpu`), `build.features`, `build.gust_profile`, `build.profile`
+(the cargo profile the binary was built with),
 `build.cfgs` and `config.shader_source`.
 
 | build | command (from `bench/`) | route | GUST backend ids |
@@ -373,8 +374,11 @@ commit you will run; the binary is `bench/target/release/gust-bench` (`bench/tar
 file marked `"functional": true` and never publishable. `cargo xtask check-bench --functional --quick` runs it.
 It builds in the `functional` profile of `bench/Cargo.toml` (release settings without cross-crate LTO, parallel
 codegen; its binary is `bench/target/functional/gust-bench`), which only that command uses. A publishable run must be
-built with `release`: the harness's publishable judgement checks only that debug assertions are off, so it does not
-tell the two profiles apart.
+built with `release`: the harness records the cargo profile it was built with (`build.profile`, read from the build
+directory by `build.rs`, `unknown` when that fails) and the publishable judgement refuses any value other than
+`release`, as well as a build with debug assertions on. The judgement checks the profile's name (its target directory),
+not its settings, so overrides of `release` (`CARGO_PROFILE_RELEASE_*`, `--config profile.release.*`, `RUSTFLAGS`) are
+not detected and such runs must not be published.
 
 ## The quiet-window sampler and the publishable judgement
 

@@ -1,0 +1,68 @@
+{
+  "kernels": [
+    {
+      "clean_sha256": "fc190b11a1e9e52a115dd473dd40036f828be9c82c750abb9dbeeb8b1003a4e5",
+      "entry_point": "gpu___gust_pf_0c716338874f103a_run",
+      "formats": [
+        {
+          "file": "b745742a9994be64.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "fc2d121a067e71e4205f1c9b6695117a9d29d8807de0126704e3ca65de7b9638",
+          "sha256": "63bb446d63c64f6a138a58e8c590b3eb39a08361266e2ef05f0329a7b549b892"
+        }
+      ],
+      "key": "b745742a9994be64",
+      "module": "__gust_pf_0c716338874f103a",
+      "name": "run"
+    },
+    {
+      "clean_sha256": "e06d10acd495f93a13d1d39d5682a51ee5a6862ffc905c6a9e3079f5ffa71608",
+      "entry_point": "gpu___gust_pf_0c716338874f103a_run",
+      "formats": [
+        {
+          "file": "bc3522061f5ab0e3.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "af70e1bbe04b624b28b8efc23c6f184b692c0870b32d6eafc9c44094b551b1ab",
+          "sha256": "3bf30269b30023503c40446568e28ce5eb2874a235d7fa0fba2e89e33dd86d51"
+        }
+      ],
+      "key": "bc3522061f5ab0e3",
+      "module": "__gust_pf_0c716338874f103a",
+      "name": "run",
+      "split_of": "b745742a9994be64"
+    },
+    {
+      "clean_sha256": "8494a9bb5a121f36e336b1ca5fafe047dca786a57d23af624ce934b14e60289e",
+      "entry_point": "gpu___gust_pf_8c1ff4185b074d87_run",
+      "formats": [
+        {
+          "file": "f490310d2f8cd3c6.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "608692aa19e60c05b0749061edb93cc1f2507d2c3cda9b4c5d859d2ce27dcfeb",
+          "sha256": "6c9784501fb77e7701d726a43ba4bcc9d05610e73de24be8adf4402a1e52191f"
+        }
+      ],
+      "key": "f490310d2f8cd3c6",
+      "module": "__gust_pf_8c1ff4185b074d87",
+      "name": "run"
+    },
+    {
+      "clean_sha256": "e4aeea4b08c07348a422c2cefae5e89df6ae9c2cc51b4221bec74d57f67f21a3",
+      "entry_point": "gpu___gust_pf_8c1ff4185b074d87_run",
+      "formats": [
+        {
+          "file": "fcdcf25008b11daa.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "1a879766303dda899cb8996835ca065187a28b712f32884aa2f950f682099f27",
+          "sha256": "c9bb3b1d558041fff34590aa8cca0669b5c78d1b50c3fb5e429530cc2ecb27fa"
+        }
+      ],
+      "key": "fcdcf25008b11daa",
+      "module": "__gust_pf_8c1ff4185b074d87",
+      "name": "run",
+      "split_of": "f490310d2f8cd3c6"
+    }
+  ],
+  "schema": 4,
+  "slang": "2026.22.1"
+}

@@ -1,5 +1,6 @@
-//! `cargo xtask check-web`: the first browser WebGPU run (plan M4 section 2.6, D45). It builds `examples/web-vector-add`
-//! for `wasm32-unknown-unknown` under `GUST_PROFILE=web`, runs `wasm-bindgen --target web` on the result, serves the
+//! `cargo xtask check-web`: the browser WebGPU runs (plan M4 section 2.6, D45). It builds two pages in turn,
+//! `examples/web-vector-add` and `examples/web-batch-frames`, for `wasm32-unknown-unknown` under `GUST_PROFILE=web`,
+//! runs `wasm-bindgen --target web` on each result, serves the
 //! output from a loopback HTTP server, opens it in headless Chrome and requires the line `GUST_OK <vendor>
 //! <architecture>` that the page's Rust code logs to the console.
 //!
@@ -20,6 +21,11 @@
 //! artifact and equalled the host reference, and the same launch without that artifact was refused with `DeviceLimit`.
 //! The label printed at the end is `Gpu (WebGPU, Chrome <version>, <vendor> <architecture>)`, or `Gpu (software ...)`
 //! when the adapter is a software one. Nothing here runs Slang: the shader is the committed WGSL artifact.
+//!
+//! The second page, `examples/web-batch-frames` (m14.s2c), is a `gpu_batch!` with `in_flight(2)`: it submits frame N+1 while
+//! frame N's ticket is pending, then requires both frames, and a third whose `begin` waited for the oldest, to equal the
+//! host computation exactly. Its stages' kernels are private to the batch, so it reports no selected kernels and its
+//! `Example` has an empty `manifest`; its label is `<vendor> <architecture> | two frames in flight exact`.
 //!
 //! The server binds `127.0.0.1` on an ephemeral port only, answers `GET` for the plain files of the output directory
 //! only, and is stopped when the check ends.
@@ -58,7 +64,7 @@ const EXAMPLE_DIR: &str = "examples/web-vector-add";
 const PACKAGE: &str = "web-vector-add";
 const OUT_NAME: &str = "web_vector_add";
 
-/// One page the runner builds and runs in Chrome: `check-web`'s own ([`WEB_VECTOR_ADD`]) and the gallery's `web-hello`
+/// One page the runner builds and runs in Chrome: `check-web`'s own ([`WEB_VECTOR_ADD`], [`WEB_BATCH_FRAMES`]) and the gallery's `web-hello`
 /// (`check-gallery`'s GPU part, m10.g9) go through the same functions, with their own constants.
 pub(crate) struct Example {
     /// The folder of the page's `index.html`, relative to the repository root.
@@ -69,7 +75,9 @@ pub(crate) struct Example {
     /// The cargo package, and the stem of its wasm output (`-` becomes `_`).
     pub(crate) package: &'static str,
     pub(crate) out_name: &'static str,
-    /// The committed manifest the page's selected kernels are compared with, relative to the repository root.
+    /// The committed manifest the page's selected kernels are compared with, relative to the repository root. Empty: the
+    /// page reports no selected kernels (its label is `<adapter> | <closing>`, read by [`split_unlisted_label`]) and no
+    /// manifest is compared.
     pub(crate) manifest: &'static str,
     /// The last part of the page's `GUST_OK` label (after the adapter words and the selected kernels).
     pub(crate) closing: &'static str,
@@ -87,6 +95,24 @@ pub(crate) const WEB_VECTOR_ADD: Example = Example {
     closing: SUBGROUPS_REFUSED,
     cleared_env: &[],
 };
+
+/// The batch page of `cargo xtask check-web` (m14.s2c): a `gpu_batch!` with two frames in flight. Its kernels are
+/// `gpu_task!` stages, private to the batch, which exposes no descriptor, so the page reports no selected kernels and
+/// `manifest` is empty: [`split_unlisted_label`] reads its label and the manifest is not compared. The strict `web`
+/// build still fails to compile without the committed artifacts of the stages.
+pub(crate) const WEB_BATCH_FRAMES: Example = Example {
+    dir: "examples/web-batch-frames",
+    workspace: "",
+    package: "web-batch-frames",
+    out_name: "web_batch_frames",
+    manifest: "",
+    closing: FRAMES_EXACT,
+    cleared_env: &[],
+};
+
+/// The last part of the batch page's `GUST_OK` line: frame N was pending when frame N+1 was submitted, and every
+/// frame's awaited ticket was exact.
+const FRAMES_EXACT: &str = "two frames in flight exact";
 
 pub(crate) const WASM_TARGET: &str = "wasm32-unknown-unknown";
 
@@ -225,7 +251,11 @@ fn find_tools(
 pub(crate) fn preflight_tools() -> Result<(), String> {
     let root = workspace_root()?;
     // The gallery's browser entry runs through the same runner in the same Full run, with its own lock.
-    for example in [&WEB_VECTOR_ADD, &crate::gallery::WEB_HELLO] {
+    for example in [
+        &WEB_VECTOR_ADD,
+        &WEB_BATCH_FRAMES,
+        &crate::gallery::WEB_HELLO,
+    ] {
         find_tools(&root, example, &Options::default(), env::var_os("PATH"))?;
     }
     Ok(())
@@ -251,12 +281,26 @@ pub(crate) fn check_web_report(args: &[String]) -> Result<String, String> {
         &cargo_target_dir(&root),
         started,
     )?;
+    let frames = run_example(
+        &root,
+        &WEB_BATCH_FRAMES,
+        &options,
+        &cargo_target_dir(&root),
+        started,
+    )?;
+    let batch_page = format!(
+        "check-web passed: the batch page logged `{OK_PREFIX}{}`: a gpu_batch! with in_flight(2) recorded and submitted frame N+1 while frame N's ticket was still pending (asserted, not timed: nothing returned to the event loop in between), a third begin was still waiting then, and the awaited tickets of both frames equalled the host computation exactly; the third frame's begin, awaited, learned that the oldest frame had completed and its ticket was exact too.\n  evidence: {}\n  {}",
+        frames.label,
+        evidence_label(frames.chrome_version.as_deref(), &frames.adapter),
+        frames.timings
+    );
     Ok(format!(
-        "check-web passed: the page logged `{OK_PREFIX}{}`: the real gust-wgpu vector-add (1000 and 8197 elements) ran in both forms, grid and pixel, on the browser GPU, and each equalled the host reference and the other bit for bit. The job contract of the browser held for each submission (status Pending right after the submit and Complete after the awaited readback; wait, wait_timeout and the generated dispatch return Error::WouldBlock), and map_gpu read back the host's result through to_vec_async. A launch past a lowered per-dimension workgroup limit ran as pieces of the kernel's split artifact and equalled the host reference, and the same launch without the split's artifact was refused with Error::DeviceLimit. The key each of the {} kernels selected is one the committed manifest lists, none needs a capability, and a device opened with the subgroups capability was refused with Error::MissingCapability.\n  evidence: {}\n  {}",
+        "check-web passed: the page logged `{OK_PREFIX}{}`: the real gust-wgpu vector-add (1000 and 8197 elements) ran in both forms, grid and pixel, on the browser GPU, and each equalled the host reference and the other bit for bit. The job contract of the browser held for each submission (status Pending right after the submit and Complete after the awaited readback; wait, wait_timeout and the generated dispatch return Error::WouldBlock), and map_gpu read back the host's result through to_vec_async. A launch past a lowered per-dimension workgroup limit ran as pieces of the kernel's split artifact and equalled the host reference, and the same launch without the split's artifact was refused with Error::DeviceLimit. The key each of the {} kernels selected is one the committed manifest lists, none needs a capability, and a device opened with the subgroups capability was refused with Error::MissingCapability.\n  evidence: {}\n  {}\n{}",
         run.label,
         run.selected.len(),
         evidence_label(run.chrome_version.as_deref(), &run.adapter),
-        run.timings
+        run.timings,
+        batch_page
     ))
 }
 
@@ -266,7 +310,8 @@ pub(crate) struct ExampleRun {
     pub(crate) label: String,
     /// The adapter words (`<vendor> <architecture>`) the page named.
     pub(crate) adapter: String,
-    /// The kernels the page's build selected, already checked against the committed manifest.
+    /// The kernels the page's build selected, already checked against the committed manifest; empty for a page whose
+    /// `manifest` is empty.
     pub(crate) selected: Vec<SelectedKernel>,
     pub(crate) chrome_version: Option<String>,
     /// The `timings: ...` line.
@@ -275,7 +320,8 @@ pub(crate) struct ExampleRun {
 
 /// Builds `example` for `wasm32-unknown-unknown` under `GUST_PROFILE=web`, runs `wasm-bindgen`, serves the site from a
 /// loopback server (`127.0.0.1`, an ephemeral port), opens it in headless Chrome and requires the page's `GUST_OK` line,
-/// whose last part must be `example.closing` and whose selected kernels must match the committed manifest. Every
+/// whose last part must be `example.closing` and whose selected kernels must match the committed manifest (unless
+/// `example.manifest` is empty: then the label is the adapter words and the closing part only). Every
 /// failure, a missing Chrome or wasm-bindgen included, is an error: nothing is skipped. `target_dir` is the cargo
 /// target directory of the build (it also holds the scratch site and Chrome's profile); `started` is when the caller's
 /// check began, for the total in the timings.
@@ -325,19 +371,30 @@ pub(crate) fn run_example(
     );
     match outcome {
         Outcome::Result(PageResult::Ok { label }) => {
-            let (adapter, selected) = split_label(&label, example.closing).map_err(|error| {
-                format!("check-web: the page logged `{OK_PREFIX}{label}`: {error}\n  {timings}")
-            })?;
-            let manifest_path = root.join(example.manifest);
-            let manifest = fs::read_to_string(&manifest_path)
-                .map_err(|error| format!("check-web: {}: {error}", manifest_path.display()))?;
-            let problems = selected_key_problems(&selected, &manifest);
-            if !problems.is_empty() {
-                return Err(format!(
-                    "check-web: the page logged `{OK_PREFIX}{label}` but its selected kernels do not match the committed manifest:\n  {}\n  {timings}",
-                    problems.join("\n  ")
-                ));
-            }
+            let (adapter, selected) = if example.manifest.is_empty() {
+                let adapter = split_unlisted_label(&label, example.closing).map_err(|error| {
+                    format!("check-web: the page logged `{OK_PREFIX}{label}`: {error}\n  {timings}")
+                })?;
+                (adapter, Vec::new())
+            } else {
+                let (adapter, selected) =
+                    split_label(&label, example.closing).map_err(|error| {
+                        format!(
+                            "check-web: the page logged `{OK_PREFIX}{label}`: {error}\n  {timings}"
+                        )
+                    })?;
+                let manifest_path = root.join(example.manifest);
+                let manifest = fs::read_to_string(&manifest_path)
+                    .map_err(|error| format!("check-web: {}: {error}", manifest_path.display()))?;
+                let problems = selected_key_problems(&selected, &manifest);
+                if !problems.is_empty() {
+                    return Err(format!(
+                        "check-web: the page logged `{OK_PREFIX}{label}` but its selected kernels do not match the committed manifest:\n  {}\n  {timings}",
+                        problems.join("\n  ")
+                    ));
+                }
+                (adapter, selected)
+            };
             Ok(ExampleRun {
                 label,
                 adapter,
@@ -441,6 +498,22 @@ pub(crate) struct SelectedKernel {
 #[cfg(test)]
 pub(crate) fn split_page_label(label: &str) -> Result<(String, Vec<SelectedKernel>), String> {
     split_label(label, SUBGROUPS_REFUSED)
+}
+
+/// The adapter words of the label of a page that reports no selected kernels (an [`Example`] with an empty `manifest`):
+/// `<vendor> <architecture> | <closing>`, and nothing else.
+pub(crate) fn split_unlisted_label(label: &str, closing: &str) -> Result<String, String> {
+    match label.split(" | ").collect::<Vec<_>>().as_slice() {
+        [_, last] if *last != closing => {
+            Err(format!("the OK line does not say `{closing}`: {last:?}"))
+        }
+        ["", _] => Err("the OK line names no adapter".to_owned()),
+        [adapter, _] => Ok((*adapter).to_owned()),
+        parts => Err(format!(
+            "the OK line has {} part(s) separated by ` | `, expected 2: the adapter words and `{closing}`",
+            parts.len()
+        )),
+    }
 }
 
 /// The error for an OK line of the wrong number of parts.

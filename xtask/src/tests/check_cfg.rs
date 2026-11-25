@@ -43,9 +43,9 @@ fn the_runs_are_pinned_by_name_and_arguments() {
             "-p gust-compute-wgpu --lib --features spirv-route",
         ),
         (
-            "wasm32: gust-compute, gust-compute-wgpu, web-vector-add",
+            "wasm32: gust-compute, gust-compute-wgpu, web-vector-add, web-batch-frames",
             true,
-            "--target wasm32-unknown-unknown -p gust-compute -p gust-compute-wgpu -p web-vector-add",
+            "--target wasm32-unknown-unknown -p gust-compute -p gust-compute-wgpu -p web-vector-add -p web-batch-frames",
         ),
         (
             "wasm32: gust-compute-wgpu with spirv-route",

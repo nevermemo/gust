@@ -999,6 +999,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "web-batch-frames"
+version = "0.2.0"
+dependencies = [
+ "gust-compute",
+ "gust-compute-wgpu",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu",
+]
+
+[[package]]
 name = "web-sys"
 version = "0.3.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"

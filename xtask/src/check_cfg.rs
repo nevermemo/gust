@@ -89,7 +89,7 @@ pub(crate) const COMBOS: &[Combo] = &[
         ],
     },
     Combo {
-        name: "wasm32: gust-compute, gust-compute-wgpu, web-vector-add",
+        name: "wasm32: gust-compute, gust-compute-wgpu, web-vector-add, web-batch-frames",
         wasm: true,
         args: &[
             "--target",
@@ -100,6 +100,8 @@ pub(crate) const COMBOS: &[Combo] = &[
             "gust-compute-wgpu",
             "-p",
             "web-vector-add",
+            "-p",
+            "web-batch-frames",
         ],
     },
     Combo {

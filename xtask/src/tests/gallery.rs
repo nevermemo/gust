@@ -986,7 +986,9 @@ fn skip_web_leaves_the_browser_entry_out_prints_it_and_records_it() {
     );
     assert_eq!(GALLERY_BROWSER_SKIP, "check-gallery web-hello browser run");
     let web = repository_file("xtask/src/web.rs");
-    assert!(web.contains("for example in [&WEB_VECTOR_ADD, &crate::gallery::WEB_HELLO]"));
+    assert!(web.contains(
+        "for example in [\n        &WEB_VECTOR_ADD,\n        &WEB_BATCH_FRAMES,\n        &crate::gallery::WEB_HELLO,\n    ]"
+    ));
     // Only the gpu part takes the flag; check-full names itself and check-gallery names itself in the printed line.
     let gallery = repository_file("xtask/src/gallery.rs");
     assert!(gallery.contains("browser_skipped_line(entry, skipped_by)"));

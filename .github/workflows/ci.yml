@@ -341,7 +341,7 @@ jobs:
   # "The semver baseline" in docs/development/RELEASE.md.
 
   wasm:
-    # The browser surface of gust-wgpu (D45, R4.9, slice m4.g2): `gust`, `gust-wgpu` and `examples/web-vector-add` lint
+    # The browser surface of gust-wgpu (D45, R4.9, slice m4.g2): `gust`, `gust-wgpu`, `examples/web-vector-add` and `examples/web-batch-frames` lint
     # clean for `wasm32-unknown-unknown` under `GUST_PROFILE=web` (a plain wasm32 check infers `dev`; only `web` is the
     # strict profile). Limits of this compile: it fails when code that stays on wasm32 calls something gated off (for
     # example `pool_read`, whose gate was the one error of the unmodified tree) and when a gated-off helper is left
@@ -366,7 +366,7 @@ jobs:
       - name: Clippy on wasm32 (strict web profile)
         env:
           GUST_PROFILE: web
-        run: cargo clippy --locked --target wasm32-unknown-unknown -p gust-compute -p gust-compute-wgpu -p web-vector-add -- -D warnings
+        run: cargo clippy --locked --target wasm32-unknown-unknown -p gust-compute -p gust-compute-wgpu -p web-vector-add -p web-batch-frames -- -D warnings
       - name: Lint the runtime per feature set and for wasm32 (check-cfg)
         # The runtime crates one feature set at a time (a workspace build unifies features and compiles none of these alone),
         # then wasm32 with the spirv-route feature; `--require-wasm` fails the step if the target is missing instead of skipping.

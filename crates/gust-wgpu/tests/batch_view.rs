@@ -461,8 +461,8 @@ fn one_bind_group_serves_three_frames_while_the_generation_holds() {
 
 /// Test 3, `in_flight(2)`: two frames are encoded and submitted in order before anything is read, and each pass reads
 /// the frame of its own encoder, not the later one, for the result `y` and for the input `x`. (A second `begin` is
-/// refused while the first `Encoded` is unreported, so B is begun after A is reported but before A has run, which is
-/// the overlap `in_flight(2)` allows.)
+/// refused while the first `Encoded` is unreported, so B is begun after A is reported, without waiting for A to run,
+/// which is the overlap `in_flight(2)` allows; a pass recorded into B's encoder before `encode_frame` reads A's frame.)
 #[test]
 fn with_two_in_flight_each_pass_reads_its_own_frame() {
     let device = Arc::new(device_logged("batch_view in_flight(2)"));
@@ -481,6 +481,8 @@ fn with_two_in_flight_each_pass_reads_its_own_frame() {
     let _submitted_a = encoded_a.submitted(&index_a);
 
     let mut encoder_b = rig.encoder();
+    let pass_b_before = rig.pass(&mut encoder_b, &bind);
+    let pass_b_x_before = rig.pass(&mut encoder_b, &x_bind);
     let (encoded_b, ticket_b) = encode_frame(&mut batch, &h, Some(&xb), Some(8), &mut encoder_b);
     let pass_b = rig.pass(&mut encoder_b, &bind);
     let pass_b_x = rig.pass(&mut encoder_b, &x_bind);
@@ -498,6 +500,16 @@ fn with_two_in_flight_each_pass_reads_its_own_frame() {
     assert_pixels("frame B pass", &rig.read(&pass_b), &expected(&values_b));
     assert_pixels("frame A input", &rig.read(&pass_a_x), &expected(&xa));
     assert_pixels("frame B input", &rig.read(&pass_b_x), &expected(&xb));
+    assert_pixels(
+        "frame B pass before encode",
+        &rig.read(&pass_b_before),
+        &expected(&values_a),
+    );
+    assert_pixels(
+        "frame B input before encode",
+        &rig.read(&pass_b_x_before),
+        &expected(&xa),
+    );
 }
 
 /// Test 4: a dropped `Encoded` and its encoder, then a frame that does not `write`: its pass reads the last frame that

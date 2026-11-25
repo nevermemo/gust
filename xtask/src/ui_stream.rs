@@ -127,10 +127,10 @@ fn foreign_rendered(stdout: &str) -> String {
     rendered
 }
 
-/// The problem that carries the cause of a call (`label` names it) that did not reach every fixture: the diagnostics of packages
-/// that are no fixture, then cargo's whole stderr, cut to the first [`CAUSE_LINES`] lines with a note of how many were
-/// left out. Lock drift, a failing build script of `gust` and an error in `gust` or the macro crate name no fixture, so
-/// no per-fixture problem can show them.
+/// The problem that carries the cause of a call (`label` names it) that did not reach every fixture: the diagnostics
+/// of packages that are no fixture, then cargo's whole stderr, cut to the first [`CAUSE_LINES`] lines with a note of
+/// how many were left out. Lock drift, a failing build script of `gust` and an error in `gust` or the macro crate name
+/// no fixture, so no per-fixture problem can show them.
 pub(crate) fn shared_cause(stdout: &str, stderr: &str, label: &str) -> String {
     let mut text = foreign_rendered(stdout);
     text.push_str(&stderr.replace('\\', "/"));

@@ -6,7 +6,9 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use super::{BatchDevice, BoxFuture, Core, Error, Param, ParamType, Stage, Value, Values, map};
+use super::{
+    BatchDevice, BoxFuture, Core, Empty, Error, Param, ParamType, Stage, Value, Values, map,
+};
 use crate::GpuPod;
 
 /// One read-back of a frame, reserved by [`FrameRun::ticket`]: a future of the values (row-major for a 2-D handle).
@@ -361,7 +363,8 @@ impl<D: BatchDevice> FrameRun<D> {
     ///
     /// # Errors
     ///
-    /// The device's failures. The frame's tickets then resolve to [`Error::NotSubmitted`].
+    /// [`Error::Empty`] when a `min` or `max` stage is over zero elements, and the device's failures. The frame's
+    /// tickets then resolve to [`Error::NotSubmitted`].
     pub fn submit(mut self) -> Result<Submitted<D>, Error> {
         let core = Arc::clone(&self.core);
         let mut encoder = core.device.new_encoder();
@@ -391,6 +394,9 @@ impl<D: BatchDevice> FrameRun<D> {
     /// not check the order, and results are wrong if it is broken).
     ///
     /// # Errors
+    ///
+    /// [`Error::Empty`] when a `min` or `max` stage is over zero elements; it is raised before anything is recorded,
+    /// so `encoder` is left untouched.
     ///
     /// The device's failures. The frame is then gone (its tickets resolve to [`Error::NotSubmitted`], the batch can
     /// begin a new frame), and `encoder` holds whatever was recorded before the failure: on the GPU the copies and the
@@ -426,6 +432,22 @@ impl<D: BatchDevice> FrameRun<D> {
         let values = Values(values);
         let mut recorded = 0;
         let result = core.stages.iter().try_for_each(|stage| {
+            // An op over zero elements: its rule runs here, before anything is encoded, so a refusal leaves the
+            // encoder as it was and `submit` and `encode` both return it.
+            if let (0, Some(empty)) = (stage.len(), &stage.empty) {
+                match empty {
+                    Empty::Identity(write) => {
+                        write(device, &mut frame).map_err(device_error::<D>)?;
+                    }
+                    Empty::Nothing => {}
+                    Empty::Refuse => {
+                        return Err(Error::Empty {
+                            batch: core.name.clone(),
+                            stage: stage.name.clone(),
+                        });
+                    }
+                }
+            }
             let changed = stage
                 .params
                 .iter()
@@ -445,9 +467,11 @@ impl<D: BatchDevice> FrameRun<D> {
             .frame_uploads(&mut frame, encoder)
             .map_err(device_error::<D>)?;
         for stage in &core.stages {
-            device
-                .frame_stage(encoder, &stage.prepared)
-                .map_err(device_error::<D>)?;
+            if let Some(prepared) = &stage.prepared {
+                device
+                    .frame_stage(encoder, prepared)
+                    .map_err(device_error::<D>)?;
+            }
         }
         for slot in &mut self.reads {
             slot.record(device, encoder);

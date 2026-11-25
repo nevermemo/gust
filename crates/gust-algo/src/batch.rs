@@ -19,10 +19,12 @@
 //! of the `cpu` module (test and dual builds) and to an independent reference (integers exact, `f32` sums inside the
 //! bound).
 //!
-//! **Interim rules until s2f2b:** an op sealed at length 0 is refused at the seal as a device error (the core's
-//! `OpDraft::seal`), and the `Empty` rule each op hands over is not applied yet. The outputs of an op are new buffers
-//! that no frame can `write` (`Error::NotInput`); a later stage that names one as its in-place target is not refused
-//! by anything today.
+//! **Over zero elements** the core applies the `Empty` rule each op hands over, in every frame and before anything is
+//! encoded: `sum`, `sum_wrapping` and `count` write their identity (0), `scan` records nothing, `compact` writes a
+//! count of 0 (its indices are empty), and `min` and `max` have no value there, so `submit` and `encode` return
+//! `Error::Empty` naming the stage. The outputs of an op are new buffers that no frame can `write`
+//! (`Error::NotInput`), and a later stage that names one as its in-place target is refused when the batch is built
+//! (`Error::Overwrite`).
 
 use std::sync::Arc;
 
@@ -181,7 +183,7 @@ impl<'a> Compact<'a> {
     }
 }
 
-/// What a stage over zero elements writes into `out`: `value`, through the frame's writes. Applied by s2f2b.
+/// What a stage over zero elements writes into `out`: `value`, through the frame's writes.
 fn identity<D: BatchDevice, T: GpuPod>(out: &Arc<D::Buffer<T>>, value: T) -> Empty<D>
 where
     D::Buffer<T>: 'static,
@@ -397,7 +399,7 @@ mod gpu {
 // ---------------------------------------------------------------------------------------------------------------
 // The CPU form.
 
-/// The reduction `op` of `values` on the host: not empty, which the seal guarantees.
+/// The reduction `op` of `values` on the host: not empty, because a stage over zero elements never runs.
 fn host_reduce<T: Host>(op: Op, values: &[T]) -> T {
     match op {
         Op::Sum => T::sum(values),

@@ -485,7 +485,7 @@ case is `Cpu` evidence.
 
 - **Supported:** Vulkan on Windows and Linux. The native backend asks wgpu for Vulkan only, so
   `HeadlessDevice::new()` needs a Vulkan compute adapter. In the browser the backend uses WebGPU through
-  `wasm32-unknown-unknown` (`examples/web-vector-add`, which is the default page of `cargo xtask check-web`, and
+  `wasm32-unknown-unknown` (`examples/web-vector-add` and `examples/web-batch-frames`, the two pages of `cargo xtask check-web`, and
   `gallery/web-hello`, a second page that `cargo xtask check-gallery` runs through the same runner; both use the strict
   `web` profile). A browser cannot block: the generated `map` and `map_on` are not emitted on `wasm32` (use
   `map_async`; `map_gpu` and `map_gpu_on` exist there and return once the work is submitted), and the generated
@@ -1178,8 +1178,8 @@ pub fn double_subgroups(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mu
 
 ## Examples
 
-The workspace contains twelve runnable programs (every directory of `examples/` but `web-vector-add`, which is a
-browser module run by `cargo xtask check-web`, and which also runs a `pixel` form of its kernel).
+The workspace contains twelve runnable programs (every directory of `examples/` but `web-vector-add` and `web-batch-frames`, which are
+browser modules run by `cargo xtask check-web`; the first also runs a `pixel` form of its kernel).
 Beside them, `gallery/` holds ten complete programs shaped like a user's crate, in a workspace of its own (`hello-gust`
 to `web-hello`, the browser page; each has a README, and `cargo xtask check-gallery` checks them), and the rustdoc guide
 (`gust::guide` and `gust_wgpu::guide`, documentation only) walks the same ground in chapters. The twelve programs:
@@ -1528,6 +1528,7 @@ examples/
   map-chain/
   texture-threshold/
   web-vector-add/
+  web-batch-frames/     a gpu_batch! with two frames in flight in a browser (cargo xtask check-web)
   shape-bench/          the same kernels as grid and pixel kernels: bit identity and timing (cargo run -p shape-bench)
   subgroup-reduce/      a subgroup kernel under the strict native+subgroups profile (D138)
   hash-rng/             a stateless hash random number generator, the same numbers on the CPU twin and the GPU

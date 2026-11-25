@@ -1237,3 +1237,81 @@ fn the_two_pages_name_their_own_files_and_check_web_keeps_its_constants() {
         "{page}"
     );
 }
+
+#[test]
+fn the_batch_page_names_its_own_files_and_closing_part_and_reports_no_selected_kernels() {
+    let batch = &super::WEB_BATCH_FRAMES;
+    assert_eq!(
+        (
+            batch.dir,
+            batch.workspace,
+            batch.package,
+            batch.out_name,
+            batch.manifest,
+            batch.closing,
+            batch.cleared_env.len()
+        ),
+        (
+            "examples/web-batch-frames",
+            "",
+            "web-batch-frames",
+            "web_batch_frames",
+            "",
+            "two frames in flight exact",
+            0
+        )
+    );
+    assert_eq!(batch.package.replace('-', "_"), batch.out_name);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let page = fs::read_to_string(root.join(batch.dir).join("index.html")).unwrap();
+    assert!(
+        page.contains(&format!("from \"./{}.js\"", batch.out_name)),
+        "{page}"
+    );
+    // The page's Rust code logs the closing part the runner requires.
+    let source = fs::read_to_string(root.join(batch.dir).join("src/page.rs")).unwrap();
+    assert!(
+        source.contains(&format!("const CLOSING: &str = \"{}\";", batch.closing)),
+        "src/page.rs does not define the closing part `{}`",
+        batch.closing
+    );
+    // The strict `web` build embeds the committed artifacts of the stages: there are some, with their manifest.
+    let artifacts = root.join(batch.dir).join("gust-artifacts");
+    assert!(artifacts.join("manifest.json").is_file());
+    let wgsl = fs::read_dir(&artifacts)
+        .unwrap()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".wgsl")
+        })
+        .count();
+    assert_eq!(
+        wgsl, 4,
+        "a body and a split artifact for each of the two stages"
+    );
+}
+
+#[test]
+fn an_unlisted_page_label_is_the_adapter_words_and_the_closing_part_only() {
+    let closing = super::FRAMES_EXACT;
+    assert_eq!(
+        super::split_unlisted_label("nvidia blackwell | two frames in flight exact", closing),
+        Ok("nvidia blackwell".to_owned())
+    );
+    for (label, wanted) in [
+        ("nvidia blackwell", "has 1 part(s)"),
+        ("nvidia blackwell | selected a.b=c:-:0 | x", "has 3 part(s)"),
+        (
+            "nvidia blackwell | one frame in flight exact",
+            "does not say",
+        ),
+        (" | two frames in flight exact", "names no adapter"),
+    ] {
+        let error = super::split_unlisted_label(label, closing).unwrap_err();
+        assert!(error.contains(wanted), "{label}: {error}");
+    }
+}

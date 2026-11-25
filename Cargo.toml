@@ -30,6 +30,7 @@ members = [
     "examples/task-basics",
     "examples/batch-basics",
     "examples/web-vector-add",
+    "examples/web-batch-frames",
     "xtask",
 ]
 default-members = ["examples/vector-add"]

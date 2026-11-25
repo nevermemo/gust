@@ -12,6 +12,9 @@ breaks existing code bumps the minor version, and the promise is described in th
   `TryFrom<u32>` (error `gust::EnumWordError`, which carries the word), each a `match` over the discriminants. The enum
   must derive `Clone`, `Copy` and `PartialEq` itself (the supertraits of `GpuEnum` make rustc say so). Any other
   shape is `GUST-E1011`. Nothing uses it yet: the stages of a batch take it in a later slice.
+- `cargo xtask check-web` runs a second page, `examples/web-batch-frames` (m14.s2c): a `gpu_batch!` with `in_flight(2)`
+  in headless Chrome records and submits frame N+1 while frame N's ticket is still pending, then checks both frames and
+  a third one against the host computation exactly. Browser run only, on the adapter Chrome picks.
 - Reductions in a `gpu_batch!` (m14.s2f2c, D262): `gust::sum`, `sum_wrapping`, `min`, `max`, `reduce`, `count`, `scan`,
   `scan_exclusive` and `let (idx, n) = gust::compact(&flags);` written as the whole init of a `let` in the build block,
   each output a handle named by its `let`. They need a `gust-algo` dependency and the native `slang-runtime` build;

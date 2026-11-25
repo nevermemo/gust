@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
-use gust::batch::{Batch, BatchDevice, Builder, D1, Error, Stage, Ticket};
+use gust::batch::{
+    Batch, BatchDevice, Builder, D1, Empty, Error, Op as BatchOp, OpDraft, Stage, Ticket,
+};
 use gust::cpu::CpuDevice;
 use gust_wgpu::{GpuVec, HeadlessDevice};
 
@@ -704,7 +706,7 @@ fn twin_compact_over_frames_with_a_shrinking_count() {
 
 /// Small batches of a device: a wrapping sum, a chain of ops that read each other's outputs, and ops over nothing.
 macro_rules! define_small_builders {
-    ($wrapping:ident, $chain:ident, $empty:ident, $device:ty) => {
+    ($wrapping:ident, $chain:ident, $nothing:ident, $extreme:ident, $named:ident, $device:ty) => {
         fn $wrapping(
             device: &Arc<$device>,
             n: usize,
@@ -738,32 +740,106 @@ macro_rules! define_small_builders {
             })
         }
 
-        /// One op over an input of zero elements: a sum (0), a minimum (1), a scan (2) or a compaction (3).
-        fn $empty(device: &Arc<$device>, kind: usize) -> Result<(), Error> {
+        /// Every op that has a value over nothing, over inputs of zero elements.
+        fn $nothing(device: &Arc<$device>) -> Result<(Batch<$device>, Nothing), Error> {
             gust::batch::build("nothing", device, 1, |b| {
-                let input = b.input::<u32, _>(0);
-                match kind {
-                    0 => b.expose(&b.op(&["total"], Sum::of(&input))),
-                    1 => b.expose(&b.op(&["least"], Min::of(&input))),
-                    2 => b.expose(&b.op(&["scanned"], Scan::of(&input))),
-                    _ => b.expose(&b.op(&["positions", "n"], Compact::of(&input)).0),
-                }
+                let u = b.input::<u32, _>(0);
+                let i = b.input::<i32, _>(0);
+                let f = b.input::<f32, _>(0);
+                let flags = b.input::<u32, _>(0);
+                let (indices, n) = b.op(&["indices", "n"], Compact::of(&flags));
+                let h = Nothing {
+                    sum_u: b.op(&["sum_u"], Sum::of(&u)),
+                    wrapping: b.op(&["wrapping"], SumWrapping::of(&u)),
+                    sum_i: b.op(&["sum_i"], Sum::of(&i)),
+                    sum_f: b.op(&["sum_f"], Sum::of(&f)),
+                    count: b.op(&["count"], Count::of(&flags)),
+                    inclusive: b.op(&["inclusive"], Scan::of(&u)),
+                    exclusive: b.op(&["exclusive"], Scan::exclusive(&u)),
+                    indices,
+                    n,
+                };
+                b.expose(&h.sum_u);
+                b.expose(&h.wrapping);
+                b.expose(&h.sum_i);
+                b.expose(&h.sum_f);
+                b.expose(&h.count);
+                b.expose(&h.inclusive);
+                b.expose(&h.exclusive);
+                b.expose(&h.indices);
+                b.expose(&h.n);
+                h
             })
-            .map(|_| ())
+        }
+
+        /// The minimum (0) or the maximum (1) of an input of zero elements: no value there. Returns the result and
+        /// `feed`, an input of four elements no op reads, which a frame can write.
+        fn $extreme(
+            device: &Arc<$device>,
+            kind: usize,
+        ) -> Result<(Batch<$device>, Stage<u32, D1>, Stage<u32, D1>), Error> {
+            gust::batch::build("extreme", device, 1, |b| {
+                let input = b.input::<u32, _>(0);
+                let feed = b.input::<u32, _>(4);
+                let result = if kind == 0 {
+                    b.op(&["least"], Min::of(&input))
+                } else {
+                    b.op(&["most"], Max::of(&input))
+                };
+                b.expose(&result);
+                b.expose(&feed);
+                (result, feed)
+            })
+            .map(|(batch, (result, feed))| (batch, result, feed))
+        }
+
+        /// A compaction whose handles are named `flags`, `idx` and `n`.
+        fn $named(
+            device: &Arc<$device>,
+            n: usize,
+        ) -> Result<(Batch<$device>, [Stage<u32, D1>; 3]), Error> {
+            let n = u32::try_from(n).unwrap();
+            gust::batch::build("named", device, 1, |b| {
+                b.next_name("flags");
+                let flags = b.input::<u32, _>(n);
+                let (idx, count) = b.op(&["idx", "n"], Compact::of(&flags));
+                let handles = [flags, idx, count];
+                for handle in &handles {
+                    b.expose(handle);
+                }
+                handles
+            })
         }
     };
+}
+
+/// The handles of the ops that have a value over nothing.
+struct Nothing {
+    sum_u: Stage<u32, D1>,
+    wrapping: Stage<u32, D1>,
+    sum_i: Stage<i32, D1>,
+    sum_f: Stage<f32, D1>,
+    count: Stage<u32, D1>,
+    inclusive: Stage<u32, D1>,
+    exclusive: Stage<u32, D1>,
+    indices: Stage<u32, D1>,
+    n: Stage<u32, D1>,
 }
 
 define_small_builders!(
     build_wrapping_gpu,
     build_chain_gpu,
-    build_empty_gpu,
+    build_nothing_gpu,
+    build_extreme_gpu,
+    build_named_gpu,
     HeadlessDevice
 );
 define_small_builders!(
     build_wrapping_cpu,
     build_chain_cpu,
-    build_empty_cpu,
+    build_nothing_cpu,
+    build_extreme_cpu,
+    build_named_cpu,
     CpuDevice
 );
 
@@ -878,30 +954,340 @@ fn twin_an_op_reads_the_output_of_another_op_in_the_same_frame() {
     }
 }
 
-/// The interim rule until s2f2b: an op over zero elements is refused when the batch is built, as a device error that
-/// names the stage, on every op (no panic).
-fn refuses_zero_elements(build: &dyn Fn(usize) -> Result<(), Error>) {
-    for (kind, stage) in [(0, "total"), (1, "least"), (2, "scanned"), (3, "positions")] {
-        match build(kind) {
-            Err(Error::Device(error)) => assert!(
-                error.to_string().contains(stage),
-                "kind {kind}: the refusal names the stage `{stage}`: {error}"
-            ),
-            Err(other) => panic!("kind {kind}: expected a device error, got {other}"),
-            Ok(()) => panic!("kind {kind}: a batch over zero elements was built"),
+/// Over zero elements: `sum`, `sum_wrapping` and `count` give their identity, `scan` and `compact` have outputs of no
+/// element (and `n == 0`). Two frames: the rule is applied by every frame.
+fn identities_over_nothing<D: BatchDevice>(batch: &mut Batch<D>, h: &Nothing)
+where
+    D::Buffer<u32>: 'static,
+    D::Buffer<i32>: 'static,
+    D::Buffer<f32>: 'static,
+{
+    for k in 0..2 {
+        let mut run = block_on(batch.begin()).expect("a frame begins");
+        let sum_u = run.ticket(&h.sum_u).unwrap();
+        let wrapping = run.ticket(&h.wrapping).unwrap();
+        let sum_i = run.ticket(&h.sum_i).unwrap();
+        let sum_f = run.ticket(&h.sum_f).unwrap();
+        let count = run.ticket(&h.count).unwrap();
+        let inclusive = run.ticket(&h.inclusive).unwrap();
+        let exclusive = run.ticket(&h.exclusive).unwrap();
+        let indices = run.ticket(&h.indices).unwrap();
+        let n = run.ticket(&h.n).unwrap();
+        let _submitted = run.submit().expect("a frame over nothing is submitted");
+        assert_eq!(one(block_on(sum_u)), 0, "frame {k}: sum of u32");
+        assert_eq!(one(block_on(wrapping)), 0, "frame {k}: wrapping sum");
+        assert_eq!(one(block_on(sum_i)), 0, "frame {k}: sum of i32");
+        assert_eq!(one(block_on(sum_f)).to_bits(), 0, "frame {k}: sum of f32");
+        assert_eq!(one(block_on(count)), 0, "frame {k}: count");
+        assert_eq!(one(block_on(n)), 0, "frame {k}: n");
+        for (ticket, what) in [
+            (inclusive, "inclusive scan"),
+            (exclusive, "exclusive scan"),
+            (indices, "indices"),
+        ] {
+            assert!(
+                block_on(ticket).unwrap().is_empty(),
+                "frame {k}: the {what} has no element"
+            );
         }
     }
 }
 
 #[test]
-fn gpu_an_op_over_zero_elements_is_refused_with_an_error() {
+fn gpu_ops_over_zero_elements_give_their_identities_and_empty_outputs() {
     let device = device();
-    refuses_zero_elements(&|kind| build_empty_gpu(&device, kind));
+    let (mut batch, handles) = build_nothing_gpu(&device).unwrap();
+    identities_over_nothing(&mut batch, &handles);
 }
 
 #[test]
-fn twin_an_op_over_zero_elements_is_refused_with_an_error() {
+fn twin_ops_over_zero_elements_give_their_identities_and_empty_outputs() {
     #[allow(clippy::arc_with_non_send_sync)]
     let device = Arc::new(CpuDevice::new());
-    refuses_zero_elements(&|kind| build_empty_cpu(&device, kind));
+    let (mut batch, handles) = build_nothing_cpu(&device).unwrap();
+    identities_over_nothing(&mut batch, &handles);
+}
+
+/// `min` and `max` over zero elements: `submit` and `encode` both return `Error::Empty` naming the stage, nothing is
+/// submitted (`submissions` counts the device's submissions; the CPU device has none), and the next `begin` works.
+/// Each refused frame writes `feed` first. `after_encode` receives the encoder the refused `encode` was given, submits
+/// it as the caller would and checks that `feed` is still as it was (zeros): the refused frame encoded nothing.
+fn refuses_nothing_to_reduce<D: BatchDevice>(
+    batch: &mut Batch<D>,
+    device: &D,
+    (result, feed): (&Stage<u32, D1>, &Stage<u32, D1>),
+    stage: &str,
+    submissions: &dyn Fn() -> u64,
+    after_encode: &dyn Fn(&Batch<D>, D::Encoder),
+) where
+    D::Buffer<u32>: 'static,
+{
+    let before = submissions();
+    for round in 0..2 {
+        let mut run = block_on(batch.begin()).expect("the next frame begins");
+        run.write(feed, &[1, 2, 3, 4]).unwrap();
+        let ticket = run.ticket(result).unwrap();
+        let mut encoder = device.new_encoder();
+        let refused = if round == 0 {
+            run.submit().map(drop)
+        } else {
+            run.encode(&mut encoder).map(drop)
+        };
+        match refused {
+            Err(Error::Empty {
+                batch,
+                stage: named,
+            }) => {
+                assert_eq!((batch.as_str(), named.as_str()), ("extreme", stage));
+            }
+            other => panic!("round {round}: expected Error::Empty, got {other:?}"),
+        }
+        assert!(
+            matches!(block_on(ticket), Err(Error::NotSubmitted { .. })),
+            "round {round}: the ticket of a refused frame resolves to NotSubmitted"
+        );
+        assert_eq!(
+            submissions(),
+            before,
+            "round {round}: nothing was submitted"
+        );
+        if round == 1 {
+            after_encode(batch, encoder);
+        }
+    }
+    drop(block_on(batch.begin()).expect("a frame begins after the refusals"));
+}
+
+/// The four elements of the GPU buffer behind `view`, read back through a staging buffer of this test's own.
+fn read_gpu_feed(
+    device: &HeadlessDevice,
+    view: &gust::batch::View<HeadlessDevice, u32>,
+) -> Vec<u32> {
+    use gust_wgpu::wgpu;
+    let bytes = (view.len() * 4) as u64;
+    let raw = device.wgpu_device();
+    let staging = raw.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: bytes,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut copy = raw.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    copy.copy_buffer_to_buffer(view.buffer().as_wgpu_buffer(), 0, &staging, 0, bytes);
+    device.wgpu_queue().submit([copy.finish()]);
+    let slice = staging.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |mapped| mapped.unwrap());
+    raw.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let mapped = slice.get_mapped_range().unwrap();
+    mapped
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|word| u32::from_le_bytes(*word))
+        .collect()
+}
+
+#[test]
+fn gpu_min_and_max_over_zero_elements_are_refused_by_submit_and_encode() {
+    let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+    eprintln!("gust-algo gpu adapter: {:?}", device.adapter_info());
+    for (kind, stage) in [(0, "least"), (1, "most")] {
+        let (mut batch, result, feed) = build_extreme_gpu(&device, kind).unwrap();
+        refuses_nothing_to_reduce(
+            &mut batch,
+            &device,
+            (&result, &feed),
+            stage,
+            &|| device.gust_submissions(),
+            &|batch, encoder| {
+                device.wgpu_queue().submit([encoder.finish()]);
+                let view = batch.view(&feed).unwrap();
+                assert_eq!(
+                    read_gpu_feed(&device, &view),
+                    [0; 4],
+                    "the encoder of a refused `encode` held no write"
+                );
+            },
+        );
+    }
+}
+
+#[test]
+fn twin_min_and_max_over_zero_elements_are_refused_by_submit_and_encode() {
+    #[allow(clippy::arc_with_non_send_sync)]
+    let device = Arc::new(CpuDevice::new());
+    for (kind, stage) in [(0, "least"), (1, "most")] {
+        let (mut batch, result, feed) = build_extreme_cpu(&device, kind).unwrap();
+        refuses_nothing_to_reduce(
+            &mut batch,
+            &device,
+            (&result, &feed),
+            stage,
+            &|| 0,
+            &|batch, encoder| {
+                assert!(
+                    format!("{encoder:?}").contains("steps: 0"),
+                    "the encoder of a refused `encode` holds no step: {encoder:?}"
+                );
+                encoder.run(&device).unwrap();
+                let view = batch.view(&feed).unwrap();
+                assert_eq!(view.buffer().read(), [0; 4], "running it writes nothing");
+            },
+        );
+    }
+}
+
+/// A test op whose rule over nothing writes 7, a value no reduction has as its identity: the core applies an
+/// `Empty::Identity` write of any value, not only the zeros of a sum.
+struct Seven<'a, D: BatchDevice> {
+    input: &'a Stage<u32, D1>,
+    prepare: fn(&D) -> Result<D::Prepared, D::Error>,
+}
+
+impl<D: BatchDevice> BatchOp<D> for Seven<'_, D>
+where
+    D::Buffer<u32>: 'static,
+{
+    type Out = Stage<u32, D1>;
+
+    fn record(self, mut draft: OpDraft<'_, D>) -> Self::Out {
+        if draft.read(self.input).is_none() {
+            return draft.abandon();
+        }
+        let Some(out) = draft.result::<u32>(1) else {
+            return draft.abandon();
+        };
+        let prepare = self.prepare;
+        draft.seal(
+            move |device, _| prepare(device),
+            Empty::Identity(Box::new(move |device, frame| {
+                device.frame_write(frame, &out, &[7])
+            })),
+        )
+    }
+}
+
+/// A batch of one `Seven` over an input of zero elements, sealed at length 0 (its plan is never called).
+fn build_seven<D: BatchDevice>(
+    device: &Arc<D>,
+    prepare: fn(&D) -> Result<D::Prepared, D::Error>,
+) -> Result<(Batch<D>, Stage<u32, D1>), Error>
+where
+    D::Buffer<u32>: 'static,
+{
+    gust::batch::build("seven", device, 1, |b| {
+        let input = b.input::<u32, _>(0);
+        let seven = b.op(
+            &["seven"],
+            Seven {
+                input: &input,
+                prepare,
+            },
+        );
+        b.expose(&seven);
+        seven
+    })
+}
+
+/// The result of `Seven`, read through `submit` on one batch and through `encode` (the encoder submitted here, as a
+/// caller would, with `finish`) on another that never ran a frame: 7 in both, so the rule is applied by each path.
+fn seven_through_submit_and_encode<D: BatchDevice>(
+    device: &Arc<D>,
+    prepare: fn(&D) -> Result<D::Prepared, D::Error>,
+    finish: &dyn Fn(D::Encoder) -> D::Token,
+) where
+    D::Buffer<u32>: 'static,
+{
+    let (mut batch, seven) = build_seven(device, prepare).unwrap();
+    let mut run = block_on(batch.begin()).expect("a frame begins");
+    let ticket = run.ticket(&seven).unwrap();
+    let _submitted = run.submit().expect("a frame over nothing is submitted");
+    assert_eq!(one(block_on(ticket)), 7, "submit");
+
+    let (mut batch, seven) = build_seven(device, prepare).unwrap();
+    let mut run = block_on(batch.begin()).expect("a frame begins");
+    let ticket = run.ticket(&seven).unwrap();
+    let mut encoder = device.new_encoder();
+    let encoded = run
+        .encode(&mut encoder)
+        .expect("a frame over nothing is encoded");
+    let token = finish(encoder);
+    let _submitted = encoded.submitted(&token);
+    assert_eq!(one(block_on(ticket)), 7, "encode");
+}
+
+#[test]
+fn gpu_an_identity_rule_over_nothing_writes_its_value_through_submit_and_encode() {
+    let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+    eprintln!("gust-algo gpu adapter: {:?}", device.adapter_info());
+    seven_through_submit_and_encode(&device, |device| device.prepare_list((), &[]), &|encoder| {
+        device.wgpu_queue().submit([encoder.finish()])
+    });
+}
+
+#[test]
+fn twin_an_identity_rule_over_nothing_writes_its_value_through_submit_and_encode() {
+    #[allow(clippy::arc_with_non_send_sync)]
+    let device = Arc::new(CpuDevice::new());
+    seven_through_submit_and_encode(
+        &device,
+        |device| Ok(device.prepare_fn(|_| Ok(()))),
+        &|encoder| encoder.run(&device).unwrap(),
+    );
+}
+
+/// `stages()` lists one entry per output of a compaction, `idx` then `n`, both reading `flags`; each has a view and a
+/// ticket: `n` whole, `idx` up to `n`.
+fn compaction_outputs_are_listed<D: BatchDevice>(
+    batch: &mut Batch<D>,
+    [flags, idx, n]: [Stage<u32, D1>; 3],
+    len: usize,
+) where
+    D::Buffer<u32>: 'static,
+{
+    let listed: Vec<_> = batch
+        .stages()
+        .into_iter()
+        .map(|stage| (stage.name, stage.dims, stage.reads))
+        .collect();
+    let width = u32::try_from(len).unwrap();
+    let reads = vec![String::from("flags")];
+    assert_eq!(
+        listed,
+        [
+            (String::from("idx"), [width, 1], reads.clone()),
+            (String::from("n"), [1, 1], reads),
+        ]
+    );
+    assert_eq!(batch.view(&idx).unwrap().len(), len, "the view of idx");
+    assert_eq!(batch.view(&n).unwrap().len(), 1, "the view of n");
+    let written = strided(len, 7, 3);
+    let mut run = block_on(batch.begin()).unwrap();
+    run.write(&flags, &written).unwrap();
+    let (idx_ticket, n_ticket) = (run.ticket(&idx).unwrap(), run.ticket(&n).unwrap());
+    let _submitted = run.submit().unwrap();
+    let want = reference_indices(&written);
+    let got_n = one(block_on(n_ticket));
+    let got = block_on(idx_ticket).unwrap();
+    assert_eq!(got_n as usize, want.len(), "n");
+    assert_same(&got[..got_n as usize], &want, "idx up to n");
+}
+
+#[test]
+fn gpu_stages_lists_each_output_of_a_compaction_with_its_view_and_ticket() {
+    let device = device();
+    for n in SIZES {
+        let (mut batch, handles) = build_named_gpu(&device, n).unwrap();
+        compaction_outputs_are_listed(&mut batch, handles, n);
+    }
+}
+
+#[test]
+fn twin_stages_lists_each_output_of_a_compaction_with_its_view_and_ticket() {
+    #[allow(clippy::arc_with_non_send_sync)]
+    let device = Arc::new(CpuDevice::new());
+    for n in SIZES {
+        let (mut batch, handles) = build_named_cpu(&device, n).unwrap();
+        compaction_outputs_are_listed(&mut batch, handles, n);
+    }
 }

@@ -1122,12 +1122,15 @@ pub(crate) const ALGO_GPU_CALL: [&str; 4] = ["test", "--locked", "-p", "gust-alg
 /// reported `ok`, and no other test of those three modules whose name starts `gpu` may exist
 /// ([`check_algo_gpu_counts`]), so a deleted or an unpinned adapter test fails the gate. The twins would still satisfy
 /// a plain "at least one test ran". Adding or removing such a test changes this list in the same commit.
-pub(crate) const ALGO_GPU_TESTS: [&str; 77] = [
-    "tests::batch::gpu_an_op_over_zero_elements_is_refused_with_an_error",
+pub(crate) const ALGO_GPU_TESTS: [&str; 80] = [
+    "tests::batch::gpu_an_identity_rule_over_nothing_writes_its_value_through_submit_and_encode",
     "tests::batch::gpu_an_op_reads_the_output_of_another_op_in_the_same_frame",
     "tests::batch::gpu_compact_over_frames_with_a_shrinking_count",
     "tests::batch::gpu_every_op_of_a_batch_equals_the_immediate_functions_over_three_frames",
+    "tests::batch::gpu_min_and_max_over_zero_elements_are_refused_by_submit_and_encode",
     "tests::batch::gpu_n_frames_make_n_submissions_after_the_seal",
+    "tests::batch::gpu_ops_over_zero_elements_give_their_identities_and_empty_outputs",
+    "tests::batch::gpu_stages_lists_each_output_of_a_compaction_with_its_view_and_ticket",
     "tests::batch::gpu_the_wrapping_sum_wraps_past_two_to_the_32",
     "tests::batch::gpu_two_frames_in_flight_each_equal_their_own_immediate_results",
     "tests::gpu::gpu_a_compaction_chain_runs_on_the_device_with_the_device_count",

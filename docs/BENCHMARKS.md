@@ -485,7 +485,10 @@ that fails is written with the header "shared machine, not publishable" and the 
 renderer.
 
 1. The commit is an ancestor of `origin/main`, the work tree is clean (untracked files included) at the start and at the
-   end of the run, and the build is a release build with none of the tainting features (`profile-counts`, `wgpu-trace`).
+   end of the run, and the build is a release build (the cargo `release` profile, recorded as `build.profile`) with none
+   of the tainting features (`profile-counts`, `wgpu-trace`). The judgement checks the profile's name (its target
+   directory), not its settings: overrides of `release` (`CARGO_PROFILE_RELEASE_*`, `--config profile.release.*`,
+   `RUSTFLAGS`) are not detected, and such runs must not be published.
    A run that is `--quick`, `--functional`, `--cold-only`, `--sizes`, asks for fewer than 30 samples, changes the settle,
    the window, the sample cap or the warm-up (`--settle-secs`, `--window-secs`, `--cap-secs`, `--warmup-secs`), is on a
    software adapter, is in the ablation group or has probe backends is never publishable, each with a named blocker. So

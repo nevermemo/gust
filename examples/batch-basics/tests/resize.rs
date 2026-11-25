@@ -7,6 +7,8 @@
 //! `cpu_` tests run on the CPU twin, the `gpu_` ones are `#[ignore]`d like the example's other GPU tests and run in full
 //! verification on the adapter the environment selects.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use batch_basics::app::block_on;
@@ -491,7 +493,219 @@ where
     assert_eq!(batch.generation(), 2, "only `side_in` and `side` followed");
 }
 
+// ---- more rules of a resize ----
+
+/// A `set` of a shape after a `ticket` of a buffer it would change is refused like one after a `write`: the reserved
+/// read-back is of the buffer the frame has, and it stays what it was.
+fn a_shape_set_after_a_ticket_is_refused<D: BatchDevice>(mut batch: Batch<D>, h: &Handles)
+where
+    D::Buffer<u32>: 'static,
+{
+    let a = inputs(4, 2, 19);
+    let mut run = block_on(batch.begin()).unwrap();
+    let doubled = run.ticket(&h.doubled).unwrap();
+    let error = run.set(&h.size, (8, 3)).unwrap_err();
+    assert!(matches!(error, Error::ShapeMismatch { .. }), "{error:?}");
+    assert!(
+        error.to_string().contains("already written or read"),
+        "the message says why: {error}"
+    );
+    run.write(&h.pixels, &a.0).unwrap();
+    let _submitted = run.submit().unwrap();
+    assert_eq!(
+        block_on(doubled).unwrap(),
+        reference(4, 2, &a.0, &[0; 8]).doubled
+    );
+    assert_eq!(batch.generation(), 0, "the refused resize changed nothing");
+}
+
+/// A resize to an extent of zero elements: a kernel stage over it has no elements, the others follow their own extents,
+/// and a resize back to a size with elements is exact again.
+fn a_resize_to_a_zero_extent_is_exact<D: BatchDevice>(mut batch: Batch<D>, h: &Handles)
+where
+    D::Buffer<u32>: 'static,
+{
+    let a = inputs(4, 2, 21);
+    frame(&mut batch, h, None, Some(&a));
+    let one = inputs(1, 1, 22);
+    let tiny = frame(&mut batch, h, Some((1, 1)), Some(&one));
+    assert_eq!(
+        tiny,
+        reference(1, 1, &one.0, &one.1),
+        "1 x 1 halves to 0 x 0"
+    );
+    assert!(tiny.small.is_empty());
+    assert_eq!(batch.view(&h.small).unwrap().len(), 0);
+    let b = inputs(6, 4, 23);
+    let back = frame(&mut batch, h, Some((6, 4)), Some(&b));
+    assert_eq!(
+        back,
+        reference(6, 4, &b.0, &b.1),
+        "back to a size with elements"
+    );
+}
+
+/// A frame whose device refuses it after the resize was made leaves the batch as it was, like a dropped resize: the
+/// extents, the memory report and the generation, and the next frame runs at the old size.
+fn a_frame_the_device_refuses_leaves_the_resize_undone(
+    batch: &mut Batch<CpuDevice>,
+    h: &RefuseHandles,
+) {
+    let a = inputs(4, 2, 24);
+    let before = (dims_of(batch), batch.report(), batch.generation());
+    h.fail.set(true);
+    let (pixels, _) = inputs(8, 3, 25);
+    let error = block_on(async {
+        let mut run = batch.begin().await?;
+        run.set(&h.size, (8, 3))?;
+        run.write(&h.pixels, &pixels)?;
+        run.submit().map(|_| ())
+    })
+    .unwrap_err();
+    assert!(matches!(error, Error::Device(_)), "{error:?}");
+    assert_eq!(
+        (dims_of(batch), batch.report(), batch.generation()),
+        before,
+        "the refused frame changed nothing"
+    );
+    h.fail.set(false);
+    let doubled = block_on(async {
+        let mut run = batch.begin().await?;
+        run.write(&h.pixels, &a.0)?;
+        let doubled = run.ticket(&h.doubled)?;
+        let _submitted = run.submit()?;
+        doubled.await
+    })
+    .unwrap();
+    assert_eq!(doubled, reference(4, 2, &a.0, &a.1).doubled);
+}
+
+/// The frame after a frame that resized is one counted submission, like any frame: a resize leaves no work behind. The
+/// frame that resizes is at most one submission and one clear per buffer it replaced (a recycled allocation is cleared
+/// in a submission of its own).
+fn the_frame_after_a_resize_is_one_submission(
+    device: &HeadlessDevice,
+    mut batch: Batch<HeadlessDevice>,
+    h: &Handles,
+) {
+    let a = inputs(4, 2, 26);
+    frame(&mut batch, h, None, Some(&a));
+    let b = inputs(8, 3, 27);
+    let (started, generation) = (device.gust_submissions(), batch.generation());
+    frame(&mut batch, h, Some((8, 3)), Some(&b));
+    let resizing = device.gust_submissions() - started;
+    let replaced = batch.generation() - generation;
+    assert!(
+        (1..=1 + replaced).contains(&resizing),
+        "the resizing frame took {resizing} submissions, it replaced {replaced} buffers"
+    );
+    let started = device.gust_submissions();
+    let next = frame(&mut batch, h, None, None);
+    assert_eq!(device.gust_submissions() - started, 1, "the next frame");
+    assert_eq!(next, reference(8, 3, &b.0, &b.1));
+}
+
+/// An op that fails on the CPU device when `fail` is set, over a buffer no resize reaches.
+struct Refuse<'a>(&'a Stage<u32, D1>, Rc<Cell<bool>>);
+
+impl Op<CpuDevice> for Refuse<'_> {
+    type Out = Stage<u32, D1>;
+
+    fn record(self, mut draft: OpDraft<'_, CpuDevice>) -> Self::Out {
+        let Some((_, len)) = draft.read(self.0) else {
+            return draft.abandon();
+        };
+        if draft.result::<u32>(len).is_none() {
+            return draft.abandon();
+        }
+        let fail = self.1;
+        draft.seal(
+            move |device, _| {
+                let fail = Rc::clone(&fail);
+                Ok(device.prepare_fn(move |_| {
+                    if fail.get() {
+                        Err(gust::cpu::Error::WrongDevice {
+                            parameter: "refused",
+                        })
+                    } else {
+                        Ok(())
+                    }
+                }))
+            },
+            Empty::Nothing,
+        )
+    }
+}
+
+struct RefuseHandles {
+    size: Param<(u32, u32)>,
+    pixels: Stage<u32, D2>,
+    doubled: Stage<u32, D2>,
+    fail: Rc<Cell<bool>>,
+}
+
+fn build_refuse(device: &Arc<CpuDevice>) -> Result<(Batch<CpuDevice>, RefuseHandles), Error> {
+    let fail = Rc::new(Cell::new(false));
+    gpu_batch!("resize_refuse", on(device); |b| {
+        let size = b.param::<(u32, u32)>((4, 2));
+        let other = b.param::<u32>(6);
+        let guard = b.input::<u32>(&other);
+        let _made = b.op(&["refused"], Refuse(&guard, Rc::clone(&fail)));
+        let pixels = b.input::<u32>(&size);
+        let doubled = gpu_task!(&size, |x, y| -> u32 { pixels[(x, y)] * 2u32 + y * 100u32 + x });
+        RefuseHandles { size, pixels, doubled, fail }
+    })
+}
+
 // ---- the same scenarios on the CPU twin and on the GPU ----
+
+#[test]
+fn cpu_a_frame_the_device_refuses_leaves_the_resize_undone() {
+    let device = Arc::new(CpuDevice::new());
+    let (mut batch, h) = build_refuse(&device).unwrap();
+    a_frame_the_device_refuses_leaves_the_resize_undone(&mut batch, &h);
+}
+
+#[test]
+fn cpu_a_resize_to_a_zero_extent_is_exact() {
+    let device = Arc::new(CpuDevice::new());
+    let (batch, h) = build_cpu(&device).unwrap();
+    a_resize_to_a_zero_extent_is_exact(batch, &h);
+}
+
+#[test]
+fn cpu_a_shape_set_after_a_ticket_is_refused() {
+    let device = Arc::new(CpuDevice::new());
+    let (batch, h) = build_cpu(&device).unwrap();
+    a_shape_set_after_a_ticket_is_refused(batch, &h);
+}
+
+#[test]
+#[ignore = "example validation runs only in full verification"]
+fn gpu_a_resize_to_a_zero_extent_is_exact() {
+    let device = private_device();
+    let (batch, h) = build_gpu(&device).unwrap();
+    println!("adapter: {}", device.adapter_info().name);
+    a_resize_to_a_zero_extent_is_exact(batch, &h);
+}
+
+#[test]
+#[ignore = "example validation runs only in full verification"]
+fn gpu_a_shape_set_after_a_ticket_is_refused() {
+    let device = private_device();
+    let (batch, h) = build_gpu(&device).unwrap();
+    println!("adapter: {}", device.adapter_info().name);
+    a_shape_set_after_a_ticket_is_refused(batch, &h);
+}
+
+#[test]
+#[ignore = "example validation runs only in full verification"]
+fn gpu_the_frame_after_a_resize_is_one_submission() {
+    let device = private_device();
+    let (batch, h) = build_gpu(&device).unwrap();
+    println!("adapter: {}", device.adapter_info().name);
+    the_frame_after_a_resize_is_one_submission(&device, batch, &h);
+}
 
 #[test]
 fn cpu_resize_across_frames_is_exact() {

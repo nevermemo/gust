@@ -172,7 +172,7 @@ pub struct FrameRun<D: BatchDevice> {
     frame: Option<D::Frame>,
     /// The parameters this frame set, derived values included, with their new values.
     pending: Vec<(usize, Value)>,
-    /// The buffers this frame was resized to, until it is recorded (see [`set`](Self::set)).
+    /// The buffers this frame was resized to, until the frame is submitted or encoded (see [`set`](Self::set)).
     staged: Option<Staged<D>>,
     /// The buffers this frame has written or reserved a read-back of: a later `set` may not change their extents.
     used: Vec<usize>,
@@ -183,8 +183,8 @@ pub struct FrameRun<D: BatchDevice> {
     done: bool,
 }
 
-/// What a frame that resizes the batch holds until it is recorded: the buffers (new ones where the extents changed), their
-/// extents, the stages prepared again over them, and the parameters' values that gave them. Dropping the frame drops
+/// What a frame that resizes the batch holds until it is submitted or encoded: the buffers (new ones where the extents
+/// frame drops all of it and the batch is as it was.
 /// all of it and the batch is as it was.
 struct Staged<D: BatchDevice> {
     values: Vec<Value>,
@@ -338,11 +338,11 @@ impl<D: BatchDevice> FrameRun<D> {
     /// an input holds zeros until the frame writes it, and nothing is carried over), the stages that bind them are
     /// prepared again over the new buffers (their workgroup counts follow the extents), and the extent records are
     /// written again at the frame's submission; nothing is counted on the GPU. The batch itself changes only when the
-    /// frame is submitted (or encoded): a frame that is dropped leaves it as it was, and when it is recorded the batch's
-    /// [`generation`](super::Batch::generation) moves. Set a shape **before** writing or reading what it resizes: a `set`
-    /// that would change a buffer this frame already wrote or reserved a read-back of is an error. The device may clear
-    /// recycled buffers in submissions of its own, so a frame that resizes can cost more submissions than one that does
-    /// not.
+    /// frame is submitted (or encoded) and the device took it, and then its [`generation`](super::Batch::generation)
+    /// moves; a frame that is dropped, or fails before that, leaves the batch as it was. Set a shape **before** writing
+    /// or reading what it resizes: a `set` that would change a buffer this frame already wrote or reserved a read-back
+    /// of is an error. The device may clear recycled buffers in submissions of its own, so a frame that resizes can cost
+    /// more submissions than one that does not.
     ///
     /// # Errors
     ///
@@ -626,6 +626,7 @@ impl<D: BatchDevice> FrameRun<D> {
             .device
             .submit_frame(frame, encoder)
             .map_err(device_error::<D>)?;
+        self.commit();
         Ok(self.mark_submitted(submission))
     }
 
@@ -657,14 +658,15 @@ impl<D: BatchDevice> FrameRun<D> {
     /// encoder; do not submit it.
     pub fn encode(mut self, encoder: &mut D::Encoder) -> Result<Encoded<D>, Error> {
         let core = Arc::clone(&self.core);
-        // Set before recording: a failure inside `record` leaves the frame's copies in the caller's encoder, which the
-        // caller may still submit.
+        // Set before recording: a failure inside `record` leaves the frame's copies in the caller's encoder; discard it
+        // (see the errors above).
         self.encoded = true;
         let frame = self.record(encoder)?;
         let encoded = core
             .device
             .encoded_frame(frame, encoder)
             .map_err(device_error::<D>)?;
+        self.commit();
         Ok(Encoded { run: self, encoded })
     }
 
@@ -695,20 +697,21 @@ impl<D: BatchDevice> FrameRun<D> {
             }
             Ok::<(), Error>(())
         })?;
-        self.commit();
-        let (mut params, dims, stale, prepared) = {
+        // The frame's resize stays in `staged` here: `submit` and `encode` make it the batch's once the device has
+        // taken the frame, so a frame that fails before that is dropped and leaves the batch as it was.
+        let (stale, mut prepared) = {
             let run = core.run.lock().unwrap_or_else(PoisonError::into_inner);
-            (
-                run.values.clone(),
-                run.dims.clone(),
-                run.stale.clone(),
-                run.prepared.clone(),
-            )
+            (run.stale.clone(), run.prepared.clone())
         };
-        for (id, value) in &self.pending {
-            params[*id] = *value;
+        if let Some(staged) = &self.staged {
+            for (stage, kept) in &staged.prepared {
+                prepared[*stage] = Some(Arc::clone(kept));
+            }
         }
-        let values = Values { params, dims };
+        let values = Values {
+            params: self.values(),
+            dims: sizes,
+        };
         let mut recorded = 0;
         let result = core.stages.iter().try_for_each(|stage| {
             let changed = stage

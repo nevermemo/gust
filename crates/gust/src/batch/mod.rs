@@ -35,10 +35,11 @@
 //! **Resize (slice s2b).** A parameter that sizes an input or a stage can be `set` to a new shape between frames, and
 //! what depends on it follows: [`FrameRun::set`] makes new, zeroed buffers (an input holds zeros until the frame writes
 //! it: nothing is carried over), prepares the stages that bind them again (their workgroup counts follow the new
-//! extents) and moves the batch's [`generation`](Batch::generation). A shape can also be a [`Derived`] value (`p.map(..)`,
-//! `p.count()`), which the CPU recomputes at each `set` of its parameter: no stage or GPU pass counts anything. A frame
-//! `set`s the shape first and `write`s after: a `set` that would change a buffer the frame has already written or read
-//! is [`Error::ShapeMismatch`]. A batch with a library op stage cannot be resized yet ([`Error::OpResize`]).
+//! extents) and, when the frame is submitted or encoded, moves the batch's [`generation`](Batch::generation). A shape
+//! can also be a [`Derived`] value (`p.map(..)`, `p.count()`), which the CPU recomputes at each `set` of its parameter:
+//! no stage or GPU pass counts anything. A frame `set`s the shape first and `write`s after: a `set` that would change a
+//! buffer the frame has already written or read is [`Error::ShapeMismatch`]. A batch with a library op stage cannot be
+//! resized yet ([`Error::OpResize`]).
 //!
 //! A caller reads a batch's buffers on the GPU through a [`View`] ([`Batch::view`], decision D261): the batch's own
 //! buffer, kept alive by the view, with the batch's [`generation`](Batch::generation). What a reader sees follows the
@@ -818,8 +819,8 @@ impl<D: BatchDevice> Core<D> {
         Ok(handle.id)
     }
 
-    /// The buffer behind a handle of this batch that the block returned, as `T`, and its extents, as the last recorded
-    /// frame left them.
+    /// The buffer behind a handle of this batch that the block returned, as `T`, and its extents, as the last frame
+    /// submitted or encoded left them.
     pub(crate) fn output<T: GpuPod, R>(&self, handle: &Stage<T, R>) -> Result<Located<D, T>, Error>
     where
         D::Buffer<T>: 'static,
@@ -863,7 +864,7 @@ impl<D: BatchDevice> Batch<D> {
 
     /// The stages in the order they run, by the name of their `let`: one entry per buffer a stage writes (an op with
     /// several outputs, such as `compact`, lists each by its own name, every one with the op's reads). The extents are
-    /// the ones the last recorded frame left (a resize changes them).
+    /// the ones the last frame submitted or encoded left (a resize changes them).
     #[must_use]
     pub fn stages(&self) -> Vec<StageInfo> {
         let buffers = &self.core.buffers;
@@ -910,7 +911,7 @@ impl<D: BatchDevice> Batch<D> {
             .extent_records
     }
 
-    /// What the batch holds in memory, at the extents the last recorded frame left.
+    /// What the batch holds in memory, at the extents the last frame submitted or encoded left.
     #[must_use]
     pub fn report(&self) -> Report {
         let run = self.core.run.lock().unwrap_or_else(PoisonError::into_inner);

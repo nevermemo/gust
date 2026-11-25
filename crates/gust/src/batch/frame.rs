@@ -1,13 +1,16 @@
 //! Frames: one trip of a batch to the device ([`FrameRun`]), the submitted frame ([`Submitted`]) and the read-back
 //! reserved in a frame ([`Ticket`]).
 
+use core::any::Any;
 use core::future::Future;
 use core::pin::Pin;
+use core::sync::atomic::Ordering;
 use core::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::{
-    BatchDevice, BoxFuture, Core, Empty, Error, Param, ParamType, Stage, Value, Values, map,
+    BatchDevice, BoxFuture, Core, Empty, Error, Layout, Param, ParamType, Stage, Value, Values,
+    map, typed,
 };
 use crate::GpuPod;
 
@@ -167,12 +170,30 @@ impl<D: BatchDevice, T: GpuPod + Send> ReadSlot<D> for Reserved<D, T> {
 pub struct FrameRun<D: BatchDevice> {
     core: Arc<Core<D>>,
     frame: Option<D::Frame>,
+    /// The parameters this frame set, derived values included, with their new values.
     pending: Vec<(usize, Value)>,
+    /// The buffers this frame was resized to, until the frame is submitted or encoded (see [`set`](Self::set)).
+    staged: Option<Staged<D>>,
+    /// The buffers this frame has written or reserved a read-back of: a later `set` may not change their extents.
+    used: Vec<usize>,
     reads: Vec<Box<dyn ReadSlot<D>>>,
     /// The frame was recorded into a caller's encoder (`encode`): the host cannot tell whether that encoder ran.
     encoded: bool,
     /// The frame was handed to `submit`'s last step: nothing is left for `Drop` to undo.
     done: bool,
+}
+
+/// What a frame that resizes the batch holds until it is submitted or encoded: the buffers (new ones where the extents
+/// frame drops all of it and the batch is as it was.
+/// all of it and the batch is as it was.
+struct Staged<D: BatchDevice> {
+    values: Vec<Value>,
+    dims: Vec<[u32; 2]>,
+    buffers: Vec<Arc<dyn Any>>,
+    /// How many of `buffers` are not the batch's own.
+    replaced: usize,
+    /// The stages (by number) whose buffers are not the batch's own, prepared over these ones.
+    prepared: Vec<(usize, Arc<D::Prepared>)>,
 }
 
 impl<D: BatchDevice> core::fmt::Debug for FrameRun<D> {
@@ -229,6 +250,8 @@ impl<D: BatchDevice> super::Batch<D> {
             core: Arc::clone(core),
             frame: Some(frame),
             pending: Vec::new(),
+            staged: None,
+            used: Vec::new(),
             reads: Vec::new(),
             encoded: false,
             done: false,
@@ -277,7 +300,7 @@ impl<D: BatchDevice> FrameRun<D> {
     where
         D::Buffer<T>: 'static,
     {
-        let (id, buffer) = self.core.output(handle)?;
+        let id = self.core.locate(handle)?;
         let entry = &self.core.buffers[id];
         if !entry.input {
             return Err(Error::NotInput {
@@ -285,14 +308,17 @@ impl<D: BatchDevice> FrameRun<D> {
                 stage: entry.name.clone(),
             });
         }
-        if data.len() != entry.len {
+        let [width, height] = self.dims_of(id);
+        let len = u64::from(width) * u64::from(height);
+        if data.len() as u64 != len {
             return Err(Error::ShapeMismatch {
                 batch: self.core.name.clone(),
                 stage: entry.name.clone(),
-                expected: format!("{} elements", entry.len),
+                expected: format!("{len} elements"),
                 found: format!("{} elements", data.len()),
             });
         }
+        let buffer = self.buffer_of::<T>(id);
         let frame = self
             .frame
             .as_mut()
@@ -300,36 +326,261 @@ impl<D: BatchDevice> FrameRun<D> {
         self.core
             .device
             .frame_write(frame, &buffer, data)
-            .map_err(device_error::<D>)
+            .map_err(device_error::<D>)?;
+        self.used.push(id);
+        Ok(())
     }
 
-    /// Give a parameter this value from this frame on. A parameter that sizes a stage cannot change after the seal:
-    /// setting it to another value is an error (a later slice lifts that).
+    /// Give a parameter this value from this frame on.
+    ///
+    /// A parameter that sizes an input or a stage (directly, or through a [`Derived`](super::Derived) value) can change
+    /// between frames: what depends on it is **resized** here. The buffers whose extents change are made again (zeroed:
+    /// an input holds zeros until the frame writes it, and nothing is carried over), the stages that bind them are
+    /// prepared again over the new buffers (their workgroup counts follow the extents), and the extent records are
+    /// written again at the frame's submission; nothing is counted on the GPU. The batch itself changes only when the
+    /// frame is submitted (or encoded) and the device took it, and then its [`generation`](super::Batch::generation)
+    /// moves; a frame that is dropped, or fails before that, leaves the batch as it was. Set a shape **before** writing
+    /// or reading what it resizes: a `set` that would change a buffer this frame already wrote or reserved a read-back
+    /// of is an error. The device may clear recycled buffers in submissions of its own, so a frame that resizes can cost
+    /// more submissions than one that does not.
     ///
     /// # Errors
     ///
-    /// [`Error::Foreign`] for a parameter of another batch; [`Error::ShapeMismatch`] for a new shape.
+    /// [`Error::Foreign`] for a parameter of another batch; [`Error::ShapeMismatch`] for a shape that would change a
+    /// buffer the frame has used; [`Error::OpResize`] for a resize that reaches a library op stage; the device's
+    /// failures (a buffer too long, or a limit of the new extents). The frame is unchanged after an error.
     pub fn set<T: ParamType>(&mut self, param: &Param<T>, value: T) -> Result<(), Error> {
-        let core = &self.core;
+        let core = Arc::clone(&self.core);
         if param.batch() != core.id || param.id() >= core.params.len() {
             return Err(Error::Foreign {
                 batch: core.name.clone(),
                 stage: String::from("a parameter"),
             });
         }
-        let entry = &core.params[param.id()];
         let packed = value.pack();
-        if entry.shape && entry.value != packed {
+        let mut set = vec![(param.id(), packed)];
+        if core.params[param.id()].shape {
+            self.resize(param.id(), &mut set)?;
+        }
+        for (id, value) in set {
+            self.pending.retain(|(pending, _)| *pending != id);
+            self.pending.push((id, value));
+        }
+        Ok(())
+    }
+
+    /// The values of the parameters in this frame: the batch's, with what the frame has set.
+    fn values(&self) -> Vec<Value> {
+        let mut values = self
+            .core
+            .run
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values
+            .clone();
+        for (id, value) in &self.pending {
+            values[*id] = *value;
+        }
+        values
+    }
+
+    /// The extents of every buffer in this frame.
+    fn dims(&self) -> Vec<[u32; 2]> {
+        match &self.staged {
+            Some(staged) => staged.dims.clone(),
+            None => self
+                .core
+                .run
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .dims
+                .clone(),
+        }
+    }
+
+    /// The extents of the buffer numbered `id` in this frame.
+    fn dims_of(&self, id: usize) -> [u32; 2] {
+        match &self.staged {
+            Some(staged) => staged.dims[id],
+            None => {
+                self.core
+                    .run
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .dims[id]
+            }
+        }
+    }
+
+    /// The buffers of this frame: the resized ones when it resized, the batch's otherwise.
+    fn buffers(&self) -> Vec<Arc<dyn Any>> {
+        match &self.staged {
+            Some(staged) => staged.buffers.clone(),
+            None => self
+                .core
+                .run
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .buffers
+                .clone(),
+        }
+    }
+
+    /// The buffer numbered `id` in this frame, as `T`.
+    fn buffer_of<T: GpuPod>(&self, id: usize) -> Arc<D::Buffer<T>>
+    where
+        D::Buffer<T>: 'static,
+    {
+        match &self.staged {
+            Some(staged) => typed::<D, T>(&staged.buffers[id]),
+            None => typed::<D, T>(
+                &self
+                    .core
+                    .run
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .buffers[id],
+            ),
+        }
+    }
+
+    /// The step of `set` for a parameter that gives extents: the new extents of every buffer, the buffers and stages
+    /// that follow them, kept in `staged`. `set` gets the derived values that changed with it. Nothing changes in the
+    /// frame when it fails.
+    fn resize(&mut self, id: usize, set: &mut Vec<(usize, Value)>) -> Result<(), Error> {
+        let core = Arc::clone(&self.core);
+        let mut values = self.values();
+        values[id] = set[0].1;
+        for (derived, entry) in core.params.iter().enumerate() {
+            if let Some((source, derive)) = &entry.derived
+                && *source == id
+            {
+                values[derived] = derive.apply(values[id]);
+                set.push((derived, values[derived]));
+            }
+        }
+        let dims: Vec<[u32; 2]> = core
+            .buffers
+            .iter()
+            .map(|buffer| buffer.rule.dims(&values))
+            .collect();
+        let (sealed_dims, sealed) = {
+            let run = core.run.lock().unwrap_or_else(PoisonError::into_inner);
+            (run.dims.clone(), run.buffers.clone())
+        };
+        let (here_dims, here) = (self.dims(), self.buffers());
+        if let Some(&used) = self
+            .used
+            .iter()
+            .find(|&&buffer| dims[buffer] != here_dims[buffer])
+        {
+            let [width, height] = here_dims[used];
             return Err(Error::ShapeMismatch {
                 batch: core.name.clone(),
-                stage: entry.name.clone(),
-                expected: format!("{:?}", entry.value),
-                found: format!("{packed:?}"),
+                stage: core.params[id].name.clone(),
+                expected: format!(
+                    "`{}` at {width} x {height}, which the frame has already written or read",
+                    core.buffers[used].name
+                ),
+                found: format!(
+                    "{:?}, which makes it {} x {}",
+                    set[0].1, dims[used][0], dims[used][1]
+                ),
             });
         }
-        self.pending.retain(|(id, _)| *id != param.id());
-        self.pending.push((param.id(), packed));
+        for stage in &core.stages {
+            let mut touched = stage.reads.iter().copied().chain(stage.written());
+            if stage.remake.is_none() && touched.any(|buffer| dims[buffer] != sealed_dims[buffer]) {
+                return Err(Error::OpResize {
+                    batch: core.name.clone(),
+                    stage: stage.name.clone(),
+                    param: core.params[id].name.clone(),
+                });
+            }
+        }
+        // A buffer keeps the frame's own where its extents are as they are here, goes back to the batch's where they are
+        // as the batch has them, and is made again otherwise.
+        let mut buffers = Vec::with_capacity(dims.len());
+        for (buffer, meta) in core.buffers.iter().enumerate() {
+            buffers.push(if dims[buffer] == here_dims[buffer] {
+                Arc::clone(&here[buffer])
+            } else if dims[buffer] == sealed_dims[buffer] {
+                Arc::clone(&sealed[buffer])
+            } else {
+                let [width, height] = dims[buffer];
+                let len = u64::from(width) * u64::from(height);
+                let Ok(count) = u32::try_from(len) else {
+                    return Err(Error::Device(map::Error::TooLong {
+                        len: usize::try_from(len).unwrap_or(usize::MAX),
+                    }));
+                };
+                (meta.alloc)(&*core.device, count).map_err(device_error::<D>)?
+            });
+        }
+        let same = |buffer: usize, other: &[Arc<dyn Any>], other_dims: &[[u32; 2]]| {
+            dims[buffer] == other_dims[buffer] && Arc::ptr_eq(&buffers[buffer], &other[buffer])
+        };
+        let replaced = (0..buffers.len())
+            .filter(|&buffer| !same(buffer, &sealed, &sealed_dims))
+            .count();
+        if replaced == 0 {
+            self.staged = None;
+            return Ok(());
+        }
+        let layout = Layout {
+            buffers: &buffers,
+            dims: &dims,
+        };
+        let mut prepared = Vec::new();
+        for (index, stage) in core.stages.iter().enumerate() {
+            let touched = || stage.reads.iter().copied().chain(stage.written());
+            if touched().all(|buffer| same(buffer, &sealed, &sealed_dims)) {
+                continue;
+            }
+            if let Some(staged) = &self.staged
+                && touched().all(|buffer| same(buffer, &here, &here_dims))
+                && let Some((_, kept)) = staged.prepared.iter().find(|(stage, _)| *stage == index)
+            {
+                prepared.push((index, Arc::clone(kept)));
+                continue;
+            }
+            let remake = stage
+                .remake
+                .as_ref()
+                .expect("a stage with a resized buffer was checked to be remakable");
+            prepared.push((index, Arc::new(remake(&*core.device, &layout)?)));
+        }
+        self.staged = Some(Staged {
+            values,
+            dims,
+            buffers,
+            replaced,
+            prepared,
+        });
         Ok(())
+    }
+
+    /// Make the resize of this frame the batch's: its buffers, extents and prepared stages, and the values of the
+    /// parameters that give extents. The generation moves by the number of buffers it replaced.
+    fn commit(&mut self) {
+        let Some(staged) = self.staged.take() else {
+            return;
+        };
+        let mut run = self.core.run.lock().unwrap_or_else(PoisonError::into_inner);
+        for (id, entry) in self.core.params.iter().enumerate() {
+            if entry.shape {
+                run.values[id] = staged.values[id];
+            }
+        }
+        run.dims = staged.dims;
+        run.buffers = staged.buffers;
+        for (stage, prepared) in staged.prepared {
+            run.prepared[stage] = Some(prepared);
+        }
+        drop(run);
+        self.core
+            .generation
+            .fetch_add(staged.replaced as u64, Ordering::Relaxed);
     }
 
     /// Reserve the read-back of a handle: its values after this frame's stages, copied inside the frame's one
@@ -342,12 +593,14 @@ impl<D: BatchDevice> FrameRun<D> {
     where
         D::Buffer<T>: 'static,
     {
-        let (_, buffer) = self.core.output(handle)?;
+        let id = self.core.locate(handle)?;
+        let buffer = self.buffer_of::<T>(id);
         let read = self
             .core
             .device
             .reserve_read::<T>(&buffer)
             .map_err(device_error::<D>)?;
+        self.used.push(id);
         let cell = Arc::new(TicketCell {
             batch: self.core.name.clone(),
             state: Mutex::new(TicketState::Reserved(None)),
@@ -373,6 +626,7 @@ impl<D: BatchDevice> FrameRun<D> {
             .device
             .submit_frame(frame, encoder)
             .map_err(device_error::<D>)?;
+        self.commit();
         Ok(self.mark_submitted(submission))
     }
 
@@ -404,14 +658,15 @@ impl<D: BatchDevice> FrameRun<D> {
     /// encoder; do not submit it.
     pub fn encode(mut self, encoder: &mut D::Encoder) -> Result<Encoded<D>, Error> {
         let core = Arc::clone(&self.core);
-        // Set before recording: a failure inside `record` leaves the frame's copies in the caller's encoder, which the
-        // caller may still submit.
+        // Set before recording: a failure inside `record` leaves the frame's copies in the caller's encoder; discard it
+        // (see the errors above).
         self.encoded = true;
         let frame = self.record(encoder)?;
         let encoded = core
             .device
             .encoded_frame(frame, encoder)
             .map_err(device_error::<D>)?;
+        self.commit();
         Ok(Encoded { run: self, encoded })
     }
 
@@ -422,19 +677,11 @@ impl<D: BatchDevice> FrameRun<D> {
         let core = Arc::clone(&self.core);
         let device = &*core.device;
         let mut frame = self.frame.take().expect("a live frame holds its recorder");
-        let (mut values, stale) = {
-            let run = core.run.lock().unwrap_or_else(PoisonError::into_inner);
-            (run.values.clone(), run.stale.clone())
-        };
-        for (id, value) in &self.pending {
-            values[*id] = *value;
-        }
-        let values = Values(values);
-        let mut recorded = 0;
-        let result = core.stages.iter().try_for_each(|stage| {
-            // An op over zero elements: its rule runs here, before anything is encoded, so a refusal leaves the
-            // encoder as it was and `submit` and `encode` both return it.
-            if let (0, Some(empty)) = (stage.len(), &stage.empty) {
+        // An op over zero elements: its rule runs here, before anything is encoded and before a resize is made the
+        // batch's, so a refusal leaves the encoder and the batch as they were and `submit` and `encode` both return it.
+        let sizes = self.dims();
+        core.stages.iter().try_for_each(|stage| {
+            if let (0, Some(empty)) = (stage.len(&sizes), &stage.empty) {
                 match empty {
                     Empty::Identity(write) => {
                         write(device, &mut frame).map_err(device_error::<D>)?;
@@ -448,6 +695,25 @@ impl<D: BatchDevice> FrameRun<D> {
                     }
                 }
             }
+            Ok::<(), Error>(())
+        })?;
+        // The frame's resize stays in `staged` here: `submit` and `encode` make it the batch's once the device has
+        // taken the frame, so a frame that fails before that is dropped and leaves the batch as it was.
+        let (stale, mut prepared) = {
+            let run = core.run.lock().unwrap_or_else(PoisonError::into_inner);
+            (run.stale.clone(), run.prepared.clone())
+        };
+        if let Some(staged) = &self.staged {
+            for (stage, kept) in &staged.prepared {
+                prepared[*stage] = Some(Arc::clone(kept));
+            }
+        }
+        let values = Values {
+            params: self.values(),
+            dims: sizes,
+        };
+        let mut recorded = 0;
+        let result = core.stages.iter().try_for_each(|stage| {
             let changed = stage
                 .params
                 .iter()
@@ -466,12 +732,10 @@ impl<D: BatchDevice> FrameRun<D> {
         device
             .frame_uploads(&mut frame, encoder)
             .map_err(device_error::<D>)?;
-        for stage in &core.stages {
-            if let Some(prepared) = &stage.prepared {
-                device
-                    .frame_stage(encoder, prepared)
-                    .map_err(device_error::<D>)?;
-            }
+        for prepared in prepared.iter().flatten() {
+            device
+                .frame_stage(encoder, prepared)
+                .map_err(device_error::<D>)?;
         }
         for slot in &mut self.reads {
             slot.record(device, encoder);
@@ -541,6 +805,10 @@ impl<D: BatchDevice> Drop for FrameRun<D> {
 /// * A parameter: the `set`s of a reported frame hold for the later frames whether or not its encoder ran (the next
 ///   frames record those parameters again, so the device follows the host); the `set`s of a dropped `Encoded` are
 ///   discarded, and the next frame records the values from before it, even if the caller submitted its encoder.
+/// * A resize: a frame that resized the batch ([`FrameRun::set`]) makes the new buffers, the new extents and the values
+///   of the parameters that give them the batch's when `encode` returns (so that a pass the caller records after it
+///   can fetch the new views, see [`Batch::generation`](super::Batch::generation)), whether or not the encoder runs or
+///   the `Encoded` is reported. The next frame records the stages' extents again if the frame was dropped.
 ///
 /// An encoder whose frame was reported with a submission that did not carry it, or was dropped, must be dropped, never
 /// submitted after a later frame was begun: it would write the batch's buffers out of order with that frame.
@@ -652,7 +920,7 @@ impl<D: BatchDevice> Blocking<'_, D> {
     where
         D::Buffer<T>: 'static,
     {
-        let (_, buffer) = self.batch.core.output(handle)?;
+        let (_, buffer, _) = self.batch.core.output(handle)?;
         self.batch
             .core
             .device

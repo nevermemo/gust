@@ -30,8 +30,16 @@
 //! frame's are discarded. A frame records the extent record of a stage only when a parameter of the stage was set in
 //! it; after a frame recorded into a caller's encoder, the parameters that frame set stay on the list of the ones a
 //! later frame records again, until a frame made by `submit` clears it. A frame's tickets read that frame's results; a
-//! later frame's writes never reach an earlier frame. A shape cannot change after the seal (a `set` that would is
-//! [`Error::ShapeMismatch`]).
+//! later frame's writes never reach an earlier frame.
+//!
+//! **Resize (slice s2b).** A parameter that sizes an input or a stage can be `set` to a new shape between frames, and
+//! what depends on it follows: [`FrameRun::set`] makes new, zeroed buffers (an input holds zeros until the frame writes
+//! it: nothing is carried over), prepares the stages that bind them again (their workgroup counts follow the new
+//! extents) and, when the frame is submitted or encoded, moves the batch's [`generation`](Batch::generation). A shape
+//! can also be a [`Derived`] value (`p.map(..)`, `p.count()`), which the CPU recomputes at each `set` of its parameter:
+//! no stage or GPU pass counts anything. A frame `set`s the shape first and `write`s after: a `set` that would change a
+//! buffer the frame has already written or read is [`Error::ShapeMismatch`]. A batch with a library op stage cannot be
+//! resized yet ([`Error::OpResize`]).
 //!
 //! A caller reads a batch's buffers on the GPU through a [`View`] ([`Batch::view`], decision D261): the batch's own
 //! buffer, kept alive by the view, with the batch's [`generation`](Batch::generation). What a reader sees follows the
@@ -66,9 +74,10 @@ pub use frame::Blocking;
 pub use frame::{Encoded, FrameRun, Submitted, Ticket};
 use ops::Plan;
 pub use ops::{Empty, Op, OpDraft, Outputs};
-pub use shape::{D1, D2, IntoShape, ParamType, Rank};
+use shape::Rule;
+pub use shape::{D1, D2, Derived, IntoShape, ParamType, Rank};
 #[doc(hidden)]
-pub use shape::{ShapeSource, Value, Values};
+pub use shape::{Derive, Layout, ShapeSource, Value, Values};
 pub use view::View;
 
 /// A boxed future: `Send` on native targets, where a [`Ticket`] must be, and not on `wasm32`, whose handles are not.
@@ -128,16 +137,26 @@ pub enum Error {
         /// The stage of the op.
         stage: String,
     },
-    /// A data call does not fit the sealed shape: a `write` of another length, or a `set` that would change a shape.
+    /// A data call does not fit the shape the frame has: a `write` of another length, or a `set` that would change the
+    /// shape of a buffer the frame has already written or read.
     ShapeMismatch {
         /// The batch.
         batch: String,
         /// The input or parameter.
         stage: String,
-        /// What the batch was sealed with.
+        /// What the batch (or the frame) has.
         expected: String,
         /// What the call brought.
         found: String,
+    },
+    /// A `set` would resize a buffer that a library op stage binds: a batch with an op stage cannot follow a resize yet.
+    OpResize {
+        /// The batch.
+        batch: String,
+        /// The op stage.
+        stage: String,
+        /// The parameter that was set.
+        param: String,
     },
     /// A ticket's frame was never submitted: it was dropped, or its submission failed.
     NotSubmitted {
@@ -209,7 +228,15 @@ impl core::fmt::Display for Error {
                 found,
             } => write!(
                 f,
-                "`{stage}` of batch `{batch}` was sealed with {expected} and the call brought {found}"
+                "`{stage}` of batch `{batch}` has {expected} and the call brought {found}"
+            ),
+            Self::OpResize {
+                batch,
+                stage,
+                param,
+            } => write!(
+                f,
+                "setting `{param}` of batch `{batch}` would resize a buffer of the op stage `{stage}`: a batch with an op stage cannot be resized yet"
             ),
             Self::NotSubmitted { batch } => {
                 write!(f, "the frame of batch `{batch}` was never submitted")
@@ -433,7 +460,9 @@ impl<D: BatchDevice> DeviceRef for &Arc<D> {
 }
 
 /// A buffer of a batch (an input or the result of a stage), seen from outside: the handle a frame writes or reads.
-/// `T` is the element, `R` the rank ([`D1`] or [`D2`]); a 2-D handle is row-major.
+/// `T` is the element, `R` the rank ([`D1`] or [`D2`]); a 2-D handle is row-major. The extents a handle reports
+/// ([`width`](Self::width), [`height`](Self::height), [`len`](Self::len)) are the ones the batch was sealed with: a
+/// resize does not change a handle, so read the current extents from a [`View`].
 pub struct Stage<T, R> {
     batch: u64,
     id: usize,
@@ -492,23 +521,12 @@ impl<T, R> Stage<T, R> {
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
-}
 
-impl<T> Stage<T, D1> {
-    /// The shape of this handle as a 1-D shape (the extent of an in-place stage). Macro support.
+    /// The number of the buffer in its batch. Macro support.
     #[doc(hidden)]
     #[must_use]
-    pub const fn shape(&self) -> u32 {
-        self.dims[0]
-    }
-}
-
-impl<T> Stage<T, D2> {
-    /// The shape of this handle as a 2-D shape. Macro support.
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn shape(&self) -> (u32, u32) {
-        (self.dims[0], self.dims[1])
+    pub const fn index(&self) -> usize {
+        self.id
     }
 }
 
@@ -573,20 +591,41 @@ pub struct Report {
     pub per_buffer: Vec<(String, u64)>,
 }
 
+/// A located output: its buffer id, the buffer and its extents.
+type Located<D, T> = (usize, Arc<<D as crate::map::MapHost>::Buffer<T>>, [u32; 2]);
+
+/// The function that makes a new, zeroed buffer of one element type, for a resize.
+type Alloc<D> = Box<dyn Fn(&D, u32) -> Result<Arc<dyn Any>, <D as crate::job::Device>::Error>>;
+
+/// A buffer while the batch is being built. At the seal it splits into a [`BufMeta`] and the live state of the run.
 pub(crate) struct BufEntry {
     pub(crate) name: String,
     pub(crate) input: bool,
     pub(crate) len: usize,
     pub(crate) dims: [u32; 2],
-    pub(crate) bytes: u64,
-    /// An `Arc<D::Buffer<T>>`.
-    pub(crate) buffer: Box<dyn Any>,
+    /// The bytes of one element.
+    pub(crate) stride: u64,
+    pub(crate) rule: Rule,
+    /// An `Arc<D::Buffer<T>>`, erased.
+    pub(crate) buffer: Arc<dyn Any>,
+}
+
+/// What a sealed buffer keeps for good: the live buffer and its extents are in [`RunState`].
+pub(crate) struct BufMeta<D: BatchDevice> {
+    pub(crate) name: String,
+    pub(crate) input: bool,
+    pub(crate) stride: u64,
+    pub(crate) rule: Rule,
+    pub(crate) alloc: Alloc<D>,
 }
 
 pub(crate) struct ParamEntry {
     pub(crate) name: String,
     pub(crate) value: Value,
+    /// Some buffer takes its extents from this parameter, or from a value derived from it.
     pub(crate) shape: bool,
+    /// For a derived value: the parameter it comes from and the function.
+    pub(crate) derived: Option<(usize, Derive)>,
 }
 
 type Update<D> = Box<
@@ -597,20 +636,30 @@ type Update<D> = Box<
     ) -> Result<(), <D as crate::job::Device>::Error>,
 >;
 
+/// The function that prepares a kernel stage again over the buffers of a resized frame.
+pub(crate) type Remake<D> =
+    Box<dyn Fn(&D, &Layout<'_>) -> Result<<D as BatchDevice>::Prepared, Error>>;
+
 pub(crate) struct StageRec<D: BatchDevice> {
     pub(crate) name: String,
-    /// What the frame dispatches: `None` for an op sealed over zero elements, where no plan can be made and the
-    /// stage's `empty` rule runs instead.
+    /// What the stage dispatches as it was sealed: `None` for an op sealed over zero elements, where no plan can be
+    /// made and the stage's `empty` rule runs instead. The seal moves it into the run's list of prepared stages, which
+    /// a resize replaces.
     pub(crate) prepared: Option<D::Prepared>,
     pub(crate) update: Option<Update<D>>,
+    /// The parameters the stage depends on: the ones its body reads, and (added at the seal) the ones that give the
+    /// extents of its buffers.
     pub(crate) params: Vec<usize>,
     pub(crate) reads: Vec<usize>,
     /// The buffer the stage writes (an op's first output).
     pub(crate) write: usize,
     /// The other buffers an op writes, in order.
     pub(crate) also: Vec<usize>,
-    /// The number of elements the stage was sealed over (see [`len`](Self::len)).
+    /// The number of elements an op stage was sealed over (see [`len`](Self::len)).
     len: usize,
+    /// How to prepare a kernel stage again over resized buffers; `None` for an op stage, which cannot follow a resize
+    /// yet.
+    pub(crate) remake: Option<Remake<D>>,
     /// An op's plan function, for the length it is called with; `Some` marks an op's stage, `None` a kernel stage.
     /// Slice s2b calls it when a length changes.
     pub(crate) plan: Option<Plan<D>>,
@@ -638,9 +687,16 @@ impl<D: BatchDevice> StageRec<D> {
             write,
             also: Vec::new(),
             len: usize::try_from(u64::from(dims[0]) * u64::from(dims[1])).unwrap_or(usize::MAX),
+            remake: None,
             plan: None,
             empty: None,
         }
+    }
+
+    /// The stage can be prepared again over resized buffers.
+    fn with_remake(mut self, remake: Remake<D>) -> Self {
+        self.remake = Some(remake);
+        self
     }
 
     /// An op's stage: `len` is the length it was sealed for, and `prepared` is `None` at length 0.
@@ -662,15 +718,22 @@ impl<D: BatchDevice> StageRec<D> {
             write: written[0].0,
             also: written[1..].iter().map(|(id, _)| *id).collect(),
             len,
+            remake: None,
             plan: Some(plan),
             empty: Some(empty),
         }
     }
 
-    /// The number of elements the stage runs over. The one place the core reads a stage's length (slice s2b changes
-    /// it, when a length can change after the seal).
-    pub(crate) const fn len(&self) -> usize {
-        self.len
+    /// The number of elements the stage runs over in a frame whose buffers have these extents (one entry per buffer).
+    /// The one place the core reads a stage's length: a kernel stage runs over the buffer it writes, which a resize
+    /// changes; an op stage runs over the length it was sealed for (a resize cannot reach one yet).
+    pub(crate) fn len(&self, dims: &[[u32; 2]]) -> usize {
+        if self.plan.is_some() {
+            self.len
+        } else {
+            let [width, height] = dims[self.write];
+            usize::try_from(u64::from(width) * u64::from(height)).unwrap_or(usize::MAX)
+        }
     }
 
     /// Every buffer the stage writes: `write`, then `also`.
@@ -680,7 +743,14 @@ impl<D: BatchDevice> StageRec<D> {
 }
 
 pub(crate) struct RunState<D: BatchDevice> {
+    /// The parameters' values (a derived value is one of them).
     pub(crate) values: Vec<Value>,
+    /// The extents of each buffer now.
+    pub(crate) dims: Vec<[u32; 2]>,
+    /// Each buffer now: an `Arc<D::Buffer<T>>`, erased.
+    pub(crate) buffers: Vec<Arc<dyn Any>>,
+    /// What each stage dispatches now (`None` for an op sealed over zero elements).
+    pub(crate) prepared: Vec<Option<Arc<D::Prepared>>>,
     /// A frame is being recorded.
     pub(crate) live: bool,
     /// The most frames the batch has submitted and not yet waited for (`in_flight(n)`).
@@ -711,7 +781,7 @@ pub(crate) struct Core<D: BatchDevice> {
     pub(crate) id: u64,
     pub(crate) name: String,
     pub(crate) device: Arc<D>,
-    pub(crate) buffers: Vec<BufEntry>,
+    pub(crate) buffers: Vec<BufMeta<D>>,
     pub(crate) stages: Vec<StageRec<D>>,
     pub(crate) params: Vec<ParamEntry>,
     pub(crate) exposed: Vec<bool>,
@@ -720,33 +790,44 @@ pub(crate) struct Core<D: BatchDevice> {
     pub(crate) run: Mutex<RunState<D>>,
 }
 
+/// The buffer `any` holds, as `T`.
+pub(crate) fn typed<D: BatchDevice, T: GpuPod>(any: &Arc<dyn Any>) -> Arc<D::Buffer<T>>
+where
+    D::Buffer<T>: 'static,
+{
+    Arc::clone(
+        any.downcast_ref::<Arc<D::Buffer<T>>>()
+            .expect("a handle's element type is its buffer's"),
+    )
+}
+
 impl<D: BatchDevice> Core<D> {
-    /// The buffer behind a handle of this batch that the block returned, as `T`.
-    pub(crate) fn output<T: GpuPod, R>(
-        &self,
-        handle: &Stage<T, R>,
-    ) -> Result<(usize, Arc<D::Buffer<T>>), Error>
-    where
-        D::Buffer<T>: 'static,
-    {
+    /// The number of the buffer behind a handle of this batch that the block returned.
+    pub(crate) fn locate<T, R>(&self, handle: &Stage<T, R>) -> Result<usize, Error> {
         if handle.batch != self.id || handle.id >= self.buffers.len() {
             return Err(Error::Foreign {
                 batch: self.name.clone(),
                 stage: String::from("a handle"),
             });
         }
-        let entry = &self.buffers[handle.id];
         if !self.exposed[handle.id] {
             return Err(Error::NotOutput {
                 batch: self.name.clone(),
-                stage: entry.name.clone(),
+                stage: self.buffers[handle.id].name.clone(),
             });
         }
-        let buffer = entry
-            .buffer
-            .downcast_ref::<Arc<D::Buffer<T>>>()
-            .expect("a handle's element type is its buffer's");
-        Ok((handle.id, Arc::clone(buffer)))
+        Ok(handle.id)
+    }
+
+    /// The buffer behind a handle of this batch that the block returned, as `T`, and its extents, as the last frame
+    /// submitted or encoded left them.
+    pub(crate) fn output<T: GpuPod, R>(&self, handle: &Stage<T, R>) -> Result<Located<D, T>, Error>
+    where
+        D::Buffer<T>: 'static,
+    {
+        let id = self.locate(handle)?;
+        let run = self.run.lock().unwrap_or_else(PoisonError::into_inner);
+        Ok((id, typed::<D, T>(&run.buffers[id]), run.dims[id]))
     }
 }
 
@@ -782,10 +863,18 @@ impl<D: BatchDevice> Batch<D> {
     }
 
     /// The stages in the order they run, by the name of their `let`: one entry per buffer a stage writes (an op with
-    /// several outputs, such as `compact`, lists each by its own name, every one with the op's reads).
+    /// several outputs, such as `compact`, lists each by its own name, every one with the op's reads). The extents are
+    /// the ones the last frame submitted or encoded left (a resize changes them).
     #[must_use]
     pub fn stages(&self) -> Vec<StageInfo> {
         let buffers = &self.core.buffers;
+        let dims = self
+            .core
+            .run
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .dims
+            .clone();
         self.core
             .stages
             .iter()
@@ -795,13 +884,14 @@ impl<D: BatchDevice> Batch<D> {
                     .iter()
                     .map(|&id| buffers[id].name.clone())
                     .collect();
+                let dims = &dims;
                 stage.written().enumerate().map(move |(k, id)| StageInfo {
                     name: if k == 0 {
                         stage.name.clone()
                     } else {
                         buffers[id].name.clone()
                     },
-                    dims: buffers[id].dims,
+                    dims: dims[id],
                     reads: reads.clone(),
                 })
             })
@@ -821,15 +911,23 @@ impl<D: BatchDevice> Batch<D> {
             .extent_records
     }
 
-    /// What the batch holds in memory.
+    /// What the batch holds in memory, at the extents the last frame submitted or encoded left.
     #[must_use]
     pub fn report(&self) -> Report {
+        let run = self.core.run.lock().unwrap_or_else(PoisonError::into_inner);
         let per_buffer: Vec<(String, u64)> = self
             .core
             .buffers
             .iter()
-            .map(|entry| (entry.name.clone(), entry.bytes))
+            .zip(&run.dims)
+            .map(|(entry, dims)| {
+                (
+                    entry.name.clone(),
+                    u64::from(dims[0]) * u64::from(dims[1]) * entry.stride,
+                )
+            })
             .collect();
+        drop(run);
         Report {
             stages: self.core.stages.len(),
             buffers: per_buffer.len(),
@@ -870,6 +968,8 @@ struct BuildState<D: BatchDevice> {
     next_name: Option<String>,
     anonymous: usize,
     buffers: Vec<BufEntry>,
+    /// The allocator of each buffer, in the order of `buffers`.
+    allocs: Vec<Alloc<D>>,
     stages: Vec<StageRec<D>>,
     params: Vec<ParamEntry>,
     exposed: Vec<usize>,
@@ -889,26 +989,61 @@ impl<D: BatchDevice> BuildState<D> {
         })
     }
 
-    /// The extents a shape has now, or `None` after recording why it has none.
-    fn resolve(&mut self, source: ShapeSource, who: &str) -> Option<[u32; 2]> {
-        match source {
-            ShapeSource::Fixed(dims) => Some(dims),
-            ShapeSource::Param { batch, id } => {
-                if batch != self.id || id >= self.params.len() {
-                    self.fail(Error::Foreign {
-                        batch: self.name.clone(),
-                        stage: who.to_owned(),
-                    });
-                    return None;
-                }
-                self.params[id].shape = true;
-                match self.params[id].value {
-                    Value::U32(n) => Some([n, 1]),
-                    Value::Pair(width, height) => Some([width, height]),
-                    other => unreachable!("a shape parameter holds {other:?}"),
-                }
+    /// The extents a shape has now and the rule that keeps them current, or `None` after recording why it has none.
+    fn resolve(&mut self, source: ShapeSource, who: &str) -> Option<([u32; 2], Rule)> {
+        let id = match source {
+            ShapeSource::Fixed(dims) => return Some((dims, Rule::Fixed(dims))),
+            ShapeSource::Param { batch, id } if batch == self.id && id < self.params.len() => id,
+            ShapeSource::Derived {
+                batch,
+                source,
+                derive,
+            } if batch == self.id && source < self.params.len() => self.derived(source, &derive),
+            ShapeSource::Buffer { batch, id } if batch == self.id && id < self.buffers.len() => {
+                let entry = &self.buffers[id];
+                return Some((entry.dims, entry.rule));
             }
+            ShapeSource::Param { .. }
+            | ShapeSource::Derived { .. }
+            | ShapeSource::Buffer { .. } => {
+                self.fail(Error::Foreign {
+                    batch: self.name.clone(),
+                    stage: who.to_owned(),
+                });
+                return None;
+            }
+        };
+        self.params[id].shape = true;
+        let rule = Rule::Param(id);
+        Some((rule.dims(&self.values()), rule))
+    }
+
+    /// The values of the parameters now.
+    fn values(&self) -> Vec<Value> {
+        self.params.iter().map(|entry| entry.value).collect()
+    }
+
+    /// The number of the parameter that holds `derive` of the parameter `source`: the one made before when this value was
+    /// used already, a new one otherwise.
+    fn derived(&mut self, source: usize, derive: &Derive) -> usize {
+        let known = self.params.iter().position(|entry| {
+            entry
+                .derived
+                .as_ref()
+                .is_some_and(|(from, known)| *from == source && known.same(derive))
+        });
+        if let Some(id) = known {
+            return id;
         }
+        let name = format!("{} (derived)", self.params[source].name);
+        self.params[source].shape = true;
+        self.params.push(ParamEntry {
+            name,
+            value: derive.apply(self.params[source].value),
+            shape: false,
+            derived: Some((source, derive.clone())),
+        });
+        self.params.len() - 1
     }
 
     fn add_buffer<T: GpuPod>(
@@ -916,6 +1051,20 @@ impl<D: BatchDevice> BuildState<D> {
         name: String,
         input: bool,
         dims: [u32; 2],
+    ) -> Option<(usize, Arc<D::Buffer<T>>)>
+    where
+        D::Buffer<T>: 'static,
+    {
+        self.add_buffer_ruled::<T>(name, input, dims, Rule::Fixed(dims))
+    }
+
+    /// A buffer of these extents, whose extents follow `rule` after a resize.
+    fn add_buffer_ruled<T: GpuPod>(
+        &mut self,
+        name: String,
+        input: bool,
+        dims: [u32; 2],
+        rule: Rule,
     ) -> Option<(usize, Arc<D::Buffer<T>>)>
     where
         D::Buffer<T>: 'static,
@@ -935,9 +1084,15 @@ impl<D: BatchDevice> BuildState<D> {
                     input,
                     len: count as usize,
                     dims,
-                    bytes: len * size_of::<T>() as u64,
-                    buffer: Box::new(Arc::clone(&buffer)),
+                    stride: size_of::<T>() as u64,
+                    rule,
+                    buffer: Arc::new(Arc::clone(&buffer)),
                 });
+                self.allocs.push(Box::new(|device, count| {
+                    device
+                        .zeroed::<T>(count)
+                        .map(|buffer| Arc::new(Arc::new(buffer)) as Arc<dyn Any>)
+                }));
                 Some((self.buffers.len() - 1, buffer))
             }
             Err(error) => {
@@ -977,9 +1132,11 @@ impl<D: BatchDevice> Builder<D> {
             return Stage::new(state.id, usize::MAX, [0, 0]);
         }
         let name = state.take_name("input");
-        let dims = state.resolve(shape.source(), &name).unwrap_or([0, 0]);
+        let (dims, rule) = state
+            .resolve(shape.source(), &name)
+            .unwrap_or(([0, 0], Rule::Fixed([0, 0])));
         let id = state.id;
-        match state.add_buffer::<T>(name, true, dims) {
+        match state.add_buffer_ruled::<T>(name, true, dims, rule) {
             Some((buffer, _)) => Stage::new(id, buffer, dims),
             None => Stage::new(id, usize::MAX, dims),
         }
@@ -1002,6 +1159,7 @@ impl<D: BatchDevice> Builder<D> {
             name,
             value: value.pack(),
             shape: false,
+            derived: None,
         });
         Param {
             batch: state.id,
@@ -1053,14 +1211,16 @@ impl<D: BatchDevice> Builder<D> {
             return StageDraft::dud(self, String::from("stage"));
         }
         let name = state.take_name("stage");
-        let Some(dims) = state.resolve(shape.source(), &name) else {
+        let Some((dims, rule)) = state.resolve(shape.source(), &name) else {
             return StageDraft::dud(self, name);
         };
         StageDraft {
             builder: self,
             name,
             dims,
+            rule,
             reads: Vec::new(),
+            bound: Vec::new(),
             params: Vec::new(),
             write: None,
             ok: true,
@@ -1117,6 +1277,15 @@ impl Error {
                 expected: expected.clone(),
                 found: found.clone(),
             },
+            Self::OpResize {
+                batch,
+                stage,
+                param,
+            } => Self::OpResize {
+                batch: batch.clone(),
+                stage: stage.clone(),
+                param: param.clone(),
+            },
             Self::NotSubmitted { batch } => Self::NotSubmitted {
                 batch: batch.clone(),
             },
@@ -1156,7 +1325,11 @@ pub struct StageDraft<'b, D: BatchDevice> {
     builder: &'b Builder<D>,
     name: String,
     dims: [u32; 2],
+    /// Where the extents come from after a resize.
+    rule: Rule,
     reads: Vec<usize>,
+    /// Every buffer the stage binds (read, written in place or made), in the order the stage took them.
+    bound: Vec<usize>,
     params: Vec<usize>,
     write: Option<usize>,
     ok: bool,
@@ -1168,11 +1341,30 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
             builder,
             name,
             dims: [0, 0],
+            rule: Rule::Fixed([0, 0]),
             reads: Vec::new(),
+            bound: Vec::new(),
             params: Vec::new(),
             write: None,
             ok: false,
         }
+    }
+
+    /// The numbers of the buffers the stage binds, in the order it took them. Macro support.
+    #[must_use]
+    pub fn bound(&self) -> Vec<usize> {
+        self.bound.clone()
+    }
+
+    /// The number of the buffer the stage writes: the stage's extents are its extents. Call it after the stage has
+    /// taken its buffers and `ok` is true. Macro support.
+    ///
+    /// # Panics
+    ///
+    /// When the stage has no result buffer yet.
+    #[must_use]
+    pub fn written(&self) -> usize {
+        self.write.expect("a stage takes its result buffer first")
     }
 
     /// The extents of the stage.
@@ -1193,18 +1385,14 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
         Arc::clone(&self.builder.state.borrow().device)
     }
 
-    /// The parameters' values now, for the extent record's first contents.
+    /// The parameters' values and the buffers' extents now, for the extent record's first contents.
     #[must_use]
     pub fn values(&self) -> Values {
-        Values(
-            self.builder
-                .state
-                .borrow()
-                .params
-                .iter()
-                .map(|entry| entry.value)
-                .collect(),
-        )
+        let state = self.builder.state.borrow();
+        Values {
+            params: state.values(),
+            dims: state.buffers.iter().map(|entry| entry.dims).collect(),
+        }
     }
 
     fn foreign(&mut self) {
@@ -1231,6 +1419,7 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
         match found.flatten() {
             Some(buffer) => {
                 self.reads.push(handle.id);
+                self.bound.push(handle.id);
                 Some(buffer)
             }
             None => {
@@ -1273,11 +1462,13 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
     {
         let mut state = self.builder.state.borrow_mut();
         let name = self.name.clone();
-        let Some((id, buffer)) = state.add_buffer::<T>(name, false, self.dims) else {
+        let Some((id, buffer)) = state.add_buffer_ruled::<T>(name, false, self.dims, self.rule)
+        else {
             self.ok = false;
             return None;
         };
         self.write = Some(id);
+        self.bound.push(id);
         Some(buffer)
     }
 
@@ -1303,13 +1494,16 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
         self.ok = false;
     }
 
-    /// Seal the stage: the kernel call `build` makes over `keep`, and `update`, which rewrites the stage's extent
-    /// record from the parameters' values when one of them was set. Returns the handle of its result.
+    /// Seal the stage: the kernel call `build` makes over `keep`, `update`, which rewrites the stage's extent record from
+    /// the parameters' values and the buffers' extents when one of them changed, and `keep_with`, which makes the
+    /// stage's `keep` again over the buffers of a resized frame (the stage is then prepared again with the same `build`,
+    /// so `build` holds nothing of its own). Returns the handle of its result.
     pub fn finish<T, Rk, K, R, const N: usize>(
         self,
         keep: R,
-        build: impl for<'o> Fn(&'o R) -> Call<'o, D, K, N> + 'static,
+        build: impl for<'o> Fn(&'o R) -> Call<'o, D, K, N> + Copy + 'static,
         update: impl Fn(&D, &mut D::Frame, &Values) -> Result<(), D::Error> + 'static,
+        keep_with: impl Fn(&Layout<'_>) -> Result<R, Error> + 'static,
     ) -> Stage<T, Rk>
     where
         D: Run<K, N>,
@@ -1324,6 +1518,7 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
             params,
             write,
             ok,
+            ..
         } = self;
         let mut state = builder.state.borrow_mut();
         let dud = Stage::new(state.id, usize::MAX, dims);
@@ -1332,8 +1527,14 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
         };
         match state.device.prepare(keep, build) {
             Ok(prepared) => {
+                let remake: Remake<D> = Box::new(move |device, layout| {
+                    device
+                        .prepare(keep_with(layout)?, build)
+                        .map_err(|error| Error::Device(D::map_error(error)))
+                });
                 let rec =
-                    StageRec::kernel(name, prepared, Box::new(update), params, reads, write, dims);
+                    StageRec::kernel(name, prepared, Box::new(update), params, reads, write, dims)
+                        .with_remake(remake);
                 state.stages.push(rec);
                 Stage::new(state.id, write, dims)
             }
@@ -1384,6 +1585,7 @@ pub fn build<D: BatchDevice, H: DeviceRef<Device = D>, O>(
             next_name: None,
             anonymous: 0,
             buffers: Vec::new(),
+            allocs: Vec::new(),
             stages: Vec::new(),
             params: Vec::new(),
             exposed: Vec::new(),
@@ -1430,17 +1632,58 @@ pub fn build<D: BatchDevice, H: DeviceRef<Device = D>, O>(
     }
     let params = core::mem::take(&mut state.params);
     let values = params.iter().map(|entry| entry.value).collect();
+    let mut stages = core::mem::take(&mut state.stages);
+    // A stage depends on the parameters that give the extents of the buffers it binds, as on the ones its body reads: a
+    // `set` of one of them records its extent record again.
+    for stage in &mut stages {
+        let bound = stage.reads.iter().copied().chain(stage.written());
+        let ruled: Vec<usize> = bound
+            .filter_map(|id| match state.buffers[id].rule {
+                Rule::Param(param) => Some(param),
+                Rule::Fixed(_) => None,
+            })
+            .collect();
+        for param in ruled {
+            if !stage.params.contains(&param) {
+                stage.params.push(param);
+            }
+        }
+    }
+    let prepared = stages
+        .iter_mut()
+        .map(|stage| stage.prepared.take().map(Arc::new))
+        .collect();
+    let mut metas = Vec::new();
+    let mut dims = Vec::new();
+    let mut live = Vec::new();
+    for (entry, alloc) in core::mem::take(&mut state.buffers)
+        .into_iter()
+        .zip(core::mem::take(&mut state.allocs))
+    {
+        metas.push(BufMeta {
+            name: entry.name,
+            input: entry.input,
+            stride: entry.stride,
+            rule: entry.rule,
+            alloc,
+        });
+        dims.push(entry.dims);
+        live.push(entry.buffer);
+    }
     let core = Core {
         id: state.id,
         name: state.name.clone(),
         device: Arc::clone(&state.device),
-        buffers: core::mem::take(&mut state.buffers),
-        stages: core::mem::take(&mut state.stages),
+        buffers: metas,
+        stages,
         params,
         exposed,
         generation: AtomicU64::new(0),
         run: Mutex::new(RunState {
             values,
+            dims,
+            buffers: live,
+            prepared,
             live: false,
             depth: usize::try_from(in_flight.max(1)).unwrap_or(1),
             pending: VecDeque::new(),

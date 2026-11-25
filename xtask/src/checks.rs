@@ -562,6 +562,18 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "twin_a_view_of_an_input_and_of_a_stage_holds_what_the_frame_left",
             "twin_a_view_refuses_a_foreign_handle_and_one_the_block_did_not_return",
             "twin_the_generation_is_equal_across_three_frames_and_with_two_in_flight",
+            // `tests/resize.rs`: a set of a size parameter resizes what depends on it (m14.s2b).
+            "cpu_a_dropped_resize_changes_nothing",
+            "cpu_a_frame_the_device_refuses_leaves_the_resize_undone",
+            "cpu_a_resize_that_reaches_an_op_stage_is_refused",
+            "cpu_a_resize_to_a_zero_extent_is_exact",
+            "cpu_a_resize_with_a_frame_in_flight",
+            "cpu_a_shape_set_after_a_ticket_is_refused",
+            "cpu_a_shape_set_after_a_write_is_refused",
+            "cpu_a_shape_set_and_set_back_resizes_nothing",
+            "cpu_a_view_taken_before_a_resize_is_stale_after_it",
+            "cpu_an_encoded_resize_moves_the_generation_before_encode_returns",
+            "cpu_resize_across_frames_is_exact",
             // `tests/reduce.rs`: the library ops written in a build block (m14.s2f2c).
             "twin_a_stage_writing_an_op_output_is_refused_at_the_seal",
             "twin_macro_ops_equal_the_builder_api_and_the_host",

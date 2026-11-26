@@ -16,7 +16,10 @@
 //! stage is two passes (the args pass and the counted one) that `FrameTiming::Passes` reports as one entry, so the
 //! span at `Frame` is the quantity. wgpu's indirect validation is recorded inside the counted pass, before its
 //! indirect dispatch, so the span includes it. On a device without timestamp queries the probe prints a different
-//! quantity (16 frames submitted, one wait, time over 16) and says so.
+//! quantity (16 frames submitted, one wait, time over 16) and says so. The six-stage cell is labelled in its output: a
+//! bounded frame records its six dispatches in one pass and an indirect frame twelve passes, so that cell's difference
+//! is not the fixed cost of one launch. Before timing, every batch's sealed launch is checked (a batch asked for
+//! `Indirect` that fell back to `Bounded` fails), and the median over the rounds is the mean of the two middle ones.
 //!
 //! `GUST_S2I_M2_PROBE=1 cargo test -p batch-basics --release --test counted_measure gpu_s2i_m2 -- --nocapture`
 
@@ -58,7 +61,12 @@ fn build(
 
 fn median(mut values: Vec<f64>) -> f64 {
     values.sort_by(f64::total_cmp);
-    values[values.len() / 2]
+    let mid = values.len() / 2;
+    if values.len().is_multiple_of(2) {
+        (values[mid - 1] + values[mid]) / 2.0
+    } else {
+        values[mid]
+    }
 }
 
 /// The median frame time of one batch at one count, in microseconds.
@@ -189,7 +197,14 @@ impl Cell {
             .iter()
             .map(|&fill| format!("{}", f64::from(fill) / 100.0))
             .collect();
-        format!("{}@{}", self.capacity, fills.join("/"))
+        let label = format!("{}@{}", self.capacity, fills.join("/"));
+        if self.fills.len() > 1 {
+            format!(
+                "{label} [six stages: Bounded records its dispatches in one pass and Indirect twelve passes; the difference is not one launch's fixed cost]"
+            )
+        } else {
+            label
+        }
     }
 }
 
@@ -316,6 +331,7 @@ fn m2_build(
     deep: bool,
     launch: CountedLaunch,
 ) -> (Batch<HeadlessDevice>, Rig) {
+    HeadlessDevice::counted_probe(true);
     set_counted_launch(Some(launch));
     let built = match (stages, deep) {
         (1, false) => build_one(device, capacity),
@@ -325,6 +341,17 @@ fn m2_build(
         _ => unreachable!("the cells have one or six stages"),
     };
     set_counted_launch(None);
+    let sealed_indirect = HeadlessDevice::counted_probe_args().len();
+    HeadlessDevice::counted_probe(false);
+    let expected = if launch == CountedLaunch::Indirect {
+        stages
+    } else {
+        0
+    };
+    assert_eq!(
+        sealed_indirect, expected,
+        "the batch asked for {launch:?} sealed {sealed_indirect} indirect stages, expected {expected}"
+    );
     built.unwrap()
 }
 
@@ -441,11 +468,10 @@ fn m2_measure(
     }
 }
 
-/// The smallest and the largest of the round medians, as text.
-fn m2_range(values: &[f64]) -> String {
-    let low = values.iter().copied().fold(f64::INFINITY, f64::min);
-    let high = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    format!("{low:.1}-{high:.1}")
+/// Every round's median in the order of the rounds (round 0 and 2 created Indirect first), as text.
+fn m2_rounds_text(values: &[f64]) -> String {
+    let texts: Vec<String> = values.iter().map(|value| format!("{value:.1}")).collect();
+    texts.join(";")
 }
 
 /// Measurement s2i.m2 (see the header). Skipped unless `GUST_S2I_M2_PROBE=1`; `GUST_S2I_M2_CELLS=small` keeps the
@@ -466,8 +492,12 @@ fn gpu_s2i_m2_span_indirect_against_bounded() {
         .filter(|cell| !small_only || cell.capacity <= 1 << 20)
         .collect();
     let device = Arc::new(HeadlessDevice::new().expect("a GPU adapter is required"));
-    let span_mode = device.supports_gpu_timestamps();
-    println!("adapter: {}", device.adapter_info().name);
+    let adapter = device.adapter_info();
+    println!("adapter: {} (backend {:?})", adapter.name, adapter.backend);
+    let span_mode = m2_build(&device, 1024, 1, false, CountedLaunch::Indirect)
+        .0
+        .frame_timing()
+        .is_some();
     if span_mode {
         println!(
             "quantity: the GPU span of the frame at FrameTiming::Frame, microseconds; the Instant columns are the \
@@ -484,7 +514,7 @@ fn gpu_s2i_m2_span_indirect_against_bounded() {
          cell = capacity@fill percent of each counted stage"
     );
     println!(
-        "cell,indirect,bounded,ratio_bounded_over_indirect,indirect_minus_bounded_us,indirect_range,bounded_range,\
+        "cell,indirect,bounded,ratio_bounded_over_indirect,indirect_minus_bounded_us,indirect_rounds,bounded_rounds,\
          indirect_instant,bounded_instant,instant_ratio"
     );
     // The cells that share a batch (a capacity and a number of counted stages), in the order of the cells.
@@ -532,8 +562,8 @@ fn gpu_s2i_m2_span_indirect_against_bounded() {
                 cell.label(),
                 b / i,
                 i - b,
-                m2_range(&column(0, false)),
-                m2_range(&column(1, false)),
+                m2_rounds_text(&column(0, false)),
+                m2_rounds_text(&column(1, false)),
                 bw / iw,
             );
         }

@@ -650,17 +650,70 @@ fn an_enum_element_without_a_word_of_zero_is_e1012_at_the_element_type() {
 }
 
 #[test]
-fn an_enum_in_place_target_and_a_host_slice_of_enums_are_refused_by_name() {
-    let target = Scratch::new();
+fn an_enum_in_place_target_loads_through_the_decoder_and_stores_the_encoded_word() {
+    let scratch = Scratch::new();
     let text = stage(
         &format!(
-            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} &mut t, [t: &mut Stage<Mode>], |i| {{ t[i] = Mode::Linear; }}"
+            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} &mut t, [t: &mut Stage<Mode>], |i| {{ \
+             t[i] = match t[i] {{ Mode::Linear => Mode::Square, Mode::Square => Mode::Linear }}; }}"
         ),
-        &target,
+        &scratch,
     );
-    assert!(failed(&text), "{text}");
-    assert_rendered_code(&text, Code::TaskCapture);
-    assert!(text.contains("in-place target of enum elements"), "{text}");
+    assert!(!failed(&text), "{text}");
+    let slang = scratch.slang();
+    // The target is a buffer of words, the load decodes and the store writes the word of the value.
+    assert!(slang.contains("RWStructuredBuffer<uint> t"), "{slang}");
+    assert!(slang.contains("par_for_enum_Mode(t["), "{slang}");
+    assert!(slang.contains("uint(par_for_enum_store)"), "{slang}");
+    assert!(text.contains("t . words ()"), "{text}");
+}
+
+#[test]
+fn a_two_dimensional_enum_target_is_still_the_rank_error() {
+    stage_rejected(
+        &format!(
+            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} &mut t, [t: &mut Stage<Mode>], |i| {{ \
+             t[(i, i)] = Mode::Linear; }}"
+        ),
+        Code::TaskIndexRank,
+    );
+}
+
+#[test]
+fn a_compound_assignment_to_an_enum_target_is_e0122() {
+    stage_rejected(
+        &format!(
+            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} &mut t, [t: &mut Stage<Mode>], |i| {{ \
+             t[i] += Mode::Linear; }}"
+        ),
+        Code::EnumShape,
+    );
+}
+
+#[test]
+fn an_atomic_on_an_enum_target_is_e0122() {
+    stage_rejected(
+        &format!(
+            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} &mut t, [t: &mut Stage<Mode>], |i| {{ \
+             atomic_add(&mut t[i], 1u32); }}"
+        ),
+        Code::EnumShape,
+    );
+}
+
+#[test]
+fn an_enum_target_without_a_word_of_zero_is_e1012() {
+    stage_rejected(
+        &format!(
+            "batch(b, \"s\"); enums {{ {SHADE_DEFINITION} }} &mut t, [t: &mut Stage<Shade>], |i| {{ \
+             t[i] = Shade::Dim; }}"
+        ),
+        Code::BatchEnumNoZero,
+    );
+}
+
+#[test]
+fn a_host_slice_of_enums_is_refused_like_every_host_slice() {
     let slice = stage(
         &format!(
             "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} 8u32, [m: &[Mode]], |i| -> u32 {{ 0u32 }}"
@@ -668,8 +721,23 @@ fn an_enum_in_place_target_and_a_host_slice_of_enums_are_refused_by_name() {
         &Scratch::new(),
     );
     assert!(failed(&slice), "{slice}");
-    assert_rendered_code(&slice, Code::TaskCapture);
-    assert!(slice.contains("host slice of enum elements"), "{slice}");
+    assert_rendered_code(&slice, Code::BatchForm);
+    assert!(slice.contains("arrives in a later release"), "{slice}");
+}
+
+#[test]
+fn a_target_that_differs_in_one_word_makes_a_different_kernel() {
+    let source = |square: u32| {
+        format!(
+            "batch(b, \"s\"); enums {{ # [repr (u32)] enum Mode {{ Square = {square}u32 , Linear = 0u32 }} }} \
+             &mut t, [t: &mut Stage<Mode>], |i| {{ t[i] = Mode::Square; }}"
+        )
+    };
+    let (five, six) = (Scratch::new(), Scratch::new());
+    let (text_five, text_six) = (stage(&source(5), &five), stage(&source(6), &six));
+    assert!(!failed(&text_five) && !failed(&text_six), "{text_five}");
+    assert_ne!(five.slang(), six.slang());
+    assert_ne!(text_five, text_six);
 }
 
 #[test]

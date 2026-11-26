@@ -3,7 +3,7 @@
 use core::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use super::{Batch, BatchDevice, Error, Stage};
+use super::{Batch, BatchDevice, Element, Error, Stage};
 use crate::GpuPod;
 
 /// A caller's stable view of one buffer of a batch (an input, or the result of a stage, that the build block returned):
@@ -128,12 +128,16 @@ impl<D: BatchDevice> Batch<D> {
     ///
     /// Parameters, extent records, and slots are not readable.
     ///
+    /// The view holds what the device stores: a handle of a [`GpuPod`] type gives a `View<D, T>`, and a handle of a
+    /// `#[derive(GpuEnum)]` enum gives a `View<D, u32>` of its words (the pass reads them as the enum's words; a word
+    /// that is no variant is possible only through the raw tier or a device fault, see [`Element`]).
+    ///
     /// # Errors
     ///
     /// [`Error::Foreign`] for a handle of another batch, [`Error::NotOutput`] for one the block did not return.
-    pub fn view<T: GpuPod, R>(&self, handle: &Stage<T, R>) -> Result<View<D, T>, Error>
+    pub fn view<T: Element, R>(&self, handle: &Stage<T, R>) -> Result<View<D, T::Word>, Error>
     where
-        D::Buffer<T>: 'static,
+        D::Buffer<T::Word>: 'static,
     {
         let (_, buffer, dims) = self.core.output(handle)?;
         Ok(View {

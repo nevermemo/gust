@@ -13,6 +13,10 @@ breaks existing code bumps the minor version, and the promise is described in th
   instead of creating one per pass (a dispatch over an empty extent in between does not break the run). Results are
   unchanged; an API trace of such a batch shows one bind group creation where it showed one per pass. Split launches
   and any dispatch that differs in a kernel or a binding keep their own groups.
+- An in-place enum target in a batch stage (m14.s2e2d): `gpu_task!(&mut phase, |i| { phase[i] = .. })` over a
+  `Stage<Phase>` of a `#[derive(GpuEnum)]` enum. A load decodes the word and a store writes `e as u32`; a compound
+  assignment or an atomic on it is `GUST-E0122`. A host slice of enums now gets the general `GUST-E1005`.
+  `Batch::view` takes `T: Element` and returns `View<D, T::Word>`, so an enum handle gives a view of its `u32` words.
 - `#[derive(GpuEnum)]` and the `gust::GpuEnum` trait (m14.s2e2a): for a field-less `#[repr(u32)]` enum with literal or
   implicit discriminants that fit in `u32`, the derive implements `from_word`, `to_word` and a validating
   `TryFrom<u32>` (error `gust::EnumWordError`, which carries the word), each a `match` over the discriminants. The enum
@@ -26,8 +30,7 @@ breaks existing code bumps the minor version, and the promise is described in th
   `ticket`, `Blocking::read`) through the new `gust::batch::Element` trait, whose blanket impl keeps every `GpuPod`
   element as it was; the device holds one `u32` word per element. A word that is no variant reads as the last variant
   in a body, and `Error::InvalidEnum` names the lowest such index on the host read. The enum needs a variant whose word
-  is 0 (`GUST-E1012`). An in-place enum target, a host slice of enums and an enum operand of a library op are refused
-  by name.
+  is 0 (`GUST-E1012`). An enum operand of a library op is refused by name.
   A `GpuPod` struct of your own as `b.input::<Particle>(n)` inside a `gpu_batch!` block is no longer accepted: the
   macro cannot tell it from an enum, so rustc says "cannot find macro `Particle` in this scope" and "`Particle` is not
   a GPU enum". There is no workaround inside the macro; build such a batch with `gust::batch::build` instead.

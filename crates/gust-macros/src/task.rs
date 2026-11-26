@@ -967,6 +967,14 @@ impl<'ast> Visit<'ast> for Rules<'_> {
     }
 }
 
+/// A call of one of the dialect's atomic operations (`atomic_add(&mut t[i], ..)`).
+fn is_atomic_call(call: &syn::ExprCall) -> bool {
+    matches!(&*call.func, syn::Expr::Path(path) if path.path.get_ident().is_some_and(|name| matches!(
+        name.unraw().to_string().as_str(),
+        "atomic_add" | "atomic_min" | "atomic_max" | "atomic_exchange" | "atomic_compare_exchange"
+    )))
+}
+
 fn is_compound_assignment(op: &syn::BinOp) -> bool {
     matches!(
         op,
@@ -1436,44 +1444,29 @@ fn lower_batch(
                 reference.mutability,
                 type_argument(&reference.elem, "Stage"),
             ) {
-                if enum_named(&clause.enums, element).is_some() {
-                    return Err(diagnostics::error(
-                        Code::TaskCapture,
-                        element,
-                        format!(
-                            "`{}` is an in-place target of enum elements, which is not in this release: a stage reads \
-                             enum elements and writes them as its result (`|i| -> {}`), and an in-place stage takes a \
-                             numeric element",
-                            name.unraw(),
-                            element.to_token_stream()
-                        ),
-                    ));
-                }
                 views.push(View {
                     name: name.clone(),
                     rank: 1,
                     target: true,
                 });
+                // An in-place target of enum elements: the kernel binds the words, a load decodes them and a store
+                // encodes the value (D275).
+                if let Some((path, definition)) = enum_named(&clause.enums, element) {
+                    require_zero_word(element, definition)?;
+                    book.take(path, definition)?;
+                    enum_views.push((name.clone(), definition.ident.clone()));
+                    entries.push(RawBinding {
+                        name,
+                        ty: syn::parse_quote!(&mut [u32]),
+                    });
+                    continue;
+                }
                 let element = element.clone();
                 entries.push(RawBinding {
                     name,
                     ty: syn::parse_quote!(&mut [#element]),
                 });
                 continue;
-            }
-            if let syn::Type::Slice(slice) = &*reference.elem
-                && enum_named(&clause.enums, &slice.elem).is_some()
-            {
-                return Err(diagnostics::error(
-                    Code::TaskCapture,
-                    &slice.elem,
-                    format!(
-                        "`{}` is a host slice of enum elements, which a stage does not capture: write the enums into \
-                         an input (`b.input::<{}>(..)`) and read the input",
-                        name.unraw(),
-                        slice.elem.to_token_stream()
-                    ),
-                ));
             }
             if matches!(*reference.elem, syn::Type::Slice(_)) {
                 return Err(batch_form(
@@ -1553,7 +1546,7 @@ fn lower_batch(
                 let decoder = enum_views
                     .iter()
                     .find(|(name, _)| *name == view.name)
-                    .map(|(_, definition)| enum_decoder(definition));
+                    .map(|(_, definition)| (enum_decoder(definition), definition.clone()));
                 (view.name.clone(), view.target, None, decoder)
             })
             .collect(),
@@ -1670,11 +1663,20 @@ fn enum_named<'a>(
         .map(|definition| (&path.path, definition))
 }
 
+/// A handle of a batch stage as the lowering sees it: its name, whether it is the in-place target, the rank the body
+/// indexes it with, and (for enum elements) the decoder's name and the enum's own name.
+type LoweredView = (
+    syn::Ident,
+    bool,
+    Option<usize>,
+    Option<(syn::Ident, syn::Ident)>,
+);
+
 /// The body of a batch stage, rewritten in place, and the first rule it breaks.
 struct Lowering {
     /// Each handle: its name, whether it is the in-place target, the rank the body indexes it with, and the function
-    /// that decodes a load when its elements are enums.
-    views: Vec<(syn::Ident, bool, Option<usize>, Option<syn::Ident>)>,
+    /// that decodes a load, with the enum's name, when its elements are enums.
+    views: Vec<LoweredView>,
     params: Vec<syn::Ident>,
     /// The expression being visited is the place of an assignment: a store, not a load.
     lvalue: bool,
@@ -1702,6 +1704,22 @@ impl Lowering {
             .position(|(view, ..)| view.unraw() == name.unraw())
     }
 
+    /// The enum whose elements the in-place target `place` indexes (`place` is `target[i]` of an enum target).
+    fn enum_target(&self, place: &syn::Expr) -> Option<syn::Ident> {
+        let mut place = place;
+        while let syn::Expr::Paren(paren) = place {
+            place = &paren.expr;
+        }
+        let syn::Expr::Index(index) = place else {
+            return None;
+        };
+        let (_, target, _, decoder) = &self.views[self.slot(&index.expr)?];
+        decoder
+            .as_ref()
+            .filter(|_| *target)
+            .map(|(_, name)| name.clone())
+    }
+
     fn is_param(&self, expression: &syn::Expr) -> bool {
         matches!(expression, syn::Expr::Path(path) if path.qself.is_none()
             && path.path.get_ident().is_some_and(|name| self.params.iter().any(|param| param.unraw() == name.unraw())))
@@ -1717,13 +1735,51 @@ impl VisitMut for Lowering {
                 self.visit_expr_mut(&mut assign.right);
                 self.lvalue = true;
                 self.visit_expr_mut(&mut assign.left);
+                // A store into an enum target writes the value's word. The value is bound with its type first (a
+                // `match` value needs one, as in a stage's result).
+                if let Some(enum_name) = self.enum_target(&assign.left) {
+                    let (left, right) = (&assign.left, &assign.right);
+                    let local = format_ident!("par_for_enum_store");
+                    *expression = syn::parse_quote!({
+                        let #local: #enum_name = #right;
+                        #left = #local as u32;
+                    });
+                }
                 return;
             }
             syn::Expr::Binary(binary) if is_compound_assignment(&binary.op) => {
+                if let Some(enum_name) = self.enum_target(&binary.left) {
+                    self.refuse(
+                        Code::EnumShape,
+                        &binary.left,
+                        format!(
+                            "an element of `{enum_name}` is assigned with `=` only: a compound assignment is arithmetic, \
+                             which an enum has none of (store the new variant: `target[i] = ..`)"
+                        ),
+                    );
+                    return;
+                }
                 self.visit_expr_mut(&mut binary.right);
                 self.lvalue = true;
                 self.visit_expr_mut(&mut binary.left);
                 return;
+            }
+            // An atomic on an element of an enum target is arithmetic on the word: refused before the load wrap
+            // rewrites its operand.
+            syn::Expr::Call(call) if is_atomic_call(call) => {
+                if let Some(syn::Expr::Reference(place)) = call.args.first()
+                    && let Some(enum_name) = self.enum_target(&place.expr)
+                {
+                    self.refuse(
+                        Code::EnumShape,
+                        &place.expr,
+                        format!(
+                            "an element of `{enum_name}` is assigned with `=` only: an atomic is arithmetic on the \
+                             word, which an enum has none of (store the new variant: `target[i] = ..`)"
+                        ),
+                    );
+                    return;
+                }
             }
             _ => {}
         }
@@ -1788,9 +1844,9 @@ impl VisitMut for Lowering {
                             let flat: syn::Expr = syn::parse_quote!(((#y) * #width + (#x)));
                             *index.index = flat;
                         }
-                        // A load of an enum element decodes the word; a store (a capture's, which E1003 refuses)
-                        // stays as written.
-                        if let (Some(decoder), false) = (&decoder, store) {
+                        // A load of an enum element decodes the word; a store stays as written (its value is
+                        // encoded by the assignment that holds it).
+                        if let (Some((decoder, _)), false) = (&decoder, store) {
                             let load = syn::Expr::Index(index.clone());
                             replacement = Some(syn::parse_quote!(#decoder(#load)));
                         }

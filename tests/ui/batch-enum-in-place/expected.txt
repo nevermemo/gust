@@ -2,5 +2,5 @@
 # A macro error is a compile_error!: code none.
 code: none
 file: batch-enum-in-place/src/main.rs
-line: 18
-message: [GUST-E1002]
+line: 19
+message: [GUST-E0122]

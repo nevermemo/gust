@@ -661,7 +661,7 @@ pub(crate) struct BufEntry {
 
 /// What a sealed buffer keeps for good: the live buffer and its extents are in [`RunState`].
 pub(crate) struct BufMeta<D: BatchDevice> {
-    pub(crate) name: String,
+    pub(crate) name: Arc<str>,
     pub(crate) input: bool,
     pub(crate) stride: u64,
     pub(crate) rule: Rule,
@@ -828,7 +828,7 @@ impl<D: BatchDevice> RunState<D> {
 
 pub(crate) struct Core<D: BatchDevice> {
     pub(crate) id: u64,
-    pub(crate) name: String,
+    pub(crate) name: Arc<str>,
     pub(crate) device: Arc<D>,
     pub(crate) buffers: Vec<BufMeta<D>>,
     pub(crate) stages: Vec<StageRec<D>>,
@@ -855,14 +855,14 @@ impl<D: BatchDevice> Core<D> {
     pub(crate) fn locate<T, R>(&self, handle: &Stage<T, R>) -> Result<usize, Error> {
         if handle.batch != self.id || handle.id >= self.buffers.len() {
             return Err(Error::Foreign {
-                batch: self.name.clone(),
+                batch: self.name.to_string(),
                 stage: String::from("a handle"),
             });
         }
         if !self.exposed[handle.id] {
             return Err(Error::NotOutput {
-                batch: self.name.clone(),
-                stage: self.buffers[handle.id].name.clone(),
+                batch: self.name.to_string(),
+                stage: self.buffers[handle.id].name.to_string(),
             });
         }
         Ok(handle.id)
@@ -934,14 +934,14 @@ impl<D: BatchDevice> Batch<D> {
                 let reads: Vec<String> = stage
                     .reads
                     .iter()
-                    .map(|&id| buffers[id].name.clone())
+                    .map(|&id| buffers[id].name.to_string())
                     .collect();
                 let dims = &dims;
                 stage.written().enumerate().map(move |(k, id)| StageInfo {
                     name: if k == 0 {
                         stage.name.clone()
                     } else {
-                        buffers[id].name.clone()
+                        buffers[id].name.to_string()
                     },
                     dims: dims[id],
                     reads: reads.clone(),
@@ -974,7 +974,7 @@ impl<D: BatchDevice> Batch<D> {
             .zip(&run.dims)
             .map(|(entry, dims)| {
                 (
-                    entry.name.clone(),
+                    entry.name.to_string(),
                     u64::from(dims[0]) * u64::from(dims[1]) * entry.stride,
                 )
             })
@@ -1708,7 +1708,7 @@ pub fn build<D: BatchDevice, H: DeviceRef<Device = D>, O>(
         .zip(core::mem::take(&mut state.allocs))
     {
         metas.push(BufMeta {
-            name: entry.name,
+            name: Arc::from(entry.name),
             input: entry.input,
             stride: entry.stride,
             rule: entry.rule,
@@ -1719,7 +1719,7 @@ pub fn build<D: BatchDevice, H: DeviceRef<Device = D>, O>(
     }
     let core = Core {
         id: state.id,
-        name: state.name.clone(),
+        name: Arc::from(state.name.as_str()),
         device: Arc::clone(&state.device),
         buffers: metas,
         stages,

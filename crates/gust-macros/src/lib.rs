@@ -318,8 +318,9 @@ pub fn gpu_task(input: TokenStream) -> TokenStream {
 /// host writes and reads `Phase` itself, the device holds one `u32` word per element, and a load decodes the word
 /// through the enum's decoder. In a body a word that is no variant is the last variant (on the CPU twin and the GPU
 /// alike); on the host a read of a bad word is `Error::InvalidEnum`. The enum needs a variant whose word is 0
-/// (GUST-E1012). An in-place `&mut Stage<Phase>` target, a host slice of enums and an enum operand of a library op are
-/// refused by name (GUST-E1002, GUST-E1009).
+/// (GUST-E1012). An in-place `&mut Stage<Phase>` target loads through the decoder and stores `e as u32` (`=` only: a
+/// compound assignment is GUST-E0122). A host slice of enums is refused as every host slice of a batch is (GUST-E1005),
+/// and an enum operand of a library op by name (GUST-E1009).
 ///
 /// The diagnostics of the form itself are GUST-E1005 and GUST-E1006, and GUST-E1009 and GUST-E1010 for the library ops
 /// (`docs/DIAGNOSTICS.md`).

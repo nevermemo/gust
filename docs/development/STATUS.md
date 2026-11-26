@@ -1437,6 +1437,9 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       on the frame path, now caught by mutation); ordering tests at 2^20 elements. Its bench rows met dev's pf.trust
       probes in a dev merge resolved in the lane; GPU_SUITE_PIN 696 over 72, printed by a full Gpu suite run on the
       Radeon 890M. BENCHMARKS says W6-hand on GUST now records one compute pass.
+      Gates t40 and t41 each found a gap the lane had not run: the GPU bench test it added was missing from the
+      tool-free bench step's adapter skip list, and its new bench kernels had no gust-bench-pre artifacts. Both were
+      fixed (the skip list and its count test; artifacts regenerated with the pinned Slang), and gate t42 is all green.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

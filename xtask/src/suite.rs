@@ -438,6 +438,90 @@ const PRECOMPILED_CLIPPY: Step = Step::Cargo(&[
     "-D",
     "warnings",
 ]);
+/// The benchmark workspace `bench/` is a workspace of its own as well (m14.benchfmt): the root's fmt and clippy never reach
+/// it, and only `budget-kit` had a nightly check. The Unit suite checks all its members, runs the CPU tests of
+/// `gust-bench` (default features; counted) and `cargo gust check` of the precompiled variant `gust-bench-pre` (the
+/// stored artifacts against its sources; with `--allow-slang-mismatch`, since the `unit` CI job has no reflection helper
+/// to read the installed Slang version; the hashes, strays and the artifact checks are pure Rust). Each step prints its
+/// seconds like every suite step.
+const BENCH_FMT: Step = Step::Cargo(&[
+    "fmt",
+    "--manifest-path",
+    "bench/Cargo.toml",
+    "--all",
+    "--",
+    "--check",
+]);
+const BENCH_CLIPPY: Step = Step::Cargo(&[
+    "clippy",
+    "--locked",
+    "--manifest-path",
+    "bench/Cargo.toml",
+    "--workspace",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings",
+]);
+/// The 13 tests of `gust-bench` that open an adapter ("an adapter is needed"; the `gust_gpu` and `wgsl_wgpu` GPU tests)
+/// fail where none exists (the `unit` CI job, the no-GPU gate stages), so this CPU step skips them by name (`--exact`,
+/// so a longer test name that merely contains one is kept); those tests run by hand where an adapter exists
+/// (`cargo test --manifest-path bench/Cargo.toml -p gust-bench`). The step runs in the tool-free environment of the
+/// `unit` job with the Vulkan loader pointed at no driver ([`Step::ToolFreeCargo`]), so a new adapter test that misses
+/// the list fails here as it does in CI.
+const BENCH_TESTS: Step = Step::ToolFreeCargo {
+    args: BENCH_TESTS_ARGS,
+    hide_vulkan: true,
+};
+const BENCH_TESTS_ARGS: &[&str] = &[
+    "test",
+    "--locked",
+    "--manifest-path",
+    "bench/Cargo.toml",
+    "-p",
+    "gust-bench",
+    "--",
+    "--exact",
+    "--skip",
+    "gust_gpu::tests::a_cold_start_records_the_route_that_ran",
+    "--skip",
+    "gust_gpu::tests::a_w6_graph_reports_a_gpu_time_for_one_run_and_for_a_repeated_batch",
+    "--skip",
+    "gust_gpu::tests::a_w7_sum_is_one_batch_and_its_gpu_time_follows_the_adapter",
+    "--skip",
+    "gust_gpu::tests::every_gust_stage_is_inside_its_own_bound_in_both_forms",
+    "--skip",
+    "gust_gpu::tests::every_workload_passes_its_bound_on_gust_and_an_undispatched_output_fails",
+    "--skip",
+    "gust_gpu::tests::the_bound_falls_back_to_the_looser_of_v0_and_v1_where_v1_is_not_admitted",
+    "--skip",
+    "wgsl_wgpu::tests::a_w7_batch_reads_one_timestamp_pair_per_repeat",
+    "--skip",
+    "wgsl_wgpu::tests::ablation_backends_flip_one_switch_and_have_their_own_ids",
+    "--skip",
+    "wgsl_wgpu::tests::all_on_has_every_switch_on_and_a_fresh_vec_like_percall",
+    "--skip",
+    "wgsl_wgpu::tests::each_switch_changes_exactly_what_it_claims",
+    "--skip",
+    "wgsl_wgpu::tests::every_hand_stage_is_inside_its_own_bound_on_the_gpu",
+    "--skip",
+    "wgsl_wgpu::tests::every_workload_passes_its_bound_on_hand_wgsl_in_both_modes",
+    "--skip",
+    "wgsl_wgpu::tests::the_unchecked_rows_have_their_own_ids_and_the_host_shape_of_their_twin",
+];
+/// Its nested `cargo check` runs without `--locked`, so it relies on [`BENCH_CLIPPY`] having run first on the same lock.
+const BENCH_PRE_CHECK: Step = Step::Cargo(&[
+    "run",
+    "--locked",
+    "--quiet",
+    "-p",
+    "cargo-gust",
+    "--",
+    "check",
+    "--manifest-path",
+    "bench/gust-bench-pre/Cargo.toml",
+    "--allow-slang-mismatch",
+]);
 const DIFFTEST_FMT: Step = Step::Cargo(DIFFTEST_FMT_ARGS);
 const DIFFTEST_CLIPPY: Step = Step::Cargo(DIFFTEST_CLIPPY_ARGS);
 const DIFFTEST_TESTS: Step = Step::Cargo(DIFFTEST_TESTS_ARGS);
@@ -497,7 +581,7 @@ impl Suite {
     pub(crate) fn covers(self) -> &'static str {
         match self {
             Self::Unit => {
-                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), the coretests_twin test (the scalar Rust core test cases on the CPU twin against their literals), the uniforms_twin test (the uniforms fixture on the CPU twin against a hand reference), the pixel_twin, textures_twin, parallel, routed_handle (the routed device handle without a GPU runtime) and toolchain test binaries, the doc tests of gust-compute that need no tool (every one but the twelve whose examples launch slangc or the native reflection helper; they run in Slangc) and the adapter-free doc tests of gust-compute-wgpu (its guide and four more; the rest of that crate's doc tests need an adapter and run in Gpu); both doc-test steps run in the environment of the CI job `unit` whatever the machine has: no Slang variable, no reflection helper, no PATH folder with a Slang tool, an empty GUST_SLANG_HOME, and for the wgpu one no Vulkan driver; the tests of cargo-gust that need no helper, clippy and check of gust and gust-wgpu without default features (the slang-runtime off state), the format check and clippy of the fixture workspace tests/precompiled (CI runs them in the job `precompiled`), the format check, clippy and tests of the harness crate tests/difftest (a workspace of its own; CI runs them in the job `difftest`, and `--skip-difftest` leaves all but the format check out of the `unit` and `slang` jobs), and the differential batch of seeds 1 to 4 in its CPU-only mode (64 generated kernels: an independent interpreter against the CPU twin, report.json judged by cargo xtask check-difftest); no external tools"
+                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), the coretests_twin test (the scalar Rust core test cases on the CPU twin against their literals), the uniforms_twin test (the uniforms fixture on the CPU twin against a hand reference), the pixel_twin, textures_twin, parallel, routed_handle (the routed device handle without a GPU runtime) and toolchain test binaries, the doc tests of gust-compute that need no tool (every one but the twelve whose examples launch slangc or the native reflection helper; they run in Slangc) and the adapter-free doc tests of gust-compute-wgpu (its guide and four more; the rest of that crate's doc tests need an adapter and run in Gpu); both doc-test steps run in the environment of the CI job `unit` whatever the machine has: no Slang variable, no reflection helper, no PATH folder with a Slang tool, an empty GUST_SLANG_HOME, and for the wgpu one no Vulkan driver; the tests of cargo-gust that need no helper, clippy and check of gust and gust-wgpu without default features (the slang-runtime off state), the format check and clippy of the fixture workspace tests/precompiled (CI runs them in the job `precompiled`), the format check, clippy, tests of gust-bench (with no Vulkan driver) and `cargo gust check --allow-slang-mismatch` of gust-bench-pre (the unit job has no helper to read the Slang version) in the benchmark workspace bench/ (a workspace of its own),the format check, clippy and tests of the harness crate tests/difftest (a workspace of its own; CI runs them in the job `difftest`, and `--skip-difftest` leaves all but the format check out of the `unit` and `slang` jobs), and the differential batch of seeds 1 to 4 in its CPU-only mode (64 generated kernels: an independent interpreter against the CPU twin, report.json judged by cargo xtask check-difftest); no external tools"
             }
             Self::Cpu => {
                 "the production CPU target (GUST_PROFILE=cpu) on the fixture tests/cpu-target: the kernels build in release, run on gust::cpu::CpuDevice and equal independent host references; the binary holds no compiler, helper or GPU runtime; gust-wgpu refuses the profile; the cfg(test) and --cfg gust_dual builds keep one impl; the profile flips rebuild correctly; cargo only"
@@ -569,6 +653,10 @@ impl Suite {
             OFF_STATE_CHECK,
             PRECOMPILED_FMT,
             PRECOMPILED_CLIPPY,
+            BENCH_FMT,
+            BENCH_CLIPPY,
+            BENCH_TESTS,
+            BENCH_PRE_CHECK,
             DIFFTEST_FMT,
             DIFFTEST_CLIPPY,
             DIFFTEST_TESTS,

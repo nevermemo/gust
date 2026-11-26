@@ -454,8 +454,10 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../gust-bench-pre/gust-artifacts");
         let read = |name: &str| -> serde_json::Value {
-            serde_json::from_slice(&std::fs::read(dir.join(name)).expect("a committed artifact file"))
-                .expect("JSON")
+            serde_json::from_slice(
+                &std::fs::read(dir.join(name)).expect("a committed artifact file"),
+            )
+            .expect("JSON")
         };
         let manifest = read("manifest.json");
         let steps = manifest["kernels"]

@@ -2,8 +2,8 @@ use crate::cache::PipelineCache;
 #[cfg(doc)]
 use crate::default_device;
 use crate::{
-    ADAPTER_ATTEMPTS, ADAPTER_BACKOFF, DeviceOptions, Error, HeadlessDevice, NEXT_DEVICE_ID,
-    TimestampProfiler, pause_between_attempts, retry_no_adapter,
+    ADAPTER_ATTEMPTS, ADAPTER_BACKOFF, DeviceOptions, Error, HeadlessDevice, LazyTimestampProfiler,
+    NEXT_DEVICE_ID, pause_between_attempts, retry_no_adapter,
 };
 use crate::{AdapterChoice, BufferPool, FeaturesPolicy, LimitsPolicy, device};
 use gust::capability::Capability;
@@ -112,11 +112,8 @@ impl HeadlessDevice {
     ) -> Self {
         let adapter_info = adapter.get_info();
         let subgroup_sizes = device::adapter_subgroup_sizes(adapter.features(), &adapter_info);
-        // From the device's own features, which are what it was granted, not from what the adapter offers.
-        let timestamp_profiler = device
-            .features()
-            .contains(wgpu::Features::TIMESTAMP_QUERY)
-            .then(|| Mutex::new(TimestampProfiler::new(&device)));
+        // The timestamp objects are made at the first timed call, not here.
+        let timestamp_profiler = LazyTimestampProfiler::new(&device);
         let limits = device.limits();
         let fragment_storage = adapter
             .get_downlevel_capabilities()

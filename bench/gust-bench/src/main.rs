@@ -4,7 +4,7 @@
 //! gust-bench run --out run1.json [--label NAME] [--quick] [--workloads W1,W3,W4-256-zipf] [--sizes N,N] [--backends a,b]
 //!                [--group publishable|spirv|ablation] [--ablation bind-group-reuse,staging-reuse,one-submission,all-on|all]
 //!                [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S]
-//!                [--cold-only] [--cold-repeats N] [--seed N] [--with gust-setup,gust-shader,gust-device]
+//!                [--cold-only] [--cold-repeats N] [--seed N] [--with gust-setup,gust-shader,gust-device,wgsl-prebuilt-b]
 //!                [--functional]   # correctness only, quick sizes, any adapter (lavapipe included), no sampler, no timing published
 //!                [--adapter "NAME"] # the one adapter whose name contains NAME (letter case ignored), for both devices of the run
 //! gust-bench aggregate --json out.json --md out.md run1.json run2.json run3.json
@@ -70,7 +70,7 @@ use serde_json::{Value, json};
 use wgsl_wgpu::{HandWgsl, Mode, Switch, WgpuContext};
 use workloads::Workload;
 
-const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W3,...] [--sizes N,N] [--backends a,b] [--group publishable|spirv|ablation] [--ablation LIST|all-on|all] [--with gust-setup,gust-shader,gust-device] [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N] [--functional] [--adapter NAME]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench dump-kernels --out DIR (slang-runtime build)\n       gust-bench probe-adapters\n       gust-bench profile --out FILE [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS] (profile-counts build)\n       gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall,gust-gpu] [--label batch16|end_to_end] (wgpu-trace build)\n       gust-bench list";
+const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W3,...] [--sizes N,N] [--backends a,b] [--group publishable|spirv|ablation] [--ablation LIST|all-on|all] [--with gust-setup,gust-shader,gust-device,wgsl-prebuilt-b] [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N] [--functional] [--adapter NAME]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench dump-kernels --out DIR (slang-runtime build)\n       gust-bench probe-adapters\n       gust-bench profile --out FILE [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS] (profile-counts build)\n       gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall,gust-gpu] [--label batch16|end_to_end] (wgpu-trace build)\n       gust-bench list";
 
 #[derive(Default)]
 struct Options {
@@ -92,7 +92,7 @@ struct Options {
     cap_secs: Option<f64>,
     /// The raw `--ablation` list (switch names, `all-on`, `all`), parsed where the hand-WGSL backends exist.
     ablation: Option<String>,
-    /// `--with gust-setup,gust-shader,gust-device`: the m10.b1c probe backends, appended to the publishable group
+    /// `--with gust-setup,gust-shader,gust-device,wgsl-prebuilt-b`: the m10.b1c probe backends (and the noise-floor copy of the reference), appended to the publishable group
     /// (see `gpu_backends`).
     with_probe: Vec<String>,
     settle_secs: Option<f64>,
@@ -233,7 +233,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--with" => {
                 for item in value("--with")?.split(',') {
                     match item {
-                        "gust-setup" | "gust-shader" | "gust-device" => {
+                        "gust-setup" | "gust-shader" | "gust-device" | "wgsl-prebuilt-b" => {
                             options.with_probe.push(item.to_owned());
                         }
                         other => {
@@ -241,7 +241,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
                                 "--with unchecked is gone: the unchecked hand rows are the spirv group's own (D193); run them with --group spirv in the spirv-route build".to_owned()
                             } else {
                                 format!(
-                                    "--with takes gust-setup, gust-shader or gust-device, not {other}"
+                                    "--with takes gust-setup, gust-shader, gust-device or wgsl-prebuilt-b, not {other}"
                                 )
                             });
                         }
@@ -369,7 +369,7 @@ fn gpu_backends(
         backends.push(Box::new(HandWgsl::all_on(Rc::clone(ctx))));
     }
     // The m10.b1c probes (`--with`): more hand backends in the publishable rotation, `gust-setup` and `gust-device` on a
-    // device of their own set up like GUST's, `gust-shader` on the shared hand device. The kill rule
+    // device of their own set up like GUST's, `gust-shader` on the shared hand device, `wgsl-prebuilt-b` (the reference again) on a device of its own, opened like the hand one. The kill rule
     // ignores them (it judges GUST against wgsl-prebuilt only).
     for (name, probe) in probes {
         backends.push({
@@ -980,8 +980,13 @@ fn run(options: &Options) -> BenchResult<bool> {
     check_probes_group(group, &options.with_probe)?;
     let mut probes = Vec::new();
     for name in &options.with_probe {
-        // `gust-setup` and `gust-device` have a device of their own (set up like GUST's); the others share the hand device.
-        let probe = if name == "gust-setup" || name == "gust-device" {
+        // `gust-setup` and `gust-device` have a device of their own (set up like GUST's), and so has `wgsl-prebuilt-b` (set up like the hand device); `gust-shader` shares the hand device.
+        let probe = if name == "wgsl-prebuilt-b" {
+            Rc::new(WgpuContext::open_on(
+                options.adapter.as_deref(),
+                adapter_limits,
+            )?)
+        } else if name == "gust-setup" || name == "gust-device" {
             Rc::new(WgpuContext::open_like_gust_on(options.adapter.as_deref())?)
         } else {
             Rc::clone(&ctx)

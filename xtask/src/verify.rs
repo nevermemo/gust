@@ -1531,9 +1531,13 @@ pub(crate) struct GpuSuitePin {
 /// number against faked adapter limits, nine to seventeen buffers against a raised limit), one `no_run` doc test
 /// (`DeviceOptions::with_storage_buffers`) and the new test file `tests/storage_buffers.rs` (nine GPU tests, one
 /// `test result:` line). Updated by count; checked by a full Gpu suite run on the Radeon 890M (lane).
+///
+/// Slice m14.lazyts: 673 over 69 became 676 over 70. The lazy timestamp slice adds the new test file
+/// `tests/lazy_timestamps.rs` (three GPU tests, one `test result:` line). Updated by count; checked by a Gpu run of
+/// the file on the Radeon 890M (lane), the full Gpu suite is owed at the merge.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 673,
-    result_lines: 69,
+    passed: 676,
+    result_lines: 70,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

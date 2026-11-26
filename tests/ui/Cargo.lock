@@ -403,6 +403,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "batch-struct-copy-mismatch"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "batch-struct-count"
 version = "0.0.0"
 dependencies = [
@@ -432,6 +439,21 @@ dependencies = [
 
 [[package]]
 name = "batch-struct-op-operand"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-struct-other-crate"
+version = "0.0.0"
+dependencies = [
+ "batch-struct-shapes",
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-struct-shapes"
 version = "0.0.0"
 dependencies = [
  "gust-compute",

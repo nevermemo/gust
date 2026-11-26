@@ -597,6 +597,12 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "twin_an_enum_target_keeps_its_stored_enums_across_frames_and_a_resize",
             // `tests/struct_element.rs`: a struct stored as the element of a batch (m14.s2s).
             "twin_a_struct_element_is_read_stored_and_updated_in_place_like_the_host",
+            "twin_counted_rows_from_n_keep_the_sentinel",
+            "twin_a_resize_zero_fills_the_rows",
+            // `tests/struct_layout.rs`: three std430 layouts of a struct element (m14.s2s fix round 1).
+            "twin_a_struct_of_two_vec2_and_two_scalars_matches_the_host",
+            "twin_a_struct_of_vec4_vec2_and_two_pads_matches_the_host",
+            "twin_a_struct_of_a_mat4_and_scalars_matches_the_host",
             // `tests/resize_ops.rs`: the library ops follow a resize (m14.s2b2).
             "cpu_a_failed_frame_after_a_staged_op_resize_leaves_the_old_plan",
             "cpu_a_min_over_nothing_refuses_the_frame_and_the_batch_recovers",

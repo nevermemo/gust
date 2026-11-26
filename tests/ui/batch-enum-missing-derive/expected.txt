@@ -1,5 +1,8 @@
-# Keys matched against the one error of `cargo check --message-format json`: the macro the derive would have written is missing.
-code: none
+# Keys matched against the named error of the two that `cargo check --message-format json` prints (`errors: 2`): the
+# marker trait both derives implement, and rustc's own "cannot find macro `Mode` in this scope" at the same type.
+code: E0277
 file: batch-enum-missing-derive/src/main.rs
 line: 21
-message: cannot find macro `Mode` in this scope
+errors: 2
+message: `Mode` is not a GPU enum or a GPU struct
+label: add `#[derive(GpuEnum)]` to an enum, or `#[derive(GpuStruct)]` to a struct

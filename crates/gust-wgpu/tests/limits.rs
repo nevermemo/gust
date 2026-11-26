@@ -10,11 +10,14 @@
 
 mod common;
 
-use common::{assert_cold, device};
+use std::sync::Arc;
 
+use common::{assert_cold, device, drive};
+
+use gust::batch::Error as BatchError;
 use gust::{
     Access, Extent, GpuPod, KernelDescriptor, ParameterDescriptor, ParameterKind, ResourceBinding,
-    ResourceLayout, TypeLayout,
+    ResourceLayout, TypeLayout, gpu_batch, gpu_task,
 };
 // The names below are the compatibility path, which these tests exercise until 1.0.
 #[allow(deprecated)]
@@ -359,42 +362,142 @@ fn storage_buffers_above_the_limit_are_an_error_before_compilation() {
     }
 }
 
-/// D279, check 5: a Breeze-shaped kernel over columns binds one storage buffer per column, so ten columns are over the
-/// stage's eight and a `DeviceLimit` before any compilation; the same data as rows (one buffer read, one written) is two
-/// bindings and runs. The limits are lowered to the portable eight, whatever the adapter allows.
-#[test]
-fn ten_column_buffers_are_a_device_limit_where_the_same_data_as_rows_is_two_bindings() {
-    let device = lowered(device(), |limits| {
-        limits.max_storage_buffers_per_shader_stage = 8;
-    });
-    let columns = (0..10)
-        .map(|index| {
-            device.create_typed_buffer(&format!("c{index}"), &[3.0], GpuBufferAccess::ReadWrite)
-        })
-        .collect::<Vec<_>>();
-    let bindings = columns
-        .iter()
-        .map(BufferBinding::read_write)
-        .collect::<Vec<_>>();
-    let error = device
-        .dispatch_buffers(&kernel(Element::F32, 64, 10), 1, &bindings)
-        .expect_err("ten storage buffers are over the stage's eight");
-    assert_limit(error, "max_storage_buffers_per_shader_stage", 10, 8);
-    assert_cold(&device, "a limit error");
+/// Nine `u32` words per element, as nine columns (nine read buffers and a written one) and as one struct of nine
+/// fields (one read buffer and a written one).
+mod nine {
+    #[derive(Clone, Copy, Debug, PartialEq, gust::GpuStruct)]
+    #[repr(C)]
+    pub struct Row {
+        pub f0: u32,
+        pub f1: u32,
+        pub f2: u32,
+        pub f3: u32,
+        pub f4: u32,
+        pub f5: u32,
+        pub f6: u32,
+        pub f7: u32,
+        pub f8: u32,
+    }
+}
 
-    let rows = (0..2)
-        .map(|index| {
-            device.create_typed_buffer(&format!("r{index}"), &[3.0], GpuBufferAccess::ReadWrite)
+use nine::Row;
+
+const ROWS: u32 = 32;
+
+/// Row `i` of the data: field `k` holds `i * 10 + k`, so every field is its own value.
+fn nine_of(i: u32) -> [u32; 9] {
+    std::array::from_fn(|k| i * 10 + k as u32)
+}
+
+/// The columns' form: nine inputs read by one stage that sums them, ten bindings on the device.
+// The stage reads nine columns, so the function its macro writes takes more arguments than clippy likes: the point.
+#[allow(clippy::too_many_arguments)]
+fn sum_of_columns(device: &Arc<HeadlessDevice>) -> Result<Vec<u32>, BatchError> {
+    let (mut batch, (columns, sum)) = gpu_batch!("nine_columns", on(device); in_flight(1); |b| {
+        let c0 = b.input::<u32>(ROWS);
+        let c1 = b.input::<u32>(ROWS);
+        let c2 = b.input::<u32>(ROWS);
+        let c3 = b.input::<u32>(ROWS);
+        let c4 = b.input::<u32>(ROWS);
+        let c5 = b.input::<u32>(ROWS);
+        let c6 = b.input::<u32>(ROWS);
+        let c7 = b.input::<u32>(ROWS);
+        let c8 = b.input::<u32>(ROWS);
+        let sum = gpu_task!(ROWS, |i| -> u32 {
+            c0[i] + c1[i] + c2[i] + c3[i] + c4[i] + c5[i] + c6[i] + c7[i] + c8[i]
+        });
+        ([c0, c1, c2, c3, c4, c5, c6, c7, c8], sum)
+    })?;
+    drive(async {
+        let mut frame = batch.begin().await?;
+        for (k, column) in columns.iter().enumerate() {
+            let data: Vec<u32> = (0..ROWS).map(|i| nine_of(i)[k]).collect();
+            frame.write(column, &data)?;
+        }
+        let sum = frame.ticket(&sum)?;
+        let _submitted = frame.submit()?;
+        sum.await
+    })
+}
+
+/// The rows' form: one struct input, one stage whose result is a whole row (field `k` plus the sum of all nine), two
+/// bindings on the device.
+fn rows_with_the_sum(device: &Arc<HeadlessDevice>) -> Result<Vec<Row>, BatchError> {
+    let (mut batch, (rows, out)) = gpu_batch!("nine_rows", on(device); in_flight(1); |b| {
+        let rows = b.input::<Row>(ROWS);
+        let out = gpu_task!(ROWS, |i| -> Row {
+            let sum: u32 = rows[i].f0 + rows[i].f1 + rows[i].f2 + rows[i].f3 + rows[i].f4
+                + rows[i].f5 + rows[i].f6 + rows[i].f7 + rows[i].f8;
+            Row {
+                f0: rows[i].f0 + sum,
+                f1: rows[i].f1 + sum,
+                f2: rows[i].f2 + sum,
+                f3: rows[i].f3 + sum,
+                f4: rows[i].f4 + sum,
+                f5: rows[i].f5 + sum,
+                f6: rows[i].f6 + sum,
+                f7: rows[i].f7 + sum,
+                f8: rows[i].f8 + sum,
+            }
+        });
+        (rows, out)
+    })?;
+    let input: Vec<Row> = (0..ROWS)
+        .map(|i| {
+            let [f0, f1, f2, f3, f4, f5, f6, f7, f8] = nine_of(i);
+            Row {
+                f0,
+                f1,
+                f2,
+                f3,
+                f4,
+                f5,
+                f6,
+                f7,
+                f8,
+            }
         })
-        .collect::<Vec<_>>();
-    let bindings = rows
-        .iter()
-        .map(BufferBinding::read_write)
-        .collect::<Vec<_>>();
-    device
-        .dispatch_buffers(&kernel(Element::F32, 64, 2), 1, &bindings)
-        .expect("two storage buffers are under the limit");
-    assert_eq!(device.read_typed_buffer(&rows[0]).unwrap(), [17.0]);
+        .collect();
+    drive(async {
+        let mut frame = batch.begin().await?;
+        frame.write(&rows, &input)?;
+        let out = frame.ticket(&out)?;
+        let _submitted = frame.submit()?;
+        out.await
+    })
+}
+
+/// D279, check 5, in its real form: a stage reading nine columns binds ten storage buffers, over the stage's eight, so
+/// the device refuses it by name (`DeviceLimit` through the batch's device error) instead of wgpu panicking; the same
+/// data as one struct is two bindings, runs under the same limit, and every field of every row equals the host
+/// reference. The limit is lowered to the portable eight, whatever the adapter allows.
+#[test]
+fn nine_columns_are_a_device_limit_where_the_same_data_as_rows_is_two_bindings() {
+    let device = Arc::new(lowered(device(), |limits| {
+        limits.max_storage_buffers_per_shader_stage = 8;
+    }));
+
+    let error =
+        sum_of_columns(&device).expect_err("ten storage buffers are over the stage's eight");
+    assert!(
+        error
+            .to_string()
+            .contains("max_storage_buffers_per_shader_stage"),
+        "{error}"
+    );
+
+    let rows = rows_with_the_sum(&device).expect("two storage buffers are under the limit");
+    assert_eq!(rows.len(), ROWS as usize);
+    for (i, row) in rows.iter().enumerate() {
+        let fields = nine_of(i as u32);
+        let sum: u32 = fields.iter().sum();
+        let got = [
+            row.f0, row.f1, row.f2, row.f3, row.f4, row.f5, row.f6, row.f7, row.f8,
+        ];
+        for k in 0..9 {
+            assert_eq!(got[k], fields[k] + sum, "row {i}, field f{k}");
+        }
+    }
 }
 
 #[test]

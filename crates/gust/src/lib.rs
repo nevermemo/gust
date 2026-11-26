@@ -245,6 +245,8 @@ pub use dispatch::{
     Arg, BindingKind, Call, Extent, Independent, LengthRule, Resource, Run, SampledCall,
     SamplerArg, SamplerDevice, SamplerSet, TypedDevice, kind,
 };
+#[doc(hidden)]
+pub use enum_word::__GpuElementKind;
 pub use enum_word::{EnumWordError, GpuEnum};
 pub use gpu_struct::GpuStruct;
 #[doc(hidden)]

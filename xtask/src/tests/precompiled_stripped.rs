@@ -143,7 +143,7 @@ fn a_dependency_disables_its_defaults_on_one_inline_line_without_the_bridge_feat
 #[test]
 fn the_counted_stage_binary_is_judged_by_its_exit_code_its_adapter_and_the_counted_line() {
     let good = format!(
-        "{ADAPTER_PREFIX}NVIDIA GeForce RTX 5090\n{COUNTED_PREFIX}, three counts (one above the capacity) equal the host model for 1000 rows\n"
+        "{ADAPTER_PREFIX}NVIDIA GeForce RTX 5090\n{COUNTED_PREFIX}, three counts (one above the capacity) equal the host model for 1000 rows\n{STRUCT_PREFIX}, three frames of 1000 rows equal the host model\n"
     );
     assert_eq!(
         judge_counted(true, &good, ""),
@@ -153,7 +153,8 @@ fn the_counted_stage_binary_is_judged_by_its_exit_code_its_adapter_and_the_count
     assert_eq!(problems.len(), 1);
     assert!(problems[0].contains("error: boom"));
     // No adapter line, or no counted line (the binary printed nothing, or a stage that did not run), is refused by name.
-    let no_adapter = judge_counted(true, COUNTED_PREFIX, "").unwrap_err();
+    let no_adapter =
+        judge_counted(true, &format!("{COUNTED_PREFIX}\n{STRUCT_PREFIX}\n"), "").unwrap_err();
     assert!(
         no_adapter
             .iter()
@@ -165,7 +166,12 @@ fn the_counted_stage_binary_is_judged_by_its_exit_code_its_adapter_and_the_count
             .iter()
             .any(|problem| problem.contains(COUNTED_PREFIX))
     );
-    assert!(judge_counted(true, "", "").unwrap_err().len() >= 2);
+    // A binary that ran the counted stage but not the struct stage is refused by the struct line's name.
+    let no_struct =
+        judge_counted(true, &format!("{ADAPTER_PREFIX}x\n{COUNTED_PREFIX}\n"), "").unwrap_err();
+    assert_eq!(no_struct.len(), 1);
+    assert!(no_struct[0].contains(STRUCT_PREFIX));
+    assert!(judge_counted(true, "", "").unwrap_err().len() >= 3);
     // The binary sits beside `app` in the same release directory.
     let app = std::path::Path::new("target")
         .join("release")

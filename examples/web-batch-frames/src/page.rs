@@ -10,7 +10,9 @@ use js_sys::{Function, Object, Promise, Reflect};
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 
-use crate::{LENGTH, build, counted_reference, input, reference};
+use crate::{
+    LENGTH, build, counted_reference, input, mixed_reference, reference, rotated_reference, rows_of,
+};
 
 /// The counts of the three frames' counted stage: a part of the rows, fewer than before (the older rows stay), and a
 /// count above the capacity (clamped).
@@ -202,9 +204,19 @@ async fn frames_in_flight() -> Result<(), String> {
     frame2
         .write(&h.count, &[COUNTS[2]])
         .map_err(|error| format!("frame N+2 count: {error}"))?;
+    let rows2 = rows_of(3);
+    frame2
+        .write(&h.rows, &rows2)
+        .map_err(|error| format!("frame N+2 rows: {error}"))?;
     let ticket2 = frame2
         .ticket(&h.y)
         .map_err(|error| format!("frame N+2 ticket: {error}"))?;
+    let mixed2 = frame2
+        .ticket(&h.mixed)
+        .map_err(|error| format!("frame N+2 struct ticket: {error}"))?;
+    let rotated2 = frame2
+        .ticket(&h.rotated)
+        .map_err(|error| format!("frame N+2 struct result ticket: {error}"))?;
     let counted2 = frame2
         .ticket(&h.z)
         .map_err(|error| format!("frame N+2 counted ticket: {error}"))?;
@@ -215,6 +227,18 @@ async fn frames_in_flight() -> Result<(), String> {
         .await
         .map_err(|error| format!("frame N+2 ticket failed: {error}"))?;
     require_exact("frame N+2", &values2, &reference(&x2, gain2))?;
+
+    // The struct stages: a field read and a whole-row result, from a struct buffer the browser's kernels bind as is.
+    let mixed = mixed2
+        .await
+        .map_err(|error| format!("struct field ticket failed: {error}"))?;
+    require_exact("struct field read", &mixed, &mixed_reference(&rows2))?;
+    let rotated = rotated2
+        .await
+        .map_err(|error| format!("struct result ticket failed: {error}"))?;
+    if rotated != rotated_reference(&rows2) {
+        return Err("struct result: the rotated rows differ from the host computation".to_owned());
+    }
 
     // The counted stage (bounded launch in a browser): each frame's rows below its count are that frame's, the rest
     // keep the last frame's values, and a count above the capacity is the capacity. The model is applied in

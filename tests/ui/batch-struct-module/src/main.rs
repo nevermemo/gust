@@ -1,6 +1,6 @@
-// A struct declared inside a `#[gpu_module]` is no GPU struct: the module does not keep it as a Rust item for a path to
-// reach, so a batch that names `kernels::Row` as an element gets rustc's "cannot find `Row` in `kernels`". expected.txt pins
-// the line.
+// A struct declared inside a `#[gpu_module]` is no GPU struct: the module keeps the struct, but it has no `#[derive(GpuStruct)]`,
+// so the hidden macro `kernels::Row!` that the batch calls does not exist: rustc's resolution error (E0433, pinned) is the
+// refusal, not an error by name, followed by the marker error that names the type (`errors: 2`).
 
 use std::sync::Arc;
 

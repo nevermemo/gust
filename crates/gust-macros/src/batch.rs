@@ -857,7 +857,7 @@ pub(crate) fn gpu_batch(input: TokenStream) -> TokenStream {
 /// one. A block with no such type is lowered at once, as before.
 pub(crate) fn gpu_batch_in(input: TokenStream, manifest_dir: Option<&Path>) -> TokenStream {
     if let Ok(resolved) = diagnostics::parse2::<Resolved>(Code::BatchForm, input.clone()) {
-        return lower(resolved.rest, resolved.enums, manifest_dir);
+        return lower(resolved.rest, resolved.definitions, manifest_dir);
     }
     match step_one(&input) {
         Some(tokens) => tokens,
@@ -868,7 +868,7 @@ pub(crate) fn gpu_batch_in(input: TokenStream, manifest_dir: Option<&Path>) -> T
 /// The hidden form that ends the callback chain: `@enums [ { enum Mode { .. } } { struct Row { .. } } .. ] ; <the
 /// original tokens>` (an enum or a struct each, by the derive that handed it over).
 struct Resolved {
-    enums: Vec<syn::Item>,
+    definitions: Vec<syn::Item>,
     rest: TokenStream,
 }
 
@@ -901,7 +901,7 @@ impl Parse for Resolved {
         }
         input.parse::<Token![;]>()?;
         Ok(Self {
-            enums,
+            definitions: enums,
             rest: input.parse()?,
         })
     }
@@ -958,7 +958,7 @@ impl UserTypes<'_> {
 /// Whether `ty`, written where an element goes (`b.input::<T>`, a stage's `-> T`, `Stage<T>`), may be an enum or a struct
 /// of the user's: a user type that is no element type the macro knows (`f32`, `Vec4`, `uint`, a 3-wide type and the
 /// others).
-pub(crate) fn is_element_enum_candidate(ty: &syn::Type) -> bool {
+pub(crate) fn is_element_user_type_candidate(ty: &syn::Type) -> bool {
     is_user_type(ty)
         && matches!(
             crate::expand::element_types(ty),
@@ -973,7 +973,8 @@ impl<'ast> Visit<'ast> for UserTypes<'_> {
         if let Some(turbofish) = &call.turbofish
             && let Some(syn::GenericArgument::Type(ty)) = turbofish.args.first()
             && on_builder
-            && (call.method == "param" || (call.method == "input" && is_element_enum_candidate(ty)))
+            && (call.method == "param"
+                || (call.method == "input" && is_element_user_type_candidate(ty)))
         {
             self.note(ty);
         }
@@ -985,7 +986,7 @@ impl<'ast> Visit<'ast> for UserTypes<'_> {
             if let Some(ty) = type_argument(&typed.ty, "Param") {
                 self.note(ty);
             } else if let Some(ty) = type_argument(&typed.ty, "Stage")
-                && is_element_enum_candidate(ty)
+                && is_element_user_type_candidate(ty)
             {
                 self.note(ty);
             }
@@ -999,7 +1000,7 @@ impl<'ast> Visit<'ast> for UserTypes<'_> {
             && let Ok(stage) =
                 diagnostics::parse2::<StageInput>(Code::BatchForm, mac.tokens.clone())
             && let syn::ReturnType::Type(_, ty) = &stage.closure.output
-            && is_element_enum_candidate(ty)
+            && is_element_user_type_candidate(ty)
         {
             self.note(ty);
         }
@@ -1022,8 +1023,12 @@ fn step_one(input: &TokenStream) -> Option<TokenStream> {
         types.visit_stmt(statement);
     }
     let (first, rest) = types.found.split_first()?;
+    let named = types.found.iter();
     let tokens = quote! {
         {
+            // A type with neither derive is named here with the derive to add (see `__GpuElementKind`).
+            fn __gust_derived_type<T: ::gust::__GpuElementKind>() {}
+            #(__gust_derived_type::<#named>();)*
             #first ! (
                 acc = [] ;
                 next = [ #({ #rest })* ] ;
@@ -1076,7 +1081,7 @@ fn lower(input: TokenStream, enums: Vec<syn::Item>, manifest_dir: Option<&Path>)
 
 /// The hidden clause that carries `enums` into each stage: `enums { enum Mode { .. } .. }`, empty for none. Two enums
 /// of one name cannot share a stage's module, so the second is refused (GUST-E1005): the stage would declare both.
-fn enums_clause_of(enums: &[syn::Item]) -> syn::Result<TokenStream> {
+fn definitions_clause_of(enums: &[syn::Item]) -> syn::Result<TokenStream> {
     for (index, definition) in enums.iter().enumerate() {
         let Some(name) = item_ident(definition) else {
             continue;
@@ -1111,7 +1116,7 @@ fn expand(
     manifest_dir: Option<&Path>,
 ) -> syn::Result<TokenStream> {
     let parsed = diagnostics::parse2::<Input>(Code::BatchForm, input)?;
-    let enums_clause = enums_clause_of(enums)?;
+    let enums_clause = definitions_clause_of(enums)?;
     let Input {
         name,
         device,
@@ -1265,6 +1270,11 @@ fn struct_check(path: &syn::Path, definition: &syn::ItemStruct) -> TokenStream {
             Some((name, canonical))
         })
         .unzip();
+    let (before, after): (Vec<&syn::Ident>, Vec<&syn::Ident>) = names
+        .iter()
+        .copied()
+        .zip(names.iter().copied().skip(1))
+        .unzip();
     quote_spanned! {path.span()=>
         const _: fn() = || {
             fn __gust_struct_check<T: ::gust::GpuStruct>() {}
@@ -1274,6 +1284,14 @@ fn struct_check(path: &syn::Path, definition: &syn::ItemStruct) -> TokenStream {
                 let #path { #(#names),* } = value;
                 #(let _: #types = #names;)*
             }
+        };
+        // The copy lists the fields in the order the user's struct has them: each field sits before the next one, in
+        // the layout the user's `#[repr(C)]` struct has (the destructuring above cannot see the order).
+        const _: () = {
+            #(::core::assert!(
+                ::core::mem::offset_of!(#path, #before) < ::core::mem::offset_of!(#path, #after),
+                "the stage's copy of the struct lists its fields in another order than the struct"
+            );)*
         };
     }
 }

@@ -350,6 +350,9 @@ fn emit(name: &syn::Ident, fields: &syn::FieldsNamed, model: &Model) -> syn::Res
         impl ::gust::__GpuStructSealed for #name {}
 
         #[automatically_derived]
+        impl ::gust::__GpuElementKind for #name {}
+
+        #[automatically_derived]
         impl ::gust::GpuStruct for #name {}
 
         #(#identity)*

@@ -55,6 +55,17 @@ pub trait GpuEnum: Copy + PartialEq + 'static {
     fn to_word(self) -> u32;
 }
 
+/// What both derives (`GpuEnum` and `GpuStruct`) implement, for `gpu_batch!`'s first expansion to ask of a type the
+/// batch names: a type with neither derive is then named in one error that says which derive to add, where rustc alone
+/// says only that the derive's macro is missing. Not for hand-written impls.
+#[doc(hidden)]
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a GPU enum or a GPU struct",
+    label = "add `#[derive(GpuEnum)]` to an enum, or `#[derive(GpuStruct)]` to a struct",
+    note = "a batch element or parameter of your own type needs one of the two derives"
+)]
+pub trait __GpuElementKind {}
+
 /// The error of `TryFrom<u32>` for a [`GpuEnum`]: the word is no variant of the enum. It carries the word.
 ///
 /// The enum is not named, because the `Result` that holds the error already has the type it was converted to.

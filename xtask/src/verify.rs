@@ -1538,11 +1538,13 @@ pub(crate) struct GpuSuitePin {
 /// the test lists on the merged tree (rebased on m14.lim-a); a full Gpu suite run on both adapters is owed at
 /// the merge.
 ///
-/// Slice m14.s2s (part b): 680 over 70 became 681 over 70. The struct element slice adds one GPU test to
-/// `tests/limits.rs` (ten column buffers are a `DeviceLimit` against eight, the same data as rows is two bindings), on
-/// an existing line. Updated by count; checked by a full Gpu suite run on the Radeon 890M only (lane); RTX 5090 pending.
+/// Slice m14.s2s (part b): 680 over 70 became 682 over 70, the number a full Gpu suite run printed (Radeon 890M only;
+/// the full suite was not run on the RTX 5090, but the struct tests `tests/struct_element.rs`, `tests/struct_layout.rs` and
+/// the `tests/limits.rs` one passed on it). One of the two is the struct element slice's GPU test in `tests/limits.rs` (nine
+/// column buffers are a `DeviceLimit` against eight, the same data as one struct is two bindings), on an existing line;
+/// the other is a library test that an earlier slice added without moving the pin.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 681,
+    passed: 682,
     result_lines: 70,
 };
 

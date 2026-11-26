@@ -1,7 +1,7 @@
-// A parameter type that is not a GPU enum: step one calls the type's own name as a macro (the derive writes it), so
-// rustc says "cannot find macro `Mode` in this scope" at the type. The kind of a type, an enum or a struct, is the
-// derive's (D279), so the `GpuEnum` bound is checked in step two, which a type with no derive never reaches: this is the
-// one error. expected.txt pins its line.
+// A parameter type that is not a GPU enum: step one asks each type of the block for the marker both derives implement,
+// so rustc names the type and the derives (E0277), and it also says "cannot find macro `Mode` in this scope" at the type,
+// because the derive writes the macro that step one calls. These are the two errors (`errors: 2` in expected.txt, which
+// pins the named one and its line).
 
 use std::sync::Arc;
 

@@ -68,6 +68,10 @@ pub(crate) struct Expected {
     /// `label: <text>`, any number: a substring of the `label` of the primary span that carries
     /// `file` and `line` (`#[diagnostic::on_unimplemented]`'s `label` lands there, not in a child).
     pub(crate) labels: Vec<String>,
+    /// `errors: 2`: how many errors rustc must print in all (default 1). The other keys must hold for one of them. For
+    /// a fixture whose one cause rustc reports twice, such as a missing derive: the named error of a marker trait, and
+    /// rustc's own "cannot find macro".
+    pub(crate) errors: usize,
 }
 
 /// One fixture crate under `tests/ui/`.
@@ -614,6 +618,7 @@ pub(crate) fn parse_expected(text: &str) -> Result<Expected, String> {
     let mut line: Option<u64> = None;
     let mut messages = Vec::new();
     let mut labels = Vec::new();
+    let mut errors: Option<usize> = None;
     let mut listed = 0_usize;
     for raw in text.trim_start_matches('\u{feff}').lines() {
         let entry = raw.trim();
@@ -623,13 +628,16 @@ pub(crate) fn parse_expected(text: &str) -> Result<Expected, String> {
         listed += 1;
         let Some((key, value)) = entry.split_once(':') else {
             return Err(format!(
-                "expected.txt line `{entry}` is not a `key: value` pair (keys: code, file, line, message, label)"
+                "expected.txt line `{entry}` is not a `key: value` pair (keys: code, file, line, message, label, errors)"
             ));
         };
         let (key, value) = (key.trim(), value.trim());
-        if !matches!(key, "code" | "file" | "line" | "message" | "label") {
+        if !matches!(
+            key,
+            "code" | "file" | "line" | "message" | "label" | "errors"
+        ) {
             return Err(format!(
-                "expected.txt has an unknown key `{key}` (keys: code, file, line, message, label)"
+                "expected.txt has an unknown key `{key}` (keys: code, file, line, message, label, errors)"
             ));
         }
         if value.is_empty() {
@@ -660,6 +668,16 @@ pub(crate) fn parse_expected(text: &str) -> Result<Expected, String> {
                     ));
                 };
                 if line.replace(number).is_some() {
+                    return Err(twice());
+                }
+            }
+            "errors" => {
+                let Some(number) = value.parse::<usize>().ok().filter(|number| *number > 1) else {
+                    return Err(format!(
+                        "expected.txt: `errors: {value}` is not a number above one (one error is the default)"
+                    ));
+                };
+                if errors.replace(number).is_some() {
                     return Err(twice());
                 }
             }
@@ -697,6 +715,7 @@ pub(crate) fn parse_expected(text: &str) -> Result<Expected, String> {
         line,
         messages,
         labels,
+        errors: errors.unwrap_or(1),
     })
 }
 
@@ -879,9 +898,14 @@ pub(crate) fn judge_for(
             "{case}: `{command}` failed but printed no error-level compiler-message of its own, so expected.txt cannot match; cargo said:\n{}",
             shown()
         )],
-        Expectation::Fails(_) if errors.len() > 1 => vec![
+        Expectation::Fails(wanted) if errors.len() != wanted.errors => vec![
             format!(
-                "{case}: expected.txt describes one error, but rustc reported {} errors: {}",
+                "{case}: expected.txt describes {}, but rustc reported {} errors: {}",
+                if wanted.errors == 1 {
+                    "one error".to_owned()
+                } else {
+                    format!("{} errors", wanted.errors)
+                },
                 errors.len(),
                 errors
                     .iter()
@@ -892,11 +916,15 @@ pub(crate) fn judge_for(
             format!("{case}: rustc output was:\n{}", shown()),
         ],
         Expectation::Fails(wanted) => {
-            let error = errors[0];
-            let missing = gaps(case, wanted, error);
-            if missing.is_empty() {
+            // The keys hold for one of the errors; the first is shown when none satisfies them.
+            if errors
+                .iter()
+                .any(|error| gaps(case, wanted, error).is_empty())
+            {
                 return Vec::new();
             }
+            let error = errors[0];
+            let missing = gaps(case, wanted, error);
             let mut problems: Vec<String> = missing
                 .iter()
                 .map(|gap| {

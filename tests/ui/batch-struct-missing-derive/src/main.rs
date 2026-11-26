@@ -1,6 +1,6 @@
-// A struct that is no GPU struct as the element of a batch: step one calls the type's own name as a macro (the derive
-// writes it), so rustc says "cannot find macro `Row` in this scope" at the type. This is the one error; expected.txt pins
-// its line.
+// A struct that is no GPU struct as the element of a batch: step one asks the type for the marker both derives implement
+// (E0277, naming the derives) and calls its name as a macro, which the derive would have written ("cannot find macro
+// `Row`"): two errors (`errors: 2`), the named one pinned.
 
 use std::sync::Arc;
 

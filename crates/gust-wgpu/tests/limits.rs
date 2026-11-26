@@ -359,6 +359,44 @@ fn storage_buffers_above_the_limit_are_an_error_before_compilation() {
     }
 }
 
+/// D279, check 5: a Breeze-shaped kernel over columns binds one storage buffer per column, so ten columns are over the
+/// stage's eight and a `DeviceLimit` before any compilation; the same data as rows (one buffer read, one written) is two
+/// bindings and runs. The limits are lowered to the portable eight, whatever the adapter allows.
+#[test]
+fn ten_column_buffers_are_a_device_limit_where_the_same_data_as_rows_is_two_bindings() {
+    let device = lowered(device(), |limits| {
+        limits.max_storage_buffers_per_shader_stage = 8;
+    });
+    let columns = (0..10)
+        .map(|index| {
+            device.create_typed_buffer(&format!("c{index}"), &[3.0], GpuBufferAccess::ReadWrite)
+        })
+        .collect::<Vec<_>>();
+    let bindings = columns
+        .iter()
+        .map(BufferBinding::read_write)
+        .collect::<Vec<_>>();
+    let error = device
+        .dispatch_buffers(&kernel(Element::F32, 64, 10), 1, &bindings)
+        .expect_err("ten storage buffers are over the stage's eight");
+    assert_limit(error, "max_storage_buffers_per_shader_stage", 10, 8);
+    assert_cold(&device, "a limit error");
+
+    let rows = (0..2)
+        .map(|index| {
+            device.create_typed_buffer(&format!("r{index}"), &[3.0], GpuBufferAccess::ReadWrite)
+        })
+        .collect::<Vec<_>>();
+    let bindings = rows
+        .iter()
+        .map(BufferBinding::read_write)
+        .collect::<Vec<_>>();
+    device
+        .dispatch_buffers(&kernel(Element::F32, 64, 2), 1, &bindings)
+        .expect("two storage buffers are under the limit");
+    assert_eq!(device.read_typed_buffer(&rows[0]).unwrap(), [17.0]);
+}
+
 #[test]
 fn lowering_limits_after_the_cache_is_warm_still_rejects() {
     let device = device();

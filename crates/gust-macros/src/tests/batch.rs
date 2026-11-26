@@ -373,14 +373,24 @@ fn a_block_with_no_type_of_the_users_expands_in_one_step_as_before() {
 }
 
 #[test]
-fn a_block_with_an_enum_parameter_first_checks_the_bound_and_calls_the_callback_of_the_enum() {
+fn a_block_with_an_enum_parameter_first_calls_the_callback_of_the_enum_and_step_two_checks_the_bound()
+ {
     let text = batch(ENUM_BLOCK);
     assert!(!failed(&text), "{text}");
-    assert!(text.contains("__gust_enum_check :: < Mode >"), "{text}");
     assert!(text.contains("Mode ! (acc = [] ;"), "{text}");
     assert!(text.contains(":: gust :: gpu_batch"), "{text}");
-    // The original tokens ride along for step two.
+    // The original tokens ride along for step two, which knows the kind of the type and checks it.
     assert!(text.contains("orig = {"), "{text}");
+    assert!(!text.contains("__gust_enum_check"), "{text}");
+    let resolved = batch(&format!(
+        "@ enums [ {{ {MODE_DEFINITION} }} ] ; {ENUM_BLOCK}"
+    ));
+    assert!(!failed(&resolved), "{resolved}");
+    assert!(
+        resolved.contains("__gust_enum_check :: < Mode >"),
+        "{resolved}"
+    );
+    assert!(!resolved.contains("__gust_struct_check"), "{resolved}");
 }
 
 #[test]
@@ -396,7 +406,7 @@ fn the_callback_chain_names_every_enum_and_a_primitive_is_not_one() {
     );
     assert!(text.contains("Mode ! (acc = [] ;"), "{text}");
     assert!(text.contains("next = [{ types :: Tint }]"), "{text}");
-    assert_eq!(text.matches("__gust_enum_check ::").count(), 2, "{text}");
+    assert!(!text.contains("__gust_enum_check"), "{text}");
 }
 
 #[test]
@@ -561,9 +571,18 @@ const ELEMENT_BLOCK: &str = r#""shade", on(&device); |b| {
 fn an_input_and_a_result_of_enum_type_are_collected_like_a_parameter() {
     let text = batch(ELEMENT_BLOCK);
     assert!(!failed(&text), "{text}");
-    // One bound check and one callback for the one enum, however many places name it.
-    assert_eq!(text.matches("__gust_enum_check ::").count(), 1, "{text}");
+    // One callback for the one enum, however many places name it, and one bound check in step two.
     assert!(text.contains("Mode ! (acc = [] ;"), "{text}");
+    assert_eq!(text.matches("Mode ! (").count(), 1, "{text}");
+    let resolved = batch(&format!(
+        "@ enums [ {{ {MODE_DEFINITION} }} ] ; {ELEMENT_BLOCK}"
+    ));
+    assert!(!failed(&resolved), "{resolved}");
+    assert_eq!(
+        resolved.matches("__gust_enum_check ::").count(),
+        1,
+        "{resolved}"
+    );
     // A numeric element is not an enum.
     let numeric = batch(
         r#""s", on(&device); |b| { let a = b.input::<f32>(4u32); let c = b.input::<Vec4>(4u32);
@@ -799,13 +818,13 @@ fn a_parameter_and_an_element_load_call_the_one_decoder_whose_last_variant_is_th
 }
 
 #[test]
-fn a_user_struct_as_an_input_is_taken_for_an_enum_in_a_block() {
-    // D275 (review finding S4): a `GpuPod` struct of the user's as `b.input::<Particle>(n)` is a type step one cannot tell
-    // from an enum, so it calls the type's own macro (rustc then says "cannot find macro `Particle`", and
-    // "`Particle` is not a GPU enum"). Documented in CHANGELOG and GUST-E1005; `gust::batch::build` is the way around.
+fn a_user_struct_as_an_input_calls_the_callback_of_the_type() {
+    // D275 (review finding S4), settled by D279: a struct of the user's as `b.input::<Particle>(n)` is a type step one
+    // cannot tell from an enum, so it calls the type's own macro, which a `#[derive(GpuStruct)]` struct has (a struct that
+    // no derive handed over has none: rustc says "cannot find macro `Particle`"). The kind is the derive's.
     let text = batch(r#""s", on(&device); |b| { let p = b.input::<Particle>(4u32); p }"#);
     assert!(text.contains("Particle ! (acc = [] ;"), "{text}");
-    assert_eq!(text.matches("__gust_enum_check ::").count(), 1, "{text}");
+    assert!(!text.contains("__gust_enum_check"), "{text}");
 }
 
 // ---- counted stages (D278) ----
@@ -898,4 +917,168 @@ fn a_block_gives_a_counted_stage_the_count_handle_it_names() {
     assert!(!failed(&text), "{text}");
     assert!(text.contains("count (n) ;"), "{text}");
     assert!(text.contains("n : Stage < u32 >"), "{text}");
+}
+
+// ---- a struct stored as an element (m14.s2s part b, D279) ----
+
+/// The definition a `#[derive(GpuStruct)]` struct hands over, as the derive's callback macro writes it.
+const ROW_DEFINITION: &str =
+    "struct Row { pos : Vec2 , life : f32 , flags : u32 , _pad0 : u32 , _pad1 : u32 }";
+
+const ROW_BLOCK: &str = r#""rows", on(&device); |b| {
+    let rows = b.input::<Row>(8u32);
+    let life = gust::gpu_task!(8u32, |i| -> f32 { rows[i].life });
+    (rows, life)
+}"#;
+
+#[test]
+fn a_struct_input_calls_the_callback_and_step_two_checks_the_marker_and_the_fields() {
+    let text = batch(ROW_BLOCK);
+    assert!(!failed(&text), "{text}");
+    assert!(text.contains("Row ! (acc = [] ;"), "{text}");
+    assert!(!text.contains("__gust_struct_check"), "{text}");
+    let resolved = batch(&format!("@ enums [ {{ {ROW_DEFINITION} }} ] ; {ROW_BLOCK}"));
+    assert!(!failed(&resolved), "{resolved}");
+    // The marker bound, then every field of the definition named and typed as its name stands for.
+    assert!(
+        resolved.contains("__gust_struct_check :: < Row >"),
+        "{resolved}"
+    );
+    assert!(
+        resolved.contains("let Row { pos , life , flags , _pad0 , _pad1 } = value"),
+        "{resolved}"
+    );
+    assert!(
+        resolved.contains("let _ : :: gust :: math :: Vec2 = pos"),
+        "{resolved}"
+    );
+    assert!(
+        resolved.contains("let _ : :: core :: primitive :: f32 = life"),
+        "{resolved}"
+    );
+    assert!(!resolved.contains("__gust_enum_check"), "{resolved}");
+    // The hidden clause carries the struct into the stages.
+    assert!(resolved.contains("enums { struct Row"), "{resolved}");
+}
+
+#[test]
+fn a_stage_over_struct_rows_declares_the_struct_and_reaches_the_users_type() {
+    let scratch = Scratch::new();
+    let text = stage(
+        &format!(
+            "batch(b, \"s\"); enums {{ {ROW_DEFINITION} }} 8u32, [rows: Stage<Row>], |i| -> f32 {{ rows[i].life }}"
+        ),
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+    // The kernel sees the struct as a buffer element, and no word, decoder or retype is involved.
+    let slang = scratch.slang();
+    assert!(slang.contains("struct Row"), "{slang}");
+    assert!(slang.contains("StructuredBuffer<Row> rows"), "{slang}");
+    assert!(!text.contains("words ()"), "{text}");
+    assert!(!text.contains("retype"), "{text}");
+    // The Rust side of the module is the user's own type, reached from the module (a copy would be another type).
+    assert!(text.contains("use super :: Row ;"), "{text}");
+    assert!(text.contains("Stage < super :: Row"), "{text}");
+    assert!(!text.contains("pub struct Row"), "{text}");
+}
+
+#[test]
+fn a_struct_result_is_a_struct_literal_stored_whole() {
+    let scratch = Scratch::new();
+    let text = stage(
+        &format!(
+            "batch(b, \"s\"); enums {{ {ROW_DEFINITION} }} 8u32, [rows: Stage<Row>], |i| -> Row {{ \
+             Row {{ pos: rows[i].pos, life: rows[i].life * 0.5f32, flags: rows[i].flags, _pad0: 0u32, _pad1: 0u32 }} }}"
+        ),
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+    let slang = scratch.slang();
+    assert!(slang.contains("RWStructuredBuffer<Row>"), "{slang}");
+    assert!(slang.contains("__gust_struct_1.life = "), "{slang}");
+}
+
+#[test]
+fn an_in_place_target_of_structs_stores_a_field_or_the_whole_element() {
+    let scratch = Scratch::new();
+    let text = stage(
+        &format!(
+            "batch(b, \"s\"); enums {{ {ROW_DEFINITION} }} &mut t, [t: &mut Stage<Row>], |i| {{ \
+             t[i].life = t[i].life * 0.5f32; t[i].flags += 1u32; }}"
+        ),
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+    let slang = scratch.slang();
+    assert!(slang.contains("RWStructuredBuffer<Row> t"), "{slang}");
+    assert!(slang.contains("t[i].life"), "{slang}");
+}
+
+#[test]
+fn rows_that_differ_in_one_field_make_different_kernels() {
+    let source = |field: &str| {
+        format!(
+            "batch(b, \"s\"); enums {{ struct Row {{ pos : Vec2 , {field} : f32 , flags : u32 , _pad0 : u32 , _pad1 : u32 }} }} \
+             8u32, [rows: Stage<Row>], |i| -> u32 {{ rows[i].flags }}"
+        )
+    };
+    let (one, two) = (Scratch::new(), Scratch::new());
+    let (text_one, text_two) = (stage(&source("life"), &one), stage(&source("mass"), &two));
+    assert!(!failed(&text_one) && !failed(&text_two), "{text_one}");
+    assert_ne!(one.slang(), two.slang());
+    assert_ne!(text_one, text_two);
+}
+
+#[test]
+fn a_struct_handle_is_no_operand_of_a_library_op() {
+    batch_rejected(
+        &format!(
+            "@ enums [ {{ {ROW_DEFINITION} }} ] ; \"s\", on(&device); |b| {{ \
+             let x = b.input::<Row>(4u32); let n = gust::sum(&x); (x, n) }}"
+        ),
+        Code::BatchStructOperand,
+    );
+}
+
+#[test]
+fn a_struct_is_no_parameter() {
+    stage_rejected(
+        &format!(
+            "batch(b, \"s\"); enums {{ {ROW_DEFINITION} }} 8u32, [p: Param<Row>], |i| -> u32 {{ 0u32 }}"
+        ),
+        Code::BatchStructParam,
+    );
+}
+
+#[test]
+fn a_struct_written_with_two_paths_in_one_stage_is_refused() {
+    stage_rejected(
+        &format!(
+            "batch(b, \"s\"); enums {{ {ROW_DEFINITION} }} 8u32, [a: Stage<Row>, c: Stage<rows::Row>], |i| -> u32 {{ \
+             a[i].flags + c[i].flags }}"
+        ),
+        Code::BatchForm,
+    );
+}
+
+#[test]
+fn a_struct_and_an_enum_of_one_name_are_refused() {
+    batch_rejected(
+        &format!(
+            "@ enums [ {{ {ROW_DEFINITION} }} {{ # [repr (u32)] enum Row {{ A = 0u32 }} }} ] ; {ROW_BLOCK}"
+        ),
+        Code::BatchForm,
+    );
+}
+
+#[test]
+fn a_struct_as_the_count_of_a_stage_is_still_the_count_error() {
+    stage_rejected(
+        &format!(
+            "batch(b, \"s\"); enums {{ {ROW_DEFINITION} }} count(rows); 8u32, [rows: Stage<Row>], |i| -> u32 {{ \
+             rows[i].flags }}"
+        ),
+        Code::BatchCountHandle,
+    );
 }

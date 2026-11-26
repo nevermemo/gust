@@ -304,8 +304,8 @@ struct Rewriter {
     first_op: Option<syn::Path>,
     /// The hidden clause that gives each stage the enums the block's parameters name (empty when there are none).
     enums: TokenStream,
-    /// The enums the derives handed over, to check the ones used as elements.
-    defs: Vec<syn::ItemEnum>,
+    /// The enums and structs the derives handed over, to check the ones used as elements.
+    defs: Vec<syn::Item>,
     error: Option<syn::Error>,
 }
 
@@ -342,15 +342,31 @@ impl Rewriter {
             .map(|(_, kind)| kind)
     }
 
-    /// The enum, among those the derives handed over, that `ty` names as an element.
-    fn element_enum(&self, ty: &syn::Type) -> Option<&syn::ItemEnum> {
+    /// The enum or struct, among those the derives handed over, that `ty` names as an element.
+    fn element_def(&self, ty: &syn::Type) -> Option<&syn::Item> {
         let syn::Type::Path(path) = ty else {
             return None;
         };
         let last = path.path.segments.last().filter(|_| path.qself.is_none())?;
-        self.defs
-            .iter()
-            .find(|definition| last.arguments.is_none() && definition.ident == last.ident)
+        self.defs.iter().find(|definition| {
+            last.arguments.is_none() && item_ident(definition) == Some(&last.ident)
+        })
+    }
+
+    /// The enum, among those the derives handed over, that `ty` names as an element.
+    fn element_enum(&self, ty: &syn::Type) -> Option<&syn::ItemEnum> {
+        match self.element_def(ty)? {
+            syn::Item::Enum(definition) => Some(definition),
+            _ => None,
+        }
+    }
+
+    /// The struct, among those the derives handed over, that `ty` names as an element.
+    fn element_struct(&self, ty: &syn::Type) -> Option<&syn::ItemStruct> {
+        match self.element_def(ty)? {
+            syn::Item::Struct(definition) => Some(definition),
+            _ => None,
+        }
     }
 
     /// An enum used as an element needs a variant whose word is 0 (GUST-E1012): its buffer starts as zeros.
@@ -413,6 +429,20 @@ impl Rewriter {
             .args
             .first()
             .and_then(|operand| self.operand_element(operand));
+        if let Some(definition) = operand.as_ref().and_then(|ty| self.element_struct(ty)) {
+            let error = diagnostics::error(
+                Code::BatchStructOperand,
+                &call.args[0],
+                format!(
+                    "the operand of a library op is a number buffer, and this handle holds the struct `{}`: an op over \
+                     rows is not in this release; read the field you want in a stage (`rows[i].field`) and run the op \
+                     over that buffer",
+                    definition.ident.unraw()
+                ),
+            );
+            self.fail(error);
+            return None;
+        }
         if let Some(definition) = operand.as_ref().and_then(|ty| self.element_enum(ty)) {
             let error = diagnostics::error(
                 Code::BatchOpForm,
@@ -820,10 +850,11 @@ pub(crate) fn gpu_batch(input: TokenStream) -> TokenStream {
     gpu_batch_in(input, manifest_dir.as_deref())
 }
 
-/// `gpu_batch!` for the crate in `manifest_dir`, when known. The call is in two steps when a parameter of the block is
-/// a type of the user's (a GPU enum, D270): step one collects those types and expands to the chain of their callback
-/// macros ([`crate::gpu_enum`]), which ends in this macro's hidden `@enums` form; step two, [`lower`], reads the enums'
-/// tokens beside the original ones. A block with no such type is lowered at once, as before.
+/// `gpu_batch!` for the crate in `manifest_dir`, when known. The call is in two steps when a parameter or an element of
+/// the block is a type of the user's (a GPU enum, D270, or a GPU struct, D279): step one collects those types and
+/// expands to the chain of their callback macros ([`crate::gpu_enum`], [`crate::gpu_struct`]), which ends in this
+/// macro's hidden `@enums` form; step two, [`lower`], reads the types' tokens beside the original ones and checks each
+/// one. A block with no such type is lowered at once, as before.
 pub(crate) fn gpu_batch_in(input: TokenStream, manifest_dir: Option<&Path>) -> TokenStream {
     if let Ok(resolved) = diagnostics::parse2::<Resolved>(Code::BatchForm, input.clone()) {
         return lower(resolved.rest, resolved.enums, manifest_dir);
@@ -834,9 +865,10 @@ pub(crate) fn gpu_batch_in(input: TokenStream, manifest_dir: Option<&Path>) -> T
     }
 }
 
-/// The hidden form that ends the callback chain: `@enums [ { enum Mode { .. } } .. ] ; <the original tokens>`.
+/// The hidden form that ends the callback chain: `@enums [ { enum Mode { .. } } { struct Row { .. } } .. ] ; <the
+/// original tokens>` (an enum or a struct each, by the derive that handed it over).
 struct Resolved {
-    enums: Vec<syn::ItemEnum>,
+    enums: Vec<syn::Item>,
     rest: TokenStream,
 }
 
@@ -857,7 +889,15 @@ impl Parse for Resolved {
         while !list.is_empty() {
             let definition;
             syn::braced!(definition in list);
-            enums.push(definition.parse()?);
+            let item: syn::Item = definition.parse()?;
+            if !matches!(item, syn::Item::Enum(_) | syn::Item::Struct(_)) {
+                return Err(diagnostics::error(
+                    Code::BatchForm,
+                    item,
+                    "the hidden `@enums` form holds enums and structs",
+                ));
+            }
+            enums.push(item);
         }
         input.parse::<Token![;]>()?;
         Ok(Self {
@@ -915,8 +955,9 @@ impl UserTypes<'_> {
     }
 }
 
-/// Whether `ty`, written where an element goes (`b.input::<T>`, a stage's `-> T`, `Stage<T>`), may be an enum of the
-/// user's: a user type that is no element type the macro knows (`f32`, `Vec4`, `uint`, a 3-wide type and the others).
+/// Whether `ty`, written where an element goes (`b.input::<T>`, a stage's `-> T`, `Stage<T>`), may be an enum or a struct
+/// of the user's: a user type that is no element type the macro knows (`f32`, `Vec4`, `uint`, a 3-wide type and the
+/// others).
 pub(crate) fn is_element_enum_candidate(ty: &syn::Type) -> bool {
     is_user_type(ty)
         && matches!(
@@ -966,10 +1007,11 @@ impl<'ast> Visit<'ast> for UserTypes<'_> {
     }
 }
 
-/// Step one: when the block's parameters have types of the user's, the expansion that checks each is a GPU enum (rustc
-/// says "add `#[derive(GpuEnum)]`" at the type otherwise) and calls the first one's callback macro with the rest, the
-/// continuation and the original tokens. `None` when there is no such type or the input does not read (step two then
-/// reports it as it always did).
+/// Step one: when the block's parameters or elements have types of the user's, the expansion calls the first one's
+/// callback macro with the rest, the continuation and the original tokens (rustc says "cannot find macro" at a type that
+/// no derive handed over). The kind of each type, an enum or a struct, is the derive's, so the checks of the types wait
+/// for step two ([`type_checks`]). `None` when there is no such type or the input does not read (step two then reports
+/// it as it always did).
 fn step_one(input: &TokenStream) -> Option<TokenStream> {
     let parsed = diagnostics::parse2::<Input>(Code::BatchForm, input.clone()).ok()?;
     let mut types = UserTypes {
@@ -980,17 +1022,8 @@ fn step_one(input: &TokenStream) -> Option<TokenStream> {
         types.visit_stmt(statement);
     }
     let (first, rest) = types.found.split_first()?;
-    let checks = types.found.iter().map(|path| {
-        quote_spanned! {path.span()=>
-            const _: fn() = || {
-                fn __gust_enum_check<T: ::gust::GpuEnum>() {}
-                __gust_enum_check::<#path>();
-            };
-        }
-    });
     let tokens = quote! {
         {
-            #(#checks)*
             #first ! (
                 acc = [] ;
                 next = [ #({ #rest })* ] ;
@@ -1007,11 +1040,7 @@ fn step_one(input: &TokenStream) -> Option<TokenStream> {
 
 /// Step two, or the whole of a call with no enum: `gpu_batch!` lowered, `enums` being the definitions the callback
 /// chain collected (each a stage may copy into its module).
-fn lower(
-    input: TokenStream,
-    enums: Vec<syn::ItemEnum>,
-    manifest_dir: Option<&Path>,
-) -> TokenStream {
+fn lower(input: TokenStream, enums: Vec<syn::Item>, manifest_dir: Option<&Path>) -> TokenStream {
     let mut krate = None;
     let mut device = None;
     match expand(input, &enums, &mut krate, &mut device, manifest_dir) {
@@ -1047,18 +1076,22 @@ fn lower(
 
 /// The hidden clause that carries `enums` into each stage: `enums { enum Mode { .. } .. }`, empty for none. Two enums
 /// of one name cannot share a stage's module, so the second is refused (GUST-E1005): the stage would declare both.
-fn enums_clause_of(enums: &[syn::ItemEnum]) -> syn::Result<TokenStream> {
+fn enums_clause_of(enums: &[syn::Item]) -> syn::Result<TokenStream> {
     for (index, definition) in enums.iter().enumerate() {
+        let Some(name) = item_ident(definition) else {
+            continue;
+        };
         if enums[..index]
             .iter()
-            .any(|earlier| earlier.ident == definition.ident)
+            .any(|earlier| item_ident(earlier) == Some(name))
         {
             return Err(batch_form(
-                &definition.ident,
+                name,
                 format!(
-                    "`{0}` names two enums among the parameter types of one batch (or one enum by two paths): a stage \
-                     declares each enum under its own name, so rename one of the enums, and write the other by one path",
-                    definition.ident
+                    "`{0}` names two enums or structs among the types of one batch (or one type by two paths): a \
+                     stage declares each type under its own name, so rename one of them, and write the other by one \
+                     path",
+                    name
                 ),
             ));
         }
@@ -1072,7 +1105,7 @@ fn enums_clause_of(enums: &[syn::ItemEnum]) -> syn::Result<TokenStream> {
 
 fn expand(
     input: TokenStream,
-    enums: &[syn::ItemEnum],
+    enums: &[syn::Item],
     krate: &mut Option<syn::Path>,
     device_seen: &mut Option<TokenStream>,
     manifest_dir: Option<&Path>,
@@ -1088,6 +1121,15 @@ fn expand(
         mut stmts,
     } = parsed;
     krate.clone_from(&written);
+    // The checks of the types the block names, in the user's scope: each is the kind the derive that handed it over says.
+    let mut types = UserTypes {
+        builder: &builder,
+        found: Vec::new(),
+    };
+    for statement in &stmts {
+        types.visit_stmt(statement);
+    }
+    let checks = type_checks(&types.found, enums);
     let Some(device) = device else {
         return Err(diagnostics::error_at(
             Code::BatchForm,
@@ -1152,7 +1194,7 @@ fn expand(
         Some(tail) => quote!(#tail),
         None => TokenStream::new(),
     };
-    Ok(quote! {
+    let built = quote! {
         ::gust::batch::build(
             #name,
             &(#device),
@@ -1163,5 +1205,75 @@ fn expand(
                 #tail
             },
         )
+    };
+    Ok(if checks.is_empty() {
+        built
+    } else {
+        quote!({ #(#checks)* #built })
     })
+}
+
+/// The name of an enum or a struct a derive handed over.
+fn item_ident(item: &syn::Item) -> Option<&syn::Ident> {
+    match item {
+        syn::Item::Enum(definition) => Some(&definition.ident),
+        syn::Item::Struct(definition) => Some(&definition.ident),
+        _ => None,
+    }
+}
+
+/// The checks, in the user's scope, of the types the block names that a derive handed over: an enum is a `GpuEnum`
+/// (rustc says "add `#[derive(GpuEnum)]`" at the type otherwise), a struct is a `GpuStruct` and has the fields the
+/// definition says (the macro that handed the definition over and the type the path names are looked up apart, so a
+/// `type` alias or a same-named struct of another module could differ).
+fn type_checks(found: &[syn::Path], handed: &[syn::Item]) -> Vec<TokenStream> {
+    found
+        .iter()
+        .filter_map(|path| {
+            let last = path.segments.last()?;
+            let item = handed
+                .iter()
+                .find(|item| item_ident(item) == Some(&last.ident))?;
+            Some(match item {
+                syn::Item::Struct(definition) => struct_check(path, definition),
+                _ => quote_spanned! {path.span()=>
+                    const _: fn() = || {
+                        fn __gust_enum_check<T: ::gust::GpuEnum>() {}
+                        __gust_enum_check::<#path>();
+                    };
+                },
+            })
+        })
+        .collect()
+}
+
+/// The check of a struct the block names: it is a `GpuStruct`, and its fields are the definition's, each of the type its
+/// name stands for (an exhaustive destructuring, then a typed `let` per field).
+fn struct_check(path: &syn::Path, definition: &syn::ItemStruct) -> TokenStream {
+    let (names, types): (Vec<&syn::Ident>, Vec<TokenStream>) = definition
+        .fields
+        .iter()
+        .filter_map(|field| {
+            let name = field.ident.as_ref()?;
+            let canonical = match &field.ty {
+                syn::Type::Path(ty) => ty
+                    .path
+                    .get_ident()
+                    .map(|ident| crate::gpu_struct::canonical(&ident.unraw().to_string())),
+                _ => None,
+            }?;
+            Some((name, canonical))
+        })
+        .unzip();
+    quote_spanned! {path.span()=>
+        const _: fn() = || {
+            fn __gust_struct_check<T: ::gust::GpuStruct>() {}
+            __gust_struct_check::<#path>();
+            #[allow(dead_code)]
+            fn __gust_struct_fields(value: #path) {
+                let #path { #(#names),* } = value;
+                #(let _: #types = #names;)*
+            }
+        };
+    }
 }

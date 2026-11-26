@@ -595,6 +595,8 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             // `tests/enum_store.rs`: an enum target written in place, and a 2-D enum result (m14.s2e2d).
             "twin_a_bad_word_decoded_in_place_is_stored_as_a_valid_word",
             "twin_an_enum_target_keeps_its_stored_enums_across_frames_and_a_resize",
+            // `tests/struct_element.rs`: a struct stored as the element of a batch (m14.s2s).
+            "twin_a_struct_element_is_read_stored_and_updated_in_place_like_the_host",
             // `tests/resize_ops.rs`: the library ops follow a resize (m14.s2b2).
             "cpu_a_failed_frame_after_a_staged_op_resize_leaves_the_old_plan",
             "cpu_a_min_over_nothing_refuses_the_frame_and_the_batch_recovers",

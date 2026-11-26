@@ -234,6 +234,8 @@ const EXAMPLE_GPU_TESTS: &[(&str, &[&str])] = &[
             "gpu_a_bad_word_decoded_in_place_is_stored_as_a_valid_word",
             "gpu_an_enum_target_equals_the_cpu_twin",
             "gpu_an_enum_target_keeps_its_stored_enums_across_frames_and_a_resize",
+            "gpu_a_struct_element_equals_the_cpu_twin",
+            "gpu_a_struct_element_is_read_stored_and_updated_in_place_like_the_host",
             "gpu_a_back_and_forth_resize_is_exact",
             "gpu_a_min_over_nothing_refuses_the_frame_and_the_batch_recovers",
             "gpu_a_resize_replaces_the_outputs_that_follow_the_operand",

@@ -277,7 +277,7 @@ fn definition(name: &syn::Ident, fields: &syn::FieldsNamed) -> TokenStream {
 }
 
 /// The canonical type a field name stands for: the primitive or the `gust::math` type itself.
-fn canonical(name: &str) -> TokenStream {
+pub(crate) fn canonical(name: &str) -> TokenStream {
     let ident = format_ident!("{}", name);
     if matches!(name, "f32" | "u32" | "i32") {
         quote!(::core::primitive::#ident)

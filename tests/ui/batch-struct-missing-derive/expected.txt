@@ -1,0 +1,5 @@
+# Keys matched against the one error of `cargo check --message-format json`: the macro the derive would have written is missing.
+code: none
+file: batch-struct-missing-derive/src/main.rs
+line: 22
+message: cannot find macro `Row` in this scope

@@ -1,0 +1,5 @@
+# Keys matched against the one error of `cargo check --message-format json`: the module's struct is not left in the module for a path to reach (its derive-free struct is the module's own).
+code: E0433
+file: batch-struct-module/src/main.rs
+line: 21
+message: cannot find `Row` in `kernels`

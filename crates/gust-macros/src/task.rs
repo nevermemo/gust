@@ -38,7 +38,9 @@ use syn::{
 use crate::{
     diagnostics::{self, Code},
     expand::{ElementReject, Environment, Profile, element_types},
-    par_for::{Binding, Kind, Options, Plan, Raw, RawBinding, Scalar, parse_options},
+    par_for::{
+        Binding, Kind, Options, Plan, Raw, RawBinding, Scalar, StructElement, parse_options,
+    },
 };
 
 /// The name of the result buffer of a stage that has a result type: an ordinary binding of the plan, under a reserved
@@ -59,6 +61,9 @@ pub(crate) struct BatchClause {
     /// The enums the block's parameters name, as their derive handed them over (`enums { enum Mode { .. } }`): the
     /// stage declares a private copy of each one its parameters use.
     pub(crate) enums: Vec<syn::ItemEnum>,
+    /// The structs the block's elements name, as their derive handed them over (D279): the stage declares each one its
+    /// elements use, for the validator and the Slang, and reaches the user's own type for the host side.
+    pub(crate) structs: Vec<syn::ItemStruct>,
 }
 
 /// The macro input as written: the options, the shape (or the in-place target), the capture list, the closure.
@@ -89,6 +94,7 @@ fn parse_batch_clause(input: ParseStream) -> syn::Result<Option<BatchClause>> {
     input.parse::<Token![;]>()?;
     let name = name.value();
     let mut enums = Vec::new();
+    let mut structs = Vec::new();
     if input
         .cursor()
         .ident()
@@ -99,13 +105,23 @@ fn parse_batch_clause(input: ParseStream) -> syn::Result<Option<BatchClause>> {
         let content;
         syn::braced!(content in input);
         while !content.is_empty() {
-            enums.push(content.parse()?);
+            match content.parse::<syn::Item>()? {
+                syn::Item::Enum(definition) => enums.push(definition),
+                syn::Item::Struct(definition) => structs.push(definition),
+                other => {
+                    return Err(batch_form(
+                        other,
+                        "the hidden `enums` clause holds the enums and structs the block's derives handed over",
+                    ));
+                }
+            }
         }
     }
     Ok(Some(BatchClause {
         builder,
         name: (!name.is_empty()).then_some(name),
         enums,
+        structs,
     }))
 }
 
@@ -198,6 +214,11 @@ struct BatchStage {
     /// The enum the stage's result holds, when it is one: the type as written and the enum's name. The kernel stores
     /// the word (`as u32`), and the call site types the handle back as the enum.
     enum_result: Option<(syn::Type, syn::Ident)>,
+    /// The structs the stage's elements have (D279): each as the stage's module declares it, with the path to the user's
+    /// own type after a marker (see [`struct_copy`]).
+    structs: Vec<syn::ItemStruct>,
+    /// The same structs as element types: the name in the kernel and the path to the user's type on the host.
+    struct_elements: Vec<StructElement>,
 }
 
 impl BatchStage {
@@ -352,9 +373,9 @@ impl TaskPlan {
         statements
     }
 
-    /// The enums of the stage's parameters and the function that decodes each one's word, to be declared in the stage's
-    /// module in front of the record and the kernel.
-    pub(crate) fn enum_items(&self) -> Vec<syn::Item> {
+    /// The enums of the stage's parameters and the function that decodes each one's word, then the structs of its
+    /// elements, to be declared in the stage's module in front of the record and the kernel.
+    pub(crate) fn type_items(&self) -> Vec<syn::Item> {
         let Some(batch) = &self.batch else {
             return Vec::new();
         };
@@ -367,6 +388,7 @@ impl TaskPlan {
                     syn::Item::Fn(decoder.clone()),
                 ]
             })
+            .chain(batch.structs.iter().cloned().map(syn::Item::Struct))
             .collect()
     }
 
@@ -1012,7 +1034,12 @@ fn bool_element(tokens: impl ToTokens, what: &str) -> syn::Error {
 /// a host slice `&[T]` of a buffer element type, or a scalar `u32`, `i32`, `f32` or `bool`; `&mut [T]` is the in-place
 /// target's entry only. In a stage of a batch (`batch`) a `bool` element is GUST-E1004 where a stand-alone stage has
 /// GUST-E1002.
-fn check_entry(entry: &RawBinding, target: Option<&syn::Ident>, batch: bool) -> syn::Result<()> {
+fn check_entry(
+    entry: &RawBinding,
+    target: Option<&syn::Ident>,
+    batch: bool,
+    structs: &[StructElement],
+) -> syn::Result<()> {
     let name = entry.name.unraw().to_string();
     let write = |element: &str| format!("`{name}: &[{element}]`");
     match &entry.ty {
@@ -1029,6 +1056,12 @@ fn check_entry(entry: &RawBinding, target: Option<&syn::Ident>, batch: bool) -> 
                              `gpu_task!(&mut {name}, ..)`"
                         ),
                     ));
+                }
+                // A struct of the user's the block's derive handed over (D279).
+                if matches!(&*slice.elem, syn::Type::Path(path) if path.qself.is_none()
+                    && path.path.get_ident().is_some_and(|ident| structs.iter().any(|found| found.name == *ident)))
+                {
+                    return Ok(());
                 }
                 match element_types(&slice.elem) {
                     Ok(types) if !types.boolean => Ok(()),
@@ -1259,8 +1292,11 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
 
     // The list: each entry is a form this slice takes; an in-place target has its `&mut [T]` entry.
     let target_name = target.as_ref().map(|(name, _)| name);
+    let structs: Vec<StructElement> = batch
+        .as_ref()
+        .map_or_else(Vec::new, |batch| batch.struct_elements.clone());
     for entry in &list {
-        check_entry(entry, target_name, batch.is_some())?;
+        check_entry(entry, target_name, batch.is_some(), &structs)?;
     }
     if let Some((name, _)) = &target {
         let entry = list.iter().find(|entry| entry.name.unraw() == name.unraw());
@@ -1339,7 +1375,7 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
         if batch.is_some() && element_types(ty).is_ok_and(|types| types.boolean) {
             return Err(bool_element(ty, "the result type of a stage"));
         }
-        crate::par_for::element(ty, "the result type of a stage")?;
+        crate::par_for::element(ty, "the result type of a stage", &structs)?;
         bindings.push(RawBinding {
             name: format_ident!("{}", OUT),
             ty: syn::parse_quote!(&mut [#ty]),
@@ -1356,6 +1392,7 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
         ranges,
         bindings,
         body: syn::parse_quote!({}),
+        structs,
     };
     let mut plan = Plan::new(raw, profile)?;
     plan.task = Some(TaskPlan {
@@ -1479,6 +1516,7 @@ fn lower_batch(
     let mut params = Vec::new();
     let mut scalars = Vec::new();
     let mut book = EnumBook::default();
+    let mut struct_book = StructBook::default();
     let mut enum_params = Vec::new();
     let mut enum_views = Vec::new();
     for entry in list {
@@ -1497,6 +1535,16 @@ fn lower_batch(
                 entries.push(RawBinding {
                     name,
                     ty: syn::parse_quote!(&[u32]),
+                });
+                continue;
+            }
+            // A view of structs: the kernel binds the structs themselves, under the name the stage declares them by.
+            if let Some((path, definition)) = struct_named(&clause.structs, element) {
+                struct_book.take(path, definition)?;
+                let element = &definition.ident;
+                entries.push(RawBinding {
+                    name,
+                    ty: syn::parse_quote!(&[#element]),
                 });
                 continue;
             }
@@ -1529,6 +1577,16 @@ fn lower_batch(
                     });
                     continue;
                 }
+                // An in-place target of structs: a field or the whole element is stored as written.
+                if let Some((path, definition)) = struct_named(&clause.structs, element) {
+                    struct_book.take(path, definition)?;
+                    let element = &definition.ident;
+                    entries.push(RawBinding {
+                        name,
+                        ty: syn::parse_quote!(&mut [#element]),
+                    });
+                    continue;
+                }
                 let element = element.clone();
                 entries.push(RawBinding {
                     name,
@@ -1558,6 +1616,17 @@ fn lower_batch(
                     ty: syn::parse_quote!(u32),
                 });
                 continue;
+            }
+            if let Some((_, definition)) = struct_named(&clause.structs, element) {
+                return Err(diagnostics::error(
+                    Code::BatchStructParam,
+                    element,
+                    format!(
+                        "`{}` is a struct, and a `Param` holds a scalar or an enum: a struct is the element of a handle \
+                         (`b.input::<{0}>(..)`), which a stage reads and writes by field",
+                        definition.ident.unraw()
+                    ),
+                ));
             }
             if !clause.enums.is_empty() && crate::batch::is_user_type(element) {
                 let handed: Vec<String> = clause
@@ -1607,6 +1676,14 @@ fn lower_batch(
         enum_result = Some((ty.clone(), definition.ident.clone()));
         result_word = Some(syn::parse_quote!(u32));
     }
+    // A result of structs: the kernel stores the struct, bound under the name the stage declares it by.
+    if let Some(ty) = result
+        && let Some((path, definition)) = struct_named(&clause.structs, ty)
+    {
+        struct_book.take(path, definition)?;
+        let name = &definition.ident;
+        result_word = Some(syn::parse_quote!(#name));
+    }
     let mut lowering = Lowering {
         views: views
             .iter()
@@ -1654,6 +1731,8 @@ fn lower_batch(
             enum_checks: book.checks,
             enum_views,
             enum_result,
+            structs: struct_book.structs,
+            struct_elements: struct_book.elements,
         },
     })
 }
@@ -1688,6 +1767,124 @@ impl EnumBook {
         }
         Ok(())
     }
+}
+
+/// The structs a stage declares, one per name, and how each is reached on the host.
+#[derive(Default)]
+struct StructBook {
+    structs: Vec<syn::ItemStruct>,
+    elements: Vec<StructElement>,
+    /// The path each struct was first written with, as text: a stage reaches one type per name.
+    written: Vec<String>,
+}
+
+impl StructBook {
+    /// Declare `definition`, the struct that `path` names, unless it is declared already.
+    fn take(&mut self, path: &syn::Path, definition: &syn::ItemStruct) -> syn::Result<()> {
+        let written = path.to_token_stream().to_string();
+        if let Some(index) = self
+            .structs
+            .iter()
+            .position(|copy| copy.ident == definition.ident)
+        {
+            if self.written[index] != written {
+                return Err(batch_form(
+                    path,
+                    format!(
+                        "`{}` is written with two paths in one stage (`{}` and `{written}`): a stage reaches one type \
+                         per name, so write the struct with one path",
+                        definition.ident.unraw(),
+                        self.written[index]
+                    ),
+                ));
+            }
+            return Ok(());
+        }
+        let host = host_path(path);
+        self.structs.push(struct_copy(definition, &host));
+        self.elements.push(StructElement {
+            name: definition.ident.clone(),
+            host,
+        });
+        self.written.push(written);
+        Ok(())
+    }
+}
+
+/// The marker a stage's struct carries in front of the path to the user's type (a doc attribute, which every pass leaves
+/// alone). The expansion of the module reads it and declares `use <path>;` in place of the struct (D279).
+pub(crate) const HOST_PATH_MARKER: &str = "__gust_host_path:";
+
+/// The path to the user's type that a stage's struct is marked with ([`struct_copy`]), when it is.
+pub(crate) fn host_path_of(item: &syn::ItemStruct) -> Option<syn::Path> {
+    item.attrs.iter().find_map(|attribute| {
+        let syn::Meta::NameValue(pair) = &attribute.meta else {
+            return None;
+        };
+        if !pair.path.is_ident("doc") {
+            return None;
+        }
+        let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(text),
+            ..
+        }) = &pair.value
+        else {
+            return None;
+        };
+        let text = text.value();
+        let path = text.strip_prefix(HOST_PATH_MARKER)?;
+        let tokens = path.parse::<TokenStream>().ok()?;
+        diagnostics::parse2(Code::TaskForm, tokens).ok()
+    })
+}
+
+/// The struct as a stage's module declares it: the definition the derive handed over, public (the kernel's signature
+/// names it) and marked with the path to the user's own type.
+fn struct_copy(definition: &syn::ItemStruct, host: &TokenStream) -> syn::ItemStruct {
+    let mut copy = definition.clone();
+    copy.vis = syn::parse_quote!(pub);
+    let marker = format!("{HOST_PATH_MARKER}{host}");
+    copy.attrs.push(syn::parse_quote!(#[doc = #marker]));
+    copy
+}
+
+/// The path from a stage's module to the type the user wrote as `path` at the call. The module is declared in the
+/// block of the call, one level inside the scope the call is in, so a relative path is reached through `super` (the
+/// type, or the `use` that brings it in, is an item of the module the call is in); a path from the crate root is
+/// reached as written.
+fn host_path(path: &syn::Path) -> TokenStream {
+    let first = path
+        .segments
+        .first()
+        .map(|segment| segment.ident.to_string());
+    match first.as_deref() {
+        _ if path.leading_colon.is_some() => quote!(#path),
+        Some("crate" | "$crate") => quote!(#path),
+        Some("self") => {
+            let rest = path.segments.iter().skip(1);
+            quote!(super #(:: #rest)*)
+        }
+        _ => quote!(super::#path),
+    }
+}
+
+/// The struct, among those the block's derives handed over, that `ty` is: a plain path whose last segment is the
+/// struct's name.
+fn struct_named<'a>(
+    structs: &'a [syn::ItemStruct],
+    ty: &'a syn::Type,
+) -> Option<(&'a syn::Path, &'a syn::ItemStruct)> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let last = path.path.segments.last().filter(|_| path.qself.is_none())?;
+    if !last.arguments.is_none() {
+        return None;
+    }
+    structs
+        .iter()
+        .find(|definition| definition.ident == last.ident)
+        .map(|definition| (&path.path, definition))
 }
 
 /// GUST-E1012: an enum stored as an element has a variant whose word is 0, because a buffer starts (and is resized) as

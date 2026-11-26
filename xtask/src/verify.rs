@@ -1531,8 +1531,12 @@ pub(crate) struct GpuSuitePin {
 /// number against faked adapter limits, nine to seventeen buffers against a raised limit), one `no_run` doc test
 /// (`DeviceOptions::with_storage_buffers`) and the new test file `tests/storage_buffers.rs` (nine GPU tests, one
 /// `test result:` line). Updated by count; checked by a full Gpu suite run on the Radeon 890M (lane).
+///
+/// Slice m14.s2s (part b): 673 over 69 became 674 over 69. The struct element slice adds one GPU test to
+/// `tests/limits.rs` (ten column buffers are a `DeviceLimit` against eight, the same data as rows is two bindings), on
+/// an existing line. Updated by count; checked by a full Gpu suite run on the Radeon 890M only (lane); RTX 5090 pending.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 673,
+    passed: 674,
     result_lines: 69,
 };
 

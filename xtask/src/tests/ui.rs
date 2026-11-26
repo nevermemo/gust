@@ -1813,6 +1813,13 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             "batch-op-crate",
             "batch-op-form",
             "batch-scope",
+            "batch-struct-atomic-field",
+            "batch-struct-columns-limit",
+            "batch-struct-count",
+            "batch-struct-missing-derive",
+            "batch-struct-module",
+            "batch-struct-ok",
+            "batch-struct-op-operand",
             "map-bool-for-u32",
             "map-ok",
             "map-struct-bool-field",
@@ -1858,7 +1865,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 316] = [
+const PINNED_FIXTURES: [&str; 323] = [
     "array-barrier",
     "array-buffer-len",
     "array-const-len",
@@ -1909,6 +1916,13 @@ const PINNED_FIXTURES: [&str; 316] = [
     "batch-op-crate",
     "batch-op-form",
     "batch-scope",
+    "batch-struct-atomic-field",
+    "batch-struct-columns-limit",
+    "batch-struct-count",
+    "batch-struct-missing-derive",
+    "batch-struct-module",
+    "batch-struct-ok",
+    "batch-struct-op-operand",
     "break-in-barrier-loop",
     "closure-barrier",
     "closure-move",

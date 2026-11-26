@@ -585,6 +585,11 @@ codes! {
     /// A field of a `#[derive(GpuStruct)]` struct whose type is not an `f32`, `u32`, `i32`, vector or matrix written by its
     /// bare name: an array, a nested struct, an enum, a `bool`, a path, a reference or any other type.
     GpuStructField = 1021 => "GUST-E1021";
+    /// A struct of the user's as the operand of a library op of a `gpu_batch!` (`sum`, `min`, `max`, `reduce`, `count`,
+    /// `scan`, `compact`): an op reads a number buffer.
+    BatchStructOperand = 1022 => "GUST-E1022";
+    /// A struct of the user's as the type of a `Param` of a `gpu_batch!`: a parameter holds a scalar or an enum.
+    BatchStructParam = 1023 => "GUST-E1023";
 }
 
 /// The error for `code` at `span`: the message prefixed with `[GUST-E....]`.

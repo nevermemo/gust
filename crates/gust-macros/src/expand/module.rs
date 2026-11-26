@@ -126,6 +126,16 @@ pub(super) fn expand_validated_with(
         })
         .collect();
     let (_, items) = module.content.as_mut().expect("validated inline module");
+    // A struct a batch stage got from the user's derive (D279) is the user's own type: the validator and the Slang have
+    // read its definition above, and the Rust side is a `use` of the type, so that the handles the user holds and the
+    // kernel's element are one type (the twin and the typed call tell elements apart by type, not by layout).
+    for item in items.iter_mut() {
+        if let syn::Item::Struct(structure) = item
+            && let Some(path) = crate::task::host_path_of(structure)
+        {
+            *item = syn::parse_quote!(use #path;);
+        }
+    }
     let mut generated = Vec::new();
     let mut descriptor_paths = Vec::new();
     // The bodies of the module's kernels, every one built, and the kernels themselves, finished once all bodies are.

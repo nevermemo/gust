@@ -8,7 +8,39 @@ use crate::{
     split_variant_matches, validate_dispatch_extent, validate_kernel, workgroup_counts,
 };
 use gust::{BindingKind, Extent, KernelDescriptor, ParameterDescriptor, ParameterKind, Shape};
+use std::sync::Arc;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
+
+/// The last whole launch of a batch's preparation: its pipeline entry, the entries its bind group was built from, and
+/// the group.
+type LastGroup<'a> = (
+    Arc<crate::cache::CachedKernel>,
+    Vec<wgpu::BindGroupEntry<'a>>,
+    wgpu::BindGroup,
+);
+
+/// Whether two bind group entry lists bind the same resources at the same binding indices: the same buffers with the
+/// same offsets and sizes, the same texture views and the same samplers. Anything else (a resource kind this crate
+/// never binds included) is a difference.
+fn same_entries(first: &[wgpu::BindGroupEntry<'_>], second: &[wgpu::BindGroupEntry<'_>]) -> bool {
+    first.len() == second.len()
+        && first.iter().zip(second).all(|(a, b)| {
+            a.binding == b.binding
+                && match (&a.resource, &b.resource) {
+                    (wgpu::BindingResource::Buffer(x), wgpu::BindingResource::Buffer(y)) => {
+                        x.buffer == y.buffer && x.offset == y.offset && x.size == y.size
+                    }
+                    (
+                        wgpu::BindingResource::TextureView(x),
+                        wgpu::BindingResource::TextureView(y),
+                    ) => x == y,
+                    (wgpu::BindingResource::Sampler(x), wgpu::BindingResource::Sampler(y)) => {
+                        x == y
+                    }
+                    _ => false,
+                }
+        })
+}
 
 impl HeadlessDevice {
     /// The staged graph's preparation (`graph.rs` reads `workgroup_count`, the x count): one-dimensional dispatches
@@ -112,6 +144,7 @@ impl HeadlessDevice {
             .collect::<Result<Vec<_>, Error>>()?;
 
         let mut prepared = Vec::with_capacity(dispatches.len());
+        let mut last: Option<LastGroup<'_>> = None;
         for (dispatch, (resources, plan)) in dispatches.iter().zip(validated) {
             if dispatch.extent().is_empty() {
                 continue;
@@ -119,6 +152,8 @@ impl HeadlessDevice {
             let workgroups = match plan {
                 LaunchPlan::Whole(workgroups) => workgroups,
                 LaunchPlan::Split(split) => {
+                    // Split pieces keep their own groups, and break the run of consecutive whole launches.
+                    last = None;
                     prepared.push(self.prepare_split(dispatch, split)?);
                     continue;
                 }
@@ -132,6 +167,7 @@ impl HeadlessDevice {
                 Launch::Compute { workgroups }
             };
             if let Some(kept) = slot.and_then(|slot| slot.reuse(&cached_kernel)) {
+                last = None;
                 prepared.push(PreparedDispatch {
                     cached_kernel,
                     bind_group: kept,
@@ -165,14 +201,30 @@ impl HeadlessDevice {
                     },
                 })
                 .collect::<Vec<_>>();
-            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some(&format!("{label} batched bind group")),
-                layout: &cached_kernel.bind_group_layout,
-                entries: &bind_group_entries,
-            });
+            // The previous whole launch of this call, when it ran the same pipeline entry over exactly the same
+            // resources (its bind group is then the same group): one group serves both passes. A dispatch over an
+            // empty extent in between is skipped above and does not break the run (it is never encoded).
+            let bind_group = match &last {
+                Some((kernel, entries, group))
+                    if Arc::ptr_eq(kernel, &cached_kernel)
+                        && same_entries(entries, &bind_group_entries) =>
+                {
+                    group.clone()
+                }
+                _ => self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(&format!("{label} batched bind group")),
+                    layout: &cached_kernel.bind_group_layout,
+                    entries: &bind_group_entries,
+                }),
+            };
             if let Some(slot) = slot {
                 slot.keep(&cached_kernel, &bind_group);
             }
+            last = Some((
+                Arc::clone(&cached_kernel),
+                bind_group_entries,
+                bind_group.clone(),
+            ));
             prepared.push(PreparedDispatch {
                 cached_kernel,
                 bind_group,
@@ -451,5 +503,131 @@ impl HeadlessDevice {
             check_binding_size(&self.limits, kernel, bytes, kind)?;
         }
         Ok(workgroups)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{BufferBinding, BufferDispatch, GpuBufferAccess, HeadlessDevice};
+
+    #[gust::gpu_module]
+    mod ops {
+        #[kernel(workgroup_size(64, 1, 1))]
+        pub fn add_one(
+            id: SV_DispatchThreadID,
+            src: StructuredBuffer<uint>,
+            mut dst: RWStructuredBuffer<uint>,
+        ) {
+            let i = id.x;
+            if i < dst.len() && i < src.len() {
+                dst[i] = src[i] + 1u32;
+            }
+        }
+
+        #[kernel(workgroup_size(64, 1, 1))]
+        pub fn add_two(
+            id: SV_DispatchThreadID,
+            src: StructuredBuffer<uint>,
+            mut dst: RWStructuredBuffer<uint>,
+        ) {
+            let i = id.x;
+            if i < dst.len() && i < src.len() {
+                dst[i] = src[i] + 2u32;
+            }
+        }
+    }
+
+    /// The bind groups of a batch of dispatches over `pairs` (source, destination), in order.
+    fn groups_of(
+        device: &HeadlessDevice,
+        pairs: &[(&crate::GpuBuffer<u32>, &crate::GpuBuffer<u32>)],
+    ) -> Vec<wgpu::BindGroup> {
+        let bindings: Vec<[BufferBinding<'_>; 2]> = pairs
+            .iter()
+            .map(|(src, dst)| {
+                [
+                    BufferBinding::read_only(src),
+                    BufferBinding::read_write(dst),
+                ]
+            })
+            .collect();
+        let dispatches: Vec<_> = bindings
+            .iter()
+            .map(|pair| BufferDispatch::new(&ops::add_one::DESCRIPTOR, 3, pair))
+            .collect();
+        device
+            .prepare_extent_batch(&dispatches)
+            .unwrap()
+            .into_iter()
+            .map(|prepared| prepared.bind_group)
+            .collect()
+    }
+
+    #[test]
+    fn identical_consecutive_dispatches_share_one_bind_group() {
+        let device = HeadlessDevice::new().expect("Vulkan adapter required");
+        let src = device.create_typed_buffer("src", &[1u32, 2, 3], GpuBufferAccess::ReadWrite);
+        let dst = device.create_typed_buffer("dst", &[0u32; 3], GpuBufferAccess::ReadWrite);
+        let groups = groups_of(&device, &[(&src, &dst); 4]);
+        assert_eq!(groups.len(), 4);
+        assert!(groups.iter().all(|group| *group == groups[0]));
+    }
+
+    #[test]
+    fn a_dispatch_that_differs_in_one_binding_gets_its_own_bind_group() {
+        let device = HeadlessDevice::new().expect("Vulkan adapter required");
+        let src = device.create_typed_buffer("src", &[1u32, 2, 3], GpuBufferAccess::ReadWrite);
+        let dst = device.create_typed_buffer("dst", &[0u32; 3], GpuBufferAccess::ReadWrite);
+        let other = device.create_typed_buffer("other", &[0u32; 3], GpuBufferAccess::ReadWrite);
+        let groups = groups_of(&device, &[(&src, &dst), (&src, &dst), (&src, &other)]);
+        assert_eq!(groups[0], groups[1]);
+        assert_ne!(groups[1], groups[2]);
+        // Only consecutive passes share: a return to the first bindings builds a new group.
+        let groups = groups_of(&device, &[(&src, &dst), (&src, &other), (&src, &dst)]);
+        assert_ne!(groups[0], groups[1]);
+        assert_ne!(groups[1], groups[2]);
+        assert_ne!(groups[0], groups[2]);
+    }
+
+    #[test]
+    fn a_batch_that_shares_its_bind_group_gives_the_same_results() {
+        let device = HeadlessDevice::new().expect("Vulkan adapter required");
+        let src = device.create_typed_buffer("src", &[1u32, 2, 3], GpuBufferAccess::ReadWrite);
+        let dst = device.create_typed_buffer("dst", &[0u32; 3], GpuBufferAccess::ReadWrite);
+        let other = device.create_typed_buffer("other", &[0u32; 3], GpuBufferAccess::ReadWrite);
+        let first = [
+            BufferBinding::read_only(&src),
+            BufferBinding::read_write(&dst),
+        ];
+        let second = [
+            BufferBinding::read_only(&dst),
+            BufferBinding::read_write(&other),
+        ];
+        let call = BufferDispatch::new(&ops::add_one::DESCRIPTOR, 3, &first);
+        let then = BufferDispatch::new(&ops::add_one::DESCRIPTOR, 3, &second);
+        device.dispatch_batch(&[call, call, call, then]).unwrap();
+        assert_eq!(device.read_typed_buffer(&dst).unwrap(), [2, 3, 4]);
+        assert_eq!(device.read_typed_buffer(&other).unwrap(), [3, 4, 5]);
+    }
+
+    #[test]
+    fn two_kernels_over_the_same_buffers_do_not_share_a_bind_group() {
+        let device = HeadlessDevice::new().expect("Vulkan adapter required");
+        let src = device.create_typed_buffer("src", &[1u32, 2, 3], GpuBufferAccess::ReadWrite);
+        let dst = device.create_typed_buffer("dst", &[0u32; 3], GpuBufferAccess::ReadWrite);
+        let bindings = [
+            BufferBinding::read_only(&src),
+            BufferBinding::read_write(&dst),
+        ];
+        let one = BufferDispatch::new(&ops::add_one::DESCRIPTOR, 3, &bindings);
+        let two = BufferDispatch::new(&ops::add_two::DESCRIPTOR, 3, &bindings);
+        let groups: Vec<_> = device
+            .prepare_extent_batch(&[one, one, two])
+            .unwrap()
+            .into_iter()
+            .map(|prepared| prepared.bind_group)
+            .collect();
+        assert_eq!(groups[0], groups[1]);
+        assert_ne!(groups[1], groups[2]);
     }
 }

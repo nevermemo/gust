@@ -1521,8 +1521,13 @@ pub(crate) struct GpuSuitePin {
 /// Slice m14.s2v: 652 over 67 became 657 over 68. The batch view slice adds the new test file `tests/batch_view.rs`
 /// (five GPU tests, one `test result:` line). Checked by a full Gpu suite run on the Radeon 890M (lane); the RTX 5090
 /// run is owed.
+///
+/// Slice m14.pfbg2: 657 over 68 became 661 over 68. The bind group reuse slice adds four library unit tests to
+/// `dispatch::prepare` (identical consecutive dispatches share a group, a differing binding or kernel gets its own, a batch that
+/// shares a group gives the same results), on existing lines. Checked by full Gpu suite runs on the Radeon 890M and
+/// the RTX 5090 (lane).
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 657,
+    passed: 661,
     result_lines: 68,
 };
 

@@ -172,9 +172,9 @@ impl HeadlessDevice {
 
     /// Submit a batch once and measure its total host and GPU time.
     ///
-    /// `gpu_elapsed` brackets the entire compute pass containing every
-    /// non-empty dispatch. Divide it by the batch length when the dispatches
-    /// represent equivalent repeated work.
+    /// Every non-empty dispatch is a pass of its own. `gpu_elapsed` runs from
+    /// the beginning of the first pass to the end of the last one. Divide it by
+    /// the batch length when the dispatches represent equivalent repeated work.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn dispatch_batch_timed(
         &self,

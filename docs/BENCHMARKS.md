@@ -646,6 +646,8 @@ Closed as "unexplained, not tuned".
 - A probe that runs the hand kernel on a separate device opened like GUST's sits in the same slow state as GUST (1.24 to
   1.29). That is an observation, not a cause, because the probe changes three things at once.
 - No further ablation was run (the kill rule).
+- Bind group reuse (pf.bg2): r = 1.03-1.07 after/before on W1 1M, RTX 5090, three seeds: no GPU-time gain. The host dispatch medians
+  were about 5-11 % lower (one median each, a side reading, not a result).
 
 **Limitation as measured.** On an RTX 5090, in runs the harness marks not publishable, the ratio of GUST's batched GPU
 time (16 dispatches) to hand WGSL's on vector-add at 1M elements is 1.22 to 1.28 in the last measurement. Over earlier

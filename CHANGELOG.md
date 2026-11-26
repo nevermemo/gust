@@ -7,6 +7,12 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- Every batch entry point (`dispatch_batch`, `dispatch_batch_timed`, `submit_batch`, `encode_batch`,
+  `submit_batch_read`, `encode_batch_read`, and the stages of a `gpu_batch!` that hold several dispatches; m14.pfbg2):
+  consecutive dispatches of a batch that run the same kernel over exactly the same resources now share one bind group
+  instead of creating one per pass (a dispatch over an empty extent in between does not break the run). Results are
+  unchanged; an API trace of such a batch shows one bind group creation where it showed one per pass. Split launches
+  and any dispatch that differs in a kernel or a binding keep their own groups.
 - `#[derive(GpuEnum)]` and the `gust::GpuEnum` trait (m14.s2e2a): for a field-less `#[repr(u32)]` enum with literal or
   implicit discriminants that fit in `u32`, the derive implements `from_word`, `to_word` and a validating
   `TryFrom<u32>` (error `gust::EnumWordError`, which carries the word), each a `match` over the discriminants. The enum

@@ -1448,6 +1448,20 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       first resize over the limit. The edits in gust's batch code and the new public variant went beyond the brief's
       file list and were accepted as the slice's design. Opus review: merge after fixes (counted order, cure text, the
       gust-algo GPU tests pinned, the empty stage). GPU_SUITE_PIN 698 over 72, printed by a full Gpu suite run.
+      Gate t43 failed clippy on lim-b's wide stage in the browser example (its generated kernel function takes one
+      argument per buffer); the allow was added and gate t44 is all green.
+    - m14.s2s merged (D279): `#[derive(GpuStruct)]` on a `#[repr(C)]` struct of named scalar, vector and matrix fields
+      with no implicit padding makes it the element of a batch's buffers: `b.input::<Row>(n)`, stages typed `-> Row`,
+      field reads, compound field writes and whole-row stores in a stage body. A batch of rows binds one storage buffer
+      per element type instead of one per column. A struct as a library op operand, a `Param` type or a count is refused
+      by code. Radeon 890M (struct element and layout tests, limits, check-precompiled, check-examples, check-web on
+      Chrome 158). Opus review: merge after fixes, one fix round. Its dev merge was resolved in the lane (both
+      manifests regenerated with the pinned Slang); GPU_SUITE_PIN 699 over 72, printed by a full Gpu suite run on the
+      Radeon 890M. Not run in the lane: the full Gpu suite on the RTX 5090.
+    - m14.s2i-nits merged: a counted stage reads the adapter's `DownlevelFlags::INDIRECT_EXECUTION` (read when the
+      device is built) instead of inferring it from the backend; the timed counted test asserts that a device with
+      timestamp queries times `Frame` and `Passes`; SEMANTICS says a count of several elements is read as its first
+      after a resize. Both adapters (counted tests).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -87,10 +87,22 @@ ahead of the rest of M14, in this order:
    factor moves the batched ratio by more than the control's spread, record "not the device options" and stop. The
    probe that opened the hand kernel's device the way GUST does was 1.24 to 1.29 times slower, but it changed three
    things at once.
-3. **Fusion of adjacent elementwise stages (pf.fuse).** Adjacent stages of a batch that are elementwise over one
-   extent become one dispatch. For tiny kernels the fixed cost of a dispatch dominates, and Breeze and Hurricane frames
-   are made of tiny kernels. It needs a plan first: when fusion is legal, the CPU twin's equivalence, the content hash,
-   and D251's one submission per frame. It starts once the stage surface (m14.s2) has settled.
+3. **One compute pass per batch (pf.onepass), then fusion of batch stages (pf.fuse).** Quiet window qw2 showed that
+   recording a batch's dispatches in one compute pass recovers most of what fused kernels gain at small sizes, so
+   pf.onepass comes first, and fusion is measured against one pass, not against a pass per dispatch. Fusion's own value
+   is at the sizes where memory traffic dominates. It comes in two kinds, each with its own pre-registered kill rule on
+   both adapters at small and large sizes:
+   - *Producer-consumer chains:* a stage fused with the stage that reads its output, so the consumer takes the value
+     from a register instead of reloading it. The output is still stored while the caller or another stage can read it.
+   - *Sibling fusion with shared reads:* stages that do not depend on each other run as one kernel. The gain at large
+     sizes comes from inputs they share, read once instead of once per stage, as in an ECS frame whose systems read the
+     same component columns. Siblings with disjoint inputs move the same bytes either way, so a hand-written spike
+     measures a shared-input and a disjoint-input case apart before any sibling code generation.
+   Both are legal only when every read of a buffer written inside the group is at the reader's own index; neighbour
+   reads, reductions, gathers and scans end a group. Staged: legality diagnostics for both kinds, then two-stage fusion
+   (one kind at a time), then full groups with reordering. It also needs the CPU twin's equivalence, the content hash
+   and D251's one submission per frame. Macro-time fusion comes first; its legality diagnostics are also the metadata
+   that runtime fusion (After the first release) needs.
 4. **An unchecked route for trusted kernels (pf.trust).** wgpu's runtime checks on WGSL cost about 20 to 30 % on
    loop-heavy code (the W3 observation). The opt-in `spirv-route` feature (D172, D174) already runs slangc's SPIR-V as
    a passthrough module on Vulkan, and wgpu can also create a WGSL module with its checks off. The slice makes one of
@@ -325,6 +337,19 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 Order after M5 (owner, 2026-11-02, D75): M6, M7, MX (execution shapes and textures), MR (the first public
 crates.io release), then M8, M9 and M10. MX and MR keep letters so that the decisions naming M8 to M10 stay
 valid. M11, Realignment, follows M10: the owner's joint review (D198), before any release or new milestone.
+
+## After the first release
+
+1. **Runtime fusion of batch stages.** GUST builds every WGSL module from a string at run time, so a batch can also
+   be fused when it is built, by splicing its stages' artifact shaders: each piece's names prefixed, bindings
+   renumbered from the reflection files within the device's limits, each entry point turned into a function called in
+   order by a small generated entry point, the piece bodies untouched. Legality comes from per-buffer facts the macro
+   writes into the artifact metadata (the same facts as macro-time fusion's diagnostics), never from parsing shader
+   text. Unlike macro-time fusion it can use runtime facts: which outputs are read this frame, real sizes, device
+   limits and measured costs, so an intermediate that nothing else reads can stay in a register. The CPU twin still
+   runs stage by stage as the independent check. Open: whether a runtime generator beside slangc fits Slang as the
+   compiler of record (the owner's decision), whether slangc can emit plain functions to WGSL, and the compile cost per
+   fused variant. A pre-registered spike that splices two artifact shaders by hand gates any slice.
 
 ## Parking lot
 

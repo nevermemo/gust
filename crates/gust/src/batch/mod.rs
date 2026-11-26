@@ -70,6 +70,7 @@ use std::sync::{
 use crate::map::{self, MapHost};
 use crate::{Call, GpuPod, Kernel, Resource, Run, kind};
 
+mod counted;
 mod element;
 mod frame;
 mod ops;
@@ -77,6 +78,9 @@ mod shape;
 mod slot;
 mod view;
 
+#[doc(hidden)]
+pub use counted::{CountedDevice, GROUP_LIMIT, grid_of, set_counted_launch};
+pub use counted::{CountedLaunch, counted_launch};
 pub use element::{Element, InvalidWord};
 #[doc(hidden)]
 pub use element::{pack_enum, unpack_enum};
@@ -197,6 +201,17 @@ pub enum Error {
         /// That word.
         word: u32,
     },
+    /// The count of a counted stage is not one element: it names a buffer of another length.
+    NotCount {
+        /// The batch.
+        batch: String,
+        /// The counted stage.
+        stage: String,
+        /// The buffer named as its count, by the name of its `let`.
+        buffer: String,
+        /// The number of elements it has.
+        len: usize,
+    },
     /// The device failed.
     Device(map::Error),
 }
@@ -270,6 +285,15 @@ impl core::fmt::Display for Error {
             } => write!(
                 f,
                 "`{stage}` of batch `{batch}` holds the word {word} at index {index}, which is no variant of its enum"
+            ),
+            Self::NotCount {
+                batch,
+                stage,
+                buffer,
+                len,
+            } => write!(
+                f,
+                "stage `{stage}` of batch `{batch}` is counted by `{buffer}`, which has {len} elements: a count is one `u32`"
             ),
             Self::Device(error) => write!(f, "device: {error}"),
         }
@@ -1343,6 +1367,17 @@ impl Error {
                 stage: stage.clone(),
                 index: *index,
                 word: *word,
+            },
+            Self::NotCount {
+                batch,
+                stage,
+                buffer,
+                len,
+            } => Self::NotCount {
+                batch: batch.clone(),
+                stage: stage.clone(),
+                buffer: buffer.clone(),
+                len: *len,
             },
             Self::Device(error) => {
                 Self::Device(map::Error::device(DeviceMessage(error.to_string())))

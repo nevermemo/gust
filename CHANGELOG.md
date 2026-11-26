@@ -7,6 +7,13 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- A counted batch stage (m14.s2i, D278): `gpu_task!(count(n); capacity, |i| -> T { .. })` in a `gpu_batch!` runs over
+  the rows `0 .. min(n, capacity)` of a one-element `u32` handle `n` that a stage wrote (a result, the count of
+  `compact`, an in-place counter), with no readback; a count above the capacity is clamped, the rows from the count on
+  keep their values, and the CPU twin is equal over the whole buffer. The GPU launches it indirectly in the frame's one
+  submission (the grid is two-dimensional, so 65535 workgroups is no ceiling) or over the grid of the capacity
+  (`wasm32`). New codes `GUST-E1013` to `GUST-E1015`.
+
 - Every batch entry point (`dispatch_batch`, `dispatch_batch_timed`, `submit_batch`, `encode_batch`,
   `submit_batch_read`, `encode_batch_read`, and the stages of a `gpu_batch!` that hold several dispatches; m14.pfbg2):
   consecutive dispatches of a batch that run the same kernel over exactly the same resources now share one bind group

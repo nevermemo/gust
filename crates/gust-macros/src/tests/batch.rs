@@ -807,3 +807,95 @@ fn a_user_struct_as_an_input_is_taken_for_an_enum_in_a_block() {
     assert!(text.contains("Particle ! (acc = [] ;"), "{text}");
     assert_eq!(text.matches("__gust_enum_check ::").count(), 1, "{text}");
 }
+
+// ---- counted stages (D278) ----
+
+#[test]
+fn a_counted_stage_has_a_linear_index_over_a_two_dimensional_grid_and_an_args_kernel() {
+    let scratch = Scratch::new();
+    let text = stage(
+        "batch(b, \"s\"); count(n); 8u32, [n: Stage<u32>, src: Stage<f32>], |i| -> f32 { src[i] }",
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+    // The stage is sealed through the counted form, over the pair of kernels.
+    assert!(text.contains("finish_counted"), "{text}");
+    assert!(text.contains("require_count"), "{text}");
+    assert!(text.contains("run_args"), "{text}");
+    let slang = scratch.slang();
+    // The counted kernel: the row is the linear index over the grid, clamped by the count and the capacity.
+    assert!(slang.contains("65535"), "{slang}");
+    assert!(slang.contains("min("), "{slang}");
+    // The args kernel writes three words.
+    assert!(
+        slang.matches("65535").count() >= 4,
+        "the grid is clamped in the args kernel too: {slang}"
+    );
+}
+
+#[test]
+fn an_uncounted_stage_has_no_args_kernel() {
+    let scratch = Scratch::new();
+    let text = stage(
+        "batch(b, \"s\"); 8u32, [src: Stage<f32>], |i| -> f32 { src[i] }",
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+    assert!(
+        !text.contains("finish_counted") && !text.contains("run_args"),
+        "{text}"
+    );
+    assert!(!scratch.slang().contains("65535"));
+}
+
+#[test]
+fn count_outside_a_batch_is_e1013() {
+    stage_rejected(
+        "count(n); 8u32, [n: &[u32], src: &[f32]], |i| -> f32 { src[i] }",
+        Code::BatchCount,
+    );
+    stage_rejected(
+        "batch(b, \"s\"); count(n); count(m); 8u32, [n: Stage<u32>, src: Stage<f32>], |i| -> f32 { src[i] }",
+        Code::BatchCount,
+    );
+}
+
+#[test]
+fn a_counted_two_dimensional_stage_or_a_tall_workgroup_is_e1014() {
+    stage_rejected(
+        "batch(b, \"s\"); count(n); (4u32, 4u32), [n: Stage<u32>, src: Stage<f32>], |x, y| -> f32 { src[(x, y)] }",
+        Code::BatchCountBody,
+    );
+    stage_rejected(
+        "batch(b, \"s\"); workgroup_size(8, 8, 1); count(n); 8u32, [n: Stage<u32>, src: Stage<f32>], |i| -> f32 { src[i] }",
+        Code::BatchCountBody,
+    );
+}
+
+#[test]
+fn a_count_that_is_not_a_u32_handle_the_stage_only_reads_is_e1015() {
+    // A handle of another element type, and the stage's own target.
+    stage_rejected(
+        "batch(b, \"s\"); count(n); 8u32, [n: Stage<f32>, src: Stage<f32>], |i| -> f32 { src[i] }",
+        Code::BatchCountHandle,
+    );
+    stage_rejected(
+        "batch(b, \"s\"); count(t); &mut t, [t: &mut Stage<u32>], |i| { t[i] = 1u32; }",
+        Code::BatchCountHandle,
+    );
+    // In a block, a name that is not a handle (a parameter) is refused at the name.
+    batch_rejected(
+        r#""s", on(&device); |b| { let p = b.param::<u32>(2); let v = b.input::<u32>(8u32); gust::gpu_task!(count(p); 8u32, |i| -> u32 { v[i] }); v }"#,
+        Code::BatchCountHandle,
+    );
+}
+
+#[test]
+fn a_block_gives_a_counted_stage_the_count_handle_it_names() {
+    let text = batch(
+        r#""s", on(&device); |b| { let n = b.input::<u32>(1u32); let v = b.input::<u32>(8u32); let o = gust::gpu_task!(count(n); 8u32, |i| -> u32 { v[i] }); o }"#,
+    );
+    assert!(!failed(&text), "{text}");
+    assert!(text.contains("count (n) ;"), "{text}");
+    assert!(text.contains("n : Stage < u32 >"), "{text}");
+}

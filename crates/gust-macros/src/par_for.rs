@@ -67,6 +67,8 @@ struct Names {
     pad: &'static str,
     /// The result buffer of a `gpu_task!` stage with a result type.
     out: &'static str,
+    /// The three-word grid buffer the args kernel of a counted stage writes (D278).
+    args: &'static str,
 }
 
 const FINAL: Names = Names {
@@ -76,6 +78,7 @@ const FINAL: Names = Names {
     axes: ["__gust_ex", "__gust_ey", "__gust_ez"],
     pad: "__gust_pad",
     out: crate::task::OUT,
+    args: "__gust_args",
 };
 
 const VIEW: Names = Names {
@@ -85,6 +88,7 @@ const VIEW: Names = Names {
     axes: ["par_for_ex", "par_for_ey", "par_for_ez"],
     pad: "par_for_pad",
     out: "par_for_task_out",
+    args: "par_for_args",
 };
 
 /// The field names of a dispatch id.
@@ -96,7 +100,7 @@ const PLACEHOLDER: &str = "__gust_pf";
 /// What the keyword options in front of the loop say.
 #[derive(Default)]
 pub(crate) struct Options {
-    workgroup: Option<[u32; 3]>,
+    pub(crate) workgroup: Option<[u32; 3]>,
     pub(crate) on: Option<syn::Expr>,
     /// The hidden `descriptor;` form, which expands to the kernel's descriptor and launches nothing. It is for the
     /// follow-up that runs the naga gate over `par_for!` kernels (the fixtures are skipped there until then); it is
@@ -105,6 +109,8 @@ pub(crate) struct Options {
     /// `crate(<path>);`: where `gust` is for a crate that reaches it through another (audit S6). It is applied by
     /// [`par_for_in`] to the whole output, the error value included.
     pub(crate) krate: Option<syn::Path>,
+    /// `count(<name>);`: the stage of a `gpu_batch!` is counted by the buffer `name` (D278). Read by [`crate::task`].
+    pub(crate) count: Option<syn::Ident>,
 }
 
 /// What [`expand_input`] learned about the call besides its expansion, for the value that follows an error.
@@ -262,6 +268,30 @@ pub(crate) fn parse_options(input: ParseStream) -> syn::Result<Options> {
                     ));
                 }
                 options.krate = Some(facade);
+            } else if text == "count" && input.peek2(syn::token::Paren) {
+                input.parse::<syn::Ident>()?;
+                let content;
+                syn::parenthesized!(content in input);
+                let name = content
+                    .parse::<syn::Ident>()
+                    .ok()
+                    .filter(|_| content.is_empty());
+                let Some(name) = name else {
+                    return Err(diagnostics::error(
+                        Code::BatchCount,
+                        &keyword,
+                        "`count(..)` takes the name of one handle of the block: `count(n);`",
+                    ));
+                };
+                input.parse::<Token![;]>()?;
+                if options.count.is_some() {
+                    return Err(diagnostics::error(
+                        Code::BatchCount,
+                        &keyword,
+                        "`count(..)` given twice",
+                    ));
+                }
+                options.count = Some(name);
             } else if text == "descriptor" && input.peek2(Token![;]) {
                 input.parse::<syn::Ident>()?;
                 input.parse::<Token![;]>()?;
@@ -315,7 +345,7 @@ pub(crate) struct Plan {
     /// The loop variable of each axis (`None` for `_`); the length is the number of dimensions.
     axes: Vec<Option<syn::Ident>>,
     extents: Vec<syn::Expr>,
-    workgroup: [u32; 3],
+    pub(crate) workgroup: [u32; 3],
     pub(crate) bindings: Vec<Binding>,
     body: syn::Block,
     profile: Profile,
@@ -661,9 +691,22 @@ impl Plan {
             }
             guard.extend(quote!(#gid.#field < #ext.#extent));
         }
+        // A counted stage (D278): the grid is two-dimensional, the row is the linear index over it, and the rows are
+        // those below the clamped count.
+        let linear: Option<TokenStream> = self.options.count.as_ref().map(|_| {
+            let group = Literal::u32_suffixed(self.workgroup[0]);
+            quote!((#gid.y * (65535u32 * #group) + #gid.x))
+        });
+        if let (Some(count), Some(linear)) = (&self.options.count, &linear) {
+            let ex0 = &axis_fields[0];
+            guard = quote!(#linear < #count[0u32].min(#ext.#ex0));
+        }
         let axis_lets = self.axes.iter().enumerate().filter_map(|(axis, name)| {
             let (name, field) = (name.as_ref()?, format_ident!("{}", FIELDS[axis]));
-            Some(quote!(let #name = #gid.#field;))
+            match (&linear, axis) {
+                (Some(linear), 0) => Some(quote!(let #name = #linear;)),
+                _ => Some(quote!(let #name = #gid.#field;)),
+            }
         });
         let scalar_lets = self.scalars().map(|(name, scalar)| {
             if let Some(decoder) = self
@@ -681,9 +724,13 @@ impl Plan {
         });
         let [x, y, z] = self.workgroup.map(Literal::u32_unsuffixed);
         let statements: Vec<syn::Stmt> = match &self.task {
-            Some(task) => {
-                task.statements(&gid, &ext, &axis_fields[0], &format_ident!("{}", names.out))
-            }
+            Some(task) => task.statements(
+                &gid,
+                &ext,
+                &axis_fields[0],
+                &format_ident!("{}", names.out),
+                linear.as_ref(),
+            ),
             None => self.body.stmts.clone(),
         };
         let [ex, ey, ez] = &axis_fields[..] else {
@@ -694,6 +741,34 @@ impl Plan {
             .task
             .as_ref()
             .map_or_else(Vec::new, crate::task::TaskPlan::enum_items);
+        // The args kernel of a counted stage: one invocation turns `min(n, capacity)` rows into the grid of groups,
+        // `x = min(g, 65535)` and `y = ceil(g / 65535)` (neither sum can overflow a `u32`).
+        let args_kernel: Vec<syn::Item> = match &self.options.count {
+            Some(count) => {
+                let args = format_ident!("{}", names.args);
+                let group = Literal::u32_suffixed(self.workgroup[0]);
+                let step = Literal::u32_suffixed(self.workgroup[0].saturating_sub(1));
+                vec![syn::parse_quote! {
+                    #[allow(clippy::manual_div_ceil)]
+                    #[kernel(workgroup_size(1, 1, 1))]
+                    pub fn run_args(
+                        #gid: SV_DispatchThreadID,
+                        #ext: Uniform<#record>,
+                        #count: StructuredBuffer<u32>,
+                        mut #args: RWStructuredBuffer<u32>,
+                    ) {
+                        if #gid.x == 0u32 {
+                            let rows = #count[0u32].min(#ext.#ex);
+                            let groups = rows / #group + (rows % #group + #step) / #group;
+                            #args[0u32] = groups.min(65535u32);
+                            #args[1u32] = groups / 65535u32 + (groups % 65535u32 + 65534u32) / 65535u32;
+                            #args[2u32] = 1u32;
+                        }
+                    }
+                }]
+            }
+            None => Vec::new(),
+        };
         syn::parse_quote! {
             mod #ident {
                 #(#enum_items)*
@@ -714,6 +789,8 @@ impl Plan {
                         #(#statements)*
                     }
                 }
+
+                #(#args_kernel)*
             }
         }
     }
@@ -1061,6 +1138,13 @@ impl Plan {
         environment: &Environment,
         call_line: u32,
     ) -> syn::Result<TokenStream> {
+        if let (Some(count), None) = (&self.options.count, &self.task) {
+            return Err(diagnostics::error(
+                Code::BatchCount,
+                count,
+                "`count(..)` is a clause of a stage of a `gpu_batch!`, not of `par_for!`: the loop's extent is its own",
+            ));
+        }
         // The body as a kernel of a module with names the validator accepts: a dialect error is reported at the
         // body's own tokens with its code.
         crate::validate::validate_module_in(

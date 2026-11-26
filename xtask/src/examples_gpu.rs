@@ -241,6 +241,18 @@ const EXAMPLE_GPU_TESTS: &[(&str, &[&str])] = &[
             "gpu_an_op_resize_with_a_frame_in_flight",
             "gpu_the_frame_after_an_op_resize_is_one_submission",
             "gpu_the_ops_follow_every_resize_and_equal_the_cpu_twin",
+            // `tests/counted.rs`: a counted stage, both launches (m14.s2i).
+            "gpu_counts_indirect",
+            "gpu_counts_bounded",
+            "gpu_group_limit_indirect",
+            "gpu_group_limit_bounded",
+            "gpu_a_count_that_changes_every_frame_indirect",
+            "gpu_a_count_that_changes_every_frame_bounded",
+            "gpu_the_count_of_compact_counts_a_stage_indirect",
+            "gpu_the_count_of_compact_counts_a_stage_bounded",
+            "gpu_frames_in_flight_keep_their_counts",
+            "gpu_resize_follows_the_capacity_indirect",
+            "gpu_resize_follows_the_capacity_bounded",
         ],
     ),
     (

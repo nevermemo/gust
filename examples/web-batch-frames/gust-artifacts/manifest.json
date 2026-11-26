@@ -1,6 +1,68 @@
 {
   "kernels": [
     {
+      "clean_sha256": "66efed4ba004c5231c864700ea147639723b0ed2f76d484489c71af17497d79c",
+      "entry_point": "gpu___gust_pf_c413d752e1648189_run_args",
+      "formats": [
+        {
+          "file": "06c874f17eb95148.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "bde434745076248794429de6b66b919f53c2e4368b9423b1885b070648b538ea",
+          "sha256": "53314e0652832f997060e2e2e2a31aa0cce96a321589f3543c196e7923df6eef"
+        }
+      ],
+      "key": "06c874f17eb95148",
+      "module": "__gust_pf_c413d752e1648189",
+      "name": "run_args"
+    },
+    {
+      "clean_sha256": "ec7dd75690a46e8b21b9957d45e27492d3c558e520fd6e43cde967461d1cec16",
+      "entry_point": "gpu___gust_pf_c413d752e1648189_run_args",
+      "formats": [
+        {
+          "file": "351fcd5eea8b63ca.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "45944ffdeb53003bfc573a17f2768fa461d67a8e1c8e7de8367081ae3afe3e90",
+          "sha256": "ada9ccf99beab21dd4ffc40ffe2e17e63103c30842914c42c8091f16452a3635"
+        }
+      ],
+      "key": "351fcd5eea8b63ca",
+      "module": "__gust_pf_c413d752e1648189",
+      "name": "run_args",
+      "split_of": "06c874f17eb95148"
+    },
+    {
+      "clean_sha256": "d138a9f6d5936bbc78101d9b695e45d7c21a4985c66351f4b2eb6c4779e98507",
+      "entry_point": "gpu___gust_pf_c413d752e1648189_run",
+      "formats": [
+        {
+          "file": "8d4a7b2ee2634c68.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "b4c758b45880b06c9400828beca1ac85a77881b5539d50dce5f963c056e8602c",
+          "sha256": "de1ee083f2dafb3c240739a655b5243c18ab7f103dd789326f646998a9e3c2c0"
+        }
+      ],
+      "key": "8d4a7b2ee2634c68",
+      "module": "__gust_pf_c413d752e1648189",
+      "name": "run",
+      "split_of": "b33892013e20e729"
+    },
+    {
+      "clean_sha256": "9fd9a828708b9cde88f4150c66f2d82abe495d1006dd71d7e5432f3e6a258c2a",
+      "entry_point": "gpu___gust_pf_c413d752e1648189_run",
+      "formats": [
+        {
+          "file": "b33892013e20e729.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "ced9f5891735a9c89ea1c57c24fb70bde91ebaf9fe53b36509be1fe0288d701b",
+          "sha256": "846241e705caf7f57922e39ab3d7c9e3877fa701f87c63a5d027b87b6076125e"
+        }
+      ],
+      "key": "b33892013e20e729",
+      "module": "__gust_pf_c413d752e1648189",
+      "name": "run"
+    },
+    {
       "clean_sha256": "fc190b11a1e9e52a115dd473dd40036f828be9c82c750abb9dbeeb8b1003a4e5",
       "entry_point": "gpu___gust_pf_0c716338874f103a_run",
       "formats": [

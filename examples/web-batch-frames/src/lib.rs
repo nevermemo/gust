@@ -33,6 +33,11 @@ pub struct Handles {
     pub x: Stage<u32, D1>,
     /// The result: `y = (x * 3 + gain) * 2 + 1`.
     pub y: Stage<u32, D1>,
+    /// How many rows the counted stage runs, written by a frame (a count above [`LENGTH`] is clamped).
+    pub count: Stage<u32, D1>,
+    /// The counted stage's result: row `i` is `x[i] + 1` for the rows below the last count that reached it and keeps
+    /// the value of the last frame that wrote it otherwise (zero before any).
+    pub z: Stage<u32, D1>,
 }
 
 /// The batch: `y = x * 3 + gain`, then `y = y * 2 + 1` in place, with `in_flight(2)`. `u32` arithmetic on small values,
@@ -50,7 +55,10 @@ pub fn build(
         let x = b.input::<u32>(n);
         let y = gpu_task!(n, |i| -> u32 { x[i] * 3u32 + gain.get() });
         let _double = gpu_task!(&mut y, |i| { y[i] = y[i] * 2u32 + 1u32; });
-        Handles { gain, x, y }
+        let count = b.input::<u32>(1u32);
+        // A counted stage (m14.s2i, D278): the browser runs the bounded launch, the one `wasm32` always takes.
+        let z = gpu_task!(count(count); n, |i| -> u32 { x[i] + 1u32 });
+        Handles { gain, x, y, count, z }
     })
 }
 
@@ -58,6 +66,14 @@ pub fn build(
 #[must_use]
 pub fn reference(x: &[u32], gain: u32) -> Vec<u32> {
     x.iter().map(|v| (v * 3 + gain) * 2 + 1).collect()
+}
+
+/// The counted stage's result after a frame that wrote `x` and the count `count`: the first `min(count, LENGTH)` rows
+/// are `x[i] + 1`, the others keep what `state` held (the frames share their buffers).
+pub fn counted_reference(state: &mut [u32], x: &[u32], count: u32) {
+    for (row, value) in state.iter_mut().zip(x).take(count as usize) {
+        *row = value + 1;
+    }
 }
 
 /// The input of frame `seed`.

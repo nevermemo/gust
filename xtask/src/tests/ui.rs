@@ -1795,6 +1795,9 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
         [
             "batch-body",
             "batch-bool",
+            "batch-count-2d",
+            "batch-count-handle",
+            "batch-count-outside",
             "batch-enum-copy-mismatch",
             "batch-enum-element-ok",
             "batch-enum-in-place",
@@ -1854,7 +1857,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 301] = [
+const PINNED_FIXTURES: [&str; 304] = [
     "array-barrier",
     "array-buffer-len",
     "array-const-len",
@@ -1887,6 +1890,9 @@ const PINNED_FIXTURES: [&str; 301] = [
     "barrier-ok",
     "batch-body",
     "batch-bool",
+    "batch-count-2d",
+    "batch-count-handle",
+    "batch-count-outside",
     "batch-enum-copy-mismatch",
     "batch-enum-element-ok",
     "batch-enum-in-place",

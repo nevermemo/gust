@@ -1462,6 +1462,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       device is built) instead of inferring it from the backend; the timed counted test asserts that a device with
       timestamp queries times `Frame` and `Passes`; SEMANTICS says a count of several elements is read as its first
       after a resize. Both adapters (counted tests).
+    - Gate t45 green on the records commit (32 steps).
+    - m14.s2i.m2 merged (probe only, no timed reading yet): an opt-in test in batch-basics' counted measurements
+      (`GUST_S2I_M2_PROBE=1`, cells `small` or `all`) times a counted chain launched indirect against the same chain
+      bounded, as the frame span, with the median of the middle rounds and every round printed. Its five-run reading
+      per adapter waits for a quiet window.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

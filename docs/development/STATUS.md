@@ -1390,6 +1390,16 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       frame on the 5090 and a few percent on the 890M (probe C6, in the guide). Both adapters (frame_time, batch-basics),
       the no-timestamp route; span-end and Off mutations caught. Opus review: merge after fixes; one fix round, re-check
       merge. Open: pf.ft2 (split the per-frame cost; batched resolve and map), pf.ftweb.
+    - m14.lim-a (D280): `DeviceOptions::with_storage_buffers(n)`, off by default, asks for n storage buffers per
+      shader stage at open; an adapter offering fewer is `DeviceLimit` before any device exists, n below 8 and wasm32
+      are refused by name, `device_request` carries n, adopt raises nothing, launches compare against the opened
+      limits, and the exported snippet of a kernel over 8 names the limit it needs. wgpu 30.0.1 reports 429391872 (Radeon
+      890M) and 524288 (RTX 5090) storage buffers per stage; a device opened with 16 got 16 on both. Both adapters
+      (storage_buffers, limits); open-check, option-ignored, request/launch mismatch and off-by-one mutations caught.
+      Opus review: merge after fixes; one fix round, re-check merge. Limitation: `par_for!` and `map` stage their slices
+      in pooled buffers before the launch check, so a refused launch has taken and returned them (nothing outstanding,
+      no pipeline). Open: lim-b (batch-build refusal, `compact` with separate keep and count buffers, check-web over 8,
+      the raised-device precompiled case), m14.lim-web.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

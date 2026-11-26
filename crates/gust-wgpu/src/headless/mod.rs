@@ -1,4 +1,5 @@
 use crate::BufferPool;
+use crate::ShaderChecks;
 mod accessors;
 mod adapter;
 mod adopt;
@@ -68,6 +69,13 @@ pub struct HeadlessDevice {
     /// Whether persistent buffers are created capture-capable (`DeviceOptions::capture`): read-only storage buffers
     /// get `COPY_SRC` too.
     pub(crate) capture: bool,
+    /// Whether the WGSL shader modules are built with wgpu's runtime checks (`DeviceOptions::unchecked_kernels`); a
+    /// device that was adopted is always checked. Read once, by `HeadlessDevice::wgsl_module`.
+    pub(crate) shader_checks: ShaderChecks,
+    /// The runtime checks the last WGSL module of this device was built with (test builds only): what the unit test of
+    /// the module call reads.
+    #[cfg(test)]
+    pub(crate) last_module_checks: Mutex<Option<wgpu::ShaderRuntimeChecks>>,
     /// Recycles the allocations of [`GpuVec`] and other pooled buffers.
     pub(crate) pool: BufferPool,
     /// How many queue submissions GUST itself has made on this device (`HeadlessDevice::gust_submissions`). Only

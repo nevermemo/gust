@@ -58,7 +58,10 @@ first pass) and its ticket copies (after the last) are **outside** it. It is the
 `gpu_batch_per_dispatch` times the number of passes. At level `Passes` the result also holds one entry per stage that
 has a pass: an entry is per **stage**, from the begin of the stage's first pass to the end of its last (a stage that
 records several passes, or a launch split into pieces, which share one pass, is still one entry); a stage over zero
-elements has none. The plan for fused passes is one entry per fused group, naming all its stages. A time is `Ok(None)`,
+elements has none. The plan for fused passes is one entry per fused group, naming all its stages. The GPU device
+records the plain `grid` dispatches of neighbouring stages in one compute pass when a frame is untimed or at `Frame`,
+but at `Passes` every stage keeps a compute pass of its own, so a per-stage time includes the pass boundary and the
+times can sum to more than the `Frame` span. A time is `Ok(None)`,
 never an error, for a batch built `Off`, a device without timestamp queries (the CPU twin, an adopted device that did
 not ask for them, `wasm32`), a frame with no pass, and a frame for which no read-back buffer was free (the batch
 keeps a bounded set of them and replaces any that a dropped or unread frame cost, so this is rare, and a caller that

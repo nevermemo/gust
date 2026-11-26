@@ -1,6 +1,8 @@
 use crate::cache::{CachedKernel, Pipeline};
 use crate::{Error, INVOCATION_CAP_LIMIT, device_limit, render};
 use gust::{Extent, KernelDescriptor, ParameterDescriptor, Shape};
+use std::borrow::Borrow;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// What one prepared dispatch launches: compute workgroups for a `grid` kernel, a full-screen pass over `elements`
@@ -86,8 +88,39 @@ impl PreparedDispatch {
         }
     }
 
-    /// Encode this dispatch into `encoder` as one pass of its own: a compute pass for `grid`, a render pass for `pixel`
-    /// (a pass per call, because one call's output may be the next call's input and a pass is one usage scope).
+    /// Whether this is a compute (`grid`) dispatch, which a pass can share with others.
+    pub(crate) fn is_compute(&self) -> bool {
+        matches!(
+            (&self.cached_kernel.pipeline, self.launch),
+            (Pipeline::Compute(_), Launch::Compute { .. })
+        )
+    }
+
+    /// Record this compute dispatch into an open pass: its pipeline, then its bind group and workgroups (one dispatch
+    /// per piece for a split launch, in order: x innermost, then y, then z).
+    fn record_compute(&self, pass: &mut wgpu::ComputePass<'_>) {
+        let (Pipeline::Compute(pipeline), Launch::Compute { workgroups }) =
+            (&self.cached_kernel.pipeline, self.launch)
+        else {
+            unreachable!("record_compute is for a compute dispatch")
+        };
+        pass.set_pipeline(pipeline);
+        if self.pieces.is_empty() {
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.dispatch_workgroups(workgroups[0], workgroups[1], workgroups[2]);
+        } else {
+            for piece in &self.pieces {
+                pass.set_bind_group(0, &piece.bind_group, &[]);
+                pass.dispatch_workgroups(
+                    piece.workgroups[0],
+                    piece.workgroups[1],
+                    piece.workgroups[2],
+                );
+            }
+        }
+    }
+
+    /// Encode this dispatch into `encoder` as one pass of its own: a compute pass for `grid`, a render pass for `pixel`.
     pub(crate) fn encode(
         &self,
         device: &wgpu::Device,
@@ -96,30 +129,9 @@ impl PreparedDispatch {
         timestamps: Option<PassTimestamps<'_>>,
     ) -> Result<(), Error> {
         match (&self.cached_kernel.pipeline, self.launch) {
-            (Pipeline::Compute(pipeline), Launch::Compute { workgroups }) => {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some(label),
-                    timestamp_writes: timestamps.map(|stamps| wgpu::ComputePassTimestampWrites {
-                        query_set: stamps.query_set,
-                        beginning_of_pass_write_index: stamps.begin,
-                        end_of_pass_write_index: stamps.end,
-                    }),
-                });
-                pass.set_pipeline(pipeline);
-                if self.pieces.is_empty() {
-                    pass.set_bind_group(0, &self.bind_group, &[]);
-                    pass.dispatch_workgroups(workgroups[0], workgroups[1], workgroups[2]);
-                } else {
-                    // The pieces of a split launch run in order inside this one pass: x innermost, then y, then z.
-                    for piece in &self.pieces {
-                        pass.set_bind_group(0, &piece.bind_group, &[]);
-                        pass.dispatch_workgroups(
-                            piece.workgroups[0],
-                            piece.workgroups[1],
-                            piece.workgroups[2],
-                        );
-                    }
-                }
+            (Pipeline::Compute(_), Launch::Compute { .. }) => {
+                let mut pass = begin_compute(encoder, label, timestamps);
+                self.record_compute(&mut pass);
                 Ok(())
             }
             (Pipeline::Render(pipeline), Launch::Pixel { elements }) => render::encode_pixel_pass(
@@ -134,6 +146,97 @@ impl PreparedDispatch {
             _ => unreachable!("a kernel's shape fixes both its pipeline and its launch"),
         }
     }
+}
+
+fn begin_compute<'encoder>(
+    encoder: &'encoder mut wgpu::CommandEncoder,
+    label: &str,
+    timestamps: Option<PassTimestamps<'_>>,
+) -> wgpu::ComputePass<'encoder> {
+    encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some(label),
+        timestamp_writes: timestamps.map(|stamps| wgpu::ComputePassTimestampWrites {
+            query_set: stamps.query_set,
+            beginning_of_pass_write_index: stamps.begin,
+            end_of_pass_write_index: stamps.end,
+        }),
+    })
+}
+
+/// Whether a batch is recorded as one pass per dispatch even where one pass would do (see
+/// [`force_pass_per_dispatch`]).
+static PASS_PER_DISPATCH: AtomicBool = AtomicBool::new(false);
+
+/// Test and benchmark support, outside the pre-1.0 promise (D111): record every batch as one pass per dispatch, the way
+/// batches were recorded before the one-pass form, instead of one compute pass for a batch whose dispatches are all
+/// `grid` dispatches. It is process wide, off by default, and read when a batch is recorded. The benchmark's probe row
+/// for the per-pass form and the tests that compare the two forms are its only users. It returns the setting it replaced.
+#[doc(hidden)]
+pub fn force_pass_per_dispatch(forced: bool) -> bool {
+    PASS_PER_DISPATCH.swap(forced, Ordering::Relaxed)
+}
+
+std::thread_local! {
+    /// The passes `encode_batch_passes` recorded on this thread.
+    static BATCH_PASSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The passes the batch recorder has put into encoders on this thread so far: a run of `grid` dispatches is one pass
+/// (a batch, or the neighbouring plain stages of a frame), a `pixel` dispatch one, an indirect counted stage two, and
+/// every dispatch one under [`force_pass_per_dispatch`]. Test support, outside the pre-1.0 promise (D111).
+#[doc(hidden)]
+#[must_use]
+pub fn batch_passes_recorded() -> u64 {
+    BATCH_PASSES.with(std::cell::Cell::get)
+}
+
+/// Count `passes` passes recorded outside [`encode_batch_passes`] (a pixel pass, the two passes of a counted stage).
+pub(crate) fn count_passes(passes: u64) {
+    BATCH_PASSES.with(|count| count.set(count.get() + passes));
+}
+
+/// Record a batch into `encoder`: one compute pass for the whole batch when every dispatch is a `grid` dispatch, one
+/// pass per dispatch otherwise (a `pixel` dispatch is a render pass, which a compute pass cannot hold).
+///
+/// A later dispatch sees the writes of an earlier one in both forms: wgpu tracks the storage buffers each dispatch of a
+/// compute pass uses and inserts the barrier before a dispatch that reads or writes what the one before it wrote
+/// (wgpu-core's compute pass flushes its bindings per dispatch). `timestamps` write `begin` at the start of the first
+/// pass and `end` at the end of the last, which in the one-pass form are the two ends of the same pass, so a timed batch
+/// keeps its one begin and one end entry.
+pub(crate) fn encode_batch_passes<D: Borrow<PreparedDispatch>>(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    label: &str,
+    batch: &[D],
+    timestamps: Option<PassTimestamps<'_>>,
+) -> Result<(), Error> {
+    if !batch.is_empty()
+        && !PASS_PER_DISPATCH.load(Ordering::Relaxed)
+        && batch.iter().all(|dispatch| dispatch.borrow().is_compute())
+    {
+        let mut pass = begin_compute(encoder, label, timestamps);
+        for dispatch in batch {
+            dispatch.borrow().record_compute(&mut pass);
+        }
+        count_passes(1);
+        return Ok(());
+    }
+    count_passes(batch.len() as u64);
+    let last = batch.len().saturating_sub(1);
+    for (index, dispatch) in batch.iter().enumerate() {
+        let dispatch = dispatch.borrow();
+        let stamps = timestamps.as_ref().and_then(|stamps| {
+            let begin = if index == 0 { stamps.begin } else { None };
+            let end = if index == last { stamps.end } else { None };
+            (begin.is_some() || end.is_some()).then_some(PassTimestamps {
+                query_set: stamps.query_set,
+                begin,
+                end,
+            })
+        });
+        dispatch.encode(device, encoder, label, stamps)?;
+    }
+    Ok(())
 }
 
 /// The most pieces one launch may be cut into (m11.g4b): each piece is one `dispatch_workgroups` with a bind group of

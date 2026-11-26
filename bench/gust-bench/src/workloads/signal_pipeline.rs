@@ -137,6 +137,33 @@ pub mod kernel {
     }
 }
 
+/// The hand-fused form of the six stages (spike m14.pffuse): `examples/signal-pipeline`'s `transform` at the stages'
+/// workgroup size, one kernel and one dispatch that keeps the five intermediate values in registers and writes only the
+/// final output. A module of its own, so the six stage kernels' module is unchanged.
+#[gpu_module]
+pub mod fused {
+    #[kernel(workgroup_size(256, 1, 1))]
+    pub fn transform(
+        id: SV_DispatchThreadID,
+        signal: StructuredBuffer<float>,
+        baseline: StructuredBuffer<float>,
+        gain: StructuredBuffer<float>,
+        bias: StructuredBuffer<float>,
+        scale: StructuredBuffer<float>,
+        mut out: RWStructuredBuffer<float>,
+    ) {
+        let i = id.x;
+        if i < out.len() {
+            let centered = signal[i] - baseline[i];
+            let amplified = centered * gain[i];
+            let biased = amplified + bias[i];
+            let normalized = biased / scale[i];
+            let energy = normalized * normalized;
+            out[i] = energy + (0.25 * normalized);
+        }
+    }
+}
+
 /// Stages of the pipeline.
 pub const STAGES: usize = 6;
 /// Host input streams: `signal`, `baseline`, `gain`, `bias`, `scale`.

@@ -172,7 +172,7 @@ impl HeadlessDevice {
 
     /// Submit a batch once and measure its total host and GPU time.
     ///
-    /// Every non-empty dispatch is a pass of its own. `gpu_elapsed` runs from
+    /// A batch of `grid` dispatches is one compute pass, any other batch a pass per dispatch. `gpu_elapsed` runs from
     /// the beginning of the first pass to the end of the last one. Divide it by
     /// the batch length when the dispatches represent equivalent repeated work.
     #[cfg(not(target_arch = "wasm32"))]
@@ -196,14 +196,13 @@ impl HeadlessDevice {
             });
 
         let Some(timestamp_profiler) = &self.timestamp_profiler else {
-            for dispatch in &prepared {
-                dispatch.encode(
-                    &self.device,
-                    &mut encoder,
-                    "GUST profiled typed batched pass",
-                    None,
-                )?;
-            }
+            crate::encode_batch_passes(
+                &self.device,
+                &mut encoder,
+                "GUST profiled typed batched pass",
+                &prepared,
+                None,
+            )?;
             let submission = self.submit_counted([encoder.finish()]);
             self.wait_for_submission(submission)?;
             return Ok(DispatchTiming {
@@ -215,20 +214,17 @@ impl HeadlessDevice {
         let profiler = timestamp_profiler
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let last_dispatch = prepared.len() - 1;
-        for (index, dispatch) in prepared.iter().enumerate() {
-            let timestamps = (index == 0 || index == last_dispatch).then_some(PassTimestamps {
+        crate::encode_batch_passes(
+            &self.device,
+            &mut encoder,
+            "GUST profiled typed batched pass",
+            &prepared,
+            Some(PassTimestamps {
                 query_set: &profiler.query_set,
-                begin: (index == 0).then_some(0),
-                end: (index == last_dispatch).then_some(1),
-            });
-            dispatch.encode(
-                &self.device,
-                &mut encoder,
-                "GUST profiled typed batched pass",
-                timestamps,
-            )?;
-        }
+                begin: Some(0),
+                end: Some(1),
+            }),
+        )?;
         encoder.resolve_query_set(&profiler.query_set, 0..2, &profiler.resolve_buffer, 0);
         encoder.copy_buffer_to_buffer(
             &profiler.resolve_buffer,

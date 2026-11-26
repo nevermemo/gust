@@ -1531,9 +1531,13 @@ pub(crate) struct GpuSuitePin {
 /// number against faked adapter limits, nine to seventeen buffers against a raised limit), one `no_run` doc test
 /// (`DeviceOptions::with_storage_buffers`) and the new test file `tests/storage_buffers.rs` (nine GPU tests, one
 /// `test result:` line). Updated by count; checked by a full Gpu suite run on the Radeon 890M (lane).
+///
+/// Slice m14.onepass: 673 over 69 became 685 over 70. The one-pass slice adds the new test file `tests/one_pass.rs` (twelve
+/// GPU tests, one `test result:` line) and changes no other test count (`tests/pixel.rs` gains an assertion in an
+/// existing test). Updated by count; checked by a full Gpu suite run on the Radeon 890M (lane); the RTX 5090 run is owed.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 673,
-    result_lines: 69,
+    passed: 685,
+    result_lines: 70,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

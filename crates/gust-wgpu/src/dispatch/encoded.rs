@@ -9,7 +9,8 @@ use std::sync::{Arc, atomic::Ordering};
 const BATCH_PASS_LABEL: &str = "GUST typed batched pass";
 
 impl HeadlessDevice {
-    /// Record a batch into `encoder`, one pass per dispatch, and never submit it. This is the form for a caller that
+    /// Record a batch into `encoder`, as one compute pass when every dispatch is a `grid` dispatch and one pass per
+    /// dispatch otherwise, and never submit it. This is the form for a caller that
     /// records its own passes on a shared device ([`adopt`](Self::adopt)) and wants GUST work and its own in one
     /// command buffer and one queue submission: encode GUST's batch, record your own commands, encode another batch,
     /// call `finish` and `queue.submit` once, then hand the [`SubmissionIndex`](wgpu::SubmissionIndex) to
@@ -36,8 +37,9 @@ impl HeadlessDevice {
     /// # }
     /// ```
     ///
-    /// The batch means what [`submit_batch`](Self::submit_batch) means: the same validation, the same passes (every
-    /// pass sees the writes of the one before it), and an empty request is valid and records nothing.
+    /// The batch means what [`submit_batch`](Self::submit_batch) means: the same validation, the same order (every
+    /// dispatch sees the writes of the one before it, in one pass or across passes), and an empty request is valid and
+    /// records nothing.
     ///
     /// # Errors leave the encoder alone, with one exception
     ///
@@ -109,7 +111,8 @@ impl HeadlessDevice {
     }
 
     /// [`record_prepared`](Self::record_prepared) with timestamp writes: the first pass writes slot `begin` of the
-    /// query set and the last pass slot `end`, where given (a frame's timing hook, which times the passes that exist and
+    /// query set and the last pass slot `end` (the same pass, when the batch is one), where given (a frame's timing
+    /// hook, which times the passes that exist and
     /// never changes them). `None` writes none.
     pub(crate) fn record_prepared_stamped(
         &self,
@@ -117,20 +120,20 @@ impl HeadlessDevice {
         prepared: &[PreparedDispatch],
         stamps: Option<(&wgpu::QuerySet, Option<u32>, Option<u32>)>,
     ) -> Result<(), Error> {
-        let last = prepared.len().saturating_sub(1);
-        for (index, dispatch) in prepared.iter().enumerate() {
-            let timestamps = stamps.and_then(|(query_set, begin, end)| {
-                let begin = (index == 0).then_some(begin).flatten();
-                let end = (index == last).then_some(end).flatten();
-                (begin.is_some() || end.is_some()).then_some(PassTimestamps {
-                    query_set,
-                    begin,
-                    end,
-                })
-            });
-            dispatch.encode(&self.device, encoder, BATCH_PASS_LABEL, timestamps)?;
-        }
-        Ok(())
+        let timestamps = stamps.and_then(|(query_set, begin, end)| {
+            (begin.is_some() || end.is_some()).then_some(PassTimestamps {
+                query_set,
+                begin,
+                end,
+            })
+        });
+        crate::encode_batch_passes(
+            &self.device,
+            encoder,
+            BATCH_PASS_LABEL,
+            prepared,
+            timestamps,
+        )
     }
 
     /// An [`EncodedJob`] of this device; `recorded` says whether any pass went into the encoder.

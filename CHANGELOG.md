@@ -7,6 +7,12 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- One compute pass for a batch of `grid` dispatches (m14.onepass): `dispatch_batch` and the frame path of a `gpu_batch!`
+  record the plain `grid` dispatches of neighbouring entries (stages, library ops, a bounded counted stage) in one
+  compute pass, in order, on by default; an indirect counted stage and a `pixel` call keep their own passes. A frame
+  timed at `Passes` keeps a compute pass per stage, so its per-stage times include the pass boundary and can sum to more
+  than the `Frame` span. New provided `BatchDevice::frame_stages` and `frame_stages_timed` hooks (the default loops
+  `frame_stage`).
 - `DeviceOptions::with_storage_buffers(n)` (m14.lim-a, native only) opens a device with `n` storage buffers per shader
   stage instead of 8; off by default, and an adapter that offers fewer than `n` is `Error::DeviceLimit` at open.
 - A counted batch stage (m14.s2i, D278): `gpu_task!(count(n); capacity, |i| -> T { .. })` in a `gpu_batch!` runs over

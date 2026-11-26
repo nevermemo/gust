@@ -117,6 +117,7 @@ impl HeadlessDevice {
                 end: None,
             })
         });
+        crate::count_passes(2);
         grid.encode(&self.device, encoder, ARGS_PASS_LABEL, args_stamps)?;
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some(COUNTED_PASS_LABEL),

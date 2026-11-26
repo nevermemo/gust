@@ -1425,6 +1425,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       failed under machine load on the Radeon 890M and passed on quiet reruns. m14.pollsflake prints that count instead of
       bounding it (a ticket that never resolves still fails at the polling deadline; waited tickets keep their bound).
       Opus review: merge after one fix (VALIDATION wording). Gate t38 all green on the corrected pin.
+    - m14.lazyts merged: a headless device makes its timestamp query set and buffers at the first timed dispatch batch
+      or graph run instead of at open; untimed devices make none, and frame timing is unchanged. Opus review: merge
+      after fixes, none must-fix (count inside the profiler constructor, native-only members gated instead of a wasm32
+      dead-code allow); frame timing objects made at batch seal were ruled out of scope. Merged on dev with the pf.trust
+      bench probes kept; GPU_SUITE_PIN 684 over 71 by count, the full Gpu suite is the merge gate's.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

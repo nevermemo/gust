@@ -84,6 +84,36 @@ pub fn build(
     })
 }
 
+/// A batch whose one stage binds ten storage buffers (nine inputs and its result), over the limit of eight that a
+/// browser device always opens with (m14.lim-b, D280): a device refuses it when it is built, naming the stage `out`.
+///
+/// # Errors
+///
+/// [`Error::StageDevice`] on a device that offers fewer than ten storage buffers per shader stage, which is every
+/// browser device in this release.
+// The stage is named by its `let`; its generated kernel function takes one argument per buffer.
+#[allow(clippy::let_and_return, clippy::too_many_arguments)]
+pub fn build_wide(
+    device: &Arc<HeadlessDevice>,
+) -> Result<(Batch<HeadlessDevice>, Stage<u32, D1>), Error> {
+    gpu_batch!("wide", on(device); in_flight(1); |b| {
+        let a0 = b.input::<u32>(LENGTH);
+        let a1 = b.input::<u32>(LENGTH);
+        let a2 = b.input::<u32>(LENGTH);
+        let a3 = b.input::<u32>(LENGTH);
+        let a4 = b.input::<u32>(LENGTH);
+        let a5 = b.input::<u32>(LENGTH);
+        let a6 = b.input::<u32>(LENGTH);
+        let a7 = b.input::<u32>(LENGTH);
+        let a8 = b.input::<u32>(LENGTH);
+        let out = gpu_task!(LENGTH, |i| -> u32 {
+            a0[i] + a1[i] * 2u32 + a2[i] * 3u32 + a3[i] * 4u32 + a4[i] * 5u32 + a5[i] * 6u32
+                + a6[i] * 7u32 + a7[i] * 8u32 + a8[i] * 9u32
+        });
+        out
+    })
+}
+
 /// The host computation of one frame's result.
 #[must_use]
 pub fn reference(x: &[u32], gain: u32) -> Vec<u32> {

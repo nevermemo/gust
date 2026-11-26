@@ -1420,6 +1420,34 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       fused kernels gain at small sizes on both adapters: next slice pf.onepass, fusion deferred, its design scouted),
       pf.dev2 GAIN in the timed path only (D282; slice pf.lazyts), pf.alone0 not reproduced at W1 1M; pf.alone0 at 16M
       and pf.split0 lost their floors to a factor near 1.9 between identical processes on the RTX 5090 (reruns owed).
+    - Merge gate t37 found two problems on dev: GPU_SUITE_PIN one short (m14.s2i added a gust-wgpu unit test without
+      moving it; corrected to the printed count) and the batch-basics poll bound for a ticket nobody waited for, which
+      failed under machine load on the Radeon 890M and passed on quiet reruns. m14.pollsflake prints that count instead of
+      bounding it (a ticket that never resolves still fails at the polling deadline; waited tickets keep their bound).
+      Opus review: merge after one fix (VALIDATION wording). Gate t38 all green on the corrected pin.
+    - m14.lazyts merged: a headless device makes its timestamp query set and buffers at the first timed dispatch batch
+      or graph run instead of at open; untimed devices make none, and frame timing is unchanged. Opus review: merge
+      after fixes, none must-fix (count inside the profiler constructor, native-only members gated instead of a wasm32
+      dead-code allow); frame timing objects made at batch seal were ruled out of scope. Merged on dev with the pf.trust
+      bench probes kept; GPU_SUITE_PIN 684 over 71 by count, the full Gpu suite is the merge gate's.
+      Gate t39 all green on it.
+    - m14.onepass merged: a batch or frame records its plain dispatches, bounded counted stages and library ops in one
+      compute pass; an indirect counted stage and a non-compute dispatch end the run, and frame timing at level
+      `Passes` keeps a pass per dispatch. Opus review: merge after fixes (one must-fix: the default form was untested
+      on the frame path, now caught by mutation); ordering tests at 2^20 elements. Its bench rows met dev's pf.trust
+      probes in a dev merge resolved in the lane; GPU_SUITE_PIN 696 over 72, printed by a full Gpu suite run on the
+      Radeon 890M. BENCHMARKS says W6-hand on GUST now records one compute pass.
+      Gates t40 and t41 each found a gap the lane had not run: the GPU bench test it added was missing from the
+      tool-free bench step's adapter skip list, and its new bench kernels had no gust-bench-pre artifacts. Both were
+      fixed (the skip list and its count test; artifacts regenerated with the pinned Slang), and gate t42 is all green.
+    - m14.lim-b merged: a batch stage, counted stage or library op whose kernel needs more storage buffers than the
+      device was opened with is refused at build as the new `batch::Error::StageDevice` (the enum is non-exhaustive),
+      naming the batch and the stage and both cures; the device-open refusal keeps its own wording. Contract, ruled by
+      the coordinator: before any pipeline or bind group of the stage, and before a counted stage's args buffer and
+      pipeline; the stage's result buffer and op scratch buffers may exist. A stage built empty is refused by name at its
+      first resize over the limit. The edits in gust's batch code and the new public variant went beyond the brief's
+      file list and were accepted as the slice's design. Opus review: merge after fixes (counted order, cure text, the
+      gust-algo GPU tests pinned, the empty stage). GPU_SUITE_PIN 698 over 72, printed by a full Gpu suite run.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -326,7 +326,11 @@ fn gpu_frame_n_is_pending_when_n_plus_1_is_submitted() {
     );
 }
 
-/// Polls `ticket` until it resolves, on this thread, and returns the values and the number of polls. Fails after 20 s.
+/// The time `count_polls` waits for a ticket before it fails.
+const POLL_DEADLINE: Duration = Duration::from_secs(20);
+
+/// Polls `ticket` until it resolves, on this thread, and returns the values and the number of polls. Fails after
+/// [`POLL_DEADLINE`].
 fn count_polls(ticket: &mut Ticket<u32>) -> (Vec<u32>, u64) {
     let mut context = Context::from_waker(Waker::noop());
     let started = Instant::now();
@@ -337,7 +341,7 @@ fn count_polls(ticket: &mut Ticket<u32>) -> (Vec<u32>, u64) {
             return (values.unwrap(), polls);
         }
         assert!(
-            started.elapsed() < Duration::from_secs(20),
+            started.elapsed() < POLL_DEADLINE,
             "a ticket was still pending after {polls} polls"
         );
         std::thread::yield_now();
@@ -347,10 +351,10 @@ fn count_polls(ticket: &mut Ticket<u32>) -> (Vec<u32>, u64) {
 /// Polls that resolve a ticket whose frame has run: the first poll polls the device and delivers the mapping, so
 /// tickets of frames that were waited for resolve at once, with two frames in flight as with one.
 const POLLS_AFTER_WAIT: u64 = 2;
-/// Polls of a ticket nobody waited for: the polls themselves drive the device. Measured at 11 to 20 on the Radeon 890M;
-/// the bound leaves room for a slower adapter and still fails a ticket that never resolves.
-const POLLS_UNWAITED: u64 = 10_000;
 
+/// Tickets of frames that were waited for resolve within [`POLLS_AFTER_WAIT`] polls. A ticket nobody waited for
+/// resolves by polls alone, before [`POLL_DEADLINE`]; its poll count is printed and not bounded,
+/// because it depends on how long the frame runs against the speed of the polling loop.
 #[test]
 #[ignore = "example validation runs only in full verification"]
 fn gpu_a_ticket_resolves_in_a_bounded_number_of_polls() {
@@ -372,12 +376,11 @@ fn gpu_a_ticket_resolves_in_a_bounded_number_of_polls() {
                 "the {name} ticket needed {polls} polls after its frame was waited for (bound {POLLS_AFTER_WAIT})"
             );
         }
-        // The same without waiting: the polls themselves drive the device.
+        // The same without waiting: the polls themselves drive the device; the count is printed, not bounded.
         let (mut third, _t) = submit_waiting(&mut batch, &h, None, 40 + round);
         let (values, polls) = count_polls(&mut third);
         assert_eq!(values, reference(&x, 40 + round));
         println!("round {round}: an unwaited ticket resolved in {polls} polls");
-        assert!(polls <= POLLS_UNWAITED, "{polls} polls");
     }
 }
 

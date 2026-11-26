@@ -870,7 +870,10 @@ fn a_batch_mixes_pixel_calls_of_different_sizes_with_a_grid_call() {
         (&third).into(),
     ];
 
+    let passes_before = gust_wgpu::batch_passes_recorded();
     device.dispatch_batch(&batch).unwrap();
+    // A batch with a pixel call keeps a pass per call: 4 passes (the grid calls of a batch without one share a pass).
+    assert_eq!(gust_wgpu::batch_passes_recorded() - passes_before, 4);
     // Two kernels (one pixel, one grid) compiled once each.
     assert_eq!(stats(&device), (2, 2, 2));
     for ((output, values), &n) in outputs.iter().zip(&values).zip(&sizes) {

@@ -11,7 +11,49 @@ use gust::{Access, GpuPod, LengthRule, Resource, pod_slice_as_bytes};
 use super::{GpuStage, map_error};
 use crate::encode::{record_upload_copy, stage_upload};
 use crate::pool::EPOCH;
-use crate::{Error, GpuBuffer, HeadlessDevice};
+use crate::{
+    Error, GpuBuffer, HeadlessDevice, PassTimestamps, PreparedDispatch, encode_batch_passes,
+};
+
+/// The label of the passes `encode_stages` records for a frame.
+const FRAME_PASS_LABEL: &str = "GUST batch frame pass";
+
+/// What the stages of a frame record as: a run of compute dispatches in one pass, a dispatch that is not a compute one
+/// (a render pass of its own), or an indirect counted stage (its two passes).
+enum Segment<'a> {
+    Run(Vec<&'a PreparedDispatch>),
+    Single(&'a PreparedDispatch),
+    Counted(&'a GpuStage, &'a wgpu::Buffer),
+}
+
+/// The segments of `stages`, in order. A stage without a dispatch adds nothing and cuts no run.
+fn segments_of<'a>(stages: &[&'a GpuStage]) -> Vec<Segment<'a>> {
+    let mut segments = Vec::new();
+    let mut run: Vec<&PreparedDispatch> = Vec::new();
+    for &stage in stages {
+        if let Some(args) = &stage.indirect {
+            if !run.is_empty() {
+                segments.push(Segment::Run(std::mem::take(&mut run)));
+            }
+            segments.push(Segment::Counted(stage, args));
+            continue;
+        }
+        for dispatch in &stage.dispatches {
+            if dispatch.is_compute() {
+                run.push(dispatch);
+            } else {
+                if !run.is_empty() {
+                    segments.push(Segment::Run(std::mem::take(&mut run)));
+                }
+                segments.push(Segment::Single(dispatch));
+            }
+        }
+    }
+    if !run.is_empty() {
+        segments.push(Segment::Run(run));
+    }
+    segments
+}
 
 /// A copy that a frame will record: the staging buffer that holds the bytes (made when the frame is written), and the
 /// buffer it goes into.
@@ -145,6 +187,51 @@ impl HeadlessDevice {
             Some(args) => self.record_counted(encoder, &stage.dispatches, args, None),
             None => self.record_prepared(encoder, &stage.dispatches),
         }
+    }
+
+    /// Record the stages of a frame in order, the plain compute dispatches of neighbouring stages (and a library op's
+    /// dispatches, and a bounded counted stage's) in one compute pass. An indirect counted stage keeps its two passes
+    /// and a `pixel` dispatch its render pass; each ends the run before it. `stamps` write `begin` at the start of the
+    /// first pass recorded and `end` at the end of the last.
+    pub(super) fn encode_stages(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        stages: &[&GpuStage],
+        stamps: Option<(&wgpu::QuerySet, Option<u32>, Option<u32>)>,
+    ) -> Result<(), Error> {
+        let segments = segments_of(stages);
+        let last = segments.len().saturating_sub(1);
+        for (index, segment) in segments.iter().enumerate() {
+            let (begin, end) = stamps.map_or((None, None), |(_, begin, end)| {
+                (
+                    (index == 0).then_some(begin).flatten(),
+                    (index == last).then_some(end).flatten(),
+                )
+            });
+            let pass_stamps = stamps.and_then(|(query_set, _, _)| {
+                (begin.is_some() || end.is_some()).then_some(PassTimestamps {
+                    query_set,
+                    begin,
+                    end,
+                })
+            });
+            match segment {
+                Segment::Run(run) => {
+                    encode_batch_passes(&self.device, encoder, FRAME_PASS_LABEL, run, pass_stamps)?
+                }
+                Segment::Single(dispatch) => {
+                    crate::count_passes(1);
+                    dispatch.encode(&self.device, encoder, FRAME_PASS_LABEL, pass_stamps)?;
+                }
+                Segment::Counted(stage, args) => self.record_counted(
+                    encoder,
+                    &stage.dispatches,
+                    args,
+                    stamps.map(|(query_set, _, _)| (query_set, begin, end)),
+                )?,
+            }
+        }
+        Ok(())
     }
 
     /// Finish the encoder and make the frame's one counted queue submission.

@@ -6,6 +6,9 @@
 // struct as its element (m14.s2s, D279): its kernels are artifacts of `app/gust-artifacts/` too, and every frame's
 // field read and whole-row result equal the host model.
 
+#[path = "../wide.rs"]
+mod wide;
+
 use std::sync::Arc;
 
 use gust::{gpu_batch, gpu_task};
@@ -139,7 +142,10 @@ fn main() -> std::process::ExitCode {
         }
     };
     println!("adapter: {}", device.adapter_info().name);
-    match check(&device).and_then(|()| check_structs(&device)) {
+    match check(&device)
+        .and_then(|()| check_structs(&device))
+        .and_then(|()| wide::run())
+    {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");

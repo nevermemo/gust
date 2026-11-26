@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use super::FrameTime;
 use super::timing::{Recorded, TimeCell, TimePlan, TimedFrame};
 use super::{
-    BatchDevice, BoxFuture, Core, Element, Empty, Error, Layout, OpPlan, Operands, PLANS_KEPT,
-    Param, ParamType, Stage, Value, Values, map, typed,
+    BatchDevice, BoxFuture, Core, Element, Empty, Error, FrameTiming, Layout, OpPlan, Operands,
+    PLANS_KEPT, Param, ParamType, Stage, Value, Values, map, typed,
 };
 use crate::GpuPod;
 
@@ -245,6 +245,19 @@ impl<D: BatchDevice> core::fmt::Debug for FrameRun<D> {
 
 fn device_error<D: BatchDevice>(error: D::Error) -> Error {
     Error::Device(D::map_error(error))
+}
+
+/// `error` of preparing stage `stage` of batch `batch` again after a resize: a device error names the stage, as it does
+/// when the stage is built (a stage built over zero rows skips the device's limit checks until a resize gives it rows).
+fn named_stage(batch: &str, stage: &str, error: Error) -> Error {
+    match error {
+        Error::Device(source) => Error::StageDevice {
+            batch: batch.to_owned(),
+            stage: stage.to_owned(),
+            source,
+        },
+        other => other,
+    }
 }
 
 /// Make `plan`, the plan of a length an op stage now runs at, the first of the stage's kept plans, and drop the oldest
@@ -595,10 +608,14 @@ impl<D: BatchDevice> FrameRun<D> {
             prepared.push(match (&stage.remake, &stage.plan) {
                 (Some(remake), _) => StagedStage {
                     stage: index,
-                    prepared: Some(Arc::new(remake(&*core.device, &layout)?)),
+                    prepared: Some(Arc::new(
+                        remake(&*core.device, &layout)
+                            .map_err(|error| named_stage(&core.name, &stage.name, error))?,
+                    )),
                     plan: None,
                 },
-                (None, Some(plan)) => Self::replan(&core, index, plan, &layout)?,
+                (None, Some(plan)) => Self::replan(&core, index, plan, &layout)
+                    .map_err(|error| named_stage(&core.name, &stage.name, error))?,
                 (None, None) => {
                     unreachable!("a stage is a kernel with a remake or an op with a plan")
                 }
@@ -911,7 +928,8 @@ impl<D: BatchDevice> FrameRun<D> {
     /// The passes of the stages, in order: when the frame asked for its time and the batch can give it, the first pass
     /// of the frame writes the first timestamp and the last pass the last one (and at level `Passes` each stage's
     /// first and last pass write that stage's pair); a resolve and a copy follow the last stage. A frame that did not
-    /// ask records none of it.
+    /// ask records none of it. Except at level `Passes`, the stages go to the device in one call
+    /// ([`BatchDevice::frame_stages`]), which may put neighbouring stages into one pass.
     fn record_stages(
         &mut self,
         encoder: &mut D::Encoder,
@@ -948,26 +966,40 @@ impl<D: BatchDevice> FrameRun<D> {
             }
         }
         let Some((groups, plan, mut clock)) = timing else {
-            for stage in prepared.iter().flatten() {
-                device
-                    .frame_stage(encoder, stage)
-                    .map_err(device_error::<D>)?;
-            }
-            return Ok(());
+            let stages: Vec<&D::Prepared> =
+                prepared.iter().flatten().map(|stage| &**stage).collect();
+            return device
+                .frame_stages(encoder, &stages)
+                .map_err(device_error::<D>);
         };
-        for (index, stage) in prepared.iter().enumerate() {
-            let Some(stage) = stage else { continue };
-            match groups.iter().position(|&group| group == index) {
-                Some(group) => {
-                    let (begin, end) = plan.slots(group);
-                    device
-                        .frame_stage_timed(encoder, stage, &mut clock, begin, end)
-                        .map_err(device_error::<D>)?;
+        if plan.level == FrameTiming::Passes {
+            // One entry per stage needs a begin and an end of its own: each stage is recorded on its own.
+            for (index, stage) in prepared.iter().enumerate() {
+                let Some(stage) = stage else { continue };
+                match groups.iter().position(|&group| group == index) {
+                    Some(group) => {
+                        let (begin, end) = plan.slots(group);
+                        device
+                            .frame_stage_timed(encoder, stage, &mut clock, begin, end)
+                            .map_err(device_error::<D>)?;
+                    }
+                    None => device
+                        .frame_stage(encoder, stage)
+                        .map_err(device_error::<D>)?,
                 }
-                None => device
-                    .frame_stage(encoder, stage)
-                    .map_err(device_error::<D>)?,
             }
+        } else {
+            // The span of the frame: the stages that have a pass, in one call, so the frame has the passes it has
+            // untimed. A stage without a pass records nothing.
+            let stages: Vec<&D::Prepared> = groups
+                .iter()
+                .filter_map(|&index| prepared[index].as_deref())
+                .collect();
+            let (begin, _) = plan.slots(0);
+            let (_, end) = plan.slots(groups.len() - 1);
+            device
+                .frame_stages_timed(encoder, &stages, &mut clock, begin, end)
+                .map_err(device_error::<D>)?;
         }
         device.frame_clock_end(encoder, &mut clock, plan.used());
         self.timed

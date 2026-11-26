@@ -1261,7 +1261,7 @@ pub(crate) const ALGO_GPU_CALL: [&str; 4] = ["test", "--locked", "-p", "gust-alg
 /// reported `ok`, and no other test of those three modules whose name starts `gpu` may exist
 /// ([`check_algo_gpu_counts`]), so a deleted or an unpinned adapter test fails the gate. The twins would still satisfy
 /// a plain "at least one test ran". Adding or removing such a test changes this list in the same commit.
-pub(crate) const ALGO_GPU_TESTS: [&str; 80] = [
+pub(crate) const ALGO_GPU_TESTS: [&str; 82] = [
     "tests::batch::gpu_an_identity_rule_over_nothing_writes_its_value_through_submit_and_encode",
     "tests::batch::gpu_an_op_reads_the_output_of_another_op_in_the_same_frame",
     "tests::batch::gpu_compact_over_frames_with_a_shrinking_count",
@@ -1342,6 +1342,9 @@ pub(crate) const ALGO_GPU_TESTS: [&str; 80] = [
     "tests::record::gpu_a_recorded_scan_list_equals_the_immediate_results",
     "tests::record::gpu_plans_refuse_operands_of_the_wrong_length_and_empty_shapes",
     "tests::record::gpu_recording_refuses_what_it_cannot_record",
+    // The integration tests of `crates/gust-algo/tests/compact_split_flags.rs` (m14.lim-b): no module prefix.
+    "gpu_nine_buffers_on_a_default_device_are_refused_and_the_packed_form_runs",
+    "gpu_nine_buffers_on_a_raised_device_equal_the_packed_form_and_the_reference",
 ];
 
 /// The shape of [`GPU_SUITE_CALL`]'s output: `passed` is the sum over every `test result:` line, `result_lines`
@@ -1538,14 +1541,34 @@ pub(crate) struct GpuSuitePin {
 /// the test lists on the merged tree (rebased on m14.lim-a); a full Gpu suite run on both adapters is owed at
 /// the merge.
 ///
-/// Slice m14.s2s (part b): 680 over 70 became 682 over 70, the number a full Gpu suite run printed (Radeon 890M only;
-/// the full suite was not run on the RTX 5090, but the struct tests `tests/struct_element.rs`, `tests/struct_layout.rs` and
-/// the `tests/limits.rs` one passed on it). One of the two is the struct element slice's GPU test in `tests/limits.rs` (nine
-/// column buffers are a `DeviceLimit` against eight, the same data as one struct is two bindings), on an existing line;
-/// the other is a library test that an earlier slice added without moving the pin.
+/// Correction after the merges of m14.s2i and m14.pftrust1: 680 over 70 became 681 over 70. Slice m14.s2i added one
+/// library unit test to `batch::counted` (`an_adapter_without_indirect_execution_takes_the_bounded_launch`) and left
+/// the count unchanged, so the count above started one short. Checked by a full Gpu suite run on the Radeon 890M (a
+/// merge gate on dev), which printed 681 over 70.
+///
+/// Slice m14.lazyts, merged on 681 over 70: 681 over 70 became 684 over 71. The lazy timestamp slice adds the new test
+/// file `tests/lazy_timestamps.rs` (three GPU tests, one `test result:` line). Updated by count; the file passed on
+/// both adapters in the lane, and the full Gpu suite is owed at the merge gate.
+///
+/// Slice m14.onepass, merged on 684 over 71: 684 over 71 became 696 over 72. The one-pass slice adds the new test file
+/// `tests/one_pass.rs` (twelve GPU tests, one `test result:` line) and changes no other test count (`tests/pixel.rs`
+/// gains an assertion in an existing test). Updated by count; the full Gpu suite run on the Radeon 890M at the merge
+/// confirms it.
+///
+/// Slice m14.lim-b, merged on 696 over 72: 696 over 72 became 698 over 72. The batch refusal adds two library unit
+/// tests to `check::limits` (`the_storage_buffer_refusal_names_the_count_the_limit_and_both_cures` and
+/// `the_device_open_refusal_has_its_own_wording_without_the_launch_cures`), on an existing line; its other tests are
+/// `#[ignore]`d example tests and a `gust-algo` integration test, which this call does not run. Updated by count; the
+/// full Gpu suite run on the Radeon 890M after the merge confirms it.
+///
+/// Slice m14.s2s, merged on 698 over 72: 698 over 72 became 699 over 72. The struct element slice adds one GPU test to
+/// `tests/limits.rs` (nine column buffers are a `DeviceLimit` against eight, the same data as one struct is two bindings)
+/// on an existing line. Updated by count; the full
+/// Gpu suite run on the Radeon 890M after the merge confirms it (the RTX 5090 ran the struct and limits tests, not the full
+/// suite).
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 682,
-    result_lines: 70,
+    passed: 699,
+    result_lines: 72,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu
@@ -1870,7 +1893,8 @@ pub(crate) fn name_adapter(root: &Path) -> Result<String, String> {
 }
 
 /// The guard for [`ALGO_GPU_CALL`] on its captured `stdout`: tests ran and none failed or was ignored, every test of
-/// [`ALGO_GPU_TESTS`] is reported `ok`, and no `tests::gpu::`, `tests::record::gpu_` or `tests::batch::gpu_` test
+/// [`ALGO_GPU_TESTS`] is reported `ok`, and no `tests::gpu::`, `tests::record::gpu_`, `tests::batch::gpu_` or integration
+/// `gpu_` (a `crates/gust-algo/tests/` file) test
 /// outside the list ran.
 pub(crate) fn check_algo_gpu_counts(call: &[String], stdout: &str) -> Result<(), String> {
     let plain = without_colors(stdout);
@@ -1893,7 +1917,8 @@ pub(crate) fn check_algo_gpu_counts(call: &[String], stdout: &str) -> Result<(),
             let line = line.trim();
             (line.starts_with("test tests::gpu::")
                 || line.starts_with("test tests::record::gpu_")
-                || line.starts_with("test tests::batch::gpu_"))
+                || line.starts_with("test tests::batch::gpu_")
+                || line.starts_with("test gpu_"))
                 && line.ends_with("... ok")
         })
         .count();

@@ -48,6 +48,22 @@
       "name": "run"
     },
     {
+      "clean_sha256": "5aea9f2e5c56ff9bfdad2aac6674db49e1c2051f0509d07a2e877e9adb7011d3",
+      "entry_point": "gpu___gust_pf_f44aeb04f0d7ea25_run",
+      "formats": [
+        {
+          "file": "7a1c760c6247d72b.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "36220f0b0813865738bbfa21e3c81408a0168e0bc9576d67f1a0173f51906002",
+          "sha256": "25a90e9e4e510c2b662535eb46d07de9c18561ba30b57420577ea54a600031e1"
+        }
+      ],
+      "key": "7a1c760c6247d72b",
+      "module": "__gust_pf_f44aeb04f0d7ea25",
+      "name": "run",
+      "split_of": "94e86075872f6358"
+    },
+    {
       "clean_sha256": "7cb5c124adb1794d486ed816f62051940fa7459b84b5fdf660ec96c2fc0e3a50",
       "entry_point": "gpu___gust_pf_cf239ea83a859908_run",
       "formats": [
@@ -60,6 +76,21 @@
       ],
       "key": "823840978c95d7fd",
       "module": "__gust_pf_cf239ea83a859908",
+      "name": "run"
+    },
+    {
+      "clean_sha256": "8c1458ee95e7466f5928e5007629734795ba59d3148f9d62cdcc10dfa51bf805",
+      "entry_point": "gpu___gust_pf_f44aeb04f0d7ea25_run",
+      "formats": [
+        {
+          "file": "94e86075872f6358.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "a89023d8ef5872f41d06827daeb8f1387586524ccd2fdca1df32c38fabf5d871",
+          "sha256": "69252ff2251849a2db19b57db60c5ad8b42e61dbf5f7807ec6cd85b8b3e26506"
+        }
+      ],
+      "key": "94e86075872f6358",
+      "module": "__gust_pf_f44aeb04f0d7ea25",
       "name": "run"
     },
     {

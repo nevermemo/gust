@@ -47,6 +47,15 @@ same rows. A counted stage is 1-D and its workgroup is along x (GUST-E1014); `co
 batch (GUST-E1013) and names a handle of `u32`s of the block (GUST-E1015). `examples/batch-basics/tests/counted.rs` has the
 checks.
 
+A stage binds one storage buffer for each handle it reads or writes, and a device allows a fixed number of them per
+shader stage (8 unless the device was opened with more). A stage over that number is refused when the batch is built, not
+at the first frame: the build returns `Error::StageDevice`, which names the batch and the stage and wraps the device's
+`DeviceLimit` (the count the stage needs and the limit the device has). A counted stage counts its count buffer among its
+buffers, and its args kernel binds the count and the args buffer. The cures are to keep columns that are read together
+as the rows of one struct (`#[derive(GpuStruct)]`, one buffer), or to open the device with more through
+`DeviceOptions::with_storage_buffers` (native only; a browser device keeps 8). `examples/batch-basics/tests/limits.rs`
+has the checks.
+
 A batch can report the GPU time of its frames. It is opt-in at the build: `b.frame_timing(FrameTiming::Frame)` (or
 `FrameTiming::Passes`) in the block makes the timestamp objects once, when the batch is sealed, and only on a device
 with timestamp queries; a batch built without it (the default, `Off`) makes none, and `batch.frame_timing()` says up
@@ -58,7 +67,10 @@ first pass) and its ticket copies (after the last) are **outside** it. It is the
 `gpu_batch_per_dispatch` times the number of passes. At level `Passes` the result also holds one entry per stage that
 has a pass: an entry is per **stage**, from the begin of the stage's first pass to the end of its last (a stage that
 records several passes, or a launch split into pieces, which share one pass, is still one entry); a stage over zero
-elements has none. The plan for fused passes is one entry per fused group, naming all its stages. A time is `Ok(None)`,
+elements has none. The plan for fused passes is one entry per fused group, naming all its stages. The GPU device
+records the plain `grid` dispatches of neighbouring stages in one compute pass when a frame is untimed or at `Frame`,
+but at `Passes` every stage keeps a compute pass of its own, so a per-stage time includes the pass boundary and the
+times can sum to more than the `Frame` span. A time is `Ok(None)`,
 never an error, for a batch built `Off`, a device without timestamp queries (the CPU twin, an adopted device that did
 not ask for them, `wasm32`), a frame with no pass, and a frame for which no read-back buffer was free (the batch
 keeps a bounded set of them and replaces any that a dropped or unread frame cost, so this is rare, and a caller that

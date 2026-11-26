@@ -333,6 +333,13 @@ launches are checked against the limit the device was opened with. Measured with
 the Radeon 890M reports 429391872 storage buffers per stage and the RTX 5090 524288. Any other adapter is refused at
 open when it offers fewer than `n`.
 
+A batch checks its stages against that limit when it is built (m14.lim-b, D280): a stage that binds more storage
+buffers than the device was opened with makes `gpu_batch!` return `batch::Error::StageDevice` with the batch, the stage
+and the `DeviceLimit` (its count and the limit), before any frame, and the `DeviceLimit` text names both cures, rows of
+one struct (`#[derive(GpuStruct)]`) or `with_storage_buffers`. A counted stage counts its count buffer among its
+buffers, and its args kernel binds the count and the args buffer. In a browser the limit is always 8, so the same
+refusal is the one a page sees (`examples/web-batch-frames` checks it under `check-web`).
+
 The split variant (m11.g4a, m11.g4b, owner ruling "Option 3": the host splits, `id.x` stays the global index). The
 `#[gpu_module]` macro gives every `grid` kernel built for the GPU a second descriptor, `KernelDescriptor::split`: the same
 Slang plus one hidden uniform (`__gust_launch_base`, 16 bytes) at the next free binding, whose `x`, `y` and `z` the

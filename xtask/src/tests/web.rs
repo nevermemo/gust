@@ -1290,8 +1290,8 @@ fn the_batch_page_names_its_own_files_and_closing_part_and_reports_no_selected_k
         })
         .count();
     assert_eq!(
-        wgsl, 12,
-        "a body and a split artifact for each of the six kernels (two stages, the counted stage and its args kernel, the struct field read and the struct result)"
+        wgsl, 14,
+        "a body and a split artifact for each of the seven kernels (two stages, the counted stage and its args kernel, the struct field read and the struct result, and the wide stage of m14.lim-b)"
     );
 }
 

@@ -21,7 +21,10 @@ pub enum FrameTiming {
     Off,
     /// One span per timed frame ([`FrameTimes::span`]).
     Frame,
-    /// The span, and one entry per stage that has a pass ([`FrameTimes::passes`]).
+    /// The span, and one entry per stage that has a pass ([`FrameTimes::passes`]). A device that merges the passes of
+    /// neighbouring stages when a frame is untimed or at `Frame` (the GPU device does) records every stage in passes of
+    /// its own at this level, so the frame is not the one that runs at the other levels: a stage's time includes its pass
+    /// boundary, and the times can sum to more than the `Frame` span.
     Passes,
 }
 

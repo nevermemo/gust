@@ -272,6 +272,13 @@ const EXAMPLE_GPU_TESTS: &[(&str, &[&str])] = &[
             "gpu_unread_and_never_run_frames_do_not_use_up_the_read_back_pool",
             "gpu_a_dropped_encoded_retires_its_read_back_buffer_and_a_frame_that_was_not_encoded_does_not",
             "gpu_frames_in_flight_on_one_batch_each_read_their_own_span",
+            // `tests/limits.rs`: a stage over the device's storage buffer limit (m14.lim-b).
+            "gpu_a_default_device_refuses_the_stage_at_build_with_both_cures",
+            "gpu_a_device_one_short_refuses_the_stage_with_its_own_limit",
+            "gpu_a_raised_device_builds_and_runs_sixteen_frames_equal_to_the_twin",
+            "gpu_a_counted_stage_over_the_limit_is_refused_at_build_by_name",
+            "gpu_a_library_op_over_the_limit_is_refused_at_build_by_name",
+            "gpu_a_stage_built_empty_and_resized_over_the_limit_is_refused_by_name",
         ],
     ),
     (

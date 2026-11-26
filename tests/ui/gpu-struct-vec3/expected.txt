@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A derive error is a compile_error!: code none.
+code: none
+file: gpu-struct-vec3/src/main.rs
+line: 11
+message: [GUST-E0204] `Vec3` is not a field of a GPU struct

@@ -35,7 +35,7 @@ mod kernel_attributes;
 mod module;
 mod origin;
 mod parameters;
-mod pod;
+pub(crate) mod pod;
 pub(crate) mod routing;
 #[cfg(test)]
 mod tests;

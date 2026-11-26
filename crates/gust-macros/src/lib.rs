@@ -34,6 +34,7 @@ mod diagnostics;
 mod expand;
 mod forward;
 mod gpu_enum;
+mod gpu_struct;
 mod manifest;
 mod math_types;
 mod mul_impls;
@@ -345,6 +346,29 @@ pub fn gpu_batch(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(GpuEnum)]
 pub fn gpu_enum(input: TokenStream) -> TokenStream {
     gpu_enum::derive(input.into()).into()
+}
+
+/// Implements `gust::GpuPod` and `gust::GpuStruct` for a free-standing `#[repr(C)]` struct of scalar, vector and matrix
+/// fields, so that a batch can hold it as a row (plan m14.s2, slice s2s, D279):
+///
+/// ```text
+/// #[derive(Clone, Copy, gust::GpuStruct)]
+/// #[repr(C)]
+/// struct Row { pos: Vec2, vel: Vec2, flags: u32, _pad0: u32, _pad1: u32, _pad2: u32 }
+/// ```
+///
+/// The derive checks the shape as written and changes nothing about the struct: named fields, `#[repr(C)]` written, no
+/// generics, at least one field, and each field an `f32`, `u32`, `i32`, `Vec2`, `Vec4`, `IVec2`, `IVec4`, `UVec2`,
+/// `UVec4`, `Mat2` or `Mat4` written by its bare name (GUST-E1020 for the shape, GUST-E1021 for another field type; a
+/// `Vec3`, `UVec3` or `Mat3` field is GUST-E0204 and a tuple GUST-E0212). No byte may be padding (GUST-E0208): fill a
+/// gap with explicit fields, whose count and place the message gives. `Clone` and `Copy` are not checked by the derive
+/// (the derive list that names `GpuStruct` is not visible to it); the supertraits of `GpuPod` make rustc say so. The
+/// impl is `unsafe`, as `#[gpu_module]`'s for its own structs, and its `const` assertions compare the offsets, size and
+/// alignment with the derive's std430 model. Same crate only: the derive also writes the hidden `macro_rules!` that a
+/// batch stage uses to declare a private copy.
+#[proc_macro_derive(GpuStruct)]
+pub fn gpu_struct(input: TokenStream) -> TokenStream {
+    gpu_struct::derive(input.into()).into()
 }
 
 /// The `Mul` and `MulAssign` impls of `gust::math`, generated from the product table that also drives the Slang

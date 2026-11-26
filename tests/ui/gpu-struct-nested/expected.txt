@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A derive error is a compile_error!: code none.
+code: none
+file: gpu-struct-nested/src/main.rs
+line: 16
+message: [GUST-E1021] `Inner` is not a field type

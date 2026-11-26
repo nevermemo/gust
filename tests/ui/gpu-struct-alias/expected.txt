@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# The identity check is rustc's own E0308, so the code is E0308.
+code: E0308
+file: gpu-struct-alias/src/main.rs
+line: 13
+message: mismatched types

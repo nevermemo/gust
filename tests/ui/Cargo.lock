@@ -389,6 +389,77 @@ dependencies = [
 ]
 
 [[package]]
+name = "batch-struct-atomic-field"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-struct-columns-limit"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-struct-copy-mismatch"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-struct-count"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-struct-missing-derive"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-struct-module"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-struct-ok"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-struct-op-operand"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-struct-other-crate"
+version = "0.0.0"
+dependencies = [
+ "batch-struct-shapes",
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-struct-shapes"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -765,6 +836,83 @@ dependencies = [
 
 [[package]]
 name = "gpu-enum-repr-other"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "gpu-struct-alias"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "gpu-struct-array-field"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "gpu-struct-enum-field"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "gpu-struct-forbid-unsafe"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "gpu-struct-generic"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "gpu-struct-nested"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "gpu-struct-ok"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "gpu-struct-padding"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "gpu-struct-repr-missing"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "gpu-struct-tuple-field"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "gpu-struct-vec3"
 version = "0.0.0"
 dependencies = [
  "gust-compute",

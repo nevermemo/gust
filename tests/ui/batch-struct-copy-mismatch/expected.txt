@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see enum-in-uniform/expected.txt): the stage's
+# const assertion that its copy lists the fields in the real struct's order.
+code: E0080
+file: batch-struct-copy-mismatch/src/main.rs
+line: 26
+message: evaluation panicked: the stage's copy of the struct lists its fields in another order than the struct

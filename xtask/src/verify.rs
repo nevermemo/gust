@@ -1560,8 +1560,14 @@ pub(crate) struct GpuSuitePin {
 /// `the_device_open_refusal_has_its_own_wording_without_the_launch_cures`), on an existing line; its other tests are
 /// `#[ignore]`d example tests and a `gust-algo` integration test, which this call does not run. Updated by count; the
 /// full Gpu suite run on the Radeon 890M after the merge confirms it.
+///
+/// Slice m14.s2s, merged on 698 over 72: 698 over 72 became 699 over 72. The struct element slice adds one GPU test to
+/// `tests/limits.rs` (nine column buffers are a `DeviceLimit` against eight, the same data as one struct is two bindings)
+/// on an existing line. Updated by count; the full
+/// Gpu suite run on the Radeon 890M after the merge confirms it (the RTX 5090 ran the struct and limits tests, not the full
+/// suite).
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 698,
+    passed: 699,
     result_lines: 72,
 };
 

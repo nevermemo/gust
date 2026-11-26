@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json`: the derive writes its hidden macro private to the
+# crate that declares the struct, so another crate cannot use the struct as a batch element (the same as an enum).
+code: E0603
+file: batch-struct-other-crate/src/main.rs
+line: 19
+message: macro `Row` is private

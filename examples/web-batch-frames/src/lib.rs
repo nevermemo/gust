@@ -25,6 +25,18 @@ use gust_wgpu::HeadlessDevice;
 /// The elements of the input and of each frame's result: more than one workgroup and not a multiple of it.
 pub const LENGTH: u32 = 1000;
 
+/// The element of the batch's struct stages (m14.s2s, D279): three words, so no padding, and exact `u32` arithmetic.
+#[derive(Clone, Copy, Debug, PartialEq, gust::GpuStruct)]
+#[repr(C)]
+pub struct Row {
+    /// The first word.
+    pub a: u32,
+    /// The second word.
+    pub b: u32,
+    /// The third word.
+    pub c: u32,
+}
+
 /// The handles of the batch: the gain, the input, and the stage whose values every frame's ticket reads.
 pub struct Handles {
     /// Added to every element in the first stage.
@@ -38,6 +50,12 @@ pub struct Handles {
     /// The counted stage's result: row `i` is `x[i] + 1` for the rows below the last count that reached it and keeps
     /// the value of the last frame that wrote it otherwise (zero before any).
     pub z: Stage<u32, D1>,
+    /// A struct as the element of an input, written by a frame.
+    pub rows: Stage<Row, D1>,
+    /// A field read of `rows`: `a + b * 2`.
+    pub mixed: Stage<u32, D1>,
+    /// A whole row as a stage's result: the fields of `rows` rotated by one (`a, b, c` become `c, a, b`).
+    pub rotated: Stage<Row, D1>,
 }
 
 /// The batch: `y = x * 3 + gain`, then `y = y * 2 + 1` in place, with `in_flight(2)`. `u32` arithmetic on small values,
@@ -58,7 +76,11 @@ pub fn build(
         let count = b.input::<u32>(1u32);
         // A counted stage (m14.s2i, D278): the browser runs the bounded launch, the one `wasm32` always takes.
         let z = gpu_task!(count(count); n, |i| -> u32 { x[i] + 1u32 });
-        Handles { gain, x, y, count, z }
+        // A struct stored as the element (m14.s2s): the browser runs kernels that read a field and return a whole row.
+        let rows = b.input::<Row>(n);
+        let mixed = gpu_task!(n, |i| -> u32 { rows[i].a + rows[i].b * 2u32 });
+        let rotated = gpu_task!(n, |i| -> Row { Row { a: rows[i].c, b: rows[i].a, c: rows[i].b } });
+        Handles { gain, x, y, count, z, rows, mixed, rotated }
     })
 }
 
@@ -104,6 +126,36 @@ pub fn counted_reference(state: &mut [u32], x: &[u32], count: u32) {
     for (row, value) in state.iter_mut().zip(x).take(count as usize) {
         *row = value + 1;
     }
+}
+
+/// The rows of frame `seed`, and what the struct stages make of them: `a + b * 2` and the rotated rows.
+#[must_use]
+pub fn rows_of(seed: u32) -> Vec<Row> {
+    (0..LENGTH)
+        .map(|i| Row {
+            a: i + seed,
+            b: i * 3,
+            c: i * 5 + seed,
+        })
+        .collect()
+}
+
+/// The values of the `mixed` stage for `rows`.
+#[must_use]
+pub fn mixed_reference(rows: &[Row]) -> Vec<u32> {
+    rows.iter().map(|row| row.a + row.b * 2).collect()
+}
+
+/// The rows of the `rotated` stage for `rows`.
+#[must_use]
+pub fn rotated_reference(rows: &[Row]) -> Vec<Row> {
+    rows.iter()
+        .map(|row| Row {
+            a: row.c,
+            b: row.a,
+            c: row.b,
+        })
+        .collect()
 }
 
 /// The input of frame `seed`.

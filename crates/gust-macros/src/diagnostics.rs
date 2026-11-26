@@ -578,6 +578,18 @@ codes! {
     /// A `count(n);` whose `n` is not a `u32` handle of the block (an input, a stage's result or the count of a library
     /// op), or is the stage's own in-place target.
     BatchCountHandle = 1015 => "GUST-E1015";
+    /// `#[derive(GpuStruct)]` on an item that is not a free-standing `#[repr(C)]` struct with named fields, or on one with
+    /// generics, no field, or a size over 4 GiB. `Clone` and `Copy` are required but enforced by the supertraits of
+    /// `GpuPod` (rustc's own error).
+    GpuStructShape = 1020 => "GUST-E1020";
+    /// A field of a `#[derive(GpuStruct)]` struct whose type is not an `f32`, `u32`, `i32`, vector or matrix written by its
+    /// bare name: an array, a nested struct, an enum, a `bool`, a path, a reference or any other type.
+    GpuStructField = 1021 => "GUST-E1021";
+    /// A struct of the user's as the operand of a library op of a `gpu_batch!` (`sum`, `min`, `max`, `reduce`, `count`,
+    /// `scan`, `compact`): an op reads a number buffer.
+    BatchStructOperand = 1022 => "GUST-E1022";
+    /// A struct of the user's as the type of a `Param` of a `gpu_batch!`: a parameter holds a scalar or an enum.
+    BatchStructParam = 1023 => "GUST-E1023";
 }
 
 /// The error for `code` at `span`: the message prefixed with `[GUST-E....]`.
@@ -1418,6 +1430,14 @@ mod tests {
         (
             Code::GpuEnumShape,
             "raised only by `#[derive(GpuEnum)]`, which checks an enum of its own and never reaches the validator of a module",
+        ),
+        (
+            Code::GpuStructShape,
+            "raised only by `#[derive(GpuStruct)]`, which checks a struct of its own and never reaches the validator of a module",
+        ),
+        (
+            Code::GpuStructField,
+            "raised only by `#[derive(GpuStruct)]`, which checks a struct of its own and never reaches the validator of a module",
         ),
     ];
 

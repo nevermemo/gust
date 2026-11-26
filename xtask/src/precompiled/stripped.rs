@@ -33,6 +33,10 @@ pub(crate) const ADAPTER_PREFIX: &str = "adapter: ";
 /// from the precompiled artifacts and three counts equalled the host model.
 pub(crate) const COUNTED_PREFIX: &str =
     "counted: a counted stage ran from its precompiled artifacts";
+
+/// The line the same binary prints after its second batch, whose element is a struct (m14.s2s, D279), ran from the
+/// precompiled artifacts and three frames equalled the host model.
+pub(crate) const STRUCT_PREFIX: &str = "counted: a struct stage ran from its precompiled artifacts";
 /// The byte strings that the run-time Slang bridge brings into a binary (E2). `gust-slang-reflect` (the name of the
 /// native helper, `HELPER_NAME` of `gust::toolchain`) and `kernel.artifact` (`compile_reflected_with_helper`) are
 /// string literals of code gated by the `slang-runtime` feature of `gust-compute`. `kernel.slang` is not gated:
@@ -184,7 +188,8 @@ pub(super) fn e1_run(fixture: &Fixture, binary: &Path) -> Result<String, String>
 }
 
 /// The problems of the run of the counted-stage binary in E1: it must exit 0, name its adapter and print the `counted:`
-/// line (printed only after three counts, one above the capacity, equalled the host model). Returns the adapter.
+/// line (printed only after three counts, one above the capacity, equalled the host model) and the struct line (printed
+/// only after three frames of a struct batch equalled the host model). Returns the adapter.
 pub(crate) fn judge_counted(
     success: bool,
     stdout: &str,
@@ -207,6 +212,11 @@ pub(crate) fn judge_counted(
     if !stdout.lines().any(|line| line.starts_with(COUNTED_PREFIX)) {
         problems.push(format!(
             "`counted` printed no `{COUNTED_PREFIX}` line, so a counted stage did not run from its precompiled artifacts"
+        ));
+    }
+    if !stdout.lines().any(|line| line.starts_with(STRUCT_PREFIX)) {
+        problems.push(format!(
+            "`counted` printed no `{STRUCT_PREFIX}` line, so a struct stage did not run from its precompiled artifacts"
         ));
     }
     match (problems.is_empty(), adapter) {

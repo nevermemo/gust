@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see limits-par-for-storage-buffers/expected.txt).
+# GUST-E0746 is a macro error, so `code: none`.
+code: none
+file: batch-struct-columns-limit/src/main.rs
+line: 22
+message: [GUST-E0746] kernel `gpu_task!` is over the portable floor: its storage buffer count is 10, over `max_storage_buffers_per_shader_stage` = 8

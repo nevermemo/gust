@@ -202,6 +202,7 @@ pub mod cpu;
 mod descriptor;
 mod dispatch;
 mod enum_word;
+mod gpu_struct;
 #[doc = include_str!("guide/index.md")]
 pub mod guide;
 mod job;
@@ -244,8 +245,13 @@ pub use dispatch::{
     Arg, BindingKind, Call, Extent, Independent, LengthRule, Resource, Run, SampledCall,
     SamplerArg, SamplerDevice, SamplerSet, TypedDevice, kind,
 };
+#[doc(hidden)]
+pub use enum_word::__GpuElementKind;
 pub use enum_word::{EnumWordError, GpuEnum};
-pub use gust_macros::{GpuEnum, gpu_batch, gpu_fn, gpu_module, gpu_task, par_for};
+pub use gpu_struct::GpuStruct;
+#[doc(hidden)]
+pub use gpu_struct::Sealed as __GpuStructSealed;
+pub use gust_macros::{GpuEnum, GpuStruct, gpu_batch, gpu_fn, gpu_module, gpu_task, par_for};
 pub use job::{Device, Job, JobStatus};
 pub use reflect::{
     PodCrossCheck, ReflectedField, ReflectedResource, ReflectedType, ReflectedTypeKind, Reflection,

@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A derive error is a compile_error!: code none.
+code: none
+file: gpu-struct-generic/src/main.rs
+line: 8
+message: [GUST-E1020] generic structs are not supported

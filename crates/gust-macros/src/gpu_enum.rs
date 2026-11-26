@@ -172,6 +172,9 @@ fn emit(
     };
     quote! {
         #[automatically_derived]
+        impl ::gust::__GpuElementKind for #name {}
+
+        #[automatically_derived]
         impl ::gust::GpuEnum for #name {
             fn from_word(word: u32) -> ::core::option::Option<Self> {
                 match word {

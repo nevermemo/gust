@@ -1420,6 +1420,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       fused kernels gain at small sizes on both adapters: next slice pf.onepass, fusion deferred, its design scouted),
       pf.dev2 GAIN in the timed path only (D282; slice pf.lazyts), pf.alone0 not reproduced at W1 1M; pf.alone0 at 16M
       and pf.split0 lost their floors to a factor near 1.9 between identical processes on the RTX 5090 (reruns owed).
+    - Merge gate t37 found two problems on dev: GPU_SUITE_PIN one short (m14.s2i added a gust-wgpu unit test without
+      moving it; corrected to the printed count) and the batch-basics poll bound for a ticket nobody waited for, which
+      failed under machine load on the Radeon 890M and passed on quiet reruns. m14.pollsflake prints that count instead of
+      bounding it (a ticket that never resolves still fails at the polling deadline; waited tickets keep their bound).
+      Opus review: merge after one fix (VALIDATION wording). Gate t38 all green on the corrected pin.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

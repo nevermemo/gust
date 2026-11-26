@@ -1400,6 +1400,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       in pooled buffers before the launch check, so a refused launch has taken and returned them (nothing outstanding,
       no pipeline). Open: lim-b (batch-build refusal, `compact` with separate keep and count buffers, check-web over 8,
       the raised-device precompiled case), m14.lim-web.
+    - m14.s2i (D278, D281): counted batch stages. `gpu_task!(count(n); ..)` keeps the stage's extent as its capacity
+      and runs over `0 .. min(n, capacity)` of a one-element `u32` handle a stage of the block wrote; rows from the
+      count on keep their values, the count is clamped, the CPU twin reads n. Native: a one-invocation args kernel and
+      an indirect launch on a two-dimensional grid in the frame's one submission; wasm32 and adapters without indirect
+      execution: the bounded launch, same kernel and result. Frame timing records counted stages. Codes GUST-E1013 to
+      E1015. Radeon 890M and RTX 5090 (batch-basics counted, frame timing, resize), check-precompiled (a counted
+      binary), check-web (a counted stage on the page), CPU twin; mutations caught. Opus review: merge after fixes;
+      one fix round, re-check merge. Open: s2i.m2 (pre-registered small-cell timing), the downlevel flag in place of
+      the backend check, s2i2 (the indirect launch on the page), a vacuous timed test on adapters without timestamps.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

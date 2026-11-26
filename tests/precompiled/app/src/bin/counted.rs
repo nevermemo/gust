@@ -6,7 +6,6 @@
 
 use std::sync::Arc;
 
-use gust::batch::Error;
 use gust::{gpu_batch, gpu_task};
 use gust_wgpu::HeadlessDevice;
 
@@ -32,7 +31,7 @@ fn check(device: &Arc<HeadlessDevice>) -> Result<(), String> {
             f.write(&x, &input)?;
             let ticket = f.ticket(&z)?;
             let _submitted = f.submit()?;
-            Ok::<_, Error>(ticket.await?)
+            ticket.await
         })
         .map_err(|error| format!("counted frame {frame} failed: {error}"))?;
         for (row, value) in model.iter_mut().zip(&input).take(n as usize) {

@@ -114,6 +114,26 @@ impl BatchDevice for HeadlessDevice {
         self.encode_stage(encoder, stage)
     }
 
+    fn frame_stages(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        stages: &[&GpuStage],
+    ) -> Result<(), Error> {
+        self.encode_stages(encoder, stages, None)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn frame_stages_timed(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        stages: &[&GpuStage],
+        clock: &mut FrameClock,
+        begin: Option<u32>,
+        end: Option<u32>,
+    ) -> Result<(), Error> {
+        self.encode_stages_timed(encoder, stages, clock, begin, end)
+    }
+
     fn reserve_read<T: GpuPod>(&self, source: &Arc<GpuBuffer<T>>) -> Result<GpuRead<T>, Error> {
         self.reserve(source)
     }

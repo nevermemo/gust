@@ -1546,9 +1546,14 @@ pub(crate) struct GpuSuitePin {
 /// Slice m14.lazyts, merged on 681 over 70: 681 over 70 became 684 over 71. The lazy timestamp slice adds the new test
 /// file `tests/lazy_timestamps.rs` (three GPU tests, one `test result:` line). Updated by count; the file passed on
 /// both adapters in the lane, and the full Gpu suite is owed at the merge gate.
+///
+/// Slice m14.onepass, merged on 684 over 71: 684 over 71 became 696 over 72. The one-pass slice adds the new test file
+/// `tests/one_pass.rs` (twelve GPU tests, one `test result:` line) and changes no other test count (`tests/pixel.rs`
+/// gains an assertion in an existing test). Updated by count; the full Gpu suite run on the Radeon 890M at the merge
+/// confirms it.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 684,
-    result_lines: 71,
+    passed: 696,
+    result_lines: 72,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

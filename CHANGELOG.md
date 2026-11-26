@@ -7,6 +7,12 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- One compute pass for a batch of `grid` dispatches (m14.onepass): `dispatch_batch` and the frame path of a `gpu_batch!`
+  record the plain `grid` dispatches of neighbouring entries (stages, library ops, a bounded counted stage) in one
+  compute pass, in order, on by default; an indirect counted stage and a `pixel` call keep their own passes. A frame
+  timed at `Passes` keeps a compute pass per stage, so its per-stage times include the pass boundary and can sum to more
+  than the `Frame` span. New provided `BatchDevice::frame_stages` and `frame_stages_timed` hooks (the default loops
+  `frame_stage`).
 - `unsafe fn DeviceOptions::unchecked_kernels` and `ShaderChecks` (m14.pftrust1): a device-level opt-in that builds the
   WGSL route's shader modules without wgpu's runtime checks (bounds, loop bounding, integer division guards), with the
   safety contract in its `# Safety` section. The default stays checked; `HeadlessDevice::shader_checks` and

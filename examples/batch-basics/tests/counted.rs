@@ -913,6 +913,13 @@ fn gpu_timed(launch: CountedLaunch) {
     for level in [FrameTiming::Off, FrameTiming::Frame, FrameTiming::Passes] {
         let (mut batch, h) = build_timed(&device, level).unwrap();
         let timed = batch.frame_timing().is_some();
+        // A device with timestamp queries must time Frame and Passes; one without must report none (both pinned
+        // adapters have them).
+        assert_eq!(
+            timed,
+            level != FrameTiming::Off && device.supports_gpu_timestamps(),
+            "{level:?}: timing available"
+        );
         for (frame_number, (&n, want)) in counts.iter().zip(&expected).enumerate() {
             let mut frame = block_on(batch.begin()).unwrap();
             frame.write(&h.n, &[n]).unwrap();

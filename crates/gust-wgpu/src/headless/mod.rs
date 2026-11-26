@@ -60,6 +60,9 @@ pub struct HeadlessDevice {
     /// Whether the adapter lets a fragment shader write a storage buffer (`DownlevelFlags::FRAGMENT_WRITABLE_STORAGE`),
     /// which every `pixel` kernel does (D120). A `pixel` call on an adapter without it is `Error::ShapeUnsupported`.
     pub(crate) fragment_storage: bool,
+    /// Whether the adapter runs `dispatch_workgroups_indirect` (`DownlevelFlags::INDIRECT_EXECUTION`). A counted stage
+    /// on an adapter without it takes the bounded launch (`effective_launch`).
+    pub(crate) indirect_execution: bool,
     /// The capabilities the device was opened with (`DeviceOptions::capabilities`); a kernel's `requires` must be a
     /// subset (`check_kernel_capabilities`).
     pub(crate) capabilities: &'static [Capability],

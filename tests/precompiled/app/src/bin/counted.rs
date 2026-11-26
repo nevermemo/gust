@@ -39,7 +39,11 @@ fn check(device: &Arc<HeadlessDevice>) -> Result<(), String> {
             *row = value * 3 + 1;
         }
         if got != model {
-            let first = got.iter().zip(&model).position(|(a, b)| a != b).unwrap_or(0);
+            let first = got
+                .iter()
+                .zip(&model)
+                .position(|(a, b)| a != b)
+                .unwrap_or(0);
             return Err(format!(
                 "counted frame {frame} (n = {n}) differs from the model at row {first}"
             ));

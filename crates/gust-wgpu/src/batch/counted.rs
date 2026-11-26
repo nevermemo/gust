@@ -165,6 +165,14 @@ impl CountedDevice for HeadlessDevice {
         let launch = effective_launch(launch, self.indirect_execution());
         #[cfg(not(target_arch = "wasm32"))]
         if launch == CountedLaunch::Indirect {
+            // The counted kernel is prepared first: its device limits (the storage buffer count above all) are checked
+            // before the args buffer or the args pipeline exist, so a refused stage leaves neither behind (m14.lim-b).
+            let counted_dispatches = {
+                let call = counted(&keep, Extent::new(workgroup, 1, 1));
+                let dispatch =
+                    BufferDispatch::new_extent(call.kernel(), call.extent(), call.bindings());
+                self.prepare_indirect(&dispatch, &crate::BindGroupSlot::default())?
+            };
             let buffer = Arc::new(self.counted_args_buffer());
             PROBE.with(|probe| {
                 let mut probe = probe.borrow_mut();
@@ -179,12 +187,8 @@ impl CountedDevice for HeadlessDevice {
                     grid_call.extent(),
                     grid_call.bindings(),
                 );
-                let call = counted(&keep, Extent::new(workgroup, 1, 1));
-                let dispatch =
-                    BufferDispatch::new_extent(call.kernel(), call.extent(), call.bindings());
                 let mut prepared = self.prepare_extent_batch(&[grid])?;
-                prepared
-                    .extend(self.prepare_indirect(&dispatch, &crate::BindGroupSlot::default())?);
+                prepared.extend(counted_dispatches);
                 prepared
             };
             let raw = buffer.raw.clone();

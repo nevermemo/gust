@@ -208,7 +208,12 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
                 Stage::new(state.id, write, dims)
             }
             Err(error) => {
-                state.fail(Error::Device(D::map_error(error)));
+                let batch = state.name.clone();
+                state.fail(Error::StageDevice {
+                    batch,
+                    stage: name,
+                    source: D::map_error(error),
+                });
                 dud
             }
         }

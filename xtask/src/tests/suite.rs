@@ -1511,6 +1511,28 @@ fn the_algo_gpu_step_requires_every_adapter_test_by_name_and_no_other() {
         .run_in(root, &recording_runner(&calls, algo_output(&more_in_batch)))
         .unwrap_err();
     assert!(error.contains("the pinned number"), "{error}");
+    // So are the integration tests of gust-algo (an unpinned `gpu_` test of a `tests/` file fails the same way), and
+    // a pinned one that did not run is named.
+    let mut more_integration = ALGO_GPU_TESTS.to_vec();
+    more_integration.push("gpu_a_new_integration_test");
+    let error = Step::AlgoGpuSuite
+        .run_in(
+            root,
+            &recording_runner(&calls, algo_output(&more_integration)),
+        )
+        .unwrap_err();
+    assert!(error.contains("the pinned number"), "{error}");
+    let last = ALGO_GPU_TESTS[ALGO_GPU_TESTS.len() - 1];
+    let error = Step::AlgoGpuSuite
+        .run_in(
+            root,
+            &recording_runner(
+                &calls,
+                algo_output(&ALGO_GPU_TESTS[..ALGO_GPU_TESTS.len() - 1]),
+            ),
+        )
+        .unwrap_err();
+    assert!(error.contains(last), "{error}");
     // Nothing ran at all.
     assert!(
         Step::AlgoGpuSuite

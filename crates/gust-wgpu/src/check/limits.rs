@@ -612,6 +612,54 @@ mod tests {
     }
 
     #[test]
+    fn the_storage_buffer_refusal_names_the_count_the_limit_and_both_cures() {
+        let message = check_kernel_limits(
+            &wgpu::Limits::default(),
+            &DESCRIPTOR,
+            10,
+            0,
+            TextureCounts::NONE,
+        )
+        .expect_err("10 against 8")
+        .to_string();
+        for part in [
+            "needs 10",
+            "the limit is 8",
+            "max_storage_buffers_per_shader_stage",
+            "#[derive(GpuStruct)]",
+            "DeviceOptions::with_storage_buffers",
+        ] {
+            assert!(message.contains(part), "`{part}` missing from: {message}");
+        }
+        // Another limit's refusal does not carry the storage buffer cures.
+        let limits = wgpu::Limits {
+            max_compute_invocations_per_workgroup: 32,
+            ..wgpu::Limits::default()
+        };
+        let other = check_kernel_limits(&limits, &DESCRIPTOR, 1, 0, TextureCounts::NONE)
+            .expect_err("64 against 32")
+            .to_string();
+        assert!(!other.contains("GpuStruct"), "{other}");
+    }
+
+    #[test]
+    fn the_device_open_refusal_has_its_own_wording_without_the_launch_cures() {
+        // Met when the device is opened (`with_storage_buffers(n)` over what the adapter offers): the cures of a launch
+        // ("open the device with more", rows of one struct) would send the reader in a circle.
+        let message = Error::DeviceLimit {
+            kernel: "device open (Some Adapter, with_storage_buffers(12))".to_owned(),
+            limit: "max_storage_buffers_per_shader_stage",
+            requested: 12,
+            maximum: 10,
+        }
+        .to_string();
+        assert!(message.contains("needs 12"), "{message}");
+        assert!(message.contains("offers at most 10"), "{message}");
+        assert!(!message.contains("GpuStruct"), "{message}");
+        assert!(!message.contains("open the device with more"), "{message}");
+    }
+
+    #[test]
     fn storage_buffers_are_checked_against_a_raised_limit() {
         let limits = wgpu::Limits {
             max_storage_buffers_per_shader_stage: 16,

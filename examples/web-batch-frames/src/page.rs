@@ -231,5 +231,34 @@ async fn frames_in_flight() -> Result<(), String> {
             .map_err(|error| format!("{what} ticket failed: {error}"))?;
         require_exact(what, &values, &state)?;
     }
-    Ok(())
+    wide_stage_is_refused_by_name(&device)
+}
+
+/// A stage of ten storage buffers is refused when the batch is built (m14.lim-b, D280): a browser device always opens
+/// with eight, so the refusal is the typed one, names the stage and the batch, and carries both cures.
+fn wide_stage_is_refused_by_name(device: &Arc<HeadlessDevice>) -> Result<(), String> {
+    let Err(error) = crate::build_wide(device) else {
+        return Err("a stage of ten storage buffers was built on a browser device".to_owned());
+    };
+    let gust::batch::Error::StageDevice {
+        batch,
+        stage,
+        source,
+    } = &error
+    else {
+        return Err(format!(
+            "the wide stage was refused, but not by name: {error}"
+        ));
+    };
+    match source.downcast_ref::<gust_wgpu::Error>() {
+        Some(gust_wgpu::Error::DeviceLimit {
+            limit: "max_storage_buffers_per_shader_stage",
+            requested: 10,
+            maximum: 8,
+            ..
+        }) if (batch.as_str(), stage.as_str()) == ("wide", "out") => Ok(()),
+        other => Err(format!(
+            "the wide stage was refused with {other:?}, not DeviceLimit 10 against 8 for stage `out` of batch `wide`"
+        )),
+    }
 }

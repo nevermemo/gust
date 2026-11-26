@@ -485,7 +485,12 @@ impl<D: BatchDevice> OpDraft<'_, D> {
                 H::make(batch, &written)
             }
             Err(error) => {
-                state.fail(Error::Device(D::map_error(error)));
+                let batch_name = state.name.clone();
+                state.fail(Error::StageDevice {
+                    batch: batch_name,
+                    stage: name,
+                    source: D::map_error(error),
+                });
                 H::dud(batch)
             }
         }

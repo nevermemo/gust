@@ -641,6 +641,21 @@ impl fmt::Display for Error {
                         formatter,
                         "; split the work into several dispatches, or use fewer invocations along that axis"
                     )?;
+                } else if *limit == "max_storage_buffers_per_shader_stage"
+                    && kernel.starts_with("device open (")
+                {
+                    // Met when the device is opened: the adapter cannot give what `with_storage_buffers` asked for.
+                    write!(
+                        formatter,
+                        "; this adapter offers at most {maximum}, so ask `DeviceOptions::with_storage_buffers` for no more"
+                    )?;
+                } else if *limit == "max_storage_buffers_per_shader_stage" {
+                    write!(
+                        formatter,
+                        "; bind fewer storage buffers by keeping the columns as rows of one struct \
+                         (`#[derive(GpuStruct)]`), or open the device with more through \
+                         `DeviceOptions::with_storage_buffers` (native only)"
+                    )?;
                 }
                 Ok(())
             }

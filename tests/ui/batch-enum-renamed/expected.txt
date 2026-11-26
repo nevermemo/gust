@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see enum-in-uniform/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: batch-enum-renamed/src/main.rs
+line: 24
+message: [GUST-E1005] `Shade` is not the name of an enum the block's derives handed over

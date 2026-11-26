@@ -263,7 +263,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "batch-enum-copy-mismatch"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-enum-missing-derive"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-enum-ok"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-enum-renamed"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-enum-same-name"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "batch-form"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-no-enum-ok"
 version = "0.0.0"
 dependencies = [
  "gust-compute",
@@ -471,6 +513,13 @@ dependencies = [
 
 [[package]]
 name = "enum-in-field"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "enum-in-uniform"
 version = "0.0.0"
 dependencies = [
  "gust-compute",
@@ -1447,6 +1496,13 @@ dependencies = [
 
 [[package]]
 name = "par-for-bool-buffer"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "par-for-enum-binding"
 version = "0.0.0"
 dependencies = [
  "gust-compute",

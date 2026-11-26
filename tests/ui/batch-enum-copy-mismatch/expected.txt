@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see enum-in-uniform/expected.txt): the stage's
+# const assertion that every word of its copy is the real enum's.
+code: E0080
+file: batch-enum-copy-mismatch/src/main.rs
+line: 25
+message: evaluation panicked: assertion failed

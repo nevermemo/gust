@@ -1,0 +1,7 @@
+# Keys matched against the one error of `cargo check --message-format json` (see gpupod-missing/expected.txt): the bound
+# of the type of a batch parameter, with the `on_unimplemented` message and label of `GpuEnum`.
+code: E0277
+file: batch-enum-missing-derive/src/main.rs
+line: 27
+message: `Mode` is not a GPU enum
+label: add `#[derive(GpuEnum)]` to the enum

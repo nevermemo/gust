@@ -11,7 +11,10 @@ breaks existing code bumps the minor version, and the promise is described in th
   implicit discriminants that fit in `u32`, the derive implements `from_word`, `to_word` and a validating
   `TryFrom<u32>` (error `gust::EnumWordError`, which carries the word), each a `match` over the discriminants. The enum
   must derive `Clone`, `Copy` and `PartialEq` itself (the supertraits of `GpuEnum` make rustc say so). Any other
-  shape is `GUST-E1011`. Nothing uses it yet: the stages of a batch take it in a later slice.
+  shape is `GUST-E1011`.
+- An enum parameter and a `match` in a `gpu_batch!` stage (m14.s2e2b): `b.param::<Mode>(..)` with `Mode` deriving
+  `GpuEnum`, `frame.set(&mode, Mode::Curve)`, and `match mode.get() { .. }` in a stage body, equal to the host and
+  the CPU twin. `GpuEnum` implies `ParamType`; a missing derive names the fix.
 - `cargo xtask check-web` runs a second page, `examples/web-batch-frames` (m14.s2c): a `gpu_batch!` with `in_flight(2)`
   in headless Chrome records and submits frame N+1 while frame N's ticket is still pending, then checks both frames and
   a third one against the host computation exactly. Browser run only, on the adapter Chrome picks.

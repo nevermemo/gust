@@ -227,6 +227,8 @@ const EXAMPLE_GPU_TESTS: &[(&str, &[&str])] = &[
             "gpu_resize_across_frames_is_exact",
             "gpu_resize_equals_the_cpu_twin_at_every_size",
             "gpu_the_frame_after_a_resize_is_one_submission",
+            "gpu_an_enum_parameter_and_a_match_equal_the_host",
+            "gpu_an_enum_parameter_equals_the_cpu_twin_at_every_pair",
         ],
     ),
     (

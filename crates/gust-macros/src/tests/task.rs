@@ -561,7 +561,7 @@ fn a_bool_element_of_a_batch_stage_is_e1004_with_the_fix() {
         rejected(input, Code::BatchElementBool);
         let scratch = Scratch::new("bool");
         let text = expand(input, &scratch, 1, Profile::Other);
-        assert!(text.contains("repr(u32)"), "{input}\n{text}");
+        assert!(text.contains("derive(GpuEnum)"), "{input}\n{text}");
     }
 }
 

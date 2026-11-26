@@ -1795,7 +1795,13 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
         [
             "batch-body",
             "batch-bool",
+            "batch-enum-copy-mismatch",
+            "batch-enum-missing-derive",
+            "batch-enum-ok",
+            "batch-enum-renamed",
+            "batch-enum-same-name",
             "batch-form",
+            "batch-no-enum-ok",
             "batch-op-crate",
             "batch-op-form",
             "batch-scope",
@@ -1808,6 +1814,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             "par-for-binding",
             "par-for-body-error",
             "par-for-bool-buffer",
+            "par-for-enum-binding",
             "par-for-form",
             "par-for-ok",
             "par-for-reserved-name",
@@ -1843,7 +1850,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 289] = [
+const PINNED_FIXTURES: [&str; 297] = [
     "array-barrier",
     "array-buffer-len",
     "array-const-len",
@@ -1876,7 +1883,13 @@ const PINNED_FIXTURES: [&str; 289] = [
     "barrier-ok",
     "batch-body",
     "batch-bool",
+    "batch-enum-copy-mismatch",
+    "batch-enum-missing-derive",
+    "batch-enum-ok",
+    "batch-enum-renamed",
+    "batch-enum-same-name",
     "batch-form",
+    "batch-no-enum-ok",
     "batch-op-crate",
     "batch-op-form",
     "batch-scope",
@@ -1893,6 +1906,7 @@ const PINNED_FIXTURES: [&str; 289] = [
     "enum-discriminant",
     "enum-in-buffer",
     "enum-in-field",
+    "enum-in-uniform",
     "enum-no-partialeq",
     "enum-ok",
     "for-bound-closure",
@@ -1990,6 +2004,7 @@ const PINNED_FIXTURES: [&str; 289] = [
     "par-for-binding",
     "par-for-body-error",
     "par-for-bool-buffer",
+    "par-for-enum-binding",
     "par-for-form",
     "par-for-ok",
     "par-for-reserved-name",

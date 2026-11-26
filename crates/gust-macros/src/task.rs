@@ -25,11 +25,12 @@
 use std::collections::HashSet;
 
 use proc_macro2::{Span, TokenStream};
-use quote::{ToTokens, format_ident, quote};
+use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::{
     Token,
     ext::IdentExt as _,
     parse::{Parse, ParseStream},
+    spanned::Spanned as _,
     visit::Visit,
     visit_mut::VisitMut,
 };
@@ -55,6 +56,9 @@ pub(crate) struct BatchClause {
     pub(crate) builder: syn::Ident,
     /// The name of the stage's `let`; `None` for a stage that no `let` names.
     pub(crate) name: Option<String>,
+    /// The enums the block's parameters name, as their derive handed them over (`enums { enum Mode { .. } }`): the
+    /// stage declares a private copy of each one its parameters use.
+    pub(crate) enums: Vec<syn::ItemEnum>,
 }
 
 /// The macro input as written: the options, the shape (or the in-place target), the capture list, the closure.
@@ -84,9 +88,24 @@ fn parse_batch_clause(input: ParseStream) -> syn::Result<Option<BatchClause>> {
     let name: syn::LitStr = content.parse()?;
     input.parse::<Token![;]>()?;
     let name = name.value();
+    let mut enums = Vec::new();
+    if input
+        .cursor()
+        .ident()
+        .is_some_and(|(keyword, _)| keyword == "enums")
+        && input.peek2(syn::token::Brace)
+    {
+        input.parse::<syn::Ident>()?;
+        let content;
+        syn::braced!(content in input);
+        while !content.is_empty() {
+            enums.push(content.parse()?);
+        }
+    }
     Ok(Some(BatchClause {
         builder,
         name: (!name.is_empty()).then_some(name),
+        enums,
     }))
 }
 
@@ -166,6 +185,106 @@ struct BatchStage {
     params: Vec<syn::Ident>,
     /// The host scalars of the list: values taken when the stage is recorded.
     scalars: Vec<syn::Ident>,
+    /// The enums the stage's parameters have: a private copy of each is declared in the stage's module (D270).
+    enums: Vec<(syn::ItemEnum, syn::ItemFn)>,
+    /// The parameters that are enums: the parameter and the enum it holds. The kernel's record has the word, and the
+    /// kernel turns it into the enum before the body runs.
+    enum_params: Vec<(syn::Ident, syn::Ident)>,
+    /// Per enum path a parameter's type names, the statements that check the copy against it ([`enum_copy_check`]).
+    enum_checks: Vec<TokenStream>,
+}
+
+impl BatchStage {
+    /// Whether the parameter `name` holds an enum.
+    fn is_enum(&self, name: &syn::Ident) -> bool {
+        self.enum_params.iter().any(|(param, _)| param == name)
+    }
+}
+
+/// The name of the function that turns the word of an enum into the enum, in the module of a stage. Not a reserved
+/// `__gust_` name, so the stage's validated view and its expanded module share it. The enum's exact name, so that two
+/// enums that differ in case (`Mode` and `MODE`) keep two functions.
+fn enum_decoder(definition: &syn::Ident) -> syn::Ident {
+    format_ident!("par_for_enum_{}", definition.unraw())
+}
+
+/// The function that decodes the word of `definition`: an `if` and `return` per discriminant, the last variant being
+/// what any other word gives (a parameter's word is always a variant's, because `set` takes the enum).
+fn enum_decoder_fn(definition: &syn::ItemEnum) -> syn::Result<syn::ItemFn> {
+    let name = &definition.ident;
+    let variants = enum_variants(definition)?;
+    let Some(((last, _), earlier)) = variants.split_last() else {
+        unreachable!("`enum_variants` refuses an enum with no variant")
+    };
+    let decoder = enum_decoder(name);
+    let (words, idents): (Vec<u32>, Vec<&syn::Ident>) =
+        earlier.iter().map(|(ident, word)| (*word, ident)).unzip();
+    Ok(syn::parse_quote! {
+        #[allow(non_snake_case)]
+        fn #decoder(word: u32) -> #name {
+            #(
+                if word == #words {
+                    return #name::#idents;
+                }
+            )*
+            #name::#last
+        }
+    })
+}
+
+/// The variants of a handed-over enum with their words, in order: each has a discriminant that is an integer literal
+/// (the derive writes them all out), and there is at least one.
+fn enum_variants(definition: &syn::ItemEnum) -> syn::Result<Vec<(syn::Ident, u32)>> {
+    let name = &definition.ident;
+    let mut variants = Vec::new();
+    for variant in &definition.variants {
+        let word = match &variant.discriminant {
+            Some((
+                _,
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Int(literal),
+                    ..
+                }),
+            )) => literal.base10_parse::<u32>()?,
+            _ => {
+                return Err(batch_form(
+                    variant,
+                    "an enum a batch parameter holds has a discriminant written on each variant: derive it with \
+                     `#[derive(GpuEnum)]`",
+                ));
+            }
+        };
+        variants.push((variant.ident.clone(), word));
+    }
+    if variants.is_empty() {
+        return Err(batch_form(
+            name,
+            "an enum a batch parameter holds has a variant",
+        ));
+    }
+    Ok(variants)
+}
+
+/// The statements, in the user's scope, that check the enum a parameter's type names against the copy a stage was
+/// given: every variant of the copy is a variant of `path` with the same word (`P::V as u32 == W`), and every variant of
+/// `path` is one of the copy's (an exhaustive `match` in a `const fn`). The copy came from the macro that carries the
+/// enum's name, and rustc resolves a macro and a type apart, so the two can differ (a `type` alias, a glob import, the
+/// hidden form written by hand): the decoder would then read the words of one enum as the variants of another, with
+/// no error at all. This is a compile error at the parameter's type instead.
+fn enum_copy_check(path: &syn::Path, variants: &[(syn::Ident, u32)]) -> TokenStream {
+    let (idents, words): (Vec<&syn::Ident>, Vec<u32>) =
+        variants.iter().map(|(ident, word)| (ident, *word)).unzip();
+    quote_spanned! {path.span()=>
+        const _: () = {
+            #(::core::assert!(#path::#idents as ::core::primitive::u32 == #words);)*
+            #[allow(dead_code)]
+            const fn __gust_enum_variants(value: #path) {
+                match value {
+                    #(#path::#idents => {})*
+                }
+            }
+        };
+    }
 }
 
 /// A handle of the block that a batch stage reads or writes.
@@ -203,6 +322,35 @@ impl TaskPlan {
             statements.push(syn::parse_quote!(#out[#index] = #tail;));
         }
         statements
+    }
+
+    /// The enums of the stage's parameters and the function that decodes each one's word, to be declared in the stage's
+    /// module in front of the record and the kernel.
+    pub(crate) fn enum_items(&self) -> Vec<syn::Item> {
+        let Some(batch) = &self.batch else {
+            return Vec::new();
+        };
+        batch
+            .enums
+            .iter()
+            .flat_map(|(definition, decoder)| {
+                [
+                    syn::Item::Enum(definition.clone()),
+                    syn::Item::Fn(decoder.clone()),
+                ]
+            })
+            .collect()
+    }
+
+    /// The function that decodes the word of the enum parameter `name`, when it is one.
+    pub(crate) fn enum_decoder_of(&self, name: &syn::Ident) -> Option<syn::Ident> {
+        let (_, definition) = self
+            .batch
+            .as_ref()?
+            .enum_params
+            .iter()
+            .find(|(param, _)| param == name)?;
+        Some(enum_decoder(definition))
     }
 
     /// The name of the binding that the kernel writes its result to: the result buffer, or the in-place target.
@@ -817,8 +965,9 @@ fn bool_element(tokens: impl ToTokens, what: &str) -> syn::Error {
         Code::BatchElementBool,
         tokens,
         format!(
-            "{what} has `bool` as its element, and a buffer holds a `bool` as a `u32` word: use `u32` (`0` and `1`), \
-             or a `#[repr(u32)]` enum once enum elements are in a batch"
+            "{what} has `bool` as its element, and a buffer holds a `bool` as a `u32` word: use `u32` (`0` and `1`); a \
+             `#[derive(GpuEnum)]` enum is a parameter type of a batch (`b.param::<Mode>(..)`), and its use as an element \
+             is not in this release"
         ),
     )
 }
@@ -1222,6 +1371,10 @@ fn lower_batch(
     let mut views = Vec::new();
     let mut params = Vec::new();
     let mut scalars = Vec::new();
+    let mut enums: Vec<(syn::ItemEnum, syn::ItemFn)> = Vec::new();
+    let mut enum_params = Vec::new();
+    let mut enum_checks = Vec::new();
+    let mut enum_paths: Vec<String> = Vec::new();
     for entry in list {
         let RawBinding { name, ty } = entry;
         if let Some(element) = type_argument(&ty, "Stage") {
@@ -1266,12 +1419,49 @@ fn lower_batch(
             }
         }
         if let Some(element) = type_argument(&ty, "Param") {
+            // An enum the block's derive handed over: the record holds its word, and the kernel decodes it.
+            if let Some((path, definition)) = enum_named(&clause.enums, element) {
+                params.push(name.clone());
+                enum_params.push((name.clone(), definition.ident.clone()));
+                if !enums.iter().any(|(copy, _)| copy.ident == definition.ident) {
+                    let decoder = enum_decoder_fn(definition)?;
+                    let mut copy = definition.clone();
+                    copy.attrs.push(syn::parse_quote!(#[derive(PartialEq)]));
+                    enums.push((copy, decoder));
+                }
+                let written = path.to_token_stream().to_string();
+                if !enum_paths.contains(&written) {
+                    enum_checks.push(enum_copy_check(path, &enum_variants(definition)?));
+                    enum_paths.push(written);
+                }
+                entries.push(RawBinding {
+                    name,
+                    ty: syn::parse_quote!(u32),
+                });
+                continue;
+            }
+            if !clause.enums.is_empty() && crate::batch::is_user_type(element) {
+                let handed: Vec<String> = clause
+                    .enums
+                    .iter()
+                    .map(|definition| format!("`{}`", definition.ident.unraw()))
+                    .collect();
+                return Err(batch_form(
+                    element,
+                    format!(
+                        "`{}` is not the name of an enum the block's derives handed over ({}): write the enum's own \
+                         name as the parameter's type (a `use .. as` rename and a `type` alias are not supported)",
+                        element.to_token_stream(),
+                        handed.join(", ")
+                    ),
+                ));
+            }
             if !is_scalar_type(element) {
                 return Err(batch_form(
                     element,
                     format!(
-                        "`{}` is a parameter a body cannot read: only a `u32`, `i32`, `f32` or `bool` parameter is read \
-                         (a `(u32, u32)` parameter is a shape, which sizes a stage)",
+                        "`{}` is a parameter a body cannot read: only a `u32`, `i32`, `f32`, `bool` or enum parameter \
+                         is read (a `(u32, u32)` parameter is a shape, which sizes a stage)",
                         name.unraw()
                     ),
                 ));
@@ -1320,8 +1510,31 @@ fn lower_batch(
             views,
             params,
             scalars,
+            enums,
+            enum_params,
+            enum_checks,
         },
     })
+}
+
+/// The enum, among those the block's parameters name, that `ty` is: a plain path (`Mode`, `types::Mode`, no generics)
+/// whose last segment is the enum's name. The stage's module declares the enum under that name, so a body writes
+/// `Mode::Linear` whatever path the parameter's type was written with.
+fn enum_named<'a>(
+    enums: &'a [syn::ItemEnum],
+    ty: &'a syn::Type,
+) -> Option<(&'a syn::Path, &'a syn::ItemEnum)> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let last = path.path.segments.last().filter(|_| path.qself.is_none())?;
+    if !last.arguments.is_none() {
+        return None;
+    }
+    enums
+        .iter()
+        .find(|definition| definition.ident == last.ident)
+        .map(|definition| (&path.path, definition))
 }
 
 /// The body of a batch stage, rewritten in place, and the first rule it breaks.
@@ -1439,13 +1652,6 @@ impl VisitMut for Lowering {
                     replacement = Some((*call.receiver).clone());
                 }
             }
-            syn::Expr::Match(matched) => {
-                self.refuse(
-                    Code::BatchBody,
-                    matched.match_token,
-                    "a `match` in a stage of a batch is not in this release (enums arrive with a later slice); use `if`",
-                );
-            }
             _ => {}
         }
         if let Some(replacement) = replacement {
@@ -1503,8 +1709,28 @@ impl TaskPlan {
             let (name, element, rank) = (&view.name, element_of(&view.name), rank_type(view.rank));
             quote!(#name: &::gust::batch::Stage<#element, #rank>)
         });
+        // An enum parameter is generic: the user's own type, which the stage's module cannot name (it declares a copy of
+        // the enum under the same name), is whatever the call passes, and the bound is the derive's trait.
+        let enum_generic = |name: &syn::Ident| {
+            let position = batch
+                .enum_params
+                .iter()
+                .position(|(param, _)| param == name)
+                .expect("an enum parameter has a generic");
+            format_ident!("__GustP{}", position)
+        };
+        let enum_generics: Vec<syn::Ident> = batch
+            .enum_params
+            .iter()
+            .map(|(name, _)| enum_generic(name))
+            .collect();
         let param_parameters = batch.params.iter().map(|name| {
-            let ty = scalar_tokens(scalar_of(name));
+            let ty = if batch.is_enum(name) {
+                let generic = enum_generic(name);
+                quote!(#generic)
+            } else {
+                scalar_tokens(scalar_of(name))
+            };
             quote!(#name: &::gust::batch::Param<#ty>)
         });
         let scalar_parameters = batch.scalars.iter().map(|name| {
@@ -1571,7 +1797,10 @@ impl TaskPlan {
                 quote!(__gust_layout.buffer::<__GustD, #element>(__gust_ids[#index]))
             });
         let scalar_fields = plan.scalars().map(|(name, scalar)| {
-            let value = if batch.params.contains(name) {
+            let value = if batch.is_enum(name) {
+                let (id, generic) = (param_id(name), enum_generic(name));
+                quote!(::gust::GpuEnum::to_word(__gust_values.get::<#generic>(#id)))
+            } else if batch.params.contains(name) {
                 let (id, ty) = (param_id(name), scalar_tokens(scalar));
                 quote!(__gust_values.get::<#ty>(#id))
             } else {
@@ -1599,7 +1828,7 @@ impl TaskPlan {
             /// Record the stage into the batch being built: seal its kernel call and return the handle of its result.
             #[doc(hidden)]
             #[allow(clippy::too_many_arguments)]
-            pub fn __gust_batch<'__gust_b, __GustD>(
+            pub fn __gust_batch<'__gust_b, __GustD #(, #enum_generics)*>(
                 mut __gust_draft: ::gust::batch::StageDraft<'__gust_b, __GustD>,
                 #(#view_parameters,)*
                 #(#param_parameters,)*
@@ -1607,6 +1836,7 @@ impl TaskPlan {
             ) -> ::gust::batch::Stage<#output_element, #output_rank>
             where
                 __GustD: ::gust::batch::BatchDevice + __GustPfHost + ::gust::Run<run, #count>,
+                #(#enum_generics: ::gust::GpuEnum,)*
                 #(#bounds)*
             {
                 let __gust_dims = __gust_draft.dims();
@@ -1715,8 +1945,10 @@ impl TaskPlan {
         let views = batch.views.iter().map(|view| &view.name);
         let params = &batch.params;
         let scalars = &batch.scalars;
+        let checks = &batch.enum_checks;
         quote! {
             {
+                #(#checks)*
                 #name
                 let __gust_draft = #builder.draft::<_, #rank>(&(#shape));
                 #module::__gust_batch(__gust_draft, #(&#views,)* #(&#params,)* #(#scalars,)*)

@@ -100,7 +100,7 @@ use self::{
     reexpand::{e7_build_twice, e7_reexpansion},
     refusals::e6_refusals,
     stripped::{
-        VERIFIED_PREFIX, check_slang_free, e1_run, e1_stripped_build_and_run,
+        VERIFIED_PREFIX, check_slang_free, counted_binary_of, e1_run, e1_stripped_build_and_run,
         e2_binary_and_features,
     },
 };
@@ -234,6 +234,15 @@ fn stamp_text(fixture: &Fixture, head: &str, tree: &str) -> Result<String, Strin
         let bytes = fs::read(&path)
             .map_err(|error| format!("cannot read the binary {}: {error}", fixture.shown(&path)))?;
         text.push_str(&format!("{key}={}\n", sha256_hex(&bytes)));
+    }
+    // The counted-stage binary that E1 builds beside `app` (m14.s2i): in the stamp when it exists, so a relinked one is
+    // stale. (`--adapter-runs` fails on a missing one when it runs it.)
+    let counted = counted_binary_of(&Fixture::app_binary(&fixture.target_dir));
+    if let Ok(bytes) = fs::read(&counted) {
+        text.push_str(&format!(
+            "sha256 of the E1 counted={}\n",
+            sha256_hex(&bytes)
+        ));
     }
     Ok(text)
 }

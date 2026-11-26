@@ -9,52 +9,57 @@ use core::task::{Context, Poll, Waker};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use super::FrameTime;
+use super::timing::{Recorded, TimeCell, TimePlan, TimedFrame};
 use super::{
-    BatchDevice, BoxFuture, Core, Empty, Error, Layout, OpPlan, Operands, PLANS_KEPT, Param,
-    ParamType, Stage, Value, Values, map, typed,
+    BatchDevice, BoxFuture, Core, Element, Empty, Error, Layout, OpPlan, Operands, PLANS_KEPT,
+    Param, ParamType, Stage, Value, Values, map, typed,
 };
 use crate::GpuPod;
 
-/// One read-back of a frame, reserved by [`FrameRun::ticket`]: a future of the values (row-major for a 2-D handle).
+/// One read-back of a frame, reserved by [`FrameRun::ticket`]: a future of the values (row-major for a 2-D handle). A
+/// handle of an enum resolves to [`Error::InvalidEnum`] when a word it read is no variant (D275).
 ///
 /// It owns what it needs and borrows nothing: it is `'static`, and `Send` on native targets (not on `wasm32`, whose
 /// handles are not). A frame that is never submitted resolves it to [`Error::NotSubmitted`]. Polling it on a native
 /// GPU device polls the device, so a caller without a runtime polls it in a loop (`gust::task::Task::dispatch` does
 /// the same for a task).
 #[must_use = "a ticket is a future of the values: await it"]
-pub struct Ticket<T> {
+pub struct Ticket<T: Element> {
     cell: Arc<TicketCell<T>>,
 }
 
-impl<T> core::fmt::Debug for Ticket<T> {
+impl<T: Element> core::fmt::Debug for Ticket<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Ticket").finish_non_exhaustive()
     }
 }
 
-enum TicketState<T> {
+enum TicketState<T: Element> {
     /// The frame has not been submitted; holds the waker of the last poll.
     Reserved(Option<Waker>),
-    /// The frame was submitted: the read-back.
-    Running(BoxFuture<Result<Option<Vec<T>>, map::Error>>),
+    /// The frame was submitted: the read-back, in the words the device holds.
+    Running(BoxFuture<Result<Option<Vec<T::Word>>, map::Error>>),
     /// The frame was never submitted.
     Failed,
     /// The result was handed out.
     Taken,
 }
 
-struct TicketCell<T> {
-    batch: String,
+struct TicketCell<T: Element> {
+    batch: Arc<str>,
+    /// The stage or input the words are read from, for [`Error::InvalidEnum`].
+    stage: Arc<str>,
     state: Mutex<TicketState<T>>,
 }
 
-impl<T> TicketCell<T> {
+impl<T: Element> TicketCell<T> {
     fn lock(&self) -> MutexGuard<'_, TicketState<T>> {
         // No code runs under the lock that can leave the state half-written.
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn start(&self, read: BoxFuture<Result<Option<Vec<T>>, map::Error>>) {
+    fn start(&self, read: BoxFuture<Result<Option<Vec<T::Word>>, map::Error>>) {
         let waker = {
             let mut state = self.lock();
             let TicketState::Reserved(waker) = &mut *state else {
@@ -85,7 +90,7 @@ impl<T> TicketCell<T> {
     }
 }
 
-impl<T> Future for Ticket<T> {
+impl<T: Element> Future for Ticket<T> {
     type Output = Result<Vec<T>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -104,10 +109,16 @@ impl<T> Future for Ticket<T> {
                 Poll::Ready(result) => {
                     *state = TicketState::Taken;
                     Poll::Ready(match result {
-                        Ok(Some(values)) => Ok(values),
+                        // The checked unpack: an enum element is a value only if its word is a variant.
+                        Ok(Some(words)) => T::unpack(words).map_err(|bad| Error::InvalidEnum {
+                            batch: self.cell.batch.to_string(),
+                            stage: self.cell.stage.to_string(),
+                            index: bad.index(),
+                            word: bad.word(),
+                        }),
                         // The copy never ran: the encoder it was recorded into was not submitted.
                         Ok(None) => Err(Error::NotSubmitted {
-                            batch: self.cell.batch.clone(),
+                            batch: self.cell.batch.to_string(),
                         }),
                         Err(error) => Err(Error::Device(error)),
                     })
@@ -117,7 +128,7 @@ impl<T> Future for Ticket<T> {
             TicketState::Failed => {
                 *state = TicketState::Taken;
                 Poll::Ready(Err(Error::NotSubmitted {
-                    batch: self.cell.batch.clone(),
+                    batch: self.cell.batch.to_string(),
                 }))
             }
             TicketState::Taken => panic!("a Ticket was polled after it returned its values"),
@@ -142,12 +153,15 @@ trait ReadSlot<D: BatchDevice> {
     fn abandon(self: Box<Self>);
 }
 
-struct Reserved<D: BatchDevice, T: GpuPod> {
-    read: D::Read<T>,
+struct Reserved<D: BatchDevice, T: Element> {
+    read: D::Read<T::Word>,
     cell: Arc<TicketCell<T>>,
 }
 
-impl<D: BatchDevice, T: GpuPod + Send> ReadSlot<D> for Reserved<D, T> {
+impl<D: BatchDevice, T: Element + Send> ReadSlot<D> for Reserved<D, T>
+where
+    T::Word: Send,
+{
     fn record(&mut self, device: &D, encoder: &mut D::Encoder) {
         device.frame_read(encoder, &mut self.read);
     }
@@ -178,6 +192,8 @@ pub struct FrameRun<D: BatchDevice> {
     /// The buffers this frame has written or reserved a read-back of: a later `set` may not change their extents.
     used: Vec<usize>,
     reads: Vec<Box<dyn ReadSlot<D>>>,
+    /// The frame's time, once [`time`](Self::time) asked for it.
+    timed: Option<TimedFrame>,
     /// The frame was recorded into a caller's encoder (`encode`): the host cannot tell whether that encoder ran.
     encoded: bool,
     /// The frame was handed to `submit`'s last step: nothing is left for `Drop` to undo.
@@ -252,7 +268,7 @@ impl<D: BatchDevice> super::Batch<D> {
             let mut run = core.run.lock().unwrap_or_else(PoisonError::into_inner);
             if run.live {
                 return Err(Error::FrameLive {
-                    batch: core.name.clone(),
+                    batch: core.name.to_string(),
                 });
             }
             run.live = true;
@@ -283,6 +299,7 @@ impl<D: BatchDevice> super::Batch<D> {
             staged: None,
             used: Vec::new(),
             reads: Vec::new(),
+            timed: None,
             encoded: false,
             done: false,
         })
@@ -326,36 +343,45 @@ impl<D: BatchDevice> FrameRun<D> {
     /// [`Error::Foreign`] for a handle of another batch, [`Error::NotOutput`] for one the block did not return,
     /// [`Error::NotInput`] for a stage, [`Error::ShapeMismatch`] for a slice of another length, and the device's
     /// failures.
-    pub fn write<T: GpuPod, R>(&mut self, handle: &Stage<T, R>, data: &[T]) -> Result<(), Error>
+    pub fn write<T: Element, R>(&mut self, handle: &Stage<T, R>, data: &[T]) -> Result<(), Error>
     where
-        D::Buffer<T>: 'static,
+        D::Buffer<T::Word>: 'static,
     {
         let id = self.core.locate(handle)?;
+        if handle.is_raw() {
+            return Err(Error::NotInput {
+                batch: self.core.name.to_string(),
+                stage: format!(
+                    "{} (the words of an enum, write the enum)",
+                    self.core.buffers[id].name
+                ),
+            });
+        }
         let entry = &self.core.buffers[id];
         if !entry.input {
             return Err(Error::NotInput {
-                batch: self.core.name.clone(),
-                stage: entry.name.clone(),
+                batch: self.core.name.to_string(),
+                stage: entry.name.to_string(),
             });
         }
         let [width, height] = self.dims_of(id);
         let len = u64::from(width) * u64::from(height);
         if data.len() as u64 != len {
             return Err(Error::ShapeMismatch {
-                batch: self.core.name.clone(),
-                stage: entry.name.clone(),
+                batch: self.core.name.to_string(),
+                stage: entry.name.to_string(),
                 expected: format!("{len} elements"),
                 found: format!("{} elements", data.len()),
             });
         }
-        let buffer = self.buffer_of::<T>(id);
+        let buffer = self.buffer_of::<T::Word>(id);
         let frame = self
             .frame
             .as_mut()
             .expect("a live frame holds its recorder");
         self.core
             .device
-            .frame_write(frame, &buffer, data)
+            .frame_write(frame, &buffer, &T::pack(data))
             .map_err(device_error::<D>)?;
         self.used.push(id);
         Ok(())
@@ -385,7 +411,7 @@ impl<D: BatchDevice> FrameRun<D> {
         let core = Arc::clone(&self.core);
         if param.batch() != core.id || param.id() >= core.params.len() {
             return Err(Error::Foreign {
-                batch: core.name.clone(),
+                batch: core.name.to_string(),
                 stage: String::from("a parameter"),
             });
         }
@@ -508,7 +534,7 @@ impl<D: BatchDevice> FrameRun<D> {
         {
             let [width, height] = here_dims[used];
             return Err(Error::ShapeMismatch {
-                batch: core.name.clone(),
+                batch: core.name.to_string(),
                 stage: core.params[id].name.clone(),
                 expected: format!(
                     "`{}` at {width} x {height}, which the frame has already written or read",
@@ -673,20 +699,22 @@ impl<D: BatchDevice> FrameRun<D> {
     /// # Errors
     ///
     /// [`Error::Foreign`], [`Error::NotOutput`] and the device's failures.
-    pub fn ticket<T: GpuPod + Send, R>(&mut self, handle: &Stage<T, R>) -> Result<Ticket<T>, Error>
+    pub fn ticket<T: Element + Send, R>(&mut self, handle: &Stage<T, R>) -> Result<Ticket<T>, Error>
     where
-        D::Buffer<T>: 'static,
+        T::Word: Send,
+        D::Buffer<T::Word>: 'static,
     {
         let id = self.core.locate(handle)?;
-        let buffer = self.buffer_of::<T>(id);
+        let buffer = self.buffer_of::<T::Word>(id);
         let read = self
             .core
             .device
-            .reserve_read::<T>(&buffer)
+            .reserve_read::<T::Word>(&buffer)
             .map_err(device_error::<D>)?;
         self.used.push(id);
         let cell = Arc::new(TicketCell {
-            batch: self.core.name.clone(),
+            batch: Arc::clone(&self.core.name),
+            stage: Arc::clone(&self.core.buffers[id].name),
             state: Mutex::new(TicketState::Reserved(None)),
         });
         self.reads.push(Box::new(Reserved::<D, T> {
@@ -694,6 +722,63 @@ impl<D: BatchDevice> FrameRun<D> {
             cell: Arc::clone(&cell),
         }));
         Ok(Ticket { cell })
+    }
+
+    /// Ask for the GPU time of this frame: a [`FrameTime`], read after the submission like a ticket, with the span from
+    /// the begin of the frame's first pass to the end of its last one (see [`FrameTimes`](super::FrameTimes)). Only a frame that asks
+    /// records timestamps, so a frame of a timed batch that does not call this costs nothing; calling it again returns
+    /// the same measurement.
+    ///
+    /// A batch built without a timing level, a device without timestamp queries (the CPU twin among them) and a frame
+    /// with no pass give `Ok(None)` when the frame is submitted; [`Batch::frame_timing`](super::Batch::frame_timing)
+    /// tells which of these a batch is, up front. On the CPU twin there is never a time:
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use std::task::{Context, Poll, Waker};
+    /// use gust::batch::FrameTiming;
+    /// use gust::cpu::CpuDevice;
+    ///
+    /// fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    ///     let mut future = std::pin::pin!(future);
+    ///     let mut context = Context::from_waker(Waker::noop());
+    ///     loop {
+    ///         if let Poll::Ready(value) = future.as_mut().poll(&mut context) {
+    ///             return value;
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let device = Arc::new(CpuDevice::new());
+    /// let (mut batch, x) = gust::gpu_batch!("timed", on(&device); in_flight(1); |b| {
+    ///     b.frame_timing(FrameTiming::Frame);
+    ///     let x = b.input::<u32>(4u32);
+    ///     x
+    /// })?;
+    /// assert!(batch.frame_timing().is_none());
+    /// let mut frame = block_on(batch.begin())?;
+    /// frame.write(&x, &[1, 2, 3, 4])?;
+    /// let time = frame.time();
+    /// let values = frame.ticket(&x)?;
+    /// let _submitted = frame.submit()?;
+    /// assert_eq!(block_on(values)?, [1, 2, 3, 4]);
+    /// assert!(block_on(time)?.is_none());
+    /// # Ok::<(), gust::batch::Error>(())
+    /// ```
+    pub fn time(&mut self) -> FrameTime {
+        if self.timed.is_none() {
+            // On `wasm32` the device's futures are not `Send`: the cell stays on its thread there.
+            #[allow(clippy::arc_with_non_send_sync)]
+            let cell = Arc::new(TimeCell::new(&self.core.name));
+            self.timed = Some(TimedFrame {
+                cell,
+                recorded: None,
+            });
+        }
+        let timed = self.timed.as_ref().expect("set above");
+        FrameTime {
+            cell: Arc::clone(&timed.cell),
+        }
     }
 
     /// Run the frame: one queue submission on the GPU whatever the number of tickets. Returns at once.
@@ -773,7 +858,7 @@ impl<D: BatchDevice> FrameRun<D> {
                     Empty::Nothing => {}
                     Empty::Refuse => {
                         return Err(Error::Empty {
-                            batch: core.name.clone(),
+                            batch: core.name.to_string(),
                             stage: stage.name.clone(),
                         });
                     }
@@ -816,15 +901,80 @@ impl<D: BatchDevice> FrameRun<D> {
         device
             .frame_uploads(&mut frame, encoder)
             .map_err(device_error::<D>)?;
-        for prepared in prepared.iter().flatten() {
-            device
-                .frame_stage(encoder, prepared)
-                .map_err(device_error::<D>)?;
-        }
+        self.record_stages(encoder, &prepared)?;
         for slot in &mut self.reads {
             slot.record(device, encoder);
         }
         Ok(frame)
+    }
+
+    /// The passes of the stages, in order: when the frame asked for its time and the batch can give it, the first pass
+    /// of the frame writes the first timestamp and the last pass the last one (and at level `Passes` each stage's
+    /// first and last pass write that stage's pair); a resolve and a copy follow the last stage. A frame that did not
+    /// ask records none of it.
+    fn record_stages(
+        &mut self,
+        encoder: &mut D::Encoder,
+        prepared: &[Option<Arc<D::Prepared>>],
+    ) -> Result<(), Error> {
+        let core = Arc::clone(&self.core);
+        let device = &*core.device;
+        let mut timing = None;
+        if let (Some(timed), Some(state)) = (self.timed.as_mut(), core.timing.as_ref()) {
+            // The timed stages: the ones that have a pass (a stage over zero elements has none).
+            let groups: Vec<usize> = prepared
+                .iter()
+                .enumerate()
+                .filter(|(_, stage)| {
+                    stage
+                        .as_deref()
+                        .is_some_and(|stage| device.stage_passes(stage) > 0)
+                })
+                .map(|(index, _)| index)
+                .collect();
+            if !groups.is_empty()
+                && let Some(clock) = device.frame_clock(&state.handle)
+            {
+                let plan = TimePlan {
+                    level: state.level,
+                    names: groups
+                        .iter()
+                        .map(|&index| core.stages[index].name.clone())
+                        .collect(),
+                    period_ns: state.period_ns,
+                };
+                timed.recorded = None;
+                timing = Some((groups, plan, clock));
+            }
+        }
+        let Some((groups, plan, mut clock)) = timing else {
+            for stage in prepared.iter().flatten() {
+                device
+                    .frame_stage(encoder, stage)
+                    .map_err(device_error::<D>)?;
+            }
+            return Ok(());
+        };
+        for (index, stage) in prepared.iter().enumerate() {
+            let Some(stage) = stage else { continue };
+            match groups.iter().position(|&group| group == index) {
+                Some(group) => {
+                    let (begin, end) = plan.slots(group);
+                    device
+                        .frame_stage_timed(encoder, stage, &mut clock, begin, end)
+                        .map_err(device_error::<D>)?;
+                }
+                None => device
+                    .frame_stage(encoder, stage)
+                    .map_err(device_error::<D>)?,
+            }
+        }
+        device.frame_clock_end(encoder, &mut clock, plan.used());
+        self.timed
+            .as_mut()
+            .expect("a timed frame keeps its cell")
+            .recorded = Some(Recorded { clock, plan });
+        Ok(())
     }
 
     /// Last step of `submit`: the frame is on the device; start its read-backs, keep its parameters and let the next
@@ -834,6 +984,15 @@ impl<D: BatchDevice> FrameRun<D> {
         for slot in self.reads.drain(..) {
             slot.start(&core.device, &submission);
         }
+        let time = self.timed.take().map(|timed| {
+            match timed.recorded {
+                Some(Recorded { clock, plan }) => timed
+                    .cell
+                    .start(core.device.begin_time(clock, &submission), plan),
+                None => timed.cell.none(),
+            }
+            FrameTime { cell: timed.cell }
+        });
         {
             let mut run = core.run.lock().unwrap_or_else(PoisonError::into_inner);
             if self.encoded {
@@ -850,7 +1009,11 @@ impl<D: BatchDevice> FrameRun<D> {
             run.pending.push_back(submission.clone());
         }
         self.done = true;
-        Submitted { core, submission }
+        Submitted {
+            core,
+            submission,
+            time,
+        }
     }
 }
 
@@ -861,6 +1024,9 @@ impl<D: BatchDevice> Drop for FrameRun<D> {
         }
         for slot in self.reads.drain(..) {
             slot.abandon();
+        }
+        if let Some(timed) = self.timed.take() {
+            timed.cell.fail();
         }
         if self.encoded || self.frame.is_none() {
             // The frame was recorded: the caller may still submit its encoder, or a CPU submission failed after its
@@ -928,6 +1094,8 @@ impl<D: BatchDevice> Encoded<D> {
 pub struct Submitted<D: BatchDevice> {
     core: Arc<Core<D>>,
     submission: D::Submission,
+    /// The time of the frame, when it asked for one.
+    time: Option<FrameTime>,
 }
 
 impl<D: BatchDevice> core::fmt::Debug for Submitted<D> {
@@ -939,6 +1107,12 @@ impl<D: BatchDevice> core::fmt::Debug for Submitted<D> {
 }
 
 impl<D: BatchDevice> Submitted<D> {
+    /// The time of the frame, when it asked for one with [`FrameRun::time`]: the same measurement that call returned.
+    #[must_use]
+    pub fn frame_time(&self) -> Option<FrameTime> {
+        self.time.clone()
+    }
+
     /// Wait until the frame has run. Not available on `wasm32`, where nothing may block (use
     /// [`finished`](Self::finished)).
     ///
@@ -1000,16 +1174,19 @@ impl<D: BatchDevice> Blocking<'_, D> {
     /// # Errors
     ///
     /// [`Error::Foreign`], [`Error::NotOutput`] and the device's failures.
-    pub fn read<T: GpuPod, R>(&self, handle: &Stage<T, R>) -> Result<Vec<T>, Error>
+    pub fn read<T: Element, R>(&self, handle: &Stage<T, R>) -> Result<Vec<T>, Error>
     where
-        D::Buffer<T>: 'static,
+        D::Buffer<T::Word>: 'static,
     {
-        let (_, buffer, _) = self.batch.core.output(handle)?;
-        self.batch
-            .core
-            .device
-            .readback(&buffer)
-            .map_err(device_error::<D>)
+        let core = &self.batch.core;
+        let (id, buffer, _) = core.output(handle)?;
+        let words = core.device.readback(&buffer).map_err(device_error::<D>)?;
+        T::unpack(words).map_err(|bad| Error::InvalidEnum {
+            batch: core.name.to_string(),
+            stage: core.buffers[id].name.to_string(),
+            index: bad.index(),
+            word: bad.word(),
+        })
     }
 }
 

@@ -286,6 +286,10 @@ pub struct DeviceOptions {
     /// Whether wgpu's runtime checks stay on in the device's shader modules. Private: it is set only by the `unsafe`
     /// [`unchecked_kernels`](Self::unchecked_kernels) and read with [`shader_checks`](Self::shader_checks).
     shader_checks: ShaderChecks,
+    /// The number of storage buffers per shader stage the device is opened with, or `None` (the default) for wgpu's 8.
+    /// Set it with [`with_storage_buffers`](Self::with_storage_buffers); the number is yours to state, valid under
+    /// either [`LimitsPolicy`].
+    pub storage_buffers: Option<u32>,
 }
 
 impl Default for DeviceOptions {
@@ -319,8 +323,47 @@ impl Default for DeviceOptions {
             capabilities: gust::capability::enabled(),
             capture: false,
             shader_checks: ShaderChecks::Checked,
+            storage_buffers: None,
         }
     }
+}
+
+/// The `max_storage_buffers_per_shader_stage` to request for `requested` (the option
+/// [`DeviceOptions::with_storage_buffers`]), given the adapter's own value `available` and its name `adapter`; `None`
+/// leaves wgpu's default. `web` is true on `wasm32`.
+///
+/// A browser device always opens with 8, so a number there is refused by name, as is one below 8 (`with_limits` is the
+/// tool that lowers). An adapter that offers fewer than `n` is [`Error::DeviceLimit`]: the device is never opened with
+/// less than the developer stated.
+pub(crate) fn required_storage_buffers(
+    requested: Option<u32>,
+    available: u32,
+    adapter: &str,
+    web: bool,
+) -> Result<Option<u32>, Error> {
+    let Some(n) = requested else {
+        return Ok(None);
+    };
+    if web {
+        return Err(Error::RequestDevice(format!(
+            "`with_storage_buffers({n})` is not available in a browser: browser devices open with 8"
+        )));
+    }
+    if n < 8 {
+        return Err(Error::RequestDevice(format!(
+            "`with_storage_buffers({n})` must be at least 8; `HeadlessDevice::with_limits` lowers the limits of an open device"
+        )));
+    }
+    if n > available {
+        return Err(Error::DeviceLimit {
+            // `DeviceLimit` names the operation in `kernel` for a limit met outside a launch.
+            kernel: format!("device open ({adapter}, with_storage_buffers({n}))"),
+            limit: "max_storage_buffers_per_shader_stage",
+            requested: u64::from(n),
+            maximum: u64::from(available),
+        });
+    }
+    Ok(Some(n))
 }
 
 impl DeviceOptions {
@@ -359,6 +402,34 @@ impl DeviceOptions {
     #[must_use]
     pub fn with_capabilities(mut self, capabilities: &'static [Capability]) -> Self {
         self.capabilities = capabilities;
+        self
+    }
+
+    /// These options with the storage buffers per shader stage set to `n` (decision D84, amended by m14.lim): the
+    /// device request carries `max_storage_buffers_per_shader_stage = n`, so a kernel that binds up to `n` storage
+    /// buffers in one stage launches on it. Off by default: without it every device opens with wgpu's 8, whatever the
+    /// [`LimitsPolicy`], and the portable floor of a `limits = "portable"` crate stays 8.
+    ///
+    /// The number is the developer's, not the adapter's own value, so a kernel validated here says in the source what
+    /// it needs. An adapter that offers fewer than `n` is [`Error::DeviceLimit`] at open, and no device exists; `n`
+    /// below 8 is refused by name ([`Error::RequestDevice`]: [`HeadlessDevice::with_limits`] lowers); in a browser
+    /// every `n` is refused, because browser devices open with 8. [`device_request`](Self::device_request) carries
+    /// `n`, so a renderer that opens the device itself gets it, and [`HeadlessDevice::adopt`] still never raises a
+    /// limit: a kernel over an adopted device's limit is [`Error::DeviceLimit`] at launch.
+    /// [`HeadlessDevice::with_limits`] can lower the limit below `n` and cannot raise it above.
+    ///
+    /// The kernel is no longer portable: it does not run on a default device or in a browser.
+    ///
+    /// ```no_run
+    /// use gust_wgpu::{DeviceOptions, HeadlessDevice};
+    ///
+    /// let device = HeadlessDevice::with_options(DeviceOptions::default().with_storage_buffers(16))?;
+    /// assert_eq!(device.limits().max_storage_buffers_per_shader_stage, 16);
+    /// # Ok::<(), gust_wgpu::Error>(())
+    /// ```
+    #[must_use]
+    pub fn with_storage_buffers(mut self, n: u32) -> Self {
+        self.storage_buffers = Some(n);
         self
     }
 
@@ -1091,6 +1162,51 @@ mod tests {
                 );
             }
             other => panic!("expected Poll for a non-memory error, got {other:?}"),
+        }
+    }
+
+    /// The storage buffer option against faked adapter limits: no adapter is needed.
+    #[test]
+    fn a_stated_storage_buffer_count_is_requested_or_refused_by_name() {
+        let ask = |requested, available, web| {
+            required_storage_buffers(requested, available, "Fake Adapter", web)
+        };
+        // Off: nothing is requested, whatever the adapter offers.
+        assert_eq!(ask(None, 4, false).unwrap(), None);
+        assert_eq!(ask(None, 4, true).unwrap(), None);
+        // Accepted at the adapter's value and below it, from 8 up.
+        assert_eq!(ask(Some(10), 16, false).unwrap(), Some(10));
+        assert_eq!(ask(Some(16), 16, false).unwrap(), Some(16));
+        assert_eq!(ask(Some(8), 8, false).unwrap(), Some(8));
+        // One over the adapter's value is a DeviceLimit naming the limit, n and the adapter's value.
+        match ask(Some(17), 16, false) {
+            Err(Error::DeviceLimit {
+                kernel,
+                limit,
+                requested,
+                maximum,
+            }) => {
+                assert_eq!(limit, "max_storage_buffers_per_shader_stage");
+                assert_eq!((requested, maximum), (17, 16));
+                assert!(kernel.contains("Fake Adapter"), "{kernel}");
+            }
+            other => panic!("expected DeviceLimit, got {other:?}"),
+        }
+        // Below 8 and in a browser: refused by name, as RequestDevice.
+        for (requested, web, text) in [
+            (7, false, "at least 8"),
+            (0, false, "at least 8"),
+            (10, true, "browser devices open with 8"),
+            (7, true, "browser devices open with 8"),
+        ] {
+            match ask(Some(requested), 16, web) {
+                Err(Error::RequestDevice(message)) => assert!(
+                    message.contains(&format!("with_storage_buffers({requested})"))
+                        && message.contains(text),
+                    "{message}"
+                ),
+                other => panic!("expected RequestDevice, got {other:?}"),
+            }
         }
     }
 

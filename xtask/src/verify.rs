@@ -1522,13 +1522,24 @@ pub(crate) struct GpuSuitePin {
 /// (five GPU tests, one `test result:` line). Checked by a full Gpu suite run on the Radeon 890M (lane); the RTX 5090
 /// run is owed.
 ///
-/// Slice m14.pftrust1: 657 over 68 became 664 over 69. The unchecked-kernels option adds three unit tests to the library's
+/// Slice m14.pfbg2: 657 over 68 became 661 over 68. The bind group reuse slice adds four library unit tests to
+/// `dispatch::prepare` (identical consecutive dispatches share a group, a differing binding or kernel gets its own, a batch that
+/// shares a group gives the same results), on existing lines. Checked by full Gpu suite runs on the Radeon 890M and
+/// the RTX 5090 (lane).
+///
+/// Slice m14.lim-a: 661 over 68 became 673 over 69. The storage buffer option adds two library unit tests (the stated
+/// number against faked adapter limits, nine to seventeen buffers against a raised limit), one `no_run` doc test
+/// (`DeviceOptions::with_storage_buffers`) and the new test file `tests/storage_buffers.rs` (nine GPU tests, one
+/// `test result:` line). Updated by count; checked by a full Gpu suite run on the Radeon 890M (lane).
+///
+/// Slice m14.pftrust1: 673 over 69 became 680 over 70. The unchecked-kernels option adds three unit tests to the library's
 /// `compile::modules` module (the setting selects wgpu's checks all on or all off; only the `unsafe` constructor turns
 /// them off; the module call passes the device's setting to wgpu, which needs an adapter) and the new test file `tests/unchecked_kernels.rs` (four GPU tests, one `test result:` line). Counted from
-/// the test lists; a full Gpu suite run on both adapters is owed at the merge.
+/// the test lists on the merged tree (rebased on m14.lim-a); a full Gpu suite run on both adapters is owed at
+/// the merge.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 664,
-    result_lines: 69,
+    passed: 680,
+    result_lines: 70,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

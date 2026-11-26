@@ -192,9 +192,20 @@ struct BatchStage {
     enum_params: Vec<(syn::Ident, syn::Ident)>,
     /// Per enum path a parameter's type names, the statements that check the copy against it ([`enum_copy_check`]).
     enum_checks: Vec<TokenStream>,
+    /// The views whose elements are enums (D275): the view and the enum's name. The kernel binds the words (`u32`), and
+    /// a load of an element decodes the word through the enum's one decoder.
+    enum_views: Vec<(syn::Ident, syn::Ident)>,
+    /// The enum the stage's result holds, when it is one: the type as written and the enum's name. The kernel stores
+    /// the word (`as u32`), and the call site types the handle back as the enum.
+    enum_result: Option<(syn::Type, syn::Ident)>,
 }
 
 impl BatchStage {
+    /// Whether the view `name` holds enum elements.
+    fn is_enum_view(&self, name: &syn::Ident) -> bool {
+        self.enum_views.iter().any(|(view, _)| view == name)
+    }
+
     /// Whether the parameter `name` holds an enum.
     fn is_enum(&self, name: &syn::Ident) -> bool {
         self.enum_params.iter().any(|(param, _)| param == name)
@@ -209,7 +220,8 @@ fn enum_decoder(definition: &syn::Ident) -> syn::Ident {
 }
 
 /// The function that decodes the word of `definition`: an `if` and `return` per discriminant, the last variant being
-/// what any other word gives (a parameter's word is always a variant's, because `set` takes the enum).
+/// what any other word gives. A parameter's word is always a variant's (`set` takes the enum); a stored element's word is
+/// whatever a stage or the host put there, so the last variant is the rule for it too (D275).
 fn enum_decoder_fn(definition: &syn::ItemEnum) -> syn::Result<syn::ItemFn> {
     let name = &definition.ident;
     let variants = enum_variants(definition)?;
@@ -311,15 +323,31 @@ impl TaskPlan {
         ext: &syn::Ident,
         width: &syn::Ident,
         out: &syn::Ident,
+        linear: Option<&TokenStream>,
     ) -> Vec<syn::Stmt> {
         let mut statements = self.stmts.clone();
         if let Some(tail) = &self.tail {
-            let index = if self.rank == 1 {
+            let index = if let Some(linear) = linear {
+                // A counted stage (D278): the row is the linear index over the two-dimensional grid.
+                linear.clone()
+            } else if self.rank == 1 {
                 quote!(#gid.x)
             } else {
                 quote!(#gid.y * #ext.#width + #gid.x)
             };
-            statements.push(syn::parse_quote!(#out[#index] = #tail;));
+            match self
+                .batch
+                .as_ref()
+                .and_then(|batch| batch.enum_result.as_ref())
+            {
+                // An enum result is stored as its word: the value is bound with its type (a `match` value needs one).
+                Some((_, name)) => {
+                    let local = format_ident!("par_for_enum_result");
+                    statements.push(syn::parse_quote!(let #local: #name = #tail;));
+                    statements.push(syn::parse_quote!(#out[#index] = #local as u32;));
+                }
+                None => statements.push(syn::parse_quote!(#out[#index] = #tail;)),
+            }
         }
         statements
     }
@@ -943,6 +971,14 @@ impl<'ast> Visit<'ast> for Rules<'_> {
     }
 }
 
+/// A call of one of the dialect's atomic operations (`atomic_add(&mut t[i], ..)`).
+fn is_atomic_call(call: &syn::ExprCall) -> bool {
+    matches!(&*call.func, syn::Expr::Path(path) if path.path.get_ident().is_some_and(|name| matches!(
+        name.unraw().to_string().as_str(),
+        "atomic_add" | "atomic_min" | "atomic_max" | "atomic_exchange" | "atomic_compare_exchange"
+    )))
+}
+
 fn is_compound_assignment(op: &syn::BinOp) -> bool {
     matches!(
         op,
@@ -966,8 +1002,8 @@ fn bool_element(tokens: impl ToTokens, what: &str) -> syn::Error {
         tokens,
         format!(
             "{what} has `bool` as its element, and a buffer holds a `bool` as a `u32` word: use `u32` (`0` and `1`); a \
-             `#[derive(GpuEnum)]` enum is a parameter type of a batch (`b.param::<Mode>(..)`), and its use as an element \
-             is not in this release"
+             `#[derive(GpuEnum)]` enum is a parameter type or an element of a batch (`b.param::<Mode>(..)`, \
+             `b.input::<Mode>(..)`), which a `bool` is not"
         ),
     )
 }
@@ -1204,13 +1240,22 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
     };
 
     // A stage of a batch: its handles, parameters and the body lowered to what the kernel sees.
+    let mut result = result;
     let (list, batch) = match batch {
         Some(clause) => {
-            let lowered = lower_batch(clause, list, &mut stmts, &mut tail)?;
+            let lowered = lower_batch(clause, list, result.as_ref(), &mut stmts, &mut tail)?;
+            if let Some(word) = lowered.result {
+                result = Some(word);
+            }
             (lowered.list, Some(lowered.stage))
         }
         None => (list, None),
     };
+
+    // A counted stage (D278): the forms the first slice takes.
+    if let Some(count) = &options.count {
+        check_count(count, &options, batch.as_ref(), &list, rank)?;
+    }
 
     // The list: each entry is a form this slice takes; an in-place target has its `&mut [T]` entry.
     let target_name = target.as_ref().map(|(name, _)| name);
@@ -1324,6 +1369,65 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
     Ok(plan)
 }
 
+/// The refusals of a counted stage (D278), by name: GUST-E1013 for a form the first slice does not take, GUST-E1014 for
+/// a count the body cannot be run over, GUST-E1015 for a count that is not a one-element `u32` handle of the block.
+fn check_count(
+    count: &syn::Ident,
+    options: &Options,
+    batch: Option<&BatchStage>,
+    list: &[RawBinding],
+    rank: usize,
+) -> syn::Result<()> {
+    let Some(batch) = batch else {
+        return Err(diagnostics::error(
+            Code::BatchCount,
+            count,
+            "`count(..)` is a clause of a stage of a `gpu_batch!`: a stage that runs alone has its extent, and a body \
+             that wants fewer rows guards on its own data",
+        ));
+    };
+    if rank != 1 {
+        return Err(diagnostics::error(
+            Code::BatchCountBody,
+            count,
+            "a counted stage is 1-D in this release (`|i| -> T { .. }`): a counted 2-D body with a host width is a \
+             later release",
+        ));
+    }
+    if options
+        .workgroup
+        .is_some_and(|size| size[1] != 1 || size[2] != 1)
+    {
+        return Err(diagnostics::error(
+            Code::BatchCountBody,
+            count,
+            "a counted stage's workgroup is along x (`workgroup_size(64, 1, 1)`): the rows are the linear index over \
+             a two-dimensional grid of groups",
+        ));
+    }
+    let view = batch.views.iter().find(|view| view.name == *count);
+    let element_is_u32 = list.iter().any(|entry| {
+        entry.name == *count
+            && matches!(&entry.ty, syn::Type::Reference(reference)
+                if reference.mutability.is_none()
+                    && matches!(&*reference.elem, syn::Type::Slice(slice)
+                        if matches!(&*slice.elem, syn::Type::Path(path) if path.path.is_ident("u32"))))
+    });
+    match view {
+        Some(view) if !view.target && element_is_u32 => Ok(()),
+        _ => Err(diagnostics::error(
+            Code::BatchCountHandle,
+            count,
+            format!(
+                "`{}` counts a stage, so it is a handle of the block holding `u32`s that the stage only reads (one \
+                 element, checked when the stage is recorded): a stage result, the count of `compact`, or an in-place \
+                 counter that another stage updates; not the stage's own target, a `Param` or a host value",
+                count.unraw()
+            ),
+        )),
+    }
+}
+
 pub(crate) fn batch_form(tokens: impl ToTokens, message: impl std::fmt::Display) -> syn::Error {
     diagnostics::error(Code::BatchForm, tokens, message)
 }
@@ -1355,6 +1459,8 @@ pub(crate) fn is_scalar_type(ty: &syn::Type) -> bool {
 /// A stage of a batch lowered to what the kernel sees: its list in kernel terms, and what its captures are.
 struct Lowered {
     list: Vec<RawBinding>,
+    /// The type the result buffer is bound as, when it is not the type written (an enum result is bound as `u32`).
+    result: Option<syn::Type>,
     stage: BatchStage,
 }
 
@@ -1364,6 +1470,7 @@ struct Lowered {
 fn lower_batch(
     clause: BatchClause,
     list: Vec<RawBinding>,
+    result: Option<&syn::Type>,
     stmts: &mut [syn::Stmt],
     tail: &mut Option<syn::Expr>,
 ) -> syn::Result<Lowered> {
@@ -1371,10 +1478,9 @@ fn lower_batch(
     let mut views = Vec::new();
     let mut params = Vec::new();
     let mut scalars = Vec::new();
-    let mut enums: Vec<(syn::ItemEnum, syn::ItemFn)> = Vec::new();
+    let mut book = EnumBook::default();
     let mut enum_params = Vec::new();
-    let mut enum_checks = Vec::new();
-    let mut enum_paths: Vec<String> = Vec::new();
+    let mut enum_views = Vec::new();
     for entry in list {
         let RawBinding { name, ty } = entry;
         if let Some(element) = type_argument(&ty, "Stage") {
@@ -1383,6 +1489,17 @@ fn lower_batch(
                 rank: 1,
                 target: false,
             });
+            // A view of enum elements: the kernel binds the words, and a load decodes them.
+            if let Some((path, definition)) = enum_named(&clause.enums, element) {
+                require_zero_word(element, definition)?;
+                book.take(path, definition)?;
+                enum_views.push((name.clone(), definition.ident.clone()));
+                entries.push(RawBinding {
+                    name,
+                    ty: syn::parse_quote!(&[u32]),
+                });
+                continue;
+            }
             let element = element.clone();
             entries.push(RawBinding {
                 name,
@@ -1400,6 +1517,18 @@ fn lower_batch(
                     rank: 1,
                     target: true,
                 });
+                // An in-place target of enum elements: the kernel binds the words, a load decodes them and a store
+                // encodes the value (D275).
+                if let Some((path, definition)) = enum_named(&clause.enums, element) {
+                    require_zero_word(element, definition)?;
+                    book.take(path, definition)?;
+                    enum_views.push((name.clone(), definition.ident.clone()));
+                    entries.push(RawBinding {
+                        name,
+                        ty: syn::parse_quote!(&mut [u32]),
+                    });
+                    continue;
+                }
                 let element = element.clone();
                 entries.push(RawBinding {
                     name,
@@ -1423,17 +1552,7 @@ fn lower_batch(
             if let Some((path, definition)) = enum_named(&clause.enums, element) {
                 params.push(name.clone());
                 enum_params.push((name.clone(), definition.ident.clone()));
-                if !enums.iter().any(|(copy, _)| copy.ident == definition.ident) {
-                    let decoder = enum_decoder_fn(definition)?;
-                    let mut copy = definition.clone();
-                    copy.attrs.push(syn::parse_quote!(#[derive(PartialEq)]));
-                    enums.push((copy, decoder));
-                }
-                let written = path.to_token_stream().to_string();
-                if !enum_paths.contains(&written) {
-                    enum_checks.push(enum_copy_check(path, &enum_variants(definition)?));
-                    enum_paths.push(written);
-                }
+                book.take(path, definition)?;
                 entries.push(RawBinding {
                     name,
                     ty: syn::parse_quote!(u32),
@@ -1450,7 +1569,8 @@ fn lower_batch(
                     element,
                     format!(
                         "`{}` is not the name of an enum the block's derives handed over ({}): write the enum's own \
-                         name as the parameter's type (a `use .. as` rename and a `type` alias are not supported)",
+                         name as the type of a parameter or an element (a `use .. as` rename and a `type` alias are not \
+                         supported)",
                         element.to_token_stream(),
                         handed.join(", ")
                     ),
@@ -1476,12 +1596,30 @@ fn lower_batch(
         }
         entries.push(RawBinding { name, ty });
     }
+    // A result of enum elements: the kernel stores its word.
+    let mut enum_result = None;
+    let mut result_word = None;
+    if let Some(ty) = result
+        && let Some((path, definition)) = enum_named(&clause.enums, ty)
+    {
+        require_zero_word(ty, definition)?;
+        book.take(path, definition)?;
+        enum_result = Some((ty.clone(), definition.ident.clone()));
+        result_word = Some(syn::parse_quote!(u32));
+    }
     let mut lowering = Lowering {
         views: views
             .iter()
-            .map(|view| (view.name.clone(), view.target, None))
+            .map(|view| {
+                let decoder = enum_views
+                    .iter()
+                    .find(|(name, _)| *name == view.name)
+                    .map(|(_, definition)| (enum_decoder(definition), definition.clone()));
+                (view.name.clone(), view.target, None, decoder)
+            })
             .collect(),
         params: params.clone(),
+        lvalue: false,
         error: None,
     };
     for statement in stmts.iter_mut() {
@@ -1493,7 +1631,7 @@ fn lower_batch(
     if let Some(error) = lowering.error {
         return Err(error);
     }
-    for (view, (_, _, rank)) in views.iter_mut().zip(&lowering.views) {
+    for (view, (_, _, rank, _)) in views.iter_mut().zip(&lowering.views) {
         view.rank = rank.unwrap_or(1);
         if view.rank == 2 {
             entries.push(RawBinding {
@@ -1504,17 +1642,73 @@ fn lower_batch(
     }
     Ok(Lowered {
         list: entries,
+        result: result_word,
         stage: BatchStage {
             builder: clause.builder,
             name: clause.name,
             views,
             params,
             scalars,
-            enums,
+            enums: book.enums,
             enum_params,
-            enum_checks,
+            enum_checks: book.checks,
+            enum_views,
+            enum_result,
         },
     })
+}
+
+/// The enums a stage declares a private copy of, and the checks of each copy against the user's enum: once per enum
+/// name, and once per path the enum is written with.
+#[derive(Default)]
+struct EnumBook {
+    enums: Vec<(syn::ItemEnum, syn::ItemFn)>,
+    checks: Vec<TokenStream>,
+    paths: Vec<String>,
+}
+
+impl EnumBook {
+    /// Declare the copy of `definition`, the enum that `path` names, unless it is declared already.
+    fn take(&mut self, path: &syn::Path, definition: &syn::ItemEnum) -> syn::Result<()> {
+        if !self
+            .enums
+            .iter()
+            .any(|(copy, _)| copy.ident == definition.ident)
+        {
+            let decoder = enum_decoder_fn(definition)?;
+            let mut copy = definition.clone();
+            copy.attrs.push(syn::parse_quote!(#[derive(PartialEq)]));
+            self.enums.push((copy, decoder));
+        }
+        let written = path.to_token_stream().to_string();
+        if !self.paths.contains(&written) {
+            self.checks
+                .push(enum_copy_check(path, &enum_variants(definition)?));
+            self.paths.push(written);
+        }
+        Ok(())
+    }
+}
+
+/// GUST-E1012: an enum stored as an element has a variant whose word is 0, because a buffer starts (and is resized) as
+/// zeros. Raised at the element type's token. `definition` is the enum a handed-over derive wrote, so each variant has a
+/// literal word.
+pub(crate) fn require_zero_word(ty: impl ToTokens, definition: &syn::ItemEnum) -> syn::Result<()> {
+    if enum_variants(definition)?
+        .iter()
+        .any(|(_, word)| *word == 0)
+    {
+        return Ok(());
+    }
+    Err(diagnostics::error(
+        Code::BatchEnumNoZero,
+        ty,
+        format!(
+            "`{0}` is stored as the element of a buffer, and a buffer starts as zeros (and a resize makes zeroed \
+             buffers), so `{0}` needs a variant whose word is 0 (`Name = 0`): add one, or keep `{0}` a parameter",
+            definition.ident.unraw()
+        ),
+    ))
 }
 
 /// The enum, among those the block's parameters name, that `ty` is: a plain path (`Mode`, `types::Mode`, no generics)
@@ -1537,11 +1731,23 @@ fn enum_named<'a>(
         .map(|definition| (&path.path, definition))
 }
 
+/// A handle of a batch stage as the lowering sees it: its name, whether it is the in-place target, the rank the body
+/// indexes it with, and (for enum elements) the decoder's name and the enum's own name.
+type LoweredView = (
+    syn::Ident,
+    bool,
+    Option<usize>,
+    Option<(syn::Ident, syn::Ident)>,
+);
+
 /// The body of a batch stage, rewritten in place, and the first rule it breaks.
 struct Lowering {
-    /// Each handle: its name, whether it is the in-place target, and the rank the body indexes it with.
-    views: Vec<(syn::Ident, bool, Option<usize>)>,
+    /// Each handle: its name, whether it is the in-place target, the rank the body indexes it with, and the function
+    /// that decodes a load, with the enum's name, when its elements are enums.
+    views: Vec<LoweredView>,
     params: Vec<syn::Ident>,
+    /// The expression being visited is the place of an assignment: a store, not a load.
+    lvalue: bool,
     error: Option<syn::Error>,
 }
 
@@ -1566,6 +1772,22 @@ impl Lowering {
             .position(|(view, ..)| view.unraw() == name.unraw())
     }
 
+    /// The enum whose elements the in-place target `place` indexes (`place` is `target[i]` of an enum target).
+    fn enum_target(&self, place: &syn::Expr) -> Option<syn::Ident> {
+        let mut place = place;
+        while let syn::Expr::Paren(paren) = place {
+            place = &paren.expr;
+        }
+        let syn::Expr::Index(index) = place else {
+            return None;
+        };
+        let (_, target, _, decoder) = &self.views[self.slot(&index.expr)?];
+        decoder
+            .as_ref()
+            .filter(|_| *target)
+            .map(|(_, name)| name.clone())
+    }
+
     fn is_param(&self, expression: &syn::Expr) -> bool {
         matches!(expression, syn::Expr::Path(path) if path.qself.is_none()
             && path.path.get_ident().is_some_and(|name| self.params.iter().any(|param| param.unraw() == name.unraw())))
@@ -1574,6 +1796,61 @@ impl Lowering {
 
 impl VisitMut for Lowering {
     fn visit_expr_mut(&mut self, expression: &mut syn::Expr) {
+        // Only the node that is the place of an assignment is a store; what is inside it is read.
+        let store = core::mem::take(&mut self.lvalue);
+        match expression {
+            syn::Expr::Assign(assign) => {
+                self.visit_expr_mut(&mut assign.right);
+                self.lvalue = true;
+                self.visit_expr_mut(&mut assign.left);
+                // A store into an enum target writes the value's word. The value is bound with its type first (a
+                // `match` value needs one, as in a stage's result).
+                if let Some(enum_name) = self.enum_target(&assign.left) {
+                    let (left, right) = (&assign.left, &assign.right);
+                    let local = format_ident!("par_for_enum_store");
+                    *expression = syn::parse_quote!({
+                        let #local: #enum_name = #right;
+                        #left = #local as u32;
+                    });
+                }
+                return;
+            }
+            syn::Expr::Binary(binary) if is_compound_assignment(&binary.op) => {
+                if let Some(enum_name) = self.enum_target(&binary.left) {
+                    self.refuse(
+                        Code::EnumShape,
+                        &binary.left,
+                        format!(
+                            "an element of `{enum_name}` is assigned with `=` only: a compound assignment is arithmetic, \
+                             which an enum has none of (store the new variant: `target[i] = ..`)"
+                        ),
+                    );
+                    return;
+                }
+                self.visit_expr_mut(&mut binary.right);
+                self.lvalue = true;
+                self.visit_expr_mut(&mut binary.left);
+                return;
+            }
+            // An atomic on an element of an enum target is arithmetic on the word: refused before the load wrap
+            // rewrites its operand.
+            syn::Expr::Call(call) if is_atomic_call(call) => {
+                if let Some(syn::Expr::Reference(place)) = call.args.first()
+                    && let Some(enum_name) = self.enum_target(&place.expr)
+                {
+                    self.refuse(
+                        Code::EnumShape,
+                        &place.expr,
+                        format!(
+                            "an element of `{enum_name}` is assigned with `=` only: an atomic is arithmetic on the \
+                             word, which an enum has none of (store the new variant: `target[i] = ..`)"
+                        ),
+                    );
+                    return;
+                }
+            }
+            _ => {}
+        }
         syn::visit_mut::visit_expr_mut(self, expression);
         let mut replacement = None;
         match expression {
@@ -1583,7 +1860,7 @@ impl VisitMut for Lowering {
                     while let syn::Expr::Paren(paren) = at {
                         at = &paren.expr;
                     }
-                    let (name, target, seen) = self.views[slot].clone();
+                    let (name, target, seen, decoder) = self.views[slot].clone();
                     let rank = match at {
                         syn::Expr::Tuple(tuple) => tuple.elems.len(),
                         _ => 1,
@@ -1634,6 +1911,12 @@ impl VisitMut for Lowering {
                             let width = width_name(&name);
                             let flat: syn::Expr = syn::parse_quote!(((#y) * #width + (#x)));
                             *index.index = flat;
+                        }
+                        // A load of an enum element decodes the word; a store stays as written (its value is
+                        // encoded by the assignment that holds it).
+                        if let (Some((decoder, _)), false) = (&decoder, store) {
+                            let load = syn::Expr::Index(index.clone());
+                            replacement = Some(syn::parse_quote!(#decoder(#load)));
                         }
                     }
                 }
@@ -1824,69 +2107,79 @@ impl TaskPlan {
             .iter()
             .map(|local| quote!(::core::option::Option::Some(#local),));
 
-        quote! {
-            /// Record the stage into the batch being built: seal its kernel call and return the handle of its result.
-            #[doc(hidden)]
-            #[allow(clippy::too_many_arguments)]
-            pub fn __gust_batch<'__gust_b, __GustD #(, #enum_generics)*>(
-                mut __gust_draft: ::gust::batch::StageDraft<'__gust_b, __GustD>,
-                #(#view_parameters,)*
-                #(#param_parameters,)*
-                #(#scalar_parameters,)*
-            ) -> ::gust::batch::Stage<#output_element, #output_rank>
-            where
-                __GustD: ::gust::batch::BatchDevice + __GustPfHost + ::gust::Run<run, #count>,
-                #(#enum_generics: ::gust::GpuEnum,)*
-                #(#bounds)*
-            {
-                let __gust_dims = __gust_draft.dims();
-                let (__gust_x, __gust_y) = (__gust_dims[0], __gust_dims[1]);
-                #(#acquire)*
-                #(#param_ids)*
-                #(#width_ids)*
-                if !__gust_draft.ok() {
-                    return __gust_draft.abandon();
-                }
-                let (#(#some_locals)*) = (#(#locals,)*) else {
-                    return __gust_draft.abandon();
-                };
-                let __gust_write = __gust_draft.written();
-                let __gust_ids = __gust_draft.bound();
-                let __gust_extent = ::gust::Extent::new(__gust_x, __gust_y, 1u32);
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    if let ::core::result::Result::Err(__gust_error) = __gust_check_cap::<__GustD>(__gust_extent) {
-                        __gust_draft.fail_map(__gust_error);
+        // The update and the remake closures are the same for a counted stage, which also checks and hands over its count.
+        let counted_index = plan.options.count.as_ref().map(|name| {
+            plan.buffers()
+                .position(|(buffer, ..)| buffer == name)
+                .expect("the count is a binding of the stage")
+        });
+        let (require_count, counted_bounds) = match counted_index {
+            Some(index) => (
+                quote! {
+                    __gust_draft.require_count(__gust_ids[#index]);
+                    if !__gust_draft.ok() {
                         return __gust_draft.abandon();
                     }
+                },
+                quote!(+ ::gust::batch::CountedDevice + ::gust::Run<run_args, 3>),
+            ),
+            None => (TokenStream::new(), TokenStream::new()),
+        };
+        let finish = match counted_index {
+            Some(index) => {
+                let count_local = &locals[index];
+                let workgroup = proc_macro2::Literal::u32_suffixed(plan.workgroup[0]);
+                quote! {
+                    let __gust_count = ::std::sync::Arc::clone(&#count_local);
+                    __gust_draft.finish_counted::<#output_element, #output_rank, run, run_args, _, #count, 3>(
+                        (__gust_uniform, #(#locals,)*),
+                        __gust_count,
+                        __gust_x,
+                        #workgroup,
+                        |__gust_keep, __gust_extent| {
+                            let (__gust_uniform, #(#locals,)*) = __gust_keep;
+                            run::call_extent(__gust_extent, &**__gust_uniform, #(#resources,)*)
+                        },
+                        |__gust_keep, __gust_grid| {
+                            let (__gust_uniform, #(#locals,)*) = __gust_keep;
+                            run_args::call_extent(
+                                ::gust::Extent::new(1u32, 1u32, 1u32),
+                                &**__gust_uniform,
+                                ::gust::Independent(&**#count_local),
+                                ::gust::Independent(__gust_grid),
+                            )
+                        },
+                        move |__gust_device, __gust_frame, __gust_values| {
+                            ::gust::batch::BatchDevice::frame_uniform(
+                                __gust_device,
+                                __gust_frame,
+                                &__gust_rewritten,
+                                __gust_record(__gust_values),
+                            )
+                        },
+                        // The same stage over the buffers of a resized frame: the new capacity and the new buffers.
+                        move |__gust_layout| {
+                            let [__gust_nx, __gust_ny] = __gust_layout.dims(__gust_write);
+                            #[cfg(not(target_arch = "wasm32"))]
+                            {
+                                if let ::core::result::Result::Err(__gust_error) =
+                                    __gust_check_cap::<__GustD>(::gust::Extent::new(__gust_nx, __gust_ny, 1u32))
+                                {
+                                    return ::core::result::Result::Err(
+                                        ::gust::batch::Error::Device(__gust_error),
+                                    );
+                                }
+                            }
+                            ::core::result::Result::Ok((
+                                (::std::sync::Arc::clone(&__gust_again), #(#remade,)*),
+                                __gust_layout.buffer::<__GustD, u32>(__gust_ids[#index]),
+                                __gust_nx,
+                            ))
+                        },
+                    )
                 }
-                // The extent record is made from the frame's extents and parameters, so a resize changes it.
-                let __gust_record = move |__gust_values: &::gust::batch::Values| {
-                    let [__gust_x, __gust_y] = __gust_values.dims(__gust_write);
-                    #(#width_lets)*
-                    #record {
-                        __gust_ex: __gust_x,
-                        __gust_ey: __gust_y,
-                        __gust_ez: 1u32,
-                        #(#scalar_fields,)*
-                        #(#pads,)*
-                    }
-                };
-                let __gust_device = __gust_draft.device();
-                // The uniform is shared by the stage and its update; the CPU twin's is single-threaded.
-                #[allow(clippy::arc_with_non_send_sync)]
-                let __gust_uniform = match <__GustD as __GustPfHost>::__gust_uniform(
-                    &*__gust_device,
-                    __gust_record(&__gust_draft.values()),
-                ) {
-                    ::core::result::Result::Ok(uniform) => ::std::sync::Arc::new(uniform),
-                    ::core::result::Result::Err(__gust_error) => {
-                        __gust_draft.fail_map(__gust_error);
-                        return __gust_draft.abandon();
-                    }
-                };
-                let __gust_rewritten = ::std::sync::Arc::clone(&__gust_uniform);
-                let __gust_again = ::std::sync::Arc::clone(&__gust_uniform);
+            }
+            None => quote! {
                 __gust_draft.finish::<#output_element, #output_rank, run, _, #count>(
                     (__gust_uniform, __gust_extent, #(#locals,)*),
                     |__gust_keep| {
@@ -1922,6 +2215,74 @@ impl TaskPlan {
                         ))
                     },
                 )
+            },
+        };
+
+        quote! {
+            /// Record the stage into the batch being built: seal its kernel call and return the handle of its result.
+            #[doc(hidden)]
+            #[allow(clippy::too_many_arguments)]
+            pub fn __gust_batch<'__gust_b, __GustD #(, #enum_generics)*>(
+                mut __gust_draft: ::gust::batch::StageDraft<'__gust_b, __GustD>,
+                #(#view_parameters,)*
+                #(#param_parameters,)*
+                #(#scalar_parameters,)*
+            ) -> ::gust::batch::Stage<#output_element, #output_rank>
+            where
+                __GustD: ::gust::batch::BatchDevice + __GustPfHost + ::gust::Run<run, #count> #counted_bounds,
+                #(#enum_generics: ::gust::GpuEnum,)*
+                #(#bounds)*
+            {
+                let __gust_dims = __gust_draft.dims();
+                let (__gust_x, __gust_y) = (__gust_dims[0], __gust_dims[1]);
+                #(#acquire)*
+                #(#param_ids)*
+                #(#width_ids)*
+                if !__gust_draft.ok() {
+                    return __gust_draft.abandon();
+                }
+                let (#(#some_locals)*) = (#(#locals,)*) else {
+                    return __gust_draft.abandon();
+                };
+                let __gust_write = __gust_draft.written();
+                let __gust_ids = __gust_draft.bound();
+                #require_count
+                let __gust_extent = ::gust::Extent::new(__gust_x, __gust_y, 1u32);
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    if let ::core::result::Result::Err(__gust_error) = __gust_check_cap::<__GustD>(__gust_extent) {
+                        __gust_draft.fail_map(__gust_error);
+                        return __gust_draft.abandon();
+                    }
+                }
+                // The extent record is made from the frame's extents and parameters, so a resize changes it.
+                let __gust_record = move |__gust_values: &::gust::batch::Values| {
+                    let [__gust_x, __gust_y] = __gust_values.dims(__gust_write);
+                    #(#width_lets)*
+                    #record {
+                        __gust_ex: __gust_x,
+                        __gust_ey: __gust_y,
+                        __gust_ez: 1u32,
+                        #(#scalar_fields,)*
+                        #(#pads,)*
+                    }
+                };
+                let __gust_device = __gust_draft.device();
+                // The uniform is shared by the stage and its update; the CPU twin's is single-threaded.
+                #[allow(clippy::arc_with_non_send_sync)]
+                let __gust_uniform = match <__GustD as __GustPfHost>::__gust_uniform(
+                    &*__gust_device,
+                    __gust_record(&__gust_draft.values()),
+                ) {
+                    ::core::result::Result::Ok(uniform) => ::std::sync::Arc::new(uniform),
+                    ::core::result::Result::Err(__gust_error) => {
+                        __gust_draft.fail_map(__gust_error);
+                        return __gust_draft.abandon();
+                    }
+                };
+                let __gust_rewritten = ::std::sync::Arc::clone(&__gust_uniform);
+                let __gust_again = ::std::sync::Arc::clone(&__gust_uniform);
+                #finish
             }
         }
     }
@@ -1942,16 +2303,29 @@ impl TaskPlan {
             (Extent::Target, Some((name, _))) => quote!(&#name),
             (Extent::Target, None) => unreachable!("an in-place stage has its target"),
         };
-        let views = batch.views.iter().map(|view| &view.name);
+        // A view of enum elements is handed to the stage as the handle of its words.
+        let views = batch.views.iter().map(|view| {
+            let name = &view.name;
+            if batch.is_enum_view(name) {
+                quote!(&#name.words())
+            } else {
+                quote!(&#name)
+            }
+        });
         let params = &batch.params;
         let scalars = &batch.scalars;
         let checks = &batch.enum_checks;
+        // The stage records its result as words; the handle is the enum's again for everyone who holds it.
+        let retype = batch
+            .enum_result
+            .as_ref()
+            .map(|(ty, _)| quote!(.retype::<#ty>()));
         quote! {
             {
                 #(#checks)*
                 #name
                 let __gust_draft = #builder.draft::<_, #rank>(&(#shape));
-                #module::__gust_batch(__gust_draft, #(&#views,)* #(&#params,)* #(#scalars,)*)
+                #module::__gust_batch(__gust_draft, #(#views,)* #(&#params,)* #(#scalars,)*) #retype
             }
         }
     }

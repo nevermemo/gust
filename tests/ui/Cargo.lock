@@ -263,7 +263,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "batch-count-2d"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-count-foreign"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-count-handle"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-count-outside"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "batch-enum-copy-mismatch"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-enum-element-ok"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-enum-in-place"
 version = "0.0.0"
 dependencies = [
  "gust-compute",
@@ -277,7 +319,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "batch-enum-no-zero"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "batch-enum-ok"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-enum-op-operand"
 version = "0.0.0"
 dependencies = [
  "gust-compute",

@@ -192,6 +192,8 @@ struct StageInput {
     /// The keyword options, as written (each with its `;`).
     options: TokenStream,
     krate: bool,
+    /// The `count(n);` clause's handle (D278).
+    count: Option<syn::Ident>,
     shape: syn::Expr,
     list: Vec<RawBinding>,
     closure: syn::ExprClosure,
@@ -201,6 +203,7 @@ impl Parse for StageInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut options = TokenStream::new();
         let mut krate = false;
+        let mut count = None;
         while let Some((keyword, _)) = input.cursor().ident() {
             if !input.peek2(syn::token::Paren) {
                 break;
@@ -208,7 +211,7 @@ impl Parse for StageInput {
             let text = keyword.to_string();
             if !matches!(
                 text.as_str(),
-                "workgroup_size" | "on" | "crate" | "descriptor"
+                "workgroup_size" | "on" | "crate" | "descriptor" | "count"
             ) {
                 break;
             }
@@ -216,6 +219,9 @@ impl Parse for StageInput {
             let group: proc_macro2::Group = input.parse()?;
             let semicolon: Token![;] = input.parse()?;
             krate |= text == "crate";
+            if text == "count" {
+                count = diagnostics::parse2::<syn::Ident>(Code::BatchCount, group.stream()).ok();
+            }
             options.extend(quote!(#ident #group #semicolon));
         }
         let shape: syn::Expr = input.parse()?;
@@ -252,6 +258,7 @@ impl Parse for StageInput {
         Ok(Self {
             options,
             krate,
+            count,
             shape,
             list,
             closure,
@@ -297,6 +304,8 @@ struct Rewriter {
     first_op: Option<syn::Path>,
     /// The hidden clause that gives each stage the enums the block's parameters name (empty when there are none).
     enums: TokenStream,
+    /// The enums the derives handed over, to check the ones used as elements.
+    defs: Vec<syn::ItemEnum>,
     error: Option<syn::Error>,
 }
 
@@ -331,6 +340,26 @@ impl Rewriter {
             .rev()
             .find(|(tracked, _)| tracked == name)
             .map(|(_, kind)| kind)
+    }
+
+    /// The enum, among those the derives handed over, that `ty` names as an element.
+    fn element_enum(&self, ty: &syn::Type) -> Option<&syn::ItemEnum> {
+        let syn::Type::Path(path) = ty else {
+            return None;
+        };
+        let last = path.path.segments.last().filter(|_| path.qself.is_none())?;
+        self.defs
+            .iter()
+            .find(|definition| last.arguments.is_none() && definition.ident == last.ident)
+    }
+
+    /// An enum used as an element needs a variant whose word is 0 (GUST-E1012): its buffer starts as zeros.
+    fn check_element(&mut self, ty: &syn::Type) {
+        if let Some(definition) = self.element_enum(ty).cloned()
+            && let Err(error) = crate::task::require_zero_word(ty, &definition)
+        {
+            self.fail(error);
+        }
     }
 
     /// The element type of a `&handle` operand the block declares.
@@ -384,6 +413,20 @@ impl Rewriter {
             .args
             .first()
             .and_then(|operand| self.operand_element(operand));
+        if let Some(definition) = operand.as_ref().and_then(|ty| self.element_enum(ty)) {
+            let error = diagnostics::error(
+                Code::BatchOpForm,
+                &call.args[0],
+                format!(
+                    "the operand of a library op is a number buffer, and this handle holds the enum `{}`: an op has no \
+                     enum operand (a `min`, a `sum` or a `scan` of enum words has no meaning, and a `compact` is not in \
+                     this release); read the enum elements in a stage",
+                    definition.ident.unraw()
+                ),
+            );
+            self.fail(error);
+            return None;
+        }
         let lowered = match batch_ops::lower(op, call, &local.pat, &self.builder) {
             Ok(lowered) => lowered,
             Err(error) => {
@@ -458,6 +501,7 @@ impl Rewriter {
         let StageInput {
             options,
             krate,
+            count,
             shape,
             list,
             closure,
@@ -499,10 +543,29 @@ impl Rewriter {
             entries.push(quote!(#name: &mut Stage<#element>));
         }
         let mut failures = Vec::new();
+        // The count of a counted stage (D278) is a handle of the block the stage captures, read or not by its body.
+        if let Some(n) = &count
+            && !written.contains(n)
+            && declared_target.as_ref() != Some(n)
+        {
+            match self.lookup(n) {
+                Some(Kind::Handle(element)) => entries.push(quote!(#n: Stage<#element>)),
+                _ => failures.push(diagnostics::error(
+                    Code::BatchCountHandle,
+                    n,
+                    format!(
+                        "`{}` counts a stage, so it is a handle of the block that holds `u32`s (a stage result, the \
+                         count of `compact`, an in-place counter); this name is not one",
+                        n.unraw()
+                    ),
+                )),
+            }
+        }
         for used in names_in(&closure.body) {
             if parameters.contains(&used)
                 || written.contains(&used)
                 || declared_target.as_ref() == Some(&used)
+                || count.as_ref() == Some(&used)
             {
                 continue;
             }
@@ -541,7 +604,10 @@ impl Rewriter {
         };
 
         match &closure.output {
-            syn::ReturnType::Type(_, ty) => Some((**ty).clone()),
+            syn::ReturnType::Type(_, ty) => {
+                self.check_element(ty);
+                Some((**ty).clone())
+            }
             syn::ReturnType::Default => match self.lookup(declared_target.as_ref()?) {
                 Some(Kind::Handle(element)) => Some(element.clone()),
                 _ => None,
@@ -603,6 +669,9 @@ impl VisitMut for Rewriter {
                     })
                 });
                 if let Some(element) = element {
+                    if is_input {
+                        self.check_element(&element);
+                    }
                     kind = if is_input {
                         Kind::Handle(element)
                     } else {
@@ -624,7 +693,22 @@ impl VisitMut for Rewriter {
                 }
             }
             Init::Op(op) => bound = self.op(op, local, annotation.as_ref()),
-            Init::Other => syn::visit_mut::visit_local_mut(self, local),
+            Init::Other => {
+                syn::visit_mut::visit_local_mut(self, local);
+                // `let bad: Stage<Phase, D1> = raw.retype::<Phase>();` (the macro-support view of a stage's words as an
+                // enum element, D275): the annotation types the handle, as it does an input's.
+                if let Some(element) = annotation
+                    .as_ref()
+                    .and_then(|ty| type_argument(ty, "Stage"))
+                    && matches!(
+                        local.init.as_ref().map(|init| &*init.expr),
+                        Some(syn::Expr::MethodCall(call)) if call.method == "retype"
+                    )
+                {
+                    self.check_element(element);
+                    kind = Kind::Handle(element.clone());
+                }
+            }
             Init::None => {}
         }
         if let Some(bound) = bound {
@@ -831,12 +915,24 @@ impl UserTypes<'_> {
     }
 }
 
+/// Whether `ty`, written where an element goes (`b.input::<T>`, a stage's `-> T`, `Stage<T>`), may be an enum of the
+/// user's: a user type that is no element type the macro knows (`f32`, `Vec4`, `uint`, a 3-wide type and the others).
+pub(crate) fn is_element_enum_candidate(ty: &syn::Type) -> bool {
+    is_user_type(ty)
+        && matches!(
+            crate::expand::element_types(ty),
+            Err(crate::expand::ElementReject::Unsupported)
+        )
+}
+
 impl<'ast> Visit<'ast> for UserTypes<'_> {
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        if call.method == "param"
-            && matches!(&*call.receiver, syn::Expr::Path(path) if path.path.is_ident(self.builder))
-            && let Some(turbofish) = &call.turbofish
+        let on_builder =
+            matches!(&*call.receiver, syn::Expr::Path(path) if path.path.is_ident(self.builder));
+        if let Some(turbofish) = &call.turbofish
             && let Some(syn::GenericArgument::Type(ty)) = turbofish.args.first()
+            && on_builder
+            && (call.method == "param" || (call.method == "input" && is_element_enum_candidate(ty)))
         {
             self.note(ty);
         }
@@ -844,12 +940,29 @@ impl<'ast> Visit<'ast> for UserTypes<'_> {
     }
 
     fn visit_local(&mut self, local: &'ast syn::Local) {
-        if let syn::Pat::Type(typed) = &local.pat
-            && let Some(ty) = type_argument(&typed.ty, "Param")
+        if let syn::Pat::Type(typed) = &local.pat {
+            if let Some(ty) = type_argument(&typed.ty, "Param") {
+                self.note(ty);
+            } else if let Some(ty) = type_argument(&typed.ty, "Stage")
+                && is_element_enum_candidate(ty)
+            {
+                self.note(ty);
+            }
+        }
+        syn::visit::visit_local(self, local);
+    }
+
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        // A stage's result type: `gpu_task!(.., |i| -> Mode { .. })`.
+        if is_task(&mac.path)
+            && let Ok(stage) =
+                diagnostics::parse2::<StageInput>(Code::BatchForm, mac.tokens.clone())
+            && let syn::ReturnType::Type(_, ty) = &stage.closure.output
+            && is_element_enum_candidate(ty)
         {
             self.note(ty);
         }
-        syn::visit::visit_local(self, local);
+        syn::visit::visit_macro(self, mac);
     }
 }
 
@@ -1010,6 +1123,7 @@ fn expand(
         depth: 0,
         first_op: None,
         enums: enums_clause,
+        defs: enums.to_vec(),
         error: None,
     };
     for statement in &mut stmts {

@@ -10,7 +10,11 @@ use js_sys::{Function, Object, Promise, Reflect};
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 
-use crate::{LENGTH, build, input, reference};
+use crate::{LENGTH, build, counted_reference, input, reference};
+
+/// The counts of the three frames' counted stage: a part of the rows, fewer than before (the older rows stay), and a
+/// count above the capacity (clamped).
+const COUNTS: [u32; 3] = [300, 100, 5000];
 
 /// The last part of the page's `GUST_OK` line; `cargo xtask check-web` requires it.
 const CLOSING: &str = "two frames in flight exact";
@@ -122,9 +126,15 @@ async fn frames_in_flight() -> Result<(), String> {
     frame0
         .set(&h.gain, gain0)
         .map_err(|error| format!("frame N set: {error}"))?;
+    frame0
+        .write(&h.count, &[COUNTS[0]])
+        .map_err(|error| format!("frame N count: {error}"))?;
     let mut ticket0 = frame0
         .ticket(&h.y)
         .map_err(|error| format!("frame N ticket: {error}"))?;
+    let counted0 = frame0
+        .ticket(&h.z)
+        .map_err(|error| format!("frame N counted ticket: {error}"))?;
     let _submitted0 = frame0
         .submit()
         .map_err(|error| format!("frame N submit: {error}"))?;
@@ -143,9 +153,15 @@ async fn frames_in_flight() -> Result<(), String> {
     frame1
         .set(&h.gain, gain1)
         .map_err(|error| format!("frame N+1 set: {error}"))?;
+    frame1
+        .write(&h.count, &[COUNTS[1]])
+        .map_err(|error| format!("frame N+1 count: {error}"))?;
     let ticket1 = frame1
         .ticket(&h.y)
         .map_err(|error| format!("frame N+1 ticket: {error}"))?;
+    let counted1 = frame1
+        .ticket(&h.z)
+        .map_err(|error| format!("frame N+1 counted ticket: {error}"))?;
     let _submitted1 = frame1
         .submit()
         .map_err(|error| format!("frame N+1 submit: {error}"))?;
@@ -183,14 +199,37 @@ async fn frames_in_flight() -> Result<(), String> {
     frame2
         .set(&h.gain, gain2)
         .map_err(|error| format!("frame N+2 set: {error}"))?;
+    frame2
+        .write(&h.count, &[COUNTS[2]])
+        .map_err(|error| format!("frame N+2 count: {error}"))?;
     let ticket2 = frame2
         .ticket(&h.y)
         .map_err(|error| format!("frame N+2 ticket: {error}"))?;
+    let counted2 = frame2
+        .ticket(&h.z)
+        .map_err(|error| format!("frame N+2 counted ticket: {error}"))?;
     let _submitted2 = frame2
         .submit()
         .map_err(|error| format!("frame N+2 submit: {error}"))?;
     let values2 = ticket2
         .await
         .map_err(|error| format!("frame N+2 ticket failed: {error}"))?;
-    require_exact("frame N+2", &values2, &reference(&x2, gain2))
+    require_exact("frame N+2", &values2, &reference(&x2, gain2))?;
+
+    // The counted stage (bounded launch in a browser): each frame's rows below its count are that frame's, the rest
+    // keep the last frame's values, and a count above the capacity is the capacity. The model is applied in
+    // submission order, which is the order the frames ran.
+    let mut state = vec![0u32; LENGTH as usize];
+    for (what, ticket, x, count) in [
+        ("frame N counted", counted0, &x0, COUNTS[0]),
+        ("frame N+1 counted", counted1, &x1, COUNTS[1]),
+        ("frame N+2 counted", counted2, &x2, COUNTS[2]),
+    ] {
+        counted_reference(&mut state, x, count);
+        let values = ticket
+            .await
+            .map_err(|error| format!("{what} ticket failed: {error}"))?;
+        require_exact(what, &values, &state)?;
+    }
+    Ok(())
 }

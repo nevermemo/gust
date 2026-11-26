@@ -13,6 +13,32 @@ breaks existing code bumps the minor version, and the promise is described in th
   `DeviceOptions::shader_checks` report the setting. A device adopted with `HeadlessDevice::adopt` stays checked, the
   SPIR-V route is unaffected and `wasm32` ignores the option. Measured on loop-heavy kernels on the RTX 5090 only;
   no gain on the Radeon 890M.
+- `DeviceOptions::with_storage_buffers(n)` (m14.lim-a, native only) opens a device with `n` storage buffers per shader
+  stage instead of 8; off by default, and an adapter that offers fewer than `n` is `Error::DeviceLimit` at open.
+- A counted batch stage (m14.s2i, D278): `gpu_task!(count(n); capacity, |i| -> T { .. })` in a `gpu_batch!` runs over
+  the rows `0 .. min(n, capacity)` of a one-element `u32` handle `n` that a stage wrote (a result, the count of
+  `compact`, an in-place counter), with no readback; a count above the capacity is clamped, the rows from the count on
+  keep their values, and the CPU twin is equal over the whole buffer. The GPU launches it indirectly in the frame's one
+  submission (the grid is two-dimensional, so 65535 workgroups is no ceiling; a browser runs the same stage without the
+  indirect pass). A count that a resize remakes is zero, so the stage then runs zero rows. New codes `GUST-E1013` to
+  `GUST-E1015`.
+- Frame timing for a `gpu_batch!` (m14.pfft): `b.frame_timing(FrameTiming::Frame)` or `::Passes` in the build block
+  (default `Off`, which makes no timestamp object), `FrameRun::time()` returning a ticket-like `FrameTime` future of
+  `Option<FrameTimes>` (also reachable as `Submitted::frame_time`), and `Batch::frame_timing()` for the level and the
+  adapter's tick. The span runs from the begin of the frame's first pass to the end of its last, with the frame's upload
+  and ticket copies outside it; level `Passes` adds one entry per stage that has a pass. A batch on a device without
+  timestamp queries (the CPU twin, `wasm32`) gives `Ok(None)`. A frame that does not ask records no timestamp, resolve
+  or copy. Checked on the Radeon 890M and the RTX 5090.
+- Every batch entry point (`dispatch_batch`, `dispatch_batch_timed`, `submit_batch`, `encode_batch`,
+  `submit_batch_read`, `encode_batch_read`, and the stages of a `gpu_batch!` that hold several dispatches; m14.pfbg2):
+  consecutive dispatches of a batch that run the same kernel over exactly the same resources now share one bind group
+  instead of creating one per pass (a dispatch over an empty extent in between does not break the run). Results are
+  unchanged; an API trace of such a batch shows one bind group creation where it showed one per pass. Split launches
+  and any dispatch that differs in a kernel or a binding keep their own groups.
+- An in-place enum target in a batch stage (m14.s2e2d): `gpu_task!(&mut phase, |i| { phase[i] = .. })` over a
+  `Stage<Phase>` of a `#[derive(GpuEnum)]` enum. A load decodes the word and a store writes `e as u32`; a compound
+  assignment or an atomic on it is `GUST-E0122`. A host slice of enums now gets the general `GUST-E1005`.
+  `Batch::view` takes `T: Element` and returns `View<D, T::Word>`, so an enum handle gives a view of its `u32` words.
 - `#[derive(GpuEnum)]` and the `gust::GpuEnum` trait (m14.s2e2a): for a field-less `#[repr(u32)]` enum with literal or
   implicit discriminants that fit in `u32`, the derive implements `from_word`, `to_word` and a validating
   `TryFrom<u32>` (error `gust::EnumWordError`, which carries the word), each a `match` over the discriminants. The enum
@@ -21,6 +47,15 @@ breaks existing code bumps the minor version, and the promise is described in th
 - An enum parameter and a `match` in a `gpu_batch!` stage (m14.s2e2b): `b.param::<Mode>(..)` with `Mode` deriving
   `GpuEnum`, `frame.set(&mode, Mode::Curve)`, and `match mode.get() { .. }` in a stage body, equal to the host and
   the CPU twin. `GpuEnum` implies `ParamType`; a missing derive names the fix.
+- An enum stored as the element of a batch's buffers (m14.s2e2c): `b.input::<Phase>(n)` and a stage typed `-> Phase`,
+  read in a stage body with `phase[i]` through a `match`. The host writes and reads `Phase` itself (`frame.write`,
+  `ticket`, `Blocking::read`) through the new `gust::batch::Element` trait, whose blanket impl keeps every `GpuPod`
+  element as it was; the device holds one `u32` word per element. A word that is no variant reads as the last variant
+  in a body, and `Error::InvalidEnum` names the lowest such index on the host read. The enum needs a variant whose word
+  is 0 (`GUST-E1012`). An enum operand of a library op is refused by name.
+  A `GpuPod` struct of your own as `b.input::<Particle>(n)` inside a `gpu_batch!` block is no longer accepted: the
+  macro cannot tell it from an enum, so rustc says "cannot find macro `Particle` in this scope" and "`Particle` is not
+  a GPU enum". There is no workaround inside the macro; build such a batch with `gust::batch::build` instead.
 - `cargo xtask check-web` runs a second page, `examples/web-batch-frames` (m14.s2c): a `gpu_batch!` with `in_flight(2)`
   in headless Chrome records and submits frame N+1 while frame N's ticket is still pending, then checks both frames and
   a third one against the host computation exactly. Browser run only, on the adapter Chrome picks.

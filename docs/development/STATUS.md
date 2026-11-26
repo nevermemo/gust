@@ -1356,6 +1356,59 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       may take submissions of its own; the frame after it is one. Radeon 890M and RTX 5090 (resize_ops, gust-algo batch
       tests), check-examples on the 890M, CPU device; mutation caught. Opus review: merge after fixes; one fix round,
       re-check merge.
+    - m14.pfbg2 (D273 performance track, proxy ruling qw1): consecutive dispatches of a batch that run the same
+      kernel over exactly the same resources share one bind group (pipeline entry and every binding compared; split
+      launches and graph-slot reuse reset the run). Measured on W1 1M on the RTX 5090, three seeds: no GPU-time gain
+      (docs/BENCHMARKS.md, outcome D); merged for the host-side saving, a side reading. Radeon 890M and RTX 5090 (full
+      Gpu suite), kernel-guard mutation caught. Opus review: merge after fixes; should-fixes in the tree before merge.
+    - m14.s2e2c (D275): a batch input, a stage result and a `Stage<E>` handle may hold a `GpuEnum`. A stored word
+      that is no variant decodes as the last variant on the CPU twin and the GPU alike, through one decoder per module
+      shared with parameters; a ticket or `read` reports `Error::InvalidEnum { batch, stage, index, word }` for the
+      lowest bad index. An enum element needs a variant of word 0 (GUST-E1012, enforced by the macro only). `Stage::words()`
+      is raw, also after `retype`, and `FrameRun::write` refuses it. A user struct as a `gpu_batch!` input is now taken
+      for an enum (documented; `gust::batch::build` is the way around). Radeon 890M and RTX 5090 (enum_element incl. the
+      fallback test), check-examples on the 890M, CPU twin; mutations caught. Opus review: merge after fixes; one fix
+      round, re-check merge. Open for s2e2d: in-place targets, `state` and host slice captures of enum elements; `view`
+      is still `GpuPod`-only; the ticket clones the stage name; no 2-D `-> Phase` test.
+    - m14.benchfmt: the gates format, lint and test the bench workspace. The fmt and clippy steps also run over
+      bench/Cargo.toml (all members and targets, -D warnings); the Unit stage runs the gust-bench CPU tests tool-free
+      with the Vulkan driver hidden (adapter tests skipped by exact name) and a `cargo gust check` of gust-bench-pre
+      with --allow-slang-mismatch. Bench files reformatted only. Open: the 13 adapter bench tests run in no gate yet;
+      the added cold-build cost in CI is unmeasured. Opus review: merge after fixes; one fix round, re-check merge.
+    - m14.s2e2d (D276): an in-place target `&mut Stage<E>` may hold a `GpuEnum`. A store writes the variant's word,
+      a load decodes through the one decoder (last-variant fallback, D275), the zero-word rule (GUST-E1012) applies at
+      the target, and compound assignment and atomics on it are GUST-E0122. `Batch::view` takes any element type and
+      returns a view of the stored word; ticket names are shared. `state` has no batch form and host slices stay
+      GUST-E1005 for every element type (D276). Radeon 890M and RTX 5090 (batch-basics incl. enum_store, frames and a
+      resize), check-examples on the 890M, CPU twin; store-encode and E0122 mutations caught. Opus review: merge after
+      fixes; one fix round, re-check merge.
+    - m14.pfft (D277): frame timing on the batch frame path. `FrameTiming { Off, Frame, Passes }` at batch build,
+      `FrameRun::time()` per frame, a non-blocking `FrameTime` from the submitted frame (one span from the first pass's
+      begin to the last pass's end; at `Passes` one entry per stage), `Batch::frame_timing()` up front; `Ok(None)` on
+      the CPU twin, without timestamp queries, on wasm32 and for `Off`, which creates nothing. The span agrees with the
+      bench's per-dispatch quantity (probe C5) on the Radeon 890M and the RTX 5090; timing on costs about 0.4 ms per timed
+      frame on the 5090 and a few percent on the 890M (probe C6, in the guide). Both adapters (frame_time, batch-basics),
+      the no-timestamp route; span-end and Off mutations caught. Opus review: merge after fixes; one fix round, re-check
+      merge. Open: pf.ft2 (split the per-frame cost; batched resolve and map), pf.ftweb.
+    - m14.lim-a (D280): `DeviceOptions::with_storage_buffers(n)`, off by default, asks for n storage buffers per
+      shader stage at open; an adapter offering fewer is `DeviceLimit` before any device exists, n below 8 and wasm32
+      are refused by name, `device_request` carries n, adopt raises nothing, launches compare against the opened
+      limits, and the exported snippet of a kernel over 8 names the limit it needs. wgpu 30.0.1 reports 429391872 (Radeon
+      890M) and 524288 (RTX 5090) storage buffers per stage; a device opened with 16 got 16 on both. Both adapters
+      (storage_buffers, limits); open-check, option-ignored, request/launch mismatch and off-by-one mutations caught.
+      Opus review: merge after fixes; one fix round, re-check merge. Limitation: `par_for!` and `map` stage their slices
+      in pooled buffers before the launch check, so a refused launch has taken and returned them (nothing outstanding,
+      no pipeline). Open: lim-b (batch-build refusal, `compact` with separate keep and count buffers, check-web over 8,
+      the raised-device precompiled case), m14.lim-web.
+    - m14.s2i (D278, D281): counted batch stages. `gpu_task!(count(n); ..)` keeps the stage's extent as its capacity
+      and runs over `0 .. min(n, capacity)` of a one-element `u32` handle a stage of the block wrote; rows from the
+      count on keep their values, the count is clamped, the CPU twin reads n. Native: a one-invocation args kernel and
+      an indirect launch on a two-dimensional grid in the frame's one submission; wasm32 and adapters without indirect
+      execution: the bounded launch, same kernel and result. Frame timing records counted stages. Codes GUST-E1013 to
+      E1015. Radeon 890M and RTX 5090 (batch-basics counted, frame timing, resize), check-precompiled (a counted
+      binary), check-web (a counted stage on the page), CPU twin; mutations caught. Opus review: merge after fixes;
+      one fix round, re-check merge. Open: s2i.m2 (pre-registered small-cell timing), the downlevel flag in place of
+      the backend check, s2i2 (the indirect launch on the page), a vacuous timed test on adapters without timestamps.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

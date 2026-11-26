@@ -25,17 +25,22 @@
 use std::sync::Arc;
 
 use gust::batch::{BatchDevice, BoxFuture};
+#[cfg(not(target_arch = "wasm32"))]
+use gust::batch::{DeviceTiming, FrameClock, FrameTiming, OpenedTiming};
 use gust::map::{self, MapHost};
 use gust::{Call, GpuPod, Kernel, Resource, Run, kind};
 
 use crate::{Error, GpuBuffer, HeadlessDevice};
 
 mod build;
+mod counted;
 mod frame;
 mod ops;
 mod shape;
 mod slot;
 mod ticket;
+#[cfg(not(target_arch = "wasm32"))]
+mod timing;
 
 pub use build::GpuStage;
 pub use frame::{GpuEncoded, GpuFrame, GpuSubmission};
@@ -156,6 +161,59 @@ impl BatchDevice for HeadlessDevice {
     #[cfg(not(target_arch = "wasm32"))]
     fn wait(&self, submission: &GpuSubmission) -> Result<(), Error> {
         self.wait_for_submission(submission.index.clone())
+    }
+
+    // Frame timing reads timestamps through blocking-free mappings, which this slice builds for native targets only:
+    // on `wasm32` the defaults answer "no timing" (the browser's availability is a probe of its own).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn timing_open(
+        &self,
+        level: FrameTiming,
+        stages: usize,
+        in_flight: usize,
+    ) -> Option<OpenedTiming> {
+        self.open_timing(level, stages, in_flight)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stage_passes(&self, stage: &GpuStage) -> usize {
+        stage.dispatches.len()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn frame_clock(&self, timing: &DeviceTiming) -> Option<FrameClock> {
+        Self::take_clock(timing)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn frame_stage_timed(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        stage: &GpuStage,
+        clock: &mut FrameClock,
+        begin: Option<u32>,
+        end: Option<u32>,
+    ) -> Result<(), Error> {
+        self.encode_stage_timed(encoder, stage, clock, begin, end)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn frame_clock_end(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        clock: &mut FrameClock,
+        slots: u32,
+    ) {
+        Self::end_clock(encoder, clock, slots);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn begin_time(
+        &self,
+        clock: FrameClock,
+        submission: &GpuSubmission,
+    ) -> BoxFuture<Result<Option<Vec<u64>>, map::Error>> {
+        self.start_time(clock, submission)
     }
 }
 

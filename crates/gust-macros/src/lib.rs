@@ -313,6 +313,15 @@ pub fn gpu_task(input: TokenStream) -> TokenStream {
 /// as the batch (GUST-E1005 in `docs/DIAGNOSTICS.md`). The `@enums` form that the derive's macro calls is internal and
 /// unstable: do not write it.
 ///
+/// An enum that derives `GpuEnum` may also be the element of an input (`b.input::<Phase>(n)`) and the result type of a
+/// stage (`gpu_task!(n, |i| -> Phase { .. })`); a stage reads it with `phase[i]` and `match`es it like a parameter. The
+/// host writes and reads `Phase` itself, the device holds one `u32` word per element, and a load decodes the word
+/// through the enum's decoder. In a body a word that is no variant is the last variant (on the CPU twin and the GPU
+/// alike); on the host a read of a bad word is `Error::InvalidEnum`. The enum needs a variant whose word is 0
+/// (GUST-E1012). An in-place `&mut Stage<Phase>` target loads through the decoder and stores `e as u32` (`=` only: a
+/// compound assignment is GUST-E0122). A host slice of enums is refused as every host slice of a batch is (GUST-E1005),
+/// and an enum operand of a library op by name (GUST-E1009).
+///
 /// The diagnostics of the form itself are GUST-E1005 and GUST-E1006, and GUST-E1009 and GUST-E1010 for the library ops
 /// (`docs/DIAGNOSTICS.md`).
 #[proc_macro]

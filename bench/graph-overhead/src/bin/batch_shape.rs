@@ -155,7 +155,10 @@ impl<'d> Rig<'d> {
 
     fn check(&self, what: &str) {
         let got = self.device.read_typed_buffer(&self.out).expect("read out");
-        assert!(got == reference(&input()), "{what}: out differs from the host reference");
+        assert!(
+            got == reference(&input()),
+            "{what}: out differs from the host reference"
+        );
     }
 }
 
@@ -447,10 +450,7 @@ fn main() {
             }
         }
     });
-    row(
-        "3 bind groups",
-        (wall / ROUNDS as f64, cpu / ROUNDS as f64),
-    );
+    row("3 bind groups", (wall / ROUNDS as f64, cpu / ROUNDS as f64));
 
     let mut in_flight = VecDeque::new();
     row(

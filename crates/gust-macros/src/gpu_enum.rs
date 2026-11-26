@@ -9,8 +9,10 @@
 //! m14.s2e2a), so the supertraits of `GpuEnum` (`Copy + PartialEq`) enforce them as rustc's own error. Nor is `cfg` on a
 //! variant: rustc has applied it before the derive runs, so the derive only ever sees the variants that stay.
 //!
-//! The expansion is `impl ::gust::GpuEnum` and `impl TryFrom<u32>`, each a `match` over the discriminants. There is
-//! no `transmute` and no `as` from a word, so a word that is no variant can never become a value of the enum.
+//! The expansion is `impl ::gust::GpuEnum`, `impl TryFrom<u32>` and `impl ::gust::batch::Element` (the host side of an
+//! enum stored as a batch element, slice s2e2c, D275: one `u32` word each), the first two a `match` over the
+//! discriminants. There is no `transmute` and no `as` from a word, so a word that is no variant can never become a
+//! value of the enum.
 //!
 //! It also hands the enum to a batch stage (slice s2e2b, D270). A proc macro cannot see a type declared elsewhere, so
 //! the derive writes a hidden `macro_rules! __gust_enum_<Name>`, re-exported under the enum's own name
@@ -185,6 +187,22 @@ fn emit(
             }
         }
 
+        // The enum as the element of a batch's data calls (D275): the device holds one `u32` word per element.
+        #[automatically_derived]
+        impl ::gust::batch::Element for #name {
+            type Word = u32;
+
+            fn pack(data: &[Self]) -> ::std::borrow::Cow<'_, [u32]> {
+                ::gust::batch::pack_enum(data)
+            }
+
+            fn unpack(
+                words: ::std::vec::Vec<u32>,
+            ) -> ::core::result::Result<::std::vec::Vec<Self>, ::gust::batch::InvalidWord> {
+                ::gust::batch::unpack_enum(words)
+            }
+        }
+
         #[automatically_derived]
         impl ::core::convert::TryFrom<u32> for #name {
             type Error = ::gust::EnumWordError;
@@ -314,6 +332,18 @@ mod tests {
         assert!(text.contains("# [repr (u32)] enum Mode"), "{text}");
         // Not the user's derives, and no `Clone` or `Copy` (the stage's module adds its own).
         assert!(!text.contains("# [derive"), "{text}");
+    }
+
+    #[test]
+    fn the_derive_adds_the_host_element_impl_with_a_word_of_u32() {
+        let text = expansion(GOOD).unwrap().to_string();
+        assert!(
+            text.contains("impl :: gust :: batch :: Element for Mode"),
+            "{text}"
+        );
+        assert!(text.contains("type Word = u32"), "{text}");
+        assert!(text.contains("pack_enum (data)"), "{text}");
+        assert!(text.contains("unpack_enum (words)"), "{text}");
     }
 
     #[test]

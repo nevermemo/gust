@@ -57,6 +57,7 @@ impl HeadlessDevice {
             features: FeaturesPolicy::Default,
             capabilities: gust::capability::enabled(),
             capture: false,
+            storage_buffers: None,
         })
         .await
     }

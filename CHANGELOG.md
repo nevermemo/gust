@@ -7,6 +7,8 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- `DeviceOptions::with_storage_buffers(n)` (m14.lim-a, native only) opens a device with `n` storage buffers per shader
+  stage instead of 8; off by default, and an adapter that offers fewer than `n` is `Error::DeviceLimit` at open.
 - Frame timing for a `gpu_batch!` (m14.pfft): `b.frame_timing(FrameTiming::Frame)` or `::Passes` in the build block
   (default `Off`, which makes no timestamp object), `FrameRun::time()` returning a ticket-like `FrameTime` future of
   `Option<FrameTimes>` (also reachable as `Submitted::frame_time`), and `Batch::frame_timing()` for the level and the

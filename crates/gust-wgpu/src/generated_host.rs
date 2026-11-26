@@ -90,6 +90,18 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
         );
         render_struct_fields(&mut source, parameter.name, layout.element, 0);
     }
+    let storage_buffers = resources
+        .iter()
+        .filter(|parameter| parameter.kind == ParameterKind::Storage)
+        .count();
+    if storage_buffers > 8 {
+        write_line(
+            &mut source,
+            format_args!(
+                "// This kernel binds {storage_buffers} storage buffers: its device must be opened with max_storage_buffers_per_shader_stage of at least {storage_buffers} (wgpu's default is 8; see DeviceOptions::with_storage_buffers)."
+            ),
+        );
+    }
     write_line(
         &mut source,
         format_args!("// Construct this pipeline once, then reuse encode() for every dispatch."),

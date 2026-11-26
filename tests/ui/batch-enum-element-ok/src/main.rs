@@ -1,5 +1,6 @@
 // Control case for an enum stored as an element of a batch (D275): an input of enums, a stage that reads it through a
-// `match` and a stage whose result type is the enum. The host writes and reads the enum itself. This crate must compile.
+// `match`, a stage whose result type is the enum and an in-place stage that stores enums into its target. The host
+// writes and reads the enum itself. This crate must compile.
 
 use std::sync::Arc;
 
@@ -27,6 +28,12 @@ fn main() {
                 Phase::Idle => Phase::Run,
                 Phase::Run => Phase::Idle,
             }
+        });
+        let _flip = gust::gpu_task!(&mut phase, |i| {
+            phase[i] = match phase[i] {
+                Phase::Idle => Phase::Run,
+                Phase::Run => Phase::Idle,
+            };
         });
         Handles { phase, next }
     });

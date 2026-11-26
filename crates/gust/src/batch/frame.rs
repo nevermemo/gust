@@ -45,9 +45,9 @@ enum TicketState<T: Element> {
 }
 
 struct TicketCell<T: Element> {
-    batch: String,
+    batch: Arc<str>,
     /// The stage or input the words are read from, for [`Error::InvalidEnum`].
-    stage: String,
+    stage: Arc<str>,
     state: Mutex<TicketState<T>>,
 }
 
@@ -109,14 +109,14 @@ impl<T: Element> Future for Ticket<T> {
                     Poll::Ready(match result {
                         // The checked unpack: an enum element is a value only if its word is a variant.
                         Ok(Some(words)) => T::unpack(words).map_err(|bad| Error::InvalidEnum {
-                            batch: self.cell.batch.clone(),
-                            stage: self.cell.stage.clone(),
+                            batch: self.cell.batch.to_string(),
+                            stage: self.cell.stage.to_string(),
                             index: bad.index(),
                             word: bad.word(),
                         }),
                         // The copy never ran: the encoder it was recorded into was not submitted.
                         Ok(None) => Err(Error::NotSubmitted {
-                            batch: self.cell.batch.clone(),
+                            batch: self.cell.batch.to_string(),
                         }),
                         Err(error) => Err(Error::Device(error)),
                     })
@@ -126,7 +126,7 @@ impl<T: Element> Future for Ticket<T> {
             TicketState::Failed => {
                 *state = TicketState::Taken;
                 Poll::Ready(Err(Error::NotSubmitted {
-                    batch: self.cell.batch.clone(),
+                    batch: self.cell.batch.to_string(),
                 }))
             }
             TicketState::Taken => panic!("a Ticket was polled after it returned its values"),
@@ -264,7 +264,7 @@ impl<D: BatchDevice> super::Batch<D> {
             let mut run = core.run.lock().unwrap_or_else(PoisonError::into_inner);
             if run.live {
                 return Err(Error::FrameLive {
-                    batch: core.name.clone(),
+                    batch: core.name.to_string(),
                 });
             }
             run.live = true;
@@ -345,7 +345,7 @@ impl<D: BatchDevice> FrameRun<D> {
         let id = self.core.locate(handle)?;
         if handle.is_raw() {
             return Err(Error::NotInput {
-                batch: self.core.name.clone(),
+                batch: self.core.name.to_string(),
                 stage: format!(
                     "{} (the words of an enum, write the enum)",
                     self.core.buffers[id].name
@@ -355,16 +355,16 @@ impl<D: BatchDevice> FrameRun<D> {
         let entry = &self.core.buffers[id];
         if !entry.input {
             return Err(Error::NotInput {
-                batch: self.core.name.clone(),
-                stage: entry.name.clone(),
+                batch: self.core.name.to_string(),
+                stage: entry.name.to_string(),
             });
         }
         let [width, height] = self.dims_of(id);
         let len = u64::from(width) * u64::from(height);
         if data.len() as u64 != len {
             return Err(Error::ShapeMismatch {
-                batch: self.core.name.clone(),
-                stage: entry.name.clone(),
+                batch: self.core.name.to_string(),
+                stage: entry.name.to_string(),
                 expected: format!("{len} elements"),
                 found: format!("{} elements", data.len()),
             });
@@ -406,7 +406,7 @@ impl<D: BatchDevice> FrameRun<D> {
         let core = Arc::clone(&self.core);
         if param.batch() != core.id || param.id() >= core.params.len() {
             return Err(Error::Foreign {
-                batch: core.name.clone(),
+                batch: core.name.to_string(),
                 stage: String::from("a parameter"),
             });
         }
@@ -529,7 +529,7 @@ impl<D: BatchDevice> FrameRun<D> {
         {
             let [width, height] = here_dims[used];
             return Err(Error::ShapeMismatch {
-                batch: core.name.clone(),
+                batch: core.name.to_string(),
                 stage: core.params[id].name.clone(),
                 expected: format!(
                     "`{}` at {width} x {height}, which the frame has already written or read",
@@ -708,8 +708,8 @@ impl<D: BatchDevice> FrameRun<D> {
             .map_err(device_error::<D>)?;
         self.used.push(id);
         let cell = Arc::new(TicketCell {
-            batch: self.core.name.clone(),
-            stage: self.core.buffers[id].name.clone(),
+            batch: Arc::clone(&self.core.name),
+            stage: Arc::clone(&self.core.buffers[id].name),
             state: Mutex::new(TicketState::Reserved(None)),
         });
         self.reads.push(Box::new(Reserved::<D, T> {
@@ -796,7 +796,7 @@ impl<D: BatchDevice> FrameRun<D> {
                     Empty::Nothing => {}
                     Empty::Refuse => {
                         return Err(Error::Empty {
-                            batch: core.name.clone(),
+                            batch: core.name.to_string(),
                             stage: stage.name.clone(),
                         });
                     }
@@ -1031,8 +1031,8 @@ impl<D: BatchDevice> Blocking<'_, D> {
         let (id, buffer, _) = core.output(handle)?;
         let words = core.device.readback(&buffer).map_err(device_error::<D>)?;
         T::unpack(words).map_err(|bad| Error::InvalidEnum {
-            batch: core.name.clone(),
-            stage: core.buffers[id].name.clone(),
+            batch: core.name.to_string(),
+            stage: core.buffers[id].name.to_string(),
             index: bad.index(),
             word: bad.word(),
         })

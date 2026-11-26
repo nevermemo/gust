@@ -247,6 +247,19 @@ fn device_error<D: BatchDevice>(error: D::Error) -> Error {
     Error::Device(D::map_error(error))
 }
 
+/// `error` of preparing stage `stage` of batch `batch` again after a resize: a device error names the stage, as it does
+/// when the stage is built (a stage built over zero rows skips the device's limit checks until a resize gives it rows).
+fn named_stage(batch: &str, stage: &str, error: Error) -> Error {
+    match error {
+        Error::Device(source) => Error::StageDevice {
+            batch: batch.to_owned(),
+            stage: stage.to_owned(),
+            source,
+        },
+        other => other,
+    }
+}
+
 /// Make `plan`, the plan of a length an op stage now runs at, the first of the stage's kept plans, and drop the oldest
 /// when more than `PLANS_KEPT` remain.
 fn keep_plan(kept: &mut VecDeque<(usize, Arc<dyn Any>)>, plan: (usize, Arc<dyn Any>)) {
@@ -595,10 +608,14 @@ impl<D: BatchDevice> FrameRun<D> {
             prepared.push(match (&stage.remake, &stage.plan) {
                 (Some(remake), _) => StagedStage {
                     stage: index,
-                    prepared: Some(Arc::new(remake(&*core.device, &layout)?)),
+                    prepared: Some(Arc::new(
+                        remake(&*core.device, &layout)
+                            .map_err(|error| named_stage(&core.name, &stage.name, error))?,
+                    )),
                     plan: None,
                 },
-                (None, Some(plan)) => Self::replan(&core, index, plan, &layout)?,
+                (None, Some(plan)) => Self::replan(&core, index, plan, &layout)
+                    .map_err(|error| named_stage(&core.name, &stage.name, error))?,
                 (None, None) => {
                     unreachable!("a stage is a kernel with a remake or an op with a plan")
                 }

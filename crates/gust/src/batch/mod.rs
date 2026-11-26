@@ -226,6 +226,16 @@ pub enum Error {
         /// The number of elements it has.
         len: usize,
     },
+    /// The device refused a stage when the batch was built (a limit of the device, a binding it cannot make): the
+    /// stage is named by its `let`, and `source` is the device's own error.
+    StageDevice {
+        /// The batch.
+        batch: String,
+        /// The stage.
+        stage: String,
+        /// The device's error.
+        source: map::Error,
+    },
     /// The device failed.
     Device(map::Error),
 }
@@ -309,6 +319,11 @@ impl core::fmt::Display for Error {
                 f,
                 "stage `{stage}` of batch `{batch}` is counted by `{buffer}`, which has {len} elements: a count is one `u32`"
             ),
+            Self::StageDevice {
+                batch,
+                stage,
+                source,
+            } => write!(f, "stage `{stage}` of batch `{batch}`: {source}"),
             Self::Device(error) => write!(f, "device: {error}"),
         }
     }
@@ -317,7 +332,7 @@ impl core::fmt::Display for Error {
 impl core::error::Error for Error {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
-            Self::Device(error) => Some(error),
+            Self::StageDevice { source, .. } | Self::Device(source) => Some(source),
             _ => None,
         }
     }
@@ -1472,6 +1487,15 @@ impl Error {
                 buffer: buffer.clone(),
                 len: *len,
             },
+            Self::StageDevice {
+                batch,
+                stage,
+                source,
+            } => Self::StageDevice {
+                batch: batch.clone(),
+                stage: stage.clone(),
+                source: map::Error::device(DeviceMessage(source.to_string())),
+            },
             Self::Device(error) => {
                 Self::Device(map::Error::device(DeviceMessage(error.to_string())))
             }
@@ -1653,16 +1677,24 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
 
     /// Record an error of the map layer (a limit of the device, a uniform that would not be made).
     pub fn fail_map(&mut self, error: map::Error) {
-        self.builder.state.borrow_mut().fail(Error::Device(error));
-        self.ok = false;
+        self.fail_stage(error);
     }
 
     /// Record a device error of this stage's preparation.
     pub fn fail(&mut self, error: D::Error) {
-        self.builder
-            .state
-            .borrow_mut()
-            .fail(Error::Device(D::map_error(error)));
+        self.fail_stage(D::map_error(error));
+    }
+
+    /// Record `source` as the failure of this stage: it names the batch and the stage, like the one `finish` records.
+    fn fail_stage(&mut self, source: map::Error) {
+        let mut state = self.builder.state.borrow_mut();
+        let batch = state.name.clone();
+        state.fail(Error::StageDevice {
+            batch,
+            stage: self.name.clone(),
+            source,
+        });
+        drop(state);
         self.ok = false;
     }
 
@@ -1710,7 +1742,12 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
                 Stage::new(state.id, write, dims)
             }
             Err(error) => {
-                state.fail(Error::Device(D::map_error(error)));
+                let batch = state.name.clone();
+                state.fail(Error::StageDevice {
+                    batch,
+                    stage: name,
+                    source: D::map_error(error),
+                });
                 dud
             }
         }

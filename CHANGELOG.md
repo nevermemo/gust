@@ -9,6 +9,10 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 - `DeviceOptions::with_storage_buffers(n)` (m14.lim-a, native only) opens a device with `n` storage buffers per shader
   stage instead of 8; off by default, and an adapter that offers fewer than `n` is `Error::DeviceLimit` at open.
+- A `gpu_batch!` stage over the device's storage buffer limit is refused when the batch is built, and a device error
+  raised while a stage is built is now the new `batch::Error::StageDevice`, which names the batch and the stage (it was
+  `Error::Device`); the `DeviceLimit` text for storage buffers names both cures, rows of one struct or
+  `DeviceOptions::with_storage_buffers`.
 - A counted batch stage (m14.s2i, D278): `gpu_task!(count(n); capacity, |i| -> T { .. })` in a `gpu_batch!` runs over
   the rows `0 .. min(n, capacity)` of a one-element `u32` handle `n` that a stage wrote (a result, the count of
   `compact`, an in-place counter), with no readback; a count above the capacity is clamped, the rows from the count on

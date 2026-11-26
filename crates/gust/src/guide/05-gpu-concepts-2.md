@@ -47,6 +47,15 @@ same rows. A counted stage is 1-D and its workgroup is along x (GUST-E1014); `co
 batch (GUST-E1013) and names a handle of `u32`s of the block (GUST-E1015). `examples/batch-basics/tests/counted.rs` has the
 checks.
 
+A stage binds one storage buffer for each handle it reads or writes, and a device allows a fixed number of them per
+shader stage (8 unless the device was opened with more). A stage over that number is refused when the batch is built, not
+at the first frame: the build returns `Error::StageDevice`, which names the batch and the stage and wraps the device's
+`DeviceLimit` (the count the stage needs and the limit the device has). A counted stage counts its count buffer among its
+buffers, and its args kernel binds the count and the args buffer. The cures are to keep columns that are read together
+as the rows of one struct (`#[derive(GpuStruct)]`, one buffer), or to open the device with more through
+`DeviceOptions::with_storage_buffers` (native only; a browser device keeps 8). `examples/batch-basics/tests/limits.rs`
+has the checks.
+
 A batch can report the GPU time of its frames. It is opt-in at the build: `b.frame_timing(FrameTiming::Frame)` (or
 `FrameTiming::Passes`) in the block makes the timestamp objects once, when the batch is sealed, and only on a device
 with timestamp queries; a batch built without it (the default, `Off`) makes none, and `batch.frame_timing()` says up

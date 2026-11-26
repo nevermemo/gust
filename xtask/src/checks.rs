@@ -562,6 +562,15 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "twin_a_view_of_an_input_and_of_a_stage_holds_what_the_frame_left",
             "twin_a_view_refuses_a_foreign_handle_and_one_the_block_did_not_return",
             "twin_the_generation_is_equal_across_three_frames_and_with_two_in_flight",
+            // `tests/counted.rs`: a counted stage (m14.s2i).
+            "twin_counts_match_the_model_over_the_whole_buffer",
+            "twin_the_count_above_the_capacity_equals_the_capacity",
+            "twin_a_count_that_changes_every_frame",
+            "twin_the_count_of_compact_counts_a_stage",
+            "twin_resize_follows_the_capacity",
+            "twin_a_count_of_many_elements_is_refused",
+            "twin_a_wrong_sized_write_after_a_resize_is_refused",
+            "twin_a_count_remade_by_a_resize_runs_zero_rows",
             // `tests/resize.rs`: a set of a size parameter resizes what depends on it (m14.s2b).
             "cpu_a_dropped_resize_changes_nothing",
             "cpu_a_frame_the_device_refuses_leaves_the_resize_undone",

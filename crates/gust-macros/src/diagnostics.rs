@@ -568,6 +568,16 @@ codes! {
     /// An enum stored as the element of a batch (an input, a stage's result) that has no variant whose word is 0: a
     /// buffer starts and is resized as zeros, so a zero word would be no variant (D275).
     BatchEnumNoZero = 1012 => "GUST-E1012";
+    /// A `count(n);` clause that is not one of its forms: outside a stage of a `gpu_batch!`, given twice, or without one
+    /// name.
+    BatchCount = 1013 => "GUST-E1013";
+    /// A counted stage whose body is not the linear one-dimensional form of this release: a 2-D body, or a
+    /// `workgroup_size` with a y or z above 1 (the counted kernel runs over a two-dimensional grid of workgroups and
+    /// computes one linear index from it).
+    BatchCountBody = 1014 => "GUST-E1014";
+    /// A `count(n);` whose `n` is not a `u32` handle of the block (an input, a stage's result or the count of a library
+    /// op), or is the stage's own in-place target.
+    BatchCountHandle = 1015 => "GUST-E1015";
 }
 
 /// The error for `code` at `span`: the message prefixed with `[GUST-E....]`.

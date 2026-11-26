@@ -9,6 +9,13 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 - `DeviceOptions::with_storage_buffers(n)` (m14.lim-a, native only) opens a device with `n` storage buffers per shader
   stage instead of 8; off by default, and an adapter that offers fewer than `n` is `Error::DeviceLimit` at open.
+- A counted batch stage (m14.s2i, D278): `gpu_task!(count(n); capacity, |i| -> T { .. })` in a `gpu_batch!` runs over
+  the rows `0 .. min(n, capacity)` of a one-element `u32` handle `n` that a stage wrote (a result, the count of
+  `compact`, an in-place counter), with no readback; a count above the capacity is clamped, the rows from the count on
+  keep their values, and the CPU twin is equal over the whole buffer. The GPU launches it indirectly in the frame's one
+  submission (the grid is two-dimensional, so 65535 workgroups is no ceiling; a browser runs the same stage without the
+  indirect pass). A count that a resize remakes is zero, so the stage then runs zero rows. New codes `GUST-E1013` to
+  `GUST-E1015`.
 - Frame timing for a `gpu_batch!` (m14.pfft): `b.frame_timing(FrameTiming::Frame)` or `::Passes` in the build block
   (default `Off`, which makes no timestamp object), `FrameRun::time()` returning a ticket-like `FrameTime` future of
   `Option<FrameTimes>` (also reachable as `Submitted::frame_time`), and `Batch::frame_timing()` for the level and the

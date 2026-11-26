@@ -139,3 +139,36 @@ fn a_dependency_disables_its_defaults_on_one_inline_line_without_the_bridge_feat
     let spaced = "gust   =   { path = \"x\" ,  default-features=false }\n";
     assert!(dependency_disables_defaults(spaced, "gust"));
 }
+
+#[test]
+fn the_counted_stage_binary_is_judged_by_its_exit_code_its_adapter_and_the_counted_line() {
+    let good = format!(
+        "{ADAPTER_PREFIX}NVIDIA GeForce RTX 5090\n{COUNTED_PREFIX}, three counts (one above the capacity) equal the host model for 1000 rows\n"
+    );
+    assert_eq!(
+        judge_counted(true, &good, ""),
+        Ok("NVIDIA GeForce RTX 5090".to_owned())
+    );
+    let problems = judge_counted(false, &good, "error: boom").unwrap_err();
+    assert_eq!(problems.len(), 1);
+    assert!(problems[0].contains("error: boom"));
+    // No adapter line, or no counted line (the binary printed nothing, or a stage that did not run), is refused by name.
+    let no_adapter = judge_counted(true, COUNTED_PREFIX, "").unwrap_err();
+    assert!(
+        no_adapter
+            .iter()
+            .any(|problem| problem.contains(ADAPTER_PREFIX))
+    );
+    let no_line = judge_counted(true, &format!("{ADAPTER_PREFIX}x\n"), "").unwrap_err();
+    assert!(
+        no_line
+            .iter()
+            .any(|problem| problem.contains(COUNTED_PREFIX))
+    );
+    assert!(judge_counted(true, "", "").unwrap_err().len() >= 2);
+    // The binary sits beside `app` in the same release directory.
+    let app = std::path::Path::new("target")
+        .join("release")
+        .join(format!("app{}", std::env::consts::EXE_SUFFIX));
+    assert!(counted_binary_of(&app).ends_with(format!("counted{}", std::env::consts::EXE_SUFFIX)));
+}

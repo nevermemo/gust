@@ -33,6 +33,7 @@ use gust::{Call, GpuPod, Kernel, Resource, Run, kind};
 use crate::{Error, GpuBuffer, HeadlessDevice};
 
 mod build;
+mod counted;
 mod frame;
 mod ops;
 mod shape;

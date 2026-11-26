@@ -141,7 +141,10 @@ impl HeadlessDevice {
         encoder: &mut wgpu::CommandEncoder,
         stage: &GpuStage,
     ) -> Result<(), Error> {
-        self.record_prepared(encoder, &stage.dispatches)
+        match &stage.indirect {
+            Some(args) => self.record_counted(encoder, &stage.dispatches, args, None),
+            None => self.record_prepared(encoder, &stage.dispatches),
+        }
     }
 
     /// Finish the encoder and make the frame's one counted queue submission.

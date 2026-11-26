@@ -94,6 +94,12 @@ used to stand beside these rules are in the appendix "SEMANTICS run narratives (
   - *Evidence.* `cargo xtask check-cpu-target` builds a fixture in release under `cpu`, runs three kernels against
     independent host references, scans the binary for the compiler, the helper and the GPU runtime, and checks the
     refusals. That is `Cpu` evidence, never GPU evidence (D42).
+- **Counted batch stages are twin-run (D278).** A stage of a `gpu_batch!` that names a count (`count(n);`) runs over
+  the rows `0 .. min(n, capacity)` on the GPU, launched indirectly or over the grid of the capacity (both mean the
+  same), and on the twin, which reads `n` from its own buffer when the stage runs and loops over the same rows. A count
+  above the capacity is clamped on both, as the rule and not as an edge case; rows from the count on are not written on
+  either, so the whole buffer is equal. This is the one exception to the next item for the batch surface: the raw
+  indirect dispatch and the staged graph stay GPU-only.
 - **Not executed by the twin.** Indirect dispatch and staged graphs stay GPU-only. A kernel can opt out explicitly with
   `#[kernel(cpu = "unsupported")]` (D26). The examples that use them carry kernel-level twin evidence only (exists,
   m3.e2): `staged-graph` and `component-pool` run the twin of each of their kernels on the GPU's inputs to that kernel

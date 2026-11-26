@@ -33,6 +33,20 @@ is GUST-E1005. The frames share one set of buffers, so the data persists from fr
 frame does not write or set holds the value of the last frame that reached the queue, whatever n is. `examples/batch-basics` has a three-stage
 batch (1-D, 2-D and in place) with two tickets, and GUST-E1005 and E1006 are the diagnostics of the form.
 
+A stage can be counted: `gpu_task!(count(n); capacity, |i| -> T { .. })` (or `gpu_task!(count(n); &mut target, |i| { .. })`)
+keeps its ordinary extent as its capacity, and runs over the rows `0 .. min(n, capacity)`, where `n` is a one-element `u32`
+handle of the same block that a stage before it wrote: a stage result, the count of `gust::compact` or `gust::count`, or an
+in-place counter. A count above the capacity is clamped, not reported, and the rows from the count on are not written: they
+keep what they held (zeros in a new buffer). Nothing reads the count back, so a count that changes every frame costs no
+readback and no second submission. How the GPU launches the stage is the runtime's choice and gives the same result
+everywhere (where the device can, it dispatches from a grid that a one-invocation kernel writes from the count, inside the
+frame's one submission); the grid is two-dimensional, so a count is not limited to 65535 workgroups. A count of 0 runs no
+row, and so does a count that a resize remakes: a resize makes the buffer new, and a new buffer holds zeros, so a count
+the frame does not write again after the resize reads 0. The CPU twin reads `n` from its own buffer and loops over the
+same rows. A counted stage is 1-D and its workgroup is along x (GUST-E1014); `count(..)` is a clause of a stage of a
+batch (GUST-E1013) and names a handle of `u32`s of the block (GUST-E1015). `examples/batch-basics/tests/counted.rs` has the
+checks.
+
 A batch can report the GPU time of its frames. It is opt-in at the build: `b.frame_timing(FrameTiming::Frame)` (or
 `FrameTiming::Passes`) in the block makes the timestamp objects once, when the batch is sealed, and only on a device
 with timestamp queries; a batch built without it (the default, `Off`) makes none, and `batch.frame_timing()` says up

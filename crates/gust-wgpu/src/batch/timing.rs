@@ -242,11 +242,12 @@ impl HeadlessDevice {
         let clock = clock
             .downcast_mut::<GpuClock>()
             .expect("a GPU batch's clock is its own");
-        self.record_prepared_stamped(
-            encoder,
-            &stage.dispatches,
-            Some((&clock.timing.query_set, begin, end)),
-        )?;
+        let stamps = Some((&clock.timing.query_set, begin, end));
+        match &stage.indirect {
+            // A counted stage's two passes carry the stage's stamps: `begin` on the args pass, `end` on the counted one.
+            Some(args) => self.record_counted(encoder, &stage.dispatches, args, stamps)?,
+            None => self.record_prepared_stamped(encoder, &stage.dispatches, stamps)?,
+        }
         let written = u64::from(begin.is_some()) + u64::from(end.is_some());
         STAMPS.fetch_add(written, Ordering::Relaxed);
         Ok(())

@@ -1532,12 +1532,18 @@ pub(crate) struct GpuSuitePin {
 /// (`DeviceOptions::with_storage_buffers`) and the new test file `tests/storage_buffers.rs` (nine GPU tests, one
 /// `test result:` line). Updated by count; checked by a full Gpu suite run on the Radeon 890M (lane).
 ///
-/// Slice m14.s2s (part b): 673 over 69 became 674 over 69. The struct element slice adds one GPU test to
+/// Slice m14.pftrust1: 673 over 69 became 680 over 70. The unchecked-kernels option adds three unit tests to the library's
+/// `compile::modules` module (the setting selects wgpu's checks all on or all off; only the `unsafe` constructor turns
+/// them off; the module call passes the device's setting to wgpu, which needs an adapter) and the new test file `tests/unchecked_kernels.rs` (four GPU tests, one `test result:` line). Counted from
+/// the test lists on the merged tree (rebased on m14.lim-a); a full Gpu suite run on both adapters is owed at
+/// the merge.
+///
+/// Slice m14.s2s (part b): 680 over 70 became 681 over 70. The struct element slice adds one GPU test to
 /// `tests/limits.rs` (ten column buffers are a `DeviceLimit` against eight, the same data as rows is two bindings), on
 /// an existing line. Updated by count; checked by a full Gpu suite run on the Radeon 890M only (lane); RTX 5090 pending.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 674,
-    result_lines: 69,
+    passed: 681,
+    result_lines: 70,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

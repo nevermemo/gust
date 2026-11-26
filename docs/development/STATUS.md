@@ -1409,6 +1409,17 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       binary), check-web (a counted stage on the page), CPU twin; mutations caught. Opus review: merge after fixes;
       one fix round, re-check merge. Open: s2i.m2 (pre-registered small-cell timing), the downlevel flag in place of
       the backend check, s2i2 (the indirect launch on the page), a vacuous timed test on adapters without timestamps.
+    - m14.pftrust1: `unsafe fn DeviceOptions::unchecked_kernels` and `ShaderChecks` build the WGSL route's shader modules
+      without wgpu's runtime checks (bounds, loop bounding, integer division guards), with the safety contract in its
+      `# Safety` section; the default stays checked, adopted devices stay checked, the SPIR-V route and wasm32 ignore
+      it. Closing series (quiet window qw2, both adapters, three seeds, device order rotated): CLOSE by its rule on the
+      RTX 5090 (unchecked/checked 0.80 to 0.81 at both loop depths, the hand pair 0.80 to 0.81), no gain and no loss
+      on the Radeon 890M (medians 1.02 and 0.97). Opus review: merge after two fix rounds. Measured on loop-heavy kernels
+      on the RTX 5090 only, a ratio of two GUST rows in the bench group.
+    - Quiet window qw2 also read: pf.fuse K1 and K2 (one compute pass for a batch's dispatches recovers most of what
+      fused kernels gain at small sizes on both adapters: next slice pf.onepass, fusion deferred, its design scouted),
+      pf.dev2 GAIN in the timed path only (D282; slice pf.lazyts), pf.alone0 not reproduced at W1 1M; pf.alone0 at 16M
+      and pf.split0 lost their floors to a factor near 1.9 between identical processes on the RTX 5090 (reruns owed).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

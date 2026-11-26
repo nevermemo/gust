@@ -323,10 +323,14 @@ impl TaskPlan {
         ext: &syn::Ident,
         width: &syn::Ident,
         out: &syn::Ident,
+        linear: Option<&TokenStream>,
     ) -> Vec<syn::Stmt> {
         let mut statements = self.stmts.clone();
         if let Some(tail) = &self.tail {
-            let index = if self.rank == 1 {
+            let index = if let Some(linear) = linear {
+                // A counted stage (D278): the row is the linear index over the two-dimensional grid.
+                linear.clone()
+            } else if self.rank == 1 {
                 quote!(#gid.x)
             } else {
                 quote!(#gid.y * #ext.#width + #gid.x)
@@ -1248,6 +1252,11 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
         None => (list, None),
     };
 
+    // A counted stage (D278): the forms the first slice takes.
+    if let Some(count) = &options.count {
+        check_count(count, &options, batch.as_ref(), &list, rank)?;
+    }
+
     // The list: each entry is a form this slice takes; an in-place target has its `&mut [T]` entry.
     let target_name = target.as_ref().map(|(name, _)| name);
     for entry in &list {
@@ -1358,6 +1367,65 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
         batch,
     });
     Ok(plan)
+}
+
+/// The refusals of a counted stage (D278), by name: GUST-E1013 for a form the first slice does not take, GUST-E1014 for
+/// a count the body cannot be run over, GUST-E1015 for a count that is not a one-element `u32` handle of the block.
+fn check_count(
+    count: &syn::Ident,
+    options: &Options,
+    batch: Option<&BatchStage>,
+    list: &[RawBinding],
+    rank: usize,
+) -> syn::Result<()> {
+    let Some(batch) = batch else {
+        return Err(diagnostics::error(
+            Code::BatchCount,
+            count,
+            "`count(..)` is a clause of a stage of a `gpu_batch!`: a stage that runs alone has its extent, and a body \
+             that wants fewer rows guards on its own data",
+        ));
+    };
+    if rank != 1 {
+        return Err(diagnostics::error(
+            Code::BatchCountBody,
+            count,
+            "a counted stage is 1-D in this release (`|i| -> T { .. }`): a counted 2-D body with a host width is a \
+             later release",
+        ));
+    }
+    if options
+        .workgroup
+        .is_some_and(|size| size[1] != 1 || size[2] != 1)
+    {
+        return Err(diagnostics::error(
+            Code::BatchCountBody,
+            count,
+            "a counted stage's workgroup is along x (`workgroup_size(64, 1, 1)`): the rows are the linear index over \
+             a two-dimensional grid of groups",
+        ));
+    }
+    let view = batch.views.iter().find(|view| view.name == *count);
+    let element_is_u32 = list.iter().any(|entry| {
+        entry.name == *count
+            && matches!(&entry.ty, syn::Type::Reference(reference)
+                if reference.mutability.is_none()
+                    && matches!(&*reference.elem, syn::Type::Slice(slice)
+                        if matches!(&*slice.elem, syn::Type::Path(path) if path.path.is_ident("u32"))))
+    });
+    match view {
+        Some(view) if !view.target && element_is_u32 => Ok(()),
+        _ => Err(diagnostics::error(
+            Code::BatchCountHandle,
+            count,
+            format!(
+                "`{}` counts a stage, so it is a handle of the block holding `u32`s that the stage only reads (one \
+                 element, checked when the stage is recorded): a stage result, the count of `compact`, or an in-place \
+                 counter that another stage updates; not the stage's own target, a `Param` or a host value",
+                count.unraw()
+            ),
+        )),
+    }
 }
 
 pub(crate) fn batch_form(tokens: impl ToTokens, message: impl std::fmt::Display) -> syn::Error {
@@ -2039,69 +2107,79 @@ impl TaskPlan {
             .iter()
             .map(|local| quote!(::core::option::Option::Some(#local),));
 
-        quote! {
-            /// Record the stage into the batch being built: seal its kernel call and return the handle of its result.
-            #[doc(hidden)]
-            #[allow(clippy::too_many_arguments)]
-            pub fn __gust_batch<'__gust_b, __GustD #(, #enum_generics)*>(
-                mut __gust_draft: ::gust::batch::StageDraft<'__gust_b, __GustD>,
-                #(#view_parameters,)*
-                #(#param_parameters,)*
-                #(#scalar_parameters,)*
-            ) -> ::gust::batch::Stage<#output_element, #output_rank>
-            where
-                __GustD: ::gust::batch::BatchDevice + __GustPfHost + ::gust::Run<run, #count>,
-                #(#enum_generics: ::gust::GpuEnum,)*
-                #(#bounds)*
-            {
-                let __gust_dims = __gust_draft.dims();
-                let (__gust_x, __gust_y) = (__gust_dims[0], __gust_dims[1]);
-                #(#acquire)*
-                #(#param_ids)*
-                #(#width_ids)*
-                if !__gust_draft.ok() {
-                    return __gust_draft.abandon();
-                }
-                let (#(#some_locals)*) = (#(#locals,)*) else {
-                    return __gust_draft.abandon();
-                };
-                let __gust_write = __gust_draft.written();
-                let __gust_ids = __gust_draft.bound();
-                let __gust_extent = ::gust::Extent::new(__gust_x, __gust_y, 1u32);
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    if let ::core::result::Result::Err(__gust_error) = __gust_check_cap::<__GustD>(__gust_extent) {
-                        __gust_draft.fail_map(__gust_error);
+        // The update and the remake closures are the same for a counted stage, which also checks and hands over its count.
+        let counted_index = plan.options.count.as_ref().map(|name| {
+            plan.buffers()
+                .position(|(buffer, ..)| buffer == name)
+                .expect("the count is a binding of the stage")
+        });
+        let (require_count, counted_bounds) = match counted_index {
+            Some(index) => (
+                quote! {
+                    __gust_draft.require_count(__gust_ids[#index]);
+                    if !__gust_draft.ok() {
                         return __gust_draft.abandon();
                     }
+                },
+                quote!(+ ::gust::batch::CountedDevice + ::gust::Run<run_args, 3>),
+            ),
+            None => (TokenStream::new(), TokenStream::new()),
+        };
+        let finish = match counted_index {
+            Some(index) => {
+                let count_local = &locals[index];
+                let workgroup = proc_macro2::Literal::u32_suffixed(plan.workgroup[0]);
+                quote! {
+                    let __gust_count = ::std::sync::Arc::clone(&#count_local);
+                    __gust_draft.finish_counted::<#output_element, #output_rank, run, run_args, _, #count, 3>(
+                        (__gust_uniform, #(#locals,)*),
+                        __gust_count,
+                        __gust_x,
+                        #workgroup,
+                        |__gust_keep, __gust_extent| {
+                            let (__gust_uniform, #(#locals,)*) = __gust_keep;
+                            run::call_extent(__gust_extent, &**__gust_uniform, #(#resources,)*)
+                        },
+                        |__gust_keep, __gust_grid| {
+                            let (__gust_uniform, #(#locals,)*) = __gust_keep;
+                            run_args::call_extent(
+                                ::gust::Extent::new(1u32, 1u32, 1u32),
+                                &**__gust_uniform,
+                                ::gust::Independent(&**#count_local),
+                                ::gust::Independent(__gust_grid),
+                            )
+                        },
+                        move |__gust_device, __gust_frame, __gust_values| {
+                            ::gust::batch::BatchDevice::frame_uniform(
+                                __gust_device,
+                                __gust_frame,
+                                &__gust_rewritten,
+                                __gust_record(__gust_values),
+                            )
+                        },
+                        // The same stage over the buffers of a resized frame: the new capacity and the new buffers.
+                        move |__gust_layout| {
+                            let [__gust_nx, __gust_ny] = __gust_layout.dims(__gust_write);
+                            #[cfg(not(target_arch = "wasm32"))]
+                            {
+                                if let ::core::result::Result::Err(__gust_error) =
+                                    __gust_check_cap::<__GustD>(::gust::Extent::new(__gust_nx, __gust_ny, 1u32))
+                                {
+                                    return ::core::result::Result::Err(
+                                        ::gust::batch::Error::Device(__gust_error),
+                                    );
+                                }
+                            }
+                            ::core::result::Result::Ok((
+                                (::std::sync::Arc::clone(&__gust_again), #(#remade,)*),
+                                __gust_layout.buffer::<__GustD, u32>(__gust_ids[#index]),
+                                __gust_nx,
+                            ))
+                        },
+                    )
                 }
-                // The extent record is made from the frame's extents and parameters, so a resize changes it.
-                let __gust_record = move |__gust_values: &::gust::batch::Values| {
-                    let [__gust_x, __gust_y] = __gust_values.dims(__gust_write);
-                    #(#width_lets)*
-                    #record {
-                        __gust_ex: __gust_x,
-                        __gust_ey: __gust_y,
-                        __gust_ez: 1u32,
-                        #(#scalar_fields,)*
-                        #(#pads,)*
-                    }
-                };
-                let __gust_device = __gust_draft.device();
-                // The uniform is shared by the stage and its update; the CPU twin's is single-threaded.
-                #[allow(clippy::arc_with_non_send_sync)]
-                let __gust_uniform = match <__GustD as __GustPfHost>::__gust_uniform(
-                    &*__gust_device,
-                    __gust_record(&__gust_draft.values()),
-                ) {
-                    ::core::result::Result::Ok(uniform) => ::std::sync::Arc::new(uniform),
-                    ::core::result::Result::Err(__gust_error) => {
-                        __gust_draft.fail_map(__gust_error);
-                        return __gust_draft.abandon();
-                    }
-                };
-                let __gust_rewritten = ::std::sync::Arc::clone(&__gust_uniform);
-                let __gust_again = ::std::sync::Arc::clone(&__gust_uniform);
+            }
+            None => quote! {
                 __gust_draft.finish::<#output_element, #output_rank, run, _, #count>(
                     (__gust_uniform, __gust_extent, #(#locals,)*),
                     |__gust_keep| {
@@ -2137,6 +2215,74 @@ impl TaskPlan {
                         ))
                     },
                 )
+            },
+        };
+
+        quote! {
+            /// Record the stage into the batch being built: seal its kernel call and return the handle of its result.
+            #[doc(hidden)]
+            #[allow(clippy::too_many_arguments)]
+            pub fn __gust_batch<'__gust_b, __GustD #(, #enum_generics)*>(
+                mut __gust_draft: ::gust::batch::StageDraft<'__gust_b, __GustD>,
+                #(#view_parameters,)*
+                #(#param_parameters,)*
+                #(#scalar_parameters,)*
+            ) -> ::gust::batch::Stage<#output_element, #output_rank>
+            where
+                __GustD: ::gust::batch::BatchDevice + __GustPfHost + ::gust::Run<run, #count> #counted_bounds,
+                #(#enum_generics: ::gust::GpuEnum,)*
+                #(#bounds)*
+            {
+                let __gust_dims = __gust_draft.dims();
+                let (__gust_x, __gust_y) = (__gust_dims[0], __gust_dims[1]);
+                #(#acquire)*
+                #(#param_ids)*
+                #(#width_ids)*
+                if !__gust_draft.ok() {
+                    return __gust_draft.abandon();
+                }
+                let (#(#some_locals)*) = (#(#locals,)*) else {
+                    return __gust_draft.abandon();
+                };
+                let __gust_write = __gust_draft.written();
+                let __gust_ids = __gust_draft.bound();
+                #require_count
+                let __gust_extent = ::gust::Extent::new(__gust_x, __gust_y, 1u32);
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    if let ::core::result::Result::Err(__gust_error) = __gust_check_cap::<__GustD>(__gust_extent) {
+                        __gust_draft.fail_map(__gust_error);
+                        return __gust_draft.abandon();
+                    }
+                }
+                // The extent record is made from the frame's extents and parameters, so a resize changes it.
+                let __gust_record = move |__gust_values: &::gust::batch::Values| {
+                    let [__gust_x, __gust_y] = __gust_values.dims(__gust_write);
+                    #(#width_lets)*
+                    #record {
+                        __gust_ex: __gust_x,
+                        __gust_ey: __gust_y,
+                        __gust_ez: 1u32,
+                        #(#scalar_fields,)*
+                        #(#pads,)*
+                    }
+                };
+                let __gust_device = __gust_draft.device();
+                // The uniform is shared by the stage and its update; the CPU twin's is single-threaded.
+                #[allow(clippy::arc_with_non_send_sync)]
+                let __gust_uniform = match <__GustD as __GustPfHost>::__gust_uniform(
+                    &*__gust_device,
+                    __gust_record(&__gust_draft.values()),
+                ) {
+                    ::core::result::Result::Ok(uniform) => ::std::sync::Arc::new(uniform),
+                    ::core::result::Result::Err(__gust_error) => {
+                        __gust_draft.fail_map(__gust_error);
+                        return __gust_draft.abandon();
+                    }
+                };
+                let __gust_rewritten = ::std::sync::Arc::clone(&__gust_uniform);
+                let __gust_again = ::std::sync::Arc::clone(&__gust_uniform);
+                #finish
             }
         }
     }

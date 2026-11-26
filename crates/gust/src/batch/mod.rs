@@ -48,6 +48,14 @@
 //! that finds a kept plan takes one per replaced buffer and no more, and the frame that follows is exactly one
 //! submission, like any frame (D251).
 //!
+//! **Frame timing.** [`Builder::frame_timing`] (the option `b.frame_timing(FrameTiming::Frame)` in the block) lets a
+//! batch report the GPU time of the frames that ask: [`FrameRun::time`] returns a [`FrameTime`], a ticket-like future of
+//! the [`FrameTimes`] (the span from the begin of the frame's first pass to the end of its last, and at level
+//! [`FrameTiming::Passes`] one entry per stage that has a pass). The timestamp objects are made when the batch is
+//! sealed, only for a level that is not `Off` and only on a device with timestamp queries; [`Batch::frame_timing`]
+//! says which. A frame that did not ask records nothing. Timing adds timestamp writes to the passes that exist, plus
+//! one resolve and one copy in the frame's encoder; it never changes the passes and never adds a submission.
+//!
 //! A caller reads a batch's buffers on the GPU through a [`View`] ([`Batch::view`], decision D261): the batch's own
 //! buffer, kept alive by the view, with the batch's [`generation`](Batch::generation). What a reader sees follows the
 //! queue order of D258: a pass recorded into the same encoder after [`FrameRun::encode`] returned reads that frame, a
@@ -70,13 +78,19 @@ use std::sync::{
 use crate::map::{self, MapHost};
 use crate::{Call, GpuPod, Kernel, Resource, Run, kind};
 
+mod counted;
 mod element;
 mod frame;
 mod ops;
 mod shape;
 mod slot;
+mod timing;
 mod view;
 
+#[doc(hidden)]
+pub use counted::{CountedDevice, GROUP_LIMIT, grid_of, set_counted_launch};
+#[doc(hidden)]
+pub use counted::{CountedLaunch, counted_launch};
 pub use element::{Element, InvalidWord};
 #[doc(hidden)]
 pub use element::{pack_enum, unpack_enum};
@@ -89,6 +103,10 @@ use shape::Rule;
 pub use shape::{D1, D2, Derived, IntoShape, ParamType, Rank};
 #[doc(hidden)]
 pub use shape::{Derive, Layout, ShapeSource, Value, Values};
+use timing::TimingState;
+#[doc(hidden)]
+pub use timing::{DeviceTiming, FrameClock, OpenedTiming};
+pub use timing::{FrameTime, FrameTimes, FrameTiming, PassTime, TimingInfo};
 pub use view::View;
 
 /// A boxed future: `Send` on native targets, where a [`Ticket`] must be, and not on `wasm32`, whose handles are not.
@@ -197,6 +215,17 @@ pub enum Error {
         /// That word.
         word: u32,
     },
+    /// The count of a counted stage is not one element: it names a buffer of another length.
+    NotCount {
+        /// The batch.
+        batch: String,
+        /// The counted stage.
+        stage: String,
+        /// The buffer named as its count, by the name of its `let`.
+        buffer: String,
+        /// The number of elements it has.
+        len: usize,
+    },
     /// The device failed.
     Device(map::Error),
 }
@@ -270,6 +299,15 @@ impl core::fmt::Display for Error {
             } => write!(
                 f,
                 "`{stage}` of batch `{batch}` holds the word {word} at index {index}, which is no variant of its enum"
+            ),
+            Self::NotCount {
+                batch,
+                stage,
+                buffer,
+                len,
+            } => write!(
+                f,
+                "stage `{stage}` of batch `{batch}` is counted by `{buffer}`, which has {len} elements: a count is one `u32`"
             ),
             Self::Device(error) => write!(f, "device: {error}"),
         }
@@ -447,6 +485,60 @@ pub trait BatchDevice: MapHost + Sized + 'static {
     /// The device's failure to wait.
     #[cfg(not(target_arch = "wasm32"))]
     fn wait(&self, submission: &Self::Submission) -> Result<(), Self::Error>;
+
+    /// Make the timing objects of a batch of `stages` stages that keeps `in_flight` frames, or `None` when this device
+    /// cannot time frames (no timestamp queries, the CPU twin, `wasm32`). Called once, when the batch is sealed, and
+    /// only for a level that is not [`FrameTiming::Off`].
+    fn timing_open(
+        &self,
+        _level: FrameTiming,
+        _stages: usize,
+        _in_flight: usize,
+    ) -> Option<OpenedTiming> {
+        None
+    }
+
+    /// How many passes the stage dispatches: a stage with none is not timed.
+    fn stage_passes(&self, _stage: &Self::Prepared) -> usize {
+        0
+    }
+
+    /// Take what one timed frame records into, or `None` when the device has nothing free for it (no frame is then
+    /// timed).
+    fn frame_clock(&self, _timing: &DeviceTiming) -> Option<FrameClock> {
+        None
+    }
+
+    /// [`frame_stage`](Self::frame_stage) of a timed frame: the first pass of the stage writes timestamp slot `begin` and
+    /// its last pass slot `end`, where given.
+    ///
+    /// # Errors
+    ///
+    /// As `frame_stage`.
+    fn frame_stage_timed(
+        &self,
+        encoder: &mut Self::Encoder,
+        stage: &Self::Prepared,
+        _clock: &mut FrameClock,
+        _begin: Option<u32>,
+        _end: Option<u32>,
+    ) -> Result<(), Self::Error> {
+        self.frame_stage(encoder, stage)
+    }
+
+    /// Record the resolve of the first `slots` timestamp slots and the copy that reads them, after the last stage of a
+    /// timed frame.
+    fn frame_clock_end(&self, _encoder: &mut Self::Encoder, _clock: &mut FrameClock, _slots: u32) {}
+
+    /// The raw timestamps of a timed frame, after the submission that carried them: `None` when the copy never ran (the
+    /// caller's encoder was dropped, or never submitted).
+    fn begin_time(
+        &self,
+        _clock: FrameClock,
+        _submission: &Self::Submission,
+    ) -> BoxFuture<Result<Option<Vec<u64>>, map::Error>> {
+        Box::pin(core::future::ready(Ok(None)))
+    }
 }
 
 /// What names a device for `gpu_batch!`'s `on(..)`: an `Arc` of it, or a reference to one. Macro support.
@@ -837,6 +929,8 @@ pub(crate) struct Core<D: BatchDevice> {
     /// One counter per batch: moves when a buffer behind a handle is replaced (see [`Batch::generation`]).
     pub(crate) generation: AtomicU64,
     pub(crate) run: Mutex<RunState<D>>,
+    /// The timing objects, when the batch was built with a level and the device could make them.
+    pub(crate) timing: Option<TimingState>,
 }
 
 /// The buffer `any` holds, as `T`.
@@ -950,6 +1044,14 @@ impl<D: BatchDevice> Batch<D> {
             .collect()
     }
 
+    /// What this batch can tell about the time of its frames: `None` when it cannot (built without a timing level, or on a
+    /// device without timestamp queries, the CPU twin and `wasm32` included), and then every [`FrameRun::time`] of the
+    /// batch resolves to `Ok(None)`.
+    #[must_use]
+    pub fn frame_timing(&self) -> Option<TimingInfo> {
+        self.core.timing.as_ref().map(TimingState::info)
+    }
+
     /// Test support, outside the pre-1.0 promise (D111): how many extent records (the per-stage records that carry the
     /// parameters' values) the batch's frames have recorded so far. A frame records the record of each stage that has
     /// a parameter set in that frame or left stale by a frame recorded into a caller's encoder.
@@ -1025,6 +1127,7 @@ struct BuildState<D: BatchDevice> {
     stages: Vec<StageRec<D>>,
     params: Vec<ParamEntry>,
     exposed: Vec<usize>,
+    timing: FrameTiming,
 }
 
 impl<D: BatchDevice> BuildState<D> {
@@ -1210,6 +1313,20 @@ impl<D: BatchDevice> Builder<D> {
         }
     }
 
+    /// Let the batch's frames be timed at this level (see [`FrameTiming`]; the default is `Off`, which makes no timing
+    /// object). The timing objects are made when the block ends, and only when the device has timestamp queries; ask
+    /// the sealed batch with [`Batch::frame_timing`]. A call on a sealed builder records the error that
+    /// [`check`](Self::check) reports.
+    pub fn frame_timing(&self, level: FrameTiming) {
+        let mut state = self.state.borrow_mut();
+        if state.sealed {
+            let batch = state.name.clone();
+            state.fail(Error::Sealed { batch });
+            return;
+        }
+        state.timing = level;
+    }
+
     /// The first error this builder recorded, or [`Error::Sealed`] once the block has ended.
     ///
     /// # Errors
@@ -1343,6 +1460,17 @@ impl Error {
                 stage: stage.clone(),
                 index: *index,
                 word: *word,
+            },
+            Self::NotCount {
+                batch,
+                stage,
+                buffer,
+                len,
+            } => Self::NotCount {
+                batch: batch.clone(),
+                stage: stage.clone(),
+                buffer: buffer.clone(),
+                len: *len,
             },
             Self::Device(error) => {
                 Self::Device(map::Error::device(DeviceMessage(error.to_string())))
@@ -1632,6 +1760,7 @@ pub fn build<D: BatchDevice, H: DeviceRef<Device = D>, O>(
             stages: Vec::new(),
             params: Vec::new(),
             exposed: Vec::new(),
+            timing: FrameTiming::Off,
         })),
     };
     let output = {
@@ -1717,6 +1846,19 @@ pub fn build<D: BatchDevice, H: DeviceRef<Device = D>, O>(
         dims.push(entry.dims);
         live.push(entry.buffer);
     }
+    let depth = usize::try_from(in_flight.max(1)).unwrap_or(1);
+    // The one place a batch's timing objects are made (a level of `Off` makes none).
+    let timing = match state.timing {
+        FrameTiming::Off => None,
+        level => state
+            .device
+            .timing_open(level, stages.len(), depth)
+            .map(|opened| TimingState {
+                level,
+                handle: opened.handle,
+                period_ns: opened.period_ns,
+            }),
+    };
     let core = Core {
         id: state.id,
         name: Arc::from(state.name.as_str()),
@@ -1733,11 +1875,12 @@ pub fn build<D: BatchDevice, H: DeviceRef<Device = D>, O>(
             prepared,
             plans,
             live: false,
-            depth: usize::try_from(in_flight.max(1)).unwrap_or(1),
+            depth,
             pending: VecDeque::new(),
             stale: Vec::new(),
             extent_records: 0,
         }),
+        timing,
     };
     // The cell of `core` is not `Sync` (the CPU device's buffers are single-threaded); the batch is a shared handle for
     // its frames and tickets, which run on the thread that owns the device.

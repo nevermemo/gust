@@ -1382,6 +1382,33 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       GUST-E1005 for every element type (D276). Radeon 890M and RTX 5090 (batch-basics incl. enum_store, frames and a
       resize), check-examples on the 890M, CPU twin; store-encode and E0122 mutations caught. Opus review: merge after
       fixes; one fix round, re-check merge.
+    - m14.pfft (D277): frame timing on the batch frame path. `FrameTiming { Off, Frame, Passes }` at batch build,
+      `FrameRun::time()` per frame, a non-blocking `FrameTime` from the submitted frame (one span from the first pass's
+      begin to the last pass's end; at `Passes` one entry per stage), `Batch::frame_timing()` up front; `Ok(None)` on
+      the CPU twin, without timestamp queries, on wasm32 and for `Off`, which creates nothing. The span agrees with the
+      bench's per-dispatch quantity (probe C5) on the Radeon 890M and the RTX 5090; timing on costs about 0.4 ms per timed
+      frame on the 5090 and a few percent on the 890M (probe C6, in the guide). Both adapters (frame_time, batch-basics),
+      the no-timestamp route; span-end and Off mutations caught. Opus review: merge after fixes; one fix round, re-check
+      merge. Open: pf.ft2 (split the per-frame cost; batched resolve and map), pf.ftweb.
+    - m14.lim-a (D280): `DeviceOptions::with_storage_buffers(n)`, off by default, asks for n storage buffers per
+      shader stage at open; an adapter offering fewer is `DeviceLimit` before any device exists, n below 8 and wasm32
+      are refused by name, `device_request` carries n, adopt raises nothing, launches compare against the opened
+      limits, and the exported snippet of a kernel over 8 names the limit it needs. wgpu 30.0.1 reports 429391872 (Radeon
+      890M) and 524288 (RTX 5090) storage buffers per stage; a device opened with 16 got 16 on both. Both adapters
+      (storage_buffers, limits); open-check, option-ignored, request/launch mismatch and off-by-one mutations caught.
+      Opus review: merge after fixes; one fix round, re-check merge. Limitation: `par_for!` and `map` stage their slices
+      in pooled buffers before the launch check, so a refused launch has taken and returned them (nothing outstanding,
+      no pipeline). Open: lim-b (batch-build refusal, `compact` with separate keep and count buffers, check-web over 8,
+      the raised-device precompiled case), m14.lim-web.
+    - m14.s2i (D278, D281): counted batch stages. `gpu_task!(count(n); ..)` keeps the stage's extent as its capacity
+      and runs over `0 .. min(n, capacity)` of a one-element `u32` handle a stage of the block wrote; rows from the
+      count on keep their values, the count is clamped, the CPU twin reads n. Native: a one-invocation args kernel and
+      an indirect launch on a two-dimensional grid in the frame's one submission; wasm32 and adapters without indirect
+      execution: the bounded launch, same kernel and result. Frame timing records counted stages. Codes GUST-E1013 to
+      E1015. Radeon 890M and RTX 5090 (batch-basics counted, frame timing, resize), check-precompiled (a counted
+      binary), check-web (a counted stage on the page), CPU twin; mutations caught. Opus review: merge after fixes;
+      one fix round, re-check merge. Open: s2i.m2 (pre-registered small-cell timing), the downlevel flag in place of
+      the backend check, s2i2 (the indirect launch on the page), a vacuous timed test on adapters without timestamps.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

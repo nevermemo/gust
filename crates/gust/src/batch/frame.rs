@@ -9,6 +9,8 @@ use core::task::{Context, Poll, Waker};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use super::FrameTime;
+use super::timing::{Recorded, TimeCell, TimePlan, TimedFrame};
 use super::{
     BatchDevice, BoxFuture, Core, Element, Empty, Error, Layout, OpPlan, Operands, PLANS_KEPT,
     Param, ParamType, Stage, Value, Values, map, typed,
@@ -190,6 +192,8 @@ pub struct FrameRun<D: BatchDevice> {
     /// The buffers this frame has written or reserved a read-back of: a later `set` may not change their extents.
     used: Vec<usize>,
     reads: Vec<Box<dyn ReadSlot<D>>>,
+    /// The frame's time, once [`time`](Self::time) asked for it.
+    timed: Option<TimedFrame>,
     /// The frame was recorded into a caller's encoder (`encode`): the host cannot tell whether that encoder ran.
     encoded: bool,
     /// The frame was handed to `submit`'s last step: nothing is left for `Drop` to undo.
@@ -295,6 +299,7 @@ impl<D: BatchDevice> super::Batch<D> {
             staged: None,
             used: Vec::new(),
             reads: Vec::new(),
+            timed: None,
             encoded: false,
             done: false,
         })
@@ -719,6 +724,63 @@ impl<D: BatchDevice> FrameRun<D> {
         Ok(Ticket { cell })
     }
 
+    /// Ask for the GPU time of this frame: a [`FrameTime`], read after the submission like a ticket, with the span from
+    /// the begin of the frame's first pass to the end of its last one (see [`FrameTimes`](super::FrameTimes)). Only a frame that asks
+    /// records timestamps, so a frame of a timed batch that does not call this costs nothing; calling it again returns
+    /// the same measurement.
+    ///
+    /// A batch built without a timing level, a device without timestamp queries (the CPU twin among them) and a frame
+    /// with no pass give `Ok(None)` when the frame is submitted; [`Batch::frame_timing`](super::Batch::frame_timing)
+    /// tells which of these a batch is, up front. On the CPU twin there is never a time:
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use std::task::{Context, Poll, Waker};
+    /// use gust::batch::FrameTiming;
+    /// use gust::cpu::CpuDevice;
+    ///
+    /// fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    ///     let mut future = std::pin::pin!(future);
+    ///     let mut context = Context::from_waker(Waker::noop());
+    ///     loop {
+    ///         if let Poll::Ready(value) = future.as_mut().poll(&mut context) {
+    ///             return value;
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let device = Arc::new(CpuDevice::new());
+    /// let (mut batch, x) = gust::gpu_batch!("timed", on(&device); in_flight(1); |b| {
+    ///     b.frame_timing(FrameTiming::Frame);
+    ///     let x = b.input::<u32>(4u32);
+    ///     x
+    /// })?;
+    /// assert!(batch.frame_timing().is_none());
+    /// let mut frame = block_on(batch.begin())?;
+    /// frame.write(&x, &[1, 2, 3, 4])?;
+    /// let time = frame.time();
+    /// let values = frame.ticket(&x)?;
+    /// let _submitted = frame.submit()?;
+    /// assert_eq!(block_on(values)?, [1, 2, 3, 4]);
+    /// assert!(block_on(time)?.is_none());
+    /// # Ok::<(), gust::batch::Error>(())
+    /// ```
+    pub fn time(&mut self) -> FrameTime {
+        if self.timed.is_none() {
+            // On `wasm32` the device's futures are not `Send`: the cell stays on its thread there.
+            #[allow(clippy::arc_with_non_send_sync)]
+            let cell = Arc::new(TimeCell::new(&self.core.name));
+            self.timed = Some(TimedFrame {
+                cell,
+                recorded: None,
+            });
+        }
+        let timed = self.timed.as_ref().expect("set above");
+        FrameTime {
+            cell: Arc::clone(&timed.cell),
+        }
+    }
+
     /// Run the frame: one queue submission on the GPU whatever the number of tickets. Returns at once.
     ///
     /// # Errors
@@ -839,15 +901,80 @@ impl<D: BatchDevice> FrameRun<D> {
         device
             .frame_uploads(&mut frame, encoder)
             .map_err(device_error::<D>)?;
-        for prepared in prepared.iter().flatten() {
-            device
-                .frame_stage(encoder, prepared)
-                .map_err(device_error::<D>)?;
-        }
+        self.record_stages(encoder, &prepared)?;
         for slot in &mut self.reads {
             slot.record(device, encoder);
         }
         Ok(frame)
+    }
+
+    /// The passes of the stages, in order: when the frame asked for its time and the batch can give it, the first pass
+    /// of the frame writes the first timestamp and the last pass the last one (and at level `Passes` each stage's
+    /// first and last pass write that stage's pair); a resolve and a copy follow the last stage. A frame that did not
+    /// ask records none of it.
+    fn record_stages(
+        &mut self,
+        encoder: &mut D::Encoder,
+        prepared: &[Option<Arc<D::Prepared>>],
+    ) -> Result<(), Error> {
+        let core = Arc::clone(&self.core);
+        let device = &*core.device;
+        let mut timing = None;
+        if let (Some(timed), Some(state)) = (self.timed.as_mut(), core.timing.as_ref()) {
+            // The timed stages: the ones that have a pass (a stage over zero elements has none).
+            let groups: Vec<usize> = prepared
+                .iter()
+                .enumerate()
+                .filter(|(_, stage)| {
+                    stage
+                        .as_deref()
+                        .is_some_and(|stage| device.stage_passes(stage) > 0)
+                })
+                .map(|(index, _)| index)
+                .collect();
+            if !groups.is_empty()
+                && let Some(clock) = device.frame_clock(&state.handle)
+            {
+                let plan = TimePlan {
+                    level: state.level,
+                    names: groups
+                        .iter()
+                        .map(|&index| core.stages[index].name.clone())
+                        .collect(),
+                    period_ns: state.period_ns,
+                };
+                timed.recorded = None;
+                timing = Some((groups, plan, clock));
+            }
+        }
+        let Some((groups, plan, mut clock)) = timing else {
+            for stage in prepared.iter().flatten() {
+                device
+                    .frame_stage(encoder, stage)
+                    .map_err(device_error::<D>)?;
+            }
+            return Ok(());
+        };
+        for (index, stage) in prepared.iter().enumerate() {
+            let Some(stage) = stage else { continue };
+            match groups.iter().position(|&group| group == index) {
+                Some(group) => {
+                    let (begin, end) = plan.slots(group);
+                    device
+                        .frame_stage_timed(encoder, stage, &mut clock, begin, end)
+                        .map_err(device_error::<D>)?;
+                }
+                None => device
+                    .frame_stage(encoder, stage)
+                    .map_err(device_error::<D>)?,
+            }
+        }
+        device.frame_clock_end(encoder, &mut clock, plan.used());
+        self.timed
+            .as_mut()
+            .expect("a timed frame keeps its cell")
+            .recorded = Some(Recorded { clock, plan });
+        Ok(())
     }
 
     /// Last step of `submit`: the frame is on the device; start its read-backs, keep its parameters and let the next
@@ -857,6 +984,15 @@ impl<D: BatchDevice> FrameRun<D> {
         for slot in self.reads.drain(..) {
             slot.start(&core.device, &submission);
         }
+        let time = self.timed.take().map(|timed| {
+            match timed.recorded {
+                Some(Recorded { clock, plan }) => timed
+                    .cell
+                    .start(core.device.begin_time(clock, &submission), plan),
+                None => timed.cell.none(),
+            }
+            FrameTime { cell: timed.cell }
+        });
         {
             let mut run = core.run.lock().unwrap_or_else(PoisonError::into_inner);
             if self.encoded {
@@ -873,7 +1009,11 @@ impl<D: BatchDevice> FrameRun<D> {
             run.pending.push_back(submission.clone());
         }
         self.done = true;
-        Submitted { core, submission }
+        Submitted {
+            core,
+            submission,
+            time,
+        }
     }
 }
 
@@ -884,6 +1024,9 @@ impl<D: BatchDevice> Drop for FrameRun<D> {
         }
         for slot in self.reads.drain(..) {
             slot.abandon();
+        }
+        if let Some(timed) = self.timed.take() {
+            timed.cell.fail();
         }
         if self.encoded || self.frame.is_none() {
             // The frame was recorded: the caller may still submit its encoder, or a CPU submission failed after its
@@ -951,6 +1094,8 @@ impl<D: BatchDevice> Encoded<D> {
 pub struct Submitted<D: BatchDevice> {
     core: Arc<Core<D>>,
     submission: D::Submission,
+    /// The time of the frame, when it asked for one.
+    time: Option<FrameTime>,
 }
 
 impl<D: BatchDevice> core::fmt::Debug for Submitted<D> {
@@ -962,6 +1107,12 @@ impl<D: BatchDevice> core::fmt::Debug for Submitted<D> {
 }
 
 impl<D: BatchDevice> Submitted<D> {
+    /// The time of the frame, when it asked for one with [`FrameRun::time`]: the same measurement that call returned.
+    #[must_use]
+    pub fn frame_time(&self) -> Option<FrameTime> {
+        self.time.clone()
+    }
+
     /// Wait until the frame has run. Not available on `wasm32`, where nothing may block (use
     /// [`finished`](Self::finished)).
     ///

@@ -2120,6 +2120,33 @@ Fixture: `tests/ui/batch-enum-no-zero`.
 Write instead: a variant with the word 0 (`Dim = 0`), or a parameter if the enum is never stored.
 Decision: D275, plan m14.s2, slice s2e2c.
 
+### GUST-E1013 `count(..)` outside a stage of a `gpu_batch!`, or given twice
+
+A counted stage (D278) names the handle that holds its row count with the clause `count(n);` in front of its extent: `gpu_task!(count(n); capacity, |i| -> T { .. })` or `gpu_task!(count(n); &mut target, |i| { .. })`. The clause belongs to a stage of a `gpu_batch!`: a `gpu_task!` that runs alone has its own extent, and a `par_for!` has its loop's, so a body that wants fewer rows guards on its own data. The clause is also refused when it is given twice or does not take exactly one name.
+Reached through `#[gpu_module]`, raised by `gpu_task!` and `par_for!` (the function-like macros that share the validator of `#[gpu_module]`), at the clause's name.
+Rejected: `gpu_task!(count(n); 4u32, [n: &[u32]], |i| -> u32 { .. })` outside a batch, `par_for!(count(n); i in 0..4u32, ..)`, `count(n); count(m);`.
+Fixture: `tests/ui/batch-count-outside`.
+Write instead: the stage inside a `gpu_batch!` block, with `n` a handle of the block.
+Decision: D278, plan m14.s2, slice s2i.
+
+### GUST-E1014 body of a counted stage that this release does not have
+
+A counted stage is 1-D and its workgroup is along x: the rows are the linear index `gid.y * (65535 * workgroup) + gid.x` over the two-dimensional grid of groups the runtime launches, so a counted `|x, y|` body (a 2-D stage with a host width) and a `workgroup_size(a, b, c)` with `b` or `c` other than 1 are a later release. There is no spelling of a counted library op (`gust::sum`, `scan`, `compact`: an op keeps its own count rule), and a user-filled args handle stays in the raw tier (`StagedGraph::run_indirect`); neither has a form to refuse; nor has a `pixel` batch stage, which has no spelling in `gpu_task!`.
+Reached through `#[gpu_module]`, raised by `gpu_task!` inside a `gpu_batch!`, at the clause's name.
+Rejected: `gpu_task!(count(n); &size, |x, y| -> u32 { .. })`, `gpu_task!(count(n); workgroup_size(8, 8, 1); ..)`.
+Fixture: `tests/ui/batch-count-2d`.
+Write instead: a 1-D counted stage over a flat buffer (index a 2-D layout by hand with a width parameter).
+Decision: D278, plan m14.s2, slice s2i.
+
+### GUST-E1015 count of a stage that is not a handle of `u32`s of the block
+
+The count `n` of `count(n);` is a handle of the same block that holds `u32`s and that the stage only reads: a stage result, an input, the count handle of `gust::compact` or `gust::count`, or an in-place counter that another stage updates. One element is checked when the stage is recorded (`Error::NotCount` otherwise), and a handle of another batch is not a name of the block (no capture list names a count), so it is refused here too. A `Param`, a host value, a handle of another element type and the stage's own in-place target are refused at the name. A count above the capacity is clamped, not an error (SEMANTICS.md).
+Reached through `#[gpu_module]`, raised by `gpu_task!` inside a `gpu_batch!`, at the name.
+Rejected: `count(limit)` with `limit` a `Param<u32>`, `count(weights)` with `weights` a `Stage<f32>`, `gpu_task!(count(t); &mut t, ..)`.
+Fixture: `tests/ui/batch-count-handle`, `tests/ui/batch-count-foreign` (a handle of another batch).
+Write instead: write the count into a one-element `u32` handle (`b.input::<u32>(1u32)`, or a stage that writes it) and name that handle.
+Decision: D278, plan m14.s2, slice s2i.
+
 ### GUST-E1020 `#[derive(GpuStruct)]` on something that is not a GPU struct of the contract
 
 `#[derive(GpuStruct)]` (re-exported as `gust::GpuStruct`, next to the trait of the same name) implements the sealed marker `gust::GpuStruct` and `gust::GpuPod` (with the very impl and `const` assertions that `#[gpu_module]` writes for its own structs: a field sits at the sum of the sizes before it and the size is the sum of all, so no padding can hide), checks that each field type is the canonical type its name stands for (`type UVec2 = IVec2;` is rustc's E0308 at the field, fixture `tests/ui/gpu-struct-alias`; an alias of another size also fails the size assertions), all for a free-standing struct, so that a batch can hold it as a row. A derive cannot change the struct, so it checks the shape as written and refuses, each refusal once, at its own token and in source order: no `#[repr(C)]` (reported at the struct's name: the derive does not add it) or any other representation (`#[repr(C, align(16))]`, `#[repr(transparent)]`, `#[repr(u32)]`, at the attribute); generics or a `where` clause; a tuple or unit struct; a struct with no field; a size over 4 GiB; and the derive on an enum or a union. A field that is refused is GUST-E1021, GUST-E0204 or GUST-E0212, and a layout with a gap is GUST-E0208. The struct must also derive `Clone` and `Copy` itself: the derive list that names `GpuStruct` is not visible to the derive, so the supertraits of `GpuPod` enforce them as rustc's own error at the struct. The impl is `unsafe`, as the one `#[gpu_module]` writes; measured: a crate with `#![forbid(unsafe_code)]` still compiles the derive (fixture `tests/ui/gpu-struct-forbid-unsafe`, `cargo check`). The derive also writes a hidden `macro_rules!` named `__gust_struct_<Name>`, re-exported as `<Name>` next to the struct, which hands the struct's name and fields to a batch stage by the protocol of `#[derive(GpuEnum)]`; it carries no `#[repr]` and no derive, because the module that receives it adds its own and refuses a hand-written one (GUST-E0106, GUST-E0107). Same crate only.

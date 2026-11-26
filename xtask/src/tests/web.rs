@@ -1290,8 +1290,8 @@ fn the_batch_page_names_its_own_files_and_closing_part_and_reports_no_selected_k
         })
         .count();
     assert_eq!(
-        wgsl, 4,
-        "a body and a split artifact for each of the two stages"
+        wgsl, 8,
+        "a body and a split artifact for each of the four kernels (two stages, the counted stage and its args kernel)"
     );
 }
 

@@ -192,6 +192,8 @@ struct StageInput {
     /// The keyword options, as written (each with its `;`).
     options: TokenStream,
     krate: bool,
+    /// The `count(n);` clause's handle (D278).
+    count: Option<syn::Ident>,
     shape: syn::Expr,
     list: Vec<RawBinding>,
     closure: syn::ExprClosure,
@@ -201,6 +203,7 @@ impl Parse for StageInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut options = TokenStream::new();
         let mut krate = false;
+        let mut count = None;
         while let Some((keyword, _)) = input.cursor().ident() {
             if !input.peek2(syn::token::Paren) {
                 break;
@@ -208,7 +211,7 @@ impl Parse for StageInput {
             let text = keyword.to_string();
             if !matches!(
                 text.as_str(),
-                "workgroup_size" | "on" | "crate" | "descriptor"
+                "workgroup_size" | "on" | "crate" | "descriptor" | "count"
             ) {
                 break;
             }
@@ -216,6 +219,9 @@ impl Parse for StageInput {
             let group: proc_macro2::Group = input.parse()?;
             let semicolon: Token![;] = input.parse()?;
             krate |= text == "crate";
+            if text == "count" {
+                count = diagnostics::parse2::<syn::Ident>(Code::BatchCount, group.stream()).ok();
+            }
             options.extend(quote!(#ident #group #semicolon));
         }
         let shape: syn::Expr = input.parse()?;
@@ -252,6 +258,7 @@ impl Parse for StageInput {
         Ok(Self {
             options,
             krate,
+            count,
             shape,
             list,
             closure,
@@ -494,6 +501,7 @@ impl Rewriter {
         let StageInput {
             options,
             krate,
+            count,
             shape,
             list,
             closure,
@@ -535,10 +543,29 @@ impl Rewriter {
             entries.push(quote!(#name: &mut Stage<#element>));
         }
         let mut failures = Vec::new();
+        // The count of a counted stage (D278) is a handle of the block the stage captures, read or not by its body.
+        if let Some(n) = &count
+            && !written.contains(n)
+            && declared_target.as_ref() != Some(n)
+        {
+            match self.lookup(n) {
+                Some(Kind::Handle(element)) => entries.push(quote!(#n: Stage<#element>)),
+                _ => failures.push(diagnostics::error(
+                    Code::BatchCountHandle,
+                    n,
+                    format!(
+                        "`{}` counts a stage, so it is a handle of the block that holds `u32`s (a stage result, the \
+                         count of `compact`, an in-place counter); this name is not one",
+                        n.unraw()
+                    ),
+                )),
+            }
+        }
         for used in names_in(&closure.body) {
             if parameters.contains(&used)
                 || written.contains(&used)
                 || declared_target.as_ref() == Some(&used)
+                || count.as_ref() == Some(&used)
             {
                 continue;
             }

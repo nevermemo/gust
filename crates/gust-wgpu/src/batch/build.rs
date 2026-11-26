@@ -11,7 +11,9 @@ use crate::{BufferDispatch, Error, HeadlessDevice, PreparedDispatch};
 #[doc(hidden)]
 pub struct GpuStage {
     pub(super) dispatches: Vec<PreparedDispatch>,
-    _keep: Box<dyn Any>,
+    /// A counted stage launched indirectly: the buffer its grid is read from (the second dispatch is the counted one).
+    pub(super) indirect: Option<wgpu::Buffer>,
+    pub(super) _keep: Box<dyn Any>,
 }
 
 impl HeadlessDevice {
@@ -34,6 +36,7 @@ impl HeadlessDevice {
         };
         Ok(GpuStage {
             dispatches,
+            indirect: None,
             _keep: Box::new(keep),
         })
     }
@@ -61,6 +64,7 @@ impl HeadlessDevice {
     ) -> Result<GpuStage, Error> {
         Ok(GpuStage {
             dispatches: self.prepare_extent_batch(dispatches)?,
+            indirect: None,
             _keep: Box::new(keep),
         })
     }

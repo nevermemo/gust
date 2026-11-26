@@ -1,0 +1,386 @@
+//! Frame timing on the GPU device: one query set, one resolve buffer and a few read-back buffers per timed batch, made
+//! in [`GpuTiming::new`] when the batch is sealed. They belong to the batch, never to the device's timestamp profiler
+//! (which is locked across a wait and so cannot serve frames in flight).
+//!
+//! A timed frame (one that called `FrameRun::time`) writes timestamps in passes that exist anyway (the first pass of a
+//! stage writes its begin, the last its end), then records one resolve and one copy into its encoder; a frame that did
+//! not ask records none of it. Frames in flight share the query set and the resolve buffer, because the queue runs
+//! them in order and each frame copies its slots out before the next one writes them (decision D258); only the
+//! read-back buffer is the frame's own, taken from the pool when the frame is recorded and given back by the mapping's
+//! callback, so a caller that never reads its frame times still gets its buffers back as the device is polled. When the
+//! pool is empty and the batch already holds its cap of buffers the frame is not timed (`Ok(None)`), it never waits. A
+//! buffer of a frame whose caller's encoder never ran, or may still run (the `Encoded` was dropped after it recorded the
+//! copy), is retired, not reused, as a ticket's staging buffer is; a retired buffer, a buffer lost to a failed mapping
+//! and one dropped with an unread frame time are counted out, so the pool makes a replacement on demand and never
+//! shrinks for good.
+
+use core::task::Poll;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+
+use gust::batch::{BoxFuture, DeviceTiming, FrameClock, FrameTiming, OpenedTiming};
+
+use super::frame::{Done, GpuSubmission};
+use super::{GpuStage, map_error};
+use crate::{Error, HeadlessDevice};
+
+/// Timing objects made by [`GpuTiming::new`], timestamp slots written by passes and resolves recorded, in this process
+/// (test support: `HeadlessDevice::frame_timing_counters`).
+static OBJECTS: AtomicU64 = AtomicU64::new(0);
+static STAMPS: AtomicU64 = AtomicU64::new(0);
+static RESOLVES: AtomicU64 = AtomicU64::new(0);
+static RETIRED: AtomicU64 = AtomicU64::new(0);
+
+/// Bytes of one timestamp.
+const TICK_BYTES: u64 = size_of::<u64>() as u64;
+
+/// What a timed batch keeps on the device.
+pub(super) struct GpuTiming {
+    query_set: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    /// The read-back buffers nobody is using.
+    free: Mutex<Vec<wgpu::Buffer>>,
+    /// How many read-back buffers exist (free or in use), and the most the batch keeps.
+    existing: AtomicUsize,
+    cap: usize,
+    device: wgpu::Device,
+    bytes: u64,
+}
+
+impl GpuTiming {
+    /// The one place a batch's timing objects are made: a query set and a resolve buffer of `slots` timestamps, and
+    /// `readbacks` read-back buffers of the same size.
+    fn new(device: &wgpu::Device, slots: u32, readbacks: usize) -> Self {
+        OBJECTS.fetch_add(1, Ordering::Relaxed);
+        let bytes = u64::from(slots) * TICK_BYTES;
+        let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("GUST batch frame timestamps"),
+            ty: wgpu::QueryType::Timestamp,
+            count: slots,
+        });
+        let resolve = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("GUST batch frame timestamp resolve"),
+            size: bytes,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let this = Self {
+            query_set,
+            resolve,
+            free: Mutex::new(Vec::new()),
+            existing: AtomicUsize::new(0),
+            cap: readbacks,
+            device: device.clone(),
+            bytes,
+        };
+        // A few buffers ready for the first frames; the rest are made when a frame needs one.
+        let ready = (readbacks / 2).max(1);
+        let buffers: Vec<wgpu::Buffer> = (0..ready).map(|_| this.make()).collect();
+        this.existing.store(buffers.len(), Ordering::Relaxed);
+        *this.free.lock().unwrap_or_else(PoisonError::into_inner) = buffers;
+        this
+    }
+
+    fn make(&self) -> wgpu::Buffer {
+        self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("GUST batch frame timestamp readback"),
+            size: self.bytes,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// A free buffer, or a new one while the batch holds fewer than its cap; `None` when all of them are in use.
+    fn take(&self) -> Option<wgpu::Buffer> {
+        if let Some(buffer) = self
+            .free
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop()
+        {
+            return Some(buffer);
+        }
+        self.existing
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |held| {
+                (held < self.cap).then_some(held + 1)
+            })
+            .ok()
+            .map(|_| self.make())
+    }
+
+    /// A buffer that must not be reused (a copy into it may still run, or it was lost): counted out, so a later frame
+    /// makes a replacement.
+    fn retire(&self, buffer: wgpu::Buffer) {
+        drop(buffer);
+        self.forget();
+    }
+
+    /// One buffer is gone without being given back.
+    fn forget(&self) {
+        self.existing.fetch_sub(1, Ordering::AcqRel);
+        RETIRED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn give(&self, buffer: wgpu::Buffer) {
+        self.free
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(buffer);
+    }
+}
+
+/// What one timed frame holds: the batch's objects and its own read-back buffer, given back if the frame is dropped
+/// before it was submitted.
+struct GpuClock {
+    timing: Arc<GpuTiming>,
+    readback: Option<wgpu::Buffer>,
+    slots: u32,
+    /// The copy into the buffer was recorded into an encoder, which a caller may still submit.
+    recorded: bool,
+}
+
+impl Drop for GpuClock {
+    fn drop(&mut self) {
+        if let Some(buffer) = self.readback.take() {
+            if self.recorded {
+                // The ticket rule: a recorded copy may still run, so the buffer is not reused.
+                self.timing.retire(buffer);
+            } else {
+                self.timing.give(buffer);
+            }
+        }
+    }
+}
+
+/// The words a read-back mapping landed, and the buffer when the frame's own future gives it back.
+struct Landing {
+    done: Done,
+    outcome: Mutex<Option<Result<Vec<u64>, String>>>,
+    buffer: Mutex<Option<wgpu::Buffer>>,
+    timing: Arc<GpuTiming>,
+}
+
+impl Drop for Landing {
+    fn drop(&mut self) {
+        // A buffer nobody decided about (the frame's time was dropped unread): retired, as when the encoder never ran.
+        let buffer = self
+            .buffer
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(buffer) = buffer {
+            self.timing.retire(buffer);
+        }
+    }
+}
+
+impl HeadlessDevice {
+    /// The counters of the frame timing hook, in this process: timing objects made, timestamp slots written by passes,
+    /// resolves recorded, read-back buffers retired. Test support, outside the pre-1.0 promise (D111).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn frame_timing_counters(&self) -> (u64, u64, u64, u64) {
+        (
+            OBJECTS.load(Ordering::Relaxed),
+            STAMPS.load(Ordering::Relaxed),
+            RESOLVES.load(Ordering::Relaxed),
+            RETIRED.load(Ordering::Relaxed),
+        )
+    }
+
+    /// The timing objects of a batch, when this device has timestamp queries.
+    pub(super) fn open_timing(
+        &self,
+        level: FrameTiming,
+        stages: usize,
+        in_flight: usize,
+    ) -> Option<OpenedTiming> {
+        if !self
+            .device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
+        {
+            return None;
+        }
+        let period = self.queue.get_timestamp_period();
+        if !(period.is_finite() && period > 0.0) {
+            return None;
+        }
+        let slots = match level {
+            FrameTiming::Passes => 2 * stages.max(1),
+            _ => 2,
+        };
+        let slots = u32::try_from(slots).ok()?;
+        let timing = GpuTiming::new(&self.device, slots, 2 * in_flight + 4);
+        Some(OpenedTiming {
+            handle: Arc::new(timing),
+            period_ns: f64::from(period),
+        })
+    }
+
+    /// A clock for one frame, or `None` when every read-back buffer is in use.
+    pub(super) fn take_clock(timing: &DeviceTiming) -> Option<FrameClock> {
+        let timing = Arc::clone(timing).downcast::<GpuTiming>().ok()?;
+        let readback = timing.take()?;
+        Some(Box::new(GpuClock {
+            timing,
+            readback: Some(readback),
+            slots: 0,
+            recorded: false,
+        }))
+    }
+
+    /// Record the passes of a stage with the begin and end timestamps given.
+    pub(super) fn encode_stage_timed(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        stage: &GpuStage,
+        clock: &mut FrameClock,
+        begin: Option<u32>,
+        end: Option<u32>,
+    ) -> Result<(), Error> {
+        let clock = clock
+            .downcast_mut::<GpuClock>()
+            .expect("a GPU batch's clock is its own");
+        let stamps = Some((&clock.timing.query_set, begin, end));
+        match &stage.indirect {
+            // A counted stage's two passes carry the stage's stamps: `begin` on the args pass, `end` on the counted one.
+            Some(args) => self.record_counted(encoder, &stage.dispatches, args, stamps)?,
+            None => self.record_prepared_stamped(encoder, &stage.dispatches, stamps)?,
+        }
+        let written = u64::from(begin.is_some()) + u64::from(end.is_some());
+        STAMPS.fetch_add(written, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Resolve the first `slots` timestamps and copy them to the frame's read-back buffer.
+    pub(super) fn end_clock(
+        encoder: &mut wgpu::CommandEncoder,
+        clock: &mut FrameClock,
+        slots: u32,
+    ) {
+        let clock = clock
+            .downcast_mut::<GpuClock>()
+            .expect("a GPU batch's clock is its own");
+        let readback = clock
+            .readback
+            .as_ref()
+            .expect("a clock keeps its buffer until the frame is submitted");
+        let bytes = u64::from(slots) * TICK_BYTES;
+        encoder.resolve_query_set(&clock.timing.query_set, 0..slots, &clock.timing.resolve, 0);
+        encoder.copy_buffer_to_buffer(&clock.timing.resolve, 0, readback, 0, bytes);
+        clock.slots = slots;
+        clock.recorded = true;
+        RESOLVES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Request the mapping, after the submission that carried the copy, and return the future of the raw timestamps:
+    /// `None` when the submission was a caller's and its epoch word says the encoder never ran.
+    pub(super) fn start_time(
+        &self,
+        clock: FrameClock,
+        submission: &GpuSubmission,
+    ) -> BoxFuture<Result<Option<Vec<u64>>, gust::map::Error>> {
+        let mut clock = clock
+            .downcast::<GpuClock>()
+            .expect("a GPU batch's clock is its own");
+        let buffer = clock
+            .readback
+            .take()
+            .expect("a clock keeps its buffer until the frame is submitted");
+        let bytes = u64::from(clock.slots) * TICK_BYTES;
+        let timing = Arc::clone(&clock.timing);
+        let epoch = submission.epoch.clone();
+        let landing = Arc::new(Landing {
+            done: Done::default(),
+            outcome: Mutex::new(None),
+            buffer: Mutex::new(None),
+            timing: Arc::clone(&timing),
+        });
+        let landed = Arc::clone(&landing);
+        let mapped = buffer.clone();
+        // Without an epoch word (the batch's own submission) the callback gives the buffer back as soon as it has read
+        // it, whether or not anyone reads the frame's time; with one, the future decides after the word is read.
+        let recycle = epoch.is_none();
+        buffer.map_async(wgpu::MapMode::Read, 0..bytes, move |result| {
+            let ticks = result.map_err(|error| error.to_string()).and_then(|()| {
+                let view = mapped
+                    .get_mapped_range(0..bytes)
+                    .map_err(|error| error.to_string())?;
+                let ticks: Vec<u64> = view[..]
+                    .as_chunks::<{ size_of::<u64>() }>()
+                    .0
+                    .iter()
+                    .map(|word| u64::from_le_bytes(*word))
+                    .collect();
+                drop(view);
+                mapped.unmap();
+                Ok(ticks)
+            });
+            if ticks.is_ok() {
+                if recycle {
+                    timing.give(mapped);
+                } else {
+                    *landed.buffer.lock().unwrap_or_else(PoisonError::into_inner) = Some(mapped);
+                }
+            } else {
+                // A failed mapping loses the buffer: counted out, so a later frame makes another.
+                drop(mapped);
+                timing.forget();
+            }
+            *landed
+                .outcome
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(ticks);
+            landed.done.finish();
+        });
+        let device = self.device.clone();
+        let timing = Arc::clone(&clock.timing);
+        Box::pin(async move {
+            let polling = device.clone();
+            let landing_of = Arc::clone(&landing);
+            core::future::poll_fn(move |cx| {
+                if let Err(error) = polling.poll(wgpu::PollType::Poll) {
+                    return Poll::Ready(Err(Error::Poll(error.to_string())));
+                }
+                landing_of.done.poll(cx.waker()).map(Ok)
+            })
+            .await
+            .map_err(map_error)?;
+            let ticks = landing
+                .outcome
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .expect("the callback stores the outcome before it finishes")
+                .map_err(|message| map_error(Error::Map(message)))?;
+            let Some(epoch) = epoch else {
+                return Ok(Some(ticks));
+            };
+            let ran = core::future::poll_fn(move |cx| {
+                if let Err(error) = device.poll(wgpu::PollType::Poll) {
+                    return Poll::Ready(Err(Error::Poll(error.to_string())));
+                }
+                epoch.poll(cx.waker()).map_err(Error::Map)
+            })
+            .await
+            .map_err(map_error)?;
+            let buffer = landing
+                .buffer
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if !ran {
+                // Retired: the caller may still submit that encoder, which would write into a buffer reused by then.
+                if let Some(buffer) = buffer {
+                    timing.retire(buffer);
+                }
+                return Ok(None);
+            }
+            if let Some(buffer) = buffer {
+                timing.give(buffer);
+            }
+            Ok(Some(ticks))
+        })
+    }
+}

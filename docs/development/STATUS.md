@@ -1348,6 +1348,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       (stored elements follow D270: the twin panics, the ticket reports InvalidEnum, s2e2c); the blanket
       `impl<E: GpuEnum> ParamType` rules out a second blanket on `ParamType`, so a D254 struct gets a per-type impl
       from its derive.
+    - m14.s2b2 (D262, D274): a batch with library op stages is resized between frames. A `set` of a shape parameter
+      re-plans each op stage for the new length (`Error::OpResize` is gone); the plan joins the staged state and commits
+      with it, so a refused or dropped frame keeps the old plan, and the two most recent plans per op stage are kept
+      (measured on the 890M: a back-and-forth resize builds no plan twice). A plan binds the frame's own buffers; scan
+      and compact outputs follow their input and move the D261 generation, reductions keep one-element outputs. A `set`
+      may take submissions of its own; the frame after it is one. Radeon 890M and RTX 5090 (resize_ops, gust-algo batch
+      tests), check-examples on the 890M, CPU device; mutation caught. Opus review: merge after fixes; one fix round,
+      re-check merge.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -1542,9 +1542,13 @@ pub(crate) struct GpuSuitePin {
 /// library unit test to `batch::counted` (`an_adapter_without_indirect_execution_takes_the_bounded_launch`) and left
 /// the count unchanged, so the count above started one short. Checked by a full Gpu suite run on the Radeon 890M (a
 /// merge gate on dev), which printed 681 over 70.
+///
+/// Slice m14.lazyts, merged on 681 over 70: 681 over 70 became 684 over 71. The lazy timestamp slice adds the new test
+/// file `tests/lazy_timestamps.rs` (three GPU tests, one `test result:` line). Updated by count; the file passed on
+/// both adapters in the lane, and the full Gpu suite is owed at the merge gate.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 681,
-    result_lines: 70,
+    passed: 684,
+    result_lines: 71,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

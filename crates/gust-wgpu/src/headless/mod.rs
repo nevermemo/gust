@@ -8,9 +8,9 @@ mod open;
 pub(crate) use adapter::*;
 pub use adopt::DeviceRequest;
 
+use crate::LazyTimestampProfiler;
 #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]
 use crate::RouteEvent;
-use crate::TimestampProfiler;
 use crate::cache::PipelineCache;
 use gust::capability::Capability;
 use std::sync::Mutex;
@@ -53,7 +53,7 @@ pub struct HeadlessDevice {
     pub(crate) queue: wgpu::Queue,
     pub(crate) adapter_info: wgpu::AdapterInfo,
     pub(crate) pipeline_cache: Mutex<PipelineCache>,
-    pub(crate) timestamp_profiler: Option<Mutex<TimestampProfiler>>,
+    pub(crate) timestamp_profiler: LazyTimestampProfiler,
     /// Limits every launch check reads: the opened device's, or lower ones installed
     /// by `with_limits`.
     pub(crate) limits: wgpu::Limits,

@@ -13,6 +13,8 @@ breaks existing code bumps the minor version, and the promise is described in th
   `DeviceOptions::shader_checks` report the setting. A device adopted with `HeadlessDevice::adopt` stays checked, the
   SPIR-V route is unaffected and `wasm32` ignores the option. Measured on loop-heavy kernels on the RTX 5090 only;
   no gain on the Radeon 890M.
+- A `HeadlessDevice` makes its timestamp query set and buffers at the first timed dispatch batch, or timed graph run
+  (m14.lazyts), not when it opens; an untimed device creates none, and the device times come back as before.
 - `DeviceOptions::with_storage_buffers(n)` (m14.lim-a, native only) opens a device with `n` storage buffers per shader
   stage instead of 8; off by default, and an adapter that offers fewer than `n` is `Error::DeviceLimit` at open.
 - A counted batch stage (m14.s2i, D278): `gpu_task!(count(n); capacity, |i| -> T { .. })` in a `gpu_batch!` runs over

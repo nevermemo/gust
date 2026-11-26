@@ -195,7 +195,7 @@ impl HeadlessDevice {
                 label: Some("GUST profiled typed batch encoder"),
             });
 
-        let Some(timestamp_profiler) = &self.timestamp_profiler else {
+        let Some(timestamp_profiler) = self.timestamp_profiler.as_ref() else {
             for dispatch in &prepared {
                 dispatch.encode(
                     &self.device,

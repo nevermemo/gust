@@ -4,7 +4,7 @@
 //! gust-bench run --out run1.json [--label NAME] [--quick] [--workloads W1,W3,W4-256-zipf] [--sizes N,N] [--backends a,b]
 //!                [--group publishable|spirv|ablation] [--ablation bind-group-reuse,staging-reuse,one-submission,all-on|all]
 //!                [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S]
-//!                [--cold-only] [--cold-repeats N] [--seed N] [--with gust-setup,gust-shader,gust-device,gust-unchecked,hand-unchecked]
+//!                [--cold-only] [--cold-repeats N] [--seed N] [--with gust-setup,gust-shader,gust-device,gust-unchecked,hand-unchecked,wgsl-prebuilt-b]
 //!                [--functional]   # correctness only, quick sizes, any adapter (lavapipe included), no sampler, no timing published
 //!                [--adapter "NAME"] # the one adapter whose name contains NAME (letter case ignored), for both devices of the run
 //! gust-bench aggregate --json out.json --md out.md run1.json run2.json run3.json
@@ -70,7 +70,7 @@ use serde_json::{Value, json};
 use wgsl_wgpu::{HandWgsl, Mode, Switch, WgpuContext};
 use workloads::Workload;
 
-const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W3,...] [--sizes N,N] [--backends a,b] [--group publishable|spirv|ablation] [--ablation LIST|all-on|all] [--with gust-setup,gust-shader,gust-device,gust-unchecked,hand-unchecked] [--device-order checked-first|unchecked-first] [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N] [--functional] [--adapter NAME]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench dump-kernels --out DIR (slang-runtime build)\n       gust-bench probe-adapters\n       gust-bench profile --out FILE [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS] (profile-counts build)\n       gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall,gust-gpu] [--label batch16|end_to_end] (wgpu-trace build)\n       gust-bench list";
+const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W3,...] [--sizes N,N] [--backends a,b] [--group publishable|spirv|ablation] [--ablation LIST|all-on|all] [--with gust-setup,gust-shader,gust-device,gust-unchecked,hand-unchecked,wgsl-prebuilt-b] [--device-order checked-first|unchecked-first] [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N] [--functional] [--adapter NAME]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench dump-kernels --out DIR (slang-runtime build)\n       gust-bench probe-adapters\n       gust-bench profile --out FILE [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS] (profile-counts build)\n       gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall,gust-gpu] [--label batch16|end_to_end] (wgpu-trace build)\n       gust-bench list";
 
 /// The order in which the checked and the unchecked GUST device of a pf.trust run are opened.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -117,10 +117,11 @@ struct Options {
     cap_secs: Option<f64>,
     /// The raw `--ablation` list (switch names, `all-on`, `all`), parsed where the hand-WGSL backends exist.
     ablation: Option<String>,
-    /// `--with gust-setup,gust-shader,gust-device,gust-unchecked,hand-unchecked`: the probe backends, appended to the
+    /// `--with gust-setup,gust-shader,gust-device,gust-unchecked,hand-unchecked,wgsl-prebuilt-b`: the probe backends, appended to the
     /// publishable group in the order given (see `gpu_backends`). The first three are the m10.b1c hand probes;
     /// `gust-unchecked` is `gust-gpu` on a second device opened with `DeviceOptions::unchecked_kernels` and
-    /// `hand-unchecked` is the hand text with wgpu's runtime checks off (pf.trust, its reproduction control).
+    /// `hand-unchecked` is the hand text with wgpu's runtime checks off (pf.trust, its reproduction control);
+    /// `wgsl-prebuilt-b` is the reference again on a device of its own, opened like the hand one (a noise floor).
     with_probe: Vec<String>,
     /// `--device-order checked-first|unchecked-first`: which of the two GUST devices of `--with gust-unchecked` is opened
     /// first (default `checked-first`). The first-created variant can be slower on the Radeon 890M, so a series swaps it.
@@ -270,7 +271,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 for item in value("--with")?.split(',') {
                     match item {
                         "gust-setup" | "gust-shader" | "gust-device" | "gust-unchecked"
-                        | "hand-unchecked" => {
+                        | "hand-unchecked" | "wgsl-prebuilt-b" => {
                             options.with_probe.push(item.to_owned());
                         }
                         other => {
@@ -278,7 +279,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
                                 "--with unchecked is gone: the unchecked hand rows are the spirv group's own (D193); run them with --group spirv in the spirv-route build".to_owned()
                             } else {
                                 format!(
-                                    "--with takes gust-setup, gust-shader, gust-device, gust-unchecked or hand-unchecked, not {other}"
+                                    "--with takes gust-setup, gust-shader, gust-device, gust-unchecked, hand-unchecked or wgsl-prebuilt-b, not {other}"
                                 )
                             });
                         }
@@ -410,6 +411,7 @@ fn gpu_backends(
     // ignores them (it judges GUST against wgsl-prebuilt only). The pf.trust probes: `gust-unchecked` is GUST itself on a
     // second device opened with `DeviceOptions::unchecked_kernels` (its id follows the device, `gust-gpu-unchecked`), and
     // `hand-unchecked` is the hand text with the checks off (`wgsl-prebuilt-unchecked`), the reproduction control.
+    // `wgsl-prebuilt-b` is the reference again on a device of its own, opened like the hand one.
     for (index, (name, probe)) in probes.iter().enumerate() {
         let backend: Box<dyn Backend> = match probe {
             Probe::Gust(unchecked) => {
@@ -1088,12 +1090,18 @@ fn run(options: &Options) -> BenchResult<bool> {
     let mut probes = Vec::new();
     for name in &options.with_probe {
         // `gust-setup` and `gust-device` have a device of their own (set up like GUST's), `gust-unchecked` a GUST device
-        // of its own opened with unchecked kernels; the others share the hand device.
+        // of its own opened with unchecked kernels, `wgsl-prebuilt-b` one set up like the hand device; the others
+        // share the hand device.
         let probe = if name == "gust-unchecked" {
             Probe::Gust(match unchecked_device.take() {
                 Some(opened) => opened,
                 None => open_unchecked_gust_device(selection.as_ref(), adapter_limits)?,
             })
+        } else if name == "wgsl-prebuilt-b" {
+            Probe::Hand(Rc::new(WgpuContext::open_on(
+                options.adapter.as_deref(),
+                adapter_limits,
+            )?))
         } else if name == "gust-setup" || name == "gust-device" {
             Probe::Hand(Rc::new(WgpuContext::open_like_gust_on(
                 options.adapter.as_deref(),

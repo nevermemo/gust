@@ -1337,6 +1337,17 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       file records it as `build.profile`, and the two `profile` fields no longer claim `release` for a `functional`
       build. The judge checks the profile name, not its settings. Unit tests and a mutation; no GPU run. Opus review:
       merge; one fix round. Found on the way: the bench workspace has no fmt or clippy check beyond `budget-kit`.
+    - m14.s2e2b (D270): a batch stage body reads a `Param<E>` of a `#[derive(GpuEnum)]` enum and `match`es on it.
+      The derive hands a private copy of the enum to a second `gpu_batch!` expansion step, which emits it and a decoder
+      into the stage's Slang (so the content hash covers it) and checks the copy against the type the host packs
+      (per-variant asserts and an exhaustive match: a mismatched copy is a compile error). A renamed import and a
+      same-name clash get their own messages; an alias or a generic parameter type is not accepted (E1005); the enum
+      must be in the same crate. A block with no user type expands token for token as before (golden test).
+      Radeon 890M and RTX 5090 (enum_param), check-examples on the 890M; mutations caught. Opus review: merge after
+      fixes; one fix round, re-check merge. Notes for later: the decoder's last-variant fallback is for parameters only
+      (stored elements follow D270: the twin panics, the ticket reports InvalidEnum, s2e2c); the blanket
+      `impl<E: GpuEnum> ParamType` rules out a second blanket on `ParamType`, so a D254 struct gets a per-type impl
+      from its derive.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

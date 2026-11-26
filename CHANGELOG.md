@@ -7,6 +7,13 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- Frame timing for a `gpu_batch!` (m14.pfft): `b.frame_timing(FrameTiming::Frame)` or `::Passes` in the build block
+  (default `Off`, which makes no timestamp object), `FrameRun::time()` returning a ticket-like `FrameTime` future of
+  `Option<FrameTimes>` (also reachable as `Submitted::frame_time`), and `Batch::frame_timing()` for the level and the
+  adapter's tick. The span runs from the begin of the frame's first pass to the end of its last, with the frame's upload
+  and ticket copies outside it; level `Passes` adds one entry per stage that has a pass. A batch on a device without
+  timestamp queries (the CPU twin, `wasm32`) gives `Ok(None)`. A frame that does not ask records no timestamp, resolve
+  or copy. Checked on the Radeon 890M and the RTX 5090.
 - Every batch entry point (`dispatch_batch`, `dispatch_batch_timed`, `submit_batch`, `encode_batch`,
   `submit_batch_read`, `encode_batch_read`, and the stages of a `gpu_batch!` that hold several dispatches; m14.pfbg2):
   consecutive dispatches of a batch that run the same kernel over exactly the same resources now share one bind group

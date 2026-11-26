@@ -1,7 +1,7 @@
 //! Batches recorded into a caller's command encoder (m14.encb): [`HeadlessDevice::encode_batch`] and the
 //! [`EncodedJob`] it returns. [`HeadlessDevice::submit_batch`] is built from the same two steps.
 
-use crate::{BufferDispatch, Error, HeadlessDevice, PreparedDispatch, WgpuJob};
+use crate::{BufferDispatch, Error, HeadlessDevice, PassTimestamps, PreparedDispatch, WgpuJob};
 #[cfg(target_arch = "wasm32")]
 use std::sync::{Arc, atomic::Ordering};
 
@@ -105,8 +105,30 @@ impl HeadlessDevice {
         encoder: &mut wgpu::CommandEncoder,
         prepared: &[PreparedDispatch],
     ) -> Result<(), Error> {
-        for dispatch in prepared {
-            dispatch.encode(&self.device, encoder, BATCH_PASS_LABEL, None)?;
+        self.record_prepared_stamped(encoder, prepared, None)
+    }
+
+    /// [`record_prepared`](Self::record_prepared) with timestamp writes: the first pass writes slot `begin` of the
+    /// query set and the last pass slot `end`, where given (a frame's timing hook, which times the passes that exist and
+    /// never changes them). `None` writes none.
+    pub(crate) fn record_prepared_stamped(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        prepared: &[PreparedDispatch],
+        stamps: Option<(&wgpu::QuerySet, Option<u32>, Option<u32>)>,
+    ) -> Result<(), Error> {
+        let last = prepared.len().saturating_sub(1);
+        for (index, dispatch) in prepared.iter().enumerate() {
+            let timestamps = stamps.and_then(|(query_set, begin, end)| {
+                let begin = (index == 0).then_some(begin).flatten();
+                let end = (index == last).then_some(end).flatten();
+                (begin.is_some() || end.is_some()).then_some(PassTimestamps {
+                    query_set,
+                    begin,
+                    end,
+                })
+            });
+            dispatch.encode(&self.device, encoder, BATCH_PASS_LABEL, timestamps)?;
         }
         Ok(())
     }

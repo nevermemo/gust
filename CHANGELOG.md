@@ -21,6 +21,16 @@ breaks existing code bumps the minor version, and the promise is described in th
 - An enum parameter and a `match` in a `gpu_batch!` stage (m14.s2e2b): `b.param::<Mode>(..)` with `Mode` deriving
   `GpuEnum`, `frame.set(&mode, Mode::Curve)`, and `match mode.get() { .. }` in a stage body, equal to the host and
   the CPU twin. `GpuEnum` implies `ParamType`; a missing derive names the fix.
+- An enum stored as the element of a batch's buffers (m14.s2e2c): `b.input::<Phase>(n)` and a stage typed `-> Phase`,
+  read in a stage body with `phase[i]` through a `match`. The host writes and reads `Phase` itself (`frame.write`,
+  `ticket`, `Blocking::read`) through the new `gust::batch::Element` trait, whose blanket impl keeps every `GpuPod`
+  element as it was; the device holds one `u32` word per element. A word that is no variant reads as the last variant
+  in a body, and `Error::InvalidEnum` names the lowest such index on the host read. The enum needs a variant whose word
+  is 0 (`GUST-E1012`). An in-place enum target, a host slice of enums and an enum operand of a library op are refused
+  by name.
+  A `GpuPod` struct of your own as `b.input::<Particle>(n)` inside a `gpu_batch!` block is no longer accepted: the
+  macro cannot tell it from an enum, so rustc says "cannot find macro `Particle` in this scope" and "`Particle` is not
+  a GPU enum". There is no workaround inside the macro; build such a batch with `gust::batch::build` instead.
 - `cargo xtask check-web` runs a second page, `examples/web-batch-frames` (m14.s2c): a `gpu_batch!` with `in_flight(2)`
   in headless Chrome records and submits frame N+1 while frame N's ticket is still pending, then checks both frames and
   a third one against the host computation exactly. Browser run only, on the adapter Chrome picks.

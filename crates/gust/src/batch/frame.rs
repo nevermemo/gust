@@ -10,51 +10,54 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::{
-    BatchDevice, BoxFuture, Core, Empty, Error, Layout, OpPlan, Operands, PLANS_KEPT, Param,
-    ParamType, Stage, Value, Values, map, typed,
+    BatchDevice, BoxFuture, Core, Element, Empty, Error, Layout, OpPlan, Operands, PLANS_KEPT,
+    Param, ParamType, Stage, Value, Values, map, typed,
 };
 use crate::GpuPod;
 
-/// One read-back of a frame, reserved by [`FrameRun::ticket`]: a future of the values (row-major for a 2-D handle).
+/// One read-back of a frame, reserved by [`FrameRun::ticket`]: a future of the values (row-major for a 2-D handle). A
+/// handle of an enum resolves to [`Error::InvalidEnum`] when a word it read is no variant (D275).
 ///
 /// It owns what it needs and borrows nothing: it is `'static`, and `Send` on native targets (not on `wasm32`, whose
 /// handles are not). A frame that is never submitted resolves it to [`Error::NotSubmitted`]. Polling it on a native
 /// GPU device polls the device, so a caller without a runtime polls it in a loop (`gust::task::Task::dispatch` does
 /// the same for a task).
 #[must_use = "a ticket is a future of the values: await it"]
-pub struct Ticket<T> {
+pub struct Ticket<T: Element> {
     cell: Arc<TicketCell<T>>,
 }
 
-impl<T> core::fmt::Debug for Ticket<T> {
+impl<T: Element> core::fmt::Debug for Ticket<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Ticket").finish_non_exhaustive()
     }
 }
 
-enum TicketState<T> {
+enum TicketState<T: Element> {
     /// The frame has not been submitted; holds the waker of the last poll.
     Reserved(Option<Waker>),
-    /// The frame was submitted: the read-back.
-    Running(BoxFuture<Result<Option<Vec<T>>, map::Error>>),
+    /// The frame was submitted: the read-back, in the words the device holds.
+    Running(BoxFuture<Result<Option<Vec<T::Word>>, map::Error>>),
     /// The frame was never submitted.
     Failed,
     /// The result was handed out.
     Taken,
 }
 
-struct TicketCell<T> {
+struct TicketCell<T: Element> {
     batch: String,
+    /// The stage or input the words are read from, for [`Error::InvalidEnum`].
+    stage: String,
     state: Mutex<TicketState<T>>,
 }
 
-impl<T> TicketCell<T> {
+impl<T: Element> TicketCell<T> {
     fn lock(&self) -> MutexGuard<'_, TicketState<T>> {
         // No code runs under the lock that can leave the state half-written.
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn start(&self, read: BoxFuture<Result<Option<Vec<T>>, map::Error>>) {
+    fn start(&self, read: BoxFuture<Result<Option<Vec<T::Word>>, map::Error>>) {
         let waker = {
             let mut state = self.lock();
             let TicketState::Reserved(waker) = &mut *state else {
@@ -85,7 +88,7 @@ impl<T> TicketCell<T> {
     }
 }
 
-impl<T> Future for Ticket<T> {
+impl<T: Element> Future for Ticket<T> {
     type Output = Result<Vec<T>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -104,7 +107,13 @@ impl<T> Future for Ticket<T> {
                 Poll::Ready(result) => {
                     *state = TicketState::Taken;
                     Poll::Ready(match result {
-                        Ok(Some(values)) => Ok(values),
+                        // The checked unpack: an enum element is a value only if its word is a variant.
+                        Ok(Some(words)) => T::unpack(words).map_err(|bad| Error::InvalidEnum {
+                            batch: self.cell.batch.clone(),
+                            stage: self.cell.stage.clone(),
+                            index: bad.index(),
+                            word: bad.word(),
+                        }),
                         // The copy never ran: the encoder it was recorded into was not submitted.
                         Ok(None) => Err(Error::NotSubmitted {
                             batch: self.cell.batch.clone(),
@@ -142,12 +151,15 @@ trait ReadSlot<D: BatchDevice> {
     fn abandon(self: Box<Self>);
 }
 
-struct Reserved<D: BatchDevice, T: GpuPod> {
-    read: D::Read<T>,
+struct Reserved<D: BatchDevice, T: Element> {
+    read: D::Read<T::Word>,
     cell: Arc<TicketCell<T>>,
 }
 
-impl<D: BatchDevice, T: GpuPod + Send> ReadSlot<D> for Reserved<D, T> {
+impl<D: BatchDevice, T: Element + Send> ReadSlot<D> for Reserved<D, T>
+where
+    T::Word: Send,
+{
     fn record(&mut self, device: &D, encoder: &mut D::Encoder) {
         device.frame_read(encoder, &mut self.read);
     }
@@ -326,11 +338,20 @@ impl<D: BatchDevice> FrameRun<D> {
     /// [`Error::Foreign`] for a handle of another batch, [`Error::NotOutput`] for one the block did not return,
     /// [`Error::NotInput`] for a stage, [`Error::ShapeMismatch`] for a slice of another length, and the device's
     /// failures.
-    pub fn write<T: GpuPod, R>(&mut self, handle: &Stage<T, R>, data: &[T]) -> Result<(), Error>
+    pub fn write<T: Element, R>(&mut self, handle: &Stage<T, R>, data: &[T]) -> Result<(), Error>
     where
-        D::Buffer<T>: 'static,
+        D::Buffer<T::Word>: 'static,
     {
         let id = self.core.locate(handle)?;
+        if handle.is_raw() {
+            return Err(Error::NotInput {
+                batch: self.core.name.clone(),
+                stage: format!(
+                    "{} (the words of an enum, write the enum)",
+                    self.core.buffers[id].name
+                ),
+            });
+        }
         let entry = &self.core.buffers[id];
         if !entry.input {
             return Err(Error::NotInput {
@@ -348,14 +369,14 @@ impl<D: BatchDevice> FrameRun<D> {
                 found: format!("{} elements", data.len()),
             });
         }
-        let buffer = self.buffer_of::<T>(id);
+        let buffer = self.buffer_of::<T::Word>(id);
         let frame = self
             .frame
             .as_mut()
             .expect("a live frame holds its recorder");
         self.core
             .device
-            .frame_write(frame, &buffer, data)
+            .frame_write(frame, &buffer, &T::pack(data))
             .map_err(device_error::<D>)?;
         self.used.push(id);
         Ok(())
@@ -673,20 +694,22 @@ impl<D: BatchDevice> FrameRun<D> {
     /// # Errors
     ///
     /// [`Error::Foreign`], [`Error::NotOutput`] and the device's failures.
-    pub fn ticket<T: GpuPod + Send, R>(&mut self, handle: &Stage<T, R>) -> Result<Ticket<T>, Error>
+    pub fn ticket<T: Element + Send, R>(&mut self, handle: &Stage<T, R>) -> Result<Ticket<T>, Error>
     where
-        D::Buffer<T>: 'static,
+        T::Word: Send,
+        D::Buffer<T::Word>: 'static,
     {
         let id = self.core.locate(handle)?;
-        let buffer = self.buffer_of::<T>(id);
+        let buffer = self.buffer_of::<T::Word>(id);
         let read = self
             .core
             .device
-            .reserve_read::<T>(&buffer)
+            .reserve_read::<T::Word>(&buffer)
             .map_err(device_error::<D>)?;
         self.used.push(id);
         let cell = Arc::new(TicketCell {
             batch: self.core.name.clone(),
+            stage: self.core.buffers[id].name.clone(),
             state: Mutex::new(TicketState::Reserved(None)),
         });
         self.reads.push(Box::new(Reserved::<D, T> {
@@ -1000,16 +1023,19 @@ impl<D: BatchDevice> Blocking<'_, D> {
     /// # Errors
     ///
     /// [`Error::Foreign`], [`Error::NotOutput`] and the device's failures.
-    pub fn read<T: GpuPod, R>(&self, handle: &Stage<T, R>) -> Result<Vec<T>, Error>
+    pub fn read<T: Element, R>(&self, handle: &Stage<T, R>) -> Result<Vec<T>, Error>
     where
-        D::Buffer<T>: 'static,
+        D::Buffer<T::Word>: 'static,
     {
-        let (_, buffer, _) = self.batch.core.output(handle)?;
-        self.batch
-            .core
-            .device
-            .readback(&buffer)
-            .map_err(device_error::<D>)
+        let core = &self.batch.core;
+        let (id, buffer, _) = core.output(handle)?;
+        let words = core.device.readback(&buffer).map_err(device_error::<D>)?;
+        T::unpack(words).map_err(|bad| Error::InvalidEnum {
+            batch: core.name.clone(),
+            stage: core.buffers[id].name.clone(),
+            index: bad.index(),
+            word: bad.word(),
+        })
     }
 }
 

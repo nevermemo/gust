@@ -580,6 +580,9 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "twin_an_enum_parameter_and_a_match_equal_the_host",
             "twin_an_enum_parameter_set_back_to_its_value_changes_nothing",
             "twin_an_enum_parameter_with_two_frames_in_flight_equals_the_host",
+            // `tests/enum_element.rs`: an enum stored as the element of a batch (m14.s2e2c).
+            "twin_a_word_that_is_no_variant_reads_as_the_last_variant_in_a_body",
+            "twin_an_enum_input_mapped_through_a_match_to_an_enum_result_equals_the_host",
             // `tests/resize_ops.rs`: the library ops follow a resize (m14.s2b2).
             "cpu_a_failed_frame_after_a_staged_op_resize_leaves_the_old_plan",
             "cpu_a_min_over_nothing_refuses_the_frame_and_the_batch_recovers",

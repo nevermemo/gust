@@ -70,12 +70,16 @@ use std::sync::{
 use crate::map::{self, MapHost};
 use crate::{Call, GpuPod, Kernel, Resource, Run, kind};
 
+mod element;
 mod frame;
 mod ops;
 mod shape;
 mod slot;
 mod view;
 
+pub use element::{Element, InvalidWord};
+#[doc(hidden)]
+pub use element::{pack_enum, unpack_enum};
 #[cfg(not(target_arch = "wasm32"))]
 pub use frame::Blocking;
 pub use frame::{Encoded, FrameRun, Submitted, Ticket};
@@ -180,6 +184,19 @@ pub enum Error {
         /// The batch.
         batch: String,
     },
+    /// A read-back of an enum handle held a word that is no variant of the enum (D275): a ticket or a `read` reports
+    /// the lowest such index, row-major for a 2-D handle, and the word. The ticket is taken; the frame's other tickets
+    /// resolve as they would, and the batch stays usable.
+    InvalidEnum {
+        /// The batch.
+        batch: String,
+        /// The stage or input the words were read from.
+        stage: String,
+        /// The index of the first word that is no variant.
+        index: usize,
+        /// That word.
+        word: u32,
+    },
     /// The device failed.
     Device(map::Error),
 }
@@ -244,6 +261,15 @@ impl core::fmt::Display for Error {
             Self::FrameLive { batch } => write!(
                 f,
                 "batch `{batch}` has a frame that is neither submitted nor dropped (one frame is in flight)"
+            ),
+            Self::InvalidEnum {
+                batch,
+                stage,
+                index,
+                word,
+            } => write!(
+                f,
+                "`{stage}` of batch `{batch}` holds the word {word} at index {index}, which is no variant of its enum"
             ),
             Self::Device(error) => write!(f, "device: {error}"),
         }
@@ -457,6 +483,8 @@ pub struct Stage<T, R> {
     batch: u64,
     id: usize,
     dims: [u32; 2],
+    /// Made by `words()`, the handle a kernel binds: it is no handle to write (D275, no public raw write of an enum).
+    raw: bool,
     marker: shape::Marker<(T, R)>,
 }
 
@@ -479,11 +507,12 @@ impl<T, R> core::fmt::Debug for Stage<T, R> {
 }
 
 impl<T, R> Stage<T, R> {
-    fn new(batch: u64, id: usize, dims: [u32; 2]) -> Self {
+    const fn new(batch: u64, id: usize, dims: [u32; 2]) -> Self {
         Self {
             batch,
             id,
             dims,
+            raw: false,
             marker: core::marker::PhantomData,
         }
     }
@@ -517,6 +546,36 @@ impl<T, R> Stage<T, R> {
     #[must_use]
     pub const fn index(&self) -> usize {
         self.id
+    }
+}
+
+impl<T: Element, R> Stage<T, R> {
+    /// The same buffer as the handle of its words (the `u32` words of an enum element), which is what a kernel binds.
+    /// It is no handle to write: `FrameRun::write` refuses it (D275). Macro support.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn words(&self) -> Stage<T::Word, R> {
+        let mut handle = Stage::new(self.batch, self.id, self.dims);
+        handle.raw = true;
+        handle
+    }
+
+    /// Whether this is a kernel's handle of an enum's words (made by `words()`).
+    pub(crate) const fn is_raw(&self) -> bool {
+        self.raw
+    }
+}
+
+impl<R> Stage<u32, R> {
+    /// The handle of a stage's result as the enum element the stage's body wrote as words. Macro support: a stage's
+    /// result handle is the one it is meant for. A handle made by `words()` stays raw, so `write` refuses it after a
+    /// `retype` too; a plain `Stage<u32>` (an input of words) is writable with any word, which is why this is not API.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn retype<E: Element<Word = u32>>(self) -> Stage<E, R> {
+        let mut handle = Stage::new(self.batch, self.id, self.dims);
+        handle.raw = self.raw;
+        handle
     }
 }
 
@@ -811,13 +870,16 @@ impl<D: BatchDevice> Core<D> {
 
     /// The buffer behind a handle of this batch that the block returned, as `T`, and its extents, as the last frame
     /// submitted or encoded left them.
-    pub(crate) fn output<T: GpuPod, R>(&self, handle: &Stage<T, R>) -> Result<Located<D, T>, Error>
+    pub(crate) fn output<T: Element, R>(
+        &self,
+        handle: &Stage<T, R>,
+    ) -> Result<Located<D, T::Word>, Error>
     where
-        D::Buffer<T>: 'static,
+        D::Buffer<T::Word>: 'static,
     {
         let id = self.locate(handle)?;
         let run = self.run.lock().unwrap_or_else(PoisonError::into_inner);
-        Ok((id, typed::<D, T>(&run.buffers[id]), run.dims[id]))
+        Ok((id, typed::<D, T::Word>(&run.buffers[id]), run.dims[id]))
     }
 }
 
@@ -1097,11 +1159,13 @@ impl<D: BatchDevice> Clone for Builder<D> {
 
 impl<D: BatchDevice> Builder<D> {
     /// A buffer the frames write: `T` elements, of the shape's extents (a `u32`, a `(u32, u32)` or a reference to a
-    /// [`Param`] of one of them). Its value starts as zeros. A call on a sealed builder, or with a handle of another
-    /// batch, records the error that [`check`](Self::check) and the end of the block report.
-    pub fn input<T: GpuPod, S: IntoShape>(&self, shape: S) -> Stage<T, S::Rank>
+    /// [`Param`] of one of them). `T` is a [`GpuPod`] type or an enum deriving `GpuEnum` (an [`Element`]: the device holds
+    /// an enum as one `u32` word, and it needs a variant whose word is 0). Its value starts as zeros. A call on a sealed
+    /// builder, or with a handle of another batch, records the error that [`check`](Self::check) and the end of the block
+    /// report.
+    pub fn input<T: Element, S: IntoShape>(&self, shape: S) -> Stage<T, S::Rank>
     where
-        D::Buffer<T>: 'static,
+        D::Buffer<T::Word>: 'static,
     {
         let mut state = self.state.borrow_mut();
         if state.sealed {
@@ -1114,7 +1178,7 @@ impl<D: BatchDevice> Builder<D> {
             .resolve(shape.source(), &name)
             .unwrap_or(([0, 0], Rule::Fixed([0, 0])));
         let id = state.id;
-        match state.add_buffer_ruled::<T>(name, true, dims, rule) {
+        match state.add_buffer_ruled::<T::Word>(name, true, dims, rule) {
             Some((buffer, _)) => Stage::new(id, buffer, dims),
             None => Stage::new(id, usize::MAX, dims),
         }
@@ -1268,6 +1332,17 @@ impl Error {
             },
             Self::FrameLive { batch } => Self::FrameLive {
                 batch: batch.clone(),
+            },
+            Self::InvalidEnum {
+                batch,
+                stage,
+                index,
+                word,
+            } => Self::InvalidEnum {
+                batch: batch.clone(),
+                stage: stage.clone(),
+                index: *index,
+                word: *word,
             },
             Self::Device(error) => {
                 Self::Device(map::Error::device(DeviceMessage(error.to_string())))

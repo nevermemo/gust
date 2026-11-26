@@ -543,3 +543,199 @@ fn enums_that_differ_in_one_word_make_different_kernels() {
     };
     assert_ne!(module(&text_five), module(&text_six));
 }
+
+// ---- an enum stored as an element (m14.s2e2c, D275) ----
+
+/// An enum with no variant whose word is 0.
+const SHADE_DEFINITION: &str = "# [repr (u32)] enum Shade { Dim = 2u32 , Lit = 5u32 }";
+
+const ELEMENT_BLOCK: &str = r#""shade", on(&device); |b| {
+    let modes = b.input::<Mode>(8u32);
+    let next = gust::gpu_task!(8u32, |i| -> Mode {
+        match modes[i] { Mode::Linear => Mode::Square, Mode::Square => Mode::Linear }
+    });
+    (modes, next)
+}"#;
+
+#[test]
+fn an_input_and_a_result_of_enum_type_are_collected_like_a_parameter() {
+    let text = batch(ELEMENT_BLOCK);
+    assert!(!failed(&text), "{text}");
+    // One bound check and one callback for the one enum, however many places name it.
+    assert_eq!(text.matches("__gust_enum_check ::").count(), 1, "{text}");
+    assert!(text.contains("Mode ! (acc = [] ;"), "{text}");
+    // A numeric element is not an enum.
+    let numeric = batch(
+        r#""s", on(&device); |b| { let a = b.input::<f32>(4u32); let c = b.input::<Vec4>(4u32);
+            let d = gust::gpu_task!(4u32, |i| -> u32 { 0u32 }); (a, c, d) }"#,
+    );
+    assert!(!numeric.contains("__gust_enum_check"), "{numeric}");
+}
+
+#[test]
+fn a_stage_reads_an_enum_view_through_the_one_decoder_and_stores_the_word() {
+    let scratch = Scratch::new();
+    let text = stage(
+        &format!(
+            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} 8u32, [x: Stage<Mode>], |i| -> Mode {{ \
+             match x[i] {{ Mode::Linear => Mode::Square, Mode::Square => Mode::Linear }} }}"
+        ),
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+    let slang = scratch.slang();
+    // The buffers are words, a load decodes through the decoder the parameters use, and the result is stored as its word.
+    assert!(slang.contains("StructuredBuffer<uint> x"), "{slang}");
+    assert!(slang.contains("par_for_enum_Mode(x["), "{slang}");
+    assert!(slang.contains("uint(par_for_enum_result)"), "{slang}");
+    assert!(slang.contains("if ((word == uint(5)))"), "{slang}");
+    // The handle of the stage is the enum's again, and the view is handed over as its words.
+    assert!(text.contains("retype :: < Mode >"), "{text}");
+    assert!(text.contains("x . words ()"), "{text}");
+}
+
+#[test]
+fn a_two_dimensional_enum_view_decodes_its_loads() {
+    let scratch = Scratch::new();
+    let text = stage(
+        &format!(
+            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} (w, h), [g: Stage<Mode>], |x, y| -> u32 {{ \
+             let v: u32 = match g[(x, y)] {{ Mode::Linear => x, Mode::Square => y }}; v }}"
+        ),
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+    let slang = scratch.slang();
+    assert!(slang.contains("par_for_enum_Mode(g["), "{slang}");
+    assert!(slang.contains("par_for_w_g"), "{slang}");
+}
+
+#[test]
+fn elements_that_differ_in_one_word_make_different_kernels() {
+    let source = |square: u32| {
+        format!(
+            "batch(b, \"s\"); enums {{ # [repr (u32)] enum Mode {{ Square = {square}u32 , Linear = 0u32 }} }} 8u32, \
+             [x: Stage<Mode>], |i| -> Mode {{ match x[i] {{ Mode::Linear => Mode::Square, Mode::Square => Mode::Linear }} }}"
+        )
+    };
+    let (five, six) = (Scratch::new(), Scratch::new());
+    let (text_five, text_six) = (stage(&source(5), &five), stage(&source(6), &six));
+    assert!(!failed(&text_five) && !failed(&text_six));
+    assert_ne!(five.slang(), six.slang());
+    assert_ne!(text_five, text_six);
+}
+
+#[test]
+fn an_enum_element_without_a_word_of_zero_is_e1012_at_the_element_type() {
+    // An input, a result type and a stage's view each carry the rule; a parameter of the same enum does not.
+    let input = format!(
+        "@ enums [ {{ {SHADE_DEFINITION} }} ] ; \"s\", on(&device); |b| {{ let x = b.input::<Shade>(4u32); x }}"
+    );
+    batch_rejected(&input, Code::BatchEnumNoZero);
+    let result = format!(
+        "@ enums [ {{ {SHADE_DEFINITION} }} ] ; \"s\", on(&device); |b| {{ \
+         let x = gust::gpu_task!(4u32, |i| -> Shade {{ Shade::Dim }}); x }}"
+    );
+    batch_rejected(&result, Code::BatchEnumNoZero);
+    stage_rejected(
+        &format!(
+            "batch(b, \"s\"); enums {{ {SHADE_DEFINITION} }} 8u32, [x: Stage<Shade>], |i| -> u32 {{ 0u32 }}"
+        ),
+        Code::BatchEnumNoZero,
+    );
+    let parameter = batch(&format!(
+        "@ enums [ {{ {SHADE_DEFINITION} }} ] ; \"s\", on(&device); |b| {{ let p = b.param::<Shade>(Shade::Dim); p }}"
+    ));
+    assert!(!failed(&parameter), "{parameter}");
+}
+
+#[test]
+fn an_enum_in_place_target_and_a_host_slice_of_enums_are_refused_by_name() {
+    let target = Scratch::new();
+    let text = stage(
+        &format!(
+            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} &mut t, [t: &mut Stage<Mode>], |i| {{ t[i] = Mode::Linear; }}"
+        ),
+        &target,
+    );
+    assert!(failed(&text), "{text}");
+    assert_rendered_code(&text, Code::TaskCapture);
+    assert!(text.contains("in-place target of enum elements"), "{text}");
+    let slice = stage(
+        &format!(
+            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} 8u32, [m: &[Mode]], |i| -> u32 {{ 0u32 }}"
+        ),
+        &Scratch::new(),
+    );
+    assert!(failed(&slice), "{slice}");
+    assert_rendered_code(&slice, Code::TaskCapture);
+    assert!(slice.contains("host slice of enum elements"), "{slice}");
+}
+
+#[test]
+fn an_enum_handle_is_no_operand_of_a_library_op() {
+    batch_rejected(
+        &format!(
+            "@ enums [ {{ {MODE_DEFINITION} }} ] ; \"s\", on(&device); |b| {{ \
+             let x = b.input::<Mode>(4u32); let n = gust::sum(&x); (x, n) }}"
+        ),
+        Code::BatchOpForm,
+    );
+}
+
+#[test]
+fn a_store_to_an_enum_capture_is_still_the_write_error() {
+    stage_rejected(
+        &format!(
+            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} 8u32, [x: Stage<Mode>], |i| -> u32 {{ \
+             x[i] = Mode::Linear; 0u32 }}"
+        ),
+        Code::TaskWrite,
+    );
+}
+
+#[test]
+fn a_parameter_and_an_element_load_call_the_one_decoder_whose_last_variant_is_the_fallback() {
+    let scratch = Scratch::new();
+    let text = stage(
+        &format!(
+            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} 8u32, [x: Stage<Mode>, mode: Param<Mode>], |i| -> u32 {{ \
+             let a: u32 = match mode.get() {{ Mode::Linear => 1u32, Mode::Square => 2u32 }}; \
+             let b: u32 = match x[i] {{ Mode::Linear => 10u32, Mode::Square => 20u32 }}; a + b }}"
+        ),
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+    let slang = scratch.slang();
+    // One decoder serves the parameter and the element load: defined once, called from both places.
+    for module in slang
+        .split("// Generated by GUST")
+        .filter(|module| !module.trim().is_empty())
+    {
+        assert_eq!(
+            module.matches("par_for_enum_Mode(uint word)").count(),
+            1,
+            "{module}"
+        );
+        assert!(module.contains("par_for_enum_Mode(x["), "{module}");
+        assert!(
+            module.contains("par_for_enum_Mode(__gust_ext.mode)"),
+            "{module}"
+        );
+    }
+    // The decoder compares the earlier variants' words only (`Square` is 5); the last variant (`Linear`, word 0) is
+    // what every other word gives, on a parameter and on an element alike: it has no comparison of its own.
+    assert!(slang.contains("if ((word == uint(5)))"), "{slang}");
+    assert!(!slang.contains("word == uint(0)"), "{slang}");
+    assert!(slang.contains("return Mode::Linear;"), "{slang}");
+}
+
+#[test]
+fn a_user_struct_as_an_input_is_taken_for_an_enum_in_a_block() {
+    // D275 (review finding S4): a `GpuPod` struct of the user's as `b.input::<Particle>(n)` is a type step one cannot tell
+    // from an enum, so it calls the type's own macro (rustc then says "cannot find macro `Particle`", and
+    // "`Particle` is not a GPU enum"). Documented in CHANGELOG and GUST-E1005; `gust::batch::build` is the way around.
+    let text = batch(r#""s", on(&device); |b| { let p = b.input::<Particle>(4u32); p }"#);
+    assert!(text.contains("Particle ! (acc = [] ;"), "{text}");
+    assert_eq!(text.matches("__gust_enum_check ::").count(), 1, "{text}");
+}

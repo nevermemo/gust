@@ -704,7 +704,8 @@ impl ResourceLayout {
     message = "`{Self}` is not a GUST GPU POD type",
     label = "declare a plain struct inside the same `#[gpu_module]` module so that the macro implements `GpuPod` for it; `u32`, `i32` and `f32` already implement it",
     note = "an `unsafe impl` written by hand must uphold the layout contract in the safety section of `GpuPod`",
-    note = "arrays `[T; N]` implement it for N in 1..=32 and 64, 128, 256, 512, 1024, 2048, 4096 (not 0), when `T` does and its std430 stride equals its Rust size; `Vec3`, `IVec3`, `UVec3` and `Mat3` do not implement it, so they cannot be array elements"
+    note = "arrays `[T; N]` implement it for N in 1..=32 and 64, 128, 256, 512, 1024, 2048, 4096 (not 0), when `T` does and its std430 stride equals its Rust size; `Vec3`, `IVec3`, `UVec3` and `Mat3` do not implement it, so they cannot be array elements",
+    note = "an enum (`#[derive(GpuEnum)]`) is never a `GpuPod` type: a batch holds it as the element of an input or of a stage's result (stored as a `u32`), and a library op takes no enum operand"
 )]
 pub unsafe trait GpuPod: Copy + 'static {
     /// The layout of `Self`. It must match Rust's size, alignment, field order and offsets.

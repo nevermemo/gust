@@ -149,7 +149,8 @@ codes! {
     /// A `Workgroup<..>` that is not `Workgroup<[T; N]>` with a supported `T` and a nonzero literal `N`, or that
     /// is used anywhere but as a kernel parameter type.
     WorkgroupShape = 210 => "GUST-E0210";
-    /// An enum as a struct field, a buffer or uniform element, or the payload of an `Option` or `Result`.
+    /// An enum as a struct field, a buffer or uniform element of a `#[gpu_module]`, or the payload of an `Option` or
+    /// `Result` (an enum stored as the element of a `gpu_batch!` buffer is no module resource, D275).
     EnumInResource = 211 => "GUST-E0211";
     /// A tuple as a struct field, a buffer or uniform element, or workgroup memory.
     TupleInResource = 212 => "GUST-E0212";
@@ -564,6 +565,9 @@ codes! {
     /// or on an enum with generics, no variant, or a `u32` overflow. `Clone`, `Copy` and `PartialEq` are required but
     /// enforced by the supertraits of `GpuEnum` (rustc's own error), and `cfg` on a variant is applied before the derive.
     GpuEnumShape = 1011 => "GUST-E1011";
+    /// An enum stored as the element of a batch (an input, a stage's result) that has no variant whose word is 0: a
+    /// buffer starts and is resized as zeros, so a zero word would be no variant (D275).
+    BatchEnumNoZero = 1012 => "GUST-E1012";
 }
 
 /// The error for `code` at `span`: the message prefixed with `[GUST-E....]`.

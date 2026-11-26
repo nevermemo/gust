@@ -612,6 +612,46 @@ mod tests {
     }
 
     #[test]
+    fn storage_buffers_are_checked_against_a_raised_limit() {
+        let limits = wgpu::Limits {
+            max_storage_buffers_per_shader_stage: 16,
+            ..wgpu::Limits::default()
+        };
+        for count in [9, 10, 16] {
+            assert!(
+                check_kernel_limits(&limits, &DESCRIPTOR, count, 0, TextureCounts::NONE).is_ok(),
+                "{count} storage buffers against 16"
+            );
+        }
+        let error = check_kernel_limits(&limits, &DESCRIPTOR, 17, 0, TextureCounts::NONE)
+            .expect_err("17 against 16");
+        assert!(matches!(
+            error,
+            Error::DeviceLimit {
+                limit: "max_storage_buffers_per_shader_stage",
+                requested: 17,
+                maximum: 16,
+                ..
+            }
+        ));
+        // Against the default 8, 9 is still refused.
+        assert!(matches!(
+            check_kernel_limits(
+                &wgpu::Limits::default(),
+                &DESCRIPTOR,
+                9,
+                0,
+                TextureCounts::NONE
+            ),
+            Err(Error::DeviceLimit {
+                requested: 9,
+                maximum: 8,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn kernel_limits_check_the_y_and_z_sizes_and_the_checked_product() {
         let limits = wgpu::Limits::default();
         let kernel = |size| DESCRIPTOR.with_workgroup_size(size);

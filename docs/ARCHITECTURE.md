@@ -325,7 +325,13 @@ those the device was opened with; `with_limits`
 can only lower them, to emulate a weaker target. "Default" has two meanings since m7.a0:
 `HeadlessDevice::new()` requests wgpu's portable defaults, while `DeviceOptions::default()`
 (what `default_device()` opens) asks a native adapter for its own buffer, binding and dispatch
-limits (`LimitsPolicy::Adapter`), so a kernel validated on one can exceed the other's limits.
+limits (`LimitsPolicy::Adapter`), so a kernel validated on one can exceed the other's limits. Storage buffers per
+stage stay at wgpu's 8 under both policies unless the developer states a number with
+`DeviceOptions::with_storage_buffers(n)` (m14.lim-a, D84 as amended): the request carries `n`, an adapter that offers
+fewer is `Error::DeviceLimit` at open, `n` below 8 is refused by name, the browser keeps 8 and refuses the option, and
+launches are checked against the limit the device was opened with. Measured with wgpu 30.0.1 on two Vulkan adapters:
+the Radeon 890M reports 429391872 storage buffers per stage and the RTX 5090 524288. Any other adapter is refused at
+open when it offers fewer than `n`.
 
 The split variant (m11.g4a, m11.g4b, owner ruling "Option 3": the host splits, `id.x` stays the global index). The
 `#[gpu_module]` macro gives every `grid` kernel built for the GPU a second descriptor, `KernelDescriptor::split`: the same
@@ -437,9 +443,9 @@ drops the least recently returned idle buffers past an idle cap of 1 GiB by defa
 the vector, and every binding exposes the logical bytes only. A recycled buffer is cleared in a submission of its own
 before it is handed out as zeroed, and a buffer with a mapping pending is never put back. `PoolStats` reports the
 hand-outs, the returns and the idle bytes. `DeviceHandle` is the shared handle that `default_device()` returns, opened
-with `DeviceOptions` (`#[non_exhaustive]`; `DeviceOptions::default()` and `with_backends`, `with_adapter`, `with_limits`
-and `with_features`; `features` asks for `float32-filterable` when the adapter offers it on native and for nothing on
-`wasm32`; slice mx.t2); `set_default_options` applies to the first `default_device()` and is
+with `DeviceOptions` (`#[non_exhaustive]`; `DeviceOptions::default()` and `with_backends`, `with_adapter`, `with_limits`,
+`with_storage_buffers` (off by default, m14.lim-a) and `with_features`; `features` asks for `float32-filterable` when
+the adapter offers it on native and for nothing on `wasm32`; slice mx.t2); `set_default_options` applies to the first `default_device()` and is
 `Error::DefaultDeviceOpened` after that. A renderer that presents from the device GUST runs on opens the device itself,
 in its own `wgpu::Instance`, with the features and limits of `DeviceOptions::device_request` (which the open also uses,
 so there is one source of truth; `crates/gust-wgpu/src/headless/adopt.rs`), and hands it over with

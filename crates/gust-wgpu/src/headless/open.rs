@@ -121,6 +121,10 @@ impl HeadlessDevice {
             .get_downlevel_capabilities()
             .flags
             .contains(wgpu::DownlevelFlags::FRAGMENT_WRITABLE_STORAGE);
+        let indirect_execution = adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION);
 
         Self {
             id: NEXT_DEVICE_ID.fetch_add(1, Ordering::Relaxed),
@@ -131,6 +135,7 @@ impl HeadlessDevice {
             timestamp_profiler,
             limits,
             fragment_storage,
+            indirect_execution,
             capabilities,
             subgroup_sizes,
             capture: false,

@@ -412,7 +412,9 @@ fn gpu_backends(
     // `hand-unchecked` is the hand text with the checks off (`wgsl-prebuilt-unchecked`), the reproduction control.
     for (index, (name, probe)) in probes.iter().enumerate() {
         let backend: Box<dyn Backend> = match probe {
-            Probe::Gust(unchecked) => Box::new(gust_gpu::GustGpu::new(DeviceHandle::clone(unchecked))),
+            Probe::Gust(unchecked) => {
+                Box::new(gust_gpu::GustGpu::new(DeviceHandle::clone(unchecked)))
+            }
             Probe::Hand(hand) if name == "hand-unchecked" => {
                 Box::new(HandWgsl::unchecked(Rc::clone(hand), Mode::Prebuilt))
             }
@@ -1657,7 +1659,10 @@ mod tests {
         assert_eq!(parse(&[]).unwrap().device_order, None);
         assert_eq!(DeviceOrder::default(), DeviceOrder::CheckedFirst);
         let order = |text: &str| parse(&args(&["--device-order", text])).map(|o| o.device_order);
-        assert_eq!(order("unchecked-first"), Ok(Some(DeviceOrder::UncheckedFirst)));
+        assert_eq!(
+            order("unchecked-first"),
+            Ok(Some(DeviceOrder::UncheckedFirst))
+        );
         assert_eq!(order("checked-first"), Ok(Some(DeviceOrder::CheckedFirst)));
         assert!(order("sideways").is_err());
     }

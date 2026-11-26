@@ -1,7 +1,7 @@
 use crate::cache::PipelineCache;
-use crate::{Error, GpuBuffer, HeadlessDevice, PipelineCacheStats};
 #[cfg(doc)]
-use crate::{GpuVec, LimitsPolicy};
+use crate::{DeviceOptions, GpuVec, LimitsPolicy};
+use crate::{Error, GpuBuffer, HeadlessDevice, PipelineCacheStats, ShaderChecks};
 use gust::capability::Capability;
 use std::sync::MutexGuard;
 use std::sync::atomic::Ordering;
@@ -23,6 +23,13 @@ impl HeadlessDevice {
     /// copied for a debugging capture. A device adopted with [`adopt`](Self::adopt) does not.
     pub fn capture_enabled(&self) -> bool {
         self.capture
+    }
+
+    /// Whether this device builds its WGSL shader modules with wgpu's runtime checks: [`ShaderChecks::Checked`] unless
+    /// it was opened with [`DeviceOptions::unchecked_kernels`]. A device adopted with [`adopt`](Self::adopt) is always
+    /// checked.
+    pub fn shader_checks(&self) -> ShaderChecks {
+        self.shader_checks
     }
 
     /// The smallest and the largest subgroup size as wgpu reports them for the adapter (`AdapterInfo`), or `None` when the

@@ -7,6 +7,12 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- `unsafe fn DeviceOptions::unchecked_kernels` and `ShaderChecks` (m14.pftrust1): a device-level opt-in that builds the
+  WGSL route's shader modules without wgpu's runtime checks (bounds, loop bounding, integer division guards), with the
+  safety contract in its `# Safety` section. The default stays checked; `HeadlessDevice::shader_checks` and
+  `DeviceOptions::shader_checks` report the setting. A device adopted with `HeadlessDevice::adopt` stays checked, the
+  SPIR-V route is unaffected and `wasm32` ignores the option. Measured on loop-heavy kernels on the RTX 5090 only;
+  no gain on the Radeon 890M.
 - `#[derive(GpuEnum)]` and the `gust::GpuEnum` trait (m14.s2e2a): for a field-less `#[repr(u32)]` enum with literal or
   implicit discriminants that fit in `u32`, the derive implements `from_word`, `to_word` and a validating
   `TryFrom<u32>` (error `gust::EnumWordError`, which carries the word), each a `match` over the discriminants. The enum

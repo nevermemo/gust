@@ -31,11 +31,37 @@ impl HeadlessDevice {
         }
         #[cfg(not(all(feature = "spirv-route", not(target_arch = "wasm32"))))]
         let _ = (kernel, layout_entries, pixel, from_artifact);
-        self.device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(&format!("{label} Slang-generated WGSL")),
-                source: wgpu::ShaderSource::Wgsl(wgsl.into()),
-            })
+        self.wgsl_module(label, wgsl)
+    }
+
+    /// The WGSL route's module call, the one place the device's [`ShaderChecks`](crate::ShaderChecks) reaches wgpu.
+    fn wgsl_module(&self, label: &str, wgsl: &str) -> wgpu::ShaderModule {
+        // SAFETY: `create_shader_module_trusted` is unsafe for the runtime checks it can turn off. They are on unless the
+        // caller opened this device with `DeviceOptions::unchecked_kernels` (`unsafe`, `# Safety` there), which is the
+        // caller's promise about every kernel of the device; `shader_checks` is private and has no other writer. With
+        // `Checked` the call is what `create_shader_module` does. wgpu's WebGPU backend ignores the checks argument.
+        unsafe {
+            self.device.create_shader_module_trusted(
+                wgpu::ShaderModuleDescriptor {
+                    label: Some(&format!("{label} Slang-generated WGSL")),
+                    source: wgpu::ShaderSource::Wgsl(wgsl.into()),
+                },
+                self.noted(self.shader_checks.runtime_checks()),
+            )
+        }
+    }
+
+    /// `checks`, unchanged. In a test build it also records them as what the module call was given: it wraps the
+    /// argument of the call itself, so a test sees the value wgpu received, not a copy.
+    fn noted(&self, checks: wgpu::ShaderRuntimeChecks) -> wgpu::ShaderRuntimeChecks {
+        #[cfg(test)]
+        {
+            *self
+                .last_module_checks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(checks);
+        }
+        checks
     }
 
     /// The SPIR-V route (m9.rt2, D172, D174): slangc's SPIR-V for the kernel as a passthrough module, or the reason
@@ -159,5 +185,77 @@ impl HeadlessDevice {
             .fullscreen
             .get_or_insert_with(|| render::fullscreen_module(&self.device))
             .clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{DeviceOptions, HeadlessDevice, ShaderChecks};
+
+    /// The setting changes the wgpu runtime checks of a module, all of them and nothing else: `Checked` is wgpu's own
+    /// `checked()` (what `create_shader_module` uses), `Unchecked` is `unchecked()`. No adapter needed.
+    #[test]
+    fn the_setting_selects_all_wgpu_runtime_checks_on_or_off() {
+        let on = ShaderChecks::Checked.runtime_checks();
+        let off = ShaderChecks::Unchecked.runtime_checks();
+        let flags = |c: wgpu::ShaderRuntimeChecks| {
+            [
+                c.bounds_checks,
+                c.force_loop_bounding,
+                c.ray_query_initialization_tracking,
+                c.task_shader_dispatch_tracking,
+                c.mesh_shader_primitive_indices_clamp,
+                c.int_div_checks,
+            ]
+        };
+        assert_eq!(flags(on), [true; 6]);
+        assert_eq!(flags(off), [false; 6]);
+        assert_eq!(flags(on), flags(wgpu::ShaderRuntimeChecks::checked()));
+        assert_eq!(flags(off), flags(wgpu::ShaderRuntimeChecks::unchecked()));
+    }
+
+    /// The module call itself: a device opened checked builds its WGSL module with every wgpu check on, and one opened
+    /// with `unchecked_kernels` with every check off. The call records the checks it passed to wgpu (test builds only),
+    /// so this sees the funnel, not the accessor. Needs an adapter. What an unchecked module does on the GPU is not
+    /// observed: out of range it is undefined behaviour, so no test can see a difference there.
+    #[test]
+    fn the_module_call_passes_the_devices_setting_to_wgpu() {
+        const WGSL: &str = "@compute @workgroup_size(1) fn main() {}";
+        let flags = |device: &HeadlessDevice| {
+            let _ = device.wgsl_module("probe", WGSL);
+            let c = device
+                .last_module_checks
+                .lock()
+                .unwrap()
+                .expect("the call recorded its checks");
+            [
+                c.bounds_checks,
+                c.force_loop_bounding,
+                c.ray_query_initialization_tracking,
+                c.task_shader_dispatch_tracking,
+                c.mesh_shader_primitive_indices_clamp,
+                c.int_div_checks,
+            ]
+        };
+        let checked = HeadlessDevice::new().expect("an adapter is required");
+        assert_eq!(flags(&checked), [true; 6]);
+        // SAFETY: the only module this device builds is an empty compute entry point.
+        let options = unsafe { DeviceOptions::default().unchecked_kernels() };
+        let unchecked = HeadlessDevice::with_options(options).expect("an adapter is required");
+        assert_eq!(flags(&unchecked), [false; 6]);
+    }
+
+    /// Only the `unsafe` constructor turns the checks off, and the default is checked.
+    #[test]
+    fn options_are_checked_unless_unchecked_kernels_is_called() {
+        assert_eq!(ShaderChecks::default(), ShaderChecks::Checked);
+        assert_eq!(
+            DeviceOptions::default().shader_checks(),
+            ShaderChecks::Checked
+        );
+        // SAFETY: the options are only inspected here; no device is opened with them.
+        let options = unsafe { DeviceOptions::default().unchecked_kernels() };
+        assert_eq!(options.shader_checks(), ShaderChecks::Unchecked);
+        assert_ne!(options, DeviceOptions::default());
     }
 }

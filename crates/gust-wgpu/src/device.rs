@@ -181,6 +181,43 @@ impl FeaturesPolicy {
     }
 }
 
+/// Whether wgpu's runtime checks stay on in the shader modules of a device (m14.pftrust1).
+///
+/// Every kernel of a device is built through naga with wgpu's runtime checks: bounds checks on buffer accesses, a bound
+/// on every loop, and guards on integer division and remainder. That is [`Checked`](Self::Checked), the default, and
+/// the only value a safe program can reach. [`Unchecked`](Self::Unchecked) builds the WGSL route's modules with those
+/// checks off, which `unsafe` code asks for through [`DeviceOptions::unchecked_kernels`]; read its `# Safety` section
+/// before using it. [`HeadlessDevice::shader_checks`] reports what an open device has.
+///
+/// The setting belongs to the device, not to a kernel, so the pipeline cache needs no extra key. It applies to the WGSL
+/// route only: a SPIR-V passthrough module (the `spirv-route` feature) has no wgpu checks in either case. A device
+/// adopted with [`HeadlessDevice::adopt`] is always `Checked`. On `wasm32` the setting is accepted and ignored: the
+/// browser validates and bounds-checks every shader itself.
+///
+/// The enum is `#[non_exhaustive]`, so a `match` outside this crate needs a wildcard arm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum ShaderChecks {
+    /// wgpu's runtime checks are on for every kernel of the device.
+    #[default]
+    Checked,
+    /// wgpu's runtime checks are off for every kernel of the device. Set only by the `unsafe`
+    /// [`DeviceOptions::unchecked_kernels`].
+    Unchecked,
+}
+
+impl ShaderChecks {
+    /// The wgpu runtime checks a shader module of a device with this setting is built with: all on for
+    /// [`Checked`](Self::Checked), all off for [`Unchecked`](Self::Unchecked). The one place the setting is turned into
+    /// wgpu's.
+    pub(crate) fn runtime_checks(self) -> wgpu::ShaderRuntimeChecks {
+        match self {
+            Self::Checked => wgpu::ShaderRuntimeChecks::checked(),
+            Self::Unchecked => wgpu::ShaderRuntimeChecks::unchecked(),
+        }
+    }
+}
+
 /// How to open a device: the backends, the adapter, the limits and the optional features. Explicit and overridable;
 /// there is no workload policy in it.
 ///
@@ -197,7 +234,8 @@ impl FeaturesPolicy {
 /// The struct is `#[non_exhaustive]`, so a later release can add an option without breaking a caller: build one from
 /// [`DeviceOptions::default()`](Default::default) and the `with_*` methods, which set one field each
 /// (`DeviceOptions::default().with_adapter(AdapterChoice::LowPower)`). The fields stay public to read and to assign
-/// on a value you already hold.
+/// on a value you already hold, except the shader checks, which only the `unsafe`
+/// [`unchecked_kernels`](Self::unchecked_kernels) sets.
 ///
 /// ```
 /// use gust_wgpu::{AdapterChoice, DeviceOptions, FeaturesPolicy, HeadlessDevice, LimitsPolicy};
@@ -245,6 +283,9 @@ pub struct DeviceOptions {
     /// buffers created after the device is opened, on a device GUST opens (a device adopted with
     /// [`HeadlessDevice::adopt`] has it off).
     pub capture: bool,
+    /// Whether wgpu's runtime checks stay on in the device's shader modules. Private: it is set only by the `unsafe`
+    /// [`unchecked_kernels`](Self::unchecked_kernels) and read with [`shader_checks`](Self::shader_checks).
+    shader_checks: ShaderChecks,
 }
 
 impl Default for DeviceOptions {
@@ -277,6 +318,7 @@ impl Default for DeviceOptions {
             features,
             capabilities: gust::capability::enabled(),
             capture: false,
+            shader_checks: ShaderChecks::Checked,
         }
     }
 }
@@ -332,6 +374,44 @@ impl DeviceOptions {
     pub fn with_capture(mut self, capture: bool) -> Self {
         self.capture = capture;
         self
+    }
+
+    /// These options with wgpu's runtime shader checks turned off for every kernel of the device (see
+    /// [`ShaderChecks::Unchecked`]). The default is [`ShaderChecks::Checked`]; there is no safe way to ask for this.
+    ///
+    /// The device applies it to the WGSL route, to kernels compiled at run time and to precompiled WGSL artifacts
+    /// alike. A device adopted with [`HeadlessDevice::adopt`] does not take options, so it stays checked. On `wasm32`
+    /// the option is accepted and ignored: the browser checks every shader itself. The SPIR-V route is not affected: its
+    /// modules have no wgpu checks either way, and a build with the `spirv-route` feature still emits its own guards
+    /// into the kernels, which this option neither adds nor removes.
+    ///
+    /// The setting covers every kernel the device builds, GUST's own library kernels included. Options passed to
+    /// [`set_default_options`], or to any other device-wide default, make the process default device unchecked: every
+    /// call that names no device, every `gust-algo` operation and every batch stage then runs unchecked, including
+    /// those that index with values read from data. The promise in `# Safety` covers all of them.
+    ///
+    /// Measured on loop-heavy kernels on the RTX 5090 only; there was no gain on the Radeon 890M.
+    ///
+    /// # Safety
+    ///
+    /// With unchecked kernels wgpu's runtime checks are off for every kernel of this device. An out-of-range index, and
+    /// a loop that does not end, are undefined behaviour on the GPU: other buffers of the device may be read or
+    /// written, and the device may hang or be lost. GUST does not add its own guards on this route. The CPU twin is
+    /// unchanged and remains the reference; run a kernel checked first.
+    ///
+    /// Integer division and remainder lose wgpu's guards too (`int_div_checks`): a zero divisor, and for a signed type
+    /// `MIN / -1`, are undefined behaviour instead of the results the checked device gives. The caller must ensure that
+    /// every divisor of every kernel is non-zero and that no signed division overflows.
+    #[must_use]
+    pub unsafe fn unchecked_kernels(mut self) -> Self {
+        self.shader_checks = ShaderChecks::Unchecked;
+        self
+    }
+
+    /// Whether the device these options open keeps wgpu's runtime shader checks on: [`ShaderChecks::Checked`] unless
+    /// [`unchecked_kernels`](Self::unchecked_kernels) was called.
+    pub fn shader_checks(&self) -> ShaderChecks {
+        self.shader_checks
     }
 }
 
@@ -846,6 +926,9 @@ mod web_default {
 /// Set the options of the default device. They apply to the first [`default_device`] (or
 /// [`default_device_async`]) of the process; after the device is open this is `Error::DefaultDeviceOpened`, and so it is
 /// after [`set_default_device`]. If [`set_default_device`] follows, the options are never used.
+///
+/// Options made with [`DeviceOptions::unchecked_kernels`] turn wgpu's runtime checks off for the default device and so
+/// for every kernel that runs on it, GUST's own library kernels and data-supplied indices included.
 ///
 /// ```
 /// use gust_wgpu::{DeviceOptions, Error, LimitsPolicy, default_device, set_default_options};

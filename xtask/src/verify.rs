@@ -1521,9 +1521,14 @@ pub(crate) struct GpuSuitePin {
 /// Slice m14.s2v: 652 over 67 became 657 over 68. The batch view slice adds the new test file `tests/batch_view.rs`
 /// (five GPU tests, one `test result:` line). Checked by a full Gpu suite run on the Radeon 890M (lane); the RTX 5090
 /// run is owed.
+///
+/// Slice m14.pftrust1: 657 over 68 became 664 over 69. The unchecked-kernels option adds three unit tests to the library's
+/// `compile::modules` module (the setting selects wgpu's checks all on or all off; only the `unsafe` constructor turns
+/// them off; the module call passes the device's setting to wgpu, which needs an adapter) and the new test file `tests/unchecked_kernels.rs` (four GPU tests, one `test result:` line). Counted from
+/// the test lists; a full Gpu suite run on both adapters is owed at the merge.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 657,
-    result_lines: 68,
+    passed: 664,
+    result_lines: 69,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

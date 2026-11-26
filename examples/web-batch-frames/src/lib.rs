@@ -69,7 +69,8 @@ pub fn build(
 ///
 /// [`Error::StageDevice`] on a device that offers fewer than ten storage buffers per shader stage, which is every
 /// browser device in this release.
-#[allow(clippy::let_and_return)] // the stage is named by its `let`
+// The stage is named by its `let`; its generated kernel function takes one argument per buffer.
+#[allow(clippy::let_and_return, clippy::too_many_arguments)]
 pub fn build_wide(
     device: &Arc<HeadlessDevice>,
 ) -> Result<(Batch<HeadlessDevice>, Stage<u32, D1>), Error> {

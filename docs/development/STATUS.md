@@ -1440,6 +1440,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       Gates t40 and t41 each found a gap the lane had not run: the GPU bench test it added was missing from the
       tool-free bench step's adapter skip list, and its new bench kernels had no gust-bench-pre artifacts. Both were
       fixed (the skip list and its count test; artifacts regenerated with the pinned Slang), and gate t42 is all green.
+    - m14.lim-b merged: a batch stage, counted stage or library op whose kernel needs more storage buffers than the
+      device was opened with is refused at build as the new `batch::Error::StageDevice` (the enum is non-exhaustive),
+      naming the batch and the stage and both cures; the device-open refusal keeps its own wording. Contract, ruled by
+      the coordinator: before any pipeline or bind group of the stage, and before a counted stage's args buffer and
+      pipeline; the stage's result buffer and op scratch buffers may exist. A stage built empty is refused by name at its
+      first resize over the limit. The edits in gust's batch code and the new public variant went beyond the brief's
+      file list and were accepted as the slice's design. Opus review: merge after fixes (counted order, cure text, the
+      gust-algo GPU tests pinned, the empty stage). GPU_SUITE_PIN 698 over 72, printed by a full Gpu suite run.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

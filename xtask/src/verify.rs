@@ -1537,8 +1537,13 @@ pub(crate) struct GpuSuitePin {
 /// them off; the module call passes the device's setting to wgpu, which needs an adapter) and the new test file `tests/unchecked_kernels.rs` (four GPU tests, one `test result:` line). Counted from
 /// the test lists on the merged tree (rebased on m14.lim-a); a full Gpu suite run on both adapters is owed at
 /// the merge.
+///
+/// Correction after the merges of m14.s2i and m14.pftrust1: 680 over 70 became 681 over 70. Slice m14.s2i added one
+/// library unit test to `batch::counted` (`an_adapter_without_indirect_execution_takes_the_bounded_launch`) and left
+/// the count unchanged, so the count above started one short. Checked by a full Gpu suite run on the Radeon 890M (a
+/// merge gate on dev), which printed 681 over 70.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 680,
+    passed: 681,
     result_lines: 70,
 };
 

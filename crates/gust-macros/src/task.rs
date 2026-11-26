@@ -192,9 +192,20 @@ struct BatchStage {
     enum_params: Vec<(syn::Ident, syn::Ident)>,
     /// Per enum path a parameter's type names, the statements that check the copy against it ([`enum_copy_check`]).
     enum_checks: Vec<TokenStream>,
+    /// The views whose elements are enums (D275): the view and the enum's name. The kernel binds the words (`u32`), and
+    /// a load of an element decodes the word through the enum's one decoder.
+    enum_views: Vec<(syn::Ident, syn::Ident)>,
+    /// The enum the stage's result holds, when it is one: the type as written and the enum's name. The kernel stores
+    /// the word (`as u32`), and the call site types the handle back as the enum.
+    enum_result: Option<(syn::Type, syn::Ident)>,
 }
 
 impl BatchStage {
+    /// Whether the view `name` holds enum elements.
+    fn is_enum_view(&self, name: &syn::Ident) -> bool {
+        self.enum_views.iter().any(|(view, _)| view == name)
+    }
+
     /// Whether the parameter `name` holds an enum.
     fn is_enum(&self, name: &syn::Ident) -> bool {
         self.enum_params.iter().any(|(param, _)| param == name)
@@ -209,7 +220,8 @@ fn enum_decoder(definition: &syn::Ident) -> syn::Ident {
 }
 
 /// The function that decodes the word of `definition`: an `if` and `return` per discriminant, the last variant being
-/// what any other word gives (a parameter's word is always a variant's, because `set` takes the enum).
+/// what any other word gives. A parameter's word is always a variant's (`set` takes the enum); a stored element's word is
+/// whatever a stage or the host put there, so the last variant is the rule for it too (D275).
 fn enum_decoder_fn(definition: &syn::ItemEnum) -> syn::Result<syn::ItemFn> {
     let name = &definition.ident;
     let variants = enum_variants(definition)?;
@@ -319,7 +331,19 @@ impl TaskPlan {
             } else {
                 quote!(#gid.y * #ext.#width + #gid.x)
             };
-            statements.push(syn::parse_quote!(#out[#index] = #tail;));
+            match self
+                .batch
+                .as_ref()
+                .and_then(|batch| batch.enum_result.as_ref())
+            {
+                // An enum result is stored as its word: the value is bound with its type (a `match` value needs one).
+                Some((_, name)) => {
+                    let local = format_ident!("par_for_enum_result");
+                    statements.push(syn::parse_quote!(let #local: #name = #tail;));
+                    statements.push(syn::parse_quote!(#out[#index] = #local as u32;));
+                }
+                None => statements.push(syn::parse_quote!(#out[#index] = #tail;)),
+            }
         }
         statements
     }
@@ -966,8 +990,8 @@ fn bool_element(tokens: impl ToTokens, what: &str) -> syn::Error {
         tokens,
         format!(
             "{what} has `bool` as its element, and a buffer holds a `bool` as a `u32` word: use `u32` (`0` and `1`); a \
-             `#[derive(GpuEnum)]` enum is a parameter type of a batch (`b.param::<Mode>(..)`), and its use as an element \
-             is not in this release"
+             `#[derive(GpuEnum)]` enum is a parameter type or an element of a batch (`b.param::<Mode>(..)`, \
+             `b.input::<Mode>(..)`), which a `bool` is not"
         ),
     )
 }
@@ -1204,9 +1228,13 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
     };
 
     // A stage of a batch: its handles, parameters and the body lowered to what the kernel sees.
+    let mut result = result;
     let (list, batch) = match batch {
         Some(clause) => {
-            let lowered = lower_batch(clause, list, &mut stmts, &mut tail)?;
+            let lowered = lower_batch(clause, list, result.as_ref(), &mut stmts, &mut tail)?;
+            if let Some(word) = lowered.result {
+                result = Some(word);
+            }
             (lowered.list, Some(lowered.stage))
         }
         None => (list, None),
@@ -1355,6 +1383,8 @@ pub(crate) fn is_scalar_type(ty: &syn::Type) -> bool {
 /// A stage of a batch lowered to what the kernel sees: its list in kernel terms, and what its captures are.
 struct Lowered {
     list: Vec<RawBinding>,
+    /// The type the result buffer is bound as, when it is not the type written (an enum result is bound as `u32`).
+    result: Option<syn::Type>,
     stage: BatchStage,
 }
 
@@ -1364,6 +1394,7 @@ struct Lowered {
 fn lower_batch(
     clause: BatchClause,
     list: Vec<RawBinding>,
+    result: Option<&syn::Type>,
     stmts: &mut [syn::Stmt],
     tail: &mut Option<syn::Expr>,
 ) -> syn::Result<Lowered> {
@@ -1371,10 +1402,9 @@ fn lower_batch(
     let mut views = Vec::new();
     let mut params = Vec::new();
     let mut scalars = Vec::new();
-    let mut enums: Vec<(syn::ItemEnum, syn::ItemFn)> = Vec::new();
+    let mut book = EnumBook::default();
     let mut enum_params = Vec::new();
-    let mut enum_checks = Vec::new();
-    let mut enum_paths: Vec<String> = Vec::new();
+    let mut enum_views = Vec::new();
     for entry in list {
         let RawBinding { name, ty } = entry;
         if let Some(element) = type_argument(&ty, "Stage") {
@@ -1383,6 +1413,17 @@ fn lower_batch(
                 rank: 1,
                 target: false,
             });
+            // A view of enum elements: the kernel binds the words, and a load decodes them.
+            if let Some((path, definition)) = enum_named(&clause.enums, element) {
+                require_zero_word(element, definition)?;
+                book.take(path, definition)?;
+                enum_views.push((name.clone(), definition.ident.clone()));
+                entries.push(RawBinding {
+                    name,
+                    ty: syn::parse_quote!(&[u32]),
+                });
+                continue;
+            }
             let element = element.clone();
             entries.push(RawBinding {
                 name,
@@ -1395,6 +1436,19 @@ fn lower_batch(
                 reference.mutability,
                 type_argument(&reference.elem, "Stage"),
             ) {
+                if enum_named(&clause.enums, element).is_some() {
+                    return Err(diagnostics::error(
+                        Code::TaskCapture,
+                        element,
+                        format!(
+                            "`{}` is an in-place target of enum elements, which is not in this release: a stage reads \
+                             enum elements and writes them as its result (`|i| -> {}`), and an in-place stage takes a \
+                             numeric element",
+                            name.unraw(),
+                            element.to_token_stream()
+                        ),
+                    ));
+                }
                 views.push(View {
                     name: name.clone(),
                     rank: 1,
@@ -1406,6 +1460,20 @@ fn lower_batch(
                     ty: syn::parse_quote!(&mut [#element]),
                 });
                 continue;
+            }
+            if let syn::Type::Slice(slice) = &*reference.elem
+                && enum_named(&clause.enums, &slice.elem).is_some()
+            {
+                return Err(diagnostics::error(
+                    Code::TaskCapture,
+                    &slice.elem,
+                    format!(
+                        "`{}` is a host slice of enum elements, which a stage does not capture: write the enums into \
+                         an input (`b.input::<{}>(..)`) and read the input",
+                        name.unraw(),
+                        slice.elem.to_token_stream()
+                    ),
+                ));
             }
             if matches!(*reference.elem, syn::Type::Slice(_)) {
                 return Err(batch_form(
@@ -1423,17 +1491,7 @@ fn lower_batch(
             if let Some((path, definition)) = enum_named(&clause.enums, element) {
                 params.push(name.clone());
                 enum_params.push((name.clone(), definition.ident.clone()));
-                if !enums.iter().any(|(copy, _)| copy.ident == definition.ident) {
-                    let decoder = enum_decoder_fn(definition)?;
-                    let mut copy = definition.clone();
-                    copy.attrs.push(syn::parse_quote!(#[derive(PartialEq)]));
-                    enums.push((copy, decoder));
-                }
-                let written = path.to_token_stream().to_string();
-                if !enum_paths.contains(&written) {
-                    enum_checks.push(enum_copy_check(path, &enum_variants(definition)?));
-                    enum_paths.push(written);
-                }
+                book.take(path, definition)?;
                 entries.push(RawBinding {
                     name,
                     ty: syn::parse_quote!(u32),
@@ -1450,7 +1508,8 @@ fn lower_batch(
                     element,
                     format!(
                         "`{}` is not the name of an enum the block's derives handed over ({}): write the enum's own \
-                         name as the parameter's type (a `use .. as` rename and a `type` alias are not supported)",
+                         name as the type of a parameter or an element (a `use .. as` rename and a `type` alias are not \
+                         supported)",
                         element.to_token_stream(),
                         handed.join(", ")
                     ),
@@ -1476,12 +1535,30 @@ fn lower_batch(
         }
         entries.push(RawBinding { name, ty });
     }
+    // A result of enum elements: the kernel stores its word.
+    let mut enum_result = None;
+    let mut result_word = None;
+    if let Some(ty) = result
+        && let Some((path, definition)) = enum_named(&clause.enums, ty)
+    {
+        require_zero_word(ty, definition)?;
+        book.take(path, definition)?;
+        enum_result = Some((ty.clone(), definition.ident.clone()));
+        result_word = Some(syn::parse_quote!(u32));
+    }
     let mut lowering = Lowering {
         views: views
             .iter()
-            .map(|view| (view.name.clone(), view.target, None))
+            .map(|view| {
+                let decoder = enum_views
+                    .iter()
+                    .find(|(name, _)| *name == view.name)
+                    .map(|(_, definition)| enum_decoder(definition));
+                (view.name.clone(), view.target, None, decoder)
+            })
             .collect(),
         params: params.clone(),
+        lvalue: false,
         error: None,
     };
     for statement in stmts.iter_mut() {
@@ -1493,7 +1570,7 @@ fn lower_batch(
     if let Some(error) = lowering.error {
         return Err(error);
     }
-    for (view, (_, _, rank)) in views.iter_mut().zip(&lowering.views) {
+    for (view, (_, _, rank, _)) in views.iter_mut().zip(&lowering.views) {
         view.rank = rank.unwrap_or(1);
         if view.rank == 2 {
             entries.push(RawBinding {
@@ -1504,17 +1581,73 @@ fn lower_batch(
     }
     Ok(Lowered {
         list: entries,
+        result: result_word,
         stage: BatchStage {
             builder: clause.builder,
             name: clause.name,
             views,
             params,
             scalars,
-            enums,
+            enums: book.enums,
             enum_params,
-            enum_checks,
+            enum_checks: book.checks,
+            enum_views,
+            enum_result,
         },
     })
+}
+
+/// The enums a stage declares a private copy of, and the checks of each copy against the user's enum: once per enum
+/// name, and once per path the enum is written with.
+#[derive(Default)]
+struct EnumBook {
+    enums: Vec<(syn::ItemEnum, syn::ItemFn)>,
+    checks: Vec<TokenStream>,
+    paths: Vec<String>,
+}
+
+impl EnumBook {
+    /// Declare the copy of `definition`, the enum that `path` names, unless it is declared already.
+    fn take(&mut self, path: &syn::Path, definition: &syn::ItemEnum) -> syn::Result<()> {
+        if !self
+            .enums
+            .iter()
+            .any(|(copy, _)| copy.ident == definition.ident)
+        {
+            let decoder = enum_decoder_fn(definition)?;
+            let mut copy = definition.clone();
+            copy.attrs.push(syn::parse_quote!(#[derive(PartialEq)]));
+            self.enums.push((copy, decoder));
+        }
+        let written = path.to_token_stream().to_string();
+        if !self.paths.contains(&written) {
+            self.checks
+                .push(enum_copy_check(path, &enum_variants(definition)?));
+            self.paths.push(written);
+        }
+        Ok(())
+    }
+}
+
+/// GUST-E1012: an enum stored as an element has a variant whose word is 0, because a buffer starts (and is resized) as
+/// zeros. Raised at the element type's token. `definition` is the enum a handed-over derive wrote, so each variant has a
+/// literal word.
+pub(crate) fn require_zero_word(ty: impl ToTokens, definition: &syn::ItemEnum) -> syn::Result<()> {
+    if enum_variants(definition)?
+        .iter()
+        .any(|(_, word)| *word == 0)
+    {
+        return Ok(());
+    }
+    Err(diagnostics::error(
+        Code::BatchEnumNoZero,
+        ty,
+        format!(
+            "`{0}` is stored as the element of a buffer, and a buffer starts as zeros (and a resize makes zeroed \
+             buffers), so `{0}` needs a variant whose word is 0 (`Name = 0`): add one, or keep `{0}` a parameter",
+            definition.ident.unraw()
+        ),
+    ))
 }
 
 /// The enum, among those the block's parameters name, that `ty` is: a plain path (`Mode`, `types::Mode`, no generics)
@@ -1539,9 +1672,12 @@ fn enum_named<'a>(
 
 /// The body of a batch stage, rewritten in place, and the first rule it breaks.
 struct Lowering {
-    /// Each handle: its name, whether it is the in-place target, and the rank the body indexes it with.
-    views: Vec<(syn::Ident, bool, Option<usize>)>,
+    /// Each handle: its name, whether it is the in-place target, the rank the body indexes it with, and the function
+    /// that decodes a load when its elements are enums.
+    views: Vec<(syn::Ident, bool, Option<usize>, Option<syn::Ident>)>,
     params: Vec<syn::Ident>,
+    /// The expression being visited is the place of an assignment: a store, not a load.
+    lvalue: bool,
     error: Option<syn::Error>,
 }
 
@@ -1574,6 +1710,23 @@ impl Lowering {
 
 impl VisitMut for Lowering {
     fn visit_expr_mut(&mut self, expression: &mut syn::Expr) {
+        // Only the node that is the place of an assignment is a store; what is inside it is read.
+        let store = core::mem::take(&mut self.lvalue);
+        match expression {
+            syn::Expr::Assign(assign) => {
+                self.visit_expr_mut(&mut assign.right);
+                self.lvalue = true;
+                self.visit_expr_mut(&mut assign.left);
+                return;
+            }
+            syn::Expr::Binary(binary) if is_compound_assignment(&binary.op) => {
+                self.visit_expr_mut(&mut binary.right);
+                self.lvalue = true;
+                self.visit_expr_mut(&mut binary.left);
+                return;
+            }
+            _ => {}
+        }
         syn::visit_mut::visit_expr_mut(self, expression);
         let mut replacement = None;
         match expression {
@@ -1583,7 +1736,7 @@ impl VisitMut for Lowering {
                     while let syn::Expr::Paren(paren) = at {
                         at = &paren.expr;
                     }
-                    let (name, target, seen) = self.views[slot].clone();
+                    let (name, target, seen, decoder) = self.views[slot].clone();
                     let rank = match at {
                         syn::Expr::Tuple(tuple) => tuple.elems.len(),
                         _ => 1,
@@ -1634,6 +1787,12 @@ impl VisitMut for Lowering {
                             let width = width_name(&name);
                             let flat: syn::Expr = syn::parse_quote!(((#y) * #width + (#x)));
                             *index.index = flat;
+                        }
+                        // A load of an enum element decodes the word; a store (a capture's, which E1003 refuses)
+                        // stays as written.
+                        if let (Some(decoder), false) = (&decoder, store) {
+                            let load = syn::Expr::Index(index.clone());
+                            replacement = Some(syn::parse_quote!(#decoder(#load)));
                         }
                     }
                 }
@@ -1942,16 +2101,29 @@ impl TaskPlan {
             (Extent::Target, Some((name, _))) => quote!(&#name),
             (Extent::Target, None) => unreachable!("an in-place stage has its target"),
         };
-        let views = batch.views.iter().map(|view| &view.name);
+        // A view of enum elements is handed to the stage as the handle of its words.
+        let views = batch.views.iter().map(|view| {
+            let name = &view.name;
+            if batch.is_enum_view(name) {
+                quote!(&#name.words())
+            } else {
+                quote!(&#name)
+            }
+        });
         let params = &batch.params;
         let scalars = &batch.scalars;
         let checks = &batch.enum_checks;
+        // The stage records its result as words; the handle is the enum's again for everyone who holds it.
+        let retype = batch
+            .enum_result
+            .as_ref()
+            .map(|(ty, _)| quote!(.retype::<#ty>()));
         quote! {
             {
                 #(#checks)*
                 #name
                 let __gust_draft = #builder.draft::<_, #rank>(&(#shape));
-                #module::__gust_batch(__gust_draft, #(&#views,)* #(&#params,)* #(#scalars,)*)
+                #module::__gust_batch(__gust_draft, #(#views,)* #(&#params,)* #(#scalars,)*) #retype
             }
         }
     }

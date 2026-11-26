@@ -270,6 +270,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "batch-enum-element-ok"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-enum-in-place"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "batch-enum-missing-derive"
 version = "0.0.0"
 dependencies = [
@@ -277,7 +291,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "batch-enum-no-zero"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "batch-enum-ok"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-enum-op-operand"
 version = "0.0.0"
 dependencies = [
  "gust-compute",

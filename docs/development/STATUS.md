@@ -1356,6 +1356,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       may take submissions of its own; the frame after it is one. Radeon 890M and RTX 5090 (resize_ops, gust-algo batch
       tests), check-examples on the 890M, CPU device; mutation caught. Opus review: merge after fixes; one fix round,
       re-check merge.
+    - m14.pfbg2 (D273 performance track, proxy ruling qw1): consecutive dispatches of a batch that run the same
+      kernel over exactly the same resources share one bind group (pipeline entry and every binding compared; split
+      launches and graph-slot reuse reset the run). Measured on W1 1M on the RTX 5090, three seeds: no GPU-time gain
+      (docs/BENCHMARKS.md, outcome D); merged for the host-side saving, a side reading. Radeon 890M and RTX 5090 (full
+      Gpu suite), kernel-guard mutation caught. Opus review: merge after fixes; should-fixes in the tree before merge.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

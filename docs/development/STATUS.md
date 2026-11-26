@@ -1370,6 +1370,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       fallback test), check-examples on the 890M, CPU twin; mutations caught. Opus review: merge after fixes; one fix
       round, re-check merge. Open for s2e2d: in-place targets, `state` and host slice captures of enum elements; `view`
       is still `GpuPod`-only; the ticket clones the stage name; no 2-D `-> Phase` test.
+    - m14.benchfmt: the gates format, lint and test the bench workspace. The fmt and clippy steps also run over
+      bench/Cargo.toml (all members and targets, -D warnings); the Unit stage runs the gust-bench CPU tests tool-free
+      with the Vulkan driver hidden (adapter tests skipped by exact name) and a `cargo gust check` of gust-bench-pre
+      with --allow-slang-mismatch. Bench files reformatted only. Open: the 13 adapter bench tests run in no gate yet;
+      the added cold-build cost in CI is unmeasured. Opus review: merge after fixes; one fix round, re-check merge.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

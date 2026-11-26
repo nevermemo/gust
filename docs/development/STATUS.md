@@ -1361,6 +1361,15 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       launches and graph-slot reuse reset the run). Measured on W1 1M on the RTX 5090, three seeds: no GPU-time gain
       (docs/BENCHMARKS.md, outcome D); merged for the host-side saving, a side reading. Radeon 890M and RTX 5090 (full
       Gpu suite), kernel-guard mutation caught. Opus review: merge after fixes; should-fixes in the tree before merge.
+    - m14.s2e2c (D275): a batch input, a stage result and a `Stage<E>` handle may hold a `GpuEnum`. A stored word
+      that is no variant decodes as the last variant on the CPU twin and the GPU alike, through one decoder per module
+      shared with parameters; a ticket or `read` reports `Error::InvalidEnum { batch, stage, index, word }` for the
+      lowest bad index. An enum element needs a variant of word 0 (GUST-E1012, enforced by the macro only). `Stage::words()`
+      is raw, also after `retype`, and `FrameRun::write` refuses it. A user struct as a `gpu_batch!` input is now taken
+      for an enum (documented; `gust::batch::build` is the way around). Radeon 890M and RTX 5090 (enum_element incl. the
+      fallback test), check-examples on the 890M, CPU twin; mutations caught. Opus review: merge after fixes; one fix
+      round, re-check merge. Open for s2e2d: in-place targets, `state` and host slice captures of enum elements; `view`
+      is still `GpuPod`-only; the ticket clones the stage name; no 2-D `-> Phase` test.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

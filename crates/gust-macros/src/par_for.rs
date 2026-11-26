@@ -666,7 +666,14 @@ impl Plan {
             Some(quote!(let #name = #gid.#field;))
         });
         let scalar_lets = self.scalars().map(|(name, scalar)| {
-            if scalar == Scalar::Bool {
+            if let Some(decoder) = self
+                .task
+                .as_ref()
+                .and_then(|task| task.enum_decoder_of(name))
+            {
+                // A parameter that is an enum: the record holds its word (D270).
+                quote!(let #name = #decoder(#ext.#name);)
+            } else if scalar == Scalar::Bool {
                 quote!(let #name = #ext.#name != 0u32;)
             } else {
                 quote!(let #name = #ext.#name;)
@@ -682,8 +689,15 @@ impl Plan {
         let [ex, ey, ez] = &axis_fields[..] else {
             unreachable!("three axes")
         };
+        // The enums of a batch stage's parameters: a private copy of each, and the function that decodes its word.
+        let enum_items = self
+            .task
+            .as_ref()
+            .map_or_else(Vec::new, crate::task::TaskPlan::enum_items);
         syn::parse_quote! {
             mod #ident {
+                #(#enum_items)*
+
                 pub struct #record {
                     pub #ex: u32,
                     pub #ey: u32,

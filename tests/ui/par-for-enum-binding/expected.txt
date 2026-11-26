@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see gpupod-missing/expected.txt). A macro
+# error is a `compile_error!` and has no rustc code, so `code: none` requires `"code": null` and at least one `message:`.
+code: none
+file: par-for-enum-binding/src/main.rs
+line: 15
+message: [GUST-E0720] the binding `levels` has a type a buffer cannot hold

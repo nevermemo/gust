@@ -288,6 +288,31 @@ pub fn gpu_task(input: TokenStream) -> TokenStream {
 /// `min`, `max`, `reduce`, `count`, `scan` and `scan_exclusive`) and `let (idx, n) = gust::compact(&flags);`. Each output
 /// is a handle named by its `let`. The ops are gust-algo's, so the crate depends on `gust-algo`.
 ///
+/// A parameter may be an enum that derives `GpuEnum`, and a stage may `match` on it (a `match` is the initializer of a
+/// typed `let`, as in any dialect body):
+///
+/// ```text
+/// #[derive(Clone, Copy, PartialEq, gust::GpuEnum)]
+/// #[repr(u32)]
+/// enum Mode { Linear = 0, Square = 1 }
+///
+/// let (mut batch, h) = gust::gpu_batch!("shade", on(&device); |b| {
+///     let mode = b.param::<Mode>(Mode::Linear);
+///     let x = b.input::<u32>(64u32);
+///     let y = gust::gpu_task!(64u32, |i| -> u32 {
+///         let v: u32 = match mode.get() { Mode::Linear => x[i] * 3u32, Mode::Square => x[i] * x[i] };
+///         v
+///     });
+///     (mode, x, y)
+/// })?;
+/// // per frame: frame.set(&h.0, Mode::Square)?;
+/// ```
+///
+/// The enum is written as a parameter type only; the derive's hidden macro hands its definition to the batch, so the
+/// enum must be written by its own name or by a path to it (`Mode`, `types::Mode`), and be declared in the same crate
+/// as the batch (GUST-E1005 in `docs/DIAGNOSTICS.md`). The `@enums` form that the derive's macro calls is internal and
+/// unstable: do not write it.
+///
 /// The diagnostics of the form itself are GUST-E1005 and GUST-E1006, and GUST-E1009 and GUST-E1010 for the library ops
 /// (`docs/DIAGNOSTICS.md`).
 #[proc_macro]

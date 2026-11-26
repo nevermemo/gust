@@ -286,10 +286,9 @@ fn a_shape_parameter_read_in_a_body_is_e1005() {
 // ---- E1006 ----
 
 #[test]
-fn a_late_read_a_stage_level_match_and_a_3d_index_are_e1006() {
+fn a_late_read_and_a_3d_index_are_e1006() {
     for input in [
         "batch(b, \"s\"); n, [h: Stage<f32>], |i| -> f32 { h.late() }",
-        "batch(b, \"s\"); n, [k: u32], |i| -> u32 { match k { 0u32 => 1u32, _ => 2u32 } }",
         "batch(b, \"s\"); n, [h: Stage<f32>], |i| -> f32 { h[(i, 0u32, 0u32)] }",
     ] {
         stage_rejected(input, Code::BatchBody);
@@ -333,4 +332,214 @@ fn a_mixed_rank_use_of_one_handle_is_the_rank_error() {
         "batch(b, \"s\"); (w, h), [px: Stage<f32>], |x, y| -> f32 { px[(x, y)] + px[x] }",
         Code::TaskIndexRank,
     );
+}
+
+// ---- an enum parameter (m14.s2e2b, D270) ----
+
+const ENUM_BLOCK: &str = r#""shade", on(&device); |b| {
+    let mode = b.param::<Mode>(Mode::Linear);
+    let x = b.input::<u32>(8u32);
+    let y = gust::gpu_task!(8u32, |i| -> u32 {
+        let v: u32 = match mode.get() { Mode::Linear => x[i], Mode::Square => x[i] * x[i] };
+        v
+    });
+    (mode, x, y)
+}"#;
+
+/// The words a user's enum hands the batch, as the derive's callback macro writes them.
+const MODE_DEFINITION: &str = "# [repr (u32)] enum Mode { Square = 5u32 , Linear = 0u32 }";
+
+#[test]
+fn a_block_with_no_type_of_the_users_expands_in_one_step_as_before() {
+    // The whole expansion, verbatim (captured from the macro after the trailing-comma fix; the base emitter writes the
+    // same tokens for a block with no type of the user's): no hidden clause, no callback, no `enums`.
+    let text = batch(BLOCK);
+    assert_eq!(text, include_str!("batch_no_enum.golden").trim_end());
+    // And a stage of it: the host function has the generics it had before enums (no trailing comma, no enum bound).
+    let scratch = Scratch::new();
+    let stage_text = stage(
+        "batch(b, \"lum\"); (w, h), [px: Stage<f32>, gain: Param<f32>], |x, y| -> f32 { px[(x, y)] * gain.get() }",
+        &scratch,
+    );
+    assert!(!failed(&stage_text), "{stage_text}");
+    assert!(
+        stage_text.contains("__gust_batch < '__gust_b , __GustD > ("),
+        "{stage_text}"
+    );
+    for hidden in ["GpuEnum", "par_for_enum", "__gust_enum"] {
+        assert!(!stage_text.contains(hidden), "{hidden}: {stage_text}");
+    }
+    assert!(!scratch.slang().contains("enum "), "{}", scratch.slang());
+}
+
+#[test]
+fn a_block_with_an_enum_parameter_first_checks_the_bound_and_calls_the_callback_of_the_enum() {
+    let text = batch(ENUM_BLOCK);
+    assert!(!failed(&text), "{text}");
+    assert!(text.contains("__gust_enum_check :: < Mode >"), "{text}");
+    assert!(text.contains("Mode ! (acc = [] ;"), "{text}");
+    assert!(text.contains(":: gust :: gpu_batch"), "{text}");
+    // The original tokens ride along for step two.
+    assert!(text.contains("orig = {"), "{text}");
+}
+
+#[test]
+fn the_callback_chain_names_every_enum_and_a_primitive_is_not_one() {
+    let text = batch(
+        r#""s", on(&device); |b| {
+            let a = b.param::<Mode>(Mode::Linear);
+            let t = b.param::<types::Tint>(Tint::Warm);
+            let g = b.param::<f32>(1.0);
+            let v = b.param::<(u32, u32)>((1, 2));
+            (a, t, g, v)
+        }"#,
+    );
+    assert!(text.contains("Mode ! (acc = [] ;"), "{text}");
+    assert!(text.contains("next = [{ types :: Tint }]"), "{text}");
+    assert_eq!(text.matches("__gust_enum_check ::").count(), 2, "{text}");
+}
+
+#[test]
+fn step_two_gives_each_stage_the_enums_clause() {
+    let text = batch(&format!(
+        "@ enums [ {{ {MODE_DEFINITION} }} ] ; {ENUM_BLOCK}"
+    ));
+    assert!(!failed(&text), "{text}");
+    assert!(text.contains("enums { # [repr (u32)] enum Mode"), "{text}");
+    assert!(!text.contains("@ enums"), "{text}");
+}
+
+#[test]
+fn two_enums_of_one_name_are_e1005() {
+    batch_rejected(
+        &format!("@ enums [ {{ {MODE_DEFINITION} }} {{ {MODE_DEFINITION} }} ] ; {ENUM_BLOCK}"),
+        Code::BatchForm,
+    );
+}
+
+#[test]
+fn a_stage_with_an_enum_parameter_matches_on_its_words_in_the_kernel() {
+    let scratch = Scratch::new();
+    let text = stage(
+        &format!(
+            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} 8u32, [x: Stage<u32>, mode: Param<Mode>], |i| -> u32 {{ \
+             let v: u32 = match mode.get() {{ Mode::Linear => x[i], Mode::Square => x[i] * x[i] }}; v }}"
+        ),
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+    let slang = scratch.slang();
+    // The record carries the word; the kernel decodes it into the module's own copy, and the decoder compares the
+    // word the definition gave (`Square` is 5, not its position).
+    assert!(slang.contains("if ((word == uint(5)))"), "{slang}");
+    assert!(slang.contains("return Mode::Square;"), "{slang}");
+    assert!(slang.contains("par_for_enum_Mode"), "{slang}");
+}
+
+#[test]
+fn an_enum_parameter_outside_a_match_is_still_a_parameter() {
+    let scratch = Scratch::new();
+    let text = stage(
+        &format!(
+            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} 8u32, [x: Stage<u32>, mode: Param<Mode>], |i| -> u32 {{ \
+             let m: Mode = mode.get(); let v: u32 = match m {{ Mode::Linear => x[i], Mode::Square => 2u32 }}; v }}"
+        ),
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+}
+
+#[test]
+fn two_enums_that_differ_in_case_keep_two_decoders() {
+    let scratch = Scratch::new();
+    let text = stage(
+        "batch(b, \"s\"); enums { # [repr (u32)] enum Mode { A = 0u32 , B = 1u32 } \
+         # [repr (u32)] enum MODE { C = 3u32 , D = 4u32 } } 8u32, [x: Stage<u32>, m: Param<Mode>, u: Param<MODE>], \
+         |i| -> u32 { let a: u32 = match m.get() { Mode::A => x[i], Mode::B => 2u32 }; \
+         let c: u32 = match u.get() { MODE::C => a, MODE::D => 3u32 }; c }",
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+    let slang = scratch.slang();
+    for name in ["par_for_enum_Mode", "par_for_enum_MODE"] {
+        assert!(slang.contains(name), "{name}: {slang}");
+    }
+}
+
+#[test]
+fn a_stage_asserts_every_word_of_its_copy_against_the_type_the_parameter_names() {
+    let scratch = Scratch::new();
+    let text = stage(
+        &format!(
+            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} 8u32, [x: Stage<u32>, mode: Param<types::Mode>, \
+             again: Param<types::Mode>], |i| -> u32 {{ let v: u32 = match mode.get() {{ Mode::Linear => x[i], \
+             Mode::Square => 1u32 }}; v }}"
+        ),
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+    // One block for the one path (two parameters of it), a word per variant of the copy, and the exhaustive `match`.
+    assert_eq!(text.matches("__gust_enum_variants").count(), 1, "{text}");
+    for expected in [
+        "assert ! (types :: Mode :: Square as :: core :: primitive :: u32 == 5u32)",
+        "assert ! (types :: Mode :: Linear as :: core :: primitive :: u32 == 0u32)",
+        "match value { types :: Mode :: Square => { } types :: Mode :: Linear => { } }",
+    ] {
+        assert!(text.contains(expected), "{expected} not in {text}");
+    }
+}
+
+#[test]
+fn a_parameter_that_names_none_of_the_enums_of_the_block_says_so() {
+    let scratch = Scratch::new();
+    let text = stage(
+        &format!(
+            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} 8u32, [x: Stage<u32>, shade: Param<Shade>], \
+             |i| -> u32 {{ x[i] }}"
+        ),
+        &scratch,
+    );
+    assert!(failed(&text), "{text}");
+    assert_rendered_code(&text, Code::BatchForm);
+    assert!(
+        text.contains(
+            "`Shade` is not the name of an enum the block's derives handed over (`Mode`)"
+        ),
+        "{text}"
+    );
+    // A primitive keeps its own text.
+    let other = stage(
+        &format!(
+            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} 8u32, [x: Stage<u32>, big: Param<u64>], \
+             |i| -> u32 {{ x[i] }}"
+        ),
+        &Scratch::new(),
+    );
+    assert!(other.contains("a parameter a body cannot read"), "{other}");
+}
+
+#[test]
+fn enums_that_differ_in_one_word_make_different_kernels() {
+    let source = |square: u32| {
+        format!(
+            "batch(b, \"s\"); enums {{ # [repr (u32)] enum Mode {{ Square = {square}u32 , Linear = 0u32 }} }} 8u32, \
+             [x: Stage<u32>, mode: Param<Mode>], |i| -> u32 {{ let v: u32 = match mode.get() {{ \
+             Mode::Linear => x[i], Mode::Square => x[i] * x[i] }}; v }}"
+        )
+    };
+    let (five, six) = (Scratch::new(), Scratch::new());
+    let (text_five, text_six) = (stage(&source(5), &five), stage(&source(6), &six));
+    assert!(!failed(&text_five) && !failed(&text_six));
+    assert!(five.slang().contains("if ((word == uint(5)))"));
+    assert!(six.slang().contains("if ((word == uint(6)))"));
+    assert_ne!(five.slang(), six.slang());
+    // The module's name carries the hash of the lowered kernel, so the artifact key moves with the word.
+    assert_ne!(text_five, text_six);
+    let module = |text: &str| {
+        text.split("mod __gust_pf_")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .map(str::to_owned)
+    };
+    assert_ne!(module(&text_five), module(&text_six));
 }

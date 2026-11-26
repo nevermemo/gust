@@ -24,11 +24,12 @@
 use std::path::Path;
 
 use proc_macro2::{Span, TokenStream};
-use quote::quote;
+use quote::{ToTokens as _, quote, quote_spanned};
 use syn::{
     Token,
     ext::IdentExt as _,
     parse::{Parse, ParseStream},
+    spanned::Spanned as _,
     visit::Visit,
     visit_mut::VisitMut,
 };
@@ -294,6 +295,8 @@ struct Rewriter {
     depth: usize,
     /// The path of the first library op of the block, where a missing `gust-algo` dependency is reported.
     first_op: Option<syn::Path>,
+    /// The hidden clause that gives each stage the enums the block's parameters name (empty when there are none).
+    enums: TokenStream,
     error: Option<syn::Error>,
 }
 
@@ -522,7 +525,7 @@ impl Rewriter {
             self.fail(error);
         }
 
-        let builder = &self.builder;
+        let (builder, enums) = (&self.builder, &self.enums);
         let label = name.unwrap_or("");
         let krate_option = match (&self.krate, krate) {
             (Some(path), false) => quote!(crate(#path);),
@@ -534,7 +537,7 @@ impl Rewriter {
             quote!([#(#entries),*],)
         };
         mac.tokens = quote! {
-            batch(#builder, #label); #options #krate_option #shape, #bracket #closure
+            batch(#builder, #label); #enums #options #krate_option #shape, #bracket #closure
         };
 
         match &closure.output {
@@ -733,11 +736,172 @@ pub(crate) fn gpu_batch(input: TokenStream) -> TokenStream {
     gpu_batch_in(input, manifest_dir.as_deref())
 }
 
-/// `gpu_batch!` for the crate in `manifest_dir`, when known.
+/// `gpu_batch!` for the crate in `manifest_dir`, when known. The call is in two steps when a parameter of the block is
+/// a type of the user's (a GPU enum, D270): step one collects those types and expands to the chain of their callback
+/// macros ([`crate::gpu_enum`]), which ends in this macro's hidden `@enums` form; step two, [`lower`], reads the enums'
+/// tokens beside the original ones. A block with no such type is lowered at once, as before.
 pub(crate) fn gpu_batch_in(input: TokenStream, manifest_dir: Option<&Path>) -> TokenStream {
+    if let Ok(resolved) = diagnostics::parse2::<Resolved>(Code::BatchForm, input.clone()) {
+        return lower(resolved.rest, resolved.enums, manifest_dir);
+    }
+    match step_one(&input) {
+        Some(tokens) => tokens,
+        None => lower(input, Vec::new(), manifest_dir),
+    }
+}
+
+/// The hidden form that ends the callback chain: `@enums [ { enum Mode { .. } } .. ] ; <the original tokens>`.
+struct Resolved {
+    enums: Vec<syn::ItemEnum>,
+    rest: TokenStream,
+}
+
+impl Parse for Resolved {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        input.parse::<Token![@]>()?;
+        let keyword: syn::Ident = input.parse()?;
+        if keyword != "enums" {
+            return Err(diagnostics::error_at(
+                Code::BatchForm,
+                keyword.span(),
+                "expected `enums`",
+            ));
+        }
+        let list;
+        syn::bracketed!(list in input);
+        let mut enums = Vec::new();
+        while !list.is_empty() {
+            let definition;
+            syn::braced!(definition in list);
+            enums.push(definition.parse()?);
+        }
+        input.parse::<Token![;]>()?;
+        Ok(Self {
+            enums,
+            rest: input.parse()?,
+        })
+    }
+}
+
+/// The names of the types that a plain path can have without being the user's: the scalar types of a parameter, and
+/// the other primitives (a refused parameter type is refused as before, not looked up as an enum).
+const PRIMITIVES: [&str; 14] = [
+    "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f16", "f32", "f64", "bool", "usize",
+    "isize",
+];
+
+/// The types of the user's that the block's parameters have, in order of first use: `b.param::<T>(..)` and a `let`
+/// annotated `Param<T>`, with `T` a plain path (no generics) that is no primitive.
+struct UserTypes<'a> {
+    builder: &'a syn::Ident,
+    found: Vec<syn::Path>,
+}
+
+/// Whether `ty` is a type of the user's as far as a parameter goes: a plain path (no generics, no qualified self) that is
+/// no primitive. An enum is written so, by its own name or a path to it; an alias or a generic parameter looks the same
+/// and is refused when step one finds no enum of that name (GUST-E1005).
+pub(crate) fn is_user_type(ty: &syn::Type) -> bool {
+    let syn::Type::Path(path) = ty else {
+        return false;
+    };
+    let plain = path.qself.is_none()
+        && path
+            .path
+            .segments
+            .iter()
+            .all(|segment| segment.arguments.is_none());
+    let primitive = path
+        .path
+        .get_ident()
+        .is_some_and(|ident| PRIMITIVES.contains(&ident.to_string().as_str()));
+    plain && !primitive
+}
+
+impl UserTypes<'_> {
+    fn note(&mut self, ty: &syn::Type) {
+        let syn::Type::Path(path) = ty else {
+            return;
+        };
+        let known = self.found.iter().any(|found| {
+            found.to_token_stream().to_string() == path.path.to_token_stream().to_string()
+        });
+        if is_user_type(ty) && !known {
+            self.found.push(path.path.clone());
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for UserTypes<'_> {
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if call.method == "param"
+            && matches!(&*call.receiver, syn::Expr::Path(path) if path.path.is_ident(self.builder))
+            && let Some(turbofish) = &call.turbofish
+            && let Some(syn::GenericArgument::Type(ty)) = turbofish.args.first()
+        {
+            self.note(ty);
+        }
+        syn::visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_local(&mut self, local: &'ast syn::Local) {
+        if let syn::Pat::Type(typed) = &local.pat
+            && let Some(ty) = type_argument(&typed.ty, "Param")
+        {
+            self.note(ty);
+        }
+        syn::visit::visit_local(self, local);
+    }
+}
+
+/// Step one: when the block's parameters have types of the user's, the expansion that checks each is a GPU enum (rustc
+/// says "add `#[derive(GpuEnum)]`" at the type otherwise) and calls the first one's callback macro with the rest, the
+/// continuation and the original tokens. `None` when there is no such type or the input does not read (step two then
+/// reports it as it always did).
+fn step_one(input: &TokenStream) -> Option<TokenStream> {
+    let parsed = diagnostics::parse2::<Input>(Code::BatchForm, input.clone()).ok()?;
+    let mut types = UserTypes {
+        builder: &parsed.builder,
+        found: Vec::new(),
+    };
+    for statement in &parsed.stmts {
+        types.visit_stmt(statement);
+    }
+    let (first, rest) = types.found.split_first()?;
+    let checks = types.found.iter().map(|path| {
+        quote_spanned! {path.span()=>
+            const _: fn() = || {
+                fn __gust_enum_check<T: ::gust::GpuEnum>() {}
+                __gust_enum_check::<#path>();
+            };
+        }
+    });
+    let tokens = quote! {
+        {
+            #(#checks)*
+            #first ! (
+                acc = [] ;
+                next = [ #({ #rest })* ] ;
+                cont = { ::gust::gpu_batch } ;
+                orig = { #input }
+            )
+        }
+    };
+    Some(match &parsed.krate {
+        Some(path) => crate::forward::forward_crate(tokens, path),
+        None => tokens,
+    })
+}
+
+/// Step two, or the whole of a call with no enum: `gpu_batch!` lowered, `enums` being the definitions the callback
+/// chain collected (each a stage may copy into its module).
+fn lower(
+    input: TokenStream,
+    enums: Vec<syn::ItemEnum>,
+    manifest_dir: Option<&Path>,
+) -> TokenStream {
     let mut krate = None;
     let mut device = None;
-    match expand(input, &mut krate, &mut device, manifest_dir) {
+    match expand(input, &enums, &mut krate, &mut device, manifest_dir) {
         Ok(tokens) => match krate {
             Some(path) => crate::forward::forward_crate(tokens, &path),
             None => tokens,
@@ -768,13 +932,40 @@ pub(crate) fn gpu_batch_in(input: TokenStream, manifest_dir: Option<&Path>) -> T
     }
 }
 
+/// The hidden clause that carries `enums` into each stage: `enums { enum Mode { .. } .. }`, empty for none. Two enums
+/// of one name cannot share a stage's module, so the second is refused (GUST-E1005): the stage would declare both.
+fn enums_clause_of(enums: &[syn::ItemEnum]) -> syn::Result<TokenStream> {
+    for (index, definition) in enums.iter().enumerate() {
+        if enums[..index]
+            .iter()
+            .any(|earlier| earlier.ident == definition.ident)
+        {
+            return Err(batch_form(
+                &definition.ident,
+                format!(
+                    "`{0}` names two enums among the parameter types of one batch (or one enum by two paths): a stage \
+                     declares each enum under its own name, so rename one of the enums, and write the other by one path",
+                    definition.ident
+                ),
+            ));
+        }
+    }
+    Ok(if enums.is_empty() {
+        TokenStream::new()
+    } else {
+        quote!(enums { #(#enums)* })
+    })
+}
+
 fn expand(
     input: TokenStream,
+    enums: &[syn::ItemEnum],
     krate: &mut Option<syn::Path>,
     device_seen: &mut Option<TokenStream>,
     manifest_dir: Option<&Path>,
 ) -> syn::Result<TokenStream> {
     let parsed = diagnostics::parse2::<Input>(Code::BatchForm, input)?;
+    let enums_clause = enums_clause_of(enums)?;
     let Input {
         name,
         device,
@@ -818,6 +1009,7 @@ fn expand(
         unrecorded: Vec::new(),
         depth: 0,
         first_op: None,
+        enums: enums_clause,
         error: None,
     };
     for statement in &mut stmts {

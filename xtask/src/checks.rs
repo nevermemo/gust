@@ -577,6 +577,10 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             // `tests/reduce.rs`: the library ops written in a build block (m14.s2f2c).
             "twin_a_stage_writing_an_op_output_is_refused_at_the_seal",
             "twin_macro_ops_equal_the_builder_api_and_the_host",
+            // `tests/enum_param.rs`: an enum parameter and a `match` in a stage (m14.s2e2b).
+            "twin_an_enum_parameter_and_a_match_equal_the_host",
+            "twin_an_enum_parameter_set_back_to_its_value_changes_nothing",
+            "twin_an_enum_parameter_with_two_frames_in_flight_equals_the_host",
         ],
     ),
 ];

@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: enum-in-uniform/src/main.rs
+line: 14
+message: [GUST-E0211] `Level` is an enum, and an enum is not the element of a buffer, a uniform or workgroup memory

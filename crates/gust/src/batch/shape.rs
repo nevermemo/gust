@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use super::{BatchDevice, Param, Stage};
-use crate::GpuPod;
+use crate::{GpuEnum, GpuPod};
 
 mod sealed {
     pub trait Sealed {}
@@ -48,8 +48,9 @@ pub enum Value {
     Pair(u32, u32),
 }
 
-/// The types a [`Param`] can hold: `u32`, `i32`, `f32` and `bool` (read in a stage's body as `p.get()`), and `(u32, u32)`
-/// (a shape: it can size a stage, and a body cannot read it).
+/// The types a [`Param`] can hold: `u32`, `i32`, `f32` and `bool` (read in a stage's body as `p.get()`), an enum with
+/// `#[derive(GpuEnum)]` (read the same way, usually in a `match`), and `(u32, u32)` (a shape: it can size a stage, and a
+/// body cannot read it).
 pub trait ParamType: Copy + 'static {
     /// Pack the value for the batch's table. Macro support.
     #[doc(hidden)]
@@ -81,6 +82,23 @@ param_type!(u32, U32);
 param_type!(i32, I32);
 param_type!(f32, F32);
 param_type!(bool, Bool);
+
+/// An enum with `#[derive(GpuEnum)]` is a parameter: it is held as its `u32` word (D270), `set` takes the enum, and a
+/// stage reads it as `p.get()` in a `match`.
+impl<E: GpuEnum> ParamType for E {
+    fn pack(self) -> Value {
+        Value::U32(self.to_word())
+    }
+
+    fn unpack(value: Value) -> Self {
+        match value {
+            Value::U32(word) => {
+                E::from_word(word).expect("an enum parameter holds a word that `pack` made")
+            }
+            other => unreachable!("an enum parameter holds {other:?}"),
+        }
+    }
+}
 
 impl ParamType for (u32, u32) {
     fn pack(self) -> Value {

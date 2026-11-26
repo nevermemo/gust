@@ -11,9 +11,19 @@
 //!
 //! The expansion is `impl ::gust::GpuEnum` and `impl TryFrom<u32>`, each a `match` over the discriminants. There is
 //! no `transmute` and no `as` from a word, so a word that is no variant can never become a value of the enum.
+//!
+//! It also hands the enum to a batch stage (slice s2e2b, D270). A proc macro cannot see a type declared elsewhere, so
+//! the derive writes a hidden `macro_rules! __gust_enum_<Name>`, re-exported under the enum's own name
+//! (`pub(crate) use __gust_enum_<Name> as <Name>;`: the type keeps the type namespace, the macro takes the macro
+//! namespace, and both travel through `use` and paths). `gpu_batch!` calls `Mode! { acc = [..]; next = [..]; cont =
+//! {..}; orig = {..} }` for each enum a block names: the macro appends the enum's tokens (its name, `#[repr(u32)]` and
+//! the variants with their words) to `acc`, then calls the next enum's macro, or, with none left, the continuation
+//! `cont` (the `gpu_batch!` itself, in its hidden `@enums` form) with every definition and the untouched original
+//! tokens. Same crate only.
 
-use proc_macro2::TokenStream;
-use quote::quote;
+use proc_macro2::{Literal, TokenStream};
+use quote::{format_ident, quote};
+use syn::ext::IdentExt as _;
 
 use crate::diagnostics::{self, Code};
 
@@ -147,6 +157,17 @@ fn emit(
     words: &[u32],
 ) -> TokenStream {
     let idents: Vec<_> = variants.iter().map(|variant| &variant.ident).collect();
+    let literals: Vec<Literal> = words
+        .iter()
+        .map(|word| Literal::u32_unsuffixed(*word))
+        .collect();
+    let callback = format_ident!("__gust_enum_{}", name.unraw());
+    // The enum as a stage's module reads it: the name, `#[repr(u32)]` and the variants with their words. The stage adds
+    // the comparison the module validator asks for; `Clone` and `Copy` are the module's own.
+    let definition = quote! {
+        #[repr(u32)]
+        enum #name { #(#idents = #literals),* }
+    };
     quote! {
         #[automatically_derived]
         impl ::gust::GpuEnum for #name {
@@ -175,6 +196,37 @@ fn emit(
                 }
             }
         }
+
+        #[allow(unused_macros)]
+        macro_rules! #callback {
+            (
+                acc = [ $($acc:tt)* ] ;
+                next = [ { $($head:tt)+ } $($tail:tt)* ] ;
+                cont = { $($cont:tt)+ } ;
+                orig = { $($orig:tt)* }
+            ) => {
+                $($head)+ ! {
+                    acc = [ $($acc)* { #definition } ] ;
+                    next = [ $($tail)* ] ;
+                    cont = { $($cont)+ } ;
+                    orig = { $($orig)* }
+                }
+            };
+            (
+                acc = [ $($acc:tt)* ] ;
+                next = [ ] ;
+                cont = { $($cont:tt)+ } ;
+                orig = { $($orig:tt)* }
+            ) => {
+                $($cont)+ ! {
+                    @enums [ $($acc)* { #definition } ] ;
+                    $($orig)*
+                }
+            };
+        }
+
+        #[allow(unused_imports)]
+        pub(crate) use #callback as #name;
     }
 }
 
@@ -248,13 +300,35 @@ mod tests {
     }
 
     #[test]
+    fn the_derive_adds_the_hidden_callback_macro_and_its_alias_for_a_batch() {
+        let text = expansion(GOOD).unwrap().to_string();
+        assert!(text.contains("macro_rules ! __gust_enum_Mode"), "{text}");
+        assert!(
+            text.contains("pub (crate) use __gust_enum_Mode as Mode"),
+            "{text}"
+        );
+        // The definition handed on keeps the words, written out (`Curve` is 1, `Last` is 16).
+        for expected in ["Linear = 0", "Curve = 1", "Step = 7", "Last = 16"] {
+            assert!(text.contains(expected), "{expected} not in {text}");
+        }
+        assert!(text.contains("# [repr (u32)] enum Mode"), "{text}");
+        // Not the user's derives, and no `Clone` or `Copy` (the stage's module adds its own).
+        assert!(!text.contains("# [derive"), "{text}");
+    }
+
+    #[test]
     fn nothing_is_transmuted_or_cast_from_a_word() {
         let text = expansion(GOOD).unwrap().to_string();
         assert!(!text.contains("transmute"), "{text}");
-        assert!(
-            !text.split_whitespace().any(|token| token == "as"),
+        // The one `as` is the rename of the batch alias (`use .. as Mode`), never a cast.
+        assert_eq!(
+            text.split_whitespace()
+                .filter(|token| *token == "as")
+                .count(),
+            1,
             "{text}"
         );
+        assert!(text.contains("__gust_enum_Mode as Mode"), "{text}");
     }
 
     #[test]

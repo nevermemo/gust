@@ -33,6 +33,34 @@ is GUST-E1005. The frames share one set of buffers, so the data persists from fr
 frame does not write or set holds the value of the last frame that reached the queue, whatever n is. `examples/batch-basics` has a three-stage
 batch (1-D, 2-D and in place) with two tickets, and GUST-E1005 and E1006 are the diagnostics of the form.
 
+A batch can report the GPU time of its frames. It is opt-in at the build: `b.frame_timing(FrameTiming::Frame)` (or
+`FrameTiming::Passes`) in the block makes the timestamp objects once, when the batch is sealed, and only on a device
+with timestamp queries; a batch built without it (the default, `Off`) makes none, and `batch.frame_timing()` says up
+front what a batch can tell (`None`, or the level and the adapter's tick). A frame then asks with `f.time()`, before
+`submit`, and reads the answer like a ticket, by polling, never by waiting: `FrameTimes { span, passes }`. Only the
+frames that ask record timestamps, so a timed batch's other frames cost nothing. The **span** runs from the begin of
+the frame's first pass to the end of its last pass, whatever lies between them; the frame's upload copies (before the
+first pass) and its ticket copies (after the last) are **outside** it. It is the quantity the benchmarks call
+`gpu_batch_per_dispatch` times the number of passes. At level `Passes` the result also holds one entry per stage that
+has a pass: an entry is per **stage**, from the begin of the stage's first pass to the end of its last (a stage that
+records several passes, or a launch split into pieces, which share one pass, is still one entry); a stage over zero
+elements has none. The plan for fused passes is one entry per fused group, naming all its stages. A time is `Ok(None)`,
+never an error, for a batch built `Off`, a device without timestamp queries (the CPU twin, an adopted device that did
+not ask for them, `wasm32`), a frame with no pass, and a frame for which no read-back buffer was free (the batch
+keeps a bounded set of them and replaces any that a dropped or unread frame cost, so this is rare, and a caller that
+never reads its frames' times does not use the set up). A frame that was never submitted is `Err(NotSubmitted)`, and so
+is a frame whose copy was recorded into a caller's encoder that never ran; only a frame that recorded no timestamp
+(a batch built `Off`, no pass) gives `Ok(None)` there. `submit` and `encode` with `Encoded::submitted` both work; the
+frame is still one submission. What a caller can tell from noise, measured on 2026-11-26 over 200 identical frames of
+a four-stage batch: on a Radeon 890M the span of one frame lies between about 5 to 7 percent below and 10 to 13
+percent above the median of the frames, on an RTX 5090 between about 2 percent below and 1 to 3 percent above it. A
+timed frame costs a roughly fixed extra wall clock of about 0.4 ms (0.3 to 0.5 ms on the 890M, 0.39 ms on the 5090;
+measured with a blocking wait per frame, not split into its causes), so the cost relative to an untimed batch depends
+on the frame length, per adapter: wall clock 1.04 to 1.05 times that of untimed frames for frames of about 7 ms on the
+890M, 1.20 to 1.24 times for frames of about 0.4 ms of span on the 5090 (1.22 to 1.23 for `Passes`). For short frames
+it is above the 1.05 that GUST calls "free". Compare spans of the same adapter and the same size, never across
+machines.
+
 ## Workgroup memory and barriers
 
 The invocations of one workgroup can share fast memory and wait for each other. `Workgroup<[T; N]>` is a kernel

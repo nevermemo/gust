@@ -1382,6 +1382,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       GUST-E1005 for every element type (D276). Radeon 890M and RTX 5090 (batch-basics incl. enum_store, frames and a
       resize), check-examples on the 890M, CPU twin; store-encode and E0122 mutations caught. Opus review: merge after
       fixes; one fix round, re-check merge.
+    - m14.pfft (D277): frame timing on the batch frame path. `FrameTiming { Off, Frame, Passes }` at batch build,
+      `FrameRun::time()` per frame, a non-blocking `FrameTime` from the submitted frame (one span from the first pass's
+      begin to the last pass's end; at `Passes` one entry per stage), `Batch::frame_timing()` up front; `Ok(None)` on
+      the CPU twin, without timestamp queries, on wasm32 and for `Off`, which creates nothing. The span agrees with the
+      bench's per-dispatch quantity (probe C5) on the Radeon 890M and the RTX 5090; timing on costs about 0.4 ms per timed
+      frame on the 5090 and a few percent on the 890M (probe C6, in the guide). Both adapters (frame_time, batch-basics),
+      the no-timestamp route; span-end and Off mutations caught. Opus review: merge after fixes; one fix round, re-check
+      merge. Open: pf.ft2 (split the per-frame cost; batched resolve and map), pf.ftweb.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

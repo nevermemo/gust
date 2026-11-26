@@ -601,6 +601,8 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "cpu_an_encoded_op_resize_is_exact",
             "cpu_an_op_resize_with_a_frame_in_flight",
             "cpu_the_ops_follow_every_resize",
+            // `tests/frame_time.rs`: the frame timing hook on the twin (m14.pfft).
+            "twin_frame_time_is_none_and_the_frames_are_unchanged",
         ],
     ),
 ];

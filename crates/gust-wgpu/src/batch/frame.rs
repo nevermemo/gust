@@ -230,13 +230,13 @@ impl HeadlessDevice {
 
 /// Whether the queue has finished a submission, and the tasks waiting for it.
 #[derive(Default)]
-struct Done {
+pub(super) struct Done {
     finished: AtomicBool,
     wakers: Mutex<Vec<Waker>>,
 }
 
 impl Done {
-    fn finish(&self) {
+    pub(super) fn finish(&self) {
         let wakers = {
             let mut wakers = self.wakers.lock().unwrap_or_else(PoisonError::into_inner);
             self.finished.store(true, Ordering::Release);
@@ -247,7 +247,7 @@ impl Done {
         }
     }
 
-    fn poll(&self, waker: &Waker) -> Poll<()> {
+    pub(super) fn poll(&self, waker: &Waker) -> Poll<()> {
         if self.finished.load(Ordering::Acquire) {
             return Poll::Ready(());
         }

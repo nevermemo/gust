@@ -725,7 +725,7 @@ impl<D: BatchDevice> FrameRun<D> {
     }
 
     /// Ask for the GPU time of this frame: a [`FrameTime`], read after the submission like a ticket, with the span from
-    /// the begin of the frame's first pass to the end of its last one (see [`FrameTimes`]). Only a frame that asks
+    /// the begin of the frame's first pass to the end of its last one (see [`FrameTimes`](super::FrameTimes)). Only a frame that asks
     /// records timestamps, so a frame of a timed batch that does not call this costs nothing; calling it again returns
     /// the same measurement.
     ///

@@ -27,7 +27,9 @@ use gust::batch::{Batch, D1, FrameTiming, Stage};
 use gust::{Extent, Independent};
 #[cfg(feature = "algo")]
 use gust_wgpu::GpuVec;
-use gust_wgpu::{BufferDispatch, DeviceHandle, GpuBuffer, GpuBufferAccess, StagedGraph};
+use gust_wgpu::{
+    BufferDispatch, DeviceHandle, GpuBuffer, GpuBufferAccess, ShaderChecks, StagedGraph,
+};
 use serde_json::Value;
 
 use crate::{
@@ -291,7 +293,17 @@ pub const fn backend_id() -> &'static str {
     }
 }
 
+/// The id of the row that runs GUST on a device opened with `DeviceOptions::unchecked_kernels` (pf.trust): the WGSL
+/// route with wgpu's runtime shader checks off, paired in one run with `gust-gpu` on a device opened the usual way.
+pub const UNCHECKED_ID: &str = "gust-gpu-unchecked";
+
 impl GustGpu {
+    /// Whether this row's device was opened with unchecked kernels: the row's id and description follow the device's own
+    /// setting, so the row cannot claim a mode its device does not have.
+    fn unchecked(&self) -> bool {
+        self.device.shader_checks() == ShaderChecks::Unchecked
+    }
+
     pub fn new(device: DeviceHandle) -> Self {
         Self::with_variant(device, Variant::Plain)
     }
@@ -731,7 +743,11 @@ impl GustGpu {
 
 impl Backend for GustGpu {
     fn id(&self) -> &'static str {
-        self.variant.id()
+        if self.variant == Variant::Plain && self.unchecked() {
+            UNCHECKED_ID
+        } else {
+            self.variant.id()
+        }
     }
 
     fn description(&self) -> &'static str {
@@ -753,7 +769,9 @@ impl Backend for GustGpu {
                 return "W6-hand as one `gust::batch` batch with the frame recorded one compute pass per stage: the pf.onepass probe row FU'";
             }
         }
-        if gust_wgpu::SPIRV_ROUTE {
+        if self.unchecked() {
+            "GUST kernel through gust-wgpu (Slang -> WGSL -> wgpu) on a device opened with DeviceOptions::unchecked_kernels (wgpu's runtime shader checks off), typed call, public API only"
+        } else if gust_wgpu::SPIRV_ROUTE {
             "GUST kernel through gust-wgpu on the opt-in SPIR-V route (slangc SPIR-V through passthrough), typed call, public API only"
         } else {
             "GUST kernel through gust-wgpu (Slang -> WGSL -> wgpu), typed call, public API only"

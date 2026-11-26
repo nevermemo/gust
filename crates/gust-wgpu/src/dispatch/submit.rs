@@ -195,7 +195,7 @@ impl HeadlessDevice {
                 label: Some("GUST profiled typed batch encoder"),
             });
 
-        let Some(timestamp_profiler) = &self.timestamp_profiler else {
+        let Some(timestamp_profiler) = self.timestamp_profiler.as_ref() else {
             crate::encode_batch_passes(
                 &self.device,
                 &mut encoder,

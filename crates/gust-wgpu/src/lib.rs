@@ -133,8 +133,8 @@ use completion::Completion;
 #[cfg(not(target_arch = "wasm32"))]
 use completion::blocking::block_on_mapping;
 pub use device::{
-    AdapterChoice, DeviceHandle, DeviceOptions, FeaturesPolicy, LimitsPolicy, default_device,
-    default_device_async, set_default_device, set_default_options,
+    AdapterChoice, DeviceHandle, DeviceOptions, FeaturesPolicy, LimitsPolicy, ShaderChecks,
+    default_device, default_device_async, set_default_device, set_default_options,
 };
 pub use dispatch::*;
 pub use error::Error;

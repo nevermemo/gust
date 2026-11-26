@@ -134,9 +134,9 @@ There are two GUST forms, reported as two workload ids that share the kernels, t
 | id | what runs | what one timed sample includes |
 |---|---|---|
 | `W6-graph` | six typed `Call`s added to a `StagedGraph` (`graph.run`, derived edges), `device.execute_graph` | building the graph, validating it (the edges are checked), encoding six compute passes into one command buffer, one submit and the wait. End to end adds five upload nodes (`graph.write`) and one read-back node (`graph.read`) in the same graph, each upload through a staging buffer the graph owns |
-| `W6-hand` | the same six calls as one `dispatch_batch` of six `BufferDispatch`es, no graph | the six passes (one compute pass per dispatch) in one submit and the wait; no graph build, no validation of edges. End to end adds five `write_typed_buffer` uploads and the typed read-back |
+| `W6-hand` | the same six calls as one `dispatch_batch` of six `BufferDispatch`es, no graph | the six dispatches recorded in one compute pass (since pf.onepass; before it, one compute pass per dispatch) in one submit and the wait; no graph build, no validation of edges. End to end adds five `write_typed_buffer` uploads and the typed read-back |
 
-Both forms of GUST and the hand WGSL do one submit with six compute passes per run; they differ in the host work around it.
+GUST's `W6-graph` and the hand WGSL do one submit with six compute passes per run; `W6-hand` on GUST does one submit with the six dispatches in one compute pass (pf.onepass). They differ in the host work around it.
 The hand WGSL (`bench/shaders/signal_pipeline.wgsl`, six entry points of one module, one three-binding layout, one bind group per
 stage, dispatched in hand order) is the baseline of both forms: `wgsl-prebuilt` builds its bind groups once, `wgsl-percall`
 builds one per pass per run. Both GUST forms have GPU timestamps and both are in the kill rule (see "The kill rule"): for

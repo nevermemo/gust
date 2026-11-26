@@ -6,11 +6,12 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::Ordering;
 use core::task::{Context, Poll, Waker};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::{
-    BatchDevice, BoxFuture, Core, Empty, Error, Layout, Param, ParamType, Stage, Value, Values,
-    map, typed,
+    BatchDevice, BoxFuture, Core, Empty, Error, Layout, OpPlan, Operands, PLANS_KEPT, Param,
+    ParamType, Stage, Value, Values, map, typed,
 };
 use crate::GpuPod;
 
@@ -184,16 +185,37 @@ pub struct FrameRun<D: BatchDevice> {
 }
 
 /// What a frame that resizes the batch holds until it is submitted or encoded: the buffers (new ones where the extents
+/// changed), the extents, the values of the shape parameters and the stages prepared over the new buffers. A dropped
 /// frame drops all of it and the batch is as it was.
-/// all of it and the batch is as it was.
 struct Staged<D: BatchDevice> {
     values: Vec<Value>,
     dims: Vec<[u32; 2]>,
     buffers: Vec<Arc<dyn Any>>,
     /// How many of `buffers` are not the batch's own.
     replaced: usize,
-    /// The stages (by number) whose buffers are not the batch's own, prepared over these ones.
-    prepared: Vec<(usize, Arc<D::Prepared>)>,
+    /// The stages whose buffers are not the batch's own, prepared over these ones.
+    prepared: Vec<StagedStage<D>>,
+}
+
+/// A stage prepared again by a resize.
+struct StagedStage<D: BatchDevice> {
+    /// The stage's number.
+    stage: usize,
+    /// What it dispatches now: `None` for an op over zero elements.
+    prepared: Option<Arc<D::Prepared>>,
+    /// For an op over some elements: its length and the plan it was prepared with, which the batch keeps when the frame
+    /// is committed.
+    plan: Option<(usize, Arc<dyn Any>)>,
+}
+
+impl<D: BatchDevice> Clone for StagedStage<D> {
+    fn clone(&self) -> Self {
+        Self {
+            stage: self.stage,
+            prepared: self.prepared.clone(),
+            plan: self.plan.clone(),
+        }
+    }
 }
 
 impl<D: BatchDevice> core::fmt::Debug for FrameRun<D> {
@@ -207,6 +229,14 @@ impl<D: BatchDevice> core::fmt::Debug for FrameRun<D> {
 
 fn device_error<D: BatchDevice>(error: D::Error) -> Error {
     Error::Device(D::map_error(error))
+}
+
+/// Make `plan`, the plan of a length an op stage now runs at, the first of the stage's kept plans, and drop the oldest
+/// when more than `PLANS_KEPT` remain.
+fn keep_plan(kept: &mut VecDeque<(usize, Arc<dyn Any>)>, plan: (usize, Arc<dyn Any>)) {
+    kept.retain(|(len, _)| *len != plan.0);
+    kept.push_front(plan);
+    kept.truncate(PLANS_KEPT);
 }
 
 impl<D: BatchDevice> super::Batch<D> {
@@ -341,13 +371,15 @@ impl<D: BatchDevice> FrameRun<D> {
     /// frame is submitted (or encoded) and the device took it, and then its [`generation`](super::Batch::generation)
     /// moves; a frame that is dropped, or fails before that, leaves the batch as it was. Set a shape **before** writing
     /// or reading what it resizes: a `set` that would change a buffer this frame already wrote or reserved a read-back
-    /// of is an error. The device may clear recycled buffers in submissions of its own, so a frame that resizes can cost
-    /// more submissions than one that does not.
+    /// of is an error. A library op stage follows too: its plan for the new length is built here (or found among the
+    /// plans the batch kept) and its outputs that follow the operand are made again. The device may clear recycled
+    /// buffers and the scratch of a new plan in submissions of its own, made inside this call, so a `set` that resizes can
+    /// cost submissions; the frame that follows it is one submission like any frame (the allocation rule is in the `batch` module doc).
     ///
     /// # Errors
     ///
     /// [`Error::Foreign`] for a parameter of another batch; [`Error::ShapeMismatch`] for a shape that would change a
-    /// buffer the frame has used; [`Error::OpResize`] for a resize that reaches a library op stage; the device's
+    /// buffer the frame has used; the device's
     /// failures (a buffer too long, or a limit of the new extents). The frame is unchanged after an error.
     pub fn set<T: ParamType>(&mut self, param: &Param<T>, value: T) -> Result<(), Error> {
         let core = Arc::clone(&self.core);
@@ -488,16 +520,6 @@ impl<D: BatchDevice> FrameRun<D> {
                 ),
             });
         }
-        for stage in &core.stages {
-            let mut touched = stage.reads.iter().copied().chain(stage.written());
-            if stage.remake.is_none() && touched.any(|buffer| dims[buffer] != sealed_dims[buffer]) {
-                return Err(Error::OpResize {
-                    batch: core.name.clone(),
-                    stage: stage.name.clone(),
-                    param: core.params[id].name.clone(),
-                });
-            }
-        }
         // A buffer keeps the frame's own where its extents are as they are here, goes back to the batch's where they are
         // as the batch has them, and is made again otherwise.
         let mut buffers = Vec::with_capacity(dims.len());
@@ -539,16 +561,22 @@ impl<D: BatchDevice> FrameRun<D> {
             }
             if let Some(staged) = &self.staged
                 && touched().all(|buffer| same(buffer, &here, &here_dims))
-                && let Some((_, kept)) = staged.prepared.iter().find(|(stage, _)| *stage == index)
+                && let Some(kept) = staged.prepared.iter().find(|kept| kept.stage == index)
             {
-                prepared.push((index, Arc::clone(kept)));
+                prepared.push(kept.clone());
                 continue;
             }
-            let remake = stage
-                .remake
-                .as_ref()
-                .expect("a stage with a resized buffer was checked to be remakable");
-            prepared.push((index, Arc::new(remake(&*core.device, &layout)?)));
+            prepared.push(match (&stage.remake, &stage.plan) {
+                (Some(remake), _) => StagedStage {
+                    stage: index,
+                    prepared: Some(Arc::new(remake(&*core.device, &layout)?)),
+                    plan: None,
+                },
+                (None, Some(plan)) => Self::replan(&core, index, plan, &layout)?,
+                (None, None) => {
+                    unreachable!("a stage is a kernel with a remake or an op with a plan")
+                }
+            });
         }
         self.staged = Some(Staged {
             values,
@@ -558,6 +586,59 @@ impl<D: BatchDevice> FrameRun<D> {
             prepared,
         });
         Ok(())
+    }
+
+    /// The op stage `index` prepared again over the buffers of `layout`, inside the `set`: over the plan the batch kept
+    /// for the new length when it has one, over a new plan (built here, which may take submissions of the device's own:
+    /// see the allocation rule in the `batch` module doc) otherwise. A length of zero prepares nothing, the stage's `empty` rule runs in the frame.
+    fn replan(
+        core: &Core<D>,
+        index: usize,
+        plan: &OpPlan<D>,
+        layout: &Layout<'_>,
+    ) -> Result<StagedStage<D>, Error> {
+        let stage = &core.stages[index];
+        let operands = Operands::new(
+            stage
+                .reads
+                .iter()
+                .map(|&id| Arc::clone(&layout.buffers[id]))
+                .collect(),
+            stage
+                .written()
+                .map(|id| Arc::clone(&layout.buffers[id]))
+                .collect(),
+            stage.len(layout.dims),
+        );
+        let len = operands.len();
+        if len == 0 {
+            return Ok(StagedStage {
+                stage: index,
+                prepared: None,
+                plan: None,
+            });
+        }
+        let kept = core
+            .run
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .plans[index]
+            .iter()
+            .find(|(kept, _)| *kept == len)
+            .map(|(_, plan)| Arc::clone(plan));
+        let device = &*core.device;
+        let plan_of_len = match kept {
+            Some(kept) => kept,
+            None => plan.build(device, len).map_err(device_error::<D>)?,
+        };
+        let prepared = plan
+            .bind(device, &plan_of_len, &operands)
+            .map_err(device_error::<D>)?;
+        Ok(StagedStage {
+            stage: index,
+            prepared: Some(Arc::new(prepared)),
+            plan: Some((len, plan_of_len)),
+        })
     }
 
     /// Make the resize of this frame the batch's: its buffers, extents and prepared stages, and the values of the
@@ -574,8 +655,11 @@ impl<D: BatchDevice> FrameRun<D> {
         }
         run.dims = staged.dims;
         run.buffers = staged.buffers;
-        for (stage, prepared) in staged.prepared {
-            run.prepared[stage] = Some(prepared);
+        for entry in staged.prepared {
+            run.prepared[entry.stage] = entry.prepared;
+            if let Some(plan) = entry.plan {
+                keep_plan(&mut run.plans[entry.stage], plan);
+            }
         }
         drop(run);
         self.core
@@ -704,8 +788,8 @@ impl<D: BatchDevice> FrameRun<D> {
             (run.stale.clone(), run.prepared.clone())
         };
         if let Some(staged) = &self.staged {
-            for (stage, kept) in &staged.prepared {
-                prepared[*stage] = Some(Arc::clone(kept));
+            for kept in &staged.prepared {
+                prepared[kept.stage].clone_from(&kept.prepared);
             }
         }
         let values = Values {

@@ -38,8 +38,15 @@
 //! extents) and, when the frame is submitted or encoded, moves the batch's [`generation`](Batch::generation). A shape
 //! can also be a [`Derived`] value (`p.map(..)`, `p.count()`), which the CPU recomputes at each `set` of its parameter:
 //! no stage or GPU pass counts anything. A frame `set`s the shape first and `write`s after: a `set` that would change a
-//! buffer the frame has already written or read is [`Error::ShapeMismatch`]. A batch with a library op stage cannot be
-//! resized yet ([`Error::OpResize`]).
+//! buffer the frame has already written or read is [`Error::ShapeMismatch`]. A library op stage follows a resize too
+//! (slice s2b2): the op's plan for the new length is built inside the `set`, and the outputs that follow the operand
+//! (those of `scan` and `compact`) are replaced and move the generation. The batch keeps the plans of the last two
+//! lengths of each op stage, so a `set` back to a kept length builds no plan; a new plan is kept only with a frame the
+//! device took. An op stage's length is that of its first operand (a resize that changes only a later operand is a
+//! device error from the `set`, and the frame is unchanged). The allocation rule: a `set` that resizes may take
+//! submissions of its own (the zeroed new buffers and the scratch of a new plan are cleared inside the call), a `set`
+//! that finds a kept plan takes one per replaced buffer and no more, and the frame that follows is exactly one
+//! submission, like any frame (D251).
 //!
 //! A caller reads a batch's buffers on the GPU through a [`View`] ([`Batch::view`], decision D261): the batch's own
 //! buffer, kept alive by the view, with the batch's [`generation`](Batch::generation). What a reader sees follows the
@@ -72,8 +79,8 @@ mod view;
 #[cfg(not(target_arch = "wasm32"))]
 pub use frame::Blocking;
 pub use frame::{Encoded, FrameRun, Submitted, Ticket};
-use ops::Plan;
-pub use ops::{Empty, Op, OpDraft, Outputs};
+pub use ops::{Empty, Op, OpDraft, Operands, Outputs};
+use ops::{OpPlan, PLANS_KEPT};
 use shape::Rule;
 pub use shape::{D1, D2, Derived, IntoShape, ParamType, Rank};
 #[doc(hidden)]
@@ -149,15 +156,6 @@ pub enum Error {
         /// What the call brought.
         found: String,
     },
-    /// A `set` would resize a buffer that a library op stage binds: a batch with an op stage cannot follow a resize yet.
-    OpResize {
-        /// The batch.
-        batch: String,
-        /// The op stage.
-        stage: String,
-        /// The parameter that was set.
-        param: String,
-    },
     /// A ticket's frame was never submitted: it was dropped, or its submission failed.
     NotSubmitted {
         /// The batch.
@@ -229,14 +227,6 @@ impl core::fmt::Display for Error {
             } => write!(
                 f,
                 "`{stage}` of batch `{batch}` has {expected} and the call brought {found}"
-            ),
-            Self::OpResize {
-                batch,
-                stage,
-                param,
-            } => write!(
-                f,
-                "setting `{param}` of batch `{batch}` would resize a buffer of the op stage `{stage}`: a batch with an op stage cannot be resized yet"
             ),
             Self::NotSubmitted { batch } => {
                 write!(f, "the frame of batch `{batch}` was never submitted")
@@ -642,9 +632,9 @@ pub(crate) type Remake<D> =
 
 pub(crate) struct StageRec<D: BatchDevice> {
     pub(crate) name: String,
-    /// What the stage dispatches as it was sealed: `None` for an op sealed over zero elements, where no plan can be
-    /// made and the stage's `empty` rule runs instead. The seal moves it into the run's list of prepared stages, which
-    /// a resize replaces.
+    /// What the stage dispatches as it was sealed: `None` for an op sealed over zero elements, where nothing is
+    /// prepared and the stage's `empty` rule runs instead. The seal moves it into the run's list of prepared stages,
+    /// which a resize replaces.
     pub(crate) prepared: Option<D::Prepared>,
     pub(crate) update: Option<Update<D>>,
     /// The parameters the stage depends on: the ones its body reads, and (added at the seal) the ones that give the
@@ -655,20 +645,18 @@ pub(crate) struct StageRec<D: BatchDevice> {
     pub(crate) write: usize,
     /// The other buffers an op writes, in order.
     pub(crate) also: Vec<usize>,
-    /// The number of elements an op stage was sealed over (see [`len`](Self::len)).
-    len: usize,
-    /// How to prepare a kernel stage again over resized buffers; `None` for an op stage, which cannot follow a resize
-    /// yet.
+    /// How to prepare a kernel stage again over resized buffers; `None` for an op stage (see `plan`).
     pub(crate) remake: Option<Remake<D>>,
-    /// An op's plan function, for the length it is called with; `Some` marks an op's stage, `None` a kernel stage.
-    /// Slice s2b calls it when a length changes.
-    pub(crate) plan: Option<Plan<D>>,
+    /// An op's functions that prepare it again at another length; `Some` marks an op's stage, `None` a kernel stage.
+    pub(crate) plan: Option<OpPlan<D>>,
+    /// The plan the op was sealed with and its length, which the seal moves into the run's list of kept plans.
+    pub(crate) first: Option<(usize, Arc<dyn Any>)>,
     /// An op's rule for a length of zero (`None` for a kernel stage).
     pub(crate) empty: Option<Empty<D>>,
 }
 
 impl<D: BatchDevice> StageRec<D> {
-    /// A kernel stage of `dims` extents.
+    /// A kernel stage.
     fn kernel(
         name: String,
         prepared: D::Prepared,
@@ -676,7 +664,6 @@ impl<D: BatchDevice> StageRec<D> {
         params: Vec<usize>,
         reads: Vec<usize>,
         write: usize,
-        dims: [u32; 2],
     ) -> Self {
         Self {
             name,
@@ -686,9 +673,9 @@ impl<D: BatchDevice> StageRec<D> {
             reads,
             write,
             also: Vec::new(),
-            len: usize::try_from(u64::from(dims[0]) * u64::from(dims[1])).unwrap_or(usize::MAX),
             remake: None,
             plan: None,
+            first: None,
             empty: None,
         }
     }
@@ -699,14 +686,14 @@ impl<D: BatchDevice> StageRec<D> {
         self
     }
 
-    /// An op's stage: `len` is the length it was sealed for, and `prepared` is `None` at length 0.
+    /// An op's stage: `prepared` and `first` are `None` at length 0.
     pub(crate) fn op(
         name: String,
         prepared: Option<D::Prepared>,
         reads: Vec<usize>,
         written: &[(usize, [u32; 2])],
-        len: usize,
-        plan: Plan<D>,
+        plan: OpPlan<D>,
+        first: Option<(usize, Arc<dyn Any>)>,
         empty: Empty<D>,
     ) -> Self {
         Self {
@@ -717,23 +704,23 @@ impl<D: BatchDevice> StageRec<D> {
             reads,
             write: written[0].0,
             also: written[1..].iter().map(|(id, _)| *id).collect(),
-            len,
             remake: None,
             plan: Some(plan),
+            first,
             empty: Some(empty),
         }
     }
 
     /// The number of elements the stage runs over in a frame whose buffers have these extents (one entry per buffer).
-    /// The one place the core reads a stage's length: a kernel stage runs over the buffer it writes, which a resize
-    /// changes; an op stage runs over the length it was sealed for (a resize cannot reach one yet).
+    /// The one place the core reads a stage's length: a kernel stage runs over the buffer it writes, an op stage over its
+    /// first operand.
     pub(crate) fn len(&self, dims: &[[u32; 2]]) -> usize {
-        if self.plan.is_some() {
-            self.len
+        let [width, height] = dims[if self.plan.is_some() {
+            self.reads[0]
         } else {
-            let [width, height] = dims[self.write];
-            usize::try_from(u64::from(width) * u64::from(height)).unwrap_or(usize::MAX)
-        }
+            self.write
+        }];
+        usize::try_from(u64::from(width) * u64::from(height)).unwrap_or(usize::MAX)
     }
 
     /// Every buffer the stage writes: `write`, then `also`.
@@ -751,6 +738,9 @@ pub(crate) struct RunState<D: BatchDevice> {
     pub(crate) buffers: Vec<Arc<dyn Any>>,
     /// What each stage dispatches now (`None` for an op sealed over zero elements).
     pub(crate) prepared: Vec<Option<Arc<D::Prepared>>>,
+    /// The plans each op stage keeps, the plan of its last non-zero length first (a resize to zero leaves them as
+    /// they were) and then the lengths before it (at most `PLANS_KEPT`): a stage that is not an op has none. An erased `Arc<P>` of the op's plan type.
+    pub(crate) plans: Vec<VecDeque<(usize, Arc<dyn Any>)>>,
     /// A frame is being recorded.
     pub(crate) live: bool,
     /// The most frames the batch has submitted and not yet waited for (`in_flight(n)`).
@@ -1046,18 +1036,6 @@ impl<D: BatchDevice> BuildState<D> {
         self.params.len() - 1
     }
 
-    fn add_buffer<T: GpuPod>(
-        &mut self,
-        name: String,
-        input: bool,
-        dims: [u32; 2],
-    ) -> Option<(usize, Arc<D::Buffer<T>>)>
-    where
-        D::Buffer<T>: 'static,
-    {
-        self.add_buffer_ruled::<T>(name, input, dims, Rule::Fixed(dims))
-    }
-
     /// A buffer of these extents, whose extents follow `rule` after a resize.
     fn add_buffer_ruled<T: GpuPod>(
         &mut self,
@@ -1276,15 +1254,6 @@ impl Error {
                 stage: stage.clone(),
                 expected: expected.clone(),
                 found: found.clone(),
-            },
-            Self::OpResize {
-                batch,
-                stage,
-                param,
-            } => Self::OpResize {
-                batch: batch.clone(),
-                stage: stage.clone(),
-                param: param.clone(),
             },
             Self::NotSubmitted { batch } => Self::NotSubmitted {
                 batch: batch.clone(),
@@ -1532,9 +1501,8 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
                         .prepare(keep_with(layout)?, build)
                         .map_err(|error| Error::Device(D::map_error(error)))
                 });
-                let rec =
-                    StageRec::kernel(name, prepared, Box::new(update), params, reads, write, dims)
-                        .with_remake(remake);
+                let rec = StageRec::kernel(name, prepared, Box::new(update), params, reads, write)
+                    .with_remake(remake);
                 state.stages.push(rec);
                 Stage::new(state.id, write, dims)
             }
@@ -1653,6 +1621,10 @@ pub fn build<D: BatchDevice, H: DeviceRef<Device = D>, O>(
         .iter_mut()
         .map(|stage| stage.prepared.take().map(Arc::new))
         .collect();
+    let plans = stages
+        .iter_mut()
+        .map(|stage| stage.first.take().into_iter().collect())
+        .collect();
     let mut metas = Vec::new();
     let mut dims = Vec::new();
     let mut live = Vec::new();
@@ -1684,6 +1656,7 @@ pub fn build<D: BatchDevice, H: DeviceRef<Device = D>, O>(
             dims,
             buffers: live,
             prepared,
+            plans,
             live: false,
             depth: usize::try_from(in_flight.max(1)).unwrap_or(1),
             pending: VecDeque::new(),

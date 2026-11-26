@@ -389,110 +389,6 @@ fn an_encoded_resize_moves_the_generation_before_encode_returns<D: Caller>(
     );
 }
 
-// ---- a batch with a library op stage cannot be resized yet ----
-
-/// An op of one result as long as its operand, that does nothing: enough to be an op stage that binds a buffer.
-struct Fill<'a>(&'a Stage<u32, D1>);
-
-impl Op<CpuDevice> for Fill<'_> {
-    type Out = Stage<u32, D1>;
-
-    fn record(self, mut draft: OpDraft<'_, CpuDevice>) -> Self::Out {
-        let Some((_, len)) = draft.read(self.0) else {
-            return draft.abandon();
-        };
-        if draft.result::<u32>(len).is_none() {
-            return draft.abandon();
-        }
-        draft.seal(
-            |device, _| Ok(device.prepare_fn(|_| Ok(()))),
-            Empty::Nothing,
-        )
-    }
-}
-
-impl Op<HeadlessDevice> for Fill<'_> {
-    type Out = Stage<u32, D1>;
-
-    fn record(self, mut draft: OpDraft<'_, HeadlessDevice>) -> Self::Out {
-        let Some((_, len)) = draft.read(self.0) else {
-            return draft.abandon();
-        };
-        if draft.result::<u32>(len).is_none() {
-            return draft.abandon();
-        }
-        draft.seal(|device, _| device.prepare_list((), &[]), Empty::Nothing)
-    }
-}
-
-struct OpHandles {
-    size: Param<(u32, u32)>,
-    other: Param<u32>,
-    x: Stage<u32, D1>,
-    y: Stage<u32, D1>,
-    side: Stage<u32, D1>,
-}
-
-macro_rules! define_op_build {
-    ($build:ident, $device:ty) => {
-        fn $build(device: &Arc<$device>) -> Result<(Batch<$device>, OpHandles), Error> {
-            gpu_batch!("resize_op", on(device); |b| {
-                let size = b.param::<(u32, u32)>((4, 2));
-                let other = b.param::<u32>(6);
-                let count = size.count();
-                let x = b.input::<u32>(&count);
-                let side_in = b.input::<u32>(&other);
-                let _made = b.op(&["made"], Fill(&x));
-                let y = gpu_task!(&count, |i| -> u32 { x[i] + 1u32 });
-                let side = gpu_task!(&other, |i| -> u32 { side_in[i] * 2u32 });
-                OpHandles { size, other, x, y, side }
-            })
-        }
-    };
-}
-
-define_op_build!(build_op_cpu, CpuDevice);
-define_op_build!(build_op_gpu, HeadlessDevice);
-
-/// A resize that reaches the op stage's buffers is `Error::OpResize` naming the stage and the parameter, and the frame
-/// is unchanged; a resize of buffers the op does not bind goes through.
-fn a_resize_that_reaches_an_op_stage_is_refused<D: BatchDevice>(mut batch: Batch<D>, h: &OpHandles)
-where
-    D::Buffer<u32>: 'static,
-{
-    let x: Vec<u32> = (0..8).collect();
-    let mut run = block_on(batch.begin()).unwrap();
-    let error = run.set(&h.size, (6, 2)).unwrap_err();
-    let Error::OpResize {
-        batch: name,
-        stage,
-        param,
-    } = &error
-    else {
-        panic!("expected OpResize, got {error:?}");
-    };
-    assert_eq!(
-        (name.as_str(), stage.as_str(), param.as_str()),
-        ("resize_op", "made", "size")
-    );
-    assert!(error.to_string().contains("`made`"), "{error}");
-    // The same shape is no resize; the buffers the op does not bind can change.
-    run.set(&h.size, (4, 2)).unwrap();
-    run.set(&h.other, 9).unwrap();
-    run.write(&h.x, &x).unwrap();
-    let side_in: Vec<u32> = (0..9).collect();
-    let y = run.ticket(&h.y).unwrap();
-    let side = run.ticket(&h.side).unwrap();
-    let _submitted = run.submit().unwrap();
-    assert_eq!(
-        block_on(y).unwrap(),
-        x.iter().map(|v| v + 1).collect::<Vec<_>>()
-    );
-    // `side_in` was not written (zeros): the stage ran over the new length.
-    assert_eq!(block_on(side).unwrap(), vec![0; side_in.len()]);
-    assert_eq!(batch.generation(), 2, "only `side_in` and `side` followed");
-}
-
 // ---- more rules of a resize ----
 
 /// A `set` of a shape after a `ticket` of a buffer it would change is refused like one after a `write`: the reserved
@@ -757,13 +653,6 @@ fn cpu_an_encoded_resize_moves_the_generation_before_encode_returns() {
 }
 
 #[test]
-fn cpu_a_resize_that_reaches_an_op_stage_is_refused() {
-    let device = Arc::new(CpuDevice::new());
-    let (batch, h) = build_op_cpu(&device).unwrap();
-    a_resize_that_reaches_an_op_stage_is_refused(batch, &h);
-}
-
-#[test]
 #[ignore = "example validation runs only in full verification"]
 fn gpu_resize_across_frames_is_exact() {
     let device = private_device();
@@ -849,12 +738,4 @@ fn gpu_an_encoded_resize_moves_the_generation_before_encode_returns() {
     let device = private_device();
     let (batch, h) = build_gpu(&device).unwrap();
     an_encoded_resize_moves_the_generation_before_encode_returns(&*device, batch, &h);
-}
-
-#[test]
-#[ignore = "example validation runs only in full verification"]
-fn gpu_a_resize_that_reaches_an_op_stage_is_refused() {
-    let device = private_device();
-    let (batch, h) = build_op_gpu(&device).unwrap();
-    a_resize_that_reaches_an_op_stage_is_refused(batch, &h);
 }

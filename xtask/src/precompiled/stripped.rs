@@ -28,6 +28,11 @@ pub(crate) const SPLIT_REFUSED_PREFIX: &str = "split fallback: no split artifact
 
 /// The line `app` prints with the name of the adapter it ran on.
 pub(crate) const ADAPTER_PREFIX: &str = "adapter: ";
+
+/// The line `counted` (the counted-stage binary of the fixture's `app` package, m14.s2i) prints after its counted stage ran
+/// from the precompiled artifacts and three counts equalled the host model.
+pub(crate) const COUNTED_PREFIX: &str =
+    "counted: a counted stage ran from its precompiled artifacts";
 /// The byte strings that the run-time Slang bridge brings into a binary (E2). `gust-slang-reflect` (the name of the
 /// native helper, `HELPER_NAME` of `gust::toolchain`) and `kernel.artifact` (`compile_reflected_with_helper`) are
 /// string literals of code gated by the `slang-runtime` feature of `gust-compute`. `kernel.slang` is not gated:
@@ -139,6 +144,11 @@ fn e1_build(fixture: &Fixture) -> Result<(), String> {
     Ok(())
 }
 
+/// The counted-stage binary that E1 builds beside `binary` (`release/app`), `release/counted` (m14.s2i).
+pub(super) fn counted_binary_of(binary: &Path) -> std::path::PathBuf {
+    binary.with_file_name(format!("counted{EXE_SUFFIX}"))
+}
+
 /// The run half of E1: the binary built by [`e1_build`] on the adapter.
 pub(super) fn e1_run(fixture: &Fixture, binary: &Path) -> Result<String, String> {
     let run = fixture.command(binary).output().map_err(|error| {
@@ -152,10 +162,57 @@ pub(super) fn e1_run(fixture: &Fixture, binary: &Path) -> Result<String, String>
     print!("{stdout}");
     let report = judge_run(run.status.success(), &stdout, &stderr)
         .map_err(|problems| format!("check-precompiled E1: {}", problems.join("; ")))?;
+    let counted = counted_binary_of(binary);
+    let counted_run = fixture.command(&counted).output().map_err(|error| {
+        format!(
+            "check-precompiled E1: could not run the counted-stage binary {}: {error}",
+            fixture.shown(&counted)
+        )
+    })?;
+    let counted_out = String::from_utf8_lossy(&counted_run.stdout).into_owned();
+    print!("{counted_out}");
+    let counted_adapter = judge_counted(
+        counted_run.status.success(),
+        &counted_out,
+        &String::from_utf8_lossy(&counted_run.stderr),
+    )
+    .map_err(|problems| format!("check-precompiled E1: {}", problems.join("; ")))?;
     Ok(format!(
-        "passed: the release `app`, built and run with Slang taken out of the environment, printed `{VERIFIED_PREFIX}{} elements` on the adapter `{}`",
+        "passed: the release `app`, built and run with Slang taken out of the environment, printed `{VERIFIED_PREFIX}{} elements` on the adapter `{}`, and the release `counted` ran a counted stage from its precompiled artifacts on `{counted_adapter}`",
         report.elements, report.adapter
     ))
+}
+
+/// The problems of the run of the counted-stage binary in E1: it must exit 0, name its adapter and print the `counted:`
+/// line (printed only after three counts, one above the capacity, equalled the host model). Returns the adapter.
+pub(crate) fn judge_counted(
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+) -> Result<String, Vec<String>> {
+    let mut problems = Vec::new();
+    if !success {
+        problems.push(format!("`counted` failed; stderr was: {}", stderr.trim()));
+    }
+    let adapter = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix(ADAPTER_PREFIX))
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty());
+    if adapter.is_none() {
+        problems.push(format!(
+            "`counted` printed no `{ADAPTER_PREFIX}` line with a name"
+        ));
+    }
+    if !stdout.lines().any(|line| line.starts_with(COUNTED_PREFIX)) {
+        problems.push(format!(
+            "`counted` printed no `{COUNTED_PREFIX}` line, so a counted stage did not run from its precompiled artifacts"
+        ));
+    }
+    match (problems.is_empty(), adapter) {
+        (true, Some(adapter)) => Ok(adapter),
+        _ => Err(problems),
+    }
 }
 
 /// What a successful run of `app` printed.

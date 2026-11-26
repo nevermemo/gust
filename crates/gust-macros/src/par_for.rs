@@ -695,6 +695,7 @@ impl Plan {
         // those below the clamped count.
         let linear: Option<TokenStream> = self.options.count.as_ref().map(|_| {
             let group = Literal::u32_suffixed(self.workgroup[0]);
+            // `gid.y * 65535 * wg` wraps only for a capacity within 65535 * wg of 2^32 rows, which no binding size allows.
             quote!((#gid.y * (65535u32 * #group) + #gid.x))
         });
         if let (Some(count), Some(linear)) = (&self.options.count, &linear) {

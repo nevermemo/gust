@@ -2131,7 +2131,7 @@ Decision: D278, plan m14.s2, slice s2i.
 
 ### GUST-E1014 body of a counted stage that this release does not have
 
-A counted stage is 1-D and its workgroup is along x: the rows are the linear index `gid.y * (65535 * workgroup) + gid.x` over the two-dimensional grid of groups the runtime launches, so a counted `|x, y|` body (a 2-D stage with a host width) and a `workgroup_size(a, b, c)` with `b` or `c` other than 1 are a later release. There is no spelling of a counted library op (`gust::sum`, `scan`, `compact`: an op keeps its own count rule), and a user-filled args handle stays in the raw tier (`StagedGraph::run_indirect`); neither has a form to refuse.
+A counted stage is 1-D and its workgroup is along x: the rows are the linear index `gid.y * (65535 * workgroup) + gid.x` over the two-dimensional grid of groups the runtime launches, so a counted `|x, y|` body (a 2-D stage with a host width) and a `workgroup_size(a, b, c)` with `b` or `c` other than 1 are a later release. There is no spelling of a counted library op (`gust::sum`, `scan`, `compact`: an op keeps its own count rule), and a user-filled args handle stays in the raw tier (`StagedGraph::run_indirect`); neither has a form to refuse; nor has a `pixel` batch stage, which has no spelling in `gpu_task!`.
 Reached through `#[gpu_module]`, raised by `gpu_task!` inside a `gpu_batch!`, at the clause's name.
 Rejected: `gpu_task!(count(n); &size, |x, y| -> u32 { .. })`, `gpu_task!(count(n); workgroup_size(8, 8, 1); ..)`.
 Fixture: `tests/ui/batch-count-2d`.
@@ -2140,9 +2140,9 @@ Decision: D278, plan m14.s2, slice s2i.
 
 ### GUST-E1015 count of a stage that is not a handle of `u32`s of the block
 
-The count `n` of `count(n);` is a handle of the same block that holds `u32`s and that the stage only reads: a stage result, an input, the count handle of `gust::compact` or `gust::count`, or an in-place counter that another stage updates. One element is checked when the stage is recorded (`Error::NotCount` otherwise), and a handle of another batch is `Error::Foreign` as for any capture. A `Param`, a host value, a handle of another element type and the stage's own in-place target are refused at the name. A count above the capacity is clamped, not an error (SEMANTICS.md).
+The count `n` of `count(n);` is a handle of the same block that holds `u32`s and that the stage only reads: a stage result, an input, the count handle of `gust::compact` or `gust::count`, or an in-place counter that another stage updates. One element is checked when the stage is recorded (`Error::NotCount` otherwise), and a handle of another batch is not a name of the block (no capture list names a count), so it is refused here too. A `Param`, a host value, a handle of another element type and the stage's own in-place target are refused at the name. A count above the capacity is clamped, not an error (SEMANTICS.md).
 Reached through `#[gpu_module]`, raised by `gpu_task!` inside a `gpu_batch!`, at the name.
 Rejected: `count(limit)` with `limit` a `Param<u32>`, `count(weights)` with `weights` a `Stage<f32>`, `gpu_task!(count(t); &mut t, ..)`.
-Fixture: `tests/ui/batch-count-handle`.
+Fixture: `tests/ui/batch-count-handle`, `tests/ui/batch-count-foreign` (a handle of another batch).
 Write instead: write the count into a one-element `u32` handle (`b.input::<u32>(1u32)`, or a stage that writes it) and name that handle.
 Decision: D278, plan m14.s2, slice s2i.

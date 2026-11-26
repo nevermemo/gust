@@ -569,6 +569,8 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "twin_the_count_of_compact_counts_a_stage",
             "twin_resize_follows_the_capacity",
             "twin_a_count_of_many_elements_is_refused",
+            "twin_a_wrong_sized_write_after_a_resize_is_refused",
+            "twin_a_count_remade_by_a_resize_runs_zero_rows",
             // `tests/resize.rs`: a set of a size parameter resizes what depends on it (m14.s2b).
             "cpu_a_dropped_resize_changes_nothing",
             "cpu_a_frame_the_device_refuses_leaves_the_resize_undone",

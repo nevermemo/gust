@@ -38,11 +38,12 @@ keeps its ordinary extent as its capacity, and runs over the rows `0 .. min(n, c
 handle of the same block that a stage before it wrote: a stage result, the count of `gust::compact` or `gust::count`, or an
 in-place counter. A count above the capacity is clamped, not reported, and the rows from the count on are not written: they
 keep what they held (zeros in a new buffer). Nothing reads the count back, so a count that changes every frame costs no
-readback and no second submission. On the GPU the runtime launches the stage from a three-word grid that a one-invocation
-kernel writes from the count (an indirect dispatch inside the frame's one submission), or, where that is not available
-(`wasm32` in this release), over the grid the capacity needs, with the same kernel and the same result; the grid is
-two-dimensional, so a count is not limited to 65535 workgroups. The CPU twin reads `n` from its own buffer and loops over
-the same rows. A counted stage is 1-D and its workgroup is along x (GUST-E1014); `count(..)` is a clause of a stage of a
+readback and no second submission. How the GPU launches the stage is the runtime's choice and gives the same result
+everywhere (where the device can, it dispatches from a grid that a one-invocation kernel writes from the count, inside the
+frame's one submission); the grid is two-dimensional, so a count is not limited to 65535 workgroups. A count of 0 runs no
+row, and so does a count that a resize remakes: a resize makes the buffer new, and a new buffer holds zeros, so a count
+the frame does not write again after the resize reads 0. The CPU twin reads `n` from its own buffer and loops over the
+same rows. A counted stage is 1-D and its workgroup is along x (GUST-E1014); `count(..)` is a clause of a stage of a
 batch (GUST-E1013) and names a handle of `u32`s of the block (GUST-E1015). `examples/batch-basics/tests/counted.rs` has the
 checks.
 

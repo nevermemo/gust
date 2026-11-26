@@ -270,6 +270,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "batch-count-foreign"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "batch-count-handle"
 version = "0.0.0"
 dependencies = [

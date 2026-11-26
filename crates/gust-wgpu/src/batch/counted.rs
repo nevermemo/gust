@@ -5,7 +5,7 @@
 //! of `min(n, capacity)` rows into a three-word buffer, and the counted kernel, dispatched from that buffer with
 //! `dispatch_workgroups_indirect` in a pass of its own. Both go into the frame's one encoder, so the frame is still one
 //! queue submission, and queue order keeps each frame's args kernel in front of its counted stage when frames are in
-//! flight (the args buffer is the stage's, one per stage, never resized). Bounded launch: the counted kernel alone, over
+//! flight (the args buffer is the stage's, one per stage; a resize that remakes the stage makes a new one). Bounded launch: the counted kernel alone, over
 //! the worst-case grid of the capacity (what `wasm32` runs until the browser's indirect path arrives).
 
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use gust::batch::{CountedDevice, CountedLaunch, GROUP_LIMIT, grid_of};
 use gust::{Call, Extent, Kernel, Run};
 
-use crate::{BufferDispatch, Error, GpuBuffer, HeadlessDevice, PreparedDispatch};
+use crate::{BufferDispatch, Error, GpuBuffer, HeadlessDevice, PassTimestamps, PreparedDispatch};
 
 use super::GpuStage;
 use crate::cache::Pipeline;
@@ -103,16 +103,30 @@ impl HeadlessDevice {
         encoder: &mut wgpu::CommandEncoder,
         dispatches: &[PreparedDispatch],
         args: &wgpu::Buffer,
+        stamps: Option<(&wgpu::QuerySet, Option<u32>, Option<u32>)>,
     ) -> Result<(), Error> {
         let [grid, counted] = dispatches else {
             unreachable!(
                 "an indirectly launched counted stage holds the args dispatch and the counted one"
             )
         };
-        grid.encode(&self.device, encoder, ARGS_PASS_LABEL, None)?;
+        let args_stamps = stamps.and_then(|(query_set, begin, _)| {
+            begin.map(|begin| PassTimestamps {
+                query_set,
+                begin: Some(begin),
+                end: None,
+            })
+        });
+        grid.encode(&self.device, encoder, ARGS_PASS_LABEL, args_stamps)?;
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some(COUNTED_PASS_LABEL),
-            timestamp_writes: None,
+            timestamp_writes: stamps.and_then(|(query_set, _, end)| {
+                end.map(|end| wgpu::ComputePassTimestampWrites {
+                    query_set,
+                    beginning_of_pass_write_index: None,
+                    end_of_pass_write_index: Some(end),
+                })
+            }),
         });
         let Pipeline::Compute(pipeline) = &counted.cached_kernel.pipeline else {
             unreachable!("a counted stage is a grid kernel")
@@ -147,6 +161,7 @@ impl CountedDevice for HeadlessDevice {
         KA: Kernel,
         R: 'static,
     {
+        let launch = effective_launch(launch, self.indirect_execution());
         #[cfg(not(target_arch = "wasm32"))]
         if launch == CountedLaunch::Indirect {
             let buffer = Arc::new(self.counted_args_buffer());
@@ -192,5 +207,51 @@ impl CountedDevice for HeadlessDevice {
             indirect: None,
             _keep: Box::new(keep),
         })
+    }
+}
+
+/// The launch a device takes for a counted stage: the wanted one, except that an adapter without indirect execution
+/// takes the bounded launch (wgpu would otherwise fail at encode). The flags are the input so that the choice can be
+/// tested without a device.
+#[must_use]
+pub(crate) const fn effective_launch(
+    wanted: CountedLaunch,
+    indirect_execution: bool,
+) -> CountedLaunch {
+    match wanted {
+        CountedLaunch::Indirect if !indirect_execution => CountedLaunch::Bounded,
+        other => other,
+    }
+}
+
+impl HeadlessDevice {
+    /// Whether the adapter runs `dispatch_workgroups_indirect`. wgpu reports it as `DownlevelFlags::INDIRECT_EXECUTION`,
+    /// which the Vulkan, Metal, DirectX 12 and WebGPU backends all have; the OpenGL backend may not, so it counts as
+    /// without (the bounded launch runs everywhere).
+    fn indirect_execution(&self) -> bool {
+        self.adapter_info.backend != wgpu::Backend::Gl
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_adapter_without_indirect_execution_takes_the_bounded_launch() {
+        assert_eq!(
+            effective_launch(CountedLaunch::Indirect, true),
+            CountedLaunch::Indirect
+        );
+        assert_eq!(
+            effective_launch(CountedLaunch::Indirect, false),
+            CountedLaunch::Bounded
+        );
+        for indirect_execution in [true, false] {
+            assert_eq!(
+                effective_launch(CountedLaunch::Bounded, indirect_execution),
+                CountedLaunch::Bounded
+            );
+        }
     }
 }

@@ -142,7 +142,7 @@ impl HeadlessDevice {
         stage: &GpuStage,
     ) -> Result<(), Error> {
         match &stage.indirect {
-            Some(args) => self.record_counted(encoder, &stage.dispatches, args),
+            Some(args) => self.record_counted(encoder, &stage.dispatches, args, None),
             None => self.record_prepared(encoder, &stage.dispatches),
         }
     }

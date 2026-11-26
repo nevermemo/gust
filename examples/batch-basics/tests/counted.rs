@@ -18,7 +18,9 @@
 use std::sync::Arc;
 
 use batch_basics::app::block_on;
-use gust::batch::{Batch, BatchDevice, CountedLaunch, D1, Error, Param, Stage, set_counted_launch};
+use gust::batch::{
+    Batch, BatchDevice, CountedLaunch, D1, Error, FrameTiming, Param, Stage, set_counted_launch,
+};
 use gust::cpu::CpuDevice;
 use gust::map::MapHost;
 use gust::{gpu_batch, gpu_task};
@@ -369,13 +371,14 @@ macro_rules! define_counter {
                 let k = b.param::<u32>(0);
                 let cnt = b.input::<u32>(1u32);
                 let src = b.input::<u32>(COUNTER_CAP);
-                // The count is produced by a stage on the GPU, going up, down and through zero, and past the capacity.
+                // The count is produced by a stage on the GPU, going up, down and through zero, and past the capacity. The result
+                // depends on the frame number, so a stale count or a write past the count shows in every frame.
                 let _tick = gpu_task!(&mut cnt, |i| {
                     let t = k.get() % 24u32;
                     let m = t.min(24u32 - t);
                     cnt[i] = m * 100u32 + k.get() / 24u32;
                 });
-                let out = gpu_task!(count(cnt); COUNTER_CAP, |i| -> u32 { src[i] + 1u32 });
+                let out = gpu_task!(count(cnt); COUNTER_CAP, |i| -> u32 { src[i] + k.get() });
                 Counter { k, cnt, src, out }
             })
         }
@@ -430,7 +433,7 @@ fn counter_model() -> Vec<Vec<u32>> {
         .map(|k| {
             let rows = counter_at(k).min(COUNTER_CAP) as usize;
             for i in 0..rows {
-                out[i] = src[i] + 1;
+                out[i] = src[i] + k;
             }
             out.clone()
         })
@@ -669,8 +672,8 @@ where
 }
 
 /// Grow, shrink and grow again with a counted stage present: the capacity follows the shape, a new buffer holds zeros
-/// (rows the count does not reach stay zero), the count is clamped against the new capacity, and a wrong-sized write is
-/// refused as before.
+/// (rows the count does not reach stay zero), and the count is clamped against the new capacity. The wrong-sized write and
+/// the remade count have their own tests below.
 fn resize_follows_the_capacity<D: BatchDevice>(mut batch: Batch<D>, h: &Resizable)
 where
     D::Buffer<u32>: 'static,
@@ -744,4 +747,214 @@ fn twin_a_count_of_many_elements_is_refused() {
         Err(other) => panic!("another error: {other}"),
         Ok(_) => panic!("a count of four elements was accepted"),
     }
+}
+
+// ---- check 6 again: a wrong-sized write after a resize, and a count that a resize remakes ----
+
+/// After a resize in a frame, a write of the old length is the old `ShapeMismatch` (D272), with the counted stage present;
+/// the dropped frame changes nothing.
+fn a_wrong_sized_write_after_a_resize_is_refused<D: BatchDevice>(mut batch: Batch<D>, h: &Resizable)
+where
+    D::Buffer<u32>: 'static,
+{
+    let mut frame = block_on(batch.begin()).unwrap();
+    frame.set(&h.len, 6).unwrap();
+    let wrong = (0..8).collect::<Vec<u32>>();
+    assert!(matches!(
+        frame.write(&h.src, &wrong),
+        Err(Error::ShapeMismatch { .. })
+    ));
+    drop(frame);
+    // The refused frame left the batch as it was: capacity 8 still, and the counted stage still runs over it.
+    let src = (0..8).map(|i| i * 2).collect::<Vec<u32>>();
+    let out = sized_frame(&mut batch, h, None, 3, Some(&src));
+    assert_eq!(out, [100, 102, 104, 0, 0, 0, 0, 0]);
+}
+
+#[test]
+fn twin_a_wrong_sized_write_after_a_resize_is_refused() {
+    let device = Arc::new(CpuDevice::new());
+    let (batch, h) = build_sized_cpu(&device).unwrap();
+    a_wrong_sized_write_after_a_resize_is_refused(batch, &h);
+}
+
+#[derive(Clone, Copy)]
+struct Remade {
+    count_len: Param<u32>,
+    n: Stage<u32, D1>,
+    src: Stage<u32, D1>,
+    out: Stage<u32, D1>,
+}
+
+macro_rules! define_remade {
+    ($build:ident, $device:ty) => {
+        fn $build(device: &Arc<$device>) -> Result<(Batch<$device>, Remade), Error> {
+            gpu_batch!("counted-remade", on(device); in_flight(1); |b| {
+                // The count's shape follows a parameter that is 1 at the seal, so the stage is sealed on a one-element count.
+                let count_len = b.param::<u32>(1);
+                let n = b.input::<u32>(&count_len);
+                let src = b.input::<u32>(8u32);
+                let out = gpu_task!(count(n); 8u32, |i| -> u32 { src[i] + 1u32 });
+                Remade { count_len, n, src, out }
+            })
+        }
+    };
+}
+
+define_remade!(build_remade_cpu, CpuDevice);
+define_remade!(build_remade_gpu, HeadlessDevice);
+
+/// A resize that remakes the count buffer makes it zeros (D272), so the count reads zero and the stage runs zero rows: the
+/// result keeps its rows. The rule is in the guide next to the count.
+fn a_count_remade_by_a_resize_runs_zero_rows<D: BatchDevice>(mut batch: Batch<D>, h: &Remade)
+where
+    D::Buffer<u32>: 'static,
+{
+    let run = |batch: &mut Batch<D>, set: Option<u32>, n: Option<&[u32]>, src: Option<&[u32]>| {
+        block_on(async {
+            let mut frame = batch.begin().await?;
+            if let Some(len) = set {
+                frame.set(&h.count_len, len)?;
+            }
+            if let Some(n) = n {
+                frame.write(&h.n, n)?;
+            }
+            if let Some(src) = src {
+                frame.write(&h.src, src)?;
+            }
+            let out = frame.ticket(&h.out)?;
+            let _submitted = frame.submit()?;
+            Ok::<_, Error>(out.await?)
+        })
+        .unwrap()
+    };
+    let a = [10_u32, 11, 12, 13, 14, 15, 16, 17];
+    assert_eq!(
+        run(&mut batch, None, Some(&[5]), Some(&a)),
+        [11, 12, 13, 14, 15, 0, 0, 0],
+        "count 5"
+    );
+    // The count is remade as two zeros (a different source is written too): zero rows run, the result keeps its rows.
+    let b = [100_u32; 8];
+    assert_eq!(
+        run(&mut batch, Some(2), None, Some(&b)),
+        [11, 12, 13, 14, 15, 0, 0, 0],
+        "a remade count is zero: no row runs"
+    );
+    assert_eq!(
+        run(&mut batch, None, Some(&[3, 99]), None),
+        [101, 101, 101, 14, 15, 0, 0, 0],
+        "the first word of the new count is the count"
+    );
+}
+
+#[test]
+fn twin_a_count_remade_by_a_resize_runs_zero_rows() {
+    let device = Arc::new(CpuDevice::new());
+    let (batch, h) = build_remade_cpu(&device).unwrap();
+    a_count_remade_by_a_resize_runs_zero_rows(batch, &h);
+}
+
+fn gpu_remade(launch: CountedLaunch) {
+    let device = private_device();
+    let _launch = Launch::set(launch);
+    let (batch, h) = build_remade_gpu(&device).unwrap();
+    a_count_remade_by_a_resize_runs_zero_rows(batch, &h);
+    let (batch, h) = build_sized_gpu(&device).unwrap();
+    a_wrong_sized_write_after_a_resize_is_refused(batch, &h);
+}
+
+#[test]
+#[ignore = "example validation runs only in full verification"]
+fn gpu_a_count_remade_by_a_resize_runs_zero_rows_indirect() {
+    gpu_remade(CountedLaunch::Indirect);
+}
+
+#[test]
+#[ignore = "example validation runs only in full verification"]
+fn gpu_a_count_remade_by_a_resize_runs_zero_rows_bounded() {
+    gpu_remade(CountedLaunch::Bounded);
+}
+
+// A count from another batch is refused at compile time: the clause names a handle of its own block, so `count(foreign)` is
+// GUST-E1015 (fixture `tests/ui/batch-count-foreign`), and the runtime `Error::Foreign` cannot be reached through it.
+
+// ---- frame timing (m14.pfft) with a counted stage ----
+
+#[derive(Clone, Copy)]
+struct Timed {
+    n: Stage<u32, D1>,
+    src: Stage<u32, D1>,
+    out: Stage<u32, D1>,
+}
+
+fn build_timed(
+    device: &Arc<HeadlessDevice>,
+    level: FrameTiming,
+) -> Result<(Batch<HeadlessDevice>, Timed), Error> {
+    gpu_batch!("counted-timed", on(device); in_flight(1); |b| {
+        b.frame_timing(level);
+        let n = b.input::<u32>(1u32);
+        let src = b.input::<u32>(CAP);
+        let out = gpu_task!(count(n); CAP, |i| -> u32 { src[i] * 3u32 + 1u32 });
+        Timed { n, src, out }
+    })
+}
+
+/// Two frames of a counted stage at `level` give the rows of the model, as at every other level and as the twin does, and a
+/// `Passes` frame has one entry for the counted stage, in order.
+fn gpu_timed(launch: CountedLaunch) {
+    let device = private_device();
+    let _launch = Launch::set(launch);
+    let src = source(CAP, 7);
+    let counts = [300_u32, 100];
+    let mut model = Model::new(CAP);
+    let expected: Vec<Vec<u32>> = counts.iter().map(|&n| model.step(&src, n).0).collect();
+    for level in [FrameTiming::Off, FrameTiming::Frame, FrameTiming::Passes] {
+        let (mut batch, h) = build_timed(&device, level).unwrap();
+        let timed = batch.frame_timing().is_some();
+        for (frame_number, (&n, want)) in counts.iter().zip(&expected).enumerate() {
+            let mut frame = block_on(batch.begin()).unwrap();
+            frame.write(&h.n, &[n]).unwrap();
+            if frame_number == 0 {
+                frame.write(&h.src, &src).unwrap();
+            }
+            let out = frame.ticket(&h.out).unwrap();
+            let time = frame.time();
+            let _submitted = frame.submit().unwrap();
+            assert_eq!(
+                &block_on(out).unwrap(),
+                want,
+                "{level:?}, frame {frame_number}: rows"
+            );
+            let times = block_on(time).unwrap();
+            if !timed {
+                assert!(
+                    times.is_none(),
+                    "{level:?}: no timestamps asked for or available"
+                );
+                continue;
+            }
+            let times = times.expect("a timed frame has a time");
+            assert!(times.span > std::time::Duration::ZERO, "{level:?}: span");
+            if level == FrameTiming::Passes {
+                assert_eq!(times.passes.len(), 1, "one entry for the one counted stage");
+                assert_eq!(times.passes[0].stages, [batch.stages()[0].name.clone()]);
+            } else {
+                assert!(times.passes.is_empty(), "{level:?}: no per-stage entries");
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "example validation runs only in full verification"]
+fn gpu_a_counted_stage_under_frame_timing_equals_the_untimed_frame_indirect() {
+    gpu_timed(CountedLaunch::Indirect);
+}
+
+#[test]
+#[ignore = "example validation runs only in full verification"]
+fn gpu_a_counted_stage_under_frame_timing_equals_the_untimed_frame_bounded() {
+    gpu_timed(CountedLaunch::Bounded);
 }

@@ -89,6 +89,7 @@ mod view;
 
 #[doc(hidden)]
 pub use counted::{CountedDevice, GROUP_LIMIT, grid_of, set_counted_launch};
+#[doc(hidden)]
 pub use counted::{CountedLaunch, counted_launch};
 pub use element::{Element, InvalidWord};
 #[doc(hidden)]

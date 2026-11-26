@@ -6,12 +6,15 @@
 //! support, outside the pre-1.0 promise (D111).
 //!
 //! **The GPU form** builds an owned plan of this crate (`ReducePlan`, `SumWrappingPlan`, `ScanPlan`, `CountPlan`,
-//! `CompactPlan`) for the sealed length inside `Op::record`, in the build block, and keeps it, with the operands, in
-//! the stage (`HeadlessDevice::prepare_list`): every clearing submission of the plan's pooled scratch happens before
-//! the seal, so a frame is one submission (D251). The closure each op hands to `OpDraft::seal` is the plan function of
-//! the op, `plan(&device, len)`. It keeps the buffers the op was sealed with, so it is valid for the sealed length
-//! only: at another length it returns a length error (`BufferLength`), and a resize that must replace the outputs of a
-//! scan or a compaction will need the new buffers handed to it with the length (slice s2b).
+//! `CompactPlan`) for the sealed length inside `Op::record`, in the build block, and prepares the stage over it and
+//! the operands (`HeadlessDevice::prepare_list`); the batch keeps the plan, not the operands. Every clearing submission
+//! of the plan's pooled scratch happens before the seal, or inside the `set` that resizes, so a frame is one
+//! submission (D251). Each op hands `OpDraft::seal_planned` two functions: `plan(&device,
+//! len)`, which makes the plan of a length (the part that costs), and `bind(&device, &plan, &operands)`, which
+//! prepares the stage over that plan and the buffers of one frame. A resize (slice s2b2) calls them again inside
+//! `FrameRun::set`: the plan only for a length the batch has not kept a plan for, `bind` always, over the new buffers.
+//! A plan holds none of its operands, so the plan of a length serves any buffers of that length, and the outputs of a
+//! scan or a compaction (made with `OpDraft::result_like`) can be replaced by a resize.
 //!
 //! **The CPU form** is plain Rust over the buffers, compiled in every build: wrapping integer folds, a float sum
 //! accumulated in `f64` and rounded once, prefix sums, and the positions of the set flags with the tail left alone. It
@@ -211,25 +214,26 @@ mod gpu {
     // ---------------------------------------------------------------------------------------------------------------
     // The GPU form.
 
-    /// The stage a GPU op seals: the dispatches `append` puts in a sink over the plan and the operands, prepared once.
-    /// The plan and the operands move into the stage, which holds them for as long as it lives (the plan's pooled
-    /// scratch goes back to the pool when it drops, and a new owner would race the stage's dispatches).
+    /// The stage a GPU op prepares: the dispatches `append` puts in a sink over the plan and the operands, prepared once.
+    /// The plan (shared with the batch's kept plans, which run in the order of the queue) and the operands move into
+    /// the stage, which holds them for as long as it lives (the plan's pooled scratch goes back to the pool when its
+    /// last owner drops).
     fn gpu_stage<P: 'static, O: 'static>(
         device: &DeviceHandle,
-        plan: P,
+        plan: &Arc<P>,
         operands: O,
         append: impl for<'s> FnOnce(&'s P, &'s O, &mut Sink<'s>) -> Result<(), Error>,
     ) -> Result<<HeadlessDevice as BatchDevice>::Prepared, gust_wgpu::Error> {
-        let held = Arc::new((plan, operands));
+        let held = Arc::new((Arc::clone(plan), operands));
         let mut sink = Sink::new();
         let (plan, operands) = &*held;
-        append(plan, operands, &mut sink).map_err(device_error)?;
+        append(&**plan, operands, &mut sink).map_err(device_error)?;
         sink.with(|dispatches| device.prepare_list(Arc::clone(&held), dispatches))
     }
 
-    /// The device's error of a plan or an append. At the sealed length only the device can refuse; a plan called at
-    /// another length than its operands have (an empty one included) is a length mismatch of an operand, returned as
-    /// `BufferLength` rather than a panic.
+    /// The device's error of a plan or an append. The batch finds or builds a plan by the length of the op's first
+    /// operand, so the plan and its operands agree by construction; a length mismatch of an operand (an op that reads
+    /// several, resized apart) is still returned as `BufferLength` rather than a panic.
     fn device_error(error: Error) -> gust_wgpu::Error {
         let mismatch = |expected: usize, actual: usize| gust_wgpu::Error::BufferLength {
             parameter: String::from("operand of a batch op"),
@@ -252,25 +256,27 @@ mod gpu {
         type Out = Stage<T, D1>;
 
         fn record(self, mut draft: OpDraft<'_, HeadlessDevice>) -> Self::Out {
-            let Some((input, _)) = draft.read(self.input) else {
+            if draft.read(self.input).is_none() {
                 return draft.abandon();
-            };
+            }
             let Some(out) = draft.result::<T>(1) else {
                 return draft.abandon();
             };
-            let device = draft.device();
             let op = self.op;
             let empty = match op.identity::<T>() {
                 Some(zero) => identity(&out, zero),
                 None => Empty::Refuse,
             };
-            draft.seal(
+            let device = draft.device();
+            let bound = Arc::clone(&device);
+            draft.seal_planned(
                 move |_, len| {
-                    let plan =
-                        ReducePlan::<T>::new(&device, shipped(op.operation()), op, length(len))
-                            .map_err(device_error)?;
-                    let operands = (Arc::clone(&input), Arc::clone(&out));
-                    gpu_stage(&device, plan, operands, |plan, (input, out), sink| {
+                    ReducePlan::<T>::new(&device, shipped(op.operation()), op, length(len))
+                        .map_err(device_error)
+                },
+                move |_, plan, operands| {
+                    let operands = (operands.read::<T>(0), operands.result::<T>(0));
+                    gpu_stage(&bound, plan, operands, |plan, (input, out), sink| {
                         plan.append(sink, &**input, &**out)
                     })
                 },
@@ -283,21 +289,23 @@ mod gpu {
         type Out = Stage<u32, D1>;
 
         fn record(self, mut draft: OpDraft<'_, HeadlessDevice>) -> Self::Out {
-            let Some((input, _)) = draft.read(self.input) else {
+            if draft.read(self.input).is_none() {
                 return draft.abandon();
-            };
+            }
             let Some(out) = draft.result::<u32>(1) else {
                 return draft.abandon();
             };
-            let device = draft.device();
             let empty = identity(&out, 0);
-            draft.seal(
+            let device = draft.device();
+            let bound = Arc::clone(&device);
+            draft.seal_planned(
                 move |_, len| {
-                    let plan =
-                        SumWrappingPlan::new(&device, shipped(Operation::SumWrapping), length(len))
-                            .map_err(device_error)?;
-                    let operands = (Arc::clone(&input), Arc::clone(&out));
-                    gpu_stage(&device, plan, operands, |plan, (input, out), sink| {
+                    SumWrappingPlan::new(&device, shipped(Operation::SumWrapping), length(len))
+                        .map_err(device_error)
+                },
+                move |_, plan, operands| {
+                    let operands = (operands.read::<u32>(0), operands.result::<u32>(0));
+                    gpu_stage(&bound, plan, operands, |plan, (input, out), sink| {
                         plan.append(sink, &**input, &**out)
                     })
                 },
@@ -310,19 +318,20 @@ mod gpu {
         type Out = Stage<u32, D1>;
 
         fn record(self, mut draft: OpDraft<'_, HeadlessDevice>) -> Self::Out {
-            let Some((flags, _)) = draft.read(self.flags) else {
+            if draft.read(self.flags).is_none() {
                 return draft.abandon();
-            };
+            }
             let Some(count) = draft.result::<u32>(1) else {
                 return draft.abandon();
             };
-            let device = draft.device();
             let empty = identity(&count, 0);
-            draft.seal(
-                move |_, len| {
-                    let plan = CountPlan::new(&device, None, length(len)).map_err(device_error)?;
-                    let operands = (Arc::clone(&flags), Arc::clone(&count));
-                    gpu_stage(&device, plan, operands, |plan, (flags, count), sink| {
+            let device = draft.device();
+            let bound = Arc::clone(&device);
+            draft.seal_planned(
+                move |_, len| CountPlan::new(&device, None, length(len)).map_err(device_error),
+                move |_, plan, operands| {
+                    let operands = (operands.read::<u32>(0), operands.result::<u32>(0));
+                    gpu_stage(&bound, plan, operands, |plan, (flags, count), sink| {
                         plan.append(sink, &**flags, &**count)
                     })
                 },
@@ -335,25 +344,25 @@ mod gpu {
         type Out = Stage<u32, D1>;
 
         fn record(self, mut draft: OpDraft<'_, HeadlessDevice>) -> Self::Out {
-            let Some((input, len)) = draft.read(self.input) else {
+            if draft.read(self.input).is_none() || draft.result_like::<u32>().is_none() {
                 return draft.abandon();
-            };
-            let Some(out) = draft.result::<u32>(len) else {
-                return draft.abandon();
-            };
-            let device = draft.device();
+            }
             let exclusive = self.exclusive;
             let operation = if exclusive {
                 Operation::Exclusive
             } else {
                 Operation::Inclusive
             };
-            draft.seal(
+            let device = draft.device();
+            let bound = Arc::clone(&device);
+            draft.seal_planned(
                 move |_, len| {
-                    let plan = ScanPlan::new(&device, shipped(operation), length(len), exclusive)
-                        .map_err(device_error)?;
-                    let operands = (Arc::clone(&input), Arc::clone(&out));
-                    gpu_stage(&device, plan, operands, |plan, (input, out), sink| {
+                    ScanPlan::new(&device, shipped(operation), length(len), exclusive)
+                        .map_err(device_error)
+                },
+                move |_, plan, operands| {
+                    let operands = (operands.read::<u32>(0), operands.result::<u32>(0));
+                    gpu_stage(&bound, plan, operands, |plan, (input, out), sink| {
                         plan.append(sink, &**input, &**out)
                     })
                 },
@@ -366,23 +375,26 @@ mod gpu {
         type Out = (Stage<u32, D1>, Stage<u32, D1>);
 
         fn record(self, mut draft: OpDraft<'_, HeadlessDevice>) -> Self::Out {
-            let Some((flags, len)) = draft.read(self.flags) else {
+            if draft.read(self.flags).is_none() || draft.result_like::<u32>().is_none() {
+                return draft.abandon();
+            }
+            let Some(count) = draft.result::<u32>(1) else {
                 return draft.abandon();
             };
-            let (Some(indices), Some(count)) = (draft.result::<u32>(len), draft.result::<u32>(1))
-            else {
-                return draft.abandon();
-            };
-            let device = draft.device();
             // At length 0 the indices are empty and the count is 0: the count is written, the indices are not.
             let empty = identity(&count, 0);
-            draft.seal(
-                move |_, len| {
-                    let plan =
-                        CompactPlan::new(&device, None, length(len)).map_err(device_error)?;
-                    let operands = (Arc::clone(&flags), Arc::clone(&indices), Arc::clone(&count));
+            let device = draft.device();
+            let bound = Arc::clone(&device);
+            draft.seal_planned(
+                move |_, len| CompactPlan::new(&device, None, length(len)).map_err(device_error),
+                move |_, plan, operands| {
+                    let operands = (
+                        operands.read::<u32>(0),
+                        operands.result::<u32>(0),
+                        operands.result::<u32>(1),
+                    );
                     gpu_stage(
-                        &device,
+                        &bound,
                         plan,
                         operands,
                         |plan, (flags, indices, count), sink| {
@@ -444,9 +456,9 @@ impl<T: Host> BatchOp<CpuDevice> for Reduce<'_, T> {
     type Out = Stage<T, D1>;
 
     fn record(self, mut draft: OpDraft<'_, CpuDevice>) -> Self::Out {
-        let Some((input, _)) = draft.read(self.input) else {
+        if draft.read(self.input).is_none() {
             return draft.abandon();
-        };
+        }
         let Some(out) = draft.result::<T>(1) else {
             return draft.abandon();
         };
@@ -456,10 +468,13 @@ impl<T: Host> BatchOp<CpuDevice> for Reduce<'_, T> {
             None => Empty::Refuse,
         };
         draft.seal(
-            move |device, _| {
-                Ok(cpu_fold(device, &input, &out, move |values| {
-                    host_reduce(op, values)
-                }))
+            move |device, operands| {
+                Ok(cpu_fold(
+                    device,
+                    &operands.read::<T>(0),
+                    &operands.result::<T>(0),
+                    move |values| host_reduce(op, values),
+                ))
             },
             empty,
         )
@@ -470,15 +485,22 @@ impl BatchOp<CpuDevice> for SumWrapping<'_> {
     type Out = Stage<u32, D1>;
 
     fn record(self, mut draft: OpDraft<'_, CpuDevice>) -> Self::Out {
-        let Some((input, _)) = draft.read(self.input) else {
+        if draft.read(self.input).is_none() {
             return draft.abandon();
-        };
+        }
         let Some(out) = draft.result::<u32>(1) else {
             return draft.abandon();
         };
         let empty = identity(&out, 0);
         draft.seal(
-            move |device, _| Ok(cpu_fold(device, &input, &out, <u32 as Host>::sum)),
+            |device, operands| {
+                Ok(cpu_fold(
+                    device,
+                    &operands.read::<u32>(0),
+                    &operands.result::<u32>(0),
+                    <u32 as Host>::sum,
+                ))
+            },
             empty,
         )
     }
@@ -488,19 +510,24 @@ impl BatchOp<CpuDevice> for Count<'_> {
     type Out = Stage<u32, D1>;
 
     fn record(self, mut draft: OpDraft<'_, CpuDevice>) -> Self::Out {
-        let Some((flags, _)) = draft.read(self.flags) else {
+        if draft.read(self.flags).is_none() {
             return draft.abandon();
-        };
+        }
         let Some(count) = draft.result::<u32>(1) else {
             return draft.abandon();
         };
         let empty = identity(&count, 0);
         draft.seal(
-            move |device, _| {
-                Ok(cpu_fold(device, &flags, &count, |flags| {
-                    u32::try_from(flags.iter().filter(|flag| **flag != 0).count())
-                        .expect("a batch buffer holds at most u32::MAX elements")
-                }))
+            |device, operands| {
+                Ok(cpu_fold(
+                    device,
+                    &operands.read::<u32>(0),
+                    &operands.result::<u32>(0),
+                    |flags| {
+                        u32::try_from(flags.iter().filter(|flag| **flag != 0).count())
+                            .expect("a batch buffer holds at most u32::MAX elements")
+                    },
+                ))
             },
             empty,
         )
@@ -511,16 +538,13 @@ impl BatchOp<CpuDevice> for Scan<'_> {
     type Out = Stage<u32, D1>;
 
     fn record(self, mut draft: OpDraft<'_, CpuDevice>) -> Self::Out {
-        let Some((input, len)) = draft.read(self.input) else {
+        if draft.read(self.input).is_none() || draft.result_like::<u32>().is_none() {
             return draft.abandon();
-        };
-        let Some(out) = draft.result::<u32>(len) else {
-            return draft.abandon();
-        };
+        }
         let exclusive = self.exclusive;
         draft.seal(
-            move |device, _| {
-                let (input, out) = (Arc::clone(&input), Arc::clone(&out));
+            move |device, operands| {
+                let (input, out) = (operands.read::<u32>(0), operands.result::<u32>(0));
                 Ok(device.prepare_fn(move |_| out.write(&host_scan(&input.read(), exclusive))))
             },
             Empty::Nothing,
@@ -532,18 +556,20 @@ impl BatchOp<CpuDevice> for Compact<'_> {
     type Out = (Stage<u32, D1>, Stage<u32, D1>);
 
     fn record(self, mut draft: OpDraft<'_, CpuDevice>) -> Self::Out {
-        let Some((flags, len)) = draft.read(self.flags) else {
+        if draft.read(self.flags).is_none() || draft.result_like::<u32>().is_none() {
             return draft.abandon();
-        };
-        let (Some(indices), Some(count)) = (draft.result::<u32>(len), draft.result::<u32>(1))
-        else {
+        }
+        let Some(count) = draft.result::<u32>(1) else {
             return draft.abandon();
         };
         let empty = identity(&count, 0);
         draft.seal(
-            move |device, _| {
-                let (flags, indices, count) =
-                    (Arc::clone(&flags), Arc::clone(&indices), Arc::clone(&count));
+            |device, operands| {
+                let (flags, indices, count) = (
+                    operands.read::<u32>(0),
+                    operands.result::<u32>(0),
+                    operands.result::<u32>(1),
+                );
                 Ok(device.prepare_fn(move |_| {
                     // The tail past the count keeps what the buffer held, as the kernels' scatter leaves it (D259).
                     let mut positions = indices.read();

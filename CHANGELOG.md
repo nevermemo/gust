@@ -22,9 +22,12 @@ breaks existing code bumps the minor version, and the promise is described in th
   `FrameRun::set` of a parameter that sizes an input or a stage (or a `Derived` value, new: `p.map(|v| -> T { .. })`
   and `p.count()`) makes the new, zeroed buffers, prepares the stages that bind them again and, when the frame is
   submitted or encoded, moves `Batch::generation`; no GPU pass counts anything. A `set` that would change a buffer the
-  frame already wrote or read is `Error::ShapeMismatch`; a resize that reaches a library op stage is the new
-  `Error::OpResize` (op stages follow in the next part). `Stage::shape` (macro support) is gone: an in-place stage
-  takes `&target` as its shape.
+  frame already wrote or read is `Error::ShapeMismatch`. Library op stages follow a resize too (m14.s2b2;
+  both adapters): the op's plan for the new length is built inside the `set` and committed with the frame (a
+  refused frame keeps the old plan), the batch keeps the plans of the last two lengths per op stage, the outputs of `scan`
+  and `compact` follow their operand and move `Batch::generation`, and a length of zero runs the op's empty rule. The
+  frame after a `set` is one submission; the `set` may take submissions of its own. `Stage::shape` (macro support) is
+  gone: an in-place stage takes `&target` as its shape.
 - Reductions in a `gpu_batch!` (m14.s2f2c, D262): `gust::sum`, `sum_wrapping`, `min`, `max`, `reduce`, `count`, `scan`,
   `scan_exclusive` and `let (idx, n) = gust::compact(&flags);` written as the whole init of a `let` in the build block,
   each output a handle named by its `let`. They need a `gust-algo` dependency and the native `slang-runtime` build;

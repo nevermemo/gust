@@ -565,7 +565,6 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             // `tests/resize.rs`: a set of a size parameter resizes what depends on it (m14.s2b).
             "cpu_a_dropped_resize_changes_nothing",
             "cpu_a_frame_the_device_refuses_leaves_the_resize_undone",
-            "cpu_a_resize_that_reaches_an_op_stage_is_refused",
             "cpu_a_resize_to_a_zero_extent_is_exact",
             "cpu_a_resize_with_a_frame_in_flight",
             "cpu_a_shape_set_after_a_ticket_is_refused",
@@ -581,6 +580,14 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "twin_an_enum_parameter_and_a_match_equal_the_host",
             "twin_an_enum_parameter_set_back_to_its_value_changes_nothing",
             "twin_an_enum_parameter_with_two_frames_in_flight_equals_the_host",
+            // `tests/resize_ops.rs`: the library ops follow a resize (m14.s2b2).
+            "cpu_a_failed_frame_after_a_staged_op_resize_leaves_the_old_plan",
+            "cpu_a_min_over_nothing_refuses_the_frame_and_the_batch_recovers",
+            "cpu_a_plan_is_kept_for_the_last_two_lengths",
+            "cpu_a_resize_replaces_the_outputs_that_follow_the_operand",
+            "cpu_an_encoded_op_resize_is_exact",
+            "cpu_an_op_resize_with_a_frame_in_flight",
+            "cpu_the_ops_follow_every_resize",
         ],
     ),
 ];

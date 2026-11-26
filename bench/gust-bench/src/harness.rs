@@ -216,19 +216,19 @@ fn warm_up_to_p0(
     let (clocks, polls, time_to_p0) = std::thread::scope(|scope| {
         let poller = query_clocks.then(|| {
             scope.spawn(|| {
-            let mut last = Value::Null;
-            let mut polls = 0u64;
-            let mut first_p0 = None;
-            while !stop.load(Ordering::Relaxed) {
-                last = meta::gpu_clocks();
-                polls += 1;
-                if is_p0(&last) {
-                    first_p0 = Some(started.elapsed().as_secs_f64());
-                    reached.store(true, Ordering::Relaxed);
-                    break;
+                let mut last = Value::Null;
+                let mut polls = 0u64;
+                let mut first_p0 = None;
+                while !stop.load(Ordering::Relaxed) {
+                    last = meta::gpu_clocks();
+                    polls += 1;
+                    if is_p0(&last) {
+                        first_p0 = Some(started.elapsed().as_secs_f64());
+                        reached.store(true, Ordering::Relaxed);
+                        break;
+                    }
                 }
-            }
-            (last, polls, first_p0)
+                (last, polls, first_p0)
             })
         });
         let mut result = Ok(());

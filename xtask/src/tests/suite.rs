@@ -67,7 +67,7 @@ const TOOL_FREE_WGPU_DOC: Step = Step::ToolFreeCargo {
     hide_vulkan: true,
 };
 
-const UNIT: [Step; 28] = [
+const UNIT: [Step; 32] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-compute-macros"]),
     Step::Cargo(&["test", "--locked", "-p", "xtask"]),
     Step::Lint,
@@ -211,6 +211,77 @@ const UNIT: [Step; 28] = [
         "--",
         "-D",
         "warnings",
+    ]),
+    // The bench workspace (m14.benchfmt).
+    Step::Cargo(&[
+        "fmt",
+        "--manifest-path",
+        "bench/Cargo.toml",
+        "--all",
+        "--",
+        "--check",
+    ]),
+    Step::Cargo(&[
+        "clippy",
+        "--locked",
+        "--manifest-path",
+        "bench/Cargo.toml",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings",
+    ]),
+    Step::ToolFreeCargo {
+        args: &[
+            "test",
+            "--locked",
+            "--manifest-path",
+            "bench/Cargo.toml",
+            "-p",
+            "gust-bench",
+            "--",
+            "--exact",
+            "--skip",
+            "gust_gpu::tests::a_cold_start_records_the_route_that_ran",
+            "--skip",
+            "gust_gpu::tests::a_w6_graph_reports_a_gpu_time_for_one_run_and_for_a_repeated_batch",
+            "--skip",
+            "gust_gpu::tests::a_w7_sum_is_one_batch_and_its_gpu_time_follows_the_adapter",
+            "--skip",
+            "gust_gpu::tests::every_gust_stage_is_inside_its_own_bound_in_both_forms",
+            "--skip",
+            "gust_gpu::tests::every_workload_passes_its_bound_on_gust_and_an_undispatched_output_fails",
+            "--skip",
+            "gust_gpu::tests::the_bound_falls_back_to_the_looser_of_v0_and_v1_where_v1_is_not_admitted",
+            "--skip",
+            "wgsl_wgpu::tests::a_w7_batch_reads_one_timestamp_pair_per_repeat",
+            "--skip",
+            "wgsl_wgpu::tests::ablation_backends_flip_one_switch_and_have_their_own_ids",
+            "--skip",
+            "wgsl_wgpu::tests::all_on_has_every_switch_on_and_a_fresh_vec_like_percall",
+            "--skip",
+            "wgsl_wgpu::tests::each_switch_changes_exactly_what_it_claims",
+            "--skip",
+            "wgsl_wgpu::tests::every_hand_stage_is_inside_its_own_bound_on_the_gpu",
+            "--skip",
+            "wgsl_wgpu::tests::every_workload_passes_its_bound_on_hand_wgsl_in_both_modes",
+            "--skip",
+            "wgsl_wgpu::tests::the_unchecked_rows_have_their_own_ids_and_the_host_shape_of_their_twin",
+        ],
+        hide_vulkan: true,
+    },
+    Step::Cargo(&[
+        "run",
+        "--locked",
+        "--quiet",
+        "-p",
+        "cargo-gust",
+        "--",
+        "check",
+        "--manifest-path",
+        "bench/gust-bench-pre/Cargo.toml",
+        "--allow-slang-mismatch",
     ]),
     Step::Cargo(&[
         "fmt",
@@ -451,17 +522,64 @@ fn the_precompiled_fixture_fmt_and_clippy_are_unit_steps_with_the_commands_of_ci
     }
 }
 
-/// The two doc-test steps of the Unit suite run in the environment of the `unit` job (no Slang, no helper), the
-/// adapter-free one also with no Vulkan driver, and say so in their label; the unfiltered doc step of the Slangc tier
-/// (which needs the tools) and every other step do not.
+/// The bench workspace `bench/` (a workspace of its own) is formatted, linted (all members, all targets, warnings
+/// denied) and tested by the Unit suite, and so by the `unit` CI job, which runs that suite: the command lines are
+/// these, `--skip-difftest` keeps them, and Slangc has them too (m14.benchfmt).
 #[test]
-fn only_the_two_tool_free_doc_steps_run_in_the_tool_free_environment() {
+fn the_bench_workspace_fmt_clippy_tests_and_pre_check_are_unit_steps() {
+    let commands = [
+        "cargo fmt --manifest-path bench/Cargo.toml --all -- --check",
+        "cargo clippy --locked --manifest-path bench/Cargo.toml --workspace --all-targets -- -D warnings",
+        "cargo run --locked --quiet -p cargo-gust -- check --manifest-path bench/gust-bench-pre/Cargo.toml --allow-slang-mismatch",
+    ];
+    let (run, skipped) = plan_suite(Suite::Unit, true).unwrap();
+    let labels: Vec<String> = run.iter().map(|step| step.label()).collect();
+    let slangc = Suite::Slangc.steps();
+    for command in commands {
+        assert!(labels.iter().any(|label| label == command), "{command}");
+        assert!(skipped.iter().all(|step| step.label() != command));
+        assert!(
+            slangc.iter().any(|step| step.label() == command),
+            "{command}"
+        );
+    }
+    // The CPU test step skips the tests that open an adapter, by exact name, runs with no Vulkan driver and in the
+    // environment of the `unit` job (so a stale list fails in the gate as in CI), and counts.
+    let tests = Suite::Unit
+        .steps()
+        .into_iter()
+        .find(|step| {
+            matches!(step, Step::ToolFreeCargo { args, hide_vulkan: true } if args.contains(&"bench/Cargo.toml"))
+        })
+        .expect("a tool-free bench test step");
+    let label = tests.label();
+    assert!(
+        label.starts_with("cargo test --locked --manifest-path bench/Cargo.toml -p gust-bench -- --exact --skip gust_gpu::tests::"),
+        "{label}"
+    );
+    assert!(
+        label.ends_with("[tool-free environment: no Slang, no helper, no Vulkan driver]"),
+        "{label}"
+    );
+    assert_eq!(label.matches(" --skip ").count(), 13, "{label}");
+}
+
+/// The two doc-test steps and the bench CPU test step of the Unit suite run in the environment of the `unit` job (no
+/// Slang, no helper), the adapter-free doc step and the bench step also with no Vulkan driver, and say so in their
+/// label; the unfiltered doc step of the Slangc tier (which needs the tools) and every other step do not.
+#[test]
+fn only_the_two_doc_steps_and_the_bench_tests_run_in_the_tool_free_environment() {
     let tool_free: Vec<Step> = Suite::Slangc
         .steps()
         .into_iter()
         .filter(|step| matches!(step, Step::ToolFreeCargo { .. }))
         .collect();
-    assert_eq!(tool_free, [TOOL_FREE_CORE_DOC, TOOL_FREE_WGPU_DOC]);
+    assert_eq!(tool_free.len(), 3);
+    assert_eq!(tool_free[..2], [TOOL_FREE_CORE_DOC, TOOL_FREE_WGPU_DOC]);
+    assert!(matches!(
+        tool_free[2],
+        Step::ToolFreeCargo { args, hide_vulkan: true } if args.contains(&"bench/Cargo.toml")
+    ));
     assert!(
         TOOL_FREE_CORE_DOC
             .label()
@@ -478,7 +596,7 @@ fn only_the_two_tool_free_doc_steps_run_in_the_tool_free_environment() {
             .iter()
             .filter(|step| matches!(step, Step::ToolFreeCargo { .. }))
             .count(),
-        2
+        3
     );
 }
 

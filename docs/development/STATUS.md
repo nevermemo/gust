@@ -1375,6 +1375,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       with the Vulkan driver hidden (adapter tests skipped by exact name) and a `cargo gust check` of gust-bench-pre
       with --allow-slang-mismatch. Bench files reformatted only. Open: the 13 adapter bench tests run in no gate yet;
       the added cold-build cost in CI is unmeasured. Opus review: merge after fixes; one fix round, re-check merge.
+    - m14.s2e2d (D276): an in-place target `&mut Stage<E>` may hold a `GpuEnum`. A store writes the variant's word,
+      a load decodes through the one decoder (last-variant fallback, D275), the zero-word rule (GUST-E1012) applies at
+      the target, and compound assignment and atomics on it are GUST-E0122. `Batch::view` takes any element type and
+      returns a view of the stored word; ticket names are shared. `state` has no batch form and host slices stay
+      GUST-E1005 for every element type (D276). Radeon 890M and RTX 5090 (batch-basics incl. enum_store, frames and a
+      resize), check-examples on the 890M, CPU twin; store-encode and E0122 mutations caught. Opus review: merge after
+      fixes; one fix round, re-check merge.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

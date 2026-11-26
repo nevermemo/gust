@@ -23,10 +23,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+use gust::batch::{Batch, D1, FrameTiming, Stage};
 use gust::{Extent, Independent};
 #[cfg(feature = "algo")]
 use gust_wgpu::GpuVec;
-use gust_wgpu::{BufferDispatch, DeviceHandle, GpuBuffer, GpuBufferAccess, StagedGraph};
+use gust_wgpu::{
+    BufferDispatch, DeviceHandle, GpuBuffer, GpuBufferAccess, ShaderChecks, StagedGraph,
+};
 use serde_json::Value;
 
 use crate::{
@@ -159,12 +162,85 @@ fn route_verdict(
     }
 }
 
+/// Which form of W6's chain a GUST row runs (slice pf.onepass; probe rows, never publishable). The base `gust-gpu` row is
+/// [`Variant::Plain`]; the others are `--with` rows that exist only for W6-hand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Variant {
+    /// The base row: every workload, the batch recorder's default (W6: six dispatches in one compute pass).
+    Plain,
+    /// P': a second copy of the base path on W6-hand, so that the default form can be created at any position of the
+    /// rotation (the base row is always created first).
+    Default,
+    /// U': the six dispatches of the chain recorded one compute pass each, the form batches had before one pass
+    /// (`gust_wgpu::force_pass_per_dispatch`).
+    PerPass,
+    /// H: the hand-fused kernel, one dispatch that writes only the final output.
+    Fused,
+    /// F': the six stages as one `gust::batch` batch (built once, one frame per chain) recorded in the default form,
+    /// the frame path's merged pass.
+    Frame,
+    /// FU': the same batch with the frame recorded one compute pass per stage (`force_pass_per_dispatch`).
+    FramePerPass,
+}
+
+impl Variant {
+    /// The `--with` name of a variant row.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "gust-default" => Some(Self::Default),
+            "gust-perpass" => Some(Self::PerPass),
+            "gust-fused" => Some(Self::Fused),
+            "gust-frame" => Some(Self::Frame),
+            "gust-frame-perpass" => Some(Self::FramePerPass),
+            _ => None,
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Plain => backend_id(),
+            Self::Default => "gust-gpu+default",
+            Self::PerPass => "gust-gpu+perpass",
+            Self::Fused => "gust-gpu+fused",
+            Self::Frame => "gust-gpu+frame",
+            Self::FramePerPass => "gust-gpu+frame-perpass",
+        }
+    }
+
+    /// Whether the row records every batch as one pass per dispatch.
+    pub fn per_pass(self) -> bool {
+        matches!(self, Self::PerPass | Self::FramePerPass)
+    }
+
+    /// Whether the row runs the six stages as a `gust::batch` batch (the frame path) and not as `dispatch_batch` calls.
+    pub fn is_frame(self) -> bool {
+        matches!(self, Self::Frame | Self::FramePerPass)
+    }
+
+    pub fn supports(self, workload: Workload) -> bool {
+        self == Self::Plain || workload == Workload::PipelineHand
+    }
+}
+
+/// The batch of the frame rows: the five input streams and the final stage of W6 as handles of one `gust::batch` batch.
+struct FrameRig {
+    batch: Batch<gust_wgpu::HeadlessDevice>,
+    inputs: [Stage<f32, D1>; 5],
+    out: Stage<f32, D1>,
+}
+
 pub struct GustGpu {
     device: DeviceHandle,
+    variant: Variant,
     resident: Option<Resident>,
     /// Dispatches since the bins were last cleared (a histogram accumulates; see `Backend::dispatch`).
     passes: Cell<u32>,
     route: RefCell<Option<Value>>,
+    /// The batch of the frame rows (F', FU'), built by `prepare` for W6-hand.
+    frame: RefCell<Option<FrameRig>>,
+    /// The final stage's words of the last frame of the last `gpu_time` call (the frame rows only), which `read_back`
+    /// returns so the harness judges a timed frame's own output. Cleared by `poison`.
+    last_frame: RefCell<Option<Vec<f32>>>,
     /// Route events of the cell's kernel already on the device when `prepare` began: the events are cumulative over the
     /// device's life (the W3 cells share `kernel::horner`), so a cell's own share is the total minus this.
     #[cfg(feature = "spirv-route")]
@@ -217,16 +293,98 @@ pub const fn backend_id() -> &'static str {
     }
 }
 
+/// The id of the row that runs GUST on a device opened with `DeviceOptions::unchecked_kernels` (pf.trust): the WGSL
+/// route with wgpu's runtime shader checks off, paired in one run with `gust-gpu` on a device opened the usual way.
+pub const UNCHECKED_ID: &str = "gust-gpu-unchecked";
+
 impl GustGpu {
+    /// Whether this row's device was opened with unchecked kernels: the row's id and description follow the device's own
+    /// setting, so the row cannot claim a mode its device does not have.
+    fn unchecked(&self) -> bool {
+        self.device.shader_checks() == ShaderChecks::Unchecked
+    }
+
     pub fn new(device: DeviceHandle) -> Self {
+        Self::with_variant(device, Variant::Plain)
+    }
+
+    pub fn with_variant(device: DeviceHandle, variant: Variant) -> Self {
         Self {
             device,
+            variant,
             resident: None,
             passes: Cell::new(0),
             route: RefCell::new(None),
+            frame: RefCell::new(None),
+            last_frame: RefCell::new(None),
             #[cfg(feature = "spirv-route")]
             events_before_prepare: RefCell::new(Vec::new()),
         }
+    }
+
+    /// One frame of the frame rows' batch (one chain of the six stages). `inputs` are written first, `read` takes a
+    /// ticket of the final stage and returns its words, `timed` returns the frame's time at level `Frame`
+    /// (`FrameTimes::span`, the first pass's begin to the last pass's end; `None` where the adapter has no timestamps).
+    /// The call returns when the submission is complete, so the host time of a call is submit to completion.
+    fn frame_chain(
+        &self,
+        inputs: Option<&Inputs>,
+        read: bool,
+        timed: bool,
+    ) -> BenchResult<(Vec<f32>, Option<Duration>)> {
+        self.arm_pass_form();
+        let mut guard = self.frame.borrow_mut();
+        let rig = guard.as_mut().expect("prepare built the frame batch");
+        let mut frame = pollster::block_on(rig.batch.begin()).map_err(|e| e.to_string())?;
+        if let Some(inputs) = inputs {
+            for (stage, values) in rig.inputs.iter().zip(&inputs.pipeline) {
+                frame.write(stage, values).map_err(|e| e.to_string())?;
+            }
+        }
+        let ticket = if read {
+            Some(frame.ticket(&rig.out).map_err(|e| e.to_string())?)
+        } else {
+            None
+        };
+        let time = timed.then(|| frame.time());
+        let submitted = frame.submit().map_err(|e| e.to_string())?;
+        submitted.wait().map_err(|e| e.to_string())?;
+        let words = match ticket {
+            Some(ticket) => pollster::block_on(ticket).map_err(|e| e.to_string())?,
+            None => Vec::new(),
+        };
+        let span = match time {
+            Some(time) => pollster::block_on(time)
+                .map_err(|e| e.to_string())?
+                .map(|times| times.span),
+            None => None,
+        };
+        Ok((words, span))
+    }
+
+    /// Builds the batch of the frame rows over `n` elements: the six stages of W6 as `gpu_task!` stages of one batch at
+    /// frame timing level `Frame`, one frame in flight.
+    fn build_frame_rig(&self, n: usize) -> BenchResult<FrameRig> {
+        let n = u32::try_from(n).map_err(|_| "the frame rows' size does not fit u32")?;
+        let device = &self.device;
+        let (batch, (inputs, out)) =
+            gust::gpu_batch!("bench w6 frame", on(device); in_flight(1); |b| {
+                b.frame_timing(FrameTiming::Frame);
+                let signal = b.input::<f32>(n);
+                let baseline = b.input::<f32>(n);
+                let gain = b.input::<f32>(n);
+                let bias = b.input::<f32>(n);
+                let scale = b.input::<f32>(n);
+                let centered = gust::gpu_task!(n, |i| -> f32 { signal[i] - baseline[i] });
+                let amplified = gust::gpu_task!(n, |i| -> f32 { centered[i] * gain[i] });
+                let biased = gust::gpu_task!(n, |i| -> f32 { amplified[i] + bias[i] });
+                let normalized = gust::gpu_task!(n, |i| -> f32 { biased[i] / scale[i] });
+                let squared = gust::gpu_task!(n, |i| -> f32 { normalized[i] * normalized[i] });
+                let out = gust::gpu_task!(n, |i| -> f32 { squared[i] + 0.25f32 * normalized[i] });
+                ([signal, baseline, gain, bias, scale], out)
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(FrameRig { batch, inputs, out })
     }
 
     fn resident(&self) -> &Resident {
@@ -339,6 +497,18 @@ impl GustGpu {
         else {
             unreachable!("with_pipeline is for W6")
         };
+        if self.variant == Variant::Fused {
+            let fused = signal_pipeline::fused::transform::call(
+                n,
+                &i[0],
+                &i[1],
+                &i[2],
+                &i[3],
+                &i[4],
+                &s[signal_pipeline::STAGES - 1],
+            );
+            return run(vec![BufferDispatch::from(&fused)]);
+        }
         let c0 = kernel::center::call(n, &i[0], &i[1], &s[0]);
         let c1 = kernel::amplify::call(n, &s[0], &i[2], &s[1]);
         let c2 = kernel::shift::call(n, &s[1], &i[3], &s[2]);
@@ -456,10 +626,18 @@ impl GustGpu {
         Ok(timed.time)
     }
 
+    /// Sets the process-wide recording form of `gust-wgpu` for the call that follows: a pass per dispatch for the
+    /// `perpass` row, the default (one compute pass) for every other row (rows are sampled interleaved, so a row's
+    /// setting must not leak into the next row's call).
+    fn arm_pass_form(&self) {
+        gust_wgpu::force_pass_per_dispatch(self.variant.per_pass());
+    }
+
     /// One complete run of the workload on the resident data: a kernel dispatch, or for W7 the public sum (which waits and
     /// reads its value back, so its word is the result). Used by `end_to_end` and the W7 warm-up; the timed `dispatch`
     /// of W7 `f32` is [`Self::dispatch_sum_f32`] (no read-back inside the timed region).
     fn run_once(&self) -> BenchResult<()> {
+        self.arm_pass_form();
         #[cfg(feature = "algo")]
         match &self.resident().data {
             Data::SumF32(values) => {
@@ -476,7 +654,9 @@ impl GustGpu {
             _ => {}
         }
         if self.resident().workload.is_pipeline() {
-            if self.resident().workload.is_graph_form() {
+            if self.variant.is_frame() {
+                self.frame_chain(None, false, false)?;
+            } else if self.resident().workload.is_graph_form() {
                 self.run_graph(None)?;
             } else {
                 self.with_pipeline(|dispatches| self.device.dispatch_batch(&dispatches))?;
@@ -563,11 +743,35 @@ impl GustGpu {
 
 impl Backend for GustGpu {
     fn id(&self) -> &'static str {
-        backend_id()
+        if self.variant == Variant::Plain && self.unchecked() {
+            UNCHECKED_ID
+        } else {
+            self.variant.id()
+        }
     }
 
     fn description(&self) -> &'static str {
-        if gust_wgpu::SPIRV_ROUTE {
+        match self.variant {
+            Variant::Plain => {}
+            Variant::Default => {
+                return "W6-hand on GUST as the base row runs it (the six dispatches in one compute pass): the pf.onepass probe row P', created at a rotating position";
+            }
+            Variant::PerPass => {
+                return "W6-hand on GUST with the six dispatches recorded one compute pass each, the form before one pass: the pf.onepass probe row U'";
+            }
+            Variant::Fused => {
+                return "W6-hand as one hand-fused GUST kernel (`transform`, one dispatch): the pf.onepass probe row H";
+            }
+            Variant::Frame => {
+                return "W6-hand as one `gust::batch` batch (six stages, built once, one frame per chain) recorded in the default form: the pf.onepass probe row F'";
+            }
+            Variant::FramePerPass => {
+                return "W6-hand as one `gust::batch` batch with the frame recorded one compute pass per stage: the pf.onepass probe row FU'";
+            }
+        }
+        if self.unchecked() {
+            "GUST kernel through gust-wgpu (Slang -> WGSL -> wgpu) on a device opened with DeviceOptions::unchecked_kernels (wgpu's runtime shader checks off), typed call, public API only"
+        } else if gust_wgpu::SPIRV_ROUTE {
             "GUST kernel through gust-wgpu on the opt-in SPIR-V route (slangc SPIR-V through passthrough), typed call, public API only"
         } else {
             "GUST kernel through gust-wgpu (Slang -> WGSL -> wgpu), typed call, public API only"
@@ -580,7 +784,7 @@ impl Backend for GustGpu {
 
     /// W7 needs `gust-algo` (the `algo` feature); every other workload is a kernel of this crate.
     fn supports(&self, workload: Workload) -> bool {
-        workload.family() != "W7" || cfg!(feature = "algo")
+        self.variant.supports(workload) && (workload.family() != "W7" || cfg!(feature = "algo"))
     }
 
     /// The bound of `gust-algo`'s `f32` sum for the schedule that runs: `f32_sum_bound_v1` where the shipped variant is v1
@@ -594,6 +798,7 @@ impl Backend for GustGpu {
 
     fn prepare(&mut self, workload: Workload, inputs: &Inputs) -> BenchResult<()> {
         self.resident = None;
+        *self.frame.borrow_mut() = None;
         #[cfg(feature = "spirv-route")]
         {
             let before = workloads::descriptors(workload)
@@ -719,10 +924,25 @@ impl Backend for GustGpu {
         if workload.family() == "W7" {
             self.run_once()?;
         }
+        // The fused row's `transform` pipeline is the one kernel the other GUST rows do not build. The cache and its miss
+        // counter belong to the device, and the harness snapshots each row's counter after that row's own warm-up, so a
+        // compile at the fused row's warm-up would move the counter of the rows warmed up before it (pf.fuse smoke, 6 to
+        // 7). Every row is prepared before any row warms up, so the compile is done here.
+        if self.variant == Variant::Fused {
+            self.run_once()?;
+        }
+        // The frame rows build their batch (six task kernels, compiled here for the same reason) and run one frame that
+        // uploads the five inputs, waits for it, and takes the frame's time once so the timing objects exist.
+        if self.variant.is_frame() {
+            let rig = self.build_frame_rig(n)?;
+            *self.frame.borrow_mut() = Some(rig);
+            self.frame_chain(Some(inputs), true, true)?;
+        }
         Ok(())
     }
 
     fn poison(&mut self) -> BenchResult<()> {
+        *self.last_frame.borrow_mut() = None;
         let r = self.resident();
         // The timed variants wait for the upload, so the copy cannot land inside a timed submission.
         match &r.data {
@@ -755,6 +975,12 @@ impl Backend for GustGpu {
     }
 
     fn end_to_end(&mut self, inputs: &Inputs, out: &mut Vec<f32>) -> BenchResult<()> {
+        if self.variant.is_frame() {
+            // One frame: the five inputs written, the six stages, a ticket of the final stage.
+            (*out, _) = self.frame_chain(Some(inputs), true, false)?;
+            self.passes.set(1);
+            return Ok(());
+        }
         let r = self.resident();
         match &r.data {
             Data::Add { x, y, .. } | Data::Saxpy { x, y, .. } => {
@@ -830,9 +1056,30 @@ impl Backend for GustGpu {
     /// `gust_algo::timed` scope. W6-graph: one graph of `batch` repeats of the six dispatches through
     /// `execute_graph_timed`. Both spans leave out the read-back mapping.
     fn gpu_time(&mut self, batch: usize) -> BenchResult<Option<Duration>> {
+        self.arm_pass_form();
         #[cfg(feature = "algo")]
         if self.resident().workload.family() == "W7" {
             return self.gpu_time_sum(batch);
+        }
+        if self.variant.is_frame() {
+            // `batch` frames, one per chain, each with its own time at level `Frame`; their sum is the span of `batch`
+            // chains the other rows report (the harness divides by `batch`). None when the adapter has no timestamps.
+            let mut total = Duration::ZERO;
+            for index in 0..batch {
+                // The last frame also takes a ticket of the final stage (its copy lies after the span, outside the time).
+                let last = index + 1 == batch;
+                let (words, span) = self.frame_chain(None, last, true)?;
+                if last {
+                    *self.last_frame.borrow_mut() = Some(words);
+                }
+                let Some(span) = span else {
+                    return Ok(None);
+                };
+                total += span;
+            }
+            self.passes
+                .set(self.passes.get().wrapping_add(batch as u32));
+            return Ok(Some(total));
         }
         if self.resident().workload.is_pipeline() {
             if self.resident().workload.is_graph_form() {
@@ -857,6 +1104,16 @@ impl Backend for GustGpu {
     }
 
     fn read_back(&mut self, out: &mut Vec<f32>) -> BenchResult<()> {
+        if self.variant.is_frame() {
+            // The frame rows' read-back is a frame of its own (the batch keeps its stage outputs to itself): the six
+            // stages over the inputs the batch holds, and a ticket of the final stage. So a poisoned output cannot fail
+            // this row. After a `gpu_time` call the words are those of its last timed frame instead (taken with its ticket).
+            *out = match self.last_frame.borrow_mut().take() {
+                Some(words) => words,
+                None => self.frame_chain(None, true, false)?.0,
+            };
+            return Ok(());
+        }
         *out = self.read_words()?;
         if self.resident().workload.accumulates() {
             normalize_counts(out, self.passes.get());
@@ -928,6 +1185,11 @@ impl Backend for GustGpu {
     /// The route record of the cold start: the first kernel's (the only one, except for W6, whose record also lists the
     /// kernel count; every one of its six pipelines is compiled by the cold sample, since the cache is cleared first).
     fn cold_start(&mut self) -> BenchResult<Option<Duration>> {
+        // The pipeline cache is the device's, shared by every GUST row: a variant row clearing it would make the other
+        // rows rebuild a pipeline inside their timed region (the harness refuses that). Only the base row has a cold start.
+        if self.variant != Variant::Plain {
+            return Ok(None);
+        }
         self.device.clear_pipeline_cache();
         let started = Instant::now();
         self.dispatch()?;
@@ -1266,5 +1528,145 @@ mod tests {
             limits.max_storage_buffer_binding_size,
             limits.max_compute_workgroups_per_dimension
         ));
+    }
+
+    /// pf.onepass: the three `--with` rows parse, are told apart by id, and differ from the base row only as stated
+    /// (the per-pass row alone forces the per-dispatch form, the variants exist for W6-hand only; the dispatch counts
+    /// are checked on a device, below).
+    #[test]
+    fn pfonepass_rows_parse_and_differ_only_as_stated() {
+        let names = [
+            "gust-default",
+            "gust-perpass",
+            "gust-fused",
+            "gust-frame",
+            "gust-frame-perpass",
+        ];
+        let rows = names.map(|name| Variant::parse(name).expect(name));
+        assert_eq!(
+            rows,
+            [
+                Variant::Default,
+                Variant::PerPass,
+                Variant::Fused,
+                Variant::Frame,
+                Variant::FramePerPass
+            ]
+        );
+        for name in [
+            "gust-gpu",
+            "gust-shader",
+            "gust-setup",
+            "gust-unfused",
+            "gust-onepass",
+            "fused",
+            "",
+        ] {
+            assert!(Variant::parse(name).is_none(), "{name:?}");
+        }
+        let all = [Variant::Plain, rows[0], rows[1], rows[2], rows[3], rows[4]];
+        let ids = all.map(Variant::id);
+        assert_eq!(ids[0], backend_id());
+        assert_eq!(
+            &ids[1..],
+            [
+                "gust-gpu+default",
+                "gust-gpu+perpass",
+                "gust-gpu+fused",
+                "gust-gpu+frame",
+                "gust-gpu+frame-perpass"
+            ]
+        );
+        assert_eq!(
+            all.map(Variant::per_pass),
+            [false, false, true, false, false, true]
+        );
+        for workload in Workload::ALL {
+            assert!(Variant::Plain.supports(workload));
+            for row in rows {
+                assert_eq!(row.supports(workload), workload == Workload::PipelineHand);
+            }
+        }
+    }
+
+    /// pf.onepass: every variant row's output passes the W6 bound on a device (end to end, one dispatch and a 16-run
+    /// batch), as the base row's does, a poisoned output that is never dispatched fails, and the rows record the
+    /// passes they are named for (one for the default and fused rows, one per dispatch for the per-pass row). The
+    /// process-wide form is handed back to the default afterwards.
+    #[test]
+    fn pfonepass_rows_pass_the_w6_bound_and_record_the_passes_they_name() {
+        /// Hands the process-wide pass form back to the default, however the test ends.
+        struct DefaultForm;
+        impl Drop for DefaultForm {
+            fn drop(&mut self) {
+                gust_wgpu::force_pass_per_dispatch(false);
+            }
+        }
+        let (_gpu, device) = gpu();
+        let _form = DefaultForm;
+        let w = Workload::PipelineHand;
+        let inputs = gen_inputs(w, workloads::test_size(w));
+        let want = reference(w, &inputs);
+        let judging = Judging {
+            rounding: Rounding::Either,
+            tree: None,
+        };
+        for variant in [
+            Variant::Default,
+            Variant::PerPass,
+            Variant::Fused,
+            Variant::Frame,
+            Variant::FramePerPass,
+        ] {
+            let mut backend = GustGpu::with_variant(DeviceHandle::clone(&device), variant);
+            backend.prepare(w, &inputs).unwrap();
+            // The fused row is one dispatch of the one kernel; the others are the six stages.
+            let dispatches = if variant.is_frame() {
+                signal_pipeline::STAGES
+            } else {
+                backend.with_pipeline(|dispatches| dispatches.len())
+            };
+            assert_eq!(
+                dispatches,
+                if variant == Variant::Fused {
+                    1
+                } else {
+                    signal_pipeline::STAGES
+                }
+            );
+            let mut out = Vec::new();
+            backend.poison().unwrap();
+            backend.read_back(&mut out).unwrap();
+            // A frame row's read-back is a frame of its own, so a poisoned output cannot fail it.
+            assert_eq!(
+                check_with(w, &inputs, &want, &out, judging).is_err(),
+                !variant.is_frame()
+            );
+            backend.poison().unwrap();
+            backend.end_to_end(&inputs, &mut out).unwrap();
+            check_with(w, &inputs, &want, &out, judging)
+                .unwrap_or_else(|e| panic!("{variant:?} end to end: {e}"));
+            backend.poison().unwrap();
+            let passes_before = gust_wgpu::batch_passes_recorded();
+            backend.dispatch().unwrap();
+            assert_eq!(
+                gust_wgpu::batch_passes_recorded() - passes_before,
+                if variant.per_pass() {
+                    signal_pipeline::STAGES as u64
+                } else {
+                    1
+                },
+                "{variant:?}: passes of one dispatch"
+            );
+            backend.read_back(&mut out).unwrap();
+            check_with(w, &inputs, &want, &out, judging)
+                .unwrap_or_else(|e| panic!("{variant:?} dispatch: {e}"));
+            backend.poison().unwrap();
+            if backend.gpu_time(16).unwrap().is_some() {
+                backend.read_back(&mut out).unwrap();
+                check_with(w, &inputs, &want, &out, judging)
+                    .unwrap_or_else(|e| panic!("{variant:?} 16-run batch: {e}"));
+            }
+        }
     }
 }

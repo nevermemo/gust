@@ -15,6 +15,18 @@ or a name) and the limits policy (the portable ones, or the adapter's own, which
 `default_device()`, the process-wide device used by calls that name none). By default the native backend asks wgpu for
 Vulkan only; `DeviceOptions::with_backends` changes that.
 
+Every kernel is built with wgpu's runtime checks on. `unsafe { DeviceOptions::default().unchecked_kernels() }` turns
+them off for every kernel of the device it opens (`HeadlessDevice::shader_checks` reports it). With unchecked kernels
+wgpu's runtime checks are off for every kernel of this device. An out-of-range index, and a loop that does not end, are
+undefined behaviour on the GPU: other buffers of the device may be read or written, and the device may hang or be lost.
+GUST does not add its own guards on this route. The CPU twin is unchanged and remains the reference; run a kernel
+checked first. Integer division and remainder lose wgpu's guards too, so a zero divisor, and `MIN / -1` for a signed
+type, are undefined behaviour as well. The option is measured on loop-heavy kernels on the RTX 5090 only; there was no
+gain on the Radeon 890M. The setting covers GUST's own library kernels too: options passed to `set_default_options`
+make the default device unchecked, so `gust-algo` operations and batch stages that index with values read from data run
+unchecked as well. A device adopted with `HeadlessDevice::adopt` is always checked, the SPIR-V route is not affected, and
+in a browser the option is accepted and ignored, because the browser checks every shader itself.
+
 A typed buffer is created from a slice with `create_typed_buffer(name, &data, access)`, where `access` is
 `GpuBufferAccess::ReadOnly` or `ReadWrite`, and it is read back with `read_typed_buffer`. The element type is any
 `GpuPod`: 32-bit scalars, 2- and 4-wide vectors, 2x2 and 4x4 matrices, fixed-size arrays of the stored lengths, and

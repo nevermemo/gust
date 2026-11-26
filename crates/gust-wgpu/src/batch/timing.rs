@@ -253,6 +253,25 @@ impl HeadlessDevice {
         Ok(())
     }
 
+    /// Record the stages of a frame as `encode_stages` does, with `begin` stamped at the start of the first pass and
+    /// `end` at the end of the last.
+    pub(super) fn encode_stages_timed(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        stages: &[&GpuStage],
+        clock: &mut FrameClock,
+        begin: Option<u32>,
+        end: Option<u32>,
+    ) -> Result<(), Error> {
+        let clock = clock
+            .downcast_mut::<GpuClock>()
+            .expect("a GPU batch's clock is its own");
+        self.encode_stages(encoder, stages, Some((&clock.timing.query_set, begin, end)))?;
+        let written = u64::from(begin.is_some()) + u64::from(end.is_some());
+        STAMPS.fetch_add(written, Ordering::Relaxed);
+        Ok(())
+    }
+
     /// Resolve the first `slots` timestamps and copy them to the frame's read-back buffer.
     pub(super) fn end_clock(
         encoder: &mut wgpu::CommandEncoder,

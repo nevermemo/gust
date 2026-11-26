@@ -29,9 +29,9 @@ impl HeadlessDevice {
     /// read-back, already requested; await [`finish`](PendingRead::finish) or, on native, `wait`.
     ///
     /// Compared with `submit_batch` and a read-back this saves a submission, and a third when a recycled output has to
-    /// be zeroed first. The batch means what [`submit_batch`](Self::submit_batch) means (validation, one pass per
-    /// dispatch, each seeing the writes of the one before it); the clears come before the first pass and the copy
-    /// after the last, in the order of recording.
+    /// be zeroed first. The batch means what [`submit_batch`](Self::submit_batch) means (validation, one compute
+    /// pass for `grid` dispatches or a pass per dispatch otherwise, each dispatch seeing the writes of the one before
+    /// it); the clears come before the first pass and the copy after the last, in the order of recording.
     ///
     /// `clear` holds buffer bindings of this device whose buffers were created read-write (the access of the binding
     /// is not read): each is zeroed over its logical length. A read-only buffer or a buffer of another device is

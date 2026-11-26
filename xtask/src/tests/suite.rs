@@ -253,6 +253,8 @@ const UNIT: [Step; 32] = [
             "--skip",
             "gust_gpu::tests::every_workload_passes_its_bound_on_gust_and_an_undispatched_output_fails",
             "--skip",
+            "gust_gpu::tests::pfonepass_rows_pass_the_w6_bound_and_record_the_passes_they_name",
+            "--skip",
             "gust_gpu::tests::the_bound_falls_back_to_the_looser_of_v0_and_v1_where_v1_is_not_admitted",
             "--skip",
             "wgsl_wgpu::tests::a_w7_batch_reads_one_timestamp_pair_per_repeat",
@@ -561,7 +563,7 @@ fn the_bench_workspace_fmt_clippy_tests_and_pre_check_are_unit_steps() {
         label.ends_with("[tool-free environment: no Slang, no helper, no Vulkan driver]"),
         "{label}"
     );
-    assert_eq!(label.matches(" --skip ").count(), 13, "{label}");
+    assert_eq!(label.matches(" --skip ").count(), 14, "{label}");
 }
 
 /// The two doc-test steps and the bench CPU test step of the Unit suite run in the environment of the `unit` job (no

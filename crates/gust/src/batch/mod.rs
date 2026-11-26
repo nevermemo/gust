@@ -54,7 +54,11 @@
 //! [`FrameTiming::Passes`] one entry per stage that has a pass). The timestamp objects are made when the batch is
 //! sealed, only for a level that is not `Off` and only on a device with timestamp queries; [`Batch::frame_timing`]
 //! says which. A frame that did not ask records nothing. Timing adds timestamp writes to the passes that exist, plus
-//! one resolve and one copy in the frame's encoder; it never changes the passes and never adds a submission.
+//! one resolve and one copy in the frame's encoder; it never adds a submission. At level `Off` and `Frame` it does not
+//! change the passes either. At level [`FrameTiming::Passes`] it does: a device that puts the dispatches of
+//! neighbouring stages into one pass (the GPU device does) records every stage in passes of its own, so that each stage
+//! has a begin and an end, and the frame is not the one that runs untimed or at `Frame`. The per-stage times then
+//! include the pass boundary a stage would otherwise share, and their sum can exceed the `Frame` time.
 //!
 //! A caller reads a batch's buffers on the GPU through a [`View`] ([`Batch::view`], decision D261): the batch's own
 //! buffer, kept alive by the view, with the batch's [`generation`](Batch::generation). What a reader sees follows the
@@ -513,7 +517,8 @@ pub trait BatchDevice: MapHost + Sized + 'static {
         None
     }
 
-    /// How many passes the stage dispatches: a stage with none is not timed.
+    /// How many dispatches the stage has: a stage with none is not timed (the count of entries at level `Passes`, whose
+    /// frames record every stage in passes of its own).
     fn stage_passes(&self, _stage: &Self::Prepared) -> usize {
         0
     }
@@ -539,6 +544,49 @@ pub trait BatchDevice: MapHost + Sized + 'static {
         _end: Option<u32>,
     ) -> Result<(), Self::Error> {
         self.frame_stage(encoder, stage)
+    }
+
+    /// Record the dispatches of the stages of a frame, in stage order and in one call, when the frame is not timed per
+    /// stage (untimed, or timed at level [`FrameTiming::Frame`]): a device that can put the dispatches of neighbouring
+    /// stages into one pass does it here. The default records each stage with [`frame_stage`](Self::frame_stage), which
+    /// is what a device without such a form does.
+    ///
+    /// # Errors
+    ///
+    /// As `frame_stage`.
+    fn frame_stages(
+        &self,
+        encoder: &mut Self::Encoder,
+        stages: &[&Self::Prepared],
+    ) -> Result<(), Self::Error> {
+        stages
+            .iter()
+            .try_for_each(|stage| self.frame_stage(encoder, stage))
+    }
+
+    /// [`frame_stages`](Self::frame_stages) of a frame timed at level [`FrameTiming::Frame`]: `begin` is written at the
+    /// start of the first pass this call records and `end` at the end of the last, where given, and the passes are those
+    /// of the untimed frame. The stages all have a pass. The default records the stages one by one with
+    /// [`frame_stage_timed`](Self::frame_stage_timed), the first carrying `begin` and the last `end`.
+    ///
+    /// # Errors
+    ///
+    /// As `frame_stage`.
+    fn frame_stages_timed(
+        &self,
+        encoder: &mut Self::Encoder,
+        stages: &[&Self::Prepared],
+        clock: &mut FrameClock,
+        begin: Option<u32>,
+        end: Option<u32>,
+    ) -> Result<(), Self::Error> {
+        let last = stages.len().saturating_sub(1);
+        for (index, stage) in stages.iter().enumerate() {
+            let begin = if index == 0 { begin } else { None };
+            let end = if index == last { end } else { None };
+            self.frame_stage_timed(encoder, stage, clock, begin, end)?;
+        }
+        Ok(())
     }
 
     /// Record the resolve of the first `slots` timestamp slots and the copy that reads them, after the last stage of a

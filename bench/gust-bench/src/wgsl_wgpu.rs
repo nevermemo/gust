@@ -502,11 +502,14 @@ impl HandWgsl {
     /// The GUST-difference probes, each `Prebuilt` plus what the wgpu trace shows differing from GUST. `gust-shader`: on the
     /// shared hand device, running GUST's generated WGSL. `gust-device`: on a device opened like GUST's (`open_like_gust_on`,
     /// which requests `MEMORY_DECORATION_COHERENT`), creating the timestamp objects before the data buffers as
-    /// `HeadlessDevice` does, running the hand WGSL. `gust-setup` (any other name): both.
+    /// `HeadlessDevice` did before it made them at the first timed call, running the hand WGSL. `wgsl-prebuilt-b`:
+    /// nothing differs, the second instance of the reference on a device of its own (the run's noise floor).
+    /// `gust-setup` (any other name): both.
     pub fn gust_probe(ctx: Rc<WgpuContext>, name: &str) -> Self {
         let (gust_shader, gust_order, probe_id) = match name {
             "gust-shader" => (true, false, "wgsl-prebuilt+gust-shader"),
             "gust-device" => (false, true, "wgsl-prebuilt+gust-device"),
+            "wgsl-prebuilt-b" => (false, false, "wgsl-prebuilt-b"),
             _ => (true, true, "wgsl-prebuilt+gust-setup"),
         };
         Self {

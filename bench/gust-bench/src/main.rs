@@ -4,7 +4,7 @@
 //! gust-bench run --out run1.json [--label NAME] [--quick] [--workloads W1,W3,W4-256-zipf] [--sizes N,N] [--backends a,b]
 //!                [--group publishable|spirv|ablation] [--ablation bind-group-reuse,staging-reuse,one-submission,all-on|all]
 //!                [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S]
-//!                [--cold-only] [--cold-repeats N] [--seed N] [--with gust-setup,gust-shader,gust-device]
+//!                [--cold-only] [--cold-repeats N] [--seed N] [--with gust-setup,gust-shader,gust-device,gust-unchecked,hand-unchecked,wgsl-prebuilt-b]
 //!                [--functional]   # correctness only, quick sizes, any adapter (lavapipe included), no sampler, no timing published
 //!                [--adapter "NAME"] # the one adapter whose name contains NAME (letter case ignored), for both devices of the run
 //! gust-bench aggregate --json out.json --md out.md run1.json run2.json run3.json
@@ -60,7 +60,7 @@ use std::{process::ExitCode, time::Duration, time::Instant};
 use backend::{Backend, BenchResult, Kind};
 use group::Group;
 #[cfg(feature = "gpu")]
-use gust_wgpu::{DeviceHandle, DeviceOptions, HeadlessDevice};
+use gust_wgpu::{DeviceHandle, DeviceOptions, FeaturesPolicy, HeadlessDevice, LimitsPolicy};
 use harness::{CellInput, Config, prepare_case, run_cell, run_gpu_group};
 #[cfg(feature = "gpu")]
 use sampler::AdapterIdent;
@@ -70,7 +70,32 @@ use serde_json::{Value, json};
 use wgsl_wgpu::{HandWgsl, Mode, Switch, WgpuContext};
 use workloads::Workload;
 
-const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W3,...] [--sizes N,N] [--backends a,b] [--group publishable|spirv|ablation] [--ablation LIST|all-on|all] [--with gust-setup,gust-shader,gust-device] [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N] [--functional] [--adapter NAME]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench dump-kernels --out DIR (slang-runtime build)\n       gust-bench probe-adapters\n       gust-bench profile --out FILE [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS] (profile-counts build)\n       gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall,gust-gpu] [--label batch16|end_to_end] (wgpu-trace build)\n       gust-bench list";
+const USAGE: &str = "usage: gust-bench run --out FILE [--label NAME] [--quick] [--workloads W1,W3,...] [--sizes N,N] [--backends a,b] [--group publishable|spirv|ablation] [--ablation LIST|all-on|all] [--with gust-setup,gust-shader,gust-device,gust-unchecked,hand-unchecked,wgsl-prebuilt-b,gust-default,gust-perpass,gust-fused,gust-frame,gust-frame-perpass] [--gust-only] [--device-order checked-first|unchecked-first] [--samples N] [--cap-secs S] [--settle-secs S] [--window-secs S] [--no-sampler] [--warmup-secs S] [--cold-only] [--cold-repeats N] [--seed N] [--functional] [--adapter NAME]\n       gust-bench aggregate --json FILE --md FILE RUN.json...\n       gust-bench dump-wgsl\n       gust-bench dump-kernels --out DIR (slang-runtime build)\n       gust-bench probe-adapters\n       gust-bench profile --out FILE [--workloads W1,W2] [--sizes N,N] [--backends a,b] [--samples CALLS] (profile-counts build)\n       gust-bench trace --out DIR [--workloads W1] [--sizes N,N] [--backends wgsl-prebuilt,wgsl-percall,gust-gpu] [--label batch16|end_to_end] (wgpu-trace build)\n       gust-bench list";
+
+/// The order in which the checked and the unchecked GUST device of a pf.trust run are opened.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum DeviceOrder {
+    #[default]
+    CheckedFirst,
+    UncheckedFirst,
+}
+
+impl DeviceOrder {
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "checked-first" => Some(Self::CheckedFirst),
+            "unchecked-first" => Some(Self::UncheckedFirst),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::CheckedFirst => "checked-first",
+            Self::UncheckedFirst => "unchecked-first",
+        }
+    }
+}
 
 #[derive(Default)]
 struct Options {
@@ -92,12 +117,25 @@ struct Options {
     cap_secs: Option<f64>,
     /// The raw `--ablation` list (switch names, `all-on`, `all`), parsed where the hand-WGSL backends exist.
     ablation: Option<String>,
-    /// `--with gust-setup,gust-shader,gust-device`: the m10.b1c probe backends, appended to the publishable group
-    /// (see `gpu_backends`).
+    /// `--with gust-setup,gust-shader,gust-device,gust-unchecked,hand-unchecked,wgsl-prebuilt-b`: the probe backends, appended to the
+    /// publishable group in the order given (see `gpu_backends`). The first three are the m10.b1c hand probes;
+    /// `gust-unchecked` is `gust-gpu` on a second device opened with `DeviceOptions::unchecked_kernels` and
+    /// `hand-unchecked` is the hand text with wgpu's runtime checks off (pf.trust, its reproduction control);
+    /// `wgsl-prebuilt-b` is the reference again on a device of its own, opened like the hand one (a noise floor).
+    /// The pf.onepass GUST rows `gust-default`, `gust-perpass`, `gust-fused`, `gust-frame` and `gust-frame-perpass` are also
+    /// `--with` names (W6-hand only, probe rows).
     with_probe: Vec<String>,
+    /// `--device-order checked-first|unchecked-first`: which of the two GUST devices of `--with gust-unchecked` is opened
+    /// first (default `checked-first`). The first-created variant can be slower on the Radeon 890M, so a series swaps it.
+    device_order: Option<DeviceOrder>,
     settle_secs: Option<f64>,
     window_secs: Option<f64>,
     no_sampler: bool,
+    /// `--gust-only`: the GUST rows (the base `gust-gpu` and the `gust-default`, `gust-perpass`, `gust-fused`,
+    /// `gust-frame` and `gust-frame-perpass` probe
+    /// rows) run alone, the form Breeze runs; no hand row, no CPU row, no paired reference. Such a run is never
+    /// publishable.
+    gust_only: bool,
     cold_only: bool,
     cold_repeats: Option<usize>,
     seed: Option<u64>,
@@ -166,6 +204,43 @@ fn check_probes_group(group: Group, with_probe: &[String]) -> Result<(), String>
     Ok(())
 }
 
+/// `--gust-only`: GUST's own rows run alone (no hand row, no CPU row), the form Breeze runs. The run names them with
+/// `--backends` (`gust-gpu` or the group's GUST id, and `gust-gpu+...` probe rows), so no other row can sneak in, and it
+/// is never publishable. The ablation group has no GUST row.
+#[cfg(feature = "gpu")]
+fn check_gust_only(options: &Options, group: Group) -> Result<(), String> {
+    if !options.gust_only {
+        return Ok(());
+    }
+    if group == Group::Ablation {
+        return Err(
+            "--gust-only needs a group with a GUST row; the ablation group has none".into(),
+        );
+    }
+    let Some(wanted) = &options.backends else {
+        return Err("--gust-only needs --backends naming the GUST rows to run".into());
+    };
+    let gust_id = group.gust_backend();
+    if let Some(other) = wanted
+        .iter()
+        .find(|name| name.as_str() != gust_id && !name.starts_with("gust-gpu+"))
+    {
+        return Err(format!(
+            "--gust-only runs GUST rows alone; {other} is not one ({gust_id}, or a gust-gpu+ probe row)"
+        ));
+    }
+    if options
+        .with_probe
+        .iter()
+        .any(|name| gust_gpu::Variant::parse(name).is_none())
+    {
+        return Err(
+            "--gust-only takes no hand probe (--with gust-setup, gust-shader, gust-device)".into(),
+        );
+    }
+    Ok(())
+}
+
 /// Whether this build runs GUST on the SPIR-V route (the `spirv-route` feature; the GPU-less build has no route).
 fn spirv_route() -> bool {
     #[cfg(feature = "gpu")]
@@ -230,10 +305,18 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 options.cap_secs = Some(value("--cap-secs")?.parse().map_err(|e| format!("{e}"))?);
             }
             "--ablation" => options.ablation = Some(value("--ablation")?),
+            "--device-order" => {
+                let text = value("--device-order")?;
+                options.device_order = Some(DeviceOrder::parse(&text).ok_or_else(|| {
+                    format!("unknown --device-order {text} (checked-first or unchecked-first)")
+                })?);
+            }
             "--with" => {
                 for item in value("--with")?.split(',') {
                     match item {
-                        "gust-setup" | "gust-shader" | "gust-device" => {
+                        "gust-setup" | "gust-shader" | "gust-device" | "gust-unchecked"
+                        | "hand-unchecked" | "wgsl-prebuilt-b" | "gust-default"
+                        | "gust-perpass" | "gust-fused" | "gust-frame" | "gust-frame-perpass" => {
                             options.with_probe.push(item.to_owned());
                         }
                         other => {
@@ -241,7 +324,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
                                 "--with unchecked is gone: the unchecked hand rows are the spirv group's own (D193); run them with --group spirv in the spirv-route build".to_owned()
                             } else {
                                 format!(
-                                    "--with takes gust-setup, gust-shader or gust-device, not {other}"
+                                    "--with takes gust-setup, gust-shader, gust-device, gust-unchecked, hand-unchecked, wgsl-prebuilt-b, or the W6-hand GUST rows gust-default, gust-perpass, gust-fused, gust-frame and gust-frame-perpass, not {other}"
                                 )
                             });
                         }
@@ -263,6 +346,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 );
             }
             "--no-sampler" => options.no_sampler = true,
+            "--gust-only" => options.gust_only = true,
             "--cold-only" => options.cold_only = true,
             "--cold-repeats" => {
                 options.cold_repeats = Some(
@@ -344,7 +428,8 @@ fn gpu_backends(
     ctx: &Rc<WgpuContext>,
     ablation: &[Switch],
     all_on: bool,
-    probes: &[(String, Rc<WgpuContext>)],
+    probes: &[(String, Probe)],
+    variants: &[gust_gpu::Variant],
 ) -> Vec<Box<dyn Backend>> {
     let mut backends: Vec<Box<dyn Backend>> = match group {
         Group::Publishable => vec![
@@ -370,14 +455,71 @@ fn gpu_backends(
     }
     // The m10.b1c probes (`--with`): more hand backends in the publishable rotation, `gust-setup` and `gust-device` on a
     // device of their own set up like GUST's, `gust-shader` on the shared hand device. The kill rule
-    // ignores them (it judges GUST against wgsl-prebuilt only).
-    for (name, probe) in probes {
-        backends.push({
-            let gust = name.as_str();
-            Box::new(HandWgsl::gust_probe(Rc::clone(probe), gust))
-        });
+    // ignores them (it judges GUST against wgsl-prebuilt only). The pf.trust probes: `gust-unchecked` is GUST itself on a
+    // second device opened with `DeviceOptions::unchecked_kernels` (its id follows the device, `gust-gpu-unchecked`), and
+    // `hand-unchecked` is the hand text with the checks off (`wgsl-prebuilt-unchecked`), the reproduction control.
+    // `wgsl-prebuilt-b` is the reference again on a device of its own, opened like the hand one.
+    for (index, (name, probe)) in probes.iter().enumerate() {
+        let backend: Box<dyn Backend> = match probe {
+            Probe::Gust(unchecked) => {
+                Box::new(gust_gpu::GustGpu::new(DeviceHandle::clone(unchecked)))
+            }
+            Probe::Hand(hand) if name == "hand-unchecked" => {
+                Box::new(HandWgsl::unchecked(Rc::clone(hand), Mode::Prebuilt))
+            }
+            Probe::Hand(hand) => Box::new(HandWgsl::gust_probe(Rc::clone(hand), name)),
+        };
+        // `gust-unchecked` as the first item of `--with` is also first in the group, before `gust-gpu`: the order in
+        // which a pair's buffers and pipelines are created matters on the Radeon 890M, so a series swaps it.
+        if index == 0 && matches!(probe, Probe::Gust(_)) {
+            backends.insert(0, backend);
+        } else {
+            backends.push(backend);
+        }
+    }
+    // The W6-hand GUST rows (all five `--with` names of `Variant`) on GUST's own device, after the hand probes,
+    // in the order given.
+    for variant in variants {
+        backends.push(Box::new(gust_gpu::GustGpu::with_variant(
+            DeviceHandle::clone(device),
+            *variant,
+        )));
     }
     backends
+}
+
+/// The device a `--with` probe runs on: the shared or a private hand context, or a GUST device of its own.
+#[cfg(feature = "gpu")]
+enum Probe {
+    Hand(Rc<WgpuContext>),
+    Gust(DeviceHandle),
+}
+
+/// The second GUST device of `--with gust-unchecked`, on the adapter and with the limits of the run's first one, opened
+/// with `DeviceOptions::unchecked_kernels` (pf.trust). The SPIR-V route has no wgpu checks to turn off, so the row would
+/// repeat `gust-gpu-spirv` under another name: it is refused there.
+#[cfg(feature = "gpu")]
+fn open_unchecked_gust_device(
+    selection: Option<&adapter::Selection>,
+    adapter_limits: bool,
+) -> BenchResult<DeviceHandle> {
+    if spirv_route() {
+        return Err("--with gust-unchecked needs the WGSL build: the SPIR-V route has no wgpu runtime checks to turn off".into());
+    }
+    let options = match (selection, adapter_limits) {
+        (Some(selected), _) => selected.options(adapter_limits),
+        (None, true) => DeviceOptions::default(),
+        (None, false) => DeviceOptions::default()
+            .with_limits(LimitsPolicy::Default)
+            .with_features(FeaturesPolicy::Default),
+    };
+    // SAFETY: this device exists to time `gust-gpu-unchecked` against `gust-gpu`. The bench kernels read and write inside
+    // their buffers (the host sizes every buffer for its kernel), divide by values the host keeps non-zero, and loop a
+    // host-chosen number of times (the degree for W3, a constant elsewhere). Every sample is compared with the serial
+    // reference, which catches a wrong result but not undefined behaviour (a hang, or a write into another buffer), so
+    // this rests on the kernels above, not on the comparison. The row is for measurement; no published table rests on it.
+    let options = unsafe { options.unchecked_kernels() };
+    Ok(DeviceHandle::new(HeadlessDevice::with_options(options)?))
 }
 
 /// What `rust_gpu_backend` returns: the backend when it can run, and the backends left out with their reasons.
@@ -648,6 +790,14 @@ fn config_json(
         "cold_repeats": config.cold_repeats,
         "workloads": workload_list.iter().map(|w| w.id()).collect::<Vec<_>>(),
         "backends": backends.iter().map(|b| json!({ "id": b.id(), "description": b.description() })).collect::<Vec<_>>(),
+        // The `--with` order is the creation order of the probe rows; `device_order` is the open order of the two GUST
+        // devices (null without `gust-unchecked`).
+        "with": options.with_probe,
+        "device_order": options
+            .with_probe
+            .iter()
+            .any(|p| p == "gust-unchecked")
+            .then(|| options.device_order.unwrap_or_default().name()),
     });
     if let (Some(top), Some(extra)) = (document.as_object_mut(), extra.as_object()) {
         top.extend(extra.clone());
@@ -941,6 +1091,20 @@ fn run(options: &Options) -> BenchResult<bool> {
         .as_deref()
         .map(adapter::select)
         .transpose()?;
+    // `--device-order`: the unchecked GUST device is opened before the checked one when asked, else after it (in the
+    // probe loop below). Only a run that has the unchecked device can name an order.
+    let wants_unchecked = options.with_probe.iter().any(|p| p == "gust-unchecked");
+    if options.device_order.is_some() && !wants_unchecked {
+        return Err("--device-order needs --with gust-unchecked".into());
+    }
+    let device_order = options.device_order.unwrap_or_default();
+    let mut unchecked_device = None;
+    if wants_unchecked && device_order == DeviceOrder::UncheckedFirst {
+        unchecked_device = Some(open_unchecked_gust_device(
+            selection.as_ref(),
+            adapter_limits,
+        )?);
+    }
     let gust_device = DeviceHandle::new(match (&selection, adapter_limits) {
         (Some(selected), _) => HeadlessDevice::with_options(selected.options(adapter_limits))?,
         (None, true) => HeadlessDevice::with_options(DeviceOptions::default())?,
@@ -978,18 +1142,51 @@ fn run(options: &Options) -> BenchResult<bool> {
 
     let config = build_config(options, group);
     check_probes_group(group, &options.with_probe)?;
+    check_gust_only(options, group)?;
     let mut probes = Vec::new();
+    let mut variants = Vec::new();
     for name in &options.with_probe {
-        // `gust-setup` and `gust-device` have a device of their own (set up like GUST's); the others share the hand device.
-        let probe = if name == "gust-setup" || name == "gust-device" {
-            Rc::new(WgpuContext::open_like_gust_on(options.adapter.as_deref())?)
+        // The W6-hand GUST rows run on GUST's own device and open no hand context.
+        if let Some(variant) = gust_gpu::Variant::parse(name) {
+            variants.push(variant);
+            continue;
+        }
+        // `gust-setup` and `gust-device` have a device of their own (set up like GUST's), `gust-unchecked` a GUST device
+        // of its own opened with unchecked kernels, `wgsl-prebuilt-b` one set up like the hand device; the others
+        // share the hand device.
+        let probe = if name == "gust-unchecked" {
+            Probe::Gust(match unchecked_device.take() {
+                Some(opened) => opened,
+                None => open_unchecked_gust_device(selection.as_ref(), adapter_limits)?,
+            })
+        } else if name == "wgsl-prebuilt-b" {
+            Probe::Hand(Rc::new(WgpuContext::open_on(
+                options.adapter.as_deref(),
+                adapter_limits,
+            )?))
+        } else if name == "gust-setup" || name == "gust-device" {
+            Probe::Hand(Rc::new(WgpuContext::open_like_gust_on(
+                options.adapter.as_deref(),
+            )?))
         } else {
-            Rc::clone(&ctx)
+            Probe::Hand(Rc::clone(&ctx))
         };
-        adapter::require_same(&[("GUST device", adapter), (name.as_str(), &probe.info)])?;
+        let info = match &probe {
+            Probe::Hand(hand) => &hand.info,
+            Probe::Gust(unchecked) => unchecked.adapter_info(),
+        };
+        adapter::require_same(&[("GUST device", adapter), (name.as_str(), info)])?;
         probes.push((name.clone(), probe));
     }
-    let mut backends = gpu_backends(group, &gust_device, &ctx, &ablation, all_on, &probes);
+    let mut backends = gpu_backends(
+        group,
+        &gust_device,
+        &ctx,
+        &ablation,
+        all_on,
+        &probes,
+        &variants,
+    );
     let (rust_gpu, mut backends_not_run) = rust_gpu_backend(options, group, adapter)?;
     backends.extend(rust_gpu);
     let (cubecl_rows, cubecl_not_run, cubecl_record) =
@@ -999,7 +1196,9 @@ fn run(options: &Options) -> BenchResult<bool> {
     if group.is_table() {
         backends.extend(cpu_backends(threads));
     }
+    // A `--gust-only` run names GUST rows alone, which the full-set rule of a table group refuses by design.
     if group.is_table()
+        && !options.gust_only
         && let Some(wanted) = &options.backends
     {
         group::require_full_set(group, wanted)?;
@@ -1086,8 +1285,12 @@ fn run(options: &Options) -> BenchResult<bool> {
         kill_rule_of(group, &cells)
     };
     let source_changed = meta::source_change(&git_start, &git_end);
-    let (publishable, publishable_reasons) =
+    let (mut publishable, mut publishable_reasons) =
         judge::judge_run(&blockers, &cells, &failures, source_changed.as_deref());
+    if options.gust_only {
+        publishable = false;
+        publishable_reasons.push("--gust-only: GUST rows alone, no paired reference".to_owned());
+    }
     let document = RunRecord {
         label: options.label.clone().unwrap_or_else(|| "run".to_owned()),
         run_seed: config.run_seed,
@@ -1101,6 +1304,7 @@ fn run(options: &Options) -> BenchResult<bool> {
             &workload_list,
             &backends,
             json!({
+                "gust_only": options.gust_only,
                 "hand_wgsl_adapter": ctx.info.name,
                 // A backend of this build that was left out, with the reason (the rust-gpu comparator on an adapter
                 // without passthrough shaders): "not run", never a fallback.
@@ -1153,6 +1357,9 @@ fn run(options: &Options) -> BenchResult<bool> {
     let (group, _) = resolve_group(options.group, options.ablation.as_deref(), spirv_route())?;
     if options.adapter.is_some() {
         return Err("--adapter needs the default build: this build has no GPU runtime".into());
+    }
+    if options.gust_only {
+        return Err("--gust-only needs the default build: this build has no GPU runtime".into());
     }
     if group != Group::Publishable {
         return Err(
@@ -1535,6 +1742,20 @@ mod tests {
     }
 
     #[test]
+    fn the_device_order_parses_and_defaults_to_checked_first() {
+        let args = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(parse(&[]).unwrap().device_order, None);
+        assert_eq!(DeviceOrder::default(), DeviceOrder::CheckedFirst);
+        let order = |text: &str| parse(&args(&["--device-order", text])).map(|o| o.device_order);
+        assert_eq!(
+            order("unchecked-first"),
+            Ok(Some(DeviceOrder::UncheckedFirst))
+        );
+        assert_eq!(order("checked-first"), Ok(Some(DeviceOrder::CheckedFirst)));
+        assert!(order("sideways").is_err());
+    }
+
+    #[test]
     fn the_spirv_group_parses_and_the_unchecked_probe_is_gone() {
         let args = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         assert_eq!(
@@ -1550,6 +1771,61 @@ mod tests {
         );
         assert!(parse(&args(&["--with", "gust-shader"])).is_ok());
         assert!(parse(&args(&["--with", "nope"])).is_err());
+        // The W6-hand GUST rows keep the order given, which fixes their creation order.
+        let with = parse(&args(&["--with", "gust-perpass,gust-fused,gust-default"])).unwrap();
+        assert_eq!(
+            with.with_probe,
+            ["gust-perpass", "gust-fused", "gust-default"]
+        );
+        // The spike's names are gone.
+        assert!(parse(&args(&["--with", "gust-onepass"])).is_err());
+        assert!(parse(&args(&["--with", "gust-unfused"])).is_err());
+        // The pf.trust probes keep the order they are given in: it is the creation order of the rows.
+        let probes = parse(&args(&["--with", "hand-unchecked,gust-unchecked"])).unwrap();
+        assert_eq!(probes.with_probe, ["hand-unchecked", "gust-unchecked"]);
+    }
+
+    /// `--gust-only` parses, is refused without `--backends` and with any row that is not GUST's, and lifts nothing else.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn gust_only_names_gust_rows_alone() {
+        let args = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert!(!parse(&[]).unwrap().gust_only);
+        let only = parse(&args(&["--gust-only", "--backends", "gust-gpu"])).unwrap();
+        assert!(only.gust_only);
+        assert!(check_gust_only(&only, Group::Publishable).is_ok());
+        let none = parse(&args(&["--gust-only"])).unwrap();
+        assert!(check_gust_only(&none, Group::Publishable).is_err());
+        let mixed = parse(&args(&[
+            "--gust-only",
+            "--backends",
+            "gust-gpu,wgsl-prebuilt",
+        ]))
+        .unwrap();
+        assert!(check_gust_only(&mixed, Group::Publishable).is_err());
+        let rows = parse(&args(&[
+            "--gust-only",
+            "--backends",
+            "gust-gpu,gust-gpu+default,gust-gpu+perpass,gust-gpu+fused,gust-gpu+frame,gust-gpu+frame-perpass",
+            "--with",
+            "gust-default,gust-perpass,gust-fused,gust-frame,gust-frame-perpass",
+        ]))
+        .unwrap();
+        assert!(check_gust_only(&rows, Group::Publishable).is_ok());
+        let hand = parse(&args(&[
+            "--gust-only",
+            "--backends",
+            "gust-gpu",
+            "--with",
+            "gust-shader",
+        ]))
+        .unwrap();
+        assert!(check_gust_only(&hand, Group::Publishable).is_err());
+        assert!(check_gust_only(&only, Group::Ablation).is_err());
+        // Without the flag nothing is checked, and the full-set rule of a table group still applies.
+        let plain = parse(&args(&["--backends", "gust-gpu"])).unwrap();
+        assert!(check_gust_only(&plain, Group::Publishable).is_ok());
+        assert!(group::require_full_set(Group::Publishable, &["gust-gpu".to_owned()]).is_err());
     }
 
     #[test]

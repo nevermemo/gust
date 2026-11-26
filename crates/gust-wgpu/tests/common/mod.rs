@@ -12,11 +12,39 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gust_wgpu::{DeviceHandle, HeadlessDevice};
+use gust_wgpu::{
+    DeviceHandle, DeviceOptions, FeaturesPolicy, HeadlessDevice, LimitsPolicy, ShaderChecks,
+};
 
-/// A headless device on the default Vulkan adapter. Panics when there is none: a GPU test must not skip silently.
+/// The variable that opens every device of a test binary with unchecked kernels (m14.pftrust1): `unchecked`. Any other
+/// value, or none, leaves the device checked as before. It lets a test binary whose kernels all stay in range run
+/// under the option without a copy of each test.
+pub const SHADER_CHECKS_VAR: &str = "GUST_TEST_SHADER_CHECKS";
+
+/// A headless device on the default Vulkan adapter. Panics when there is none: a GPU test must not skip silently. With
+/// `GUST_TEST_SHADER_CHECKS=unchecked` in the environment it is opened with unchecked kernels, on the options
+/// `HeadlessDevice::new` stands for (wgpu's default limits, no optional feature).
 pub fn device() -> HeadlessDevice {
+    if std::env::var(SHADER_CHECKS_VAR).as_deref() == Ok("unchecked") {
+        return unchecked_device();
+    }
     HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip")
+}
+
+/// A device like the one [`HeadlessDevice::new`] opens, with unchecked kernels.
+pub fn unchecked_device() -> HeadlessDevice {
+    // SAFETY: only the tests that call `device()` under the variable, and `tests/unchecked_kernels.rs`, open this
+    // device. Their kernels index inside their buffers, have bounded loops and divide by non-zero values.
+    let options = unsafe {
+        DeviceOptions::default()
+            .with_backends(wgpu::Backends::VULKAN)
+            .with_limits(LimitsPolicy::Default)
+            .with_features(FeaturesPolicy::Default)
+            .unchecked_kernels()
+    };
+    assert_eq!(options.shader_checks(), ShaderChecks::Unchecked);
+    HeadlessDevice::with_options(options)
+        .expect("Vulkan adapter required; this test must not silently skip")
 }
 
 /// [`device`] behind the shared handle that `GpuVec`, the map calls and the concurrency tests take.

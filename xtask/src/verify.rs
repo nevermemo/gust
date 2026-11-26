@@ -1535,12 +1535,34 @@ pub(crate) struct GpuSuitePin {
 /// (`DeviceOptions::with_storage_buffers`) and the new test file `tests/storage_buffers.rs` (nine GPU tests, one
 /// `test result:` line). Updated by count; checked by a full Gpu suite run on the Radeon 890M (lane).
 ///
-/// Slice m14.lim-b: 673 over 69 became 674 over 69. The batch refusal adds one library unit test (the storage buffer
-/// refusal names the count, the limit and both cures), on an existing line. Updated by count; checked by a full Gpu
-/// suite run on the Radeon 890M (lane).
+/// Slice m14.pftrust1: 673 over 69 became 680 over 70. The unchecked-kernels option adds three unit tests to the library's
+/// `compile::modules` module (the setting selects wgpu's checks all on or all off; only the `unsafe` constructor turns
+/// them off; the module call passes the device's setting to wgpu, which needs an adapter) and the new test file `tests/unchecked_kernels.rs` (four GPU tests, one `test result:` line). Counted from
+/// the test lists on the merged tree (rebased on m14.lim-a); a full Gpu suite run on both adapters is owed at
+/// the merge.
+///
+/// Correction after the merges of m14.s2i and m14.pftrust1: 680 over 70 became 681 over 70. Slice m14.s2i added one
+/// library unit test to `batch::counted` (`an_adapter_without_indirect_execution_takes_the_bounded_launch`) and left
+/// the count unchanged, so the count above started one short. Checked by a full Gpu suite run on the Radeon 890M (a
+/// merge gate on dev), which printed 681 over 70.
+///
+/// Slice m14.lazyts, merged on 681 over 70: 681 over 70 became 684 over 71. The lazy timestamp slice adds the new test
+/// file `tests/lazy_timestamps.rs` (three GPU tests, one `test result:` line). Updated by count; the file passed on
+/// both adapters in the lane, and the full Gpu suite is owed at the merge gate.
+///
+/// Slice m14.onepass, merged on 684 over 71: 684 over 71 became 696 over 72. The one-pass slice adds the new test file
+/// `tests/one_pass.rs` (twelve GPU tests, one `test result:` line) and changes no other test count (`tests/pixel.rs`
+/// gains an assertion in an existing test). Updated by count; the full Gpu suite run on the Radeon 890M at the merge
+/// confirms it.
+///
+/// Slice m14.lim-b, merged on 696 over 72: 696 over 72 became 698 over 72. The batch refusal adds two library unit
+/// tests to `check::limits` (`the_storage_buffer_refusal_names_the_count_the_limit_and_both_cures` and
+/// `the_device_open_refusal_has_its_own_wording_without_the_launch_cures`), on an existing line; its other tests are
+/// `#[ignore]`d example tests and a `gust-algo` integration test, which this call does not run. Updated by count; the
+/// full Gpu suite run on the Radeon 890M after the merge confirms it.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 674,
-    result_lines: 69,
+    passed: 698,
+    result_lines: 72,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

@@ -6,8 +6,8 @@ program can keep several launches in flight or poll one; see `gust::Job` and `gu
 ## Several calls in one submission
 
 A loop of dependent steps should not pay a submit-and-wait per step. `dispatch_batch` takes a slice of
-`BufferDispatch` entries and runs them in one command buffer, one pass each, and every pass sees the writes of the one
-before it. A typed `Call` converts into a `BufferDispatch`, so the call is built once and borrowed by every entry.
+`BufferDispatch` entries and runs them in one command buffer, in one compute pass when every entry is a `grid` call (a
+batch with a `pixel` call keeps a pass per entry), and every entry sees the writes of the one before it. A typed `Call` converts into a `BufferDispatch`, so the call is built once and borrowed by every entry.
 
 G4, `particles`, does that. Its kernel updates a struct with array fields (`Particle` has `pos: [f32; 2]` and
 `vel: [f32; 2]`; the layout is Rust's own `repr(C)`, so the host fills the buffer with the same type), and `main` runs

@@ -493,6 +493,8 @@ const BENCH_TESTS_ARGS: &[&str] = &[
     "--skip",
     "gust_gpu::tests::every_workload_passes_its_bound_on_gust_and_an_undispatched_output_fails",
     "--skip",
+    "gust_gpu::tests::pfonepass_rows_pass_the_w6_bound_and_record_the_passes_they_name",
+    "--skip",
     "gust_gpu::tests::the_bound_falls_back_to_the_looser_of_v0_and_v1_where_v1_is_not_admitted",
     "--skip",
     "wgsl_wgpu::tests::a_w7_batch_reads_one_timestamp_pair_per_repeat",

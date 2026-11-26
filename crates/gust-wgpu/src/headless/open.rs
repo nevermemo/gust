@@ -2,10 +2,10 @@ use crate::cache::PipelineCache;
 #[cfg(doc)]
 use crate::default_device;
 use crate::{
-    ADAPTER_ATTEMPTS, ADAPTER_BACKOFF, DeviceOptions, Error, HeadlessDevice, NEXT_DEVICE_ID,
-    TimestampProfiler, pause_between_attempts, retry_no_adapter,
+    ADAPTER_ATTEMPTS, ADAPTER_BACKOFF, DeviceOptions, Error, HeadlessDevice, LazyTimestampProfiler,
+    NEXT_DEVICE_ID, pause_between_attempts, retry_no_adapter,
 };
-use crate::{AdapterChoice, BufferPool, FeaturesPolicy, LimitsPolicy, device};
+use crate::{AdapterChoice, BufferPool, FeaturesPolicy, LimitsPolicy, ShaderChecks, device};
 use gust::capability::Capability;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -50,15 +50,16 @@ impl HeadlessDevice {
     /// Like `new`, it requests the capabilities of this build ([`gust::capability::enabled`]). In a browser a
     /// non-empty set is refused with `Error::MissingCapability`: the pinned wgpu cannot request subgroups there.
     pub async fn new_async(backends: wgpu::Backends) -> Result<Self, Error> {
-        Self::new_async_with(DeviceOptions {
-            backends,
-            adapter: AdapterChoice::HighPerformance,
-            limits: LimitsPolicy::Default,
-            features: FeaturesPolicy::Default,
-            capabilities: gust::capability::enabled(),
-            capture: false,
-            storage_buffers: None,
-        })
+        // The shader checks are the options' default: on.
+        Self::new_async_with(
+            DeviceOptions::default()
+                .with_backends(backends)
+                .with_adapter(AdapterChoice::HighPerformance)
+                .with_limits(LimitsPolicy::Default)
+                .with_features(FeaturesPolicy::Default)
+                .with_capabilities(gust::capability::enabled())
+                .with_capture(false),
+        )
         .await
     }
 
@@ -99,6 +100,7 @@ impl HeadlessDevice {
             .map_err(|error| Error::RequestDevice(error.to_string()))?;
         let mut opened = Self::finish(&adapter, device, queue, options.capabilities);
         opened.capture = options.capture;
+        opened.shader_checks = options.shader_checks();
         Ok(opened)
     }
 
@@ -112,11 +114,8 @@ impl HeadlessDevice {
     ) -> Self {
         let adapter_info = adapter.get_info();
         let subgroup_sizes = device::adapter_subgroup_sizes(adapter.features(), &adapter_info);
-        // From the device's own features, which are what it was granted, not from what the adapter offers.
-        let timestamp_profiler = device
-            .features()
-            .contains(wgpu::Features::TIMESTAMP_QUERY)
-            .then(|| Mutex::new(TimestampProfiler::new(&device)));
+        // The timestamp objects are made at the first timed call, not here.
+        let timestamp_profiler = LazyTimestampProfiler::new(&device);
         let limits = device.limits();
         let fragment_storage = adapter
             .get_downlevel_capabilities()
@@ -135,6 +134,9 @@ impl HeadlessDevice {
             capabilities,
             subgroup_sizes,
             capture: false,
+            shader_checks: ShaderChecks::Checked,
+            #[cfg(test)]
+            last_module_checks: Mutex::new(None),
             pool: BufferPool::new(),
             submissions: AtomicU64::new(0),
             #[cfg(all(feature = "spirv-route", not(target_arch = "wasm32")))]

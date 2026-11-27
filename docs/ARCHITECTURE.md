@@ -756,9 +756,10 @@ adds a note naming an outdated helper when the stage argument fails. The private
 (reached through `cached_kernel`) calls both on every pipeline-cache miss and refuses
 to build the pipeline on any error; the WGSL it feeds to wgpu is the helper's
 artifact, so the executed shader and the reflected layout come from one compilation.
-The cache key is descriptor identity (`&'static` source and parameter slices plus
-entry point), so a descriptor whose contract differs from a cached one produces a
-different key, misses, and is checked before it can run (see
+The cache key is an address alias over a content key (entry point, source, parameters,
+shape, workgroup size, `requires` and artifact, compared in full), so a descriptor whose
+contract differs from a cached one produces a different key, misses, and is checked
+before it can run, and two copies of one descriptor are one entry (see
 `crates/gust-wgpu/tests/reflection.rs`). The helper's SPIR-V is byte-identical
 to `slang::compile_spirv`; its WGSL differs from `slang::compile_wgsl` only in line
 endings.

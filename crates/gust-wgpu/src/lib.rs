@@ -129,6 +129,7 @@ pub use buffers::*;
 pub use cache::PipelineCacheStats;
 pub(crate) use check::*;
 pub(crate) use compile::*;
+pub use compile::{PrecompileOutcome, Precompiled};
 use completion::Completion;
 #[cfg(not(target_arch = "wasm32"))]
 use completion::blocking::block_on_mapping;

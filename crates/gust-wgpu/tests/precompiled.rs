@@ -229,7 +229,7 @@ fn the_gpu_runs_the_bytes_of_the_artifact_not_a_recompile_of_the_slang() {
 }
 
 #[test]
-fn descriptors_with_the_same_fields_and_different_artifacts_get_their_own_verified_pipelines() {
+fn descriptors_with_the_same_content_at_other_addresses_share_one_verified_pipeline() {
     let device = device();
     let expected = inputs().expected;
     let same_bytes_elsewhere = with_artifact(ARTIFACT.with_bytes(leaked_bytes(WGSL.to_vec())));
@@ -250,13 +250,15 @@ fn descriptors_with_the_same_fields_and_different_artifacts_get_their_own_verifi
         same_reflection_elsewhere.artifacts[0].reflection.as_ptr(),
         PRE.artifacts[0].reflection.as_ptr()
     );
-    // Three artifacts, three verifications, three pipelines, no hit.
-    assert_eq!(stats(&device), (3, 3, 0));
-    // Each one hits its own entry afterwards.
+    // One kernel by content (m14.bzpre): the first run compiled it from the verified artifact, the two copies at other
+    // addresses found it by content (the artifact is in the content key, in full, so a different artifact never does,
+    // see the next test).
+    assert_eq!(stats(&device), (1, 1, 2));
+    // Each address is an alias of it afterwards.
     for kernel in [&PRE, &same_bytes_elsewhere, &same_reflection_elsewhere] {
         assert_eq!(run(&device, kernel).unwrap(), expected);
     }
-    assert_eq!(stats(&device), (3, 3, 3));
+    assert_eq!(stats(&device), (1, 1, 5));
 }
 
 #[test]

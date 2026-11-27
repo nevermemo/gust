@@ -1,11 +1,19 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 
-use gust::{Artifact, Format, KernelDescriptor, Shape, capability::Capability};
+use gust::{
+    Artifact, Format, KernelDescriptor, ParameterDescriptor, Shape, capability::Capability,
+};
 
 /// Observable state of one device's compiled-kernel cache.
 ///
 /// [`HeadlessDevice::pipeline_cache_stats`](crate::HeadlessDevice::pipeline_cache_stats) returns one. The first
-/// dispatch of a kernel compiles it (a miss); the next dispatch of the same kernel finds it (a hit):
+/// dispatch of a kernel compiles it (a miss), unless
+/// [`HeadlessDevice::precompile`](crate::HeadlessDevice::precompile) created it first (that call is the miss, and the
+/// dispatch a hit, wherever the descriptor is stored); the next dispatch of the same kernel finds it (a hit):
 ///
 /// ```
 /// use gust::gpu_module;
@@ -76,10 +84,11 @@ pub(crate) fn preferred_artifact(kernel: &KernelDescriptor) -> Option<&'static A
         .find(|artifact| artifact.format == Format::Wgsl)
 }
 
-/// What identifies one compiled kernel in the cache of a device (R4.5). The fields are addresses and lengths of the
-/// descriptor's static slices, not their contents: two descriptors that share every slice share a pipeline, and
-/// descriptors that differ in any field below never share one. The artifact and its reflection JSON are in the key
-/// because a cache hit skips `verify_artifact`: an artifact that was never verified must not be able to borrow the
+/// What a lookup finds first in the cache of a device (R4.5): the address of the descriptor's static slices, the fast
+/// path. Two descriptors that share every slice share a pipeline here, and descriptors that differ in any field below
+/// never do. A descriptor at an address not seen before falls through to [`KernelContentKey`], which is what
+/// makes two copies of one descriptor one entry. The artifact and its reflection JSON are in the key because a cache
+/// hit skips `verify_artifact`: an artifact whose content was never verified must not be able to borrow the
 /// pipeline of one that was. The one field that is by content is `requires`: the set of capabilities (D142), small, and
 /// compared and hashed in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -127,6 +136,91 @@ impl KernelCacheKey {
     }
 }
 
+/// What a compiled kernel is, by content: everything that changes its shader module or its pipeline (the ruling of
+/// m14.bzpre). The address key above is the fast path and an alias of this one: a descriptor reached through
+/// another address (a `const` is copied to one address per use, so `Kernel::DESCRIPTOR` and the typed call's own
+/// reference do not share one) finds the pipeline here once, and the alias then serves its later lookups without
+/// hashing. Equality compares every field in full, after the stored hash: the hash is a filter over the fields that
+/// tell descriptors apart (`ParameterDescriptor` is not `Hash`, so a parameter counts by name and binding), never the
+/// decision. The hash is computed once, in [`KernelContentKey::new`], which runs outside the cache's lock, so no
+/// content is hashed while the lock is held. The labels of a descriptor (`module`, `name`, `variant`) are not part of
+/// it: a descriptor that differs only in them reuses the first one's pipeline, with the first one's wgpu labels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct KernelContentKey {
+    /// First, so that the derived `Eq` compares it before any content.
+    hash: u64,
+    entry_point: &'static str,
+    slang_source: &'static str,
+    parameters: &'static [ParameterDescriptor],
+    shape: Shape,
+    workgroup_size: [u32; 3],
+    requires: &'static [Capability],
+    artifact: Option<ArtifactContent>,
+}
+
+/// The preferred artifact of a descriptor, by content (`gust::Artifact` is not `Hash`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ArtifactContent {
+    format: ArtifactFormat,
+    key: &'static str,
+    bytes: &'static [u8],
+    reflection: &'static str,
+}
+
+impl Hash for KernelContentKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u64(self.hash);
+    }
+}
+
+impl KernelContentKey {
+    pub(crate) fn new(kernel: &KernelDescriptor) -> Self {
+        let artifact = preferred_artifact(kernel).map(|artifact| ArtifactContent {
+            format: artifact.format.into(),
+            key: artifact.key,
+            bytes: artifact.bytes,
+            reflection: artifact.reflection,
+        });
+        let mut key = Self {
+            hash: 0,
+            entry_point: kernel.entry_point,
+            slang_source: kernel.slang_source,
+            parameters: kernel.parameters,
+            shape: kernel.shape,
+            workgroup_size: kernel.workgroup_size,
+            requires: kernel.requires,
+            artifact,
+        };
+        key.hash = key.content_hash();
+        key
+    }
+
+    /// The hash over the fields that tell descriptors apart. A parameter counts by name and binding only.
+    fn content_hash(&self) -> u64 {
+        let mut state = std::collections::hash_map::DefaultHasher::new();
+        self.entry_point.hash(&mut state);
+        self.slang_source.hash(&mut state);
+        self.parameters.len().hash(&mut state);
+        for parameter in self.parameters {
+            parameter.name.hash(&mut state);
+            parameter
+                .binding
+                .map(|binding| (binding.group, binding.binding))
+                .hash(&mut state);
+        }
+        self.shape.hash(&mut state);
+        self.workgroup_size.hash(&mut state);
+        self.requires.hash(&mut state);
+        if let Some(artifact) = &self.artifact {
+            artifact.format.hash(&mut state);
+            artifact.key.hash(&mut state);
+            artifact.bytes.hash(&mut state);
+            artifact.reflection.hash(&mut state);
+        }
+        state.finish()
+    }
+}
+
 /// The pipeline of a cached kernel: a compute pipeline for a `grid` kernel, a full-screen render pipeline for a
 /// `pixel` one (slice mx.p1b). The cache key holds the shape, so one key has one kind.
 pub(crate) enum Pipeline {
@@ -154,7 +248,11 @@ pub(crate) struct CachedKernel {
 
 #[derive(Default)]
 pub(crate) struct PipelineCache {
+    /// The addresses seen so far, each an alias of an entry of `contents`: the lookup of the dispatch path, which
+    /// hashes nothing but the key's own fields. Aliases are not entries.
     pub(crate) kernels: HashMap<KernelCacheKey, Arc<CachedKernel>>,
+    /// The compiled kernels by content: the entries `PipelineCacheStats::entries` counts.
+    pub(crate) contents: HashMap<KernelContentKey, Arc<CachedKernel>>,
     /// The vertex module of every `pixel` pipeline of the device (`shapes/fullscreen.wgsl`), created on first use.
     pub(crate) fullscreen: Option<wgpu::ShaderModule>,
     pub(crate) hits: u64,
@@ -164,6 +262,7 @@ pub(crate) struct PipelineCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gust::{Access, GpuPod, ParameterKind, ResourceBinding, ResourceLayout};
 
     const BYTES: &[u8] = b"@compute fn main() {}";
     const REFLECTION: &str = "{\"schemaVersion\":1}";
@@ -172,12 +271,24 @@ mod tests {
 
     const ARTIFACTS: &[Artifact] = &[BASE];
 
+    const PARAMS: &[ParameterDescriptor] = &[ParameterDescriptor {
+        name: "out",
+        rust_type: "StorageMut<f32>",
+        kind: ParameterKind::Storage,
+        access: Access::ReadWrite,
+        resource_layout: Some(ResourceLayout::storage_v1(<f32 as GpuPod>::LAYOUT)),
+        binding: Some(ResourceBinding {
+            group: 0,
+            binding: 0,
+        }),
+    }];
+
     const KERNEL: KernelDescriptor = KernelDescriptor::new(
         "cache_test",
         "kernel",
         "cache_test_kernel",
         [64, 1, 1],
-        &[],
+        PARAMS,
         "void cache_test_kernel() {}",
     )
     .with_artifacts(ARTIFACTS);
@@ -274,5 +385,102 @@ mod tests {
         assert_eq!(key(&with(spirv)), key(&bare));
         assert!(preferred_artifact(&with(spirv)).is_none());
         assert_eq!(preferred_artifact(&KERNEL), Some(&BASE));
+    }
+
+    fn content(kernel: &KernelDescriptor) -> KernelContentKey {
+        KernelContentKey::new(kernel)
+    }
+
+    fn hash_of(key: &KernelContentKey) -> u64 {
+        let mut state = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut state);
+        state.finish()
+    }
+
+    /// `KERNEL` with `PARAMS` replaced by the same parameter with `access` changed.
+    fn with_access(access: Access) -> KernelDescriptor {
+        let parameters: &'static [ParameterDescriptor] =
+            Box::leak(Box::new([ParameterDescriptor {
+                access,
+                ..PARAMS[0]
+            }]));
+        KERNEL.with_parameters(parameters)
+    }
+
+    fn with_source(source: &'static str) -> KernelDescriptor {
+        KernelDescriptor::new(
+            "cache_test",
+            "kernel",
+            "cache_test_kernel",
+            [64, 1, 1],
+            PARAMS,
+            source,
+        )
+        .with_artifacts(ARTIFACTS)
+    }
+
+    #[test]
+    fn two_copies_of_one_descriptor_have_one_content_key_and_two_address_keys() {
+        // Fresh copies of the source, the parameter list and the artifact: other addresses, the same content.
+        let source: &'static str = Box::leak(String::from("void cache_test_kernel() {}").into());
+        let parameters: &'static [ParameterDescriptor] =
+            Box::leak(PARAMS.to_vec().into_boxed_slice());
+        let artifact = Artifact::new(
+            Format::Wgsl,
+            "0123456789abcdef",
+            leaked_copy(BYTES),
+            Box::leak(String::from(REFLECTION).into_boxed_str()),
+        );
+        let copy = with_source(source)
+            .with_parameters(parameters)
+            .with_artifacts(Box::leak(Box::new([artifact])));
+        assert_ne!(key(&KERNEL), key(&copy));
+        assert_eq!(content(&KERNEL), content(&copy));
+        assert_eq!(hash_of(&content(&KERNEL)), hash_of(&content(&copy)));
+    }
+
+    #[test]
+    fn the_content_key_tells_apart_whatever_changes_the_pipeline() {
+        let base = content(&KERNEL);
+        let differs = |kernel: KernelDescriptor| assert_ne!(base, content(&kernel));
+        differs(KERNEL.with_entry_point("other"));
+        differs(KERNEL.with_requires(&[Capability::Subgroups]));
+        differs(KERNEL.with_artifacts(&[]));
+        differs(with(BASE.with_key("fedcba9876543210")));
+        differs(with(BASE.with_bytes(b"@compute fn other() {}")));
+        differs(with(BASE.with_reflection("{\"schemaVersion\":2}")));
+        differs(with_source("void cache_test_kernel() { }"));
+        differs(KERNEL.with_workgroup_size([32, 1, 1]));
+        differs(KERNEL.with_shape(Shape::Pixel));
+        differs(KERNEL.with_parameters(&[]));
+        differs(with_access(Access::ReadOnly));
+        let moved = ParameterDescriptor {
+            binding: Some(ResourceBinding {
+                group: 0,
+                binding: 1,
+            }),
+            ..PARAMS[0]
+        };
+        differs(KERNEL.with_parameters(Box::leak(Box::new([moved]))));
+        // Names that only label the kernel do not change the pipeline.
+        assert_eq!(base, content(&KERNEL.with_name("renamed")));
+    }
+
+    #[test]
+    fn a_hash_match_is_decided_by_content_not_by_the_hash() {
+        // `access` is not in the hash (a parameter counts by name and binding), so these two collide, and only the
+        // full comparison tells them apart: the layout entry they make differs in `read_only`.
+        let read_write = content(&with_access(Access::ReadWrite));
+        let read_only = content(&with_access(Access::ReadOnly));
+        assert_eq!(read_write.hash, read_only.hash);
+        assert_eq!(hash_of(&read_write), hash_of(&read_only));
+        assert_ne!(read_write, read_only);
+        // In a map the two stay two entries, and each finds its own.
+        let mut map = HashMap::new();
+        map.insert(read_write, 1);
+        map.insert(read_only, 2);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[&read_write], 1);
+        assert_eq!(map[&read_only], 2);
     }
 }

@@ -1,7 +1,7 @@
-use crate::cache::{CachedKernel, KernelCacheKey, Pipeline};
+use crate::cache::{CachedKernel, KernelCacheKey, KernelContentKey, Pipeline};
 #[cfg(not(feature = "slang-runtime"))]
 use crate::no_artifact;
-use crate::{Error, HeadlessDevice, ShaderSource, render, select_shader_source};
+use crate::{Error, HeadlessDevice, PrecompileOutcome, ShaderSource, render, select_shader_source};
 use gust::{Access, KernelDescriptor, ParameterDescriptor, ParameterKind, Shape};
 use std::sync::Arc;
 
@@ -11,24 +11,49 @@ impl HeadlessDevice {
         kernel: &KernelDescriptor,
         resources: &[&ParameterDescriptor],
     ) -> Result<Arc<CachedKernel>, Error> {
+        self.cached_kernel_outcome(kernel, resources)
+            .map(|(cached, _)| cached)
+    }
+
+    /// [`Self::cached_kernel`], and which branch it took: what the cache counted for this lookup. The address of the
+    /// descriptor's data is looked up first and hashes nothing; an address not seen before is looked up by content
+    /// once, and aliased to the entry it finds. A compile that lost a race to another thread is a hit, as the counters
+    /// say.
+    pub(crate) fn cached_kernel_outcome(
+        &self,
+        kernel: &KernelDescriptor,
+        resources: &[&ParameterDescriptor],
+    ) -> Result<(Arc<CachedKernel>, PrecompileOutcome), Error> {
         let key = KernelCacheKey::new(kernel);
         {
             let mut cache = self.lock_pipeline_cache();
             if let Some(cached) = cache.kernels.get(&key).cloned() {
                 cache.hits += 1;
-                return Ok(cached);
+                return Ok((cached, PrecompileOutcome::Hit));
+            }
+        }
+
+        let content = KernelContentKey::new(kernel);
+        {
+            let mut cache = self.lock_pipeline_cache();
+            if let Some(cached) = cache.contents.get(&content).cloned() {
+                cache.hits += 1;
+                cache.kernels.insert(key, Arc::clone(&cached));
+                return Ok((cached, PrecompileOutcome::Hit));
             }
         }
 
         let compiled = Arc::new(self.compile_kernel(kernel, resources)?);
         let mut cache = self.lock_pipeline_cache();
-        if let Some(cached) = cache.kernels.get(&key).cloned() {
+        if let Some(cached) = cache.contents.get(&content).cloned() {
             cache.hits += 1;
-            return Ok(cached);
+            cache.kernels.insert(key, Arc::clone(&cached));
+            return Ok((cached, PrecompileOutcome::Hit));
         }
         cache.misses += 1;
+        cache.contents.insert(content, Arc::clone(&compiled));
         cache.kernels.insert(key, Arc::clone(&compiled));
-        Ok(compiled)
+        Ok((compiled, PrecompileOutcome::Compiled))
     }
 
     /// Compile and reflect `kernel` through the native helper, then cross-check it against the descriptor.

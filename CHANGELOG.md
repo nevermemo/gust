@@ -7,6 +7,16 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- An indirect counted stage joins the frame's compute pass (m14.s2imerge): its args dispatch and its indirect dispatch
+  are recorded, in stage order, into the pass the plain stages share, so only a `pixel` call ends a run (this replaces
+  "an indirect counted stage keeps its own passes" in the two entries below). A count another stage wrote earlier in
+  the frame reaches the args dispatch and the indirect launch in order. At `FrameTiming::Passes` on a device with
+  `TIMESTAMP_QUERY_INSIDE_PASSES` the stage is stamped inside the shared pass, one entry from before its args dispatch
+  to after its indirect dispatch (wgpu's own validation dispatch for the indirect launch falls inside that entry);
+  without the feature it is one pass of its own holding both dispatches. The hidden `force_pass_per_dispatch` keeps the
+  old form, two passes a stage. The bounded launch, the browser and the CPU twin are unchanged. The test support
+  `HeadlessDevice::counted_probe_passes` is now `counted_probe_launches` (it counts indirect launches). Checked on the
+  Radeon 890M and the RTX 5090.
 - Whole struct rows through `compact` in a batch (m14.s2s2): there is no op over rows. `gust::compact` stays an op over
   `u32` flags (built in a stage from a field); the rows are gathered by a counted stage through the indices,
   `gpu_task!(count(n); CAP, |i| -> Row { rows[idx[i]] })`, or through any other index handle, one a stage built included.

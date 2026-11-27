@@ -3,34 +3,41 @@
 //!
 //! Indirect launch (native): the stage is two prepared dispatches, the one-invocation args kernel that writes the grid
 //! of `min(n, capacity)` rows into a three-word buffer, and the counted kernel, dispatched from that buffer with
-//! `dispatch_workgroups_indirect` in a pass of its own. Both go into the frame's one encoder, so the frame is still one
-//! queue submission, and queue order keeps each frame's args kernel in front of its counted stage when frames are in
-//! flight (the args buffer is the stage's, one per stage; a resize that remakes the stage makes a new one). Bounded launch: the counted kernel alone, over
-//! the worst-case grid of the capacity (what `wasm32` runs until the browser's indirect path arrives).
+//! `dispatch_workgroups_indirect`. A frame records both, in stage order, into the compute pass its plain stages share
+//! (slice m14.s2imerge): only a `pixel` stage ends that pass. A dispatch of a pass sees the writes of the dispatches
+//! before it, the arguments and a count another stage wrote earlier in the frame included, and the indirect buffer
+//! joins the usage of the dispatch that launches from it. Under `force_pass_per_dispatch` the stage records two passes,
+//! one per dispatch. Both go into the frame's one encoder, so the frame is still one queue submission, and queue order
+//! keeps each frame's args kernel in front of its counted stage when frames are in flight (the args buffer is the
+//! stage's, one per stage; a resize that remakes the stage makes a new one). Bounded launch: the counted kernel alone,
+//! over the worst-case grid of the capacity (what `wasm32` runs until the browser's indirect path arrives).
 
 use std::sync::Arc;
 
 use gust::batch::{CountedDevice, CountedLaunch, GROUP_LIMIT, grid_of};
 use gust::{Call, Extent, Kernel, Run};
 
-use crate::{BufferDispatch, Error, GpuBuffer, HeadlessDevice, PassTimestamps, PreparedDispatch};
+use crate::{
+    BufferDispatch, Error, GpuBuffer, HeadlessDevice, PassTimestamps, PreparedDispatch,
+    begin_compute, pass_per_dispatch_forced,
+};
 
 use super::GpuStage;
 use crate::cache::Pipeline;
 
-/// The label of the pass of an indirectly launched counted stage.
+/// The label of the pass of a counted stage that has a pass of its own (a frame timed without stamps inside passes).
 const COUNTED_PASS_LABEL: &str = "GUST counted batch pass";
-/// The label of the pass of the args kernel.
+/// The label of the pass of the args kernel under `force_pass_per_dispatch`.
 const ARGS_PASS_LABEL: &str = "GUST counted batch args pass";
 
-/// What a test may see of the counted stages the device sealed and recorded on this thread (D278, check 3): the args
-/// buffers and the number of indirect passes recorded. Test support, off until [`HeadlessDevice::counted_probe`] turns
+/// What a test may see of the counted stages the device made and recorded on this thread (D278, check 3): the args
+/// buffers and the number of indirect launches recorded. Test support, off until [`HeadlessDevice::counted_probe`] turns
 /// it on; not API.
 #[derive(Default)]
 struct Probe {
     on: bool,
     args: Vec<std::sync::Weak<GpuBuffer<u32>>>,
-    passes: u64,
+    launches: u64,
 }
 
 std::thread_local! {
@@ -49,7 +56,7 @@ impl HeadlessDevice {
         });
     }
 
-    /// The args buffers of the counted stages sealed with the indirect launch since the probe was turned on, oldest
+    /// The args buffers of the counted stages made with the indirect launch since the probe was turned on, oldest
     /// first, those still alive.
     #[doc(hidden)]
     #[must_use]
@@ -64,11 +71,11 @@ impl HeadlessDevice {
         })
     }
 
-    /// The indirect counted passes recorded since the probe was turned on.
+    /// The indirect launches (`dispatch_workgroups_indirect` of a counted stage) recorded since the probe was turned on.
     #[doc(hidden)]
     #[must_use]
-    pub fn counted_probe_passes() -> u64 {
-        PROBE.with(|probe| probe.borrow().passes)
+    pub fn counted_probe_launches() -> u64 {
+        PROBE.with(|probe| probe.borrow().launches)
     }
 }
 
@@ -97,7 +104,11 @@ impl HeadlessDevice {
         }
     }
 
-    /// Record the args pass and the indirect counted pass of a stage sealed with the indirect launch.
+    /// Record a stage made with the indirect launch on its own, outside the frame's shared pass: where the frame's
+    /// passes do not hold it (a frame timed without stamps inside passes, which gives each stage its own pass, and a
+    /// stage recorded alone), the args dispatch and the counted dispatch are one compute pass, and `begin` and `end` are
+    /// the stamps of its two ends. Under `force_pass_per_dispatch` they are two passes, `begin` on the args pass and
+    /// `end` on the counted one.
     pub(super) fn record_counted(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -110,39 +121,61 @@ impl HeadlessDevice {
                 "an indirectly launched counted stage holds the args dispatch and the counted one"
             )
         };
-        let args_stamps = stamps.and_then(|(query_set, begin, _)| {
-            begin.map(|begin| PassTimestamps {
+        if pass_per_dispatch_forced() {
+            let args_stamps = stamps.and_then(|(query_set, begin, _)| {
+                begin.map(|begin| PassTimestamps {
+                    query_set,
+                    begin: Some(begin),
+                    end: None,
+                })
+            });
+            crate::count_passes(2);
+            grid.encode(&self.device, encoder, ARGS_PASS_LABEL, args_stamps)?;
+            let counted_stamps = stamps.and_then(|(query_set, _, end)| {
+                end.map(|end| PassTimestamps {
+                    query_set,
+                    begin: None,
+                    end: Some(end),
+                })
+            });
+            let mut pass = begin_compute(encoder, COUNTED_PASS_LABEL, counted_stamps);
+            record_indirect(&mut pass, counted, args);
+            return Ok(());
+        }
+        let pass_stamps = stamps.and_then(|(query_set, begin, end)| {
+            (begin.is_some() || end.is_some()).then_some(PassTimestamps {
                 query_set,
-                begin: Some(begin),
-                end: None,
+                begin,
+                end,
             })
         });
-        crate::count_passes(2);
-        grid.encode(&self.device, encoder, ARGS_PASS_LABEL, args_stamps)?;
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some(COUNTED_PASS_LABEL),
-            timestamp_writes: stamps.and_then(|(query_set, _, end)| {
-                end.map(|end| wgpu::ComputePassTimestampWrites {
-                    query_set,
-                    beginning_of_pass_write_index: None,
-                    end_of_pass_write_index: Some(end),
-                })
-            }),
-        });
-        let Pipeline::Compute(pipeline) = &counted.cached_kernel.pipeline else {
-            unreachable!("a counted stage is a grid kernel")
-        };
-        pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, &counted.bind_group, &[]);
-        pass.dispatch_workgroups_indirect(args, 0);
-        PROBE.with(|probe| {
-            let mut probe = probe.borrow_mut();
-            if probe.on {
-                probe.passes += 1;
-            }
-        });
+        crate::count_passes(1);
+        let mut pass = begin_compute(encoder, COUNTED_PASS_LABEL, pass_stamps);
+        grid.record_compute(&mut pass);
+        record_indirect(&mut pass, counted, args);
         Ok(())
     }
+}
+
+/// Record the indirect dispatch of a counted stage into an open compute pass: the counted kernel, launched from the
+/// args buffer the args dispatch before it wrote.
+pub(super) fn record_indirect(
+    pass: &mut wgpu::ComputePass<'_>,
+    counted: &PreparedDispatch,
+    args: &wgpu::Buffer,
+) {
+    let Pipeline::Compute(pipeline) = &counted.cached_kernel.pipeline else {
+        unreachable!("a counted stage is a grid kernel")
+    };
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, &counted.bind_group, &[]);
+    pass.dispatch_workgroups_indirect(args, 0);
+    PROBE.with(|probe| {
+        let mut probe = probe.borrow_mut();
+        if probe.on {
+            probe.launches += 1;
+        }
+    });
 }
 
 impl CountedDevice for HeadlessDevice {

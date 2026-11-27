@@ -9,16 +9,22 @@
 //! **Stamps inside passes (level `Passes`).** Where the device has `TIMESTAMP_QUERY_INSIDE_PASSES` (read from the
 //! device when the frame is recorded, so a device the caller opened counts too) the frame has the passes of the untimed
 //! one: the plain compute dispatches of neighbouring stages share one compute pass, which the clock keeps open from one
-//! `frame_stage_timed` call to the next, and an indirect counted stage and a `pixel` dispatch keep their own passes.
-//! The slot layout is the one of the pass-per-stage form, `2 * stage` for a stage's begin and `2 * stage + 1` for its
-//! end, so the plan, the read-back and the resolve do not change. Inside a shared pass a stage's begin is a
-//! `write_timestamp` before its first dispatch and its end one after its last, so two neighbouring stages write the same
-//! point twice and a stage's time runs from its begin to its end as before; a stage that has a pass of its own writes
-//! them at the pass boundary (`timestamp_writes`: begin on the first pass, end on the last). Without the feature (a
-//! browser device, or a caller's device opened without it), or while `force_pass_per_dispatch` is on, every stage is
-//! recorded in passes of its own, as before. A stamp between two stages that depend on nothing from each other (no
-//! barrier between them) only splits work that may overlap on the GPU loosely: such a stage's time is the span between
-//! its two stamps, not an exact cost.
+//! `frame_stage_timed` call to the next, and only a `pixel` dispatch keeps a pass of its own. An indirect counted stage
+//! (slice m14.s2imerge) is stamped inside the shared pass like a plain one: its begin before its args dispatch and its
+//! end after its indirect dispatch, one entry for the stage, and wgpu's own validation dispatch for the indirect launch
+//! falls inside that entry. The slot layout is the one of the pass-per-stage form, `2 * stage` for a stage's begin and
+//! `2 * stage + 1` for its end, so the plan, the read-back and the resolve do not change. Inside a shared pass a
+//! stage's begin is a `write_timestamp` before its first dispatch and its end one after its last, so two neighbouring
+//! stages write the same point twice and a stage's time runs from its begin to its end as before; a stage that has a
+//! pass of its own writes them at the pass boundary (`timestamp_writes`: begin on the first pass, end on the last).
+//! Without the feature (a browser device, or a caller's device opened without it) every stage is recorded in a pass of
+//! its own, as before, a counted stage as one pass that holds both its dispatches. While `force_pass_per_dispatch` is on
+//! every dispatch is a pass of its own, a counted stage's two passes carrying its begin and its end. A timed and an
+//! untimed frame record the same passes for a counted stage in the cases with the feature (one shared pass) and under
+//! the force (two passes a counted stage); without the feature the timed frame has a pass per stage where the untimed
+//! one has the one. A stamp between two stages that depend on nothing from each other (no barrier between them) only
+//! splits work that may overlap on the GPU loosely: such a stage's time is the span between its two stamps, not an
+//! exact cost.
 //!
 //! Frames in flight share the query set and the resolve buffer, because the queue runs
 //! them in order and each frame copies its slots out before the next one writes them (decision D258); only the
@@ -36,6 +42,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use gust::batch::{BoxFuture, DeviceTiming, FrameClock, FrameTiming, OpenedTiming};
 
+use super::counted::record_indirect;
 use super::frame::{Done, FRAME_PASS_LABEL, GpuSubmission};
 use super::{GpuStage, map_error};
 use crate::{Error, HeadlessDevice, PassTimestamps};
@@ -263,14 +270,16 @@ impl HeadlessDevice {
         let clock = clock
             .downcast_mut::<GpuClock>()
             .expect("a GPU batch's clock is its own");
-        if inside && stage.indirect.is_none() {
+        if inside {
             return self.encode_stage_in_run(encoder, stage, clock, begin, end);
         }
         // A pass left open by an earlier stage ends before anything else goes into the encoder.
         clock.run = None;
         let stamps = Some((&clock.timing.query_set, begin, end));
         match &stage.indirect {
-            // A counted stage's two passes carry the stage's stamps: `begin` on the args pass, `end` on the counted one.
+            // A counted stage without stamps inside passes is one pass of its own holding both dispatches, with `begin`
+            // and `end` on the pass; under `force_pass_per_dispatch` two passes, `begin` on the args one, `end` on the
+            // counted one.
             Some(args) => self.record_counted(encoder, &stage.dispatches, args, stamps)?,
             None => self.record_prepared_stamped(encoder, &stage.dispatches, stamps)?,
         }
@@ -288,10 +297,11 @@ impl HeadlessDevice {
             && !crate::pass_per_dispatch_forced()
     }
 
-    /// Record a plain stage as `encode_stages` records it: its compute dispatches join the pass the clock holds open
-    /// (or open one), a `pixel` dispatch ends it and takes a render pass of its own. `begin` is written before the
-    /// stage's first dispatch and `end` after its last: inside the shared pass as `write_timestamp`, on the pass
-    /// boundary where the first or last dispatch has a pass of its own. The stage has at least one dispatch.
+    /// Record a stage as `encode_stages` records it: its compute dispatches join the pass the clock holds open (or open
+    /// one), the counted dispatch of an indirect counted stage launched from its args buffer, a `pixel` dispatch ends
+    /// the pass and takes a render pass of its own. `begin` is written before the stage's first dispatch and `end`
+    /// after its last: inside the shared pass as `write_timestamp`, on the pass boundary where the first or last
+    /// dispatch has a pass of its own. The stage has at least one dispatch.
     fn encode_stage_in_run(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -308,6 +318,8 @@ impl HeadlessDevice {
                 (index == 0).then_some(begin).flatten(),
                 (index == last).then_some(end).flatten(),
             );
+            // The counted dispatch of an indirect counted stage is the last dispatch of its stage.
+            let indirect = stage.indirect.as_ref().filter(|_| index == last);
             if dispatch.is_compute() {
                 let pass = clock.run.get_or_insert_with(|| {
                     crate::count_passes(1);
@@ -321,7 +333,10 @@ impl HeadlessDevice {
                 if let Some(slot) = begin {
                     pass.write_timestamp(query_set, slot);
                 }
-                dispatch.record_compute(pass);
+                match indirect {
+                    Some(args) => record_indirect(pass, dispatch, args),
+                    None => dispatch.record_compute(pass),
+                }
                 if let Some(slot) = end {
                     pass.write_timestamp(query_set, slot);
                 }

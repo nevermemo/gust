@@ -39,8 +39,9 @@ std::thread_local! {
     static LAUNCH: Cell<Option<CountedLaunch>> = const { Cell::new(None) };
 }
 
-/// The launch the batches sealed on this thread use for their counted stages: [`CountedLaunch::Indirect`] on native
-/// targets and [`CountedLaunch::Bounded`] on `wasm32`, unless [`set_counted_launch`] chose one.
+/// The launch a counted stage takes when it is added to a batch under construction on this thread:
+/// [`CountedLaunch::Indirect`] on native targets and [`CountedLaunch::Bounded`] on `wasm32`, unless
+/// [`set_counted_launch`] chose one.
 #[must_use]
 pub fn counted_launch() -> CountedLaunch {
     LAUNCH
@@ -52,9 +53,9 @@ pub fn counted_launch() -> CountedLaunch {
         })
 }
 
-/// Choose the launch of the counted stages of the batches this thread seals next (`None` restores the default). A
-/// batch keeps the launch it was sealed with, through resizes. Test and measurement support: the launches mean the
-/// same, and on `wasm32` only [`CountedLaunch::Bounded`] runs.
+/// Choose the launch of the counted stages this thread adds next (`None` restores the default). A stage reads the launch
+/// when it is added and keeps it through the remakes a resize causes, whatever is chosen later. Test and measurement
+/// support: the launches mean the same, and on `wasm32` only [`CountedLaunch::Bounded`] runs.
 #[doc(hidden)]
 pub fn set_counted_launch(launch: Option<CountedLaunch>) {
     LAUNCH.with(|cell| cell.set(launch));

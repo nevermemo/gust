@@ -2,8 +2,9 @@
 //! (slice m14.onepassts; Gpu tier).
 //!
 //! Where the device has `TIMESTAMP_QUERY_INSIDE_PASSES` (GUST asks for it where the adapter offers it) a timed frame
-//! records the same passes as the untimed one, one time per stage; a device opened without the feature (here through the
-//! adopt path) keeps a pass per stage and still returns one time per stage. The pass count is `batch_passes_recorded`,
+//! records the same passes as the untimed one, one time per stage, an indirect counted stage (both its dispatches) in
+//! the shared pass among them; a device opened without the feature (here through the adopt path) keeps a pass per stage,
+//! a counted stage's one pass holding both its dispatches, and still returns one time per stage. The pass count is `batch_passes_recorded`,
 //! read around `submit`; the results are held to a host model, so a stamp cannot hide a wrong byte. Each test prints
 //! the adapter's name and the per-stage times it saw (run with `--show-output`).
 
@@ -276,22 +277,18 @@ fn run_mixed(
         .collect()
 }
 
-/// Plain, plain, indirect counted, plain at `Passes`: the run before the counted stage is one pass, the counted stage
-/// keeps its two, the stage after it one, as untimed; each of the four stages has a time. (Pass counts: 1 + 2 + 1 = 4.)
-#[test]
-fn a_plain_run_with_an_indirect_counted_stage_is_timed_per_stage_in_the_untimed_passes() {
-    let _serial = serial();
-    let _launch = Launch::set(CountedLaunch::Indirect);
-    let device = Arc::new(device_logged("inside-pass mixed"));
-    if !device.supports_gpu_timestamps() || !has_inside_passes(&device) {
-        println!("SKIP: the adapter has no timestamp queries inside passes");
-        return;
-    }
-    let untimed = run_mixed(&device, FrameTiming::Off);
-    let timed = run_mixed(&device, FrameTiming::Passes);
+/// What `run_mixed` saw at `Off` and at `Passes`, held to the pass counts the form must record: the same in both, one
+/// time per stage (the counted one included), the timed rows the untimed rows, every plain stage's time above zero and
+/// the stage times inside the span. Returns the last timed frame's times for printing.
+fn check_mixed_passes(device: &Arc<HeadlessDevice>, passes_wanted: u64) -> FrameTimes {
+    let untimed = run_mixed(device, FrameTiming::Off);
+    let timed = run_mixed(device, FrameTiming::Passes);
     for ((rows, passes, _), (timed_rows, timed_passes, times)) in untimed.iter().zip(&timed) {
-        assert_eq!(passes, &4, "1 + 2 + 1 passes untimed");
-        assert_eq!(timed_passes, &4, "the timed frame has the same passes");
+        assert_eq!(passes, &passes_wanted, "untimed passes");
+        assert_eq!(
+            timed_passes, &passes_wanted,
+            "the timed frame has the same passes"
+        );
         assert_eq!(timed_rows, rows);
         let times = times.as_ref().expect("a timed frame has a time");
         assert_eq!(
@@ -308,12 +305,37 @@ fn a_plain_run_with_an_indirect_counted_stage_is_timed_per_stage_in_the_untimed_
         }
         let sum: std::time::Duration = times.passes.iter().map(|pass| pass.duration).sum();
         assert!(sum <= times.span, "{sum:?} against {:?}", times.span);
-        // No `sum * 2 >= span` lower bound here, unlike the three plain stages: the counted stage's two passes each
-        // begin and end a pass, and those boundaries sit between stamps, so the stage times can cover under half the
-        // span on some adapters.
+        // No `sum * 2 >= span` lower bound here, unlike the three plain stages: the counted stage's entry may cover
+        // less of the span than a plain stage's (the pass boundaries of the forced form sit between stamps, and wgpu's
+        // own validation dispatch of the indirect launch falls inside the counted stage's entry), so the stage times
+        // can cover under half the span on some adapters.
     }
-    let last = timed.last().and_then(|frame| frame.2.as_ref()).unwrap();
-    print_times("inside-pass plain+counted (Passes)", &device, last);
+    timed
+        .into_iter()
+        .next_back()
+        .and_then(|frame| frame.2)
+        .unwrap()
+}
+
+/// Plain, plain, indirect counted, plain at `Passes`: the counted stage's args dispatch and indirect dispatch join the
+/// shared pass, so the timed frame is the untimed frame's one pass, with a time for each of the four stages (the counted
+/// one stamped inside the pass, from before its args dispatch to after its indirect dispatch); under
+/// `force_pass_per_dispatch` the old form, a pass per dispatch in both frames, the counted stage's two among them.
+/// (Pass counts: 1; forced 1 + 1 + 2 + 1 = 5.)
+#[test]
+fn an_indirect_counted_stage_joins_the_run_and_is_timed_per_stage() {
+    let _serial = serial();
+    let _launch = Launch::set(CountedLaunch::Indirect);
+    let device = Arc::new(device_logged("inside-pass mixed"));
+    if !device.supports_gpu_timestamps() || !has_inside_passes(&device) {
+        println!("SKIP: the adapter has no timestamp queries inside passes");
+        return;
+    }
+    let last = check_mixed_passes(&device, 1);
+    print_times("inside-pass plain+counted (Passes)", &device, &last);
+    let _forced = Forced::on();
+    let last = check_mixed_passes(&device, 5);
+    print_times("inside-pass plain+counted forced (Passes)", &device, &last);
 }
 
 // ---- a device opened without the feature ----
@@ -371,6 +393,44 @@ fn a_device_without_stamps_inside_passes_keeps_a_pass_per_stage_and_times_each()
     }
     let last = timed.last().and_then(|frame| frame.2.as_ref()).unwrap();
     print_times("inside-pass fallback (Passes)", &device, last);
+}
+
+/// Without the feature a counted stage at `Passes` is one pass of its own holding its args dispatch and its indirect
+/// dispatch, stamped on the pass boundary, with one time per stage. (Pass counts: 1 untimed, 1 + 1 + 1 + 1 = 4 timed.)
+#[test]
+fn a_device_without_stamps_inside_passes_times_a_counted_stage_as_one_pass_of_its_own() {
+    let _serial = serial();
+    let _launch = Launch::set(CountedLaunch::Indirect);
+    let device = adopted_without_inside_passes();
+    assert!(
+        !has_inside_passes(&device),
+        "the device was opened without the feature"
+    );
+    if !device.supports_gpu_timestamps() {
+        println!("SKIP: the adapter has no timestamp queries");
+        return;
+    }
+    let untimed = run_mixed(&device, FrameTiming::Off);
+    let timed = run_mixed(&device, FrameTiming::Passes);
+    for ((rows, passes, _), (timed_rows, timed_passes, times)) in untimed.iter().zip(&timed) {
+        assert_eq!(passes, &1, "untimed: the counted stage joins the one pass");
+        assert_eq!(
+            timed_passes, &4,
+            "without the feature: a pass per stage, the counted stage's holding both its dispatches"
+        );
+        assert_eq!(timed_rows, rows);
+        let times = times.as_ref().expect("a timed frame has a time");
+        assert_eq!(times.passes.len(), 4, "one time per stage");
+        for pass in &times.passes {
+            assert!(
+                pass.duration > std::time::Duration::ZERO,
+                "stage {:?} has a time above zero",
+                pass.stages
+            );
+        }
+    }
+    let last = timed.last().and_then(|frame| frame.2.as_ref()).unwrap();
+    print_times("inside-pass fallback plain+counted (Passes)", &device, last);
 }
 
 /// A device with the feature, while `force_pass_per_dispatch` is on, keeps a pass per stage at `Passes` as the untimed

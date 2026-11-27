@@ -148,7 +148,7 @@ impl PreparedDispatch {
     }
 }
 
-fn begin_compute<'encoder>(
+pub(crate) fn begin_compute<'encoder>(
     encoder: &'encoder mut wgpu::CommandEncoder,
     label: &str,
     timestamps: Option<PassTimestamps<'_>>,
@@ -189,15 +189,16 @@ std::thread_local! {
 }
 
 /// The passes the batch recorder has put into encoders on this thread so far: a run of `grid` dispatches is one pass
-/// (a batch, or the neighbouring plain stages of a frame), a `pixel` dispatch one, an indirect counted stage two, and
-/// every dispatch one under [`force_pass_per_dispatch`]. Test support, outside the pre-1.0 promise (D111).
+/// (a batch, or the neighbouring stages of a frame, an indirect counted stage's two dispatches among them), a `pixel`
+/// dispatch one, and every dispatch one under [`force_pass_per_dispatch`] (an indirect counted stage two). Test
+/// support, outside the pre-1.0 promise (D111).
 #[doc(hidden)]
 #[must_use]
 pub fn batch_passes_recorded() -> u64 {
     BATCH_PASSES.with(std::cell::Cell::get)
 }
 
-/// Count `passes` passes recorded outside [`encode_batch_passes`] (a pixel pass, the two passes of a counted stage).
+/// Count `passes` passes recorded outside [`encode_batch_passes`] (a pixel pass, the pass or passes of a counted stage).
 pub(crate) fn count_passes(passes: u64) {
     BATCH_PASSES.with(|count| count.set(count.get() + passes));
 }

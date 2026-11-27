@@ -15,7 +15,7 @@
     clippy::assign_op_pattern
 )]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use batch_basics::app::block_on;
 use gust::batch::{
@@ -24,7 +24,7 @@ use gust::batch::{
 use gust::cpu::CpuDevice;
 use gust::map::MapHost;
 use gust::{gpu_batch, gpu_task};
-use gust_wgpu::HeadlessDevice;
+use gust_wgpu::{HeadlessDevice, force_pass_per_dispatch};
 
 /// The workgroup of every counted stage here (the default of a 1-D stage).
 const WG: u32 = 256;
@@ -248,14 +248,14 @@ fn gpu_counts(launch: CountedLaunch) {
             check_args(&device, 2, n, CAP);
         }
     }
-    let passes = HeadlessDevice::counted_probe_passes();
+    let launches = HeadlessDevice::counted_probe_launches();
     match launch {
         CountedLaunch::Indirect => assert_eq!(
-            passes,
+            launches,
             2 * frames.len() as u64,
-            "each frame records one indirect pass per counted stage"
+            "each frame records one indirect launch per counted stage"
         ),
-        _ => assert_eq!(passes, 0, "the bounded launch records no indirect pass"),
+        _ => assert_eq!(launches, 0, "the bounded launch records no indirect launch"),
     }
     HeadlessDevice::counted_probe(false);
 }
@@ -491,9 +491,9 @@ struct Compacted {
 }
 
 macro_rules! define_compacted {
-    ($build:ident, $device:ty) => {
+    ($build:ident, $device:ty, $depth:tt) => {
         fn $build(device: &Arc<$device>) -> Result<(Batch<$device>, Compacted), Error> {
-            gpu_batch!("compacted", on(device); in_flight(1); |b| {
+            gpu_batch!("compacted", on(device); in_flight($depth); |b| {
                 let k = b.param::<u32>(0);
                 let flags = b.input::<u32>(COUNTER_CAP);
                 let values = b.input::<u32>(COUNTER_CAP);
@@ -505,8 +505,9 @@ macro_rules! define_compacted {
     };
 }
 
-define_compacted!(build_compacted_cpu, CpuDevice);
-define_compacted!(build_compacted_gpu, HeadlessDevice);
+define_compacted!(build_compacted_cpu, CpuDevice, 1);
+define_compacted!(build_compacted_gpu, HeadlessDevice, 1);
+define_compacted!(build_compacted_gpu2, HeadlessDevice, 2);
 
 /// The flags of frame `k`: a share of the rows, going 0, 1/12, .. 12/12 and back, so the count changes every frame and
 /// passes through 0.
@@ -582,6 +583,180 @@ fn gpu_the_count_of_compact_counts_a_stage_indirect() {
 #[ignore = "example validation runs only in full verification"]
 fn gpu_the_count_of_compact_counts_a_stage_bounded() {
     gpu_compacted(CountedLaunch::Bounded);
+}
+
+// ---- the count written earlier in the same frame, in the frame's one pass (m14.s2imerge) ----
+
+/// The two process-wide settings of the tests below: the pass form is `force_pass_per_dispatch`, which a test sets.
+static PASS_FORM: Mutex<()> = Mutex::new(());
+
+/// Puts the pass form it found back when it drops; the test holds the lock meanwhile.
+struct PassForm {
+    before: bool,
+    _guard: MutexGuard<'static, ()>,
+}
+
+impl PassForm {
+    fn take(forced: bool) -> Self {
+        let guard = PASS_FORM
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self {
+            before: force_pass_per_dispatch(forced),
+            _guard: guard,
+        }
+    }
+}
+
+impl Drop for PassForm {
+    fn drop(&mut self) {
+        force_pass_per_dispatch(self.before);
+    }
+}
+
+/// The flags of a frame with exactly `n` rows set, spread over the capacity.
+fn flags_with(n: u32) -> Vec<u32> {
+    (0..COUNTER_CAP)
+        .map(|i| u32::from(i * 7 % COUNTER_CAP < n))
+        .collect()
+}
+
+/// The counts of `compact` the frames below use: none, a middle one, the capacity, and back through them.
+const COMPACT_COUNTS: [u32; 7] = [
+    COUNTER_CAP / 2,
+    0,
+    COUNTER_CAP,
+    COUNTER_CAP / 2,
+    COUNTER_CAP,
+    0,
+    1,
+];
+
+/// One frame of the compacted batch with exactly `n` rows flagged: the gathered rows. `first` also writes the values.
+fn compacted_frame<D: BatchDevice>(
+    batch: &mut Batch<D>,
+    h: &Compacted,
+    n: u32,
+    first: bool,
+) -> Vec<u32>
+where
+    D::Buffer<u32>: 'static,
+{
+    block_on(async {
+        let mut frame = batch.begin().await?;
+        if first {
+            let values: Vec<u32> = (0..COUNTER_CAP).map(|i| i * 7 % 1000).collect();
+            frame.write(&h.values, &values)?;
+        }
+        frame.write(&h.flags, &flags_with(n))?;
+        let gathered = frame.ticket(&h.gathered)?;
+        let _submitted = frame.submit()?;
+        Ok::<_, Error>(gathered.await?)
+    })
+    .unwrap()
+}
+
+/// What the CPU twin gathers over `COMPACT_COUNTS`, whole buffers.
+fn compacted_twin_over_counts() -> Vec<Vec<u32>> {
+    let device = Arc::new(CpuDevice::new());
+    let (mut batch, h) = build_compacted_cpu(&device).unwrap();
+    COMPACT_COUNTS
+        .iter()
+        .enumerate()
+        .map(|(index, &n)| compacted_frame(&mut batch, &h, n, index == 0))
+        .collect()
+}
+
+/// `compact` writes the count a counted stage reads in the same frame: with the counted stage's two dispatches in the
+/// frame's one pass the write, the args kernel and the indirect read follow in order, and the gathered buffers equal the
+/// CPU twin's at no row, a middle count and the capacity. The frame is one pass by default; the form under
+/// `force_pass_per_dispatch` (a pass per dispatch) gives the same buffers.
+fn gpu_compacted_exact_against_the_twin(launch: CountedLaunch) {
+    let twin = compacted_twin_over_counts();
+    let values: Vec<u32> = (0..COUNTER_CAP).map(|i| i * 7 % 1000).collect();
+    assert_eq!(
+        twin[2], values,
+        "at the capacity the twin gathers every row"
+    );
+    assert_eq!(
+        twin[1], twin[0],
+        "at count 0 the rows of the frame before stay"
+    );
+    let device = private_device();
+    let _launch = Launch::set(launch);
+    for forced in [false, true] {
+        let _form = PassForm::take(forced);
+        let (mut batch, h) = build_compacted_gpu(&device).unwrap();
+        let mut passes = Vec::new();
+        for (index, (&n, expected)) in COMPACT_COUNTS.iter().zip(&twin).enumerate() {
+            let before = gust_wgpu::batch_passes_recorded();
+            let got = compacted_frame(&mut batch, &h, n, index == 0);
+            passes.push(gust_wgpu::batch_passes_recorded() - before);
+            assert_eq!(
+                &got, expected,
+                "{launch:?}, forced {forced}, count {n}: the GPU against the twin, whole buffer"
+            );
+        }
+        println!("{launch:?} forced {forced}: passes a frame {passes:?}");
+        if launch == CountedLaunch::Indirect && !forced {
+            assert!(
+                passes.iter().all(|&count| count == 1),
+                "the compaction and the counted stage share the frame's one pass: {passes:?}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "example validation runs only in full verification"]
+fn gpu_a_count_written_earlier_in_the_frame_is_exact_against_the_twin_indirect() {
+    gpu_compacted_exact_against_the_twin(CountedLaunch::Indirect);
+}
+
+#[test]
+#[ignore = "example validation runs only in full verification"]
+fn gpu_a_count_written_earlier_in_the_frame_is_exact_against_the_twin_bounded() {
+    gpu_compacted_exact_against_the_twin(CountedLaunch::Bounded);
+}
+
+/// Two frames in flight (`in_flight(2)`) with the counted stage behind `compact`: frames are submitted in pairs before
+/// either is read, with different counts, and each equals the twin's frame of the same position.
+fn gpu_compacted_in_flight(launch: CountedLaunch) {
+    let twin = compacted_twin_over_counts();
+    let device = private_device();
+    let _launch = Launch::set(launch);
+    let (mut batch, h) = build_compacted_gpu2(&device).unwrap();
+    let values: Vec<u32> = (0..COUNTER_CAP).map(|i| i * 7 % 1000).collect();
+    let mut got = Vec::new();
+    for (pair, counts) in COMPACT_COUNTS.chunks(2).enumerate() {
+        let mut tickets = Vec::new();
+        let mut held = Vec::new();
+        for (offset, &n) in counts.iter().enumerate() {
+            let mut frame = block_on(batch.begin()).unwrap();
+            if pair == 0 && offset == 0 {
+                frame.write(&h.values, &values).unwrap();
+            }
+            frame.write(&h.flags, &flags_with(n)).unwrap();
+            tickets.push(frame.ticket(&h.gathered).unwrap());
+            held.push(frame.submit().unwrap());
+        }
+        for ticket in tickets {
+            got.push(block_on(ticket).unwrap());
+        }
+    }
+    assert_eq!(got, twin, "{launch:?}: frames in flight against the twin");
+}
+
+#[test]
+#[ignore = "example validation runs only in full verification"]
+fn gpu_compacted_frames_in_flight_equal_the_twin_indirect() {
+    gpu_compacted_in_flight(CountedLaunch::Indirect);
+}
+
+#[test]
+#[ignore = "example validation runs only in full verification"]
+fn gpu_compacted_frames_in_flight_equal_the_twin_bounded() {
+    gpu_compacted_in_flight(CountedLaunch::Bounded);
 }
 
 // ---- check 5: frames in flight ----

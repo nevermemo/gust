@@ -1514,6 +1514,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       The guide states the pf.ft2 result (a read that does not block costs the batch less, on both adapters) without
       figures. The plan's SEMANTICS sentence was not needed: SEMANTICS has no frame-timing paragraph. Native timing
       tests pass on both adapters.
+    - m14.s2imerge merged (D289 amends D278, D281 and D283): an indirect counted stage now records its args and
+      indirect dispatches into the frame's shared compute pass, and only a `pixel` stage ends the run. The spike's
+      split layout and its knob are gone; the hidden pass-per-dispatch form keeps two passes. Tests are exact against
+      the CPU twin on both adapters, at count 0, mid and capacity, with frames in flight and a flag pattern that
+      changes every frame. Without stamps inside passes a timed frame gives the stage a pass of its own and an untimed
+      frame does not, as for plain stages. wgpu validation was on with no error; the Vulkan validation layer loaded
+      in a debug run but its messages were not captured, so the frame is not checked by that layer. The closing
+      series runs in the next quiet window.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -1,6 +1,6 @@
 use crate::{
-    BufferBinding, BufferDispatch, Error, GpuBuffer, GpuSamplerBinding, GpuUniform, HeadlessDevice,
-    WgpuJob,
+    BufferBinding, BufferDispatch, Error, GpuBuffer, GpuBufferView, GpuSamplerBinding, GpuUniform,
+    HeadlessDevice, WgpuJob,
 };
 use gust::target::GpuKernel;
 use gust::{Access, Call, GpuPod, LengthRule, Resource, Run, TypedDevice};
@@ -155,6 +155,78 @@ impl<T: GpuPod> Resource for GpuBuffer<T> {
             LengthRule::Independent => binding.independent_length(),
             // `Shared` and any rule added later: the strictest rule (exactly `element_count`
             // elements) is the safe reading of one this crate does not know.
+            _ => binding,
+        }
+    }
+}
+
+/// A [`GpuBufferView`] is a typed resource of [`HeadlessDevice`] wherever a `GpuBuffer<U>` is: its element type is `U`,
+/// checked at compile time like a buffer's (a `u32` view where the kernel wants `f32` does not compile), and its
+/// binding carries the view's length, so the shared length rule applies to `len()` of the view.
+///
+/// ```compile_fail,E0271
+/// # use gust::*;
+/// # use gust_wgpu::GpuBuffer;
+/// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+/// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+/// # }
+/// # struct Probe;
+/// # impl Kernel for Probe {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadWrite)], "");
+/// # }
+/// # impl gust::target::GpuKernel for Probe {}
+/// # fn call<'r, R0>(n: u32, a: impl Into<Arg<'r, R0>>) -> Call<'r, R0::Device, Probe, 1>
+/// # where
+/// #     R0: Resource<Element = f32> + 'r,
+/// # {
+/// #     Call::new(n, [a.into().bind(Access::ReadWrite)])
+/// # }
+/// fn wrong(words: &GpuBuffer<f32>) -> Result<(), gust_wgpu::Error> {
+///     let as_words = words.view_as::<u32>()?;
+///     let _ = call(1, &as_words);
+///     Ok(())
+/// }
+/// ```
+///
+/// The control differs in exactly one place (the view's element type):
+///
+/// ```
+/// # use gust::*;
+/// # use gust_wgpu::GpuBuffer;
+/// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+/// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+/// # }
+/// # struct Probe;
+/// # impl Kernel for Probe {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadWrite)], "");
+/// # }
+/// # impl gust::target::GpuKernel for Probe {}
+/// # fn call<'r, R0>(n: u32, a: impl Into<Arg<'r, R0>>) -> Call<'r, R0::Device, Probe, 1>
+/// # where
+/// #     R0: Resource<Element = f32> + 'r,
+/// # {
+/// #     Call::new(n, [a.into().bind(Access::ReadWrite)])
+/// # }
+/// fn right(words: &GpuBuffer<f32>) -> Result<(), gust_wgpu::Error> {
+///     let as_floats = words.view_as::<f32>()?;
+///     let _ = call(1, &as_floats);
+///     Ok(())
+/// }
+/// ```
+impl<U: GpuPod> Resource for GpuBufferView<'_, U> {
+    type Element = U;
+    type Device = HeadlessDevice;
+    type Kind = gust::kind::Storage;
+
+    fn bind<'resources>(
+        &'resources self,
+        access: Access,
+        length: LengthRule,
+    ) -> BufferBinding<'resources> {
+        let binding = BufferBinding::new_view(self, access);
+        match length {
+            LengthRule::Independent => binding.independent_length(),
+            // `Shared` and any rule added later: the strictest rule, as for a `GpuBuffer`.
             _ => binding,
         }
     }

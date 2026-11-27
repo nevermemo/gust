@@ -210,6 +210,19 @@ pub enum Error {
         /// The parameter's name.
         parameter: String,
     },
+    /// `GpuBuffer::view_as` (or `GpuVec::view_as`) refused: `rule` says whether the buffer's bytes are not a whole number
+    /// of the view's elements (a tail would be left over; nothing is rounded down) or an element type's layout stride
+    /// differs from its Rust size.
+    BufferViewSize {
+        /// The bytes of the source buffer's live elements.
+        buffer_bytes: u64,
+        /// The element type the rule failed for: the view's for a tail, the offending type's for a stride.
+        element: &'static str,
+        /// That element type's layout stride in bytes.
+        stride: u32,
+        /// The rule that failed.
+        rule: crate::BufferViewRule,
+    },
     /// A graph node depends on a node that is not an earlier node of the same graph.
     GraphDependencyOrder {
         /// The index of the node.
@@ -584,6 +597,24 @@ impl fmt::Display for Error {
             Self::IndependentLengthEmpty { parameter } => write!(
                 formatter,
                 "parameter `{parameter}` was bound with an independent length but the buffer is empty; the GPU would observe a one-element placeholder",
+            ),
+            Self::BufferViewSize {
+                buffer_bytes,
+                element,
+                stride,
+                rule: crate::BufferViewRule::Tail { tail },
+            } => write!(
+                formatter,
+                "a buffer of {buffer_bytes} bytes is not a whole number of `{element}` elements ({stride} bytes each): {tail} bytes would be left over, and a view does not round down",
+            ),
+            Self::BufferViewSize {
+                element,
+                stride,
+                rule: crate::BufferViewRule::Stride { rust_size },
+                ..
+            } => write!(
+                formatter,
+                "`{element}` has a layout stride of {stride} bytes but a Rust size of {rust_size}: a view needs the same bytes in Rust and on the GPU",
             ),
             Self::GraphDependencyOrder { node, dependency } => write!(
                 formatter,

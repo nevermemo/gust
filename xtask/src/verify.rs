@@ -1571,9 +1571,18 @@ pub(crate) struct GpuSuitePin {
 /// new test file `tests/inside_pass_timestamps.rs` (four GPU tests, one `test result:` line) and changes no other
 /// test count (`tests/one_pass.rs` renames and widens one existing test, `tests/device_share.rs` gains a feature in its
 /// hand-written request). Updated by count; the full Gpu suite run at the merge confirms it.
+///
+/// Slice m14.bzview, on 703 over 73 (2026-11-27): 703 over 73 became 726 over 74. The buffer view slice adds four unit
+/// tests to the library's `buffers::view` module (the length and the two rules, on layouts alone), four doc tests
+/// (`GpuBufferView`, `BufferBinding::read_only_view`, and the compile-fail and control pair on `Resource for
+/// GpuBufferView`) and the new test file `tests/buffer_view.rs` (fifteen GPU tests, one `test result:` line). The first
+/// full `cargo test -p gust-compute-wgpu` of the lane printed 725 over 74 on the Radeon 890M and on the RTX 5090, with
+/// fourteen tests in the new file; a review round added one (the reverse store at a split launch), so the pin is that
+/// count plus one, and the new file alone printed 15 passed on both adapters. The full Gpu suite is owed at the merge
+/// gate.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 703,
-    result_lines: 73,
+    passed: 726,
+    result_lines: 74,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

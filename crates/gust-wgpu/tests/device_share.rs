@@ -112,6 +112,7 @@ fn expected_features(adapter: &wgpu::Adapter, options: &DeviceOptions) -> wgpu::
     // GUST's own: timestamps and coherent storage wherever the adapter has them.
     for feature in [
         wgpu::Features::TIMESTAMP_QUERY,
+        wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES,
         wgpu::Features::MEMORY_DECORATION_COHERENT,
     ] {
         if offered.contains(feature) {

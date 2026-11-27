@@ -7,12 +7,18 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- A frame timed at `FrameTiming::Passes` is now the frame that runs untimed (m14.onepassts): on a device with
+  `TIMESTAMP_QUERY_INSIDE_PASSES` (`DeviceOptions::device_request` now asks for it where the adapter offers it) the
+  stages share compute passes as they do untimed and each stage's begin and end are timestamps inside the pass, so the
+  per-stage times of stages in a shared pass no longer include a pass boundary of their own (an indirect counted stage
+  and a `pixel` call keep their own passes, as untimed). A device without the feature (a browser device, or one a
+  caller opened without it) keeps a pass per stage at this level.
 - One compute pass for a batch of `grid` dispatches (m14.onepass): `dispatch_batch` and the frame path of a `gpu_batch!`
   record the plain `grid` dispatches of neighbouring entries (stages, library ops, a bounded counted stage) in one
   compute pass, in order, on by default; an indirect counted stage and a `pixel` call keep their own passes. A frame
-  timed at `Passes` keeps a compute pass per stage, so its per-stage times include the pass boundary and can sum to more
-  than the `Frame` span. New provided `BatchDevice::frame_stages` and `frame_stages_timed` hooks (the default loops
-  `frame_stage`).
+  timed at `Passes` keeps a compute pass per stage on a device that cannot stamp inside a pass (see the entry above),
+  so there its per-stage times include the pass boundary and can sum to more than the `Frame` span. New provided
+  `BatchDevice::frame_stages` and `frame_stages_timed` hooks (the default loops `frame_stage`).
 - `unsafe fn DeviceOptions::unchecked_kernels` and `ShaderChecks` (m14.pftrust1): a device-level opt-in that builds the
   WGSL route's shader modules without wgpu's runtime checks (bounds, loop bounding, integer division guards), with the
   safety contract in its `# Safety` section. The default stays checked; `HeadlessDevice::shader_checks` and

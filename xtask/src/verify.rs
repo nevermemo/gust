@@ -1572,14 +1572,20 @@ pub(crate) struct GpuSuitePin {
 /// test count (`tests/one_pass.rs` renames and widens one existing test, `tests/device_share.rs` gains a feature in its
 /// hand-written request). Updated by count; the full Gpu suite run at the merge confirms it.
 ///
-/// Slice m14.bzpre, on 703 over 73: 703 over 73 became 720 over 74. `HeadlessDevice::precompile` adds two library unit
-/// tests (`compile::precompile`, on the existing line), one doc test (the method's example, on the existing doc-test
-/// line) and the new test file `tests/precompile.rs` (eleven GPU tests, one `test result:` line); the two-level
-/// pipeline cache adds three unit tests to `cache` (the content key), on the existing line. Measured, not derived: a
-/// full Gpu suite run gave 720 passed over 74 result lines on the Radeon 890M and on the RTX 5090 (tree of this slice
-/// only; rebase and re-run when another lane has merged first).
+/// Slice m14.s2imerge, on 703 over 73: 703 over 73 became 704 over 73. The counted-stage pass slice adds one GPU test
+/// to the existing `tests/inside_pass_timestamps.rs` (a device without stamps inside passes times a counted stage as
+/// one pass of its own) and changes no other test count (`tests/one_pass.rs` and the mixed test of
+/// `inside_pass_timestamps.rs` gain an assertion for the forced form). Updated by count (the four affected test files
+/// ran on both adapters in the lane); the full Gpu suite run at the merge confirms it.
+///
+/// Slice m14.bzpre, on 703 over 73: 703 over 73 became 720 over 74 in the lane. `HeadlessDevice::precompile` adds
+/// two library unit tests (`compile::precompile`, on the existing line), one doc test (the method's example, on the
+/// existing doc-test line) and the new test file `tests/precompile.rs` (eleven GPU tests, one `test result:` line);
+/// the two-level pipeline cache adds three unit tests to `cache` (the content key), on the existing line. Merged on
+/// 704 over 73 (m14.s2imerge and m14.s2sc first): 721 over 74, measured by the full Gpu suite on the merged tree on
+/// the Radeon 890M and on the RTX 5090.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 720,
+    passed: 721,
     result_lines: 74,
 };
 

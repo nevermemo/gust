@@ -1,6 +1,21 @@
 {
   "kernels": [
     {
+      "clean_sha256": "fadbb41aba3dd0d6cdcbefd42098a855267413efd6f2a0eeab77c64267781a77",
+      "entry_point": "gpu___gust_pf_69c47aebba0924e5_run",
+      "formats": [
+        {
+          "file": "001f235b18ac22fb.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "d9b097745d51cbea9ea33e915f675d34558e95808d84767047c995594bf235b5",
+          "sha256": "c3abb7e3eea72d4df320e766916679bcfebda9e41428120050df6e87bb7f75d3"
+        }
+      ],
+      "key": "001f235b18ac22fb",
+      "module": "__gust_pf_69c47aebba0924e5",
+      "name": "run"
+    },
+    {
       "clean_sha256": "66efed4ba004c5231c864700ea147639723b0ed2f76d484489c71af17497d79c",
       "entry_point": "gpu___gust_pf_c413d752e1648189_run_args",
       "formats": [
@@ -60,6 +75,22 @@
       "module": "__gust_pf_7b67cf42df546847",
       "name": "run",
       "split_of": "cf23887c0514e547"
+    },
+    {
+      "clean_sha256": "25ce62fdffe7bd27c668238e4f68fe64644e47e4e192edc18f43bc7dd1d1b634",
+      "entry_point": "gpu___gust_pf_69c47aebba0924e5_run",
+      "formats": [
+        {
+          "file": "308e0b72be8d6bf4.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "4ac0076f13730f28b84fb58522a9f47b3d6be8829b6d0a18d5386f7d7e1d464c",
+          "sha256": "2f84a03dcf2d0f978cc2780e46e690c91505685324943bf5eefa73c08b6d05b4"
+        }
+      ],
+      "key": "308e0b72be8d6bf4",
+      "module": "__gust_pf_69c47aebba0924e5",
+      "name": "run",
+      "split_of": "001f235b18ac22fb"
     },
     {
       "clean_sha256": "ec7dd75690a46e8b21b9957d45e27492d3c558e520fd6e43cde967461d1cec16",

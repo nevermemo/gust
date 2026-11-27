@@ -64,7 +64,7 @@ pub use records::LineRecord;
 pub use statements::local_binding;
 pub(crate) use statements::tuple_pattern;
 pub use types::{ParameterFlavor, parameter_flavor, wrapper_element_type};
-pub(crate) use types::{emit_ident, parameter_flavor_in, type_name};
+pub(crate) use types::{emit_ident, is_scatter_type, parameter_flavor_in, type_name};
 
 #[cfg(test)]
 mod tests {

@@ -37,8 +37,8 @@ pub const LENGTH: u32 = 1000;
 
 /// The stages of [`build`] that have a pass, and so the entries of a frame's time at level `Passes` (the browser records
 /// each stage in passes of its own): `y`, the in-place doubling of `y`, `z`, `mixed`, `rotated`, the reversal index
-/// stage and `gathered`.
-pub const TIMED_STAGES: usize = 7;
+/// stage, `gathered` and the scatter stage (`_scatter`).
+pub const TIMED_STAGES: usize = 8;
 
 /// The element of the batch's struct stages (m14.s2s, D279): three words, so no padding, and exact `u32` arithmetic.
 #[derive(Clone, Copy, Debug, PartialEq, gust::GpuStruct)]
@@ -73,6 +73,8 @@ pub struct Handles {
     pub rotated: Stage<Row, D1>,
     /// The rows of `rows` reversed, gathered by a counted stage through an index a stage built.
     pub gathered: Stage<Row, D1>,
+    /// The rows of `rows` reversed, stored by a scatter stage (m14.s2sc) at the place `rev` names for each row.
+    pub scattered: Stage<Row, D1>,
 }
 
 /// The batch: `y = x * 3 + gain`, then `y = y * 2 + 1` in place, with `in_flight(2)`. `u32` arithmetic on small values,
@@ -113,7 +115,12 @@ pub fn build(
         // browser build has not, so the index is a stage's here. `999` is `LENGTH - 1` (`build` checks `n`).
         let rev = gpu_task!(n, |i| -> u32 { 999u32 - i });
         let gathered = gpu_task!(count(count); n, |i| -> Row { rows[rev[i]] });
-        Handles { gain, x, y, count, z, rows, mixed, rotated, gathered }
+        // A scatter stage (m14.s2sc) stores each row at the place the same index names: the places are distinct, as the
+        // stage declares. Its `let` is a unit value and names the stage in the twin's panic message.
+        let scattered = b.input::<Row>(n);
+        #[allow(clippy::let_unit_value)]
+        let _scatter = gpu_task!(n, scatter(&mut scattered), |i| { scattered[rev[i]] = rows[i]; });
+        Handles { gain, x, y, count, z, rows, mixed, rotated, gathered, scattered }
     })
 }
 
@@ -223,6 +230,12 @@ pub fn gathered_reference(rows: &[Row], count: u32) -> Vec<Row> {
     gathered.truncate(count as usize);
     gathered.resize(rows.len(), Row { a: 0, b: 0, c: 0 });
     gathered
+}
+
+/// The rows of the scatter stage for `rows`: each row stored at the place `LENGTH - 1 - i`, so the rows reversed.
+#[must_use]
+pub fn scattered_reference(rows: &[Row]) -> Vec<Row> {
+    rows.iter().rev().copied().collect()
 }
 
 /// The input of frame `seed`.

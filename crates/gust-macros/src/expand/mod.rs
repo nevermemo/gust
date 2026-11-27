@@ -22,7 +22,7 @@ use syn::ext::IdentExt as _;
 use crate::{
     diagnostics::{self, Code},
     profile::{GRID, GRID_SPLIT, PIXEL, ReflectionKind, Shape, StageProfile, TwinHarness},
-    slang::{ParameterFlavor, parameter_flavor_in},
+    slang::{ParameterFlavor, is_scatter_type, parameter_flavor_in},
     validate::classify::{self, AttributeFacts, ShapePin},
 };
 
@@ -48,6 +48,7 @@ pub(crate) use artifact::TWIN_TEXT;
 pub(crate) use artifact::{Environment, content_key};
 use artifact_items::*;
 pub use build_profile::*;
+pub(crate) use cpu_twin::SCATTER_STAGE_MARKER;
 use cpu_twin::*;
 pub(crate) use kernel_attributes::*;
 use module::*;

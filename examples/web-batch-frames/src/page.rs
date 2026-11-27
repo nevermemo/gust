@@ -14,7 +14,7 @@ use wasm_bindgen_futures::JsFuture;
 
 use crate::{
     LENGTH, TIMED_STAGES, build, counted_reference, gathered_reference, input, mixed_reference,
-    reference, rotated_reference, rows_of, wide_input, wide_reference,
+    reference, rotated_reference, rows_of, scattered_reference, wide_input, wide_reference,
 };
 
 /// The storage buffers per stage the raised device asks for: what Chrome 158 reports as the adapter limit on the two
@@ -314,6 +314,9 @@ async fn frames_in_flight() -> Result<&'static str, String> {
     let gathered2 = frame2
         .ticket(&h.gathered)
         .map_err(|error| format!("frame N+2 gathered rows ticket: {error}"))?;
+    let scattered2 = frame2
+        .ticket(&h.scattered)
+        .map_err(|error| format!("frame N+2 scattered rows ticket: {error}"))?;
     let counted2 = frame2
         .ticket(&h.z)
         .map_err(|error| format!("frame N+2 counted ticket: {error}"))?;
@@ -350,6 +353,13 @@ async fn frames_in_flight() -> Result<&'static str, String> {
         .map_err(|error| format!("gathered rows ticket failed: {error}"))?;
     if gathered != gathered_reference(&rows2, COUNTS[2]) {
         return Err("gathered rows: they differ from the host computation".to_owned());
+    }
+    // The scatter stage stores every row at its own place, so the rows come out reversed, whatever the count.
+    let scattered = scattered2
+        .await
+        .map_err(|error| format!("scattered rows ticket failed: {error}"))?;
+    if scattered != scattered_reference(&rows2) {
+        return Err("scattered rows: they differ from the host computation".to_owned());
     }
 
     // The counted stage (bounded launch in a browser): each frame's rows below its count are that frame's, the rest

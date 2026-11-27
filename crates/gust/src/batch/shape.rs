@@ -368,6 +368,8 @@ impl Values {
 pub struct Layout<'a> {
     pub(crate) buffers: &'a [Arc<dyn Any>],
     pub(crate) dims: &'a [[u32; 2]],
+    /// The parameters' values in the resized frame (a scatter stage's rows are sized by a rule over them).
+    pub(crate) values: &'a [Value],
 }
 
 impl Layout<'_> {

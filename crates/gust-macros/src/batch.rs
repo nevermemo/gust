@@ -195,6 +195,8 @@ struct StageInput {
     /// The `count(n);` clause's handle (D278).
     count: Option<syn::Ident>,
     shape: syn::Expr,
+    /// The `scatter(&mut a, &mut b)` part (slice s2sc), as written.
+    scatter: Option<(syn::Ident, Vec<syn::Expr>)>,
     list: Vec<RawBinding>,
     closure: syn::ExprClosure,
 }
@@ -226,6 +228,7 @@ impl Parse for StageInput {
         }
         let shape: syn::Expr = input.parse()?;
         input.parse::<Token![,]>()?;
+        let scatter = crate::task::parse_scatter(input)?;
         let mut list = Vec::new();
         if input.peek(syn::token::Bracket) {
             let content;
@@ -260,6 +263,7 @@ impl Parse for StageInput {
             krate,
             count,
             shape,
+            scatter,
             list,
             closure,
         })
@@ -540,6 +544,7 @@ impl Rewriter {
             krate,
             count,
             shape,
+            scatter,
             list,
             closure,
         } = parsed;
@@ -580,6 +585,44 @@ impl Rewriter {
             entries.push(quote!(#name: &mut Stage<#element>));
         }
         let mut failures = Vec::new();
+        // The scatter targets (slice s2sc): handles of the block that the stage writes, each a `&mut` entry of its list.
+        let scatter_names: Vec<syn::Ident> = scatter
+            .as_ref()
+            .map(|(_, entries)| {
+                entries
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        syn::Expr::Reference(reference) if reference.mutability.is_some() => {
+                            match &*reference.expr {
+                                syn::Expr::Path(path) => path.path.get_ident().cloned(),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for name in &scatter_names {
+            match self.lookup(name) {
+                Some(Kind::Handle(element)) => {
+                    let element = element.clone();
+                    entries.push(quote!(#name: &mut Stage<#element>));
+                }
+                _ => failures.push(diagnostics::error(
+                    Code::BatchScatterForm,
+                    name,
+                    format!(
+                        "`{}` is a scatter target, so it is a handle of the block (`b.input::<T>(..)` or a stage's \
+                         result); this name is not one",
+                        name.unraw()
+                    ),
+                )),
+            }
+        }
+        let scatter_clause = scatter
+            .as_ref()
+            .map(|(keyword, scattered)| quote!(#keyword(#(#scattered),*),));
         // The count of a counted stage (D278) is a handle of the block the stage captures, read or not by its body.
         if let Some(n) = &count
             && !written.contains(n)
@@ -603,6 +646,7 @@ impl Rewriter {
                 || written.contains(&used)
                 || declared_target.as_ref() == Some(&used)
                 || count.as_ref() == Some(&used)
+                || scatter_names.contains(&used)
             {
                 continue;
             }
@@ -637,7 +681,7 @@ impl Rewriter {
             quote!([#(#entries),*],)
         };
         mac.tokens = quote! {
-            batch(#builder, #label); #enums #options #krate_option #shape, #bracket #closure
+            batch(#builder, #label); #enums #options #krate_option #shape, #scatter_clause #bracket #closure
         };
 
         match &closure.output {

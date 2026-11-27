@@ -323,8 +323,8 @@ fn run_six_as_set(level: FrameTiming, encode: bool) -> (Vec<u32>, u64, usize) {
     (rows, passes, entries)
 }
 
-/// Six plain stages, each reading the one before: one pass untimed and at `Frame` (no per-stage entries), a pass per
-/// stage at `Passes` (one entry per stage), and a pass per stage forced. (Pass counts: 1, 1, 6, 6.)
+/// Six plain stages, each reading the one before: one pass untimed and at `Frame` (no per-stage entries). (Pass
+/// counts: 1, 1.)
 #[test]
 fn six_plain_stages_are_one_pass_untimed_and_at_frame() {
     let twin = {
@@ -348,16 +348,30 @@ fn six_plain_stages_are_one_pass_untimed_and_at_frame() {
     assert_eq!(entries, 0, "Frame has no per-stage entries");
 }
 
+/// At `Passes` a device with stamps inside passes records the one pass of the untimed frame; one without them keeps a
+/// pass per stage. Either way, one entry per stage. (Pass count: 1, or 6 without the feature.)
 #[test]
-fn six_plain_stages_are_a_pass_each_at_passes_with_one_entry_per_stage() {
-    if !device_logged("one_pass passes probe").supports_gpu_timestamps() {
+fn six_plain_stages_at_passes_are_one_pass_with_stamps_inside_or_a_pass_each_without() {
+    let probe = device_logged("one_pass passes probe");
+    if !probe.supports_gpu_timestamps() {
         println!(
             "SKIP: the adapter has no timestamp queries, so level Passes has no entries to count"
         );
         return;
     }
+    let inside = probe
+        .wgpu_device()
+        .features()
+        .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES);
     let (_, passes, entries) = run_six(FrameTiming::Passes, false, false);
-    assert_eq!(passes, 6, "Passes records every stage in passes of its own");
+    if inside {
+        assert_eq!(
+            passes, 1,
+            "stamps inside the pass: the untimed frame's pass"
+        );
+    } else {
+        assert_eq!(passes, 6, "no stamps inside passes: a pass per stage");
+    }
     assert_eq!(entries, 6, "one entry per stage");
 }
 

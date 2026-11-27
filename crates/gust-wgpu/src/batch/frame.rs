@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// The label of the passes `encode_stages` records for a frame.
-const FRAME_PASS_LABEL: &str = "GUST batch frame pass";
+pub(super) const FRAME_PASS_LABEL: &str = "GUST batch frame pass";
 
 /// What the stages of a frame record as: a run of compute dispatches in one pass, a dispatch that is not a compute one
 /// (a render pass of its own), or an indirect counted stage (its two passes).

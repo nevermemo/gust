@@ -70,8 +70,11 @@ has a pass: an entry is per **stage**, from the begin of the stage's first pass 
 records several passes, or a launch split into pieces, which share one pass, is still one entry); a stage over zero
 elements has none. The plan for fused passes is one entry per fused group, naming all its stages. The GPU device
 records the plain `grid` dispatches of neighbouring stages in one compute pass when a frame is untimed or at `Frame`,
-but at `Passes` every stage keeps a compute pass of its own, so a per-stage time includes the pass boundary and the
-times can sum to more than the `Frame` span. A time is `Ok(None)`,
+and so it does at `Passes` where the device can write a timestamp inside a pass (`TIMESTAMP_QUERY_INSIDE_PASSES`:
+native devices that have it; GUST asks for it where the adapter offers it): each stage's begin and end are stamps
+inside the shared pass. Where the device cannot (a browser device, or a native one a caller opened without the feature)
+every stage keeps a compute pass of its own at `Passes`, so a per-stage time includes the pass boundary and the times
+can sum to more than the `Frame` span. A time is `Ok(None)`,
 never an error, for a batch built `Off`, a device without timestamp queries (the CPU twin, an adopted device that did
 not ask for them, `wasm32`), a frame with no pass, and a frame for which no read-back buffer was free (the batch
 keeps a bounded set of them and replaces any that a dropped or unread frame cost, so this is rare, and a caller that

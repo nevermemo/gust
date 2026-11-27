@@ -268,7 +268,7 @@ fn goldens() -> [Golden; 31] {
         Golden {
             file: "mismatch.slang",
             text: include_str!("../../../tests/fixtures/mismatch.slang"),
-            entries: 15,
+            entries: 16,
             kernels: f_mismatch::KERNELS,
         },
         Golden {
@@ -904,7 +904,7 @@ fn compare_kernel(kernel: &KernelDescriptor, module: &Module) -> Vec<String> {
 }
 
 /// The compute and fragment entries the thirty-one goldens hold in all (pinned per golden in [`goldens`]).
-const GOLDEN_ENTRIES: usize = 124;
+const GOLDEN_ENTRIES: usize = 125;
 
 /// The fixture kernels that no golden holds: the macro's golden test keeps only the first kernel of `atomics.rs`
 /// (`atomics.slang` has one entry for the ten kernels of the module) and of `numeric.rs` (one of two).

@@ -26,7 +26,10 @@
 //! frame N's ticket is pending, then requires both frames, and a third whose `begin` waited for the oldest, to equal the
 //! host computation exactly. Its stages' kernels are private to the batch, so it reports no selected kernels and its
 //! `Example` has an empty `manifest`; its label is
-//! `<vendor> <architecture> | two frames in flight exact, wide stage refused on 8 and exact on 16`.
+//! `<vendor> <architecture> | frame time read | two frames in flight exact, wide stage refused on 8 and exact on 16`,
+//! where the middle part (one of the `Example`'s `infos`, and no other) is `frame time read` when the browser granted
+//! timestamp queries and the third frame's GPU time was read and checked, and `frame time absent` when it did not and
+//! the frame time was `None`.
 //!
 //! The server binds `127.0.0.1` on an ephemeral port only, answers `GET` for the plain files of the output directory
 //! only, and is stopped when the check ends.
@@ -82,6 +85,10 @@ pub(crate) struct Example {
     pub(crate) manifest: &'static str,
     /// The last part of the page's `GUST_OK` label (after the adapter words and the selected kernels).
     pub(crate) closing: &'static str,
+    /// For a page with an empty `manifest` only: the middle parts its label may have, between the adapter words and the
+    /// closing part (`<adapter> | <info> | <closing>`), which say which branch of the page ran; any other middle part
+    /// is refused. Empty: no such part, and the label is `<adapter> | <closing>`.
+    pub(crate) infos: &'static [&'static str],
     /// Environment variables the cargo build of the page does not inherit (empty for `check-web`'s own page).
     pub(crate) cleared_env: &'static [&'static str],
 }
@@ -94,6 +101,7 @@ pub(crate) const WEB_VECTOR_ADD: Example = Example {
     out_name: OUT_NAME,
     manifest: MANIFEST_PATH,
     closing: SUBGROUPS_REFUSED,
+    infos: &[],
     cleared_env: &[],
 };
 
@@ -108,8 +116,14 @@ pub(crate) const WEB_BATCH_FRAMES: Example = Example {
     out_name: "web_batch_frames",
     manifest: "",
     closing: FRAMES_EXACT,
+    infos: FRAME_TIME_PARTS,
     cleared_env: &[],
 };
+
+/// The middle parts of the batch page's label: the page says `frame time read` when the browser granted timestamp
+/// queries and the timed frame's GPU time was read and checked, and `frame time absent` when it did not and the frame
+/// time resolved to `None`. Without it a pass on a machine with no grant would prove only the `None` branch.
+const FRAME_TIME_PARTS: &[&str] = &["frame time read", "frame time absent"];
 
 /// The last part of the batch page's `GUST_OK` line: frame N was pending when frame N+1 was submitted, and every
 /// frame's awaited ticket was exact.
@@ -290,8 +304,9 @@ pub(crate) fn check_web_report(args: &[String]) -> Result<String, String> {
         started,
     )?;
     let batch_page = format!(
-        "check-web passed: the batch page logged `{OK_PREFIX}{}`: a gpu_batch! with in_flight(2) recorded and submitted frame N+1 while frame N's ticket was still pending (asserted, not timed: nothing returned to the event loop in between), a third begin was still waiting then, and the awaited tickets of both frames equalled the host computation exactly; the third frame's begin, awaited, learned that the oldest frame had completed and its ticket was exact too.\n  evidence: {}\n  {}",
+        "check-web passed: the batch page logged `{OK_PREFIX}{}`: a gpu_batch! with in_flight(2) recorded and submitted frame N+1 while frame N's ticket was still pending (asserted, not timed: nothing returned to the event loop in between), a third begin was still waiting then, and the awaited tickets of both frames equalled the host computation exactly; the third frame's begin, awaited, learned that the oldest frame had completed and its ticket was exact too. The label's middle part says which branch of the frame timing ran: `{}`.\n  evidence: {}\n  {}",
         frames.label,
+        frames.info,
         evidence_label(frames.chrome_version.as_deref(), &frames.adapter),
         frames.timings
     );
@@ -311,6 +326,8 @@ pub(crate) struct ExampleRun {
     pub(crate) label: String,
     /// The adapter words (`<vendor> <architecture>`) the page named.
     pub(crate) adapter: String,
+    /// The middle part of the label of a page whose `infos` is not empty (which branch ran); empty otherwise.
+    pub(crate) info: String,
     /// The kernels the page's build selected, already checked against the committed manifest; empty for a page whose
     /// `manifest` is empty.
     pub(crate) selected: Vec<SelectedKernel>,
@@ -372,11 +389,14 @@ pub(crate) fn run_example(
     );
     match outcome {
         Outcome::Result(PageResult::Ok { label }) => {
-            let (adapter, selected) = if example.manifest.is_empty() {
-                let adapter = split_unlisted_label(&label, example.closing).map_err(|error| {
-                    format!("check-web: the page logged `{OK_PREFIX}{label}`: {error}\n  {timings}")
-                })?;
-                (adapter, Vec::new())
+            let (adapter, selected, info) = if example.manifest.is_empty() {
+                let (adapter, info) = split_unlisted_label(&label, example.infos, example.closing)
+                    .map_err(|error| {
+                        format!(
+                            "check-web: the page logged `{OK_PREFIX}{label}`: {error}\n  {timings}"
+                        )
+                    })?;
+                (adapter, Vec::new(), info)
             } else {
                 let (adapter, selected) =
                     split_label(&label, example.closing).map_err(|error| {
@@ -394,11 +414,12 @@ pub(crate) fn run_example(
                         problems.join("\n  ")
                     ));
                 }
-                (adapter, selected)
+                (adapter, selected, String::new())
             };
             Ok(ExampleRun {
                 label,
                 adapter,
+                info,
                 selected,
                 chrome_version,
                 timings,
@@ -501,20 +522,46 @@ pub(crate) fn split_page_label(label: &str) -> Result<(String, Vec<SelectedKerne
     split_label(label, SUBGROUPS_REFUSED)
 }
 
-/// The adapter words of the label of a page that reports no selected kernels (an [`Example`] with an empty `manifest`):
-/// `<vendor> <architecture> | <closing>`, and nothing else.
-pub(crate) fn split_unlisted_label(label: &str, closing: &str) -> Result<String, String> {
-    match label.split(" | ").collect::<Vec<_>>().as_slice() {
-        [_, last] if *last != closing => {
-            Err(format!("the OK line does not say `{closing}`: {last:?}"))
+/// The adapter words, and the middle part, of the label of a page that reports no selected kernels (an [`Example`] with
+/// an empty `manifest`): `<vendor> <architecture> | <closing>` when `infos` is empty (the middle part returned is then
+/// empty), and `<vendor> <architecture> | <info> | <closing>` when it is not, where `<info>` is one of `infos`. Nothing
+/// else is accepted.
+pub(crate) fn split_unlisted_label(
+    label: &str,
+    infos: &[&str],
+    closing: &str,
+) -> Result<(String, String), String> {
+    let parts: Vec<&str> = label.split(" | ").collect();
+    let (adapter, info, last) = match (infos.is_empty(), parts.as_slice()) {
+        (true, [adapter, last]) => (*adapter, "", *last),
+        (false, [adapter, info, last]) => (*adapter, *info, *last),
+        (empty, _) => {
+            let (expected, named) = if empty {
+                (2, format!("the adapter words and `{closing}`"))
+            } else {
+                (
+                    3,
+                    format!("the adapter words, one of {infos:?} and `{closing}`"),
+                )
+            };
+            return Err(format!(
+                "the OK line has {} part(s) separated by ` | `, expected {expected}: {named}",
+                parts.len()
+            ));
         }
-        ["", _] => Err("the OK line names no adapter".to_owned()),
-        [adapter, _] => Ok((*adapter).to_owned()),
-        parts => Err(format!(
-            "the OK line has {} part(s) separated by ` | `, expected 2: the adapter words and `{closing}`",
-            parts.len()
-        )),
+    };
+    if last != closing {
+        return Err(format!("the OK line does not say `{closing}`: {last:?}"));
     }
+    if !infos.is_empty() && !infos.contains(&info) {
+        return Err(format!(
+            "the OK line's middle part is not one of {infos:?}: {info:?}"
+        ));
+    }
+    if adapter.is_empty() {
+        return Err("the OK line names no adapter".to_owned());
+    }
+    Ok((adapter.to_owned(), info.to_owned()))
 }
 
 /// The error for an OK line of the wrong number of parts.

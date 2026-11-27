@@ -1477,6 +1477,17 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       may ask for more than 8 storage buffers per stage; a browser device without the option keeps 8. `check-web`'s
       batch page refuses a wide stage on the default 8 and runs it exactly on a device that asked for 16 (Chrome 158,
       Radeon 890M). Other browsers are unmeasured.
+    - Quiet window qw3 read four pre-registered measurements. s2i.m2 (counted stages, GPU span, five runs per cell,
+      both adapters): the two launches of a counted stage rank in opposite directions on the two adapters below 16M
+      rows, so by proxy ruling no launch hint is added and the default stays Indirect (D285); the pass structure of
+      several indirect counted stages is queued as speed spike s2i.pass. pf.fma (fused multiply-add, a scratch spike
+      outside the repo, three seeds per adapter): read, not closed; on both adapters the default route already
+      contracts `a*b+c`, and forbidding contraction cost time in the multiply-add-bound cells; any change to the
+      semantics contract is the owner's. pf.alone0 rerun: not reproduced at W1 1M; at 16M the floor was not held
+      again (identical processes differ by a factor near 1.2 to 1.9 on the RTX 5090), nothing concluded, and the
+      isolation slice that depended on it is not ordered. pf.split0 rerun (seeds 11 and 33, as ruled): KILL, the step
+      does not reproduce through GUST's path; no pf.split slice. Seed 22, outside the ruling, showed the same factor
+      near 1.9 between cells.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

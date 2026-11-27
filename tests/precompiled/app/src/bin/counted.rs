@@ -71,15 +71,20 @@ fn check(device: &Arc<HeadlessDevice>) -> Result<(), String> {
 /// Runs three frames of a batch whose element is [`Row`]: a stage reads a field and a stage returns a whole row, each
 /// compared with the host model.
 fn check_structs(device: &Arc<HeadlessDevice>) -> Result<(), String> {
-    let (mut batch, (rows, life, next)) = gpu_batch!("rows", on(device); in_flight(1); |b| {
-        let rows = b.input::<Row>(CAPACITY);
-        let life = gpu_task!(CAPACITY, |i| -> f32 { rows[i].life });
-        let next = gpu_task!(CAPACITY, |i| -> Row {
-            Row { life: rows[i].life * 0.5, flags: rows[i].flags + 1u32, tag: rows[i].tag }
-        });
-        (rows, life, next)
-    })
-    .map_err(|error| format!("struct build failed: {error}"))?;
+    let (mut batch, (rows, life, next, gathered)) =
+        gpu_batch!("rows", on(device); in_flight(1); |b| {
+            let rows = b.input::<Row>(CAPACITY);
+            let life = gpu_task!(CAPACITY, |i| -> f32 { rows[i].life });
+            let next = gpu_task!(CAPACITY, |i| -> Row {
+                Row { life: rows[i].life * 0.5, flags: rows[i].flags + 1u32, tag: rows[i].tag }
+            });
+            // Whole rows through an index handle (m14.s2s2): a stage builds a reversal, and a stage gathers the rows through
+            // it. (A library op such as `compact` runs Slang kernels at run time, which this build does not have.)
+            let rev = gpu_task!(CAPACITY, |i| -> u32 { 999u32 - i });
+            let gathered = gpu_task!(CAPACITY, |i| -> Row { rows[rev[i]] });
+            (rows, life, next, gathered)
+        })
+        .map_err(|error| format!("struct build failed: {error}"))?;
     for frame in 0..3u32 {
         let input: Vec<Row> = (0..CAPACITY)
             .map(|i| Row {
@@ -88,13 +93,14 @@ fn check_structs(device: &Arc<HeadlessDevice>) -> Result<(), String> {
                 tag: 1000 + i,
             })
             .collect();
-        let (got_life, got_next) = block_on(async {
+        let (got_life, got_next, got_gathered) = block_on(async {
             let mut f = batch.begin().await?;
             f.write(&rows, &input)?;
             let life = f.ticket(&life)?;
             let next = f.ticket(&next)?;
+            let gathered = f.ticket(&gathered)?;
             let _submitted = f.submit()?;
-            Ok::<_, gust::batch::Error>((life.await?, next.await?))
+            Ok::<_, gust::batch::Error>((life.await?, next.await?, gathered.await?))
         })
         .map_err(|error| format!("struct frame {frame} failed: {error}"))?;
         let want_next: Vec<Row> = input
@@ -108,9 +114,14 @@ fn check_structs(device: &Arc<HeadlessDevice>) -> Result<(), String> {
         if got_life != input.iter().map(|r| r.life).collect::<Vec<_>>() || got_next != want_next {
             return Err(format!("struct frame {frame} differs from the host model"));
         }
+        if got_gathered != input.iter().rev().copied().collect::<Vec<_>>() {
+            return Err(format!(
+                "struct frame {frame}: the gathered rows differ from the host model"
+            ));
+        }
     }
     println!(
-        "counted: a struct stage ran from its precompiled artifacts, three frames of {CAPACITY} rows equal the host model"
+        "counted: a struct stage ran from its precompiled artifacts, three frames of {CAPACITY} rows equal the host model, a gather of rows through a stage-built index included"
     );
     Ok(())
 }

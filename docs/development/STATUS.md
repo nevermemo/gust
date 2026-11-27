@@ -1488,6 +1488,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       isolation slice that depended on it is not ordered. pf.split0 rerun (seeds 11 and 33, as ruled): KILL, the step
       does not reproduce through GUST's path; no pf.split slice. Seed 22, outside the ruling, showed the same factor
       near 1.9 between cells.
+    - m14.s2s2 merged (D286 corrects D279): whole struct rows go through `compact` by the form the ruling names.
+      `gust::compact` stays over `u32` flags; a counted stage gathers `rows[idx[i]]` through the index handle, and a
+      struct operand of an op stays GUST-E1022 with a message naming that form. Tests compare whole buffers against a
+      host model at the edges 0, 1, CAP-1 and CAP, plus a stage-built permutation, on both adapters and in the browser
+      example. The three planned mutations ran on the CPU twin only, and each failed the twin tests; the GPU tests use
+      the same assertion functions, so they would catch the GPU-side form, but that is inferred, not run. Two review
+      points go into m14.s2sc: the browser example's `build(n)` assumes `n == LENGTH`, and the refusal test at three
+      buffers does not name the refused stage.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

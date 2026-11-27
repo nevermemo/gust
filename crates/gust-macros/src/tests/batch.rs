@@ -1030,6 +1030,43 @@ fn a_counted_stage_over_a_struct_target_is_one_binding_for_the_rows_and_one_for_
 }
 
 #[test]
+fn a_counted_stage_gathers_whole_struct_rows_by_an_index_handle() {
+    // m14.s2s2: `rows[idx[i]]` is a struct read at a computed index and `-> Row` under `count(n)` is a counted struct
+    // result; the stage is four bindings (rows, index, count, result) whatever the fields.
+    let scratch = Scratch::new();
+    let text = stage(
+        &format!(
+            "batch(b, \"s\"); enums {{ {ROW_DEFINITION} }} count(n); 8u32, \
+             [n: Stage<u32>, idx: Stage<u32>, rows: Stage<Row>], |i| -> Row {{ rows[idx[i]] }}"
+        ),
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+    let slang = scratch.slang();
+    assert!(slang.contains("RWStructuredBuffer<Row>"), "{slang}");
+    assert!(slang.contains("rows[idx[i]]"), "{slang}");
+    assert_eq!(bindings(&slang, "StructuredBuffer<Row>"), 2, "{slang}");
+    assert_eq!(bindings(&slang, "StructuredBuffer<uint>"), 2, "{slang}");
+}
+
+#[test]
+fn a_counted_stage_gathers_a_field_built_struct_row_by_an_index_handle() {
+    let scratch = Scratch::new();
+    let text = stage(
+        &format!(
+            "batch(b, \"s\"); enums {{ {ROW_DEFINITION} }} count(n); 8u32, \
+             [n: Stage<u32>, idx: Stage<u32>, rows: Stage<Row>], |i| -> Row {{ \
+             Row {{ pos: rows[idx[i]].pos, life: rows[idx[i]].life * 0.5f32, flags: rows[idx[i]].flags, \
+             _pad0: 0u32, _pad1: 0u32 }} }}"
+        ),
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+    let slang = scratch.slang();
+    assert!(slang.contains("rows[idx[i]].life"), "{slang}");
+}
+
+#[test]
 fn an_in_place_target_of_structs_stores_a_field_or_the_whole_element() {
     let scratch = Scratch::new();
     let text = stage(
@@ -1140,6 +1177,35 @@ fn a_struct_handle_is_no_operand_of_a_library_op() {
         ),
         Code::BatchStructOperand,
     );
+}
+
+#[test]
+fn the_refusal_of_a_struct_operand_names_the_form_that_compacts_rows() {
+    // m14.s2s2: `compact` takes flags, so its message says what to write; the other ops keep their own text.
+    let refused = |call: &str| {
+        let text = batch(&format!(
+            "@ enums [ {{ {ROW_DEFINITION} }} ] ; \"s\", on(&device); |b| {{ \
+             let x = b.input::<Row>(4u32); let n = {call}; (x, n) }}"
+        ));
+        assert!(failed(&text), "{text}");
+        assert_rendered_code(&text, Code::BatchStructOperand);
+        text
+    };
+    let compact = refused("gust::compact(&x)");
+    for part in [
+        "the operand of `compact` is a buffer of `u32` flags",
+        "build the flags in a stage",
+        "gather the rows in a counted stage",
+        "count(n); CAP, |i| -> Row { rows[idx[i]] }",
+    ] {
+        assert!(compact.contains(part), "`{part}` missing from: {compact}");
+    }
+    let sum = refused("gust::sum(&x)");
+    assert!(
+        sum.contains("an op over rows is not in this release"),
+        "{sum}"
+    );
+    assert!(!sum.contains("counted stage"), "{sum}");
 }
 
 #[test]

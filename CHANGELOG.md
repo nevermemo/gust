@@ -7,6 +7,12 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- Whole struct rows through `compact` in a batch (m14.s2s2): there is no op over rows. `gust::compact` stays an op over
+  `u32` flags (built in a stage from a field); the rows are gathered by a counted stage through the indices,
+  `gpu_task!(count(n); CAP, |i| -> Row { rows[idx[i]] })`, or through any other index handle, one a stage built included.
+  The gather binds four storage buffers whatever the number of fields, and rows from the count on keep what the earlier
+  frame left. `gust::compact(&rows)` stays `GUST-E1022`, with a message that now names this form. A move of rows to a
+  computed place is a `scatter` stage, committed as the next slice (m14.s2sc). The browser page (`web-batch-frames`) and the precompiled app gather through an index built by a stage (a reversal), not through `compact`; that form is covered by the batch-basics tests, not by those two examples. The new tests ran on the Radeon 890M and the RTX 5090 (both counted launches).
 - A frame timed at `FrameTiming::Passes` is now the frame that runs untimed (m14.onepassts): on a device with
   `TIMESTAMP_QUERY_INSIDE_PASSES` (`DeviceOptions::device_request` now asks for it where the adapter offers it) the
   stages share compute passes as they do untimed and each stage's begin and end are timestamps inside the pass, so the

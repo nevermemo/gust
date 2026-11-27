@@ -403,6 +403,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "batch-struct-compact-operand"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "batch-struct-copy-mismatch"
 version = "0.0.0"
 dependencies = [

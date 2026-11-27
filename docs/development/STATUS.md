@@ -1473,6 +1473,10 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       and `pixel` stages keep their own passes; without the feature, or with the pass-per-dispatch form forced, a pass
       per stage as before. New test file `inside_pass_timestamps.rs` (four GPU tests) ran on the Radeon 890M and the
       RTX 5090; the pin is 703 over 73 by count, and the merge gate's full Gpu suite confirms it.
+    - m14.lim-web merged (D284 amends D280): `with_storage_buffers(n)` follows one rule on every target, so a page
+      may ask for more than 8 storage buffers per stage; a browser device without the option keeps 8. `check-web`'s
+      batch page refuses a wide stage on the default 8 and runs it exactly on a device that asked for 16 (Chrome 158,
+      Radeon 890M). Other browsers are unmeasured.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

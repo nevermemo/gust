@@ -4,15 +4,17 @@ use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
+use std::time::Duration;
 
+use gust::batch::{FrameTime, FrameTiming, TimingInfo};
 use gust_wgpu::{DeviceOptions, HeadlessDevice};
 use js_sys::{Function, Object, Promise, Reflect};
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 
 use crate::{
-    LENGTH, build, counted_reference, gathered_reference, input, mixed_reference, reference,
-    rotated_reference, rows_of, wide_input, wide_reference,
+    LENGTH, TIMED_STAGES, build, counted_reference, gathered_reference, input, mixed_reference,
+    reference, rotated_reference, rows_of, wide_input, wide_reference,
 };
 
 /// The storage buffers per stage the raised device asks for: what Chrome 158 reports as the adapter limit on the two
@@ -26,15 +28,31 @@ const COUNTS: [u32; 3] = [300, 100, 5000];
 /// The last part of the page's `GUST_OK` line; `cargo xtask check-web` requires it.
 const CLOSING: &str = "two frames in flight exact, wide stage refused on 8 and exact on 16";
 
-/// Runs the page and returns the line it logged: `GUST_OK <vendor> <architecture> | <CLOSING>` or
-/// `GUST_FAIL <reason>`. It never rejects; a panic is logged as `GUST_FAIL panic: ...` first.
+/// The middle part of the line when the browser granted timestamp queries and the third frame's time was read and
+/// checked; `cargo xtask check-web` accepts only the middle parts listed in `infos` of the page's `Example` in xtask.
+const TIME_READ: &str = "frame time read";
+
+/// The middle part when it did not: the batch reported no timing and the frame's time resolved to `None`.
+const TIME_ABSENT: &str = "frame time absent";
+
+/// How far the GPU span of the timed frame may exceed the CPU wall time measured around it: the resolution of
+/// `Date.now()`, one millisecond. The wall time is only a coarse bound: the step-zero probe (which read `performance.now()`
+/// around single frames) saw about 5 ms in every case on Chrome 158, Radeon 890M only; RTX 5090 pending, a browser timer
+/// floor. This page's wall time covers a longer stretch, so the check catches a wild value, not a good-looking wrong one.
+const WALL_SLACK_MS: f64 = 1.0;
+
+/// Runs the page and returns the line it logged: `GUST_OK <vendor> <architecture> | <TIME_READ or TIME_ABSENT> |
+/// <CLOSING>` or `GUST_FAIL <reason>`. It never rejects; a panic is logged as `GUST_FAIL panic: ...` first.
 #[wasm_bindgen]
 pub async fn run() -> String {
     std::panic::set_hook(Box::new(|info| {
         log(&format!("GUST_FAIL panic: {}", one_line(&info.to_string())));
     }));
     let line = match frames_in_flight().await {
-        Ok(()) => format!("GUST_OK {} | {CLOSING}", browser_adapter_label().await),
+        Ok(time) => format!(
+            "GUST_OK {} | {time} | {CLOSING}",
+            browser_adapter_label().await
+        ),
         Err(reason) => format!("GUST_FAIL {}", one_line(&reason)),
     };
     log(&line);
@@ -111,7 +129,78 @@ fn require_exact(what: &str, got: &[u32], expected: &[u32]) -> Result<(), String
     }
 }
 
-async fn frames_in_flight() -> Result<(), String> {
+/// The timed frame's time, awaited: with the grant (`granted`) it is a value that has [`TIMED_STAGES`] entries, one per
+/// stage with a pass, each naming a distinct stage and none longer than the span, and a span within the CPU wall time
+/// since `started_ms` (see [`WALL_SLACK_MS`]), and the batch reports the level it was built with and a 1 ns tick;
+/// without it the time is `None` and the batch reports no timing. Returns the middle part of the label for the branch
+/// that ran.
+async fn check_frame_time(
+    granted: bool,
+    info: Option<TimingInfo>,
+    time: FrameTime,
+    started_ms: f64,
+) -> Result<&'static str, String> {
+    let times = time
+        .await
+        .map_err(|error| format!("frame time failed: {error}"))?;
+    let wall_ms = js_sys::Date::now() - started_ms;
+    if !granted {
+        return match (times, info) {
+            (None, None) => Ok(TIME_ABSENT),
+            (times, info) => Err(format!(
+                "timestamp queries were not granted, but the frame time is {times:?} and the batch timing {info:?}"
+            )),
+        };
+    }
+    let Some(info) = info else {
+        return Err("timestamp queries were granted, but the batch reports no timing".to_owned());
+    };
+    if (info.level, info.tick) != (FrameTiming::Passes, Duration::from_nanos(1)) {
+        return Err(format!(
+            "the batch reports {:?} at a tick of {:?}, not Passes at 1 ns",
+            info.level, info.tick
+        ));
+    }
+    let Some(times) = times else {
+        return Err(
+            "timestamp queries were granted, but the frame time resolved to None".to_owned(),
+        );
+    };
+    // One entry for each stage that has a pass, each naming its own stage, and none longer than the whole span (the
+    // browser's rounding keeps the order of the values, so this holds exactly). A span of 0 is not refused: a short
+    // frame can read as 0 steps.
+    let mut names: Vec<&str> = times
+        .passes
+        .iter()
+        .flat_map(|pass| pass.stages.iter().map(String::as_str))
+        .collect();
+    let named = names.len();
+    names.sort_unstable();
+    names.dedup();
+    if times.passes.len() != TIMED_STAGES || named != TIMED_STAGES || names.len() != TIMED_STAGES {
+        return Err(format!(
+            "the frame time has {} entries naming {named} stages ({} distinct), not {TIMED_STAGES} of each: {:?}",
+            times.passes.len(),
+            names.len(),
+            times.passes
+        ));
+    }
+    if let Some(pass) = times.passes.iter().find(|pass| pass.duration > times.span) {
+        return Err(format!(
+            "the entry of {:?} lasts {:?}, longer than the whole span of {:?}",
+            pass.stages, pass.duration, times.span
+        ));
+    }
+    let span_ms = times.span.as_secs_f64() * 1000.0;
+    if span_ms > wall_ms + WALL_SLACK_MS {
+        return Err(format!(
+            "the GPU span of the frame, {span_ms} ms, is longer than the {wall_ms} ms of CPU wall time around it"
+        ));
+    }
+    Ok(TIME_READ)
+}
+
+async fn frames_in_flight() -> Result<&'static str, String> {
     // The batch takes its device as an `Arc`; a browser page is one thread, so the handles never cross one.
     #[allow(clippy::arc_with_non_send_sync)]
     let device = Arc::new(
@@ -228,6 +317,14 @@ async fn frames_in_flight() -> Result<(), String> {
     let counted2 = frame2
         .ticket(&h.z)
         .map_err(|error| format!("frame N+2 counted ticket: {error}"))?;
+    // This frame asks for its GPU time (the batch is built with `FrameTiming::Passes`); it is read after the tickets.
+    let time2 = frame2.time();
+    let timing = batch.frame_timing();
+    let granted = device
+        .wgpu_device()
+        .features()
+        .contains(wgpu::Features::TIMESTAMP_QUERY);
+    let started_ms = js_sys::Date::now();
     let _submitted2 = frame2
         .submit()
         .map_err(|error| format!("frame N+2 submit: {error}"))?;
@@ -270,8 +367,10 @@ async fn frames_in_flight() -> Result<(), String> {
             .map_err(|error| format!("{what} ticket failed: {error}"))?;
         require_exact(what, &values, &state)?;
     }
+    let time = check_frame_time(granted, timing, time2, started_ms).await?;
     wide_stage_is_refused_by_name(&device)?;
-    wide_stage_runs_on_a_raised_device().await
+    wide_stage_runs_on_a_raised_device().await?;
+    Ok(time)
 }
 
 /// A stage of ten storage buffers is refused when the batch is built (m14.lim-b, D280): a browser device opened without

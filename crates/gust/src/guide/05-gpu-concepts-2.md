@@ -83,22 +83,28 @@ and so it does at `Passes` where the device can write a timestamp inside a pass 
 native devices that have it; GUST asks for it where the adapter offers it): each stage's begin and end are stamps
 inside the shared pass. Where the device cannot (a browser device, or a native one a caller opened without the feature)
 every stage keeps a compute pass of its own at `Passes`, so a per-stage time includes the pass boundary and the times
-can sum to more than the `Frame` span. A time is `Ok(None)`,
-never an error, for a batch built `Off`, a device without timestamp queries (the CPU twin, an adopted device that did
-not ask for them, `wasm32`), a frame with no pass, and a frame for which no read-back buffer was free (the batch
-keeps a bounded set of them and replaces any that a dropped or unread frame cost, so this is rare, and a caller that
-never reads its frames' times does not use the set up). A frame that was never submitted is `Err(NotSubmitted)`, and so
+can sum to more than the `Frame` span. In a browser a batch times its frames where the browser grants the
+`timestamp-query` feature (headless Chrome 158 granted it on the one adapter measured, with default flags), at pass
+boundaries only, so `Passes` is the only per-stage form there and a short stage reads as one pass boundary. The browser
+quantizes the values, so a span is a multiple of its step and a frame shorter than the step can read as 0: 65536 ns on
+headless Chrome 158, Radeon 890M only; RTX 5090 pending. `batch.frame_timing()` states a tick of 1 ns there, which is
+not the step. A time is `Ok(None)`, never an error, for a batch built `Off`, a device without timestamp queries (the CPU
+twin, an adopted device that did not ask for them, a browser that does not grant the feature), a frame with no pass,
+and a frame for which no read-back buffer was free (the batch keeps a bounded set of them and replaces any that a
+dropped or unread frame cost, so this is rare, and a caller that never reads its frames' times does not use the set
+up). A frame that was never submitted is `Err(NotSubmitted)`, and so
 is a frame whose copy was recorded into a caller's encoder that never ran; only a frame that recorded no timestamp
 (a batch built `Off`, no pass) gives `Ok(None)` there. `submit` and `encode` with `Encoded::submitted` both work; the
 frame is still one submission. What a caller can tell from noise, measured on 2026-11-26 over 200 identical frames of
 a four-stage batch: on a Radeon 890M the span of one frame lies between about 5 to 7 percent below and 10 to 13
 percent above the median of the frames, on an RTX 5090 between about 2 percent below and 1 to 3 percent above it. A
 timed frame costs a roughly fixed extra wall clock of about 0.4 ms (0.3 to 0.5 ms on the 890M, 0.39 ms on the 5090;
-measured with a blocking wait per frame, not split into its causes), so the cost relative to an untimed batch depends
+measured with a blocking wait per frame), so the cost relative to an untimed batch depends
 on the frame length, per adapter: wall clock 1.04 to 1.05 times that of untimed frames for frames of about 7 ms on the
 890M, 1.20 to 1.24 times for frames of about 0.4 ms of span on the 5090 (1.22 to 1.23 for `Passes`). For short frames
-it is above the 1.05 that GUST calls "free". Compare spans of the same adapter and the same size, never across
-machines.
+it is above the 1.05 that GUST calls "free". That extra is the price of a blocking read of every frame: a read
+that does not block (polling a frame's time later, or never reading it) costs the batch less, on both adapters
+measured. Compare spans of the same adapter and the same size, never across machines.
 
 ## Workgroup memory and barriers
 

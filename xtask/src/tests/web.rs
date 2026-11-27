@@ -1296,14 +1296,15 @@ fn the_batch_page_names_its_own_files_and_closing_part_and_reports_no_selected_k
 }
 
 #[test]
-fn an_unlisted_page_label_is_the_adapter_words_and_the_closing_part_only() {
+fn an_unlisted_page_label_without_infos_is_the_adapter_words_and_the_closing_part_only() {
     let closing = super::FRAMES_EXACT;
     assert_eq!(
         super::split_unlisted_label(
             "nvidia blackwell | two frames in flight exact, wide stage refused on 8 and exact on 16",
+            &[],
             closing
         ),
-        Ok("nvidia blackwell".to_owned())
+        Ok(("nvidia blackwell".to_owned(), String::new()))
     );
     for (label, wanted) in [
         ("nvidia blackwell", "has 1 part(s)"),
@@ -1317,7 +1318,71 @@ fn an_unlisted_page_label_is_the_adapter_words_and_the_closing_part_only() {
             "names no adapter",
         ),
     ] {
-        let error = super::split_unlisted_label(label, closing).unwrap_err();
+        let error = super::split_unlisted_label(label, &[], closing).unwrap_err();
         assert!(error.contains(wanted), "{label}: {error}");
+    }
+}
+
+#[test]
+fn an_unlisted_page_label_with_infos_has_a_middle_part_that_is_one_of_them() {
+    let closing = super::FRAMES_EXACT;
+    let infos = super::FRAME_TIME_PARTS;
+    for info in ["frame time read", "frame time absent"] {
+        assert_eq!(
+            super::split_unlisted_label(
+                &format!("amd rdna-3 | {info} | {closing}"),
+                infos,
+                closing
+            ),
+            Ok(("amd rdna-3".to_owned(), info.to_owned())),
+            "{info}"
+        );
+    }
+    for (label, wanted) in [
+        // The part is missing: the two-part label that a page without infos logs.
+        (format!("amd rdna-3 | {closing}"), "has 2 part(s)"),
+        (
+            format!("amd rdna-3 | selected a.b=c:-:0 | {closing}"),
+            "is not one of",
+        ),
+        (format!("amd rdna-3 |  | {closing}"), "is not one of"),
+        (
+            format!("amd rdna-3 | frame time read | frame time read | {closing}"),
+            "has 4 part(s)",
+        ),
+        (
+            "amd rdna-3 | frame time read | one frame in flight exact".to_owned(),
+            "does not say",
+        ),
+        (
+            format!("amd rdna-3 | frame time skipped | {closing}"),
+            "is not one of",
+        ),
+        (
+            format!(" | frame time read | {closing}"),
+            "names no adapter",
+        ),
+    ] {
+        let error = super::split_unlisted_label(&label, infos, closing).unwrap_err();
+        assert!(error.contains(wanted), "{label}: {error}");
+    }
+}
+
+#[test]
+fn only_the_batch_page_names_infos_and_its_source_logs_both_branches() {
+    assert_eq!(
+        super::WEB_BATCH_FRAMES.infos,
+        ["frame time read", "frame time absent"]
+    );
+    assert!(super::WEB_VECTOR_ADD.infos.is_empty());
+    assert!(crate::gallery::WEB_HELLO.infos.is_empty());
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let source =
+        fs::read_to_string(root.join(super::WEB_BATCH_FRAMES.dir).join("src/page.rs")).unwrap();
+    for line in [
+        "const TIME_READ: &str = \"frame time read\";",
+        "const TIME_ABSENT: &str = \"frame time absent\";",
+    ] {
+        assert!(source.contains(line), "src/page.rs lacks `{line}`");
     }
 }

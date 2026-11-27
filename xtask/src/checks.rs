@@ -601,6 +601,15 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "twin_a_struct_element_is_read_stored_and_updated_in_place_like_the_host",
             "twin_counted_rows_from_n_keep_the_sentinel",
             "twin_a_resize_zero_fills_the_rows",
+            // `tests/struct_compact.rs`: whole struct rows gathered through the indices of `compact` (m14.s2s2).
+            "twin_compact_gathers_whole_struct_rows",
+            "twin_compact_rows_at_the_edges",
+            "twin_compact_rows_through_a_view",
+            "twin_compact_rows_with_pad_fields",
+            "twin_compact_gather_uses_four_bindings_whatever_the_fields",
+            "twin_compact_rows_with_an_in_place_consumer",
+            "twin_compact_rows_follow_a_resize",
+            "twin_gather_rows_through_a_stage_built_permutation",
             // `tests/struct_layout.rs`: three std430 layouts of a struct element (m14.s2s fix round 1).
             "twin_a_struct_of_two_vec2_and_two_scalars_matches_the_host",
             "twin_a_struct_of_vec4_vec2_and_two_pads_matches_the_host",

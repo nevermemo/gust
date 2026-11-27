@@ -2167,11 +2167,11 @@ Decision: D279, plan m14.s2, slice s2s (part a).
 
 ### GUST-E1022 a struct as the operand of a library op
 
-A library op of a `gpu_batch!` (`sum`, `min`, `max`, `reduce`, `count`, `scan`, `compact`) reads a buffer of numbers. A handle whose elements are a `#[derive(GpuStruct)]` struct is refused at the operand: an op over rows is not in this release.
+A library op of a `gpu_batch!` (`sum`, `min`, `max`, `reduce`, `count`, `scan`, `compact`) reads a buffer of numbers. A handle whose elements are a `#[derive(GpuStruct)]` struct is refused at the operand: an op over rows is not in this release, and `compact` takes `u32` flags, not rows.
 Reached through `#[gpu_module]`, raised by `gpu_batch!` at the operand.
-Rejected: `let total = gust::sum(&rows);` with `rows` a handle of `Row`.
-Fixture: `tests/ui/batch-struct-op-operand`.
-Write instead: a stage that reads a field of each row into a number buffer (`gpu_task!(n, |i| -> f32 { rows[i].mass })` over `rows: Stage<Row>`, as the tests write it), and the op over that buffer.
+Rejected: `let total = gust::sum(&rows);` and `let (idx, n) = gust::compact(&rows);` with `rows` a handle of `Row`.
+Fixtures: `tests/ui/batch-struct-op-operand`, `tests/ui/batch-struct-compact-operand`.
+Write instead: a stage that reads a field of each row into a number buffer (`gpu_task!(n, |i| -> f32 { rows[i].mass })` over `rows: Stage<Row>`, as the tests write it), and the op over that buffer. To compact rows, build `u32` flags in a stage, compact the flags, and gather the rows in a counted stage (`gpu_task!(count(n); CAP, |i| -> Row { rows[idx[i]] })`).
 Decision: D279, plan m14.s2, slice s2s (part b).
 
 ### GUST-E1023 a struct as the type of a `Param`

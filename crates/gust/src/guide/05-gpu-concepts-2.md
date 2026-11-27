@@ -47,6 +47,15 @@ same rows. A counted stage is 1-D and its workgroup is along x (GUST-E1014); `co
 batch (GUST-E1013) and names a handle of `u32`s of the block (GUST-E1015). `examples/batch-basics/tests/counted.rs` has the
 checks.
 
+Whole struct rows move through a batch by the same pieces; there is no op over rows. `gust::compact` is an op over `u32`
+flags and gives `(idx, n)`: a stage builds the flags from a field (`let v: u32 = if rows[i].life > 0.0 { 1u32 } else {
+0u32 }; v`), `compact` turns them into the indices, and a counted stage gathers the rows, `gpu_task!(count(n); CAP, |i| ->
+Row { rows[idx[i]] })`. Any index handle does for the gather, one a stage built included (a reversal, the order of a
+counting sort). The gather binds the rows, the indices, the count and its result, four storage buffers whatever the number
+of fields; rows from the count on keep what the earlier frame left. `gust::compact(&rows)` is `GUST-E1022`, and its message
+names this form. A move of a row to a place computed from another handle is a `scatter` stage, committed as the next slice
+(m14.s2sc). `examples/batch-basics/tests/struct_compact.rs` has the checks.
+
 A stage binds one storage buffer for each handle it reads or writes, and a device allows a fixed number of them per
 shader stage (8 unless the device was opened with more). A stage over that number is refused when the batch is built, not
 at the first frame: the build returns `Error::StageDevice`, which names the batch and the stage and wraps the device's

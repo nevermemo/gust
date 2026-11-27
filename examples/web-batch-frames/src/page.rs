@@ -11,7 +11,8 @@ use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 
 use crate::{
-    LENGTH, build, counted_reference, input, mixed_reference, reference, rotated_reference, rows_of,
+    LENGTH, build, counted_reference, gathered_reference, input, mixed_reference, reference,
+    rotated_reference, rows_of,
 };
 
 /// The counts of the three frames' counted stage: a part of the rows, fewer than before (the older rows stay), and a
@@ -217,6 +218,9 @@ async fn frames_in_flight() -> Result<(), String> {
     let rotated2 = frame2
         .ticket(&h.rotated)
         .map_err(|error| format!("frame N+2 struct result ticket: {error}"))?;
+    let gathered2 = frame2
+        .ticket(&h.gathered)
+        .map_err(|error| format!("frame N+2 gathered rows ticket: {error}"))?;
     let counted2 = frame2
         .ticket(&h.z)
         .map_err(|error| format!("frame N+2 counted ticket: {error}"))?;
@@ -238,6 +242,13 @@ async fn frames_in_flight() -> Result<(), String> {
         .map_err(|error| format!("struct result ticket failed: {error}"))?;
     if rotated != rotated_reference(&rows2) {
         return Err("struct result: the rotated rows differ from the host computation".to_owned());
+    }
+    // Whole rows through an index handle: a counted stage gathers the rows reversed, through a stage-built index.
+    let gathered = gathered2
+        .await
+        .map_err(|error| format!("gathered rows ticket failed: {error}"))?;
+    if gathered != gathered_reference(&rows2, COUNTS[2]) {
+        return Err("gathered rows: they differ from the host computation".to_owned());
     }
 
     // The counted stage (bounded launch in a browser): each frame's rows below its count are that frame's, the rest

@@ -56,6 +56,8 @@ pub struct Handles {
     pub mixed: Stage<u32, D1>,
     /// A whole row as a stage's result: the fields of `rows` rotated by one (`a, b, c` become `c, a, b`).
     pub rotated: Stage<Row, D1>,
+    /// The rows of `rows` reversed, gathered by a counted stage through an index a stage built.
+    pub gathered: Stage<Row, D1>,
 }
 
 /// The batch: `y = x * 3 + gain`, then `y = y * 2 + 1` in place, with `in_flight(2)`. `u32` arithmetic on small values,
@@ -80,7 +82,12 @@ pub fn build(
         let rows = b.input::<Row>(n);
         let mixed = gpu_task!(n, |i| -> u32 { rows[i].a + rows[i].b * 2u32 });
         let rotated = gpu_task!(n, |i| -> Row { Row { a: rows[i].c, b: rows[i].a, c: rows[i].b } });
-        Handles { gain, x, y, count, z, rows, mixed, rotated }
+        // Whole rows through an index handle (m14.s2s2): a stage builds a reversal (the length is `LENGTH`), and a counted
+        // stage gathers the rows through it. The ops of a batch (`compact`) run Slang kernels at run time, which a
+        // browser build has not, so the index is a stage's here.
+        let rev = gpu_task!(n, |i| -> u32 { 999u32 - i });
+        let gathered = gpu_task!(count(count); n, |i| -> Row { rows[rev[i]] });
+        Handles { gain, x, y, count, z, rows, mixed, rotated, gathered }
     })
 }
 
@@ -156,6 +163,17 @@ pub fn rotated_reference(rows: &[Row]) -> Vec<Row> {
             c: row.b,
         })
         .collect()
+}
+
+/// The rows of the `gathered` stage after the frame that wrote `rows` and the count `count`: the first
+/// `min(count, LENGTH)` rows are the rows reversed, the others are zero rows (the frames before wrote no rows, so each
+/// of their gathers moved zero rows, and the stage's buffer holds zeros past the count).
+#[must_use]
+pub fn gathered_reference(rows: &[Row], count: u32) -> Vec<Row> {
+    let mut gathered: Vec<Row> = rows.iter().rev().copied().collect();
+    gathered.truncate(count as usize);
+    gathered.resize(rows.len(), Row { a: 0, b: 0, c: 0 });
+    gathered
 }
 
 /// The input of frame `seed`.

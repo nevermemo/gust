@@ -199,6 +199,23 @@ pub(super) fn expand_validated_with(
         };
         let original_name = function.sig.ident.clone();
         let original_name_text = original_name.to_string();
+        // `ScatterMut` is the target type of a scatter stage's kernel, which a `gpu_task!` writes (`Identity::Site`); a
+        // kernel of a user's module or `#[gpu_fn]` that takes it has no stage to check its stores against, whatever
+        // its attributes say.
+        if matches!(identity, Identity::Module)
+            && function.sig.inputs.iter().any(
+                |input| matches!(input, syn::FnArg::Typed(typed) if is_scatter_type(&typed.ty)),
+            )
+        {
+            return Err(diagnostics::error_at(
+                Code::BatchScatterForm,
+                original_name.span(),
+                format!(
+                    "`ScatterMut` is the type of a scatter target of a `gpu_task!` stage, which the batch writes itself; \
+                     the kernel `{original_name_text}` of a module cannot take it (use `StorageMut`)"
+                ),
+            ));
+        }
         // A variant is built like a kernel and belongs to the kernel it names (M8, D139); `selected` says which body of
         // a kernel with several this build uses. A function the plan does not know is one portable body.
         let owner = plan.owner_of(&original_name_text);

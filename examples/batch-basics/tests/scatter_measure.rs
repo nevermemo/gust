@@ -11,7 +11,7 @@
 //! buffers); the kernel side is the typed `dispatch` of a module kernel with the same fields in a row of the module's
 //! own (D279 keeps `GpuStruct` out of modules), which returns when the work is done. Each round builds the two variants
 //! in the other order (the first variant created on the Radeon 890M can be up to 3x slower than the second), and the
-//! median is the mean of the two middle frame times of [`FRAMES`] frames after [`WARMUP`] warm-up frames, over
+//! median is the middle frame time of [`FRAMES`] frames after [`WARMUP`] warm-up frames, over
 //! [`ROUNDS`] rounds.
 //!
 //! Pre-registered rule, written before the first run: the ratio stage over kernel inside 0.90 to 1.10 on every cell

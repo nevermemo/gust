@@ -403,6 +403,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "batch-scatter-module"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "batch-scatter-ok"
 version = "0.0.0"
 dependencies = [

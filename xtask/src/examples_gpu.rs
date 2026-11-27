@@ -297,6 +297,7 @@ const EXAMPLE_GPU_TESTS: &[(&str, &[&str])] = &[
             "gpu_scatter_extent_follows_a_parameter",
             "gpu_scatter_extent_moves_while_every_buffer_keeps_its_size",
             "gpu_scatter_stores_an_enum_element",
+            "gpu_scatter_second_target_follows_a_resize",
         ],
     ),
     (

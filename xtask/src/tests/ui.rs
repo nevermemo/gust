@@ -1816,6 +1816,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             "batch-scatter-atomic",
             "batch-scatter-field",
             "batch-scatter-loop",
+            "batch-scatter-module",
             "batch-scatter-ok",
             "batch-scatter-outside",
             "batch-scatter-read",
@@ -1878,7 +1879,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 335] = [
+const PINNED_FIXTURES: [&str; 336] = [
     "array-barrier",
     "array-buffer-len",
     "array-const-len",
@@ -1931,6 +1932,7 @@ const PINNED_FIXTURES: [&str; 335] = [
     "batch-scatter-atomic",
     "batch-scatter-field",
     "batch-scatter-loop",
+    "batch-scatter-module",
     "batch-scatter-ok",
     "batch-scatter-outside",
     "batch-scatter-read",

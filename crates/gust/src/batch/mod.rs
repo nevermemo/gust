@@ -1093,7 +1093,9 @@ impl<D: BatchDevice> Batch<D> {
 
     /// The stages in the order they run, by the name of their `let`: one entry per buffer a stage writes (an op with
     /// several outputs, such as `compact`, lists each by its own name, every one with the op's reads). The extents are
-    /// the ones the last frame submitted or encoded left (a resize changes them).
+    /// the ones the last frame submitted or encoded left (a resize changes them). A scatter stage lists each of its
+    /// targets (the first by the stage's name, the others by their own), and the extents of each are the target's, not
+    /// the rows' of the stage.
     #[must_use]
     pub fn stages(&self) -> Vec<StageInfo> {
         let buffers = &self.core.buffers;

@@ -865,7 +865,8 @@ fn gpu_scatter_extent_follows_a_parameter() {
 
 // ---- an extent that moves while every buffer keeps its size ----
 
-const CAP: u32 = 16;
+/// More than one workgroup (256 rows), so that a stage that keeps its old dispatch is seen.
+const CAP: u32 = 600;
 
 #[derive(Clone, Copy)]
 struct Narrowed {
@@ -879,7 +880,7 @@ macro_rules! define_narrowed {
     ($build:ident, $device:ty) => {
         fn $build(device: &Arc<$device>) -> Result<(Batch<$device>, Narrowed), Error> {
             gpu_batch!("scatter_narrowed", on(device); in_flight(1); |b| {
-                let live = b.param::<u32>(CAP);
+                let live = b.param::<u32>(5u32);
                 let rows = b.input::<Row>(CAP);
                 let dst = b.input::<u32>(CAP);
                 let out = b.input::<Row>(CAP);
@@ -902,7 +903,7 @@ where
     D::Buffer<u32>: 'static,
     D::Buffer<Row>: 'static,
 {
-    [CAP, 5, CAP, 11, 5]
+    [5, CAP, 11, CAP, 5]
         .into_iter()
         .enumerate()
         .map(|(k, live)| {
@@ -1023,4 +1024,140 @@ fn gpu_scatter_stores_an_enum_element() {
     let got = enumerated_frames(batch, &h, "gpu");
     let (cpu_batch, cpu_h) = enumerated_cpu(&Arc::new(CpuDevice::new())).unwrap();
     assert_eq!(got, enumerated_frames(cpu_batch, &cpu_h, "twin"));
+}
+
+// ---- a second target that is resized: the stage follows it ----
+
+#[derive(Clone, Copy)]
+struct Follow {
+    m: Param<u32>,
+    rows: Stage<Row, D1>,
+    dst: Stage<u32, D1>,
+    first: Stage<Row, D1>,
+    second: Stage<u32, D1>,
+}
+
+macro_rules! define_follow {
+    ($build:ident, $device:ty) => {
+        fn $build(device: &Arc<$device>) -> Result<(Batch<$device>, Follow), Error> {
+            gpu_batch!("scatter_follow", on(device); in_flight(1); |b| {
+                let m = b.param::<u32>(N);
+                let rows = b.input::<Row>(N);
+                let dst = b.input::<u32>(N);
+                let first = b.input::<Row>(N);
+                let second = b.input::<u32>(&m);
+                let _scatter = gpu_task!(N, scatter(&mut first, &mut second), |i| {
+                    first[dst[i]] = rows[i];
+                    second[dst[i]] = rows[i].tag;
+                });
+                Follow { m, rows, dst, first, second }
+            })
+        }
+    };
+}
+
+define_follow!(follow_cpu, CpuDevice);
+define_follow!(follow_gpu, HeadlessDevice);
+
+/// Only the second target changes size (and is remade zeroed): the stage must keep writing the buffer the second
+/// target holds now, so the frame's contents of it, written before the stage, are overwritten at the named places.
+fn follow_frames<D: BatchDevice>(
+    mut batch: Batch<D>,
+    h: &Follow,
+    what: &str,
+) -> Vec<(Vec<Row>, Vec<u32>)>
+where
+    D::Buffer<u32>: 'static,
+    D::Buffer<Row>: 'static,
+{
+    let dst = permutation();
+    [N, 2 * N, N, 3 * N]
+        .into_iter()
+        .enumerate()
+        .map(|(k, m)| {
+            let rows = rows_for(k as u32, N);
+            let got = block_on(async {
+                let mut frame = batch.begin().await?;
+                frame.set(&h.m, m)?;
+                frame.write(&h.rows, &rows)?;
+                frame.write(&h.dst, &dst)?;
+                frame.write(&h.first, &[SENTINEL; N as usize])?;
+                frame.write(&h.second, &vec![7777u32; m as usize])?;
+                let first = frame.ticket(&h.first)?;
+                let second = frame.ticket(&h.second)?;
+                let _submitted = frame.submit()?;
+                Ok::<_, Error>((first.await?, second.await?))
+            })
+            .unwrap();
+            let mut first = vec![SENTINEL; N as usize];
+            let mut second = vec![7777u32; m as usize];
+            for (i, row) in rows.iter().enumerate() {
+                first[dst[i] as usize] = *row;
+                second[dst[i] as usize] = row.tag;
+            }
+            assert_eq!(
+                got,
+                (first, second),
+                "{what}: second target of {m} words, frame {k}"
+            );
+            got
+        })
+        .collect()
+}
+
+#[test]
+fn twin_scatter_second_target_follows_a_resize() {
+    let device = Arc::new(CpuDevice::new());
+    let (batch, h) = follow_cpu(&device).unwrap();
+    follow_frames(batch, &h, "twin");
+}
+
+#[test]
+#[ignore = "example validation runs only in full verification"]
+fn gpu_scatter_second_target_follows_a_resize() {
+    let device = private_device();
+    let twin = {
+        let cpu = Arc::new(CpuDevice::new());
+        let (batch, h) = follow_cpu(&cpu).unwrap();
+        follow_frames(batch, &h, "twin")
+    };
+    let (batch, h) = follow_gpu(&device).unwrap();
+    assert_eq!(follow_frames(batch, &h, "gpu"), twin);
+}
+
+/// Every target is listed by `stages()`, the first by the stage's `let` and the others by their own names.
+#[test]
+fn twin_scatter_lists_every_target_in_the_stages() {
+    let device = Arc::new(CpuDevice::new());
+    let (batch, _h) = many_cpu(&device).unwrap();
+    let names: Vec<String> = batch.stages().into_iter().map(|stage| stage.name).collect();
+    assert_eq!(names, ["_scatter", "cold", "names"]);
+}
+
+/// A target made by an op is refused when the block seals, as a stage that writes an op's output is.
+#[test]
+fn twin_scatter_refuses_an_op_output_as_a_second_target() {
+    let device = Arc::new(CpuDevice::new());
+    let result = gpu_batch!("scatter_overwrite", on(&device); in_flight(1); |b| {
+        let flags = b.input::<u32>(N);
+        let out = b.input::<u32>(N);
+        let (idx, _n) = gust::compact(&flags);
+        let _scatter = gpu_task!(N, scatter(&mut out, &mut idx), |i| {
+            out[i] = flags[i];
+            idx[i] = i;
+        });
+        out
+    });
+    match result {
+        Err(Error::Overwrite {
+            stage, op, buffer, ..
+        }) => {
+            assert_eq!(
+                (stage.as_str(), op.as_str(), buffer.as_str()),
+                ("_scatter", "idx", "idx")
+            )
+        }
+        Err(other) => panic!("another error: {other}"),
+        Ok(_) => panic!("a stage scattered into an op's output and the batch was built"),
+    }
 }

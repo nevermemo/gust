@@ -534,7 +534,8 @@ impl ScatterMarks {
 /// one run of the stage, and the GPU checks nothing (a repeated place is a race, and an out-of-range one is outside
 /// the contract); the twin panics on a repeated place, naming the stage, the target and the slot, and on an
 /// out-of-range one with the slice's own message. A body only stores to it (`out[place] = value`): a read is refused
-/// by the macro (GUST-E1008), so the `Index` impl exists only because `IndexMut` needs it.
+/// by the macro (GUST-E1008), so the `Index` impl exists only because `IndexMut` needs it. It is the type of a stage's
+/// target, which `gpu_task!` writes: a kernel of a user's `#[gpu_module]` cannot take it (GUST-E1024).
 ///
 /// ```
 /// use gust::{ScatterMarks, ScatterMut};
@@ -558,6 +559,18 @@ impl ScatterMarks {
 /// let mut target = ScatterMut::new(&mut values, &mut marks, "demo", "out");
 /// target[2] = 1;
 /// target[2] = 2;
+/// ```
+///
+/// A stage no `let` names has an empty name, and the message says so:
+///
+/// ```should_panic(expected = "an unnamed scatter stage")
+/// use gust::{ScatterMarks, ScatterMut};
+///
+/// let mut values = [0_u32; 4];
+/// let mut marks = ScatterMarks::new(values.len());
+/// let mut target = ScatterMut::new(&mut values, &mut marks, "", "out");
+/// target[1] = 1;
+/// target[1] = 2;
 /// ```
 #[derive(Debug)]
 pub struct ScatterMut<'a, T> {
@@ -611,9 +624,13 @@ impl<T> IndexMut<u32> for ScatterMut<'_, T> {
         let (word, bit) = (index as usize / 64, 1_u64 << (index % 64));
         assert!(
             self.marks.words[word] & bit == 0,
-            "scatter stage `{}`: slot {index} of target `{}` is written twice in one run of the stage (a scatter \
-             stage declares that the places of its rows are distinct)",
-            self.stage,
+            "{}: slot {index} of target `{}` is written twice in one run of the stage (a scatter stage declares that \
+             the places of its rows are distinct)",
+            if self.stage.is_empty() {
+                "an unnamed scatter stage".to_owned()
+            } else {
+                format!("scatter stage `{}`", self.stage)
+            },
             self.target,
         );
         self.marks.words[word] |= bit;

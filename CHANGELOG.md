@@ -13,7 +13,9 @@ breaks existing code bumps the minor version, and the promise is described in th
   path may store any subset of the targets or none. A read of a target is `GUST-E1008`, a field or compound store or a
   store in a loop is the new `GUST-E1025`, and any other form of the clause is the new `GUST-E1024`. Two invocations of
   one run must not name the same slot: the CPU twin panics on a repeated slot, naming the stage, the target and the slot,
-  and on the GPU the winner of such a race is unspecified. Atomics at a computed index are not part of this slice.
+  and on the GPU the winner of such a race is unspecified. `ScatterMut`, the type of a stage's target, is refused on a kernel
+  of a user's `#[gpu_module]` (`GUST-E1024`). The browser page (`web-batch-frames`) has a scatter stage too. Atomics at a
+  computed index are not part of this slice.
 - Frame timing in the browser (m14.ftweb): `FrameTiming::Frame` and `Passes` now compile and run on `wasm32`. Where the
   browser grants `timestamp-query` a frame's `f.time()` resolves to the span and, at `Passes`, one entry per stage that
   has a pass (pass boundaries only: WebGPU has no stamps inside passes); where it does not, the time is `Ok(None)` and

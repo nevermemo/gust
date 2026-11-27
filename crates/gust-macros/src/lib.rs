@@ -272,7 +272,8 @@ pub fn par_for(input: TokenStream) -> TokenStream {
 /// path of the body; a path may store any subset of the targets or none. A read of a target is GUST-E1008, a field
 /// store, a compound store or a store in a loop or closure is GUST-E1025, and any other form of the clause, outside a
 /// batch included, is GUST-E1024. The caller keeps the places of one run apart: the CPU twin panics on a repeated slot,
-/// and on the GPU the winner of such a race is unspecified.
+/// and on the GPU the winner of such a race is unspecified. The stage's `let` names it in that panic message; its value
+/// is `()`, so `clippy::let_unit_value` asks for an allow where the stage is written.
 #[proc_macro]
 pub fn gpu_task(input: TokenStream) -> TokenStream {
     // The one place that reads the build profile, as for `par_for!`.

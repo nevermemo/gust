@@ -1225,7 +1225,7 @@ needs the two targets to agree.
 | KM-12 | A texel address outside a texture: `load` or `store` at `(width, 0)` or `(0, height)` of a 4 x 2 `r32uint` storage texture (slice mx.t4) | Panics "index out of bounds" in every profile: the twin says "index out of bounds: the texel is (4, 0) but the texture is 4x2" (a coordinate past the width panics although the flat index exists), and a `Vec<Vec<u32>>` indexed the same way panics too. | Unspecified (WGSL `textureLoad` and `textureStore` with an out-of-range coordinate). Observed at both addresses: the load returned 0 and the store changed no texel. One format, one adapter. | unspecified, measured |
 | KM-13 | Linear `sample` of a 3 x 2 `r32float` texture under clamp-to-edge, at (0.37, 0.61) and (0.93, 0.08) (slice mx.t4) | The formula of section 4 in `f32`, in its written order; the twin and plain Rust agree bit for bit (0x40753f7c, about 3.8319, at the first point; 0x40800000, 4.0, at the second). | Inside the error domain of section 4 (`linear_error_bound`), which the test enforces on every adapter; the value inside it is the hardware's. Observed: 0x40760000 (3.84375) at the first point, where the formula gives about 3.8319, and 0x40800000 (equal to the formula) at the second. Needs a device with `float32-filterable`; the test fails, it does not skip, on an adapter without it. | unspecified, measured |
 | KM-14 | Nearest `sample` of a 4 x 1 `r32float` texture of 10, 20, 30, 40 under clamp-to-edge, within one ulp of a texel edge: u = 0.5 - 1 ulp, 0.5, 0.75 - 1 ulp and 0.25 + 1 ulp (slice mx.t4) | The texel `min(floor(u * 4), 3)`: 20, 30, 30 and 20 (a coordinate just below an edge reads the texel on its left). | A GPU may pick the neighbouring texel (D39). Observed: the formula's texel for all four probes (the 4-wide edges, with exact products). The 5-wide probes of `textures.rs` (edges at k/5, one ulp of u either side) picked a neighbour in 24 of 63 cases under clamp. The 1/128 texel band of that test is its tolerance, not a measurement; the direct probes found a neighbour only at 2^-20 texel and none from 2^-12 (section 4, *Nearest*). | unspecified, measured |
-| KM-15 | 257 invocations (one per workgroup) each store their own id into one cell with a plain store, `cell[0] = id` (a place repeated within one dispatch, as in a scatter stage whose places collide; slice m14.s2sc) | Sequential, ascending invocation id: the cell ends at 256 (the twin and plain Rust). | A race, so a dynamic error (section 5): the cell ends at some id that stored it, or the dispatch behaves as WGSL section 6.5.7 leaves open; the test records the observation and enforces no value (D39). Observed on the Radeon 890M (Vulkan): over 32 runs of the dispatch, 4 distinct final values, all between 224 and 239. Not measured on the RTX 5090 in this slice. | unspecified, measured |
+| KM-15 | 257 invocations (one per workgroup) each store their own id into one cell with a plain store, `cell[0] = id` (a place repeated within one dispatch, as in a scatter stage whose places collide; slice m14.s2sc) | Sequential, ascending invocation id: the cell ends at 256 (the twin of a module kernel and plain Rust; the twin of a scatter stage panics on the repeated place instead, section 5). | A race, so a dynamic error (section 5): the cell ends at some id that stored it, or the dispatch behaves as WGSL section 6.5.7 leaves open; the test records the observation and enforces no value (D39). Observed on the Radeon 890M (Vulkan): over 32 runs of the dispatch, 4 distinct final values, all between 224 and 239. Not measured on the RTX 5090 in this slice. | unspecified, measured |
 
 Reading the table: the Rust column and every GPU value that the specification fixes (labelled spec-allowed) are
 enforced, so the test fails when one changes and the row is edited in the same change. A value marked unspecified is
@@ -1239,8 +1239,9 @@ column and every `DOMAIN` control hold on both, and a deviation of one of them o
 observation. Only the observations of the unenforced rows (KM-07, KM-08, KM-11 to KM-15 and the NaN casts of KM-05 and
 KM-06) are kept per kind. The exception inside them is KM-13, whose value must also lie inside the error domain of
 section 4 on every adapter, so that bound is enforced like a `DOMAIN` control. The GPU column above is the hardware
-observation (RTX 5090, NVIDIA 610.88, Vulkan). The software column is a separate pin, set only where lavapipe differs
-from it, and the test prints a NOTE, with the driver, backend and `driver_info` of the adapter, when the running kind's
+observation (RTX 5090, NVIDIA 610.88, Vulkan), except KM-15, whose observation is the Radeon 890M's (AMD proprietary
+driver 26.11.2, Vulkan). The software column is a separate pin, set only where lavapipe differs from it, and the test
+prints a NOTE, with the driver, backend and `driver_info` of the adapter, when the running kind's
 own pin changes. A row without a software pin (the hardware pin accepted m5.b0's value) is then compared only with the
 hardware pin, the NOTE says "no software pin (the hardware pin accepted m5.b0's value)" for a difference from it, and
 nothing fails. The software pins of the NaN rows record m5.b0's exact payload bits, so a lavapipe payload change prints
@@ -1249,8 +1250,9 @@ Measured on lavapipe (llvmpipe, Mesa) the NaN payloads and the denormal and larg
 RTX 5090 (appendix A8 of [VALIDATION](development/VALIDATION.md) has the values). KM-09 keeps its set rule on both
 kinds and gets no per-kind value: its observations vary between runs. KM-12 to KM-14 were measured on the RTX 5090
 only (slice mx.t4); they have no software pin yet, so a lavapipe run compares them with the hardware pin and prints a
-NOTE where they differ, and nothing fails except the KM-13 bound. Both are unspecified, measured observations of one
-driver version each, not requirements, and the Rust and twin columns are unchanged.
+NOTE where they differ, and nothing fails except the KM-13 bound. KM-15 was measured on the Radeon 890M only. All of
+these are unspecified, measured observations of one driver version each, not requirements, and the Rust and twin
+columns are unchanged.
 
 **Known driver defect (D168, D169), not a ledger row.** On the RTX 5090 with NVIDIA driver 610.88 through Vulkan,
 a function-scope array has one or more elements read as 0 after an element at a dynamic index is loaded and

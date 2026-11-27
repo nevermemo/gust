@@ -1284,9 +1284,9 @@ fn a_scatter_stage_that_stores_on_some_paths_only_is_accepted() {
 }
 
 #[test]
-fn a_scatter_stage_gives_no_new_module_name_to_a_stage_without_scatter() {
-    // R2: the marker that carries the stage name to the CPU twin is not Slang, so the module of a stage with the same
-    // body and no scatter clause has the same kernel text.
+fn a_scatter_stage_marker_is_not_in_the_slang() {
+    // R2: the marker that carries the stage name to the CPU twin is not Slang (the precompiled manifest of the lane
+    // shows that every untouched kernel kept its key).
     let scratch = Scratch::new();
     let text = stage(&scatter_stage("out[dst[i]] = src[i];"), &scratch);
     assert!(!failed(&text), "{text}");
@@ -1356,4 +1356,23 @@ fn a_scatter_target_that_is_no_name_is_refused() {
         "batch(b, \"s\"); 8u32, scatter(&mut 3), [dst: Stage<u32>], |i| { }",
         Code::BatchScatterForm,
     );
+}
+
+#[test]
+fn a_module_kernel_that_takes_a_scatter_target_is_refused_whatever_its_attributes_say() {
+    // The marker a stage's kernel carries is a doc attribute, which a user can write too: the refusal is decided by
+    // who expands the kernel (a module), not by the marker.
+    for attributes in [
+        "",
+        "#[doc = \"__gust_scatter_stage:x\"]",
+        "#[doc = \"__gust_scatter_stage:\"]",
+    ] {
+        let source = format!(
+            "mod place {{ {attributes} #[kernel(shape = grid)] pub fn store(id: SV_DispatchThreadID, mut out: ScatterMut<u32>) {{ out[id.x] = id.x; }} }}"
+        );
+        let module: syn::ItemMod = crate::diagnostics::testing::parse_str(&source).unwrap();
+        let error =
+            crate::expand::expand_with_directories(module, None, None, None).expect_err(&source);
+        crate::diagnostics::testing::assert_code(&error, Code::BatchScatterForm);
+    }
 }

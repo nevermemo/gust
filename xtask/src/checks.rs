@@ -623,6 +623,9 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "twin_scatter_over_live_and_created_rows",
             "twin_scatter_extent_follows_a_parameter",
             "twin_scatter_stores_an_enum_element",
+            "twin_scatter_second_target_follows_a_resize",
+            "twin_scatter_lists_every_target_in_the_stages",
+            "twin_scatter_refuses_an_op_output_as_a_second_target",
             // `tests/struct_layout.rs`: three std430 layouts of a struct element (m14.s2s fix round 1).
             "twin_a_struct_of_two_vec2_and_two_scalars_matches_the_host",
             "twin_a_struct_of_vec4_vec2_and_two_pads_matches_the_host",

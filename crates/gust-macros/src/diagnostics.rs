@@ -592,8 +592,8 @@ codes! {
     BatchStructParam = 1023 => "GUST-E1023";
     /// A `scatter(..)` clause that is not one of its forms (slice s2sc): outside a stage of a `gpu_batch!`, on an
     /// in-place or 2-D stage or one with a result type, with an entry that is not `&mut name` of a handle of the block,
-    /// an empty or repeated list, a target that is also the stage's count or a handle it reads, or a target no path of
-    /// the body stores.
+    /// an empty or repeated list, a target that is also the stage's count, a target no path of the body stores, or a
+    /// `ScatterMut` parameter on a kernel of a user's module.
     BatchScatterForm = 1024 => "GUST-E1024";
     /// A store to a scatter target that is not `target[place] = value;` at most once on every path (slice s2sc): a
     /// field store, a compound store, a tuple index, a second store on one path, a store inside a loop, a closure or an

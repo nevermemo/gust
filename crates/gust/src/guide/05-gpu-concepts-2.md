@@ -63,7 +63,11 @@ what it held). A field store, a compound store, a store in a loop or a read of a
 `GUST-E1008`), and so is a scatter clause in any other form (`GUST-E1024`). The caller keeps the places apart: two
 invocations of one run must not name the same slot. The CPU twin checks it and panics on a repeated slot, naming the
 stage, the target and the slot; on the GPU the winner of such a race is unspecified. A counted scatter runs the rows
-`0 .. min(n, CAP)` as any counted stage does. `examples/batch-basics/tests/scatter.rs` has the checks.
+`0 .. min(n, CAP)` as any counted stage does. Rows that a stage made next to the live ones are scattered in the same
+way: the count `n` holds `live + created` (a stage over one-element handles adds them), and the body branches on the row,
+`let mut v: Row = rows[i]; if i >= live[0u32] { v = Row { .. }; } out[i] = v;`. A scatter stage has the value `()`, so a
+`let` that names it (the name the twin's panic message prints) trips `clippy::let_unit_value`: allow it where the stage is
+written. `examples/batch-basics/tests/scatter.rs` has the checks.
 
 A stage binds one storage buffer for each handle it reads or writes, and a device allows a fixed number of them per
 shader stage (8 unless the device was opened with more). A stage over that number is refused when the batch is built, not

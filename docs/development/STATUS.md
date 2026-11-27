@@ -1522,6 +1522,12 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       frame does not, as for plain stages. wgpu validation was on with no error; the Vulkan validation layer loaded
       in a debug run but its messages were not captured, so the frame is not checked by that layer. The closing
       series runs in the next quiet window.
+    - m14.s2sc merged (D290): a batch stage can store rows at places its body computes, through `scatter(&mut a, ..)`
+      over one or several targets, each element stored whole at most once per path. A repeated slot is a race the
+      GPU does not check and the CPU twin panics on; unwritten slots keep their bytes. A scatter target on a user's
+      module kernel is refused (GUST-E1024). Tests compare against the CPU twin on both adapters at sizes up to
+      capacity, across resizes, with a second target and an op output refused as one; the browser example has a
+      scatter stage, checked on the Radeon 890M. The mutations ran on the CPU twin only.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

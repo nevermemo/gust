@@ -4,12 +4,14 @@
 //! `index.html` with the result from a loopback server, opens it in headless Chrome and reads the one line that the page
 //! logs to the console:
 //!
-//! - `GUST_OK <vendor> <architecture> | two frames in flight exact` when the page recorded and submitted frame N+1
-//!   while frame N's ticket was still pending (nothing returns to the event loop in between, so the ticket cannot have
-//!   resolved: that is checked, not guessed), a third `begin` was still waiting for frame N at that point, and then
-//!   every frame's ticket, awaited, equalled the host computation exactly. The third frame's `begin`, awaited after the
-//!   first two tickets, learned from the browser's `on_submitted_work_done` that the oldest frame had completed, and
-//!   its ticket was exact too. The two words are what the browser says about its adapter (`GPUAdapter.info`; wgpu's own
+//! - `GUST_OK <vendor> <architecture> | two frames in flight exact, wide stage refused on 8 and exact on 16` when the
+//!   page recorded and submitted frame N+1 while frame N's ticket was still pending (nothing returns to the event loop
+//!   in between, so the ticket cannot have resolved: that is checked, not guessed), a third `begin` was still waiting
+//!   for frame N at that point, and then every frame's ticket, awaited, equalled the host computation exactly. The
+//!   third frame's `begin`, awaited after the first two tickets, learned from the browser's `on_submitted_work_done`
+//!   that the oldest frame had completed, and its ticket was exact too. The last part of the line is the wide stage
+//!   (ten storage buffers): [`build_wide`] was refused by name on the default device (8), and on a second device opened
+//!   with `with_storage_buffers(16)` it built and its result was exact. The two words are what the browser says about its adapter (`GPUAdapter.info`; wgpu's own
 //!   name is empty there);
 //! - `GUST_FAIL <reason>` on any error or panic.
 //!
@@ -84,18 +86,27 @@ pub fn build(
     })
 }
 
+/// The handles of the wide batch: its nine inputs and the stage that reads them all.
+pub struct WideHandles {
+    /// The inputs `a0` to `a8`, written by a frame.
+    pub inputs: [Stage<u32, D1>; 9],
+    /// The result: `out[i] = a0[i] * 1 + a1[i] * 2 + ... + a8[i] * 9`.
+    pub out: Stage<u32, D1>,
+}
+
 /// A batch whose one stage binds ten storage buffers (nine inputs and its result), over the limit of eight that a
-/// browser device always opens with (m14.lim-b, D280): a device refuses it when it is built, naming the stage `out`.
+/// browser device opens with unless it is asked for more (m14.lim-b, D280; m14.lim-web): a default device refuses it
+/// when it is built, naming the stage `out`, and a device opened with `with_storage_buffers(16)` builds and runs it.
 ///
 /// # Errors
 ///
 /// [`Error::StageDevice`] on a device that offers fewer than ten storage buffers per shader stage, which is every
-/// browser device in this release.
+/// browser device opened without the option.
 // The stage is named by its `let`; its generated kernel function takes one argument per buffer.
-#[allow(clippy::let_and_return, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub fn build_wide(
     device: &Arc<HeadlessDevice>,
-) -> Result<(Batch<HeadlessDevice>, Stage<u32, D1>), Error> {
+) -> Result<(Batch<HeadlessDevice>, WideHandles), Error> {
     gpu_batch!("wide", on(device); in_flight(1); |b| {
         let a0 = b.input::<u32>(LENGTH);
         let a1 = b.input::<u32>(LENGTH);
@@ -110,8 +121,22 @@ pub fn build_wide(
             a0[i] + a1[i] * 2u32 + a2[i] * 3u32 + a3[i] * 4u32 + a4[i] * 5u32 + a5[i] * 6u32
                 + a6[i] * 7u32 + a7[i] * 8u32 + a8[i] * 9u32
         });
-        out
+        WideHandles { inputs: [a0, a1, a2, a3, a4, a5, a6, a7, a8], out }
     })
+}
+
+/// Input `k` of the wide batch (`k` below nine): small values, so the weighted sum is exact in `u32`.
+#[must_use]
+pub fn wide_input(k: u32) -> Vec<u32> {
+    (0..LENGTH).map(|i| i * 7 + k).collect()
+}
+
+/// The host computation of the wide stage: for each row, the sum over `k` of `(k + 1) * wide_input(k)[i]`.
+#[must_use]
+pub fn wide_reference() -> Vec<u32> {
+    (0..LENGTH)
+        .map(|i| (0..9u32).map(|k| (k + 1) * (i * 7 + k)).sum())
+        .collect()
 }
 
 /// The host computation of one frame's result.

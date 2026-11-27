@@ -60,7 +60,6 @@ impl DeviceOptions {
             self.storage_buffers,
             adapter.limits().max_storage_buffers_per_shader_stage,
             &adapter.get_info().name,
-            cfg!(target_arch = "wasm32"),
         )? {
             limits.max_storage_buffers_per_shader_stage = n;
         }

@@ -2,7 +2,8 @@
 //!
 //! Two entries are covered: `dispatch_batch` over a list of dispatches, and the frame path of a `gpu_batch!` batch
 //! (`BatchDevice::frame_stages`). A pass count is read from `batch_passes_recorded`, the number of compute passes (and
-//! render passes) a batch recorded on this thread; a counted stage with the indirect launch records two. Every result is
+//! render passes) a batch recorded on this thread; a counted stage with the indirect launch records none of its own
+//! (its dispatches join the run) and two under `force_pass_per_dispatch`. Every result is
 //! held to a host loop, and the batch results also to the CPU twin, so "one pass" cannot hide "wrong bytes": the chains
 //! read what the dispatch before them wrote, so a missing ordering between dispatches of one pass shows as wrong data.
 //!
@@ -434,10 +435,10 @@ fn build_counted_cpu(device: &Arc<CpuDevice>) -> Result<(Batch<CpuDevice>, Count
     })
 }
 
-/// Two frames (counts 300 then 100) of plain, plain, counted, plain: the rows, the passes of each frame and the indirect
-/// counted passes the probe saw.
-fn run_counted(launch: CountedLaunch) -> (Vec<Vec<u32>>, Vec<u64>, u64) {
-    let _form = Form::take(false);
+/// Two frames (counts 300 then 100) of plain, plain, counted, plain, with the pass form `forced` or not: the rows, the
+/// passes of each frame and the indirect launches the probe saw.
+fn run_counted(launch: CountedLaunch, forced: bool) -> (Vec<Vec<u32>>, Vec<u64>, u64) {
+    let _form = Form::take(forced);
     set_counted_launch(Some(launch));
     let device = Arc::new(device_logged("one_pass counted"));
     HeadlessDevice::counted_probe(true);
@@ -455,7 +456,7 @@ fn run_counted(launch: CountedLaunch) -> (Vec<Vec<u32>>, Vec<u64>, u64) {
         rows.push(drive(ticket).unwrap());
         counts.push(passes);
     }
-    let indirect = HeadlessDevice::counted_probe_passes();
+    let indirect = HeadlessDevice::counted_probe_launches();
     HeadlessDevice::counted_probe(false);
     (rows, counts, indirect)
 }
@@ -480,25 +481,31 @@ fn counted_twin() -> Vec<Vec<u32>> {
         .collect()
 }
 
-/// Plain, plain, indirect counted, plain: the run before the counted stage is one pass, the counted stage keeps its
-/// two (args kernel and indirect launch), and the stage after it opens a pass of its own. (Pass count: 1 + 2 + 1 = 4.)
+/// Plain, plain, indirect counted, plain: the counted stage's args dispatch and indirect dispatch join the run, so the
+/// frame is one pass; under `force_pass_per_dispatch` (the old form) every dispatch is a pass, the counted stage's two
+/// among them. The rows are the CPU twin's and the host model's in both. (Pass counts: 1; forced 1 + 1 + 2 + 1 = 5.)
 #[test]
-fn an_indirect_counted_stage_splits_the_run_into_one_two_and_one() {
-    let (rows, counts, indirect) = run_counted(CountedLaunch::Indirect);
-    assert_eq!(counts, [4, 4], "1 + 2 + 1 passes a frame");
-    assert_eq!(indirect, 2, "one indirect counted pass a frame");
+fn an_indirect_counted_stage_joins_the_run() {
+    let (rows, counts, indirect) = run_counted(CountedLaunch::Indirect, false);
+    assert_eq!(counts, [1, 1], "one pass a frame");
+    assert_eq!(indirect, 2, "one indirect launch a frame");
     assert_eq!(rows, counted_twin(), "against the CPU twin");
     let x = small_of(CAP, 3);
     let first: Vec<u32> = (0..CAP as usize)
         .map(|i| if i < 300 { (x[i] + 2) * 3 + 5 } else { 5 })
         .collect();
     assert_eq!(rows[0], first, "the first frame against the host");
+
+    let (forced_rows, forced_counts, forced_indirect) = run_counted(CountedLaunch::Indirect, true);
+    assert_eq!(forced_counts, [5, 5], "forced: a pass per dispatch");
+    assert_eq!(forced_indirect, 2, "forced: one indirect launch a frame");
+    assert_eq!(forced_rows, rows, "forced and default give the same rows");
 }
 
 /// The bounded launch is one plain kernel: the whole frame is one pass. (Pass count: 1.)
 #[test]
 fn a_bounded_counted_stage_joins_the_run() {
-    let (rows, counts, indirect) = run_counted(CountedLaunch::Bounded);
+    let (rows, counts, indirect) = run_counted(CountedLaunch::Bounded, false);
     assert_eq!(counts, [1, 1]);
     assert_eq!(indirect, 0);
     assert_eq!(rows, counted_twin());

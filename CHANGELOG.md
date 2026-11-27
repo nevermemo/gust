@@ -71,9 +71,16 @@ breaks existing code bumps the minor version, and the promise is described in th
   element as it was; the device holds one `u32` word per element. A word that is no variant reads as the last variant
   in a body, and `Error::InvalidEnum` names the lowest such index on the host read. The enum needs a variant whose word
   is 0 (`GUST-E1012`). An enum operand of a library op is refused by name.
-  A `GpuPod` struct of your own as `b.input::<Particle>(n)` inside a `gpu_batch!` block is no longer accepted: the
-  macro cannot tell it from an enum, so rustc says "cannot find macro `Particle` in this scope" and "`Particle` is not
-  a GPU enum". There is no workaround inside the macro; build such a batch with `gust::batch::build` instead.
+  A struct of your own as `b.input::<Particle>(n)` inside a `gpu_batch!` block needs `#[derive(GpuStruct)]` (below);
+  with no derive, rustc names the type ("not a GPU enum or a GPU struct") with the derive to add, and also says
+  "cannot find macro `Particle` in this scope".
+- A struct stored as the element of a batch's buffers (m14.s2s, D279): `#[derive(GpuStruct)]` on a `#[repr(C)]` struct of
+  named scalar, vector and matrix fields with no implicit padding (anything else is refused at the derive) gives
+  `b.input::<Row>(n)`, a stage typed `-> Row`, and `rows[i].life`, `rows[i].life += x` and `rows[i] = Row { .. }` in a
+  stage body. The device holds the struct itself, so a batch of rows binds one storage buffer per element type instead
+  of one per column. A struct as a library op operand is `GUST-E1022`, as a `Param` type `GUST-E1023`, and as a count
+  `GUST-E1015`; an atomic on a field is `GUST-E0609` (the ruling said `GUST-E0122`). The struct must be declared or
+  imported at module level of the call.
 - `cargo xtask check-web` runs a second page, `examples/web-batch-frames` (m14.s2c): a `gpu_batch!` with `in_flight(2)`
   in headless Chrome records and submits frame N+1 while frame N's ticket is still pending, then checks both frames and
   a third one against the host computation exactly. Browser run only, on the adapter Chrome picks.

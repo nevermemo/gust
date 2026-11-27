@@ -113,7 +113,7 @@ pub(super) fn element_layout_assertions(
 
 /// The layout rules the `const` assertions of a struct's `GpuPod` impl check.
 #[derive(Clone, Debug)]
-pub(super) enum PodRules {
+pub(crate) enum PodRules {
     /// `StorageV1` or `StorageV2`: `#[repr(C)]`, the largest field alignment, and no padding.
     Storage,
     /// `Std140V1` (the struct is reachable from a uniform parameter): `#[repr(C, align(16))]`, alignment and size
@@ -123,7 +123,7 @@ pub(super) enum PodRules {
     Std140(Option<crate::uniform::Std140Struct>),
 }
 
-pub(super) fn gpu_pod_impl(item: &syn::ItemStruct, rules: &PodRules) -> syn::Result<TokenStream> {
+pub(crate) fn gpu_pod_impl(item: &syn::ItemStruct, rules: &PodRules) -> syn::Result<TokenStream> {
     let ident = &item.ident;
     let syn::Fields::Named(fields) = &item.fields else {
         return Err(diagnostics::error(

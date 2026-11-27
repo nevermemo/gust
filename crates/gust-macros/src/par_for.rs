@@ -134,6 +134,17 @@ pub(crate) struct Raw {
     pub(crate) ranges: syn::Expr,
     pub(crate) bindings: Vec<RawBinding>,
     pub(crate) body: syn::Block,
+    /// The structs of the user's that a stage of a batch holds as elements (D279): empty for a `par_for!`.
+    pub(crate) structs: Vec<StructElement>,
+}
+
+/// A struct of the user's as the element of a buffer binding of a batch stage: the name the stage's module declares it
+/// under (the kernel's spelling) and the path from the module to the user's own type (the host's spelling, so that the
+/// handles the user holds and the kernel's `Resource::Element` are one type).
+#[derive(Clone)]
+pub(crate) struct StructElement {
+    pub(crate) name: syn::Ident,
+    pub(crate) host: TokenStream,
 }
 
 impl Parse for RawBinding {
@@ -186,6 +197,7 @@ impl Parse for Raw {
             ranges,
             bindings,
             body,
+            structs: Vec::new(),
         })
     }
 }
@@ -451,7 +463,22 @@ fn range_ends(ranges: &syn::Expr, dimensions: usize) -> syn::Result<Vec<syn::Exp
 
 /// The element of a buffer binding: `f32`, `i32`, `u32` (or `float`, `int`, `uint`) and the vector and matrix types
 /// that can be buffer elements. `bool` is not one (a buffer holds `u32` words).
-pub(crate) fn element(ty: &syn::Type, what: &str) -> syn::Result<Element> {
+pub(crate) fn element(
+    ty: &syn::Type,
+    what: &str,
+    structs: &[StructElement],
+) -> syn::Result<Element> {
+    // A struct of the user's, handed over by its derive: written by its bare name, as the stage's module declares it.
+    if let syn::Type::Path(path) = ty
+        && path.qself.is_none()
+        && let Some(ident) = path.path.get_ident()
+        && let Some(found) = structs.iter().find(|found| found.name == *ident)
+    {
+        return Ok(Element {
+            kernel: quote!(#ident),
+            host: found.host.clone(),
+        });
+    }
     let reject = || {
         binding_error(
             ty,
@@ -498,7 +525,12 @@ fn gpu_vec_element(path: &syn::TypePath) -> Option<&syn::Type> {
     }
 }
 
-fn classify(name: &syn::Ident, ty: &syn::Type, profile: Profile) -> syn::Result<Kind> {
+fn classify(
+    name: &syn::Ident,
+    ty: &syn::Type,
+    profile: Profile,
+    structs: &[StructElement],
+) -> syn::Result<Kind> {
     let what = format!("the binding `{}`", name.unraw());
     let unsupported = || {
         binding_error(
@@ -515,7 +547,7 @@ fn classify(name: &syn::Ident, ty: &syn::Type, profile: Profile) -> syn::Result<
             match reference.elem.as_ref() {
                 syn::Type::Slice(slice) => Ok(Kind::Slice {
                     mutable,
-                    element: element(&slice.elem, &what)?,
+                    element: element(&slice.elem, &what, structs)?,
                 }),
                 syn::Type::Path(path) => {
                     let Some(inner) = gpu_vec_element(path) else {
@@ -532,7 +564,7 @@ fn classify(name: &syn::Ident, ty: &syn::Type, profile: Profile) -> syn::Result<
                     }
                     Ok(Kind::Resident {
                         mutable,
-                        element: element(inner, &what)?,
+                        element: element(inner, &what, structs)?,
                     })
                 }
                 _ => Err(unsupported()),
@@ -592,7 +624,7 @@ impl Plan {
                     ),
                 ));
             }
-            let kind = classify(&binding.name, &binding.ty, profile)?;
+            let kind = classify(&binding.name, &binding.ty, profile, &raw.structs)?;
             bindings.push(Binding {
                 name: binding.name,
                 kind,
@@ -737,11 +769,12 @@ impl Plan {
         let [ex, ey, ez] = &axis_fields[..] else {
             unreachable!("three axes")
         };
-        // The enums of a batch stage's parameters: a private copy of each, and the function that decodes its word.
+        // The enums of a batch stage's parameters (a private copy of each, and the function that decodes its word) and
+        // the structs of its elements.
         let enum_items = self
             .task
             .as_ref()
-            .map_or_else(Vec::new, crate::task::TaskPlan::enum_items);
+            .map_or_else(Vec::new, crate::task::TaskPlan::type_items);
         // The args kernel of a counted stage: one invocation turns `min(n, capacity)` rows into the grid of groups,
         // `x = min(g, 65535)` and `y = ceil(g / 65535)` (neither sum can overflow a `u32`).
         let args_kernel: Vec<syn::Item> = match &self.options.count {

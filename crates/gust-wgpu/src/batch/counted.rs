@@ -230,11 +230,10 @@ pub(crate) const fn effective_launch(
 }
 
 impl HeadlessDevice {
-    /// Whether the adapter runs `dispatch_workgroups_indirect`. wgpu reports it as `DownlevelFlags::INDIRECT_EXECUTION`,
-    /// which the Vulkan, Metal, DirectX 12 and WebGPU backends all have; the OpenGL backend may not, so it counts as
-    /// without (the bounded launch runs everywhere).
+    /// Whether the adapter runs `dispatch_workgroups_indirect`: wgpu's `DownlevelFlags::INDIRECT_EXECUTION`, read when
+    /// the device was built.
     fn indirect_execution(&self) -> bool {
-        self.adapter_info.backend != wgpu::Backend::Gl
+        self.indirect_execution
     }
 }
 

@@ -1,7 +1,7 @@
-// A parameter type that is not a GPU enum: rustc says "`Mode` is not a GPU enum" at the type, with the label "add
-// `#[derive(GpuEnum)]` to the enum" (the trait's `on_unimplemented`, D270). Without the derive there is no macro of
-// that name either, and rustc reports "cannot find macro `Mode`" next to this error; the stand-in macro below takes
-// the place of the one the derive would write, so that this fixture has the one error expected.txt pins.
+// A parameter type that is not a GPU enum: step one asks each type of the block for the marker both derives implement,
+// so rustc names the type and the derives (E0277), and it also says "cannot find macro `Mode` in this scope" at the type,
+// because the derive writes the macro that step one calls. These are the two errors (`errors: 2` in expected.txt, which
+// pins the named one and its line).
 
 use std::sync::Arc;
 
@@ -13,12 +13,6 @@ use gust::cpu::CpuDevice;
 enum Mode {
     Linear,
     Curve,
-}
-
-macro_rules! Mode {
-    ($($tokens:tt)*) => {
-        ::core::unreachable!()
-    };
 }
 
 fn main() {

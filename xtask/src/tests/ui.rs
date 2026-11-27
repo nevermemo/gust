@@ -91,6 +91,7 @@ fn expected(code: &str, file: &str, line: u64, messages: &[&str], labels: &[&str
         line,
         messages: messages.iter().map(|text| (*text).to_owned()).collect(),
         labels: labels.iter().map(|text| (*text).to_owned()).collect(),
+        errors: 1,
     }
 }
 
@@ -1813,6 +1814,15 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             "batch-op-crate",
             "batch-op-form",
             "batch-scope",
+            "batch-struct-atomic-field",
+            "batch-struct-columns-limit",
+            "batch-struct-copy-mismatch",
+            "batch-struct-count",
+            "batch-struct-missing-derive",
+            "batch-struct-module",
+            "batch-struct-ok",
+            "batch-struct-op-operand",
+            "batch-struct-other-crate",
             "map-bool-for-u32",
             "map-ok",
             "map-struct-bool-field",
@@ -1858,7 +1868,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 305] = [
+const PINNED_FIXTURES: [&str; 325] = [
     "array-barrier",
     "array-buffer-len",
     "array-const-len",
@@ -1909,6 +1919,15 @@ const PINNED_FIXTURES: [&str; 305] = [
     "batch-op-crate",
     "batch-op-form",
     "batch-scope",
+    "batch-struct-atomic-field",
+    "batch-struct-columns-limit",
+    "batch-struct-copy-mismatch",
+    "batch-struct-count",
+    "batch-struct-missing-derive",
+    "batch-struct-module",
+    "batch-struct-ok",
+    "batch-struct-op-operand",
+    "batch-struct-other-crate",
     "break-in-barrier-loop",
     "closure-barrier",
     "closure-move",
@@ -1943,6 +1962,17 @@ const PINNED_FIXTURES: [&str; 305] = [
     "gpu-enum-ok",
     "gpu-enum-repr-missing",
     "gpu-enum-repr-other",
+    "gpu-struct-alias",
+    "gpu-struct-array-field",
+    "gpu-struct-enum-field",
+    "gpu-struct-forbid-unsafe",
+    "gpu-struct-generic",
+    "gpu-struct-nested",
+    "gpu-struct-ok",
+    "gpu-struct-padding",
+    "gpu-struct-repr-missing",
+    "gpu-struct-tuple-field",
+    "gpu-struct-vec3",
     "gpupod-missing",
     "gpupod-present",
     "headless-cpu-kernel",
@@ -2276,4 +2306,64 @@ fn the_reexport_check_shares_the_cases_target_directory_unless_cargo_is_told_one
     )
     .unwrap();
     assert!(ignore.lines().any(|line| line == "/target/"), "{ignore}");
+}
+
+#[test]
+fn an_errors_count_lets_the_keys_hold_for_one_of_several_errors() {
+    let mut wanted = macro_expected();
+    wanted.errors = 2;
+    let other = MACRO_ERROR_LINE
+        .replace("\"line_start\":7", "\"line_start\":9")
+        .replace("\"line_end\":7", "\"line_end\":9");
+    // One of the two satisfies the keys, whichever comes first.
+    assert_eq!(
+        run_macro_all(&wanted, &[&other, MACRO_ERROR_LINE]),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        run_macro_all(&wanted, &[MACRO_ERROR_LINE, &other]),
+        Vec::<String>::new()
+    );
+    // None does, or the count is not the one the file names.
+    assert!(run_macro_all(&wanted, &[&other, &other])[0].contains("does not satisfy"));
+    assert!(
+        run_macro_all(&wanted, &[MACRO_ERROR_LINE])[0]
+            .contains("describes 2 errors, but rustc reported 1 errors")
+    );
+    // Without the key, a second error is still refused.
+    assert!(
+        run_macro_all(&macro_expected(), &[MACRO_ERROR_LINE, &other])[0]
+            .contains("describes one error, but rustc reported 2 errors")
+    );
+}
+
+fn run_macro_all(wanted: &Expected, lines: &[&str]) -> Vec<String> {
+    judge(
+        "kernel-cpu-bad-value",
+        "kernel-cpu-bad-value",
+        &fails(wanted.clone()),
+        false,
+        &cargo_stdout(lines),
+        "",
+    )
+}
+
+#[test]
+fn the_errors_key_is_a_number_above_one_and_appears_once() {
+    let base = "code: E0277\nfile: a/src/main.rs\nline: 3\n";
+    assert_eq!(
+        parse_expected(&format!("{base}errors: 2\n"))
+            .unwrap()
+            .errors,
+        2
+    );
+    assert_eq!(parse_expected(base).unwrap().errors, 1);
+    for bad in [
+        "errors: 1",
+        "errors: 0",
+        "errors: two",
+        "errors: 2\nerrors: 3",
+    ] {
+        assert!(parse_expected(&format!("{base}{bad}\n")).is_err(), "{bad}");
+    }
 }

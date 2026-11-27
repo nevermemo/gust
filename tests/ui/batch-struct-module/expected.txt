@@ -1,0 +1,7 @@
+# Keys matched against the resolution error of the two that `cargo check --message-format json` prints (`errors: 2`): the
+# module keeps its struct, but the derive's hidden macro is not in the module; the named marker error follows at the type.
+code: E0433
+file: batch-struct-module/src/main.rs
+line: 21
+errors: 2
+message: cannot find `Row` in `kernels`

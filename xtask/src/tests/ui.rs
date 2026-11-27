@@ -3,8 +3,9 @@ use std::fs;
 use super::{
     Expectation, Expected, REEXPORT_DIR, UI_DIR, cargo_args, case_command, discover_cases, judge,
     parse_diagnostics, parse_env, parse_expectation, parse_expected, reexport_args,
-    reexport_command, reexport_problems, reexport_target_dir,
+    reexport_command, reexport_problems, ui_target_dir,
 };
+use crate::ui::{group_command, shared_command};
 use crate::workspace::workspace_root;
 
 const MESSAGE: &str = "`Outside` is not a GUST GPU POD type";
@@ -2301,25 +2302,40 @@ fn the_reexport_fixture_has_no_direct_dependency_on_gust() {
 }
 
 #[test]
-fn the_reexport_check_shares_the_cases_target_directory_unless_cargo_is_told_one() {
-    // Without it a run in a clean checkout would leave an untracked `tests/reexport/target` (the Unit job of CI sets
-    // no `CARGO_TARGET_DIR`).
+fn every_check_ui_child_builds_in_the_ui_directory_of_the_target_directory() {
+    // The fixtures build `crates/gust` under other `GUST_PROFILE` values; in the main target that flips the
+    // fingerprint of its build script for the next dev build.
+    let root = std::path::Path::new("ROOT");
     assert_eq!(
-        reexport_target_dir(None).as_deref(),
-        Some("tests/ui/target")
+        ui_target_dir(root, None),
+        std::path::Path::new("ROOT").join("target").join("ui")
     );
     assert_eq!(
-        reexport_target_dir(Some(std::ffi::OsStr::new(""))).as_deref(),
-        Some("tests/ui/target")
+        ui_target_dir(root, Some(std::ffi::OsStr::new(""))),
+        std::path::Path::new("ROOT").join("target").join("ui")
     );
-    assert_eq!(reexport_target_dir(Some(std::ffi::OsStr::new("/t"))), None);
-    let command = reexport_command(std::path::Path::new("ROOT"));
-    let args: Vec<_> = command.get_args().map(ToOwned::to_owned).collect();
-    let has_directory = args.iter().any(|arg| arg == "--target-dir");
     assert_eq!(
-        has_directory,
-        std::env::var_os("CARGO_TARGET_DIR").is_none_or(|value| value.is_empty())
+        ui_target_dir(root, Some(std::ffi::OsStr::new("/t"))),
+        std::path::Path::new("/t").join("ui")
     );
+    let wanted = ui_target_dir(root, std::env::var_os("CARGO_TARGET_DIR").as_deref());
+    let target_of = |command: &std::process::Command| {
+        let values: Vec<_> = command
+            .get_envs()
+            .filter(|(name, _)| *name == "CARGO_TARGET_DIR")
+            .map(|(_, value)| value.map(std::path::PathBuf::from))
+            .collect();
+        assert_eq!(values.len(), 1, "{values:?}");
+        values[0].clone()
+    };
+    for command in [
+        reexport_command(root),
+        case_command(root, "gpupod-missing", &[]),
+        group_command(root, &["a", "b"], &[]),
+        shared_command(root, &["a"]),
+    ] {
+        assert_eq!(target_of(&command), Some(wanted.clone()));
+    }
     let ignore = fs::read_to_string(
         workspace_root()
             .unwrap()

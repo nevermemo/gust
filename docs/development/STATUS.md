@@ -1537,6 +1537,10 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       per kernel whether it was a hit or compiled and how long the call took on the CPU. The pipeline cache now
       finds a kernel by content when its addresses differ, so a typed call after a precompile of its `DESCRIPTOR`
       is a hit, and `entries` counts kernels. Tests pass on both adapters natively and in the browser example.
+    - m14.bzview merged (D294): `view_as::<U>()` gives a buffer a second element type over the same bytes, for typed
+      calls, bindings and staged graph nodes, readable or writable. To the aliasing and ordering checks a view and its
+      source are one buffer. GPU only, with no CPU twin. SEMANTICS section 5 says how the memory rules read through a
+      view. Tests pass on both adapters.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

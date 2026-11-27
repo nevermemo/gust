@@ -8,39 +8,88 @@ use std::sync::{Arc, Mutex, PoisonError};
 use gust::batch::BoxFuture;
 use gust::{Access, GpuPod, LengthRule, Resource, pod_slice_as_bytes};
 
+use super::counted::record_indirect;
 use super::{GpuStage, map_error};
 use crate::encode::{record_upload_copy, stage_upload};
 use crate::pool::EPOCH;
 use crate::{
-    Error, GpuBuffer, HeadlessDevice, PassTimestamps, PreparedDispatch, encode_batch_passes,
+    Error, GpuBuffer, HeadlessDevice, PassTimestamps, PreparedDispatch, begin_compute,
+    encode_batch_passes, pass_per_dispatch_forced,
 };
 
 /// The label of the passes `encode_stages` records for a frame.
 pub(super) const FRAME_PASS_LABEL: &str = "GUST batch frame pass";
 
+/// A dispatch of a run: a plain compute dispatch, or the counted dispatch of an indirect counted stage with the args
+/// buffer it launches from (the stage's args dispatch, a plain compute dispatch, comes before it in the run).
+#[derive(Clone, Copy)]
+enum Item<'a> {
+    Plain(&'a PreparedDispatch),
+    Indirect(&'a PreparedDispatch, &'a wgpu::Buffer),
+}
+
+impl<'a> Item<'a> {
+    fn dispatch(&self) -> &'a PreparedDispatch {
+        match *self {
+            Item::Plain(dispatch) | Item::Indirect(dispatch, _) => dispatch,
+        }
+    }
+}
+
+/// Record a run that holds the dispatches of indirect counted stages in one compute pass, in order: the plain
+/// dispatches (an args dispatch among them) as dispatches, the counted ones launched from their args buffers. A
+/// dispatch of the pass sees the writes of the ones before it (wgpu tracks the usage of each dispatch and inserts the
+/// barrier), so the args dispatch's write reaches the indirect launch after it.
+fn record_merged_run(
+    encoder: &mut wgpu::CommandEncoder,
+    run: &[Item<'_>],
+    stamps: Option<PassTimestamps<'_>>,
+) {
+    let mut pass = begin_compute(encoder, FRAME_PASS_LABEL, stamps);
+    for item in run {
+        match *item {
+            Item::Plain(dispatch) => dispatch.record_compute(&mut pass),
+            Item::Indirect(dispatch, args) => record_indirect(&mut pass, dispatch, args),
+        }
+    }
+    crate::count_passes(1);
+}
+
 /// What the stages of a frame record as: a run of compute dispatches in one pass, a dispatch that is not a compute one
-/// (a render pass of its own), or an indirect counted stage (its two passes).
+/// (a render pass of its own), or, under `force_pass_per_dispatch` only, an indirect counted stage (its two passes).
 enum Segment<'a> {
-    Run(Vec<&'a PreparedDispatch>),
+    Run(Vec<Item<'a>>),
     Single(&'a PreparedDispatch),
     Counted(&'a GpuStage, &'a wgpu::Buffer),
 }
 
-/// The segments of `stages`, in order. A stage without a dispatch adds nothing and cuts no run.
-fn segments_of<'a>(stages: &[&'a GpuStage]) -> Vec<Segment<'a>> {
+/// The segments of `stages`, in order. A stage without a dispatch adds nothing and cuts no run. An indirect counted
+/// stage joins the run, its args dispatch then its counted dispatch, unless `per_dispatch` (`force_pass_per_dispatch`
+/// is on): then it is a segment of its own, recorded as two passes.
+fn segments_of<'a>(stages: &[&'a GpuStage], per_dispatch: bool) -> Vec<Segment<'a>> {
     let mut segments = Vec::new();
-    let mut run: Vec<&PreparedDispatch> = Vec::new();
+    let mut run: Vec<Item<'a>> = Vec::new();
     for &stage in stages {
         if let Some(args) = &stage.indirect {
-            if !run.is_empty() {
-                segments.push(Segment::Run(std::mem::take(&mut run)));
+            if per_dispatch {
+                if !run.is_empty() {
+                    segments.push(Segment::Run(std::mem::take(&mut run)));
+                }
+                segments.push(Segment::Counted(stage, args));
+            } else {
+                let [grid, counted] = &stage.dispatches[..] else {
+                    unreachable!(
+                        "an indirect counted stage holds the args dispatch and the counted one"
+                    )
+                };
+                run.push(Item::Plain(grid));
+                run.push(Item::Indirect(counted, args));
             }
-            segments.push(Segment::Counted(stage, args));
             continue;
         }
         for dispatch in &stage.dispatches {
             if dispatch.is_compute() {
-                run.push(dispatch);
+                run.push(Item::Plain(dispatch));
             } else {
                 if !run.is_empty() {
                     segments.push(Segment::Run(std::mem::take(&mut run)));
@@ -189,17 +238,18 @@ impl HeadlessDevice {
         }
     }
 
-    /// Record the stages of a frame in order, the plain compute dispatches of neighbouring stages (and a library op's
-    /// dispatches, and a bounded counted stage's) in one compute pass. An indirect counted stage keeps its two passes
-    /// and a `pixel` dispatch its render pass; each ends the run before it. `stamps` write `begin` at the start of the
-    /// first pass recorded and `end` at the end of the last.
+    /// Record the stages of a frame in order, the compute dispatches of neighbouring stages (and a library op's
+    /// dispatches, a bounded counted stage's, and both dispatches of an indirect counted stage) in one compute pass. A
+    /// `pixel` dispatch keeps its render pass and ends the run before it; under `force_pass_per_dispatch` every
+    /// dispatch has a pass of its own. `stamps` write `begin` at the start of the first pass recorded and `end` at the
+    /// end of the last.
     pub(super) fn encode_stages(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         stages: &[&GpuStage],
         stamps: Option<(&wgpu::QuerySet, Option<u32>, Option<u32>)>,
     ) -> Result<(), Error> {
-        let segments = segments_of(stages);
+        let segments = segments_of(stages, pass_per_dispatch_forced());
         let last = segments.len().saturating_sub(1);
         for (index, segment) in segments.iter().enumerate() {
             let (begin, end) = stamps.map_or((None, None), |(_, begin, end)| {
@@ -216,8 +266,18 @@ impl HeadlessDevice {
                 })
             });
             match segment {
+                Segment::Run(run) if run.iter().any(|item| matches!(item, Item::Indirect(..))) => {
+                    record_merged_run(encoder, run, pass_stamps);
+                }
                 Segment::Run(run) => {
-                    encode_batch_passes(&self.device, encoder, FRAME_PASS_LABEL, run, pass_stamps)?
+                    let plain: Vec<&PreparedDispatch> = run.iter().map(Item::dispatch).collect();
+                    encode_batch_passes(
+                        &self.device,
+                        encoder,
+                        FRAME_PASS_LABEL,
+                        &plain,
+                        pass_stamps,
+                    )?;
                 }
                 Segment::Single(dispatch) => {
                     crate::count_passes(1);

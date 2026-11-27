@@ -1467,6 +1467,12 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       (`GUST_S2I_M2_PROBE=1`, cells `small` or `all`) times a counted chain launched indirect against the same chain
       bounded, as the frame span, with the median of the middle rounds and every round printed. Its five-run reading
       per adapter waits for a quiet window.
+    - Gate t46 green on the s2i.m2 records (32 steps).
+    - m14.onepass-ts merged (D283 amends D277): where the adapter offers `TIMESTAMP_QUERY_INSIDE_PASSES`, a frame
+      timed at `Passes` keeps its plain stages in one compute pass and stamps each stage inside it; indirect counted
+      and `pixel` stages keep their own passes; without the feature, or with the pass-per-dispatch form forced, a pass
+      per stage as before. New test file `inside_pass_timestamps.rs` (four GPU tests) ran on the Radeon 890M and the
+      RTX 5090; the pin is 703 over 73 by count, and the merge gate's full Gpu suite confirms it.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

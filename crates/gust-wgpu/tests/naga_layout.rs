@@ -31,8 +31,8 @@
 //! Validation matches `wgpu_core::Device::create_shader_module`: the WGSL front end is given the capability set, then
 //! the validator runs with `ValidationFlags::all()` and the same capability set. The set here is
 //! `Capabilities::empty()`, which is what wgpu derives from a device that requests no shader features. The devices of
-//! `HeadlessDevice` request `TIMESTAMP_QUERY` and `MEMORY_DECORATION_COHERENT` when the adapter has them, and neither
-//! maps to a naga capability the goldens use; wgpu also adds the capabilities of three downlevel flags (f16 in f32,
+//! `HeadlessDevice` request `TIMESTAMP_QUERY`, `TIMESTAMP_QUERY_INSIDE_PASSES` and `MEMORY_DECORATION_COHERENT` when
+//! the adapter has them, and none maps to a naga capability the goldens use; wgpu also adds the capabilities of three downlevel flags (f16 in f32,
 //! multisampled shading, cube array textures), which no compute golden touches. So the gate is at least as strict as
 //! any device of the crate. It must never be `Capabilities::all()`, the default of `naga::front::wgsl::Options`: that
 //! passed WGSL that wgpu refuses (docs/development/VALIDATION.md); `default_capabilities_refuse_what_all_accept`

@@ -1566,9 +1566,14 @@ pub(crate) struct GpuSuitePin {
 /// on an existing line. Updated by count; the full
 /// Gpu suite run on the Radeon 890M after the merge confirms it (the RTX 5090 ran the struct and limits tests, not the full
 /// suite).
+///
+/// Slice m14.onepassts, merged on 699 over 72: 699 over 72 became 703 over 73. The inside-pass timestamp slice adds the
+/// new test file `tests/inside_pass_timestamps.rs` (four GPU tests, one `test result:` line) and changes no other
+/// test count (`tests/one_pass.rs` renames and widens one existing test, `tests/device_share.rs` gains a feature in its
+/// hand-written request). Updated by count; the full Gpu suite run at the merge confirms it.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 699,
-    result_lines: 72,
+    passed: 703,
+    result_lines: 73,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

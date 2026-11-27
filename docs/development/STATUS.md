@@ -1528,6 +1528,11 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       module kernel is refused (GUST-E1024). Tests compare against the CPU twin on both adapters at sizes up to
       capacity, across resizes, with a second target and an op output refused as one; the browser example has a
       scatter stage, checked on the Radeon 890M. The mutations ran on the CPU twin only.
+    - Quiet-window readings, 2026-11-27: the CPU chains stay (D291, the second pair D287 asked for). The closing
+      series of m14.s2imerge holds both clauses: on the RTX 5090, six indirect stages in the shared pass cost under
+      half of what the forced two-pass form adds over the bounded launch, and no cell is resolved worse than the
+      forced form on either adapter (the Radeon 890M runs were interleaved, without a pre-heat). The timer spike
+      pf.lazyts did not hold its floor in its rerun, so nothing is concluded and no further runs are ordered. pf.bgratio is void and parked (D292).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

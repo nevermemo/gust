@@ -61,6 +61,8 @@
 //! each stage has a begin and an end, and the frame is not the one that runs untimed or at `Frame`. The per-stage times
 //! then include the pass boundary a stage would otherwise share, and their sum can exceed the `Frame` time. A native
 //! device with the feature records the frame as untimed and stamps each stage's begin and end inside the passes.
+//! In the browser a batch times its frames where the adapter grants `timestamp-query` (pass boundaries only, as above), and
+//! the values are quantized by the browser (measured 65536 ns on Chrome 158, Radeon 890M only; RTX 5090 pending).
 //!
 //! A caller reads a batch's buffers on the GPU through a [`View`] ([`Batch::view`], decision D261): the batch's own
 //! buffer, kept alive by the view, with the batch's [`generation`](Batch::generation). What a reader sees follows the
@@ -508,7 +510,7 @@ pub trait BatchDevice: MapHost + Sized + 'static {
     fn wait(&self, submission: &Self::Submission) -> Result<(), Self::Error>;
 
     /// Make the timing objects of a batch of `stages` stages that keeps `in_flight` frames, or `None` when this device
-    /// cannot time frames (no timestamp queries, the CPU twin, `wasm32`). Called once, when the batch is sealed, and
+    /// cannot time frames (no timestamp queries, the CPU twin). Called once, when the batch is sealed, and
     /// only for a level that is not [`FrameTiming::Off`].
     fn timing_open(
         &self,
@@ -1126,8 +1128,8 @@ impl<D: BatchDevice> Batch<D> {
     }
 
     /// What this batch can tell about the time of its frames: `None` when it cannot (built without a timing level, or on a
-    /// device without timestamp queries, the CPU twin and `wasm32` included), and then every [`FrameRun::time`] of the
-    /// batch resolves to `Ok(None)`.
+    /// device without timestamp queries, the CPU twin included, or a browser that does not grant them), and then every
+    /// [`FrameRun::time`] of the batch resolves to `Ok(None)`.
     #[must_use]
     pub fn frame_timing(&self) -> Option<TimingInfo> {
         self.core.timing.as_ref().map(TimingState::info)

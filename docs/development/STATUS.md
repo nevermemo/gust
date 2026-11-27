@@ -1496,6 +1496,24 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       the same assertion functions, so they would catch the GPU-side form, but that is inferred, not run. Two review
       points go into m14.s2sc: the browser example's `build(n)` assumes `n == LENGTH`, and the refusal test at three
       buffers does not name the refused stage.
+    - Quiet window qw4 read six pre-registered measurements. The CPU-stage chains (D287 amends D268) stay the default
+      on the whole-stage wall of one clean pair; the statistic registered first is withdrawn because both legs lose
+      time at every stage boundary, and a second pair is owed once that time is removed. Spike s2i.pass (the passes of
+      several indirect counted stages merged into one) survived its kill rule on both adapters, and by proxy ruling it
+      becomes a slice with the merged layout as the only one, honouring the forced pass-per-dispatch form; its D-row is
+      written at merge. Spike pf.sib (sibling stages fused into one kernel): siblings that read the same inputs gain on
+      both adapters at the larger sizes, siblings with disjoint inputs lose, so by proxy ruling fusion goes ahead for
+      shared-input siblings only, in three staged slices, and disjoint siblings are never fused. pf.ft2 (the cost of
+      reading frame times) closes by its K1 rule, with a guide sentence; the pf.onepass closing series closes with all
+      clauses held on both adapters; pf.lazyts held its floors in three of six runs, so those runs and their partner
+      legs run again in the next window.
+    - m14.ftweb merged (D288 amends D277 and D283): batch frame timing works on wasm32 when the browser grants
+      timestamp queries, and the browser example reads and checks the third frame's time (check-web label `frame time
+      read` in headless Chrome 158 on the Radeon 890M; the RTX 5090 has not run the browser check). The quantum the
+      browser applies, 65536 ns, was measured by a step-zero probe outside the repo; the page does not measure it.
+      The guide states the pf.ft2 result (a read that does not block costs the batch less, on both adapters) without
+      figures. The plan's SEMANTICS sentence was not needed: SEMANTICS has no frame-timing paragraph. Native timing
+      tests pass on both adapters.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

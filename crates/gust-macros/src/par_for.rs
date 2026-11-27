@@ -707,7 +707,16 @@ impl Plan {
         let parameters = self.buffers().map(|(name, mutable, element, _)| {
             let element = &element.kernel;
             let name = self.kernel_name(name, names);
-            if mutable {
+            if mutable
+                && self
+                    .task
+                    .as_ref()
+                    .is_some_and(|task| task.is_scatter(&name))
+            {
+                // A scatter target (slice s2sc): the same buffer to the Slang and the descriptor, a type of its own
+                // to the CPU twin, which checks its stores.
+                quote!(mut #name: ScatterMut<#element>)
+            } else if mutable {
                 quote!(mut #name: RWStructuredBuffer<#element>)
             } else {
                 quote!(#name: StructuredBuffer<#element>)
@@ -803,6 +812,15 @@ impl Plan {
             }
             None => Vec::new(),
         };
+        // A stage with scatter targets tells its CPU twin the stage's name (a doc attribute, which no pass reads and
+        // which is no part of the Slang, so no part of the kernel's name).
+        let scatter_marker: Vec<syn::Attribute> = self
+            .task
+            .as_ref()
+            .and_then(crate::task::TaskPlan::scatter_marker)
+            .map(|marker| syn::parse_quote!(#[doc = #marker]))
+            .into_iter()
+            .collect();
         syn::parse_quote! {
             mod #ident {
                 #(#enum_items)*
@@ -815,6 +833,7 @@ impl Plan {
                     #(pub #pads: u32,)*
                 }
 
+                #(#scatter_marker)*
                 #[kernel(workgroup_size(#x, #y, #z))]
                 pub fn run(#gid: SV_DispatchThreadID, #ext: Uniform<#record>, #(#parameters,)*) {
                     if #guard {

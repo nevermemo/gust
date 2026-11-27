@@ -90,7 +90,9 @@ pub(crate) fn parameter_flavor_in(stage: &dyn StageProfile, ty: &syn::Type) -> P
     match name.as_str() {
         "Workgroup" => ParameterFlavor::Workgroup,
         "Storage" | "StructuredBuffer" => ParameterFlavor::StorageRead,
-        "StorageMut" | "RWStructuredBuffer" => ParameterFlavor::StorageReadWrite,
+        // A scatter target (slice s2sc) is a read-write buffer to the Slang and to the descriptor; only the CPU twin
+        // (which checks its stores) and the classifier (`grid` only) tell it from `StorageMut`.
+        "StorageMut" | "RWStructuredBuffer" | "ScatterMut" => ParameterFlavor::StorageReadWrite,
         "Uniform" | "ConstantBuffer" => ParameterFlavor::Uniform,
         "Texture2D" => ParameterFlavor::SampledTexture,
         "StorageTexture2D" => ParameterFlavor::StorageTexture,
@@ -241,6 +243,12 @@ pub fn wrapper_element_type(ty: &syn::Type) -> syn::Result<&syn::Type> {
                 "GPU resource requires an element type",
             )
         })
+}
+
+/// Whether a kernel parameter of type `ty` is a scatter target (`ScatterMut<T>`, slice s2sc): a read-write buffer that
+/// only a stage of a batch has, and that the CPU twin checks and the classifier keeps `grid`.
+pub(crate) fn is_scatter_type(ty: &syn::Type) -> bool {
+    type_name(ty).as_deref() == Some("ScatterMut")
 }
 
 pub(crate) fn type_name(ty: &syn::Type) -> Option<String> {

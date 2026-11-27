@@ -2182,3 +2182,21 @@ Rejected: `let p = b.param::<Row>(Row { .. });` (a `Param<Row>` capture is the s
 Fixture: none (a unit test of the macro reaches it, `a_struct_is_no_parameter`; the form is rare).
 Write instead: one `Param` per scalar the body reads, or a one-element handle of `Row` that a stage reads at index 0.
 Decision: D279, plan m14.s2, slice s2s (part b).
+
+### GUST-E1024 a scatter clause that is not one of its forms
+
+A scatter stage is `gpu_task!(count(n); CAP, scatter(&mut a, &mut b), |i| { a[place] = value; })` inside a `gpu_batch!`: one dimension, no result type (the value is `()`), and a list of `&mut name` entries that each name a handle of the block. The code is raised for a `scatter(..)` clause outside a batch, on a 2-D stage or a stage with `-> T`, on an in-place stage (`&mut target` as the shape), with an empty list, an entry that is not `&mut name` of a handle, a name twice, a target that is also the stage's count, for a declared target that no path of the body stores into, and for a `ScatterMut` parameter on a kernel of a user's `#[gpu_module]` (the type is the target of a stage's kernel, which the batch writes itself).
+Reached through `#[gpu_module]`, raised by `gpu_task!` (and by `gpu_batch!` for an entry that is no handle), and by `#[gpu_module]` itself for a `ScatterMut` parameter on a kernel of a module.
+Rejected: a scatter stage outside a batch, `|x, y| { .. }` with a scatter clause, a body that never stores into one of its targets, `mut out: ScatterMut<u32>` on a kernel of a module.
+Fixtures: `tests/ui/batch-scatter-outside`, `tests/ui/batch-scatter-two-d`, `tests/ui/batch-scatter-unstored`, `tests/ui/batch-scatter-module`, with `tests/ui/batch-scatter-ok` as the control that compiles.
+Write instead: name only the handles the body writes, keep the stage one-dimensional, and give a target that is written on one path only a store on that path.
+Decision: slice m14.s2sc.
+
+### GUST-E1025 a store to a scatter target that is not one place store
+
+A store to a scatter target is `target[place] = value;`, where `place` is any `u32` expression and the store is a statement that runs at most once on every path of the body. A field store (`out[p].life = ..`), a compound store (`out[p] += ..`), a tuple index, `&mut out`, an atomic on a target, a second store on one path, and a store inside a loop, a closure or a nested expression are refused at the store. A path may store any subset of its targets, or none; a read of a target is the existing GUST-E1008. A branch that diverges (`if c { out[a] = x; return; } out[b] = y;`) is not modelled, so that body is refused as two stores on one path; store in an `else` instead.
+Reached through `#[gpu_module]`, raised by `gpu_task!` inside a `gpu_batch!`.
+Rejected: `out[dst[i]].flags = 1u32;`, `out[dst[i]] += 1u32;`, two stores to `out` in one block, `for k in 0..2u32 { out[k] = v; }`.
+Fixtures: `tests/ui/batch-scatter-field`, `tests/ui/batch-scatter-atomic`, `tests/ui/batch-scatter-loop`, `tests/ui/batch-scatter-two-stores` (and `tests/ui/batch-scatter-read` for GUST-E1008).
+Write instead: build the whole value first (`let mut row = rows[i]; row.life = ..;`) and store it once; use a library op for an accumulation. On the CPU twin, a place written twice in one run of the stage panics naming the stage, the target and the slot; on the GPU the winner of such a race is unspecified.
+Decision: slice m14.s2sc.

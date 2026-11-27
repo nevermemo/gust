@@ -7,6 +7,15 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- A scatter stage in a batch (m14.s2sc): `gpu_task!(count(n); CAP, scatter(&mut out, &mut other), |i| { out[dst[i]] =
+  rows[i]; })` stores at places its body computes, into one or several handles of the block. The stage is 1-D with no
+  result type; a store is `target[place] = value;` (any `u32` expression as the place), at most once on every path, and a
+  path may store any subset of the targets or none. A read of a target is `GUST-E1008`, a field or compound store or a
+  store in a loop is the new `GUST-E1025`, and any other form of the clause is the new `GUST-E1024`. Two invocations of
+  one run must not name the same slot: the CPU twin panics on a repeated slot, naming the stage, the target and the slot,
+  and on the GPU the winner of such a race is unspecified. `ScatterMut`, the type of a stage's target, is refused on a kernel
+  of a user's `#[gpu_module]` (`GUST-E1024`). The browser page (`web-batch-frames`) has a scatter stage too. Atomics at a
+  computed index are not part of this slice.
 - An indirect counted stage joins the frame's compute pass (m14.s2imerge): its args dispatch and its indirect dispatch
   are recorded, in stage order, into the pass the plain stages share, so only a `pixel` call ends a run (this replaces
   "an indirect counted stage and a `pixel` call keep their own passes" in the m14.onepassts and m14.onepass entries

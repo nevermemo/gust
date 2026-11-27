@@ -291,6 +291,17 @@ const EXAMPLE_GPU_TESTS: &[(&str, &[&str])] = &[
             "gpu_a_counted_stage_over_the_limit_is_refused_at_build_by_name",
             "gpu_a_library_op_over_the_limit_is_refused_at_build_by_name",
             "gpu_a_stage_built_empty_and_resized_over_the_limit_is_refused_by_name",
+            // `tests/scatter.rs`: the scatter stage (m14.s2sc).
+            "gpu_scatter_permutes_struct_rows",
+            "gpu_counted_scatter_runs_the_live_rows_only",
+            "gpu_scatter_place_is_a_computed_expression",
+            "gpu_scatter_path_that_stores_nothing_keeps_the_slot",
+            "gpu_scatter_stores_several_targets_with_a_set_per_path",
+            "gpu_scatter_over_live_and_created_rows",
+            "gpu_scatter_extent_follows_a_parameter",
+            "gpu_scatter_extent_moves_while_every_buffer_keeps_its_size",
+            "gpu_scatter_stores_an_enum_element",
+            "gpu_scatter_second_target_follows_a_resize",
         ],
     ),
     (

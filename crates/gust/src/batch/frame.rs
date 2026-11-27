@@ -13,7 +13,7 @@ use super::FrameTime;
 use super::timing::{Recorded, TimeCell, TimePlan, TimedFrame};
 use super::{
     BatchDevice, BoxFuture, Core, Element, Empty, Error, FrameTiming, Layout, OpPlan, Operands,
-    PLANS_KEPT, Param, ParamType, Stage, Value, Values, map, typed,
+    PLANS_KEPT, Param, ParamType, Stage, StageRec, Value, Values, map, typed,
 };
 use crate::GpuPod;
 
@@ -521,6 +521,7 @@ impl<D: BatchDevice> FrameRun<D> {
     fn resize(&mut self, id: usize, set: &mut Vec<(usize, Value)>) -> Result<(), Error> {
         let core = Arc::clone(&self.core);
         let mut values = self.values();
+        let here_values = values.clone();
         values[id] = set[0].1;
         for (derived, entry) in core.params.iter().enumerate() {
             if let Some((source, derive)) = &entry.derived
@@ -535,9 +536,9 @@ impl<D: BatchDevice> FrameRun<D> {
             .iter()
             .map(|buffer| buffer.rule.dims(&values))
             .collect();
-        let (sealed_dims, sealed) = {
+        let (sealed_dims, sealed, sealed_values) = {
             let run = core.run.lock().unwrap_or_else(PoisonError::into_inner);
-            (run.dims.clone(), run.buffers.clone())
+            (run.dims.clone(), run.buffers.clone(), run.values.clone())
         };
         let (here_dims, here) = (self.dims(), self.buffers());
         if let Some(&used) = self
@@ -584,22 +585,32 @@ impl<D: BatchDevice> FrameRun<D> {
         let replaced = (0..buffers.len())
             .filter(|&buffer| !same(buffer, &sealed, &sealed_dims))
             .count();
-        if replaced == 0 {
+        // A scatter stage's extents are its rows', which follow a parameter whatever the buffers it writes do.
+        let moved = |stage: &StageRec<D>, other: &[Value]| {
+            stage
+                .extent
+                .is_some_and(|rule| rule.dims(&values) != rule.dims(other))
+        };
+        if replaced == 0 && !core.stages.iter().any(|stage| moved(stage, &sealed_values)) {
             self.staged = None;
             return Ok(());
         }
         let layout = Layout {
             buffers: &buffers,
             dims: &dims,
+            values: &values,
         };
         let mut prepared = Vec::new();
         for (index, stage) in core.stages.iter().enumerate() {
             let touched = || stage.reads.iter().copied().chain(stage.written());
-            if touched().all(|buffer| same(buffer, &sealed, &sealed_dims)) {
+            if touched().all(|buffer| same(buffer, &sealed, &sealed_dims))
+                && !moved(stage, &sealed_values)
+            {
                 continue;
             }
             if let Some(staged) = &self.staged
                 && touched().all(|buffer| same(buffer, &here, &here_dims))
+                && !moved(stage, &here_values)
                 && let Some(kept) = staged.prepared.iter().find(|kept| kept.stage == index)
             {
                 prepared.push(kept.clone());

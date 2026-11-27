@@ -1249,3 +1249,111 @@ fn a_struct_as_the_count_of_a_stage_is_still_the_count_error() {
         Code::BatchCountHandle,
     );
 }
+
+// ---- the scatter stage (m14.s2sc) ----
+
+/// A scatter stage over `body`, with one target `out` and the index list `dst`.
+fn scatter_stage(body: &str) -> String {
+    format!(
+        "batch(b, \"s\"); 8u32, scatter(&mut out), [dst: Stage<u32>, src: Stage<u32>, out: &mut Stage<u32>], \
+         |i| {{ {body} }}"
+    )
+}
+
+#[test]
+fn a_scatter_stage_lowers_to_one_store_at_the_computed_place() {
+    let scratch = Scratch::new();
+    let text = stage(&scatter_stage("out[dst[i]] = src[i];"), &scratch);
+    assert!(!failed(&text), "{text}");
+    let slang = scratch.slang();
+    assert!(slang.contains("RWStructuredBuffer<uint>"), "{slang}");
+    assert!(slang.contains("out[dst[i]] = src[i];"), "{slang}");
+}
+
+#[test]
+fn a_scatter_stage_that_stores_on_some_paths_only_is_accepted() {
+    for body in [
+        "if src[i] > 1u32 { out[dst[i]] = src[i]; }",
+        "if src[i] > 1u32 { out[dst[i]] = src[i]; } else { out[i] = 0u32; }",
+        "out[dst[i]] = src[i]; if src[i] > 1u32 { return; }",
+    ] {
+        let scratch = Scratch::new();
+        let text = stage(&scatter_stage(body), &scratch);
+        assert!(!failed(&text), "{body}\n{text}");
+    }
+}
+
+#[test]
+fn a_scatter_stage_gives_no_new_module_name_to_a_stage_without_scatter() {
+    // R2: the marker that carries the stage name to the CPU twin is not Slang, so the module of a stage with the same
+    // body and no scatter clause has the same kernel text.
+    let scratch = Scratch::new();
+    let text = stage(&scatter_stage("out[dst[i]] = src[i];"), &scratch);
+    assert!(!failed(&text), "{text}");
+    assert!(!scratch.slang().contains("__gust_scatter_stage"));
+}
+
+#[test]
+fn scatter_refusals_carry_their_codes() {
+    let cases: [(&str, Code); 6] = [
+        ("out[dst[i]] += src[i];", Code::BatchScatterStore),
+        (
+            "out[dst[i]] = src[i]; out[i] = 0u32;",
+            Code::BatchScatterStore,
+        ),
+        (
+            "for k in 0..2u32 { out[k] = src[i]; }",
+            Code::BatchScatterStore,
+        ),
+        ("let v = out[i]; out[dst[i]] = v;", Code::TaskInPlaceRead),
+        ("let v = src[i];", Code::BatchScatterForm),
+        (
+            "{ out[dst[i]] = src[i]; } out[i] = 1u32;",
+            Code::BatchScatterStore,
+        ),
+    ];
+    for (body, code) in cases {
+        stage_rejected(&scatter_stage(body), code);
+    }
+}
+
+#[test]
+fn scatter_form_errors() {
+    for (input, code) in [
+        // a result type on a scatter stage
+        (
+            "batch(b, \"s\"); 8u32, scatter(&mut out), [dst: Stage<u32>, out: &mut Stage<u32>], |i| -> u32 { out[dst[i]] = 1u32; 0u32 }",
+            Code::BatchScatterForm,
+        ),
+        // two dimensions
+        (
+            "batch(b, \"s\"); (4u32, 4u32), scatter(&mut out), [dst: Stage<u32>, out: &mut Stage<u32>], |x, y| { out[dst[(x, y)]] = 1u32; }",
+            Code::BatchScatterForm,
+        ),
+        // the target is not in the list of entries
+        (
+            "batch(b, \"s\"); 8u32, scatter(&mut out), [dst: Stage<u32>], |i| { out[dst[i]] = 1u32; }",
+            Code::BatchScatterForm,
+        ),
+        // an empty list
+        (
+            "batch(b, \"s\"); 8u32, scatter(), [dst: Stage<u32>], |i| { }",
+            Code::BatchScatterForm,
+        ),
+        // the same target twice
+        (
+            "batch(b, \"s\"); 8u32, scatter(&mut out, &mut out), [dst: Stage<u32>, out: &mut Stage<u32>], |i| { out[dst[i]] = 1u32; }",
+            Code::BatchScatterForm,
+        ),
+    ] {
+        stage_rejected(input, code);
+    }
+}
+
+#[test]
+fn a_scatter_target_that_is_no_name_is_refused() {
+    stage_rejected(
+        "batch(b, \"s\"); 8u32, scatter(&mut 3), [dst: Stage<u32>], |i| { }",
+        Code::BatchScatterForm,
+    );
+}

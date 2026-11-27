@@ -511,6 +511,116 @@ impl<T> IndexMut<u32> for StorageMut<'_, T> {
     }
 }
 
+/// The slots of one scatter target that a stage run has stored, one bit per slot: the CPU twin makes one per target
+/// each time the stage runs and hands it to [`ScatterMut`]. Macro support.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct ScatterMarks {
+    words: Vec<u64>,
+}
+
+impl ScatterMarks {
+    /// No slot stored, for a target of `len` elements.
+    #[must_use]
+    pub fn new(len: usize) -> Self {
+        Self {
+            words: vec![0; len.div_ceil(64)],
+        }
+    }
+}
+
+/// Rust shadow type for a scatter target of a batch stage (`scatter(&mut out)`): a read-write structured buffer whose
+/// stores the CPU twin checks. A scatter stage declares that the places its rows store to are pairwise distinct within
+/// one run of the stage, and the GPU checks nothing (a repeated place is a race, and an out-of-range one is outside
+/// the contract); the twin panics on a repeated place, naming the stage, the target and the slot, and on an
+/// out-of-range one with the slice's own message. A body only stores to it (`out[place] = value`): a read is refused
+/// by the macro (GUST-E1008), so the `Index` impl exists only because `IndexMut` needs it.
+///
+/// ```
+/// use gust::{ScatterMarks, ScatterMut};
+///
+/// let mut values = [0_u32; 4];
+/// let mut marks = ScatterMarks::new(values.len());
+/// let mut target = ScatterMut::new(&mut values, &mut marks, "demo", "out");
+/// target[3] = 7;
+/// target[0] = 5;
+/// assert_eq!(target.len(), 4);
+/// assert_eq!(values, [5, 0, 0, 7]);
+/// ```
+///
+/// A repeated place panics:
+///
+/// ```should_panic
+/// use gust::{ScatterMarks, ScatterMut};
+///
+/// let mut values = [0_u32; 4];
+/// let mut marks = ScatterMarks::new(values.len());
+/// let mut target = ScatterMut::new(&mut values, &mut marks, "demo", "out");
+/// target[2] = 1;
+/// target[2] = 2;
+/// ```
+#[derive(Debug)]
+pub struct ScatterMut<'a, T> {
+    values: &'a mut [T],
+    marks: &'a mut ScatterMarks,
+    stage: &'static str,
+    target: &'static str,
+}
+
+impl<'a, T> ScatterMut<'a, T> {
+    /// Wraps `values` as the scatter target that a kernel parameter has in the shadow body. `marks` is made for the
+    /// stage run (see [`ScatterMarks`]) and `stage` is the name of the stage's `let` (empty for a stage no `let`
+    /// names).
+    pub fn new(
+        values: &'a mut [T],
+        marks: &'a mut ScatterMarks,
+        stage: &'static str,
+        target: &'static str,
+    ) -> Self {
+        Self {
+            values,
+            marks,
+            stage,
+            target,
+        }
+    }
+
+    /// The number of elements. Panics if the slice holds more than `u32::MAX`, which a GPU buffer cannot.
+    pub fn len(&self) -> u32 {
+        u32::try_from(self.values.len()).expect("GPU buffers are limited to u32::MAX elements")
+    }
+
+    /// Whether the buffer holds no element.
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+}
+
+impl<T> Index<u32> for ScatterMut<'_, T> {
+    type Output = T;
+
+    fn index(&self, index: u32) -> &Self::Output {
+        &self.values[index as usize]
+    }
+}
+
+impl<T> IndexMut<u32> for ScatterMut<'_, T> {
+    fn index_mut(&mut self, index: u32) -> &mut Self::Output {
+        // The slice's own bounds check comes first, so an out-of-range place is its "index out of bounds".
+        let slot = &mut self.values[index as usize];
+        let (word, bit) = (index as usize / 64, 1_u64 << (index % 64));
+        assert!(
+            self.marks.words[word] & bit == 0,
+            "scatter stage `{}`: slot {index} of target `{}` is written twice in one run of the stage (a scatter \
+             stage declares that the places of its rows are distinct)",
+            self.stage,
+            self.target,
+        );
+        self.marks.words[word] |= bit;
+        slot
+    }
+}
+
 /// The read-only view of a uniform (constant buffer) that a kernel's `Uniform<T>` parameter has: `T` is a struct of the
 /// `#[gpu_module]` module, read one field at a time (`params.scale`). `Deref` gives that on the CPU twin, which passes
 /// `Uniform(copy)` of the bound value.

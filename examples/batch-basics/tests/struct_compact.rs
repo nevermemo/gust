@@ -666,9 +666,20 @@ fn gpu_compact_gather_uses_four_bindings_whatever_the_fields() {
             "the gather binds four storage buffers: it must not build on a device limited to three"
         )
     };
-    let Error::StageDevice { source, .. } = &error else {
+    let Error::StageDevice {
+        batch,
+        stage,
+        source,
+    } = &error
+    else {
         panic!("a stage the device refuses at build is `StageDevice`: {error:?}")
     };
+    // The refusal names the gathering stage, not another stage of the batch.
+    assert_eq!(
+        (batch.as_str(), stage.as_str()),
+        ("compact_ten", "dense"),
+        "the refused stage is the gather: {error}"
+    );
     match source.downcast_ref::<gust_wgpu::Error>() {
         Some(gust_wgpu::Error::DeviceLimit {
             limit,

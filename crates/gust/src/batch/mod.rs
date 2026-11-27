@@ -864,6 +864,9 @@ pub(crate) struct StageRec<D: BatchDevice> {
     pub(crate) write: usize,
     /// The other buffers an op writes, in order.
     pub(crate) also: Vec<usize>,
+    /// Where a scatter stage's extents come from: its rows', which are not those of the buffers it writes. `None` for
+    /// every other stage, whose extents are the written buffer's (a kernel stage) or the first operand's (an op).
+    pub(crate) extent: Option<Rule>,
     /// How to prepare a kernel stage again over resized buffers; `None` for an op stage (see `plan`).
     pub(crate) remake: Option<Remake<D>>,
     /// An op's functions that prepare it again at another length; `Some` marks an op's stage, `None` a kernel stage.
@@ -892,11 +895,19 @@ impl<D: BatchDevice> StageRec<D> {
             reads,
             write,
             also: Vec::new(),
+            extent: None,
             remake: None,
             plan: None,
             first: None,
             empty: None,
         }
+    }
+
+    /// A scatter stage: the other targets it writes and where its extents come from.
+    fn with_scatter(mut self, also: Vec<usize>, extent: Rule) -> Self {
+        self.also = also;
+        self.extent = Some(extent);
+        self
     }
 
     /// The stage can be prepared again over resized buffers.
@@ -923,6 +934,7 @@ impl<D: BatchDevice> StageRec<D> {
             reads,
             write: written[0].0,
             also: written[1..].iter().map(|(id, _)| *id).collect(),
+            extent: None,
             remake: None,
             plan: Some(plan),
             first,
@@ -930,9 +942,10 @@ impl<D: BatchDevice> StageRec<D> {
         }
     }
 
-    /// The number of elements the stage runs over in a frame whose buffers have these extents (one entry per buffer).
-    /// The one place the core reads a stage's length: a kernel stage runs over the buffer it writes, an op stage over its
-    /// first operand.
+    /// The number of elements an op stage runs over in a frame whose buffers have these extents (one entry per buffer):
+    /// its first operand's. The one place the core reads a stage's length, and only an op's (a kernel stage's extents
+    /// are its macro code's: the buffer it writes, or for a scatter stage its rows', see `extent`); for a kernel stage
+    /// this is the written buffer's, which is the stage's length only when it is no scatter stage.
     pub(crate) fn len(&self, dims: &[[u32; 2]]) -> usize {
         let [width, height] = dims[if self.plan.is_some() {
             self.reads[0]
@@ -1450,6 +1463,8 @@ impl<D: BatchDevice> Builder<D> {
             bound: Vec::new(),
             params: Vec::new(),
             write: None,
+            also: Vec::new(),
+            scatter: false,
             ok: true,
         }
     }
@@ -1581,7 +1596,31 @@ pub struct StageDraft<'b, D: BatchDevice> {
     bound: Vec<usize>,
     params: Vec<usize>,
     write: Option<usize>,
+    /// The other buffers a scatter stage writes, after `write` (its first target), in the order written.
+    also: Vec<usize>,
+    /// The stage is a scatter stage: its extents are its rows', not those of the buffers it writes.
+    scatter: bool,
     ok: bool,
+}
+
+/// Where a stage's extents come from after a resize, for a stage whose extents are not those of a buffer it writes (a
+/// scatter stage's rows). Macro support.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct Extents(Rule);
+
+impl Extents {
+    /// The extents (width, height) in the frame whose parameter values and buffer extents these are.
+    #[must_use]
+    pub fn dims(&self, values: &Values) -> [u32; 2] {
+        self.0.dims(&values.params)
+    }
+
+    /// The extents (width, height) in a resized frame's layout.
+    #[must_use]
+    pub fn dims_in(&self, layout: &Layout<'_>) -> [u32; 2] {
+        self.0.dims(layout.values)
+    }
 }
 
 impl<'b, D: BatchDevice> StageDraft<'b, D> {
@@ -1595,8 +1634,35 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
             bound: Vec::new(),
             params: Vec::new(),
             write: None,
+            also: Vec::new(),
+            scatter: false,
             ok: false,
         }
+    }
+
+    /// Where the stage's extents come from, for the macro code of a scatter stage. Macro support.
+    #[must_use]
+    pub const fn extents(&self) -> Extents {
+        Extents(self.rule)
+    }
+
+    /// A buffer a scatter stage stores into at places its rows compute: the handle's own, bound read-write. The first
+    /// target is the stage's `write`, the rest are written too (`also`). The stage's extents stay its rows'. Macro
+    /// support.
+    pub fn scatter_target<T: GpuPod>(&mut self, handle: &Stage<T, D1>) -> Option<Arc<D::Buffer<T>>>
+    where
+        D::Buffer<T>: 'static,
+    {
+        let before = self.reads.len();
+        let buffer = self.view(handle)?;
+        self.reads.truncate(before);
+        self.scatter = true;
+        if self.write.is_none() {
+            self.write = Some(handle.id);
+        } else {
+            self.also.push(handle.id);
+        }
+        Some(buffer)
     }
 
     /// The numbers of the buffers the stage binds, in the order it took them. Macro support.
@@ -1774,6 +1840,9 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
             reads,
             params,
             write,
+            also,
+            scatter,
+            rule,
             ok,
             ..
         } = self;
@@ -1789,8 +1858,12 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
                         .prepare(keep_with(layout)?, build)
                         .map_err(|error| Error::Device(D::map_error(error)))
                 });
-                let rec = StageRec::kernel(name, prepared, Box::new(update), params, reads, write)
-                    .with_remake(remake);
+                let mut rec =
+                    StageRec::kernel(name, prepared, Box::new(update), params, reads, write)
+                        .with_remake(remake);
+                if scatter {
+                    rec = rec.with_scatter(also, rule);
+                }
                 state.stages.push(rec);
                 Stage::new(state.id, write, dims)
             }
@@ -1904,6 +1977,11 @@ pub fn build<D: BatchDevice, H: DeviceRef<Device = D>, O>(
                 Rule::Param(param) => Some(param),
                 Rule::Fixed(_) => None,
             })
+            // A scatter stage's rows give its extents, whatever the buffers it writes have.
+            .chain(stage.extent.and_then(|rule| match rule {
+                Rule::Param(param) => Some(param),
+                Rule::Fixed(_) => None,
+            }))
             .collect();
         for param in ruled {
             if !stage.params.contains(&param) {

@@ -3780,8 +3780,8 @@ fn mismatch_golden() {
         translate_every_kernel(include_str!("../../../../tests/fixtures/mismatch.rs")).unwrap();
     assert_eq!(
         source.matches("// ==== kernel ").count(),
-        15,
-        "the mismatch fixture declares 15 kernels"
+        16,
+        "the mismatch fixture declares 16 kernels"
     );
     assert_golden(
         &source,

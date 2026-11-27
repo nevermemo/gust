@@ -295,4 +295,11 @@ mod mismatch {
     ) {
         atomic_compare_exchange(&mut cell[0], 999u32, id.x + 1u32);
     }
+
+    // KM-15: every invocation stores its own id into the one shared cell with a plain store (a race, as a scatter
+    // stage whose places repeat).
+    #[kernel(workgroup_size(1, 1, 1))]
+    pub fn contend_store(id: SV_DispatchThreadID, mut cell: RWStructuredBuffer<uint>) {
+        cell[0] = id.x;
+    }
 }

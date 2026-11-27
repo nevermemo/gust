@@ -182,6 +182,9 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
             reads,
             params,
             write,
+            also,
+            scatter,
+            rule,
             ok,
             ..
         } = self;
@@ -202,8 +205,12 @@ impl<'b, D: BatchDevice> StageDraft<'b, D> {
                         .prepare_counted(keep, count, capacity, workgroup, launch, counted, args)
                         .map_err(|error| Error::Device(D::map_error(error)))
                 });
-                let rec = StageRec::kernel(name, prepared, Box::new(update), params, reads, write)
-                    .with_remake(remake);
+                let mut rec =
+                    StageRec::kernel(name, prepared, Box::new(update), params, reads, write)
+                        .with_remake(remake);
+                if scatter {
+                    rec = rec.with_scatter(also, rule);
+                }
                 state.stages.push(rec);
                 Stage::new(state.id, write, dims)
             }

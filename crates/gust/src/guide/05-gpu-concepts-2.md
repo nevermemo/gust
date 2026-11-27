@@ -53,8 +53,17 @@ flags and gives `(idx, n)`: a stage builds the flags from a field (`let v: u32 =
 Row { rows[idx[i]] })`. Any index handle does for the gather, one a stage built included (a reversal, the order of a
 counting sort). The gather binds the rows, the indices, the count and its result, four storage buffers whatever the number
 of fields; rows from the count on keep what the earlier frame left. `gust::compact(&rows)` is `GUST-E1022`, and its message
-names this form. A move of a row to a place computed from another handle is a `scatter` stage, committed as the next slice
-(m14.s2sc). `examples/batch-basics/tests/struct_compact.rs` has the checks.
+names this form. `examples/batch-basics/tests/struct_compact.rs` has the checks.
+
+A move of a row to a place the stage computes is a scatter stage: `gpu_task!(count(n); CAP, scatter(&mut out), |i| {
+out[dst[i]] = rows[i]; })`. The targets are handles of the block, named `&mut name` after the extent (one or several);
+the stage is 1-D and has no result type. A store is `target[place] = value;` with any `u32` expression as the place, at
+most once on every path of the body, and a path may store any subset of the targets or none (a slot no path stores keeps
+what it held). A field store, a compound store, a store in a loop or a read of a target is refused (`GUST-E1025`,
+`GUST-E1008`), and so is a scatter clause in any other form (`GUST-E1024`). The caller keeps the places apart: two
+invocations of one run must not name the same slot. The CPU twin checks it and panics on a repeated slot, naming the
+stage, the target and the slot; on the GPU the winner of such a race is unspecified. A counted scatter runs the rows
+`0 .. min(n, CAP)` as any counted stage does. `examples/batch-basics/tests/scatter.rs` has the checks.
 
 A stage binds one storage buffer for each handle it reads or writes, and a device allows a fixed number of them per
 shader stage (8 unless the device was opened with more). A stage over that number is refused when the batch is built, not

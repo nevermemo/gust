@@ -259,6 +259,20 @@ pub fn par_for(input: TokenStream) -> TokenStream {
 /// target, `.dispatch()` also waits for it (native targets). The body is the dialect, validated and lowered through the
 /// `par_for!` generator, so the kernel has the artifacts, records, routing and CPU twin of any kernel. The diagnostics
 /// of the call itself are GUST-E1001, E1002, E1003, E1007 and E1008 (`docs/DIAGNOSTICS.md`).
+///
+/// Inside a `gpu_batch!` a stage can also be a scatter stage (slice m14.s2sc), which stores at places its body
+/// computes:
+///
+/// ```text
+/// gust::gpu_task!(count(n); CAP, scatter(&mut out, &mut other), |i| { out[dst[i]] = rows[i]; })
+/// ```
+///
+/// The targets are handles of the block, named `&mut name` after the extent; the stage is 1-D, has no result type and
+/// its value is `()`. A store is `target[place] = value;` with any `u32` expression as the place, at most once on every
+/// path of the body; a path may store any subset of the targets or none. A read of a target is GUST-E1008, a field
+/// store, a compound store or a store in a loop or closure is GUST-E1025, and any other form of the clause, outside a
+/// batch included, is GUST-E1024. The caller keeps the places of one run apart: the CPU twin panics on a repeated slot,
+/// and on the GPU the winner of such a race is unspecified.
 #[proc_macro]
 pub fn gpu_task(input: TokenStream) -> TokenStream {
     // The one place that reads the build profile, as for `par_for!`.

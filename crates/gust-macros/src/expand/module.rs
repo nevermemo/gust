@@ -470,6 +470,7 @@ pub(super) fn expand_validated_with(
                     workgroup_size,
                     cpu,
                     profile,
+                    &scatter_stage_of(&function.attrs),
                 )?
             }
             // No twin, but a call can still be captured: `capture` says so (`NoTwin`).

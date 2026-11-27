@@ -1533,6 +1533,10 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       half of what the forced two-pass form adds over the bounded launch, and no cell is resolved worse than the
       forced form on either adapter (the Radeon 890M runs were interleaved, without a pre-heat). The timer spike
       pf.lazyts did not hold its floor in its rerun, so nothing is concluded and no further runs are ordered. pf.bgratio is void and parked (D292).
+    - m14.bzprecompile merged (D293): `HeadlessDevice::precompile` creates named kernels ahead of use and reports
+      per kernel whether it was a hit or compiled and how long the call took on the CPU. The pipeline cache now
+      finds a kernel by content when its addresses differ, so a typed call after a precompile of its `DESCRIPTOR`
+      is a hit, and `entries` counts kernels. Tests pass on both adapters natively and in the browser example.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

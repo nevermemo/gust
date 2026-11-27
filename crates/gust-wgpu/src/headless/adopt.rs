@@ -19,9 +19,10 @@ pub struct DeviceRequest {
 
 impl DeviceOptions {
     /// Exactly what [`HeadlessDevice::new_async_with`] would request from `adapter` under these options: the
-    /// features (`TIMESTAMP_QUERY` and `MEMORY_DECORATION_COHERENT` where the adapter offers them, the
-    /// [`features`](Self::features) policy's, `PASSTHROUGH_SHADERS` for the SPIR-V route on Vulkan, and the features of
-    /// the [`capabilities`](Self::capabilities)) and the limits of the [`limits`](Self::limits) policy, with
+    /// features (`TIMESTAMP_QUERY`, `TIMESTAMP_QUERY_INSIDE_PASSES` and `MEMORY_DECORATION_COHERENT` where the adapter
+    /// offers them, the [`features`](Self::features) policy's, `PASSTHROUGH_SHADERS` for the SPIR-V route on Vulkan,
+    /// and the features of the [`capabilities`](Self::capabilities)) and the limits of the
+    /// [`limits`](Self::limits) policy, with
     /// `max_storage_buffers_per_shader_stage` set to the number of
     /// [`with_storage_buffers`](Self::with_storage_buffers) when one was stated (refused as at open when the adapter
     /// offers fewer). The open itself calls this, so the request has one source of truth. `backends` and `adapter`
@@ -60,13 +61,14 @@ impl DeviceOptions {
             self.storage_buffers,
             adapter.limits().max_storage_buffers_per_shader_stage,
             &adapter.get_info().name,
-            cfg!(target_arch = "wasm32"),
         )? {
             limits.max_storage_buffers_per_shader_stage = n;
         }
         Ok(DeviceRequest {
             features: (available
-                & (wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::MEMORY_DECORATION_COHERENT))
+                & (wgpu::Features::TIMESTAMP_QUERY
+                    | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES
+                    | wgpu::Features::MEMORY_DECORATION_COHERENT))
                 | self.features.required_features(adapter)
                 | spirv_route_features(adapter)
                 | capability_features,

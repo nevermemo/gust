@@ -1257,7 +1257,7 @@ fn the_batch_page_names_its_own_files_and_closing_part_and_reports_no_selected_k
             "web-batch-frames",
             "web_batch_frames",
             "",
-            "two frames in flight exact",
+            "two frames in flight exact, wide stage refused on 8 and exact on 16",
             0
         )
     );
@@ -1299,7 +1299,10 @@ fn the_batch_page_names_its_own_files_and_closing_part_and_reports_no_selected_k
 fn an_unlisted_page_label_is_the_adapter_words_and_the_closing_part_only() {
     let closing = super::FRAMES_EXACT;
     assert_eq!(
-        super::split_unlisted_label("nvidia blackwell | two frames in flight exact", closing),
+        super::split_unlisted_label(
+            "nvidia blackwell | two frames in flight exact, wide stage refused on 8 and exact on 16",
+            closing
+        ),
         Ok("nvidia blackwell".to_owned())
     );
     for (label, wanted) in [
@@ -1309,7 +1312,10 @@ fn an_unlisted_page_label_is_the_adapter_words_and_the_closing_part_only() {
             "nvidia blackwell | one frame in flight exact",
             "does not say",
         ),
-        (" | two frames in flight exact", "names no adapter"),
+        (
+            " | two frames in flight exact, wide stage refused on 8 and exact on 16",
+            "names no adapter",
+        ),
     ] {
         let error = super::split_unlisted_label(label, closing).unwrap_err();
         assert!(error.contains(wanted), "{label}: {error}");

@@ -25,7 +25,8 @@
 //! The second page, `examples/web-batch-frames` (m14.s2c), is a `gpu_batch!` with `in_flight(2)`: it submits frame N+1 while
 //! frame N's ticket is pending, then requires both frames, and a third whose `begin` waited for the oldest, to equal the
 //! host computation exactly. Its stages' kernels are private to the batch, so it reports no selected kernels and its
-//! `Example` has an empty `manifest`; its label is `<vendor> <architecture> | two frames in flight exact`.
+//! `Example` has an empty `manifest`; its label is
+//! `<vendor> <architecture> | two frames in flight exact, wide stage refused on 8 and exact on 16`.
 //!
 //! The server binds `127.0.0.1` on an ephemeral port only, answers `GET` for the plain files of the output directory
 //! only, and is stopped when the check ends.
@@ -112,7 +113,7 @@ pub(crate) const WEB_BATCH_FRAMES: Example = Example {
 
 /// The last part of the batch page's `GUST_OK` line: frame N was pending when frame N+1 was submitted, and every
 /// frame's awaited ticket was exact.
-const FRAMES_EXACT: &str = "two frames in flight exact";
+const FRAMES_EXACT: &str = "two frames in flight exact, wide stage refused on 8 and exact on 16";
 
 pub(crate) const WASM_TARGET: &str = "wasm32-unknown-unknown";
 

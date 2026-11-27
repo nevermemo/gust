@@ -654,7 +654,7 @@ impl fmt::Display for Error {
                         formatter,
                         "; bind fewer storage buffers by keeping the columns as rows of one struct \
                          (`#[derive(GpuStruct)]`), or open the device with more through \
-                         `DeviceOptions::with_storage_buffers` (native only)"
+                         `DeviceOptions::with_storage_buffers` (where the adapter offers it)"
                     )?;
                 }
                 Ok(())

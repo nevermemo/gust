@@ -98,7 +98,7 @@ impl PreparedDispatch {
 
     /// Record this compute dispatch into an open pass: its pipeline, then its bind group and workgroups (one dispatch
     /// per piece for a split launch, in order: x innermost, then y, then z).
-    fn record_compute(&self, pass: &mut wgpu::ComputePass<'_>) {
+    pub(crate) fn record_compute(&self, pass: &mut wgpu::ComputePass<'_>) {
         let (Pipeline::Compute(pipeline), Launch::Compute { workgroups }) =
             (&self.cached_kernel.pipeline, self.launch)
         else {
@@ -166,6 +166,13 @@ fn begin_compute<'encoder>(
 /// Whether a batch is recorded as one pass per dispatch even where one pass would do (see
 /// [`force_pass_per_dispatch`]).
 static PASS_PER_DISPATCH: AtomicBool = AtomicBool::new(false);
+
+/// Whether [`force_pass_per_dispatch`] is on: a frame timed with stamps inside passes keeps to the per-stage form then,
+/// as the untimed frame does.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn pass_per_dispatch_forced() -> bool {
+    PASS_PER_DISPATCH.load(Ordering::Relaxed)
+}
 
 /// Test and benchmark support, outside the pre-1.0 promise (D111): record every batch as one pass per dispatch, the way
 /// batches were recorded before the one-pass form, instead of one compute pass for a batch whose dispatches are all

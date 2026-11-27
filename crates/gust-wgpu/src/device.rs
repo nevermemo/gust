@@ -330,31 +330,31 @@ impl Default for DeviceOptions {
 
 /// The `max_storage_buffers_per_shader_stage` to request for `requested` (the option
 /// [`DeviceOptions::with_storage_buffers`]), given the adapter's own value `available` and its name `adapter`; `None`
-/// leaves wgpu's default. `web` is true on `wasm32`.
+/// leaves wgpu's default.
 ///
-/// A browser device always opens with 8, so a number there is refused by name, as is one below 8 (`with_limits` is the
-/// tool that lowers). An adapter that offers fewer than `n` is [`Error::DeviceLimit`]: the device is never opened with
+/// The same rule on every target, a browser included: a number below 8 is refused by name (`with_limits` is the tool
+/// that lowers), and an adapter that offers fewer than `n` is [`Error::DeviceLimit`]: the device is never opened with
 /// less than the developer stated.
 pub(crate) fn required_storage_buffers(
     requested: Option<u32>,
     available: u32,
     adapter: &str,
-    web: bool,
 ) -> Result<Option<u32>, Error> {
     let Some(n) = requested else {
         return Ok(None);
     };
-    if web {
-        return Err(Error::RequestDevice(format!(
-            "`with_storage_buffers({n})` is not available in a browser: browser devices open with 8"
-        )));
-    }
     if n < 8 {
         return Err(Error::RequestDevice(format!(
             "`with_storage_buffers({n})` must be at least 8; `HeadlessDevice::with_limits` lowers the limits of an open device"
         )));
     }
     if n > available {
+        // A browser gives wgpu no adapter name; the text says so instead of naming an empty string.
+        let adapter = if adapter.is_empty() {
+            "browser adapter"
+        } else {
+            adapter
+        };
         return Err(Error::DeviceLimit {
             // `DeviceLimit` names the operation in `kernel` for a limit met outside a launch.
             kernel: format!("device open ({adapter}, with_storage_buffers({n}))"),
@@ -412,13 +412,16 @@ impl DeviceOptions {
     ///
     /// The number is the developer's, not the adapter's own value, so a kernel validated here says in the source what
     /// it needs. An adapter that offers fewer than `n` is [`Error::DeviceLimit`] at open, and no device exists; `n`
-    /// below 8 is refused by name ([`Error::RequestDevice`]: [`HeadlessDevice::with_limits`] lowers); in a browser
-    /// every `n` is refused, because browser devices open with 8. [`device_request`](Self::device_request) carries
-    /// `n`, so a renderer that opens the device itself gets it, and [`HeadlessDevice::adopt`] still never raises a
-    /// limit: a kernel over an adopted device's limit is [`Error::DeviceLimit`] at launch.
-    /// [`HeadlessDevice::with_limits`] can lower the limit below `n` and cannot raise it above.
+    /// below 8 is refused by name ([`Error::RequestDevice`]: [`HeadlessDevice::with_limits`] lowers). A browser page
+    /// asks for `n` the same way and gets it where its adapter offers it (measured: 16 on Chrome 158 for the two
+    /// adapters of the test machine; other browsers are unmeasured); a browser device opened without the option still
+    /// has 8. [`device_request`](Self::device_request) carries `n`, so a renderer that opens the device itself gets
+    /// it, and [`HeadlessDevice::adopt`] still never raises a limit: a kernel over an adopted device's limit is
+    /// [`Error::DeviceLimit`] at launch. [`HeadlessDevice::with_limits`] can lower the limit below `n` and cannot
+    /// raise it above.
     ///
-    /// The kernel is no longer portable: it does not run on a default device or in a browser.
+    /// The kernel is no longer portable: it does not run on a default device, and a page must open its device with
+    /// the option too.
     ///
     /// ```no_run
     /// use gust_wgpu::{DeviceOptions, HeadlessDevice};
@@ -1168,18 +1171,29 @@ mod tests {
     /// The storage buffer option against faked adapter limits: no adapter is needed.
     #[test]
     fn a_stated_storage_buffer_count_is_requested_or_refused_by_name() {
-        let ask = |requested, available, web| {
-            required_storage_buffers(requested, available, "Fake Adapter", web)
-        };
+        let ask =
+            |requested, available| required_storage_buffers(requested, available, "Fake Adapter");
         // Off: nothing is requested, whatever the adapter offers.
-        assert_eq!(ask(None, 4, false).unwrap(), None);
-        assert_eq!(ask(None, 4, true).unwrap(), None);
-        // Accepted at the adapter's value and below it, from 8 up.
-        assert_eq!(ask(Some(10), 16, false).unwrap(), Some(10));
-        assert_eq!(ask(Some(16), 16, false).unwrap(), Some(16));
-        assert_eq!(ask(Some(8), 8, false).unwrap(), Some(8));
-        // One over the adapter's value is a DeviceLimit naming the limit, n and the adapter's value.
-        match ask(Some(17), 16, false) {
+        assert_eq!(ask(None, 4).unwrap(), None);
+        // Accepted at the adapter's value and below it, from 8 up (a browser adapter is asked the same way).
+        assert_eq!(ask(Some(10), 16).unwrap(), Some(10));
+        assert_eq!(ask(Some(16), 16).unwrap(), Some(16));
+        assert_eq!(ask(Some(8), 8).unwrap(), Some(8));
+        // One over the adapter's value is a DeviceLimit naming the limit, n and the adapter's value; a browser
+        // adapter that offers 8 refuses 16 the same way.
+        match ask(Some(16), 8) {
+            Err(Error::DeviceLimit {
+                limit,
+                requested,
+                maximum,
+                ..
+            }) => {
+                assert_eq!(limit, "max_storage_buffers_per_shader_stage");
+                assert_eq!((requested, maximum), (16, 8));
+            }
+            other => panic!("expected DeviceLimit, got {other:?}"),
+        }
+        match ask(Some(17), 16) {
             Err(Error::DeviceLimit {
                 kernel,
                 limit,
@@ -1192,17 +1206,20 @@ mod tests {
             }
             other => panic!("expected DeviceLimit, got {other:?}"),
         }
-        // Below 8 and in a browser: refused by name, as RequestDevice.
-        for (requested, web, text) in [
-            (7, false, "at least 8"),
-            (0, false, "at least 8"),
-            (10, true, "browser devices open with 8"),
-            (7, true, "browser devices open with 8"),
-        ] {
-            match ask(Some(requested), 16, web) {
+        // A browser reports no adapter name: the text says "browser adapter", not an empty string.
+        match required_storage_buffers(Some(16), 8, "") {
+            Err(Error::DeviceLimit { kernel, .. }) => assert_eq!(
+                kernel, "device open (browser adapter, with_storage_buffers(16))",
+                "{kernel}"
+            ),
+            other => panic!("expected DeviceLimit, got {other:?}"),
+        }
+        // Below 8: refused by name, as RequestDevice.
+        for requested in [7, 0] {
+            match ask(Some(requested), 16) {
                 Err(Error::RequestDevice(message)) => assert!(
                     message.contains(&format!("with_storage_buffers({requested})"))
-                        && message.contains(text),
+                        && message.contains("at least 8"),
                     "{message}"
                 ),
                 other => panic!("expected RequestDevice, got {other:?}"),

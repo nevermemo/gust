@@ -55,10 +55,12 @@
 //! sealed, only for a level that is not `Off` and only on a device with timestamp queries; [`Batch::frame_timing`]
 //! says which. A frame that did not ask records nothing. Timing adds timestamp writes to the passes that exist, plus
 //! one resolve and one copy in the frame's encoder; it never adds a submission. At level `Off` and `Frame` it does not
-//! change the passes either. At level [`FrameTiming::Passes`] it does: a device that puts the dispatches of
-//! neighbouring stages into one pass (the GPU device does) records every stage in passes of its own, so that each stage
-//! has a begin and an end, and the frame is not the one that runs untimed or at `Frame`. The per-stage times then
-//! include the pass boundary a stage would otherwise share, and their sum can exceed the `Frame` time.
+//! change the passes either. At level [`FrameTiming::Passes`] it does on a device that puts the dispatches of
+//! neighbouring stages into one pass (the GPU device does) but cannot write a timestamp inside a pass (a browser device,
+//! or a native one opened without `TIMESTAMP_QUERY_INSIDE_PASSES`): it records every stage in passes of its own, so that
+//! each stage has a begin and an end, and the frame is not the one that runs untimed or at `Frame`. The per-stage times
+//! then include the pass boundary a stage would otherwise share, and their sum can exceed the `Frame` time. A native
+//! device with the feature records the frame as untimed and stamps each stage's begin and end inside the passes.
 //!
 //! A caller reads a batch's buffers on the GPU through a [`View`] ([`Batch::view`], decision D261): the batch's own
 //! buffer, kept alive by the view, with the batch's [`generation`](Batch::generation). What a reader sees follows the
@@ -517,8 +519,7 @@ pub trait BatchDevice: MapHost + Sized + 'static {
         None
     }
 
-    /// How many dispatches the stage has: a stage with none is not timed (the count of entries at level `Passes`, whose
-    /// frames record every stage in passes of its own).
+    /// How many dispatches the stage has: a stage with none is not timed (the count of entries at level `Passes`).
     fn stage_passes(&self, _stage: &Self::Prepared) -> usize {
         0
     }
@@ -529,8 +530,12 @@ pub trait BatchDevice: MapHost + Sized + 'static {
         None
     }
 
-    /// [`frame_stage`](Self::frame_stage) of a timed frame: the first pass of the stage writes timestamp slot `begin` and
-    /// its last pass slot `end`, where given.
+    /// [`frame_stage`](Self::frame_stage) of a timed frame at level [`FrameTiming::Passes`]: timestamp slot `begin` is
+    /// written at the start of the stage and slot `end` at its end, where given. A device that can stamp inside a pass
+    /// may keep a pass open from one call to the next, or to [`frame_clock_end`](Self::frame_clock_end), so that
+    /// neighbouring stages share it; the caller therefore records nothing else into the encoder between these calls.
+    /// (A stage with no dispatch is recorded with `frame_stage` between them and records nothing, which is why that is
+    /// safe.)
     ///
     /// # Errors
     ///

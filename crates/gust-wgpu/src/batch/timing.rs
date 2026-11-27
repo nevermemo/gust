@@ -4,7 +4,23 @@
 //!
 //! A timed frame (one that called `FrameRun::time`) writes timestamps in passes that exist anyway (the first pass of a
 //! stage writes its begin, the last its end), then records one resolve and one copy into its encoder; a frame that did
-//! not ask records none of it. Frames in flight share the query set and the resolve buffer, because the queue runs
+//! not ask records none of it.
+//!
+//! **Stamps inside passes (level `Passes`).** Where the device has `TIMESTAMP_QUERY_INSIDE_PASSES` (read from the
+//! device when the frame is recorded, so a device the caller opened counts too) the frame has the passes of the untimed
+//! one: the plain compute dispatches of neighbouring stages share one compute pass, which the clock keeps open from one
+//! `frame_stage_timed` call to the next, and an indirect counted stage and a `pixel` dispatch keep their own passes.
+//! The slot layout is the one of the pass-per-stage form, `2 * stage` for a stage's begin and `2 * stage + 1` for its
+//! end, so the plan, the read-back and the resolve do not change. Inside a shared pass a stage's begin is a
+//! `write_timestamp` before its first dispatch and its end one after its last, so two neighbouring stages write the same
+//! point twice and a stage's time runs from its begin to its end as before; a stage that has a pass of its own writes
+//! them at the pass boundary (`timestamp_writes`: begin on the first pass, end on the last). Without the feature (a
+//! browser device, or a caller's device opened without it), or while `force_pass_per_dispatch` is on, every stage is
+//! recorded in passes of its own, as before. A stamp between two stages that depend on nothing from each other (no
+//! barrier between them) only splits work that may overlap on the GPU loosely: such a stage's time is the span between
+//! its two stamps, not an exact cost.
+//!
+//! Frames in flight share the query set and the resolve buffer, because the queue runs
 //! them in order and each frame copies its slots out before the next one writes them (decision D258); only the
 //! read-back buffer is the frame's own, taken from the pool when the frame is recorded and given back by the mapping's
 //! callback, so a caller that never reads its frame times still gets its buffers back as the device is polled. When the
@@ -20,9 +36,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use gust::batch::{BoxFuture, DeviceTiming, FrameClock, FrameTiming, OpenedTiming};
 
-use super::frame::{Done, GpuSubmission};
+use super::frame::{Done, FRAME_PASS_LABEL, GpuSubmission};
 use super::{GpuStage, map_error};
-use crate::{Error, HeadlessDevice};
+use crate::{Error, HeadlessDevice, PassTimestamps};
 
 /// Timing objects made by [`GpuTiming::new`], timestamp slots written by passes and resolves recorded, in this process
 /// (test support: `HeadlessDevice::frame_timing_counters`).
@@ -137,6 +153,9 @@ struct GpuClock {
     slots: u32,
     /// The copy into the buffer was recorded into an encoder, which a caller may still submit.
     recorded: bool,
+    /// The compute pass of the frame that is still open, for the next stage to join (stamps inside passes only). The
+    /// encoder must not be used while it is held: every other recording first drops it, which ends the pass.
+    run: Option<wgpu::ComputePass<'static>>,
 }
 
 impl Drop for GpuClock {
@@ -227,6 +246,7 @@ impl HeadlessDevice {
             readback: Some(readback),
             slots: 0,
             recorded: false,
+            run: None,
         }))
     }
 
@@ -239,9 +259,15 @@ impl HeadlessDevice {
         begin: Option<u32>,
         end: Option<u32>,
     ) -> Result<(), Error> {
+        let inside = self.stamps_inside_passes();
         let clock = clock
             .downcast_mut::<GpuClock>()
             .expect("a GPU batch's clock is its own");
+        if inside && stage.indirect.is_none() {
+            return self.encode_stage_in_run(encoder, stage, clock, begin, end);
+        }
+        // A pass left open by an earlier stage ends before anything else goes into the encoder.
+        clock.run = None;
         let stamps = Some((&clock.timing.query_set, begin, end));
         match &stage.indirect {
             // A counted stage's two passes carry the stage's stamps: `begin` on the args pass, `end` on the counted one.
@@ -250,6 +276,70 @@ impl HeadlessDevice {
         }
         let written = u64::from(begin.is_some()) + u64::from(end.is_some());
         STAMPS.fetch_add(written, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Whether a timed frame at level `Passes` records the passes of the untimed one, with stamps inside them: the
+    /// device has `TIMESTAMP_QUERY_INSIDE_PASSES` and the one-pass form is not switched off.
+    fn stamps_inside_passes(&self) -> bool {
+        self.device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES)
+            && !crate::pass_per_dispatch_forced()
+    }
+
+    /// Record a plain stage as `encode_stages` records it: its compute dispatches join the pass the clock holds open
+    /// (or open one), a `pixel` dispatch ends it and takes a render pass of its own. `begin` is written before the
+    /// stage's first dispatch and `end` after its last: inside the shared pass as `write_timestamp`, on the pass
+    /// boundary where the first or last dispatch has a pass of its own. The stage has at least one dispatch.
+    fn encode_stage_in_run(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        stage: &GpuStage,
+        clock: &mut GpuClock,
+        begin: Option<u32>,
+        end: Option<u32>,
+    ) -> Result<(), Error> {
+        let timing = Arc::clone(&clock.timing);
+        let query_set = &timing.query_set;
+        let last = stage.dispatches.len() - 1;
+        for (index, dispatch) in stage.dispatches.iter().enumerate() {
+            let (begin, end) = (
+                (index == 0).then_some(begin).flatten(),
+                (index == last).then_some(end).flatten(),
+            );
+            if dispatch.is_compute() {
+                let pass = clock.run.get_or_insert_with(|| {
+                    crate::count_passes(1);
+                    encoder
+                        .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            label: Some(FRAME_PASS_LABEL),
+                            timestamp_writes: None,
+                        })
+                        .forget_lifetime()
+                });
+                if let Some(slot) = begin {
+                    pass.write_timestamp(query_set, slot);
+                }
+                dispatch.record_compute(pass);
+                if let Some(slot) = end {
+                    pass.write_timestamp(query_set, slot);
+                }
+            } else {
+                clock.run = None;
+                crate::count_passes(1);
+                let stamps = (begin.is_some() || end.is_some()).then_some(PassTimestamps {
+                    query_set,
+                    begin,
+                    end,
+                });
+                dispatch.encode(&self.device, encoder, FRAME_PASS_LABEL, stamps)?;
+            }
+            STAMPS.fetch_add(
+                u64::from(begin.is_some()) + u64::from(end.is_some()),
+                Ordering::Relaxed,
+            );
+        }
         Ok(())
     }
 
@@ -281,6 +371,8 @@ impl HeadlessDevice {
         let clock = clock
             .downcast_mut::<GpuClock>()
             .expect("a GPU batch's clock is its own");
+        // The pass of the last stages, still open, ends before the resolve.
+        clock.run = None;
         let readback = clock
             .readback
             .as_ref()

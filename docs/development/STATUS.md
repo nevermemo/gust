@@ -1462,6 +1462,32 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       device is built) instead of inferring it from the backend; the timed counted test asserts that a device with
       timestamp queries times `Frame` and `Passes`; SEMANTICS says a count of several elements is read as its first
       after a resize. Both adapters (counted tests).
+    - Gate t45 green on the records commit (32 steps).
+    - m14.s2i.m2 merged (probe only, no timed reading yet): an opt-in test in batch-basics' counted measurements
+      (`GUST_S2I_M2_PROBE=1`, cells `small` or `all`) times a counted chain launched indirect against the same chain
+      bounded, as the frame span, with the median of the middle rounds and every round printed. Its five-run reading
+      per adapter waits for a quiet window.
+    - Gate t46 green on the s2i.m2 records (32 steps).
+    - m14.onepass-ts merged (D283 amends D277): where the adapter offers `TIMESTAMP_QUERY_INSIDE_PASSES`, a frame
+      timed at `Passes` keeps its plain stages in one compute pass and stamps each stage inside it; indirect counted
+      and `pixel` stages keep their own passes; without the feature, or with the pass-per-dispatch form forced, a pass
+      per stage as before. New test file `inside_pass_timestamps.rs` (four GPU tests) ran on the Radeon 890M and the
+      RTX 5090; the pin is 703 over 73 by count, and the merge gate's full Gpu suite confirms it.
+    - m14.lim-web merged (D284 amends D280): `with_storage_buffers(n)` follows one rule on every target, so a page
+      may ask for more than 8 storage buffers per stage; a browser device without the option keeps 8. `check-web`'s
+      batch page refuses a wide stage on the default 8 and runs it exactly on a device that asked for 16 (Chrome 158,
+      Radeon 890M). Other browsers are unmeasured.
+    - Quiet window qw3 read four pre-registered measurements. s2i.m2 (counted stages, GPU span, five runs per cell,
+      both adapters): the two launches of a counted stage rank in opposite directions on the two adapters below 16M
+      rows, so by proxy ruling no launch hint is added and the default stays Indirect (D285); the pass structure of
+      several indirect counted stages is queued as speed spike s2i.pass. pf.fma (fused multiply-add, a scratch spike
+      outside the repo, three seeds per adapter): read, not closed; on both adapters the default route already
+      contracts `a*b+c`, and forbidding contraction cost time in the multiply-add-bound cells; any change to the
+      semantics contract is the owner's. pf.alone0 rerun: not reproduced at W1 1M; at 16M the floor was not held
+      again (identical processes differ by a factor near 1.2 to 1.9 on the RTX 5090), nothing concluded, and the
+      isolation slice that depended on it is not ordered. pf.split0 rerun (seeds 11 and 33, as ruled): KILL, the step
+      does not reproduce through GUST's path; no pf.split slice. Seed 22, outside the ruling, showed the same factor
+      near 1.9 between cells.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

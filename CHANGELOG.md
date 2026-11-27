@@ -9,7 +9,7 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 - An indirect counted stage joins the frame's compute pass (m14.s2imerge): its args dispatch and its indirect dispatch
   are recorded, in stage order, into the pass the plain stages share, so only a `pixel` call ends a run (this replaces
-  "an indirect counted stage keeps its own passes" in the two entries below). A count another stage wrote earlier in
+  "an indirect counted stage keeps its own passes" in the m14.onepass-ts and m14.onepass entries below). A count another stage wrote earlier in
   the frame reaches the args dispatch and the indirect launch in order. At `FrameTiming::Passes` on a device with
   `TIMESTAMP_QUERY_INSIDE_PASSES` the stage is stamped inside the shared pass, one entry from before its args dispatch
   to after its indirect dispatch (wgpu's own validation dispatch for the indirect launch falls inside that entry);
@@ -17,6 +17,14 @@ breaks existing code bumps the minor version, and the promise is described in th
   old form, two passes a stage. The bounded launch, the browser and the CPU twin are unchanged. The test support
   `HeadlessDevice::counted_probe_passes` is now `counted_probe_launches` (it counts indirect launches). Checked on the
   Radeon 890M and the RTX 5090.
+- Frame timing in the browser (m14.ftweb): `FrameTiming::Frame` and `Passes` now compile and run on `wasm32`. Where the
+  browser grants `timestamp-query` a frame's `f.time()` resolves to the span and, at `Passes`, one entry per stage that
+  has a pass (pass boundaries only: WebGPU has no stamps inside passes); where it does not, the time is `Ok(None)` and
+  `batch.frame_timing()` is `None`, as before. The batch states a tick of 1 ns, and the browser quantizes the values
+  (measured 65536 ns on headless Chrome 158, Radeon 890M only; RTX 5090 pending), so a span is a multiple of that step
+  and a frame shorter than it can read as 0. The `DeviceTiming` handle of the macro-support types is an `Rc` on `wasm32` and stays an
+  `Arc` elsewhere. `cargo xtask check-web` runs it on the batch page, whose label now says `frame time read` or
+  `frame time absent`.
 - Whole struct rows through `compact` in a batch (m14.s2s2): there is no op over rows. `gust::compact` stays an op over
   `u32` flags (built in a stage from a field); the rows are gathered by a counted stage through the indices,
   `gpu_task!(count(n); CAP, |i| -> Row { rows[idx[i]] })`, or through any other index handle, one a stage built included.

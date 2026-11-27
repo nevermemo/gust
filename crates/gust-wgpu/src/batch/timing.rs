@@ -37,8 +37,12 @@
 //! shrinks for good.
 
 use core::task::Poll;
+#[cfg(target_arch = "wasm32")]
+use std::rc::Rc as Shared;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc as Shared;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Mutex, PoisonError};
 
 use gust::batch::{BoxFuture, DeviceTiming, FrameClock, FrameTiming, OpenedTiming};
 
@@ -155,7 +159,7 @@ impl GpuTiming {
 /// What one timed frame holds: the batch's objects and its own read-back buffer, given back if the frame is dropped
 /// before it was submitted.
 struct GpuClock {
-    timing: Arc<GpuTiming>,
+    timing: Shared<GpuTiming>,
     readback: Option<wgpu::Buffer>,
     slots: u32,
     /// The copy into the buffer was recorded into an encoder, which a caller may still submit.
@@ -183,7 +187,7 @@ struct Landing {
     done: Done,
     outcome: Mutex<Option<Result<Vec<u64>, String>>>,
     buffer: Mutex<Option<wgpu::Buffer>>,
-    timing: Arc<GpuTiming>,
+    timing: Shared<GpuTiming>,
 }
 
 impl Drop for Landing {
@@ -239,14 +243,14 @@ impl HeadlessDevice {
         let slots = u32::try_from(slots).ok()?;
         let timing = GpuTiming::new(&self.device, slots, 2 * in_flight + 4);
         Some(OpenedTiming {
-            handle: Arc::new(timing),
+            handle: Shared::new(timing),
             period_ns: f64::from(period),
         })
     }
 
     /// A clock for one frame, or `None` when every read-back buffer is in use.
     pub(super) fn take_clock(timing: &DeviceTiming) -> Option<FrameClock> {
-        let timing = Arc::clone(timing).downcast::<GpuTiming>().ok()?;
+        let timing = Shared::clone(timing).downcast::<GpuTiming>().ok()?;
         let readback = timing.take()?;
         Some(Box::new(GpuClock {
             timing,
@@ -310,7 +314,7 @@ impl HeadlessDevice {
         begin: Option<u32>,
         end: Option<u32>,
     ) -> Result<(), Error> {
-        let timing = Arc::clone(&clock.timing);
+        let timing = Shared::clone(&clock.timing);
         let query_set = &timing.query_set;
         let last = stage.dispatches.len() - 1;
         for (index, dispatch) in stage.dispatches.iter().enumerate() {
@@ -415,15 +419,15 @@ impl HeadlessDevice {
             .take()
             .expect("a clock keeps its buffer until the frame is submitted");
         let bytes = u64::from(clock.slots) * TICK_BYTES;
-        let timing = Arc::clone(&clock.timing);
+        let timing = Shared::clone(&clock.timing);
         let epoch = submission.epoch.clone();
-        let landing = Arc::new(Landing {
+        let landing = Shared::new(Landing {
             done: Done::default(),
             outcome: Mutex::new(None),
             buffer: Mutex::new(None),
-            timing: Arc::clone(&timing),
+            timing: Shared::clone(&timing),
         });
-        let landed = Arc::clone(&landing);
+        let landed = Shared::clone(&landing);
         let mapped = buffer.clone();
         // Without an epoch word (the batch's own submission) the callback gives the buffer back as soon as it has read
         // it, whether or not anyone reads the frame's time; with one, the future decides after the word is read.
@@ -461,10 +465,10 @@ impl HeadlessDevice {
             landed.done.finish();
         });
         let device = self.device.clone();
-        let timing = Arc::clone(&clock.timing);
+        let timing = Shared::clone(&clock.timing);
         Box::pin(async move {
             let polling = device.clone();
-            let landing_of = Arc::clone(&landing);
+            let landing_of = Shared::clone(&landing);
             core::future::poll_fn(move |cx| {
                 if let Err(error) = polling.poll(wgpu::PollType::Poll) {
                     return Poll::Ready(Err(Error::Poll(error.to_string())));

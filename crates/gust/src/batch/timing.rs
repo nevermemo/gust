@@ -5,6 +5,8 @@ use core::any::Any;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
+#[cfg(target_arch = "wasm32")]
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -27,7 +29,7 @@ pub enum FrameTiming {
     /// begin and an end timestamp for each stage. A device that merges but cannot (a browser device, or one opened
     /// without the feature) records every stage in passes of its own at this level, so the frame is not the one that
     /// runs at the other levels: a stage's time includes its pass boundary, and the times can sum to more than the
-    /// `Frame` span.
+    /// `Frame` span. In the browser this is the only form, because WebGPU has no timestamps inside passes.
     Passes,
 }
 
@@ -38,7 +40,9 @@ pub struct TimingInfo {
     /// The level the batch was built with (never `Off`: a batch with no timing has no `TimingInfo`).
     pub level: FrameTiming,
     /// The adapter's stated timestamp tick. A value is a whole number of ticks times this; the spread of repeated
-    /// frames is a measured fact of each adapter, not part of this type.
+    /// frames is a measured fact of each adapter, not part of this type. In the browser the tick is stated as 1 ns and
+    /// the values are quantized by the browser (measured 65536 ns on Chrome 158, Radeon 890M only; RTX 5090 pending), so
+    /// a span is a multiple of that step and a frame shorter than the step can read as 0.
     pub tick: Duration,
 }
 
@@ -64,9 +68,16 @@ pub struct FrameTimes {
     pub passes: Vec<PassTime>,
 }
 
-/// The timing objects of a device for one batch, kept by the batch. Macro support.
+/// The timing objects of a device for one batch, kept by the batch: `Arc<dyn Any + Send + Sync>` on native targets and
+/// `Rc<dyn Any>` on `wasm32`, where the browser device's objects are not `Send`. Macro support.
 #[doc(hidden)]
+#[cfg(not(target_arch = "wasm32"))]
 pub type DeviceTiming = Arc<dyn Any + Send + Sync>;
+
+/// The timing objects of a device for one batch, kept by the batch (see the native alias). Macro support.
+#[doc(hidden)]
+#[cfg(target_arch = "wasm32")]
+pub type DeviceTiming = Rc<dyn Any>;
 
 /// What a frame holds while it is recorded and until it is submitted. Macro support.
 #[doc(hidden)]
@@ -244,11 +255,15 @@ impl TimeCell {
 /// The GPU time of one frame, asked for with [`FrameRun::time`](super::FrameRun::time): a future of the
 /// [`FrameTimes`], read the way a [`Ticket`](super::Ticket) is (it is polled, never waited for, and it may arrive
 /// frames after the frame). A frame the device gave no time for resolves to `Ok(None)`: a batch built with
-/// [`FrameTiming::Off`], a device without timestamp queries (including the CPU twin and `wasm32`), a frame with no pass,
-/// or no free read-back buffer when the frame was recorded (the batch keeps a bounded set, replaced as frames drop or
-/// fail, so this is rare). A frame that is never submitted resolves to [`Error::NotSubmitted`], and so does a frame
-/// whose timestamps were recorded into a caller's encoder that never ran (`Encoded::submitted` with the index of another
-/// submission); a frame that recorded none (built `Off`, no pass) is `Ok(None)` there.
+/// [`FrameTiming::Off`], a device without timestamp queries (including the CPU twin, and a browser that does not grant
+/// the feature), a frame with no pass, or no free read-back buffer when the frame was recorded (the batch keeps a
+/// bounded set, replaced as frames drop or fail, so this is rare). A frame that is never submitted resolves to
+/// [`Error::NotSubmitted`], and so does a frame whose timestamps were recorded into a caller's encoder that never ran
+/// (`Encoded::submitted` with the index of another submission); a frame that recorded none (built `Off`, no pass) is
+/// `Ok(None)` there.
+///
+/// In the browser the values are quantized by the browser (measured 65536 ns on Chrome 158, Radeon 890M only; RTX 5090
+/// pending), so a span is a multiple of that step and a frame shorter than the step can read as 0.
 ///
 /// Clones read the same measurement; a second `.await` of the same handle returns it again. Native GPU devices complete
 /// it only while the device is polled, which polling the future does (see [`Ticket`](super::Ticket)).

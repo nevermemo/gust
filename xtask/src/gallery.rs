@@ -167,6 +167,7 @@ pub(crate) const WEB_HELLO: Example = Example {
     out_name: "web_hello",
     manifest: "gallery/web-hello/gust-artifacts/manifest.json",
     closing: "map_async exact against the host reference",
+    infos: &[],
     // A gallery crate is built the way a user builds it: no flag variables of the caller.
     cleared_env: &["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"],
 };

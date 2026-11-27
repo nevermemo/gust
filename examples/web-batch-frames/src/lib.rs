@@ -4,15 +4,23 @@
 //! `index.html` with the result from a loopback server, opens it in headless Chrome and reads the one line that the page
 //! logs to the console:
 //!
-//! - `GUST_OK <vendor> <architecture> | two frames in flight exact, wide stage refused on 8 and exact on 16` when the
-//!   page recorded and submitted frame N+1 while frame N's ticket was still pending (nothing returns to the event loop
-//!   in between, so the ticket cannot have resolved: that is checked, not guessed), a third `begin` was still waiting
-//!   for frame N at that point, and then every frame's ticket, awaited, equalled the host computation exactly. The
-//!   third frame's `begin`, awaited after the first two tickets, learned from the browser's `on_submitted_work_done`
-//!   that the oldest frame had completed, and its ticket was exact too. The last part of the line is the wide stage
+//! - `GUST_OK <vendor> <architecture> | frame time read | two frames in flight exact, wide stage refused on 8 and exact
+//!   on 16` when the page recorded and submitted frame N+1 while frame N's ticket was still pending (nothing returns to
+//!   the event loop in between, so the ticket cannot have resolved: that is checked, not guessed), a third `begin` was
+//!   still waiting for frame N at that point, and then every frame's ticket, awaited, equalled the host computation
+//!   exactly. The third frame's `begin`, awaited after the first two tickets, learned from the browser's
+//!   `on_submitted_work_done` that the oldest frame had completed, and its ticket was exact too. The last part of the
+//!   line is the wide stage
 //!   (ten storage buffers): [`build_wide`] was refused by name on the default device (8), and on a second device opened
-//!   with `with_storage_buffers(16)` it built and its result was exact. The two words are what the browser says about its adapter (`GPUAdapter.info`; wgpu's own
-//!   name is empty there);
+//!   with `with_storage_buffers(16)` it built and its result was exact. The middle part says which branch of the frame
+//!   timing ran (m14.ftweb): the batch is built with `FrameTiming::Passes`, and the third frame asks for its GPU time. On
+//!   an adapter where the browser granted `timestamp-query` the time resolved to a value with one entry per stage that
+//!   has a pass ([`TIMED_STAGES`] of them, with distinct names, none longer than the span), a span no longer than the
+//!   CPU wall time of that frame (plus the resolution of the clock), and the batch reported a 1 ns tick: `frame time
+//!   read`. Where it did not, the time resolved to `None` and the batch reported no timing: `frame time absent`. The
+//!   values are quantized by the browser (measured 65536 ns on headless Chrome 158, Radeon 890M only; RTX 5090
+//!   pending). The two adapter words are what the browser says about its adapter (`GPUAdapter.info`; wgpu's own name is
+//!   empty there);
 //! - `GUST_FAIL <reason>` on any error or panic.
 //!
 //! The batch builder, [`build`], is compiled on the host as well, which is how `cargo gust build` finds the kernels;
@@ -20,12 +28,17 @@
 
 use std::sync::Arc;
 
-use gust::batch::{Batch, D1, Error, Param, Stage};
+use gust::batch::{Batch, D1, Error, FrameTiming, Param, Stage};
 use gust::{gpu_batch, gpu_task};
 use gust_wgpu::HeadlessDevice;
 
 /// The elements of the input and of each frame's result: more than one workgroup and not a multiple of it.
 pub const LENGTH: u32 = 1000;
+
+/// The stages of [`build`] that have a pass, and so the entries of a frame's time at level `Passes` (the browser records
+/// each stage in passes of its own): `y`, the in-place doubling of `y`, `z`, `mixed`, `rotated`, the reversal index
+/// stage and `gathered`.
+pub const TIMED_STAGES: usize = 7;
 
 /// The element of the batch's struct stages (m14.s2s, D279): three words, so no padding, and exact `u32` arithmetic.
 #[derive(Clone, Copy, Debug, PartialEq, gust::GpuStruct)]
@@ -68,11 +81,22 @@ pub struct Handles {
 /// # Errors
 ///
 /// The batch's build errors (an unusable device, a kernel without its artifact on the `web` profile).
+///
+/// # Panics
+///
+/// When `n` is not [`LENGTH`]: the stage that reverses the rows (`rev`) writes the index `999 - i`, which is `LENGTH - 1
+/// - i` only for that length, and the kernels of the committed artifacts are made for it.
 pub fn build(
     device: &Arc<HeadlessDevice>,
     n: u32,
 ) -> Result<(Batch<HeadlessDevice>, Handles), Error> {
+    assert_eq!(
+        n, LENGTH,
+        "the reversal of `rev` is written for LENGTH rows"
+    );
     gpu_batch!("frames", on(device); in_flight(2); |b| {
+        // Pass boundaries only in a browser (WebGPU has no stamps inside passes); `Ok(None)` where it is not granted.
+        b.frame_timing(FrameTiming::Passes);
         let gain = b.param::<u32>(1);
         let x = b.input::<u32>(n);
         let y = gpu_task!(n, |i| -> u32 { x[i] * 3u32 + gain.get() });
@@ -86,7 +110,7 @@ pub fn build(
         let rotated = gpu_task!(n, |i| -> Row { Row { a: rows[i].c, b: rows[i].a, c: rows[i].b } });
         // Whole rows through an index handle (m14.s2s2): a stage builds a reversal (the length is `LENGTH`), and a counted
         // stage gathers the rows through it. The ops of a batch (`compact`) run Slang kernels at run time, which a
-        // browser build has not, so the index is a stage's here.
+        // browser build has not, so the index is a stage's here. `999` is `LENGTH - 1` (`build` checks `n`).
         let rev = gpu_task!(n, |i| -> u32 { 999u32 - i });
         let gathered = gpu_task!(count(count); n, |i| -> Row { rows[rev[i]] });
         Handles { gain, x, y, count, z, rows, mixed, rotated, gathered }

@@ -7,6 +7,20 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- Kernels can be created ahead of use (m14.bzpre): `HeadlessDevice::precompile(&[&KernelDescriptor])` runs the
+  device-level checks of a launch and creates each named kernel's shader module, layouts and pipeline in the device's
+  pipeline cache, in order, stopping at the first error with the earlier entries kept. A later dispatch of the same
+  descriptor, typed or batched, is a cache hit. The pipeline cache now keeps a second level by content (entry point,
+  source, parameters, workgroup size, shape, `requires` and artifact, compared in full): a descriptor at an address the
+  cache has not seen is looked up by content once and then aliased, so two copies of one descriptor are one entry
+  and `PipelineCacheStats::entries` counts kernels, not addresses. `precompile` returns one `Precompiled` per
+  descriptor: `PrecompileOutcome::Hit` or `Compiled`, and the CPU time the call took for it (`None` on `wasm32`). The
+  split variant of an oversized launch is
+  created only when named (`KernelDescriptor::split`). "Created" is the promise: a driver or a browser may defer part of
+  its own compile, so a short time does not prove the pipeline is fully built; bind groups are still made at use. There
+  is no warm submission, no `Batch` call and no CPU-device counterpart. A stage sealed over an empty extent still
+  compiles at its first non-empty frame. Tested on the Radeon 890M and the RTX 5090 (native), and in Chrome on the
+  Radeon 890M.
 - Frame timing in the browser (m14.ftweb): `FrameTiming::Frame` and `Passes` now compile and run on `wasm32`. Where the
   browser grants `timestamp-query` a frame's `f.time()` resolves to the span and, at `Passes`, one entry per stage that
   has a pass (pass boundaries only: WebGPU has no stamps inside passes); where it does not, the time is `Ok(None)` and

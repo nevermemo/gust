@@ -1571,9 +1571,16 @@ pub(crate) struct GpuSuitePin {
 /// new test file `tests/inside_pass_timestamps.rs` (four GPU tests, one `test result:` line) and changes no other
 /// test count (`tests/one_pass.rs` renames and widens one existing test, `tests/device_share.rs` gains a feature in its
 /// hand-written request). Updated by count; the full Gpu suite run at the merge confirms it.
+///
+/// Slice m14.bzpre, on 703 over 73: 703 over 73 became 720 over 74. `HeadlessDevice::precompile` adds two library unit
+/// tests (`compile::precompile`, on the existing line), one doc test (the method's example, on the existing doc-test
+/// line) and the new test file `tests/precompile.rs` (eleven GPU tests, one `test result:` line); the two-level
+/// pipeline cache adds three unit tests to `cache` (the content key), on the existing line. Measured, not derived: a
+/// full Gpu suite run gave 720 passed over 74 result lines on the Radeon 890M and on the RTX 5090 (tree of this slice
+/// only; rebase and re-run when another lane has merged first).
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 703,
-    result_lines: 73,
+    passed: 720,
+    result_lines: 74,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

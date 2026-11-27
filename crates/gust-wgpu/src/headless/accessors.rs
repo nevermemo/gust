@@ -174,7 +174,7 @@ impl HeadlessDevice {
     pub fn pipeline_cache_stats(&self) -> PipelineCacheStats {
         let cache = self.lock_pipeline_cache();
         PipelineCacheStats {
-            entries: cache.kernels.len(),
+            entries: cache.contents.len(),
             hits: cache.hits,
             misses: cache.misses,
         }

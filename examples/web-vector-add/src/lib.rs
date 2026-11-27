@@ -21,7 +21,10 @@
 //!   subgroup feature, D142; M8, slice m8.e); and when a `grid` launch past a lowered per-dimension workgroup limit
 //!   (D208, D209; m11.web) runs as pieces of the kernel's split variant from the split's own precompiled artifact and
 //!   equals the host reference ([`split_launch`]), and the same launch of the kernel whose split variant has no
-//!   artifact is refused with `Error::DeviceLimit`, because a browser build has no run-time compiler. The `selected` part names, for each kernel, the key of the artifact the build
+//!   artifact is refused with `Error::DeviceLimit`, because a browser build has no run-time compiler; and when
+//!   `HeadlessDevice::precompile` creates the grid and the pixel kernel (two misses, `Compiled` each, no time on
+//!   wasm32) and the typed launches of both forms after it are hits, no miss, and equal the host reference
+//!   ([`precompile_then_typed`]). The `selected` part names, for each kernel, the key of the artifact the build
 //!   embedded, the variant it selected (`-` for the portable body) and how many capabilities that body requires
 //!   ([`selected_kernels`]); `check-web` compares it with the committed manifest;
 //! - `GUST_FAIL <reason>` on any error or panic.
@@ -32,7 +35,10 @@
 use gust::capability::Capability;
 use gust::{Access, Extent, JobStatus, KernelDescriptor, LengthRule, Resource};
 use gust::{gpu_fn, gpu_module};
-use gust_wgpu::{BufferDispatch, DeviceOptions, Error, GpuBufferAccess, HeadlessDevice, WgpuJob};
+use gust_wgpu::{
+    BufferDispatch, DeviceOptions, Error, GpuBufferAccess, HeadlessDevice, PrecompileOutcome,
+    WgpuJob,
+};
 use js_sys::{Function, Object, Promise, Reflect};
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
@@ -170,7 +176,7 @@ async fn vector_add_on_the_browser_gpu() -> Result<String, String> {
     let device = HeadlessDevice::new_async(wgpu::Backends::BROWSER_WEBGPU)
         .await
         .map_err(|error| format!("no WebGPU device: {error}"))?;
-    both_forms(&device, LENGTH).await?;
+    precompile_then_typed(&device).await?;
     both_forms(&device, TWO_DRAWS).await?;
 
     // The map path: `map_async` opens the default device (a second device, through `default_device_async`), uploads
@@ -381,6 +387,43 @@ fn check_job_contract(
     ) {
         return Err(format!(
             "{what}: WgpuJob::wait_timeout must return Error::WouldBlock in the browser"
+        ));
+    }
+    Ok(())
+}
+
+/// `HeadlessDevice::precompile` on the browser GPU, then both typed forms of [`both_forms`] on the same, still empty,
+/// pipeline cache: the call creates the grid and the pixel kernel (two entries, two misses, no hit, `Compiled` each,
+/// and no time on wasm32, which has no clock in the crate), and the typed launches afterwards (which read the
+/// descriptor through `Kernel`, at other addresses than the references here) find them by content: two entries and two
+/// misses still, hits added, and the results equal the host reference. This shows "created ahead, found later" on the
+/// browser GPU, not that the browser has finished compiling.
+async fn precompile_then_typed(device: &HeadlessDevice) -> Result<(), String> {
+    let grid: &'static KernelDescriptor = &vector_add::add::DESCRIPTOR;
+    let pixel: &'static KernelDescriptor = &vector_add::add_pixel::DESCRIPTOR;
+    let report = device
+        .precompile(&[grid, pixel])
+        .map_err(|error| format!("precompile failed: {error}"))?;
+    if report.len() != 2
+        || report
+            .iter()
+            .any(|entry| entry.outcome != PrecompileOutcome::Compiled || entry.elapsed.is_some())
+    {
+        return Err(format!(
+            "precompile must report two kernels, each Compiled and with no time on wasm32, got {report:?}"
+        ));
+    }
+    let created = device.pipeline_cache_stats();
+    if (created.entries, created.misses, created.hits) != (2, 2, 0) {
+        return Err(format!(
+            "precompile must leave two entries, two misses and no hit, got {created:?}"
+        ));
+    }
+    both_forms(device, LENGTH).await?;
+    let used = device.pipeline_cache_stats();
+    if used.entries != 2 || used.misses != 2 || used.hits < 2 {
+        return Err(format!(
+            "the typed launches of the precompiled kernels must be hits and no miss (two entries, two misses, at least two hits), got {used:?}"
         ));
     }
     Ok(())

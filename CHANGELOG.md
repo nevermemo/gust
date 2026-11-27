@@ -9,14 +9,13 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 - An indirect counted stage joins the frame's compute pass (m14.s2imerge): its args dispatch and its indirect dispatch
   are recorded, in stage order, into the pass the plain stages share, so only a `pixel` call ends a run (this replaces
-  "an indirect counted stage keeps its own passes" in the m14.onepass-ts and m14.onepass entries below). A count another stage wrote earlier in
-  the frame reaches the args dispatch and the indirect launch in order. At `FrameTiming::Passes` on a device with
-  `TIMESTAMP_QUERY_INSIDE_PASSES` the stage is stamped inside the shared pass, one entry from before its args dispatch
-  to after its indirect dispatch (wgpu's own validation dispatch for the indirect launch falls inside that entry);
-  without the feature it is one pass of its own holding both dispatches. The hidden `force_pass_per_dispatch` keeps the
-  old form, two passes a stage. The bounded launch, the browser and the CPU twin are unchanged. The test support
-  `HeadlessDevice::counted_probe_passes` is now `counted_probe_launches` (it counts indirect launches). Checked on the
-  Radeon 890M and the RTX 5090.
+  "an indirect counted stage and a `pixel` call keep their own passes" in the m14.onepassts and m14.onepass entries
+  below, which now hold for `pixel` alone). A count another stage wrote earlier in the frame reaches the args dispatch
+  and the indirect launch in order. At `FrameTiming::Passes` on a device with `TIMESTAMP_QUERY_INSIDE_PASSES` the stage
+  is stamped inside the shared pass, one entry from before its args dispatch to after its indirect dispatch (wgpu's own
+  validation dispatch for the indirect launch falls inside that entry); without the feature it is one pass of its own
+  holding both dispatches. The hidden `force_pass_per_dispatch` keeps the old form, two passes a stage. The bounded
+  launch, the browser and the CPU twin are unchanged. Checked on the Radeon 890M and the RTX 5090.
 - Frame timing in the browser (m14.ftweb): `FrameTiming::Frame` and `Passes` now compile and run on `wasm32`. Where the
   browser grants `timestamp-query` a frame's `f.time()` resolves to the span and, at `Passes`, one entry per stage that
   has a pass (pass boundaries only: WebGPU has no stamps inside passes); where it does not, the time is `Ok(None)` and

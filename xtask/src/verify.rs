@@ -1572,11 +1572,11 @@ pub(crate) struct GpuSuitePin {
 /// test count (`tests/one_pass.rs` renames and widens one existing test, `tests/device_share.rs` gains a feature in its
 /// hand-written request). Updated by count; the full Gpu suite run at the merge confirms it.
 ///
-/// Slice m14.s2imerge, on 703 over 73: 703 over 73 became 704 over 73. The counted-stage pass slice adds one GPU test to
-/// the existing `tests/inside_pass_timestamps.rs` (a device without stamps inside passes times a counted stage as one
-/// pass of its own) and changes no other test count (`tests/one_pass.rs` and the mixed test of `inside_pass_timestamps.rs`
-/// gain an assertion for the forced form). Updated by count (the four affected test files ran on both adapters in the
-/// lane); the full Gpu suite run at the merge confirms it.
+/// Slice m14.s2imerge, on 703 over 73: 703 over 73 became 704 over 73. The counted-stage pass slice adds one GPU test
+/// to the existing `tests/inside_pass_timestamps.rs` (a device without stamps inside passes times a counted stage as
+/// one pass of its own) and changes no other test count (`tests/one_pass.rs` and the mixed test of
+/// `inside_pass_timestamps.rs` gain an assertion for the forced form). Updated by count (the four affected test files
+/// ran on both adapters in the lane); the full Gpu suite run at the merge confirms it.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
     passed: 704,
     result_lines: 73,

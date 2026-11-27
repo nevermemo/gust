@@ -264,7 +264,11 @@ fn into_rig<const N: usize>(
 macro_rules! define_m2_builds {
     ($one:ident, $six:ident, $depth:tt) => {
         /// A batch of one counted stage over the light kernel of the first probe, timed at level `Frame`.
-        fn $one(device: &Arc<HeadlessDevice>, capacity: u32, level: FrameTiming) -> Result<(Batch<HeadlessDevice>, Rig), Error> {
+        fn $one(
+            device: &Arc<HeadlessDevice>,
+            capacity: u32,
+            level: FrameTiming,
+        ) -> Result<(Batch<HeadlessDevice>, Rig), Error> {
             gpu_batch!("measure-m2", on(device); in_flight($depth); |b| {
                 b.frame_timing(level);
                 let n = b.input::<u32>(1u32);
@@ -279,7 +283,11 @@ macro_rules! define_m2_builds {
         }
 
         /// A batch of six counted stages over the same kernel, each with a count of its own.
-        fn $six(device: &Arc<HeadlessDevice>, capacity: u32, level: FrameTiming) -> Result<(Batch<HeadlessDevice>, Rig), Error> {
+        fn $six(
+            device: &Arc<HeadlessDevice>,
+            capacity: u32,
+            level: FrameTiming,
+        ) -> Result<(Batch<HeadlessDevice>, Rig), Error> {
             gpu_batch!("measure-m2-six", on(device); in_flight($depth); |b| {
                 b.frame_timing(level);
                 let src = b.input::<u32>(capacity);
@@ -656,8 +664,8 @@ fn pass_frame(
 /// Measurement s2i.pass, timing (`GUST_S2I_PASS_PROBE=1`; `GUST_S2I_PASS_ROUNDS`, default 4): the frame's GPU span at
 /// `Frame` of the default form, the forced form and Bounded over [`pass_cells`], in the shape of s2i.m2 (two batches a
 /// round, Indirect and Bounded, whose creation order alternates; within the Indirect batch the order default, forced
-/// alternates). Per cell it prints the spans, `d` = span minus Bounded for the default and forced forms, and the ratio of
-/// the default over the forced span. The pass count of every variant is asserted before timing, and the results are
+/// alternates). Per cell it prints the spans, `d` = span minus Bounded for the default and forced forms, and the ratio
+/// of the default over the forced span. The pass count of every variant is asserted before timing, and the results are
 /// held to the model. Then, for the six-stage cell, the `Passes` reading of each form: the entry of every stage and the
 /// frame's span, medians over the same number of frames.
 #[test]

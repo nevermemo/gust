@@ -31,8 +31,8 @@ const COUNTED_PASS_LABEL: &str = "GUST counted batch pass";
 const ARGS_PASS_LABEL: &str = "GUST counted batch args pass";
 
 /// What a test may see of the counted stages the device made and recorded on this thread (D278, check 3): the args
-/// buffers and the number of indirect launches recorded. Test support, off until [`HeadlessDevice::counted_probe`] turns
-/// it on; not API.
+/// buffers and the number of indirect launches recorded. Test support, off until [`HeadlessDevice::counted_probe`]
+/// turns it on; not API.
 #[derive(Default)]
 struct Probe {
     on: bool,
@@ -71,7 +71,8 @@ impl HeadlessDevice {
         })
     }
 
-    /// The indirect launches (`dispatch_workgroups_indirect` of a counted stage) recorded since the probe was turned on.
+    /// The indirect launches (`dispatch_workgroups_indirect` of a counted stage) recorded since the probe was turned
+    /// on.
     #[doc(hidden)]
     #[must_use]
     pub fn counted_probe_launches() -> u64 {
@@ -106,9 +107,9 @@ impl HeadlessDevice {
 
     /// Record a stage made with the indirect launch on its own, outside the frame's shared pass: where the frame's
     /// passes do not hold it (a frame timed without stamps inside passes, which gives each stage its own pass, and a
-    /// stage recorded alone), the args dispatch and the counted dispatch are one compute pass, and `begin` and `end` are
-    /// the stamps of its two ends. Under `force_pass_per_dispatch` they are two passes, `begin` on the args pass and
-    /// `end` on the counted one.
+    /// stage recorded alone), the args dispatch and the counted dispatch are one compute pass, and `begin` and `end`
+    /// are the stamps of its two ends. Under `force_pass_per_dispatch` they are two passes, `begin` on the args pass
+    /// and `end` on the counted one.
     pub(super) fn record_counted(
         &self,
         encoder: &mut wgpu::CommandEncoder,

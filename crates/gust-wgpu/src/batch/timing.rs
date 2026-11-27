@@ -18,8 +18,8 @@
 //! stages write the same point twice and a stage's time runs from its begin to its end as before; a stage that has a
 //! pass of its own writes them at the pass boundary (`timestamp_writes`: begin on the first pass, end on the last).
 //! Without the feature (a browser device, or a caller's device opened without it) every stage is recorded in a pass of
-//! its own, as before, a counted stage as one pass that holds both its dispatches. While `force_pass_per_dispatch` is on
-//! every dispatch is a pass of its own, a counted stage's two passes carrying its begin and its end. A timed and an
+//! its own, as before, a counted stage as one pass that holds both its dispatches. While `force_pass_per_dispatch` is
+//! on every dispatch is a pass of its own, a counted stage's two passes carrying its begin and its end. A timed and an
 //! untimed frame record the same passes for a counted stage in the cases with the feature (one shared pass) and under
 //! the force (two passes a counted stage); without the feature the timed frame has a pass per stage where the untimed
 //! one has the one. A stamp between two stages that depend on nothing from each other (no barrier between them) only

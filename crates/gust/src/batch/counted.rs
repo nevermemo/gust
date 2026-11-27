@@ -53,9 +53,9 @@ pub fn counted_launch() -> CountedLaunch {
         })
 }
 
-/// Choose the launch of the counted stages this thread adds next (`None` restores the default). A stage reads the launch
-/// when it is added and keeps it through the remakes a resize causes, whatever is chosen later. Test and measurement
-/// support: the launches mean the same, and on `wasm32` only [`CountedLaunch::Bounded`] runs.
+/// Choose the launch of the counted stages this thread adds next (`None` restores the default). A stage reads the
+/// launch when it is added and keeps it through the remakes a resize causes, whatever is chosen later. Test and
+/// measurement support: the launches mean the same, and on `wasm32` only [`CountedLaunch::Bounded`] runs.
 #[doc(hidden)]
 pub fn set_counted_launch(launch: Option<CountedLaunch>) {
     LAUNCH.with(|cell| cell.set(launch));

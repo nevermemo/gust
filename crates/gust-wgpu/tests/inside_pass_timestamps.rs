@@ -3,10 +3,10 @@
 //!
 //! Where the device has `TIMESTAMP_QUERY_INSIDE_PASSES` (GUST asks for it where the adapter offers it) a timed frame
 //! records the same passes as the untimed one, one time per stage, an indirect counted stage (both its dispatches) in
-//! the shared pass among them; a device opened without the feature (here through the adopt path) keeps a pass per stage,
-//! a counted stage's one pass holding both its dispatches, and still returns one time per stage. The pass count is `batch_passes_recorded`,
-//! read around `submit`; the results are held to a host model, so a stamp cannot hide a wrong byte. Each test prints
-//! the adapter's name and the per-stage times it saw (run with `--show-output`).
+//! the shared pass among them; a device opened without the feature (here through the adopt path) keeps a pass per
+//! stage, a counted stage's one pass holding both its dispatches, and still returns one time per stage. The pass count
+//! is `batch_passes_recorded`, read around `submit`; the results are held to a host model, so a stamp cannot hide a
+//! wrong byte. Each test prints the adapter's name and the per-stage times it saw (run with `--show-output`).
 
 mod common;
 
@@ -296,19 +296,18 @@ fn check_mixed_passes(device: &Arc<HeadlessDevice>, passes_wanted: u64) -> Frame
             4,
             "one time per stage, the counted one included"
         );
-        for index in [0, 1, 3] {
+        for index in [0, 1, 2, 3] {
             assert!(
                 times.passes[index].duration > std::time::Duration::ZERO,
-                "the plain stage {:?} has a time above zero",
+                "the stage {:?} has a time above zero",
                 times.passes[index].stages
             );
         }
         let sum: std::time::Duration = times.passes.iter().map(|pass| pass.duration).sum();
         assert!(sum <= times.span, "{sum:?} against {:?}", times.span);
-        // No `sum * 2 >= span` lower bound here, unlike the three plain stages: the counted stage's entry may cover
-        // less of the span than a plain stage's (the pass boundaries of the forced form sit between stamps, and wgpu's
-        // own validation dispatch of the indirect launch falls inside the counted stage's entry), so the stage times
-        // can cover under half the span on some adapters.
+        // No `sum * 2 >= span` lower bound here, unlike the three plain stages: in the forced form the pass boundaries
+        // between the stages sit between the stamps, so the stage times can cover under half the span on some adapters
+        // (wgpu's own validation dispatch of the indirect launch lengthens the counted stage's entry, not the gaps).
     }
     timed
         .into_iter()
@@ -318,8 +317,8 @@ fn check_mixed_passes(device: &Arc<HeadlessDevice>, passes_wanted: u64) -> Frame
 }
 
 /// Plain, plain, indirect counted, plain at `Passes`: the counted stage's args dispatch and indirect dispatch join the
-/// shared pass, so the timed frame is the untimed frame's one pass, with a time for each of the four stages (the counted
-/// one stamped inside the pass, from before its args dispatch to after its indirect dispatch); under
+/// shared pass, so the timed frame is the untimed frame's one pass, with a time for each of the four stages (the
+/// counted one stamped inside the pass, from before its args dispatch to after its indirect dispatch); under
 /// `force_pass_per_dispatch` the old form, a pass per dispatch in both frames, the counted stage's two among them.
 /// (Pass counts: 1; forced 1 + 1 + 2 + 1 = 5.)
 #[test]

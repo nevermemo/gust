@@ -614,10 +614,11 @@ impl Drop for PassForm {
     }
 }
 
-/// The flags of a frame with exactly `n` rows set, spread over the capacity.
-fn flags_with(n: u32) -> Vec<u32> {
+/// The flags of frame number `frame` with exactly `n` rows set, spread over the capacity; the pattern rotates with the
+/// frame, so the rows a frame leaves in `idx` and `gathered` differ from the frame before even at the same count.
+fn flags_with(n: u32, frame: u32) -> Vec<u32> {
     (0..COUNTER_CAP)
-        .map(|i| u32::from(i * 7 % COUNTER_CAP < n))
+        .map(|i| u32::from((i + 5 * frame) % COUNTER_CAP * 7 % COUNTER_CAP < n))
         .collect()
 }
 
@@ -638,6 +639,7 @@ fn compacted_frame<D: BatchDevice>(
     h: &Compacted,
     n: u32,
     first: bool,
+    frame_number: u32,
 ) -> Vec<u32>
 where
     D::Buffer<u32>: 'static,
@@ -648,7 +650,7 @@ where
             let values: Vec<u32> = (0..COUNTER_CAP).map(|i| i * 7 % 1000).collect();
             frame.write(&h.values, &values)?;
         }
-        frame.write(&h.flags, &flags_with(n))?;
+        frame.write(&h.flags, &flags_with(n, frame_number))?;
         let gathered = frame.ticket(&h.gathered)?;
         let _submitted = frame.submit()?;
         Ok::<_, Error>(gathered.await?)
@@ -663,13 +665,13 @@ fn compacted_twin_over_counts() -> Vec<Vec<u32>> {
     COMPACT_COUNTS
         .iter()
         .enumerate()
-        .map(|(index, &n)| compacted_frame(&mut batch, &h, n, index == 0))
+        .map(|(index, &n)| compacted_frame(&mut batch, &h, n, index == 0, index as u32))
         .collect()
 }
 
 /// `compact` writes the count a counted stage reads in the same frame: with the counted stage's two dispatches in the
-/// frame's one pass the write, the args kernel and the indirect read follow in order, and the gathered buffers equal the
-/// CPU twin's at no row, a middle count and the capacity. The frame is one pass by default; the form under
+/// frame's one pass the write, the args kernel and the indirect read follow in order, and the gathered buffers equal
+/// the CPU twin's at no row, a middle count and the capacity. The frame is one pass by default; the form under
 /// `force_pass_per_dispatch` (a pass per dispatch) gives the same buffers.
 fn gpu_compacted_exact_against_the_twin(launch: CountedLaunch) {
     let twin = compacted_twin_over_counts();
@@ -690,7 +692,7 @@ fn gpu_compacted_exact_against_the_twin(launch: CountedLaunch) {
         let mut passes = Vec::new();
         for (index, (&n, expected)) in COMPACT_COUNTS.iter().zip(&twin).enumerate() {
             let before = gust_wgpu::batch_passes_recorded();
-            let got = compacted_frame(&mut batch, &h, n, index == 0);
+            let got = compacted_frame(&mut batch, &h, n, index == 0, index as u32);
             passes.push(gust_wgpu::batch_passes_recorded() - before);
             assert_eq!(
                 &got, expected,
@@ -725,8 +727,10 @@ fn gpu_compacted_in_flight(launch: CountedLaunch) {
     let twin = compacted_twin_over_counts();
     let device = private_device();
     let _launch = Launch::set(launch);
+    let _form = PassForm::take(false);
     let (mut batch, h) = build_compacted_gpu2(&device).unwrap();
     let values: Vec<u32> = (0..COUNTER_CAP).map(|i| i * 7 % 1000).collect();
+    let passes_before = gust_wgpu::batch_passes_recorded();
     let mut got = Vec::new();
     for (pair, counts) in COMPACT_COUNTS.chunks(2).enumerate() {
         let mut tickets = Vec::new();
@@ -736,7 +740,9 @@ fn gpu_compacted_in_flight(launch: CountedLaunch) {
             if pair == 0 && offset == 0 {
                 frame.write(&h.values, &values).unwrap();
             }
-            frame.write(&h.flags, &flags_with(n)).unwrap();
+            frame
+                .write(&h.flags, &flags_with(n, (pair * 2 + offset) as u32))
+                .unwrap();
             tickets.push(frame.ticket(&h.gathered).unwrap());
             held.push(frame.submit().unwrap());
         }
@@ -745,6 +751,13 @@ fn gpu_compacted_in_flight(launch: CountedLaunch) {
         }
     }
     assert_eq!(got, twin, "{launch:?}: frames in flight against the twin");
+    if launch == CountedLaunch::Indirect {
+        assert_eq!(
+            gust_wgpu::batch_passes_recorded() - passes_before,
+            COMPACT_COUNTS.len() as u64,
+            "one pass a frame in the merged form"
+        );
+    }
 }
 
 #[test]

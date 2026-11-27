@@ -430,16 +430,23 @@ impl Rewriter {
             .first()
             .and_then(|operand| self.operand_element(operand));
         if let Some(definition) = operand.as_ref().and_then(|ty| self.element_struct(ty)) {
-            let error = diagnostics::error(
-                Code::BatchStructOperand,
-                &call.args[0],
+            let message = if op == batch_ops::Op::Compact {
+                format!(
+                    "the operand of `compact` is a buffer of `u32` flags, and this handle holds the struct `{}`: build \
+                     the flags in a stage (`let flags = gpu_task!(CAP, |i| -> u32 {{ let v: u32 = if rows[i].life > \
+                     0.0 {{ 1u32 }} else {{ 0u32 }}; v }});`), compact them, and gather the rows in a counted stage \
+                     (`gpu_task!(count(n); CAP, |i| -> Row {{ rows[idx[i]] }})`)",
+                    definition.ident.unraw()
+                )
+            } else {
                 format!(
                     "the operand of a library op is a number buffer, and this handle holds the struct `{}`: an op over \
                      rows is not in this release; read the field you want in a stage (`rows[i].field`) and run the op \
                      over that buffer",
                     definition.ident.unraw()
-                ),
-            );
+                )
+            };
+            let error = diagnostics::error(Code::BatchStructOperand, &call.args[0], message);
             self.fail(error);
             return None;
         }
@@ -449,8 +456,8 @@ impl Rewriter {
                 &call.args[0],
                 format!(
                     "the operand of a library op is a number buffer, and this handle holds the enum `{}`: an op has no \
-                     enum operand (a `min`, a `sum` or a `scan` of enum words has no meaning, and a `compact` is not in \
-                     this release); read the enum elements in a stage",
+                     enum operand (a `min`, a `sum`, a `scan` or a `compact` of enum words has no meaning); read the \
+                     enum elements in a stage",
                     definition.ident.unraw()
                 ),
             );

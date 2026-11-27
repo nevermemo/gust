@@ -114,6 +114,17 @@ submission, each invocation running once with the ids of an unsplit launch (a st
 `DeviceLimit`, and so does a kernel whose split has neither a precompiled artifact nor a run-time compiler to build it;
 the host never checks an indirect dispatch's count).
 
+A kernel's pipeline is created once per device, the first time a launch of it has work: the first non-empty dispatch of
+a typed call, a batch or a staged graph's first `execute`, and a batch sealed by `gust::Batch` over a non-empty extent
+creates its stages' kernels at build; a stage sealed over an empty extent creates its kernel at its first non-empty
+frame. The split variant of a launch past a workgroup limit is a second kernel, created when such a launch first runs.
+`HeadlessDevice::precompile(&[&kernel::DESCRIPTOR, ..])` creates the named descriptors now, in order, and reports for
+each whether it was created or already there and the CPU time it took (a "precompiled artifact" is the build-time WGSL;
+this call creates the device's pipeline from it). Name the split variant (`kernel::DESCRIPTOR.split`) to create it
+too. Later dispatches of those descriptors, typed or batched, are cache hits (`pipeline_cache_stats` counts them).
+"Created" is the promise: a driver may do more work at the first submission, and in a browser the objects are
+created but the browser may still be compiling.
+
 The program below is gallery entry G2, `saxpy-uniform`. It dispatches once with the typed `dispatch`, then builds the
 same launch as a value with `call`, changes the uniform with `write_uniform` and submits the call with `dispatch_call`:
 the second dispatch sees the new value.

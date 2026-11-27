@@ -979,3 +979,16 @@ fn a_refused_pin_counts_the_other_constructs_that_rule_the_shape_out() {
 
 // The ledger of accepted constructs, and the tests that tie it to the validator and the emitter (D94).
 mod ledger_tests;
+
+/// A scatter target (slice s2sc) is stored at a place the row computes, so the kernel is `grid` only, even where the
+/// place is spelled like the own index.
+#[test]
+fn a_scatter_target_keeps_the_kernel_grid_only() {
+    let source = kernel(
+        "#[kernel]",
+        "id: SV_DispatchThreadID, mut out: ScatterMut<f32>",
+        "out[id.x] = 1.0f32;",
+    );
+    let exclusion = assert_excluded(&source, Why::ScatterTarget);
+    assert_eq!(exclusion.why.code(), Code::ShapeExcluded);
+}

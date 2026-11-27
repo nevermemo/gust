@@ -12,16 +12,23 @@
 //!
 //! Measurement s2i.m2 (the second test, `GUST_S2I_M2_PROBE=1`, `GUST_S2I_M2_CELLS=small|all`, default `all`): the same
 //! two launches timed by the frame's GPU span (`FrameTiming::Frame`, D277), beside the wall-clock of the same frames,
-//! over the cells of the ruling, Breeze's cells and one frame of six counted stages. The indirect launch of a counted
-//! stage is two passes (the args pass and the counted one) that `FrameTiming::Passes` reports as one entry, so the
-//! span at `Frame` is the quantity. wgpu's indirect validation is recorded inside the counted pass, before its
-//! indirect dispatch, so the span includes it. On a device without timestamp queries the probe prints a different
-//! quantity (16 frames submitted, one wait, time over 16) and says so. The six-stage cell is labelled in its output: a
-//! bounded frame records its six dispatches in one pass and an indirect frame twelve passes, so that cell's difference
-//! is not the fixed cost of one launch. Before timing, every batch's sealed launch is checked (a batch asked for
-//! `Indirect` that fell back to `Bounded` fails), and the median over the rounds is the mean of the two middle ones.
+//! over the cells of the ruling, Breeze's cells and one frame of six counted stages. A counted stage's args dispatch
+//! and indirect dispatch are one entry at `FrameTiming::Passes` and join the frame's one pass, so the span at `Frame`
+//! is the quantity. wgpu's indirect validation is recorded before the indirect dispatch, so the span includes it. On a
+//! device without timestamp queries the probe prints a different quantity (16 frames submitted, one wait, time over
+//! 16) and says so. The six-stage cell is labelled in its output: the difference of six stages is not one launch's
+//! fixed cost. Before timing, every batch's launch is checked (a batch asked for `Indirect` that fell back to
+//! `Bounded` fails), and the median over the rounds is the mean of the two middle ones.
 //!
 //! `GUST_S2I_M2_PROBE=1 cargo test -p batch-basics --release --test counted_measure gpu_s2i_m2 -- --nocapture`
+//!
+//! Measurement s2i.pass (`gpu_s2i_pass_span`, `GUST_S2I_PASS_PROBE=1`, `GUST_S2I_PASS_ROUNDS`, default 4): the frame's
+//! GPU span of the indirect launch recorded in the frame's one pass (the default), recorded as the old form
+//! (`force_pass_per_dispatch`, two passes a counted stage) and of the bounded launch, over a one-stage cell at 65536
+//! and at 2^20 rows and the six-stage cell, then the `Passes` reading of the six-stage cell of each form (the entry
+//! of each stage and the frame's span).
+//!
+//! `GUST_S2I_PASS_PROBE=1 cargo test -p batch-basics --release --test counted_measure gpu_s2i_pass -- --nocapture`
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -29,7 +36,7 @@ use std::time::Instant;
 use batch_basics::app::block_on;
 use gust::batch::{Batch, CountedLaunch, D1, Error, FrameTiming, Stage, set_counted_launch};
 use gust::{gpu_batch, gpu_task};
-use gust_wgpu::HeadlessDevice;
+use gust_wgpu::{HeadlessDevice, force_pass_per_dispatch};
 
 const WARMUP: usize = 5;
 const FRAMES: usize = 21;
@@ -199,9 +206,7 @@ impl Cell {
             .collect();
         let label = format!("{}@{}", self.capacity, fills.join("/"));
         if self.fills.len() > 1 {
-            format!(
-                "{label} [six stages: Bounded records its dispatches in one pass and Indirect twelve passes; the difference is not one launch's fixed cost]"
-            )
+            format!("{label} [six stages: the difference is not one launch's fixed cost]")
         } else {
             label
         }
@@ -259,9 +264,13 @@ fn into_rig<const N: usize>(
 macro_rules! define_m2_builds {
     ($one:ident, $six:ident, $depth:tt) => {
         /// A batch of one counted stage over the light kernel of the first probe, timed at level `Frame`.
-        fn $one(device: &Arc<HeadlessDevice>, capacity: u32) -> Result<(Batch<HeadlessDevice>, Rig), Error> {
+        fn $one(
+            device: &Arc<HeadlessDevice>,
+            capacity: u32,
+            level: FrameTiming,
+        ) -> Result<(Batch<HeadlessDevice>, Rig), Error> {
             gpu_batch!("measure-m2", on(device); in_flight($depth); |b| {
-                b.frame_timing(FrameTiming::Frame);
+                b.frame_timing(level);
                 let n = b.input::<u32>(1u32);
                 let src = b.input::<u32>(capacity);
                 let out = gpu_task!(count(n); capacity, |i| -> u32 {
@@ -274,9 +283,13 @@ macro_rules! define_m2_builds {
         }
 
         /// A batch of six counted stages over the same kernel, each with a count of its own.
-        fn $six(device: &Arc<HeadlessDevice>, capacity: u32) -> Result<(Batch<HeadlessDevice>, Rig), Error> {
+        fn $six(
+            device: &Arc<HeadlessDevice>,
+            capacity: u32,
+            level: FrameTiming,
+        ) -> Result<(Batch<HeadlessDevice>, Rig), Error> {
             gpu_batch!("measure-m2-six", on(device); in_flight($depth); |b| {
-                b.frame_timing(FrameTiming::Frame);
+                b.frame_timing(level);
                 let src = b.input::<u32>(capacity);
                 let n0 = b.input::<u32>(1u32);
                 let o0 = gpu_task!(count(n0); capacity, |i| -> u32 {
@@ -323,7 +336,7 @@ define_m2_builds!(build_one, build_six, 1);
 // The fallback keeps four frames in flight (the most a batch takes) so that its frames queue before the one wait.
 define_m2_builds!(build_one_deep, build_six_deep, 4);
 
-/// The batch of `stages` counted stages (1 or 6) at `capacity`, sealed with `launch`, `depth` frames in flight.
+/// The batch of `stages` counted stages (1 or 6) at `capacity`, made with `launch`, timed at level `Frame`.
 fn m2_build(
     device: &Arc<HeadlessDevice>,
     capacity: u32,
@@ -331,13 +344,25 @@ fn m2_build(
     deep: bool,
     launch: CountedLaunch,
 ) -> (Batch<HeadlessDevice>, Rig) {
+    m2_build_at(device, capacity, stages, deep, launch, FrameTiming::Frame)
+}
+
+/// [`m2_build`] timed at `level`.
+fn m2_build_at(
+    device: &Arc<HeadlessDevice>,
+    capacity: u32,
+    stages: usize,
+    deep: bool,
+    launch: CountedLaunch,
+    level: FrameTiming,
+) -> (Batch<HeadlessDevice>, Rig) {
     HeadlessDevice::counted_probe(true);
     set_counted_launch(Some(launch));
     let built = match (stages, deep) {
-        (1, false) => build_one(device, capacity),
-        (1, true) => build_one_deep(device, capacity),
-        (6, false) => build_six(device, capacity),
-        (6, true) => build_six_deep(device, capacity),
+        (1, false) => build_one(device, capacity, level),
+        (1, true) => build_one_deep(device, capacity, level),
+        (6, false) => build_six(device, capacity, level),
+        (6, true) => build_six_deep(device, capacity, level),
         _ => unreachable!("the cells have one or six stages"),
     };
     set_counted_launch(None);
@@ -567,5 +592,220 @@ fn gpu_s2i_m2_span_indirect_against_bounded() {
                 bw / iw,
             );
         }
+    }
+}
+
+// ---- measurement s2i.pass: the passes of an indirect counted stage (m14.s2imerge) ----
+
+/// The layouts one Indirect batch is timed in (the setting flips between the first two) and the Bounded reference.
+const PASS_VARIANTS: [&str; 3] = ["default", "forced", "bounded"];
+
+/// The cells: the two 100 % one-stage cells and the six-stage cell.
+fn pass_cells() -> Vec<Cell> {
+    vec![
+        Cell::single(65_536, 10_000),
+        Cell::single(1 << 20, 10_000),
+        Cell {
+            capacity: 1 << 20,
+            fills: vec![3_500, 2_600, 1_750, 900, 100, 10],
+        },
+    ]
+}
+
+/// A cell's label without the m2 note.
+fn pass_label(cell: &Cell) -> String {
+    let fills: Vec<String> = cell
+        .fills
+        .iter()
+        .map(|&fill| format!("{}", f64::from(fill) / 100.0))
+        .collect();
+    format!("{}@{}", cell.capacity, fills.join("/"))
+}
+
+/// The passes a frame records per variant for `stages` counted stages: one in the default form and for Bounded, two a
+/// stage under `force_pass_per_dispatch`.
+fn expected_passes(variant: usize, stages: usize) -> u64 {
+    if variant == 1 { 2 * stages as u64 } else { 1 }
+}
+
+/// Switch the pass form of the next frames: variant 1 is the forced (old) one, the others the default.
+fn set_layout(variant: usize) {
+    force_pass_per_dispatch(variant == 1);
+}
+
+/// One frame with the given counts: every stage's whole result buffer is read, and the passes the frame recorded.
+fn pass_frame(
+    batch: &mut Batch<HeadlessDevice>,
+    rig: &Rig,
+    counts: &[u32],
+) -> (Vec<Vec<u32>>, u64) {
+    let before = gust_wgpu::batch_passes_recorded();
+    block_on(async {
+        let mut frame = batch.begin().await?;
+        for (stage, &n) in rig.counts.iter().zip(counts) {
+            frame.write(stage, &[n])?;
+        }
+        let mut tickets = Vec::new();
+        for out in &rig.outs {
+            tickets.push(frame.ticket(out)?);
+        }
+        let _submitted = frame.submit()?;
+        let passes = gust_wgpu::batch_passes_recorded() - before;
+        let mut results = Vec::new();
+        for ticket in tickets {
+            let result: Result<Vec<u32>, Error> = ticket.await;
+            results.push(result?);
+        }
+        Ok::<_, Error>((results, passes))
+    })
+    .unwrap()
+}
+
+/// Measurement s2i.pass, timing (`GUST_S2I_PASS_PROBE=1`; `GUST_S2I_PASS_ROUNDS`, default 4): the frame's GPU span at
+/// `Frame` of the default form, the forced form and Bounded over [`pass_cells`], in the shape of s2i.m2 (two batches a
+/// round, Indirect and Bounded, whose creation order alternates; within the Indirect batch the order default, forced
+/// alternates). Per cell it prints the spans, `d` = span minus Bounded for the default and forced forms, and the ratio
+/// of the default over the forced span. The pass count of every variant is asserted before timing, and the results are
+/// held to the model. Then, for the six-stage cell, the `Passes` reading of each form: the entry of every stage and the
+/// frame's span, medians over the same number of frames.
+#[test]
+fn gpu_s2i_pass_span() {
+    // A probe, not a gate test: no `#[ignore]` for the pin scan to list.
+    if std::env::var("GUST_S2I_PASS_PROBE").as_deref() != Ok("1") {
+        return;
+    }
+    let rounds_wanted: usize = std::env::var("GUST_S2I_PASS_ROUNDS")
+        .ok()
+        .map_or(M2_ROUNDS, |text| {
+            text.parse().expect("GUST_S2I_PASS_ROUNDS is a number")
+        });
+    let device = Arc::new(HeadlessDevice::new().expect("a GPU adapter is required"));
+    let adapter = device.adapter_info();
+    println!("adapter: {} (backend {:?})", adapter.name, adapter.backend);
+    assert!(
+        m2_build(&device, 1024, 1, false, CountedLaunch::Indirect)
+            .0
+            .frame_timing()
+            .is_some(),
+        "the span needs timestamp queries"
+    );
+    println!(
+        "quantity: the GPU span of the frame at FrameTiming::Frame, microseconds; {rounds_wanted} rounds, \
+         {M2_FRAMES} frames after {M2_WARMUP} warm-up per variant and round; d = variant minus bounded"
+    );
+    println!(
+        "cell,default,forced,bounded,d_default,d_forced,ratio_default_over_forced,default_rounds,forced_rounds,\
+         bounded_rounds,default_wall,forced_wall,bounded_wall"
+    );
+    for cell in pass_cells() {
+        let (capacity, stages) = (cell.capacity, cell.fills.len());
+        let src: Vec<u32> = (0..capacity).map(|i| i % 1000).collect();
+        let counts = cell.counts();
+        // [variant] -> the round's measurements
+        let mut rounds = vec![Vec::<Measured>::new(); PASS_VARIANTS.len()];
+        for round in 0..rounds_wanted {
+            let order = if round % 2 == 0 { [0, 1] } else { [1, 0] };
+            let mut batches = Vec::new();
+            for batch_kind in order {
+                // batch_kind 0: the Indirect batch, 1: the Bounded one
+                let launch = if batch_kind == 0 {
+                    CountedLaunch::Indirect
+                } else {
+                    CountedLaunch::Bounded
+                };
+                batches.push((
+                    batch_kind,
+                    m2_build(&device, capacity, stages, false, launch),
+                ));
+            }
+            for (batch_kind, (batch, rig)) in &mut batches {
+                m2_check(batch, rig, &counts, capacity, &src, true);
+                let variants: Vec<usize> = match (*batch_kind, round % 2) {
+                    (0, 0) => vec![0, 1],
+                    (0, _) => vec![1, 0],
+                    _ => vec![2],
+                };
+                for variant in variants {
+                    set_layout(variant);
+                    let (outs, passes) = pass_frame(batch, rig, &counts);
+                    assert_eq!(
+                        passes,
+                        expected_passes(variant, stages),
+                        "{}: passes recorded",
+                        PASS_VARIANTS[variant]
+                    );
+                    assert_eq!(outs.len(), stages);
+                    rounds[variant].push(m2_measure(batch, rig, &counts, true));
+                }
+                set_layout(0);
+            }
+        }
+        let column = |variant: usize, wall: bool| -> Vec<f64> {
+            rounds[variant]
+                .iter()
+                .map(|m| if wall { m.wall } else { m.quantity })
+                .collect()
+        };
+        let [d, f, b] = [0, 1, 2].map(|variant| median(column(variant, false)));
+        let [dw, fw, bw] = [0, 1, 2].map(|variant| median(column(variant, true)));
+        println!(
+            "{},{d:.1},{f:.1},{b:.1},{:.1},{:.1},{:.3},{},{},{},{dw:.1},{fw:.1},{bw:.1}",
+            pass_label(&cell),
+            d - b,
+            f - b,
+            d / f,
+            m2_rounds_text(&column(0, false)),
+            m2_rounds_text(&column(1, false)),
+            m2_rounds_text(&column(2, false)),
+        );
+    }
+    passes_reading(&device);
+}
+
+/// The `Passes` reading of the six-stage cell for each form: one line a form, `passes,<form>,<frame span>,<entry of
+/// stage 0>;..;<entry of stage 5>` in microseconds, medians over [`M2_FRAMES`] frames after [`M2_WARMUP`], taken in
+/// the order default, forced, bounded on a batch built just before.
+fn passes_reading(device: &Arc<HeadlessDevice>) {
+    let cell = pass_cells().pop().expect("the six-stage cell is last");
+    let (capacity, stages) = (cell.capacity, cell.fills.len());
+    let src: Vec<u32> = (0..capacity).map(|i| i % 1000).collect();
+    let counts = cell.counts();
+    println!("passes,form,frame_span_us,stage_entries_us");
+    for (variant, name) in PASS_VARIANTS.into_iter().enumerate() {
+        let launch = if variant == 2 {
+            CountedLaunch::Bounded
+        } else {
+            CountedLaunch::Indirect
+        };
+        let (mut batch, rig) =
+            m2_build_at(device, capacity, stages, false, launch, FrameTiming::Passes);
+        m2_check(&mut batch, &rig, &counts, capacity, &src, true);
+        set_layout(variant);
+        let (mut spans, mut entries) = (Vec::new(), vec![Vec::new(); stages]);
+        for round in 0..M2_WARMUP + M2_FRAMES {
+            let mut frame = block_on(batch.begin()).unwrap();
+            for (stage, &n) in rig.counts.iter().zip(&counts) {
+                frame.write(stage, &[n]).unwrap();
+            }
+            let time = frame.time();
+            let submitted = frame.submit().unwrap();
+            submitted.wait().unwrap();
+            let times = block_on(time)
+                .unwrap()
+                .expect("the batch is timed and the device has timestamp queries");
+            if round >= M2_WARMUP {
+                assert_eq!(times.passes.len(), stages, "one entry a stage");
+                spans.push(times.span.as_secs_f64() * 1e6);
+                for (slot, entry) in entries.iter_mut().zip(&times.passes) {
+                    slot.push(entry.duration.as_secs_f64() * 1e6);
+                }
+            }
+        }
+        set_layout(0);
+        let per_stage: Vec<String> = entries
+            .into_iter()
+            .map(|values| format!("{:.1}", median(values)))
+            .collect();
+        println!("passes,{name},{:.1},{}", median(spans), per_stage.join(";"));
     }
 }

@@ -55,7 +55,9 @@ use super::{atomic_buffer_names, atomic_operation_name};
 use crate::diagnostics::{self, Code};
 use crate::names::peel_expr;
 use crate::profile::StageProfile;
-use crate::slang::{ParameterFlavor, local_binding, parameter_flavor_in, wrapper_element_type};
+use crate::slang::{
+    ParameterFlavor, is_scatter_type, local_binding, parameter_flavor_in, wrapper_element_type,
+};
 
 mod kinds;
 
@@ -157,6 +159,9 @@ pub(crate) enum Why {
     OutputOther,
     /// A `StorageMut` parameter that is never written.
     OutputUnwritten,
+    /// A `ScatterMut` parameter (slice s2sc): it is stored at a place the row computes, so the kernel is `grid` only
+    /// whatever its index looks like.
+    ScatterTarget,
 }
 
 impl Why {
@@ -181,6 +186,7 @@ impl Why {
             | Self::TargetElement
             | Self::NoOutput
             | Self::Unrecognised
+            | Self::ScatterTarget
             | Self::WorkgroupSize => Code::ShapeExcluded,
         }
     }
@@ -251,6 +257,10 @@ impl Why {
                 "is a mutable buffer that is never written, an input read through a mutable binding; {detail} \
                  should be a plain `Storage` buffer"
             ),
+            Self::ScatterTarget => {
+                "is a scatter target, stored at a place the row computes, which a pixel cannot do"
+                    .to_owned()
+            }
         }
     }
 }
@@ -338,10 +348,17 @@ pub(crate) fn classify(
                 found.exclude(Why::InvocationBuiltin, argument, "");
             }
             ParameterFlavor::Workgroup => found.exclude(Why::WorkgroupMemory, argument, ""),
-            ParameterFlavor::StorageReadWrite => outputs.push(Output {
-                name: name.ident.unraw().to_string(),
-                argument,
-            }),
+            ParameterFlavor::StorageReadWrite => {
+                // A scatter target is stored at a place the row computes, so the kernel is `grid` only, even where the
+                // place is spelled like the own index.
+                if is_scatter_type(&argument.ty) {
+                    found.exclude(Why::ScatterTarget, argument, "");
+                }
+                outputs.push(Output {
+                    name: name.ident.unraw().to_string(),
+                    argument,
+                });
+            }
             // A storage texture is written at texel addresses the own-index rules cannot see (mx.t3); a sampled
             // texture and a sampler are reads, which a fragment can make.
             ParameterFlavor::StorageTexture | ParameterFlavor::WriteTexture => {

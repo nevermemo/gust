@@ -15,6 +15,38 @@ breaks existing code bumps the minor version, and the promise is described in th
   element type whose layout stride differs from its Rust size, is the new `Error::BufferViewSize`; its `rule`
   (`BufferViewRule::Tail` or `Stride`) says which. GPU only, with no CPU
   twin and no host read or write through a view. Tested on the Radeon 890M and the RTX 5090.
+- Kernels can be created ahead of use (m14.bzpre): `HeadlessDevice::precompile(&[&KernelDescriptor])` runs the
+  device-level checks of a launch and creates each named kernel's shader module, layouts and pipeline in the device's
+  pipeline cache, in order, stopping at the first error with the earlier entries kept. A later dispatch of the same
+  descriptor, typed or batched, is a cache hit. The pipeline cache now keeps a second level by content (entry point,
+  source, parameters, workgroup size, shape, `requires` and artifact, compared in full): a descriptor at an address the
+  cache has not seen is looked up by content once and then aliased, so two copies of one descriptor are one entry
+  and `PipelineCacheStats::entries` counts kernels, not addresses. `precompile` returns one `Precompiled` per
+  descriptor: `PrecompileOutcome::Hit` or `Compiled`, and the CPU time the call took for it (`None` on `wasm32`). The
+  split variant of an oversized launch is
+  created only when named (`KernelDescriptor::split`). "Created" is the promise: a driver or a browser may defer part of
+  its own compile, so a short time does not prove the pipeline is fully built; bind groups are still made at use. There
+  is no warm submission, no `Batch` call and no CPU-device counterpart. A stage sealed over an empty extent still
+  compiles at its first non-empty frame. Tested on the Radeon 890M and the RTX 5090 (native), and in Chrome on the
+  Radeon 890M.
+- A scatter stage in a batch (m14.s2sc): `gpu_task!(count(n); CAP, scatter(&mut out, &mut other), |i| { out[dst[i]] =
+  rows[i]; })` stores at places its body computes, into one or several handles of the block. The stage is 1-D with no
+  result type; a store is `target[place] = value;` (any `u32` expression as the place), at most once on every path, and a
+  path may store any subset of the targets or none. A read of a target is `GUST-E1008`, a field or compound store or a
+  store in a loop is the new `GUST-E1025`, and any other form of the clause is the new `GUST-E1024`. Two invocations of
+  one run must not name the same slot: the CPU twin panics on a repeated slot, naming the stage, the target and the slot,
+  and on the GPU the winner of such a race is unspecified. `ScatterMut`, the type of a stage's target, is refused on a kernel
+  of a user's `#[gpu_module]` (`GUST-E1024`). The browser page (`web-batch-frames`) has a scatter stage too. Atomics at a
+  computed index are not part of this slice.
+- An indirect counted stage joins the frame's compute pass (m14.s2imerge): its args dispatch and its indirect dispatch
+  are recorded, in stage order, into the pass the plain stages share, so only a `pixel` call ends a run (this replaces
+  "an indirect counted stage and a `pixel` call keep their own passes" in the m14.onepassts and m14.onepass entries
+  below, which now hold for `pixel` alone). A count another stage wrote earlier in the frame reaches the args dispatch
+  and the indirect launch in order. At `FrameTiming::Passes` on a device with `TIMESTAMP_QUERY_INSIDE_PASSES` the stage
+  is stamped inside the shared pass, one entry from before its args dispatch to after its indirect dispatch (wgpu's own
+  validation dispatch for the indirect launch falls inside that entry); without the feature it is one pass of its own
+  holding both dispatches. The hidden `force_pass_per_dispatch` keeps the old form, two passes a stage. The bounded
+  launch, the browser and the CPU twin are unchanged. Checked on the Radeon 890M and the RTX 5090.
 - Frame timing in the browser (m14.ftweb): `FrameTiming::Frame` and `Passes` now compile and run on `wasm32`. Where the
   browser grants `timestamp-query` a frame's `f.time()` resolves to the span and, at `Passes`, one entry per stage that
   has a pass (pass boundaries only: WebGPU has no stamps inside passes); where it does not, the time is `Ok(None)` and

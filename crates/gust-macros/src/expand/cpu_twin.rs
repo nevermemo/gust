@@ -8,11 +8,14 @@ use super::*;
 /// renamed typecheck function) as written, once per invocation, and reaches the bindings only through
 /// `::gust::cpu::{validate, read, write, invocations}`: no body copy, no rewrite, no IR and no downcast in the
 /// emitted code. `gust/src/cpu.rs` holds a hand-written impl of this exact shape in its tests, which is the
-/// specification.
+/// specification. A `ScatterMut` parameter (a scatter target of a batch stage, slice s2sc) gets the marks of its stores
+/// and the name of the stage (`scatter_stage`, from the kernel's `__gust_scatter_stage` marker, empty when no `let`
+/// names the stage), so that a repeated slot panics with both.
 ///
 /// Nothing is emitted for `cpu = "unsupported"`. A uniform parameter is read by copy (`::gust::cpu::read_uniform`) and
 /// passed as `::gust::Uniform(copy)` (D57). Locals take the user's parameter names (the validator reserves `__gust_`,
 /// so they cannot collide with `__gust_call` and `__gust_id`).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn cpu_twin_items(
     stage: &dyn StageProfile,
     kernel: &syn::Ident,
@@ -21,6 +24,7 @@ pub(super) fn cpu_twin_items(
     workgroup_size: [u32; 3],
     cpu: CpuTwin,
     profile: Profile,
+    scatter_stage: &str,
 ) -> syn::Result<TokenStream> {
     if cpu == CpuTwin::Unsupported {
         return capture::no_twin_items(stage, kernel, inputs, profile);
@@ -102,7 +106,19 @@ pub(super) fn cpu_twin_items(
                 acquisitions.push(quote! {
                     let mut #name = ::gust::cpu::write::<#element>(#name, #label)?;
                 });
-                arguments.push(quote!(::gust::StorageMut::new(&mut #name)));
+                if is_scatter_type(&input.ty) {
+                    // A scatter target (slice s2sc): the marks are made with the acquisition, so once per run of the
+                    // stage, and each store sets its slot's bit or panics on a slot already set.
+                    let marks = format_ident!("__gust_marks_{}", name.unraw());
+                    acquisitions.push(quote! {
+                        let mut #marks = ::gust::ScatterMarks::new(#name.len());
+                    });
+                    arguments.push(quote! {
+                        ::gust::ScatterMut::new(&mut #name, &mut #marks, #scatter_stage, #label)
+                    });
+                } else {
+                    arguments.push(quote!(::gust::StorageMut::new(&mut #name)));
+                }
             }
             ParameterFlavor::Uniform => {
                 // The uniform is read once, by copy, and each invocation gets `Uniform(copy)`: the shadow body cannot
@@ -248,6 +264,36 @@ pub(super) fn cpu_twin_items(
         #twin
         #capture
     })
+}
+
+/// The marker a stage of a batch that has scatter targets puts on its kernel (a doc attribute, which every pass leaves
+/// alone): `__gust_scatter_stage:<the name of the stage's let>`.
+pub(crate) const SCATTER_STAGE_MARKER: &str = "__gust_scatter_stage:";
+
+/// The name of the stage that the kernel's marker carries (`scatter_stage` of [`cpu_twin_items`]): empty for a kernel
+/// with no marker and for a stage no `let` names.
+pub(super) fn scatter_stage_of(attributes: &[syn::Attribute]) -> String {
+    attributes
+        .iter()
+        .find_map(|attribute| {
+            let syn::Meta::NameValue(pair) = &attribute.meta else {
+                return None;
+            };
+            let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(text),
+                ..
+            }) = &pair.value
+            else {
+                return None;
+            };
+            if !pair.path.is_ident("doc") {
+                return None;
+            }
+            text.value()
+                .strip_prefix(SCATTER_STAGE_MARKER)
+                .map(str::to_owned)
+        })
+        .unwrap_or_default()
 }
 
 /// What `capture` needs of the twin's parameter walk: the same names, acquisitions and arguments the twin's

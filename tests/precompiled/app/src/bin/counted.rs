@@ -71,7 +71,7 @@ fn check(device: &Arc<HeadlessDevice>) -> Result<(), String> {
 /// Runs three frames of a batch whose element is [`Row`]: a stage reads a field and a stage returns a whole row, each
 /// compared with the host model.
 fn check_structs(device: &Arc<HeadlessDevice>) -> Result<(), String> {
-    let (mut batch, (rows, life, next, gathered)) =
+    let (mut batch, (rows, life, next, gathered, scattered)) =
         gpu_batch!("rows", on(device); in_flight(1); |b| {
             let rows = b.input::<Row>(CAPACITY);
             let life = gpu_task!(CAPACITY, |i| -> f32 { rows[i].life });
@@ -80,9 +80,14 @@ fn check_structs(device: &Arc<HeadlessDevice>) -> Result<(), String> {
             });
             // Whole rows through an index handle (m14.s2s2): a stage builds a reversal, and a stage gathers the rows through
             // it. (A library op such as `compact` runs Slang kernels at run time, which this build does not have.)
-            let rev = gpu_task!(CAPACITY, |i| -> u32 { 999u32 - i });
+            // The last row's index is a parameter derived from the capacity, so the reversal follows `CAPACITY`.
+            let last = b.param::<u32>(CAPACITY - 1);
+            let rev = gpu_task!(CAPACITY, |i| -> u32 { last.get() - i });
             let gathered = gpu_task!(CAPACITY, |i| -> Row { rows[rev[i]] });
-            (rows, life, next, gathered)
+            // A scatter stage (m14.s2sc): the same reversal written as stores at the places `rev` holds.
+            let scattered = b.input::<Row>(CAPACITY);
+            gpu_task!(CAPACITY, scatter(&mut scattered), |i| { scattered[rev[i]] = rows[i]; });
+            (rows, life, next, gathered, scattered)
         })
         .map_err(|error| format!("struct build failed: {error}"))?;
     for frame in 0..3u32 {
@@ -93,14 +98,20 @@ fn check_structs(device: &Arc<HeadlessDevice>) -> Result<(), String> {
                 tag: 1000 + i,
             })
             .collect();
-        let (got_life, got_next, got_gathered) = block_on(async {
+        let (got_life, got_next, got_gathered, got_scattered) = block_on(async {
             let mut f = batch.begin().await?;
             f.write(&rows, &input)?;
             let life = f.ticket(&life)?;
             let next = f.ticket(&next)?;
             let gathered = f.ticket(&gathered)?;
+            let scattered = f.ticket(&scattered)?;
             let _submitted = f.submit()?;
-            Ok::<_, gust::batch::Error>((life.await?, next.await?, gathered.await?))
+            Ok::<_, gust::batch::Error>((
+                life.await?,
+                next.await?,
+                gathered.await?,
+                scattered.await?,
+            ))
         })
         .map_err(|error| format!("struct frame {frame} failed: {error}"))?;
         let want_next: Vec<Row> = input
@@ -117,6 +128,11 @@ fn check_structs(device: &Arc<HeadlessDevice>) -> Result<(), String> {
         if got_gathered != input.iter().rev().copied().collect::<Vec<_>>() {
             return Err(format!(
                 "struct frame {frame}: the gathered rows differ from the host model"
+            ));
+        }
+        if got_scattered != got_gathered {
+            return Err(format!(
+                "struct frame {frame}: the scattered rows differ from the gathered rows"
             ));
         }
     }

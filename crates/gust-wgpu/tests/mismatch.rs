@@ -19,7 +19,7 @@
 //!
 //! Two kinds of adapter run this file (slice m5.b, D52): hardware and software (`device_type` `Cpu`, lavapipe).
 //! An enforced row and every `DOMAIN` control have one pin that holds on both. An unenforced row (KM-07, KM-08,
-//! KM-11, KM-12 to KM-14 and the NaN casts of KM-05 and KM-06) has its hardware observation in `Case::gpu` and, where
+//! KM-11, KM-12 to KM-15 and the NaN casts of KM-05 and KM-06) has its hardware observation in `Case::gpu` and, where
 //! lavapipe differs, its software observation in `Case::software`; the NOTE compares with the running kind's pin. Each
 //! run writes one `LEDGER` line per case to `ledger-<kind>.txt` under the target's tmp directory.
 //!
@@ -224,6 +224,8 @@ enum Kind {
     ContendedExchange,
     ContendedCompareExchange,
     UncontendedCompareExchange,
+    /// KM-15: 257 invocations each store their id into one cell with a plain store; the observation is the final cell.
+    ContendedStore,
     /// KM-12: `load` at the texel `(operands.1, operands.2)` of the 4 x 2 texture, outside it.
     TexLoadOob,
     /// KM-12: `store` of 77 there; the observation is the row-major index of the texel that holds 77 afterwards.
@@ -1484,6 +1486,18 @@ fn cases() -> Vec<Case> {
         |_| v(1),
     ));
 
+    // ---- KM-15 a plain store to one cell from many invocations of a dispatch (the race of a scatter place) ----
+    // The cell ends with one of the ids that stored it (any of them is allowed; no observation is more than that of
+    // one adapter kind, D39). Plain Rust and the twin run the ids in ascending order, so the last one wins.
+    add(case(
+        "KM-15",
+        "257 x plain store cell[0] = id: final cell",
+        ContendedStore,
+        (0, 0, 0),
+        Outcome::Within(0, CONTENDERS - 1),
+        |_| v(CONTENDERS - 1),
+    ));
+
     // ---- KM-12 a texel address outside the texture ----
     // The texture is 4 x 2 (`TEX_W` x `TEX_H`) and holds 10, 11, .. 17 row-major. The address `(4, 0)` has a flat
     // index (it would be `(0, 1)` of a flat array) and `(0, 2)` has none: both are outside.
@@ -1692,6 +1706,13 @@ fn rust_observed(case: &Case) -> Observed {
                 .to_bits(),
             Kind::NearestSample => nearest_probe(f32::from_bits(a)).to_bits(),
             // The sequential host loop: ascending ids, as the CPU twin runs them.
+            Kind::ContendedStore => {
+                let mut cell = black_box(9999u32);
+                for id in 0..CONTENDERS {
+                    cell = black_box(id);
+                }
+                cell
+            }
             Kind::ContendedExchange => {
                 let mut cell = black_box(9999u32);
                 for id in 0..CONTENDERS {
@@ -1851,6 +1872,9 @@ fn twin_observed(case: &Case) -> Observed {
                 f32::from_bits(operands.2),
             ),
             Kind::NearestSample => twin_sample(Filter::Nearest, f32::from_bits(operands.1), 0.5),
+            Kind::ContendedStore => twin_contended(9999, CONTENDERS, |d, count, cell| {
+                mismatch::contend_store::dispatch(d, count, cell)
+            }),
             Kind::ContendedExchange => twin_contended(9999, CONTENDERS, |d, count, cell| {
                 mismatch::contend_exchange::dispatch(d, count, cell)
             }),
@@ -2328,6 +2352,14 @@ fn gpu_observed(device: &HeadlessDevice, cases: &[Case]) -> Vec<Vec<u32>> {
             }
         }
     }
+    for n in of_kind(Kind::ContendedStore) {
+        out[n] = run_contended(
+            device,
+            &mismatch::contend_store::DESCRIPTOR,
+            9999,
+            CONTENDERS,
+        );
+    }
     for n in of_kind(Kind::ContendedExchange) {
         out[n] = run_contended(
             device,
@@ -2372,7 +2404,7 @@ fn gpu_observed(device: &HeadlessDevice, cases: &[Case]) -> Vec<Vec<u32>> {
 /// (owner ruling D39). The plain Rust column is always enforced.
 fn gpu_is_enforced(id: &str, kind: Kind, first: u32) -> bool {
     match id {
-        "KM-07" | "KM-08" | "KM-11" | "KM-12" | "KM-13" | "KM-14" => false,
+        "KM-07" | "KM-08" | "KM-11" | "KM-12" | "KM-13" | "KM-14" | "KM-15" => false,
         "KM-05" | "KM-06" => {
             !(matches!(kind, Kind::CastInt | Kind::CastUint) && f32::from_bits(first).is_nan())
         }
@@ -2628,7 +2660,7 @@ fn every_pinned_ledger_id_is_documented_and_every_documented_id_is_pinned() {
         documented, pinned,
         "docs/SEMANTICS.md ledger ids and the ids pinned in tests/mismatch.rs differ"
     );
-    assert_eq!(pinned.len(), 14, "KM-01 to KM-14");
+    assert_eq!(pinned.len(), 15, "KM-01 to KM-15");
     // Every row has at least one case that is not a control, and ids follow KM-nn.
     for id in &pinned {
         assert!(

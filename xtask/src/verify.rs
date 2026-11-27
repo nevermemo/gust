@@ -1572,17 +1572,30 @@ pub(crate) struct GpuSuitePin {
 /// test count (`tests/one_pass.rs` renames and widens one existing test, `tests/device_share.rs` gains a feature in its
 /// hand-written request). Updated by count; the full Gpu suite run at the merge confirms it.
 ///
+/// Slice m14.s2imerge, on 703 over 73: 703 over 73 became 704 over 73. The counted-stage pass slice adds one GPU test
+/// to the existing `tests/inside_pass_timestamps.rs` (a device without stamps inside passes times a counted stage as
+/// one pass of its own) and changes no other test count (`tests/one_pass.rs` and the mixed test of
+/// `inside_pass_timestamps.rs` gain an assertion for the forced form). Updated by count (the four affected test files
+/// ran on both adapters in the lane); the full Gpu suite run at the merge confirms it.
+///
+/// Slice m14.bzpre, on 703 over 73: 703 over 73 became 720 over 74 in the lane. `HeadlessDevice::precompile` adds
+/// two library unit tests (`compile::precompile`, on the existing line), one doc test (the method's example, on the
+/// existing doc-test line) and the new test file `tests/precompile.rs` (eleven GPU tests, one `test result:` line);
+/// the two-level pipeline cache adds three unit tests to `cache` (the content key), on the existing line. Merged on
+/// 704 over 73 (m14.s2imerge and m14.s2sc first): 721 over 74, measured by the full Gpu suite on the merged tree on
+/// the Radeon 890M and on the RTX 5090.
+///
 /// Slice m14.bzview, on 703 over 73 (2026-11-27): 703 over 73 became 726 over 74. The buffer view slice adds four unit
 /// tests to the library's `buffers::view` module (the length and the two rules, on layouts alone), four doc tests
 /// (`GpuBufferView`, `BufferBinding::read_only_view`, and the compile-fail and control pair on `Resource for
 /// GpuBufferView`) and the new test file `tests/buffer_view.rs` (fifteen GPU tests, one `test result:` line). The first
 /// full `cargo test -p gust-compute-wgpu` of the lane printed 725 over 74 on the Radeon 890M and on the RTX 5090, with
 /// fourteen tests in the new file; a review round added one (the reverse store at a split launch), so the pin is that
-/// count plus one, and the new file alone printed 15 passed on both adapters. The full Gpu suite is owed at the merge
-/// gate.
+/// count plus one, and the new file alone printed 15 passed on both adapters. Merged on 721 over 74 (m14.bzpre
+/// first): 744 over 75, measured by the full Gpu suite on the merged tree on the Radeon 890M and on the RTX 5090.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 726,
-    result_lines: 74,
+    passed: 744,
+    result_lines: 75,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu

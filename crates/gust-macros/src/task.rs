@@ -71,8 +71,34 @@ pub(crate) struct Input {
     batch: Option<BatchClause>,
     pub(crate) options: Options,
     pub(crate) shape: syn::Expr,
+    /// The `scatter(&mut a, &mut b)` part after the shape (slice s2sc): the keyword and the entries as written.
+    pub(crate) scatter: Option<(syn::Ident, Vec<syn::Expr>)>,
     pub(crate) list: Vec<RawBinding>,
     pub(crate) closure: syn::ExprClosure,
+}
+
+/// The `scatter(..)` part that may follow the shape: `scatter(&mut a, &mut b),`. The entries are read as expressions so
+/// that a wrong one is refused by name (GUST-E1024) and not as a parse error.
+pub(crate) fn parse_scatter(
+    input: ParseStream,
+) -> syn::Result<Option<(syn::Ident, Vec<syn::Expr>)>> {
+    let starts = input
+        .cursor()
+        .ident()
+        .is_some_and(|(keyword, _)| keyword == "scatter")
+        && input.peek2(syn::token::Paren);
+    if !starts {
+        return Ok(None);
+    }
+    let keyword: syn::Ident = input.parse()?;
+    let content;
+    syn::parenthesized!(content in input);
+    let entries = content
+        .parse_terminated(syn::Expr::parse, Token![,])?
+        .into_iter()
+        .collect();
+    input.parse::<Token![,]>()?;
+    Ok(Some((keyword, entries)))
 }
 
 /// The hidden batch clause, when the input starts with one.
@@ -131,6 +157,7 @@ impl Parse for Input {
         let options = parse_options(input)?;
         let shape: syn::Expr = input.parse()?;
         input.parse::<Token![,]>()?;
+        let scatter = parse_scatter(input)?;
         let mut list = Vec::new();
         if input.peek(syn::token::Bracket) {
             let content;
@@ -162,6 +189,7 @@ impl Parse for Input {
             batch,
             options,
             shape,
+            scatter,
             list,
             closure,
         })
@@ -187,6 +215,9 @@ pub(crate) struct TaskPlan {
     tail: Option<syn::Expr>,
     /// The in-place target: its name in the list and the place it is taken from.
     target: Option<(syn::Ident, syn::Expr)>,
+    /// The scatter targets of the stage, in the order written (slice s2sc): handles of the block that the rows store
+    /// into at places they compute. Empty for every other stage.
+    scatter: Vec<syn::Ident>,
     /// A stage of a `gpu_batch!`: what its captures are and where it is recorded.
     batch: Option<BatchStage>,
 }
@@ -325,8 +356,10 @@ struct View {
     name: syn::Ident,
     /// 1 for a flat view, 2 for a row-major view indexed by a pair.
     rank: usize,
-    /// The in-place target.
+    /// The in-place target, or a scatter target (both are written and bound read-write).
     target: bool,
+    /// A scatter target (slice s2sc).
+    scatter: bool,
 }
 
 /// The name of the kernel scalar that holds the width of the 2-D view `name`.
@@ -403,12 +436,32 @@ impl TaskPlan {
         Some(enum_decoder(definition))
     }
 
-    /// The name of the binding that the kernel writes its result to: the result buffer, or the in-place target.
+    /// The name of the binding that the kernel writes its result to: the result buffer, the in-place target, or (a
+    /// scatter stage, which has no result of its own) its first scatter target.
     fn output_name(&self) -> syn::Ident {
-        match &self.target {
-            Some((name, _)) => name.clone(),
-            None => format_ident!("{}", OUT),
+        match (&self.target, self.scatter.first()) {
+            (Some((name, _)), _) | (None, Some(name)) => name.clone(),
+            (None, None) => format_ident!("{}", OUT),
         }
+    }
+
+    /// Whether `name` is a scatter target of this stage.
+    pub(crate) fn is_scatter(&self, name: &syn::Ident) -> bool {
+        self.scatter.iter().any(|target| target == name)
+    }
+
+    /// The marker a stage with scatter targets puts on its kernel for the CPU twin (the stage's name after the marker's
+    /// prefix); `None` for a stage with none.
+    pub(crate) fn scatter_marker(&self) -> Option<String> {
+        if self.scatter.is_empty() {
+            return None;
+        }
+        let name = self
+            .batch
+            .as_ref()
+            .and_then(|batch| batch.name.as_deref())
+            .unwrap_or("");
+        Some(format!("{}{name}", crate::expand::SCATTER_STAGE_MARKER))
     }
 
     fn output<'a>(&self, plan: &'a Plan) -> &'a Binding {
@@ -783,6 +836,8 @@ struct Rules<'a> {
     target: Option<&'a syn::Ident>,
     /// The closure's own index of an in-place stage.
     own: Option<&'a syn::Ident>,
+    /// The scatter targets of the stage (slice s2sc): stored at one index each, never read.
+    scatter: &'a [syn::Ident],
     /// The names a value path of the body may have: the closure's parameters, the list's entries and every name that a
     /// pattern or an item of the body binds.
     known: &'a HashSet<String>,
@@ -809,6 +864,61 @@ impl Rules<'_> {
 
     fn is_view(&self, name: &syn::Ident) -> bool {
         self.views.iter().any(|view| view.unraw() == name.unraw())
+    }
+
+    fn is_scatter(&self, name: &syn::Ident) -> bool {
+        self.scatter
+            .iter()
+            .any(|target| target.unraw() == name.unraw())
+    }
+
+    /// GUST-E1008 for a read of a scatter target, in any form.
+    fn scatter_read(&mut self, name: &syn::Ident, tokens: impl ToTokens) {
+        self.refuse(
+            Code::TaskInPlaceRead,
+            tokens,
+            format!(
+                "`{0}` is a scatter target: a scatter stage stores into it at places its rows compute, so a read of \
+                 it at any index (or a binding of it to another name) would see a slot another row may be writing on \
+                 the GPU while the CPU twin sees a settled one; store with `{0}[place] = value;` only, and read the \
+                 data from another handle",
+                name.unraw()
+            ),
+        );
+    }
+
+    /// GUST-E1025: a store to a scatter target that is not `target[place] = value;`, or a second store on one path.
+    fn scatter_store_form(&mut self, tokens: impl ToTokens, what: &str) {
+        self.refuse(
+            Code::BatchScatterStore,
+            tokens,
+            format!(
+                "{what}: a scatter stage stores a whole element with `target[place] = value;`, once per target on any \
+                 path, as a statement of its own (not in a loop or a closure, and not as a field, a compound \
+                 assignment, a tuple index, a borrow or an atomic): a place stored twice would be one the check cannot \
+                 prove distinct"
+            ),
+        );
+    }
+
+    /// The scatter target that `place` stores to as `target[index]`, when it is exactly that.
+    fn scatter_store<'p>(&self, place: &'p syn::Expr) -> Option<(&'p syn::Ident, &'p syn::Expr)> {
+        let mut place = place;
+        while let syn::Expr::Paren(paren) = place {
+            place = &paren.expr;
+        }
+        let syn::Expr::Index(index) = place else {
+            return None;
+        };
+        let mut base = &*index.expr;
+        while let syn::Expr::Paren(paren) = base {
+            base = &paren.expr;
+        }
+        let syn::Expr::Path(path) = base else {
+            return None;
+        };
+        let name = path.path.get_ident().filter(|_| path.qself.is_none())?;
+        self.is_scatter(name).then_some((name, &*index.index))
     }
 
     /// A value path of the body. A single name that is not a parameter, a capture or a local is a capture the list does
@@ -922,6 +1032,50 @@ impl<'ast> Visit<'ast> for Rules<'_> {
             syn::Expr::Let(binding) => self.aliased(&binding.expr),
             _ => {}
         }
+        // The stores of a scatter stage (slice s2sc): `target[place] = value;` is the one form, and what is inside it
+        // (the place and the value) is read as any expression.
+        if let syn::Expr::Assign(assign) = expression
+            && root_name(&assign.left).is_some_and(|name| self.is_scatter(name))
+        {
+            match self.scatter_store(&assign.left) {
+                Some((_, place)) => {
+                    let mut at = place;
+                    while let syn::Expr::Paren(paren) = at {
+                        at = &paren.expr;
+                    }
+                    if matches!(at, syn::Expr::Tuple(_)) {
+                        self.scatter_store_form(
+                            place,
+                            "a scatter target is a flat view and a tuple is no place",
+                        );
+                    }
+                    self.visit_expr(place);
+                    self.visit_expr(&assign.right);
+                }
+                None => self.scatter_store_form(
+                    &assign.left,
+                    "a field or a nested place of a scatter target is stored",
+                ),
+            }
+            return;
+        }
+        match expression {
+            syn::Expr::Binary(binary)
+                if is_compound_assignment(&binary.op)
+                    && root_name(&binary.left).is_some_and(|name| self.is_scatter(name)) =>
+            {
+                self.scatter_store_form(&binary.left, "a compound assignment to a scatter target");
+                return;
+            }
+            syn::Expr::Reference(reference)
+                if reference.mutability.is_some()
+                    && root_name(&reference.expr).is_some_and(|name| self.is_scatter(name)) =>
+            {
+                self.scatter_store_form(reference, "a borrow of a scatter target");
+                return;
+            }
+            _ => {}
+        }
         match expression {
             // The callee of a call is a function of the dialect, not a value: only its arguments are names used.
             syn::Expr::Call(call) if matches!(&*call.func, syn::Expr::Path(_)) => {
@@ -930,7 +1084,17 @@ impl<'ast> Visit<'ast> for Rules<'_> {
                 }
                 return;
             }
-            syn::Expr::Path(path) => self.used(path, false),
+            syn::Expr::Path(path) => {
+                if let Some(name) = path
+                    .path
+                    .get_ident()
+                    .filter(|name| path.qself.is_none() && self.is_scatter(name))
+                {
+                    self.scatter_read(name, path);
+                } else {
+                    self.used(path, false);
+                }
+            }
             syn::Expr::Assign(assign) => self.written(&assign.left),
             syn::Expr::Binary(binary) if is_compound_assignment(&binary.op) => {
                 self.written(&binary.left);
@@ -993,6 +1157,189 @@ impl<'ast> Visit<'ast> for Rules<'_> {
     }
 }
 
+/// The first store to one of `targets` inside `expression` (`target[..] = ..`), as an expression.
+fn first_store(targets: &[syn::Ident], expression: &syn::Expr) -> Option<syn::Expr> {
+    struct Stores<'a> {
+        targets: &'a [syn::Ident],
+        found: Option<syn::Expr>,
+    }
+    impl<'ast> Visit<'ast> for Stores<'_> {
+        fn visit_expr(&mut self, expression: &'ast syn::Expr) {
+            if self.found.is_some() {
+                return;
+            }
+            if let syn::Expr::Assign(assign) = expression
+                && root_name(&assign.left).is_some_and(|name| {
+                    self.targets
+                        .iter()
+                        .any(|target| target.unraw() == name.unraw())
+                })
+            {
+                self.found = Some(expression.clone());
+                return;
+            }
+            syn::visit::visit_expr(self, expression);
+        }
+    }
+    let mut stores = Stores {
+        targets,
+        found: None,
+    };
+    stores.visit_expr(expression);
+    stores.found
+}
+
+/// The path analysis of a scatter stage's body (slice s2sc): on every path through the body each target is stored at
+/// most once, by a statement of its own. A path may store any subset of the targets, or none; a store in a loop, a
+/// closure or the middle of another expression is refused, because the analysis could not count it.
+struct ScatterPaths<'a> {
+    targets: &'a [syn::Ident],
+    /// Per target: some path stores it.
+    ever: Vec<bool>,
+}
+
+impl ScatterPaths<'_> {
+    fn none(&self) -> Vec<bool> {
+        vec![false; self.targets.len()]
+    }
+
+    fn index_of(&self, name: &syn::Ident) -> Option<usize> {
+        self.targets
+            .iter()
+            .position(|target| target.unraw() == name.unraw())
+    }
+
+    /// An error when `expression` holds a store: the store is not a statement of the path the analysis can count.
+    fn nested(&self, expression: &syn::Expr, what: &str) -> syn::Result<()> {
+        match first_store(self.targets, expression) {
+            Some(found) => Err(diagnostics::error(
+                Code::BatchScatterStore,
+                found,
+                format!(
+                    "a store to a scatter target inside {what}: the check counts one store per target on each path, \
+                     so a store is a statement of its own (`target[place] = value;`), in the body or in the branches \
+                     of an `if`, never in a loop, a closure or inside another expression"
+                ),
+            )),
+            None => Ok(()),
+        }
+    }
+
+    /// The targets a block stores on one path through it; a second store to one target is an error.
+    fn block(&mut self, statements: &[syn::Stmt]) -> syn::Result<Vec<bool>> {
+        let mut seen = self.none();
+        for statement in statements {
+            let here = self.statement(statement)?;
+            for (index, stored) in here.into_iter().enumerate() {
+                if stored && seen[index] {
+                    return Err(diagnostics::error(
+                        Code::BatchScatterStore,
+                        statement,
+                        format!(
+                            "the scatter target `{}` is stored twice on one path: a stage stores each target at most \
+                             once per row, because the check can only promise that no two rows share a slot, not \
+                             that one row does not overwrite itself; store once, or store on different branches of an \
+                             `if`",
+                            self.targets[index].unraw()
+                        ),
+                    ));
+                }
+                seen[index] |= stored;
+            }
+        }
+        Ok(seen)
+    }
+
+    fn statement(&mut self, statement: &syn::Stmt) -> syn::Result<Vec<bool>> {
+        match statement {
+            syn::Stmt::Local(local) => {
+                if let Some(init) = &local.init {
+                    self.nested(&init.expr, "a `let`")?;
+                    if let Some((_, diverge)) = &init.diverge {
+                        self.nested(diverge, "a `let .. else`")?;
+                    }
+                }
+                Ok(self.none())
+            }
+            syn::Stmt::Item(_) | syn::Stmt::Macro(_) => Ok(self.none()),
+            syn::Stmt::Expr(expression, _) => self.expression(expression),
+        }
+    }
+
+    fn expression(&mut self, expression: &syn::Expr) -> syn::Result<Vec<bool>> {
+        match expression {
+            syn::Expr::Assign(assign) => {
+                match root_name(&assign.left).and_then(|name| self.index_of(name)) {
+                    Some(index) => {
+                        self.nested(&assign.right, "the value of a store")?;
+                        if let syn::Expr::Index(place) = &*assign.left {
+                            self.nested(&place.index, "the place of a store")?;
+                        }
+                        self.ever[index] = true;
+                        let mut stored = self.none();
+                        stored[index] = true;
+                        Ok(stored)
+                    }
+                    None => {
+                        self.nested(expression, "an assignment")?;
+                        Ok(self.none())
+                    }
+                }
+            }
+            syn::Expr::If(branch) => {
+                self.nested(&branch.cond, "the condition of an `if`")?;
+                let then = self.block(&branch.then_branch.stmts)?;
+                let other = match &branch.else_branch {
+                    Some((_, other)) => self.expression(other)?,
+                    None => self.none(),
+                };
+                Ok(then
+                    .into_iter()
+                    .zip(other)
+                    .map(|(then, other)| then || other)
+                    .collect())
+            }
+            syn::Expr::Block(block) => self.block(&block.block.stmts),
+            syn::Expr::Unsafe(block) => self.block(&block.block.stmts),
+            other => {
+                self.nested(other, "this expression")?;
+                Ok(self.none())
+            }
+        }
+    }
+}
+
+/// The path analysis over a scatter stage's body, then the rule that every declared target is stored on some path.
+fn check_scatter_paths(
+    targets: &[syn::Ident],
+    statements: &[syn::Stmt],
+    tail: Option<&syn::Expr>,
+) -> syn::Result<()> {
+    let mut paths = ScatterPaths {
+        targets,
+        ever: vec![false; targets.len()],
+    };
+    paths.block(statements)?;
+    if let Some(tail) = tail {
+        paths.expression(tail)?;
+    }
+    for (target, stored) in targets.iter().zip(&paths.ever) {
+        if !stored {
+            return Err(diagnostics::error(
+                Code::BatchScatterForm,
+                target,
+                format!(
+                    "`{0}` is a scatter target, and no path of the body stores into it (`{0}[place] = value;`): a \
+                     handle the stage never writes is a read (`gpu_task!(.., |i| {{ .. {0}[i] .. }})`) or no part of \
+                     the stage",
+                    target.unraw()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// A call of one of the dialect's atomic operations (`atomic_add(&mut t[i], ..)`).
 fn is_atomic_call(call: &syn::ExprCall) -> bool {
     matches!(&*call.func, syn::Expr::Path(path) if path.path.get_ident().is_some_and(|name| matches!(
@@ -1037,6 +1384,7 @@ fn bool_element(tokens: impl ToTokens, what: &str) -> syn::Error {
 fn check_entry(
     entry: &RawBinding,
     target: Option<&syn::Ident>,
+    scatter: &[syn::Ident],
     batch: bool,
     structs: &[StructElement],
 ) -> syn::Result<()> {
@@ -1045,7 +1393,10 @@ fn check_entry(
     match &entry.ty {
         syn::Type::Reference(reference) => match reference.elem.as_ref() {
             syn::Type::Slice(slice) => {
-                let is_target = target.is_some_and(|target| target.unraw() == entry.name.unraw());
+                let is_target = target.is_some_and(|target| target.unraw() == entry.name.unraw())
+                    || scatter
+                        .iter()
+                        .any(|name| name.unraw() == entry.name.unraw());
                 if reference.mutability.is_some() && !is_target {
                     return Err(diagnostics::error(
                         Code::TaskWrite,
@@ -1135,15 +1486,119 @@ fn check_entry(
     }
 }
 
+/// GUST-E1024 for the form of a scatter stage (slice s2sc).
+fn scatter_form(tokens: impl ToTokens, message: impl std::fmt::Display) -> syn::Error {
+    diagnostics::error(Code::BatchScatterForm, tokens, message)
+}
+
+/// The names of a `scatter(&mut a, &mut b)` clause: each entry is `&mut name`, a name once, and the clause is in a stage
+/// of a batch that has no result, no in-place target and no 2-D closure.
+fn scatter_names(
+    keyword: &syn::Ident,
+    entries: &[syn::Expr],
+    batch: bool,
+    shape: &syn::Expr,
+    closure: &syn::ExprClosure,
+    options: &Options,
+) -> syn::Result<Vec<syn::Ident>> {
+    if !batch {
+        return Err(scatter_form(
+            keyword,
+            "`scatter(..)` is a clause of a stage of a `gpu_batch!`: its targets are handles of the block, and a stage \
+             that runs alone has host slices and a result to read back",
+        ));
+    }
+    if entries.is_empty() {
+        return Err(scatter_form(
+            keyword,
+            "`scatter()` names the handles the rows store into: `scatter(&mut out)`",
+        ));
+    }
+    if matches!(shape, syn::Expr::Reference(reference) if reference.mutability.is_some()) {
+        return Err(scatter_form(
+            shape,
+            "a scatter stage's extent is its rows (`gpu_task!(count, scatter(&mut out), |i| { .. })`), not a target's \
+             own length: `&mut target` as the shape is the in-place form",
+        ));
+    }
+    if !matches!(closure.output, syn::ReturnType::Default) {
+        return Err(scatter_form(
+            &closure.output,
+            "a scatter stage has no result of its own (its results are what it stores into its targets): drop the \
+             `-> T`",
+        ));
+    }
+    if closure.inputs.len() != 1 {
+        return Err(scatter_form(
+            &closure.inputs,
+            "a scatter stage is 1-D in this release (`|i| { .. }`): its rows are numbered by one index",
+        ));
+    }
+    let mut names: Vec<syn::Ident> = Vec::new();
+    for entry in entries {
+        let name = match entry {
+            syn::Expr::Reference(reference) if reference.mutability.is_some() => {
+                match &*reference.expr {
+                    syn::Expr::Path(path) if path.qself.is_none() => path.path.get_ident(),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let Some(name) = name else {
+            return Err(scatter_form(
+                entry,
+                "an entry of `scatter(..)` is `&mut name`, with `name` a handle of the block",
+            ));
+        };
+        if names.iter().any(|seen| seen.unraw() == name.unraw()) {
+            return Err(scatter_form(
+                name,
+                format!(
+                    "`{}` is named twice in `scatter(..)`: a target is listed once",
+                    name.unraw()
+                ),
+            ));
+        }
+        if options
+            .count
+            .as_ref()
+            .is_some_and(|count| count.unraw() == name.unraw())
+        {
+            return Err(scatter_form(
+                name,
+                format!(
+                    "`{}` is the stage's count, and a stage cannot store into the count that sizes it",
+                    name.unraw()
+                ),
+            ));
+        }
+        names.push(name.clone());
+    }
+    Ok(names)
+}
+
 /// Everything the macro makes of the call, or the first error.
 fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
     let Input {
         batch,
         options,
         shape,
+        scatter,
         list,
         closure,
     } = input;
+    let scatter: Vec<syn::Ident> = match &scatter {
+        Some((keyword, entries)) => scatter_names(
+            keyword,
+            entries,
+            batch.is_some(),
+            &shape,
+            &closure,
+            &options,
+        )?,
+        None => Vec::new(),
+    };
     if options.descriptor {
         return Err(form(&shape, "`descriptor;` is not a clause of `gpu_task!`"));
     }
@@ -1202,6 +1657,7 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
     };
     let result = match (&closure.output, &target) {
         (syn::ReturnType::Type(_, ty), None) => Some((**ty).clone()),
+        (syn::ReturnType::Default, None) if !scatter.is_empty() => None,
         (syn::ReturnType::Default, None) => {
             return Err(form(
                 &closure,
@@ -1276,7 +1732,14 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
     let mut result = result;
     let (list, batch) = match batch {
         Some(clause) => {
-            let lowered = lower_batch(clause, list, result.as_ref(), &mut stmts, &mut tail)?;
+            let lowered = lower_batch(
+                clause,
+                list,
+                result.as_ref(),
+                &scatter,
+                &mut stmts,
+                &mut tail,
+            )?;
             if let Some(word) = lowered.result {
                 result = Some(word);
             }
@@ -1284,6 +1747,25 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
         }
         None => (list, None),
     };
+
+    if let Some(batch) = &batch {
+        for name in &scatter {
+            if !batch
+                .views
+                .iter()
+                .any(|view| view.scatter && view.name == *name)
+            {
+                return Err(scatter_form(
+                    name,
+                    format!(
+                        "`{}` is not a handle of the block (`b.input::<T>(..)` or the result of a stage): a scatter \
+                         target is one",
+                        name.unraw()
+                    ),
+                ));
+            }
+        }
+    }
 
     // A counted stage (D278): the forms the first slice takes.
     if let Some(count) = &options.count {
@@ -1296,7 +1778,7 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
         .as_ref()
         .map_or_else(Vec::new, |batch| batch.struct_elements.clone());
     for entry in &list {
-        check_entry(entry, target_name, batch.is_some(), &structs)?;
+        check_entry(entry, target_name, &scatter, batch.is_some(), &structs)?;
     }
     if let Some((name, _)) = &target {
         let entry = list.iter().find(|entry| entry.name.unraw() == name.unraw());
@@ -1327,6 +1809,11 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
     let captures: Vec<syn::Ident> = list
         .iter()
         .filter(|entry| target_name.is_none_or(|target| target.unraw() != entry.name.unraw()))
+        .filter(|entry| {
+            !scatter
+                .iter()
+                .any(|name| name.unraw() == entry.name.unraw())
+        })
         .map(|entry| entry.name.clone())
         .collect();
     let views: Vec<syn::Ident> = list
@@ -1356,6 +1843,7 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
         views: &views,
         target: target_name,
         own,
+        scatter: &scatter,
         known: &known,
         error: None,
     };
@@ -1367,6 +1855,9 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
     }
     if let Some(error) = rules.error {
         return Err(error);
+    }
+    if !scatter.is_empty() {
+        check_scatter_paths(&scatter, &stmts, tail.as_ref())?;
     }
 
     // The generator's input: the list, then the result buffer.
@@ -1401,6 +1892,7 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
         stmts,
         tail,
         target,
+        scatter,
         batch,
     });
     Ok(plan)
@@ -1508,6 +2000,7 @@ fn lower_batch(
     clause: BatchClause,
     list: Vec<RawBinding>,
     result: Option<&syn::Type>,
+    scatter: &[syn::Ident],
     stmts: &mut [syn::Stmt],
     tail: &mut Option<syn::Expr>,
 ) -> syn::Result<Lowered> {
@@ -1526,6 +2019,7 @@ fn lower_batch(
                 name: name.clone(),
                 rank: 1,
                 target: false,
+                scatter: false,
             });
             // A view of enum elements: the kernel binds the words, and a load decodes them.
             if let Some((path, definition)) = enum_named(&clause.enums, element) {
@@ -1564,6 +2058,7 @@ fn lower_batch(
                     name: name.clone(),
                     rank: 1,
                     target: true,
+                    scatter: scatter.contains(&name),
                 });
                 // An in-place target of enum elements: the kernel binds the words, a load decodes them and a store
                 // encodes the value (D275).
@@ -2234,6 +2729,12 @@ impl TaskPlan {
                 } else if batch
                     .views
                     .iter()
+                    .any(|view| view.name == *name && view.scatter)
+                {
+                    quote!(let #local = __gust_draft.scatter_target(#name);)
+                } else if batch
+                    .views
+                    .iter()
                     .any(|view| view.name == *name && view.target)
                 {
                     quote!(let #local = __gust_draft.target(#name);)
@@ -2304,6 +2805,23 @@ impl TaskPlan {
             .iter()
             .map(|local| quote!(::core::option::Option::Some(#local),));
 
+        // Where the stage's extents come from: the buffer it writes, or (a scatter stage, whose targets are not its
+        // rows) the rule of its own shape.
+        let scatter = !self.scatter.is_empty();
+        let (extents_let, dims_of_values, dims_of_layout) = if scatter {
+            (
+                quote!(let __gust_extents = __gust_draft.extents();),
+                quote!(__gust_extents.dims(__gust_values)),
+                quote!(__gust_extents.dims_in(__gust_layout)),
+            )
+        } else {
+            (
+                quote!(let __gust_write = __gust_draft.written();),
+                quote!(__gust_values.dims(__gust_write)),
+                quote!(__gust_layout.dims(__gust_write)),
+            )
+        };
+
         // The update and the remake closures are the same for a counted stage, which also checks and hands over its count.
         let counted_index = plan.options.count.as_ref().map(|name| {
             plan.buffers()
@@ -2356,7 +2874,7 @@ impl TaskPlan {
                         },
                         // The same stage over the buffers of a resized frame: the new capacity and the new buffers.
                         move |__gust_layout| {
-                            let [__gust_nx, __gust_ny] = __gust_layout.dims(__gust_write);
+                            let [__gust_nx, __gust_ny] = #dims_of_layout;
                             #[cfg(not(target_arch = "wasm32"))]
                             {
                                 if let ::core::result::Result::Err(__gust_error) =
@@ -2393,7 +2911,7 @@ impl TaskPlan {
                     },
                     // The same stage over the buffers of a resized frame: the new extent and the new buffers.
                     move |__gust_layout| {
-                        let [__gust_nx, __gust_ny] = __gust_layout.dims(__gust_write);
+                        let [__gust_nx, __gust_ny] = #dims_of_layout;
                         let __gust_extent = ::gust::Extent::new(__gust_nx, __gust_ny, 1u32);
                         #[cfg(not(target_arch = "wasm32"))]
                         {
@@ -2441,7 +2959,7 @@ impl TaskPlan {
                 let (#(#some_locals)*) = (#(#locals,)*) else {
                     return __gust_draft.abandon();
                 };
-                let __gust_write = __gust_draft.written();
+                #extents_let
                 let __gust_ids = __gust_draft.bound();
                 #require_count
                 let __gust_extent = ::gust::Extent::new(__gust_x, __gust_y, 1u32);
@@ -2454,7 +2972,7 @@ impl TaskPlan {
                 }
                 // The extent record is made from the frame's extents and parameters, so a resize changes it.
                 let __gust_record = move |__gust_values: &::gust::batch::Values| {
-                    let [__gust_x, __gust_y] = __gust_values.dims(__gust_write);
+                    let [__gust_x, __gust_y] = #dims_of_values;
                     #(#width_lets)*
                     #record {
                         __gust_ex: __gust_x,
@@ -2517,6 +3035,18 @@ impl TaskPlan {
             .enum_result
             .as_ref()
             .map(|(ty, _)| quote!(.retype::<#ty>()));
+        if !self.scatter.is_empty() {
+            // A scatter stage has no handle of its own to give: its value is `()`, and the targets are the handles
+            // that already exist.
+            return quote! {
+                {
+                    #(#checks)*
+                    #name
+                    let __gust_draft = #builder.draft::<_, #rank>(&(#shape));
+                    let _ = #module::__gust_batch(__gust_draft, #(#views,)* #(&#params,)* #(#scalars,)*);
+                }
+            };
+        }
         quote! {
             {
                 #(#checks)*

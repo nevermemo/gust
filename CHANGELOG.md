@@ -27,8 +27,10 @@ breaks existing code bumps the minor version, and the promise is described in th
   no gain on the Radeon 890M.
 - A `HeadlessDevice` makes its timestamp query set and buffers at the first timed dispatch batch, or timed graph run
   (m14.lazyts), not when it opens; an untimed device creates none, and the device times come back as before.
-- `DeviceOptions::with_storage_buffers(n)` (m14.lim-a, native only) opens a device with `n` storage buffers per shader
-  stage instead of 8; off by default, and an adapter that offers fewer than `n` is `Error::DeviceLimit` at open.
+- `DeviceOptions::with_storage_buffers(n)` (m14.lim-a, m14.lim-web) opens a device with `n` storage buffers per shader
+  stage instead of 8; off by default, and an adapter that offers fewer than `n` is `Error::DeviceLimit` at open. It
+  works in a browser too: the page asks for `n` and gets it where the browser's adapter offers it (16 measured in
+  Chrome 158 on two adapters; other browsers unmeasured), and a browser device opened without the option still has 8.
 - A `gpu_batch!` stage over the device's storage buffer limit is refused when the batch is built, and a device error
   raised while a stage is built is now the new `batch::Error::StageDevice`, which names the batch and the stage (it was
   `Error::Device`); the `DeviceLimit` text for storage buffers names both cures, rows of one struct or

@@ -53,8 +53,9 @@ at the first frame: the build returns `Error::StageDevice`, which names the batc
 `DeviceLimit` (the count the stage needs and the limit the device has). A counted stage counts its count buffer among its
 buffers, and its args kernel binds the count and the args buffer. The cures are to keep columns that are read together
 as the rows of one struct (`#[derive(GpuStruct)]`, one buffer), or to open the device with more through
-`DeviceOptions::with_storage_buffers` (native only; a browser device keeps 8). `examples/batch-basics/tests/limits.rs`
-has the checks.
+`DeviceOptions::with_storage_buffers` (a browser page asks the same way and gets the number where its adapter offers
+it: 16 in Chrome 158 on the two adapters measured, other browsers unmeasured; without the option a browser device has
+8). `examples/batch-basics/tests/limits.rs` has the checks.
 
 A batch can report the GPU time of its frames. It is opt-in at the build: `b.frame_timing(FrameTiming::Frame)` (or
 `FrameTiming::Passes`) in the block makes the timestamp objects once, when the batch is sealed, and only on a device

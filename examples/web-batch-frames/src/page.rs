@@ -5,23 +5,28 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-use gust_wgpu::HeadlessDevice;
+use gust_wgpu::{DeviceOptions, HeadlessDevice};
 use js_sys::{Function, Object, Promise, Reflect};
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 
 use crate::{
-    LENGTH, build, counted_reference, input, mixed_reference, reference, rotated_reference, rows_of,
+    LENGTH, build, counted_reference, input, mixed_reference, reference, rotated_reference,
+    rows_of, wide_input, wide_reference,
 };
+
+/// The storage buffers per stage the raised device asks for: what Chrome 158 reports as the adapter limit on the two
+/// adapters measured, so an adapter that offers fewer fails the page.
+const RAISED_STORAGE_BUFFERS: u32 = 16;
 
 /// The counts of the three frames' counted stage: a part of the rows, fewer than before (the older rows stay), and a
 /// count above the capacity (clamped).
 const COUNTS: [u32; 3] = [300, 100, 5000];
 
 /// The last part of the page's `GUST_OK` line; `cargo xtask check-web` requires it.
-const CLOSING: &str = "two frames in flight exact";
+const CLOSING: &str = "two frames in flight exact, wide stage refused on 8 and exact on 16";
 
-/// Runs the page and returns the line it logged: `GUST_OK <vendor> <architecture> | two frames in flight exact` or
+/// Runs the page and returns the line it logged: `GUST_OK <vendor> <architecture> | <CLOSING>` or
 /// `GUST_FAIL <reason>`. It never rejects; a panic is logged as `GUST_FAIL panic: ...` first.
 #[wasm_bindgen]
 pub async fn run() -> String {
@@ -255,14 +260,18 @@ async fn frames_in_flight() -> Result<(), String> {
             .map_err(|error| format!("{what} ticket failed: {error}"))?;
         require_exact(what, &values, &state)?;
     }
-    wide_stage_is_refused_by_name(&device)
+    wide_stage_is_refused_by_name(&device)?;
+    wide_stage_runs_on_a_raised_device().await
 }
 
-/// A stage of ten storage buffers is refused when the batch is built (m14.lim-b, D280): a browser device always opens
-/// with eight, so the refusal is the typed one, names the stage and the batch, and carries both cures.
+/// A stage of ten storage buffers is refused when the batch is built (m14.lim-b, D280): a browser device opened without
+/// the option has eight, so the refusal is the typed one, names the stage and the batch, and carries both cures.
 fn wide_stage_is_refused_by_name(device: &Arc<HeadlessDevice>) -> Result<(), String> {
     let Err(error) = crate::build_wide(device) else {
-        return Err("a stage of ten storage buffers was built on a browser device".to_owned());
+        return Err(
+            "a stage of ten storage buffers was built on a browser device opened without the option"
+                .to_owned(),
+        );
     };
     let gust::batch::Error::StageDevice {
         batch,
@@ -285,4 +294,51 @@ fn wide_stage_is_refused_by_name(device: &Arc<HeadlessDevice>) -> Result<(), Str
             "the wide stage was refused with {other:?}, not DeviceLimit 10 against 8 for stage `out` of batch `wide`"
         )),
     }
+}
+
+/// The same stage on a device opened with `with_storage_buffers(16)` (m14.lim-web): the page asks for sixteen, the
+/// adapter offers them (an adapter that offers fewer fails the open, which is this page's failure), the batch builds, and
+/// the result of one frame equals the host computation exactly.
+async fn wide_stage_runs_on_a_raised_device() -> Result<(), String> {
+    #[allow(clippy::arc_with_non_send_sync)]
+    let device = Arc::new(
+        HeadlessDevice::new_async_with(
+            DeviceOptions::default().with_storage_buffers(RAISED_STORAGE_BUFFERS),
+        )
+        .await
+        .map_err(|error| {
+            format!("no WebGPU device with {RAISED_STORAGE_BUFFERS} storage buffers: {error}")
+        })?,
+    );
+    let limit = device.limits().max_storage_buffers_per_shader_stage;
+    if limit != RAISED_STORAGE_BUFFERS {
+        return Err(format!(
+            "the raised device reports {limit} storage buffers per stage, not {RAISED_STORAGE_BUFFERS}"
+        ));
+    }
+    let (mut batch, h) = crate::build_wide(&device)
+        .map_err(|error| format!("the wide stage did not build on the raised device: {error}"))?;
+    let mut frame = batch
+        .begin()
+        .await
+        .map_err(|error| format!("wide begin failed: {error}"))?;
+    for (k, stage) in (0u32..).zip(&h.inputs) {
+        frame
+            .write(stage, &wide_input(k))
+            .map_err(|error| format!("wide write of input {k}: {error}"))?;
+    }
+    let ticket = frame
+        .ticket(&h.out)
+        .map_err(|error| format!("wide ticket: {error}"))?;
+    let _submitted = frame
+        .submit()
+        .map_err(|error| format!("wide submit: {error}"))?;
+    let values = ticket
+        .await
+        .map_err(|error| format!("wide ticket failed: {error}"))?;
+    require_exact(
+        "wide stage on the raised device",
+        &values,
+        &wide_reference(),
+    )
 }

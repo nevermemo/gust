@@ -328,17 +328,20 @@ can only lower them, to emulate a weaker target. "Default" has two meanings sinc
 limits (`LimitsPolicy::Adapter`), so a kernel validated on one can exceed the other's limits. Storage buffers per
 stage stay at wgpu's 8 under both policies unless the developer states a number with
 `DeviceOptions::with_storage_buffers(n)` (m14.lim-a, D84 as amended): the request carries `n`, an adapter that offers
-fewer is `Error::DeviceLimit` at open, `n` below 8 is refused by name, the browser keeps 8 and refuses the option, and
-launches are checked against the limit the device was opened with. Measured with wgpu 30.0.1 on two Vulkan adapters:
-the Radeon 890M reports 429391872 storage buffers per stage and the RTX 5090 524288. Any other adapter is refused at
-open when it offers fewer than `n`.
+fewer is `Error::DeviceLimit` at open, `n` below 8 is refused by name, and launches are checked against the limit the
+device was opened with. Measured with wgpu 30.0.1 on two Vulkan adapters: the Radeon 890M reports 429391872 storage
+buffers per stage and the RTX 5090 524288. Any other adapter is refused at open when it offers fewer than `n`. A browser
+page asks for `n` the same way (m14.lim-web): a browser device opened without the option has 8, and one opened with it
+gets `n` where the browser's adapter offers it. Measured in Chrome 158 on those two adapters: an adapter limit of 16 per
+stage, and a device that asked for 16 got 16; other browsers and vendors are unmeasured.
 
 A batch checks its stages against that limit when it is built (m14.lim-b, D280): a stage that binds more storage
 buffers than the device was opened with makes `gpu_batch!` return `batch::Error::StageDevice` with the batch, the stage
 and the `DeviceLimit` (its count and the limit), before any frame, and the `DeviceLimit` text names both cures, rows of
 one struct (`#[derive(GpuStruct)]`) or `with_storage_buffers`. A counted stage counts its count buffer among its
-buffers, and its args kernel binds the count and the args buffer. In a browser the limit is always 8, so the same
-refusal is the one a page sees (`examples/web-batch-frames` checks it under `check-web`).
+buffers, and its args kernel binds the count and the args buffer. A browser device opened without the option has 8, so
+the same refusal is the one a page sees there, and a device the page opened with `with_storage_buffers(16)` builds and
+runs the wide stage (`examples/web-batch-frames` checks both under `check-web`).
 
 The split variant (m11.g4a, m11.g4b, owner ruling "Option 3": the host splits, `id.x` stays the global index). The
 `#[gpu_module]` macro gives every `grid` kernel built for the GPU a second descriptor, `KernelDescriptor::split`: the same

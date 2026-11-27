@@ -73,6 +73,22 @@ that `snapshot.changed(&device)` lists the elements a later dispatch changed. Ea
 so the buffer must be read-write; any other buffer returns `InspectError::Readback` with a hint. The `_async` forms
 are the ones that exist on `wasm32`.
 
+## One buffer, two element types
+
+`buffer.view_as::<U>()` (and `vec.view_as::<U>()` on a `GpuVec`) is the same bytes as a buffer of another element
+type: a store of whole `UVec4` elements into a `u32` buffer that a later stage reads word by word, or the other way
+round. The view is borrowed and `Copy`, binds wherever a `GpuBuffer<U>` does (a typed call, `BufferBinding::read_only_view`
+and `read_write_view`, a staged graph node), and may be written when the source may. Its length is the source's bytes
+divided by `U`'s size, and the shared length rule applies to that length; a source that is not a whole number of `U`,
+or an element type whose layout stride differs from its Rust size, is `Error::BufferViewSize` (its `rule` says which;
+a tail is never rounded down).
+A view and its source are one buffer to every check GUST has: both in one call with a writer is
+`Error::AliasedBinding`, and a staged graph orders a writer through a view and a reader of the source by an edge, as for
+one element type. Plain successive dispatches of a raw-tier batch run in queue order with no check, as two kernels over
+one buffer do. A view is GPU only: `CpuBuffer` has no `view_as`, so a program that names a view does not compile for
+the CPU device, and the equality of the batch tier does not cover it. It has no host read or write (use the source),
+and a uniform or a texture has no view.
+
 ## Typed calls
 
 For every kernel the `#[gpu_module]` macro generates three functions, and the first listing uses two of them:

@@ -851,6 +851,14 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   out-of-bounds rule above: the twin panics, the GPU drops the store or lands it elsewhere. A path of the body may store
   any subset of the targets or none, and a slot no path stores keeps its previous contents. The stage's extent is the
   one its shape names (`N`, or `count(n); CAP` as for any counted stage), never a target's length.
+- **Views (slice m14.bzview, D294).** `view_as::<U>()` on a `GpuBuffer<T>` or a `GpuVec<T>` is a second element type
+  over the same bytes, GPU-only (the CPU twin has no views). Both rules above apply to the bytes, not to the element
+  type: a location is a byte range, so a store through a `UVec4` view writes four `u32` elements of the source, and
+  the race-free rule counts a write through the view and a read through the source of an overlapping range in one
+  dispatch as a race. Binding a view and its source to two parameters of one call with a writer is refused
+  (`Error::AliasedBinding`), and a staged graph orders a writer through one and a reader through the other as one
+  buffer. A view exists only when the live bytes are a whole number of `U` (`Error::BufferViewSize`), and its
+  `len()` counts `U` elements, so the in-bounds rule reads indices of the view in units of `U`.
 - **Texel addresses.** `Texture2D::load`, `StorageTexture2D::load` and `::store` and `WriteTexture2D::store` take
   texel coordinates `(x, y)` with `(0, 0)` the top-left texel, `x` to the right, `y` downward, stored row-major.
   They are exact and inside the contract only while `x < width` and `y < height`. Outside, the twin panics with

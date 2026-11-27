@@ -1,5 +1,5 @@
 use crate::texture::TextureBinding;
-use crate::{GpuBuffer, GpuBufferAccess, GpuUniform, same_buffer};
+use crate::{GpuBuffer, GpuBufferAccess, GpuBufferView, GpuUniform, same_buffer};
 use gust::{Access, BindingKind, GpuPod};
 
 /// One persistent buffer bound to an `f32` storage parameter.
@@ -176,6 +176,29 @@ impl<'a> BufferBinding<'a> {
         Self::new(buffer, Access::ReadWrite)
     }
 
+    /// Bind a [`GpuBufferView`] read-only: the source's bytes as the view's element type. The binding's lifetime is the
+    /// source's, not the borrow of the view, so a binding list may be built from a temporary view:
+    ///
+    /// ```
+    /// use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+    /// use gust::math::UVec4;
+    ///
+    /// let device = HeadlessDevice::new()?;
+    /// let words = device.create_typed_buffer("words", &[0u32; 8], GpuBufferAccess::ReadWrite);
+    /// let bindings = [BufferBinding::read_only_view(&words.view_as::<UVec4>()?)];
+    /// assert_eq!(bindings.len(), 1);
+    /// # Ok::<(), gust_wgpu::Error>(())
+    /// ```
+    pub fn read_only_view<U: GpuPod>(view: &GpuBufferView<'a, U>) -> Self {
+        Self::new_view(view, Access::ReadOnly)
+    }
+
+    /// Bind a [`GpuBufferView`] read-write (the view's source must be read-write too, or the dispatch is refused with
+    /// `Error::PersistentBufferAccess`). See [`read_only_view`](Self::read_only_view) for the lifetime.
+    pub fn read_write_view<U: GpuPod>(view: &GpuBufferView<'a, U>) -> Self {
+        Self::new_view(view, Access::ReadWrite)
+    }
+
     /// Allow this buffer's length to differ from the dispatch element count.
     ///
     /// The default rule requires every binding to hold exactly `element_count`
@@ -201,6 +224,23 @@ impl<'a> BufferBinding<'a> {
             indirect: buffer.indirect,
             kind: BindingKind::Storage,
             bytes: buffer.logical_bytes(),
+            texture: None,
+        }
+    }
+
+    /// A view's binding: the same fields as `new`, with the view's element layout and length over the source's bytes.
+    pub(crate) fn new_view<U: GpuPod>(view: &GpuBufferView<'a, U>, access: Access) -> Self {
+        Self {
+            raw: Raw::Buffer(view.raw),
+            len: view.len,
+            layout: U::LAYOUT,
+            buffer_access: view.access,
+            access,
+            device_id: view.device_id,
+            independent_length: false,
+            indirect: view.indirect,
+            kind: BindingKind::Storage,
+            bytes: view.bytes,
             texture: None,
         }
     }

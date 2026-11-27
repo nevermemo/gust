@@ -7,6 +7,14 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- One buffer, two element types (m14.bzview): `GpuBuffer<T>::view_as::<U>()` and `GpuVec<T>::view_as::<U>()` return a
+  borrowed, `Copy` `GpuBufferView<U>` over the same bytes, for a store of whole `UVec4` elements into a `u32` buffer that
+  later stages read word by word, or the other way round. It binds as a `GpuBuffer<U>` does (typed call,
+  `BufferBinding::read_only_view` and `read_write_view`, staged graph) and may be written when its source may; to the
+  aliasing rule and the staged graph it is one buffer with its source. A source that is not a whole number of `U`, or an
+  element type whose layout stride differs from its Rust size, is the new `Error::BufferViewSize`; its `rule`
+  (`BufferViewRule::Tail` or `Stride`) says which. GPU only, with no CPU
+  twin and no host read or write through a view. Tested on the Radeon 890M and the RTX 5090.
 - Kernels can be created ahead of use (m14.bzpre): `HeadlessDevice::precompile(&[&KernelDescriptor])` runs the
   device-level checks of a launch and creates each named kernel's shader module, layouts and pipeline in the device's
   pipeline cache, in order, stopping at the first error with the earlier entries kept. A later dispatch of the same

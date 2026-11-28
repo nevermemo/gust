@@ -274,6 +274,12 @@ pub fn par_for(input: TokenStream) -> TokenStream {
 /// batch included, is GUST-E1024. The caller keeps the places of one run apart: the CPU twin panics on a repeated slot,
 /// and on the GPU the winner of such a race is unspecified. The stage's `let` names it in that panic message; its value
 /// is `()`, so `clippy::let_unit_value` asks for an allow where the stage is written.
+///
+/// A stage that accumulates at a place its body computes takes `atomic(&mut counts)` in place of `scatter(..)`:
+/// `gust::gpu_task!(count(n); CAP, atomic(&mut counts), |i| { atomic_add(&mut counts[key[i]], 1u32); })`. The targets are
+/// `u32` or `i32` handles, touched only by `atomic_add`, `atomic_min` and `atomic_max` (GUST-E1027 otherwise), never read
+/// (GUST-E1008); any other form of the clause is GUST-E1026. Chapter 5 of the guide has the stage and what the CPU twin
+/// promises for it.
 #[proc_macro]
 pub fn gpu_task(input: TokenStream) -> TokenStream {
     // The one place that reads the build profile, as for `par_for!`.

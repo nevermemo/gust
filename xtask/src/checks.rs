@@ -626,6 +626,18 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "twin_scatter_second_target_follows_a_resize",
             "twin_scatter_lists_every_target_in_the_stages",
             "twin_scatter_refuses_an_op_output_as_a_second_target",
+            // `tests/atomic.rs`: the atomic stage (m14.s2sa).
+            "twin_atomic_histogram_equals_the_host",
+            "twin_atomic_over_many_rows_is_whole",
+            "twin_counts_scan_rank_and_scatter_sort_like_the_host",
+            "twin_counted_atomic_runs_the_live_rows_only",
+            "twin_a_target_persists_across_frames_and_the_zero_stage_clears_it",
+            "twin_min_max_and_wrapping_adds_equal_the_host",
+            "twin_two_targets_and_the_old_value_give_the_host_totals",
+            "twin_the_atomic_extent_follows_the_rows_not_the_target",
+            "twin_panics_on_a_key_out_of_range",
+            "twin_atomic_over_more_rows_than_the_workgroup_limit",
+            "twin_atomic_refuses_an_op_output_as_a_target",
             // `tests/struct_layout.rs`: three std430 layouts of a struct element (m14.s2s fix round 1).
             "twin_a_struct_of_two_vec2_and_two_scalars_matches_the_host",
             "twin_a_struct_of_vec4_vec2_and_two_pads_matches_the_host",

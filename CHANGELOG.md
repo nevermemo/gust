@@ -7,6 +7,14 @@ breaks existing code bumps the minor version, and the promise is described in th
 
 ## Unreleased
 
+- An atomic stage in a batch (m14.s2sa): `gpu_task!(count(n); CAP, atomic(&mut counts, &mut sums), |i| {
+  atomic_add(&mut counts[key[i]], 1u32); })` accumulates into one or several `u32` or `i32` handles of the block at any
+  `u32` index. A target is touched only by `atomic_add` (`u32` or `i32`), `atomic_min` and `atomic_max` (`u32`) at
+  `&mut target[place]`; a read of a target is `GUST-E1008`, any other use, `atomic_exchange` and `atomic_compare_exchange`
+  included, is the new `GUST-E1027`, and any other form of the clause is the new `GUST-E1026`. A target persists from
+  frame to frame, so the author clears it with an in-place stage. The CPU twin equals the GPU over the whole target when
+  each cell receives one kind of operation and no atomic is steered by a bound old value; a stage that binds the old
+  value has set-level equality only. The gpu_ tests of the atomic stage passed on the Radeon 890M and the RTX 5090.
 - One buffer, two element types (m14.bzview): `GpuBuffer<T>::view_as::<U>()` and `GpuVec<T>::view_as::<U>()` return a
   borrowed, `Copy` `GpuBufferView<U>` over the same bytes, for a store of whole `UVec4` elements into a `u32` buffer that
   later stages read word by word, or the other way round. It binds as a `GpuBuffer<U>` does (typed call,

@@ -77,17 +77,22 @@ pub(crate) struct Input {
     pub(crate) closure: syn::ExprClosure,
 }
 
-/// The `scatter(..)` part that may follow the shape: `scatter(&mut a, &mut b),`. The entries are read as expressions so
-/// that a wrong one is refused by name (GUST-E1024) and not as a parse error.
+/// Whether the input is at a `scatter(..)` or `atomic(..)` clause.
+fn at_target_clause(input: ParseStream) -> bool {
+    input
+        .cursor()
+        .ident()
+        .is_some_and(|(keyword, _)| keyword == "scatter" || keyword == "atomic")
+        && input.peek2(syn::token::Paren)
+}
+
+/// The `scatter(..)` or `atomic(..)` part that may follow the shape: `scatter(&mut a, &mut b),` (slice s2sc) or
+/// `atomic(&mut a, &mut b),` (slice s2sa). The entries are read as expressions so that a wrong one is refused by name
+/// (GUST-E1024, GUST-E1026) and not as a parse error. A stage has one such clause: a second one is refused here.
 pub(crate) fn parse_scatter(
     input: ParseStream,
 ) -> syn::Result<Option<(syn::Ident, Vec<syn::Expr>)>> {
-    let starts = input
-        .cursor()
-        .ident()
-        .is_some_and(|(keyword, _)| keyword == "scatter")
-        && input.peek2(syn::token::Paren);
-    if !starts {
+    if !at_target_clause(input) {
         return Ok(None);
     }
     let keyword: syn::Ident = input.parse()?;
@@ -98,6 +103,24 @@ pub(crate) fn parse_scatter(
         .into_iter()
         .collect();
     input.parse::<Token![,]>()?;
+    if at_target_clause(input) {
+        let second: syn::Ident = input.fork().parse()?;
+        let atomic = keyword == "atomic" || second == "atomic";
+        return Err(diagnostics::error(
+            if atomic {
+                Code::BatchAtomicForm
+            } else {
+                Code::BatchScatterForm
+            },
+            second,
+            if atomic {
+                "a stage has one target clause: `atomic(..)` accumulates at places its rows compute (repeats are the \
+                 point), and `scatter(..)` stores at places that must be distinct, so the two are separate stages"
+            } else {
+                "a stage has one `scatter(..)` clause: list every target in it"
+            },
+        ));
+    }
     Ok(Some((keyword, entries)))
 }
 
@@ -218,6 +241,9 @@ pub(crate) struct TaskPlan {
     /// The scatter targets of the stage, in the order written (slice s2sc): handles of the block that the rows store
     /// into at places they compute. Empty for every other stage.
     scatter: Vec<syn::Ident>,
+    /// The targets in `scatter` are atomic targets (slice s2sa, `atomic(..)`): plain buffers that the body touches only
+    /// through `atomic_add`, `atomic_min` and `atomic_max`, with no marks on the CPU twin.
+    atomic: bool,
     /// A stage of a `gpu_batch!`: what its captures are and where it is recorded.
     batch: Option<BatchStage>,
 }
@@ -445,15 +471,15 @@ impl TaskPlan {
         }
     }
 
-    /// Whether `name` is a scatter target of this stage.
+    /// Whether `name` is a scatter target of this stage (an atomic target is a plain buffer, not a `ScatterMut`).
     pub(crate) fn is_scatter(&self, name: &syn::Ident) -> bool {
-        self.scatter.iter().any(|target| target == name)
+        !self.atomic && self.scatter.iter().any(|target| target == name)
     }
 
     /// The marker a stage with scatter targets puts on its kernel for the CPU twin (the stage's name after the marker's
-    /// prefix); `None` for a stage with none.
+    /// prefix); `None` for a stage with none (an atomic target has no marks).
     pub(crate) fn scatter_marker(&self) -> Option<String> {
-        if self.scatter.is_empty() {
+        if self.scatter.is_empty() || self.atomic {
             return None;
         }
         let name = self
@@ -838,6 +864,12 @@ struct Rules<'a> {
     own: Option<&'a syn::Ident>,
     /// The scatter targets of the stage (slice s2sc): stored at one index each, never read.
     scatter: &'a [syn::Ident],
+    /// The targets in `scatter` are atomic targets (slice s2sa): touched only through the atomic calls.
+    atomic: bool,
+    /// The atomic targets whose element is `i32`: `atomic_min` and `atomic_max` are for `u32`.
+    signed: &'a [syn::Ident],
+    /// The atomic targets some atomic call touched, in the order met.
+    touched: Vec<syn::Ident>,
     /// The names a value path of the body may have: the closure's parameters, the list's entries and every name that a
     /// pattern or an item of the body binds.
     known: &'a HashSet<String>,
@@ -874,6 +906,20 @@ impl Rules<'_> {
 
     /// GUST-E1008 for a read of a scatter target, in any form.
     fn scatter_read(&mut self, name: &syn::Ident, tokens: impl ToTokens) {
+        if self.atomic {
+            self.refuse(
+                Code::TaskInPlaceRead,
+                tokens,
+                format!(
+                    "`{0}` is an atomic target: an atomic stage accumulates into it at places its rows compute, so a \
+                     read of it at any index (or a binding of it to another name) would see a cell other rows are \
+                     updating on the GPU while the CPU twin sees a settled one; touch it with `atomic_add`, \
+                     `atomic_min` or `atomic_max` at `&mut {0}[place]` only, and read the counts in a later stage",
+                    name.unraw()
+                ),
+            );
+            return;
+        }
         self.refuse(
             Code::TaskInPlaceRead,
             tokens,
@@ -887,8 +933,96 @@ impl Rules<'_> {
         );
     }
 
+    /// GUST-E1027: a use of an atomic target other than the three atomic calls at `&mut target[place]`.
+    fn atomic_use(&mut self, tokens: impl ToTokens, what: &str) {
+        self.refuse(
+            Code::BatchAtomicUse,
+            tokens,
+            format!(
+                "{what}: an atomic target is touched only by `atomic_add` (`u32` or `i32` target), `atomic_min` and \
+                 `atomic_max` (`u32` target), written `atomic_add(&mut target[place], value)`, as a statement or the \
+                 initializer of a `let`; a plain store, a compound store, a field store, a borrow elsewhere, \
+                 `atomic_exchange` and `atomic_compare_exchange` stay in a `#[gpu_module]` kernel"
+            ),
+        );
+    }
+
+    /// An atomic call whose first argument borrows an atomic target: the one form is `&mut target[place]` in `atomic_add`,
+    /// `atomic_min` or `atomic_max`, with `atomic_min` and `atomic_max` on a `u32` target. The place and the other
+    /// arguments are read as any expression.
+    fn atomic_call(&mut self, call: &syn::ExprCall) {
+        let Some(syn::Expr::Reference(borrow)) = call.args.first() else {
+            return;
+        };
+        let function = match &*call.func {
+            syn::Expr::Path(path) => path
+                .path
+                .get_ident()
+                .map(|name| name.unraw().to_string())
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        let mut place = &*borrow.expr;
+        while let syn::Expr::Paren(paren) = place {
+            place = &paren.expr;
+        }
+        let target = match place {
+            syn::Expr::Index(index) => match &*index.expr {
+                syn::Expr::Path(path) if path.qself.is_none() => path.path.get_ident(),
+                _ => None,
+            }
+            .filter(|name| self.is_scatter(name)),
+            _ => None,
+        };
+        let (Some(target), Some(_), syn::Expr::Index(index)) = (target, borrow.mutability, place)
+        else {
+            self.atomic_use(
+                call,
+                "an atomic call on a target that is not `&mut target[place]`",
+            );
+            return;
+        };
+        if matches!(
+            function.as_str(),
+            "atomic_exchange" | "atomic_compare_exchange"
+        ) {
+            self.atomic_use(call, &format!("`{function}` on an atomic target"));
+            return;
+        }
+        if matches!(function.as_str(), "atomic_min" | "atomic_max")
+            && self
+                .signed
+                .iter()
+                .any(|name| name.unraw() == target.unraw())
+        {
+            self.atomic_use(
+                call,
+                &format!(
+                    "`{function}` on `{}`, whose element is `i32` (the Slang atomic min and max take unsigned words)",
+                    target.unraw()
+                ),
+            );
+            return;
+        }
+        if !self
+            .touched
+            .iter()
+            .any(|seen| seen.unraw() == target.unraw())
+        {
+            self.touched.push(target.clone());
+        }
+        self.visit_expr(&index.index);
+        for argument in call.args.iter().skip(1) {
+            self.visit_expr(argument);
+        }
+    }
+
     /// GUST-E1025: a store to a scatter target that is not `target[place] = value;`, or a second store on one path.
     fn scatter_store_form(&mut self, tokens: impl ToTokens, what: &str) {
+        if self.atomic {
+            self.atomic_use(tokens, &what.replace("scatter target", "atomic target"));
+            return;
+        }
         self.refuse(
             Code::BatchScatterStore,
             tokens,
@@ -1032,11 +1166,25 @@ impl<'ast> Visit<'ast> for Rules<'_> {
             syn::Expr::Let(binding) => self.aliased(&binding.expr),
             _ => {}
         }
+        // The atomic calls of an atomic stage (slice s2sa) are the one way to touch its targets.
+        if self.atomic
+            && let syn::Expr::Call(call) = expression
+            && is_atomic_call(call)
+            && matches!(call.args.first(), Some(syn::Expr::Reference(borrow))
+                if root_name(&borrow.expr).is_some_and(|name| self.is_scatter(name)))
+        {
+            self.atomic_call(call);
+            return;
+        }
         // The stores of a scatter stage (slice s2sc): `target[place] = value;` is the one form, and what is inside it
         // (the place and the value) is read as any expression.
         if let syn::Expr::Assign(assign) = expression
             && root_name(&assign.left).is_some_and(|name| self.is_scatter(name))
         {
+            if self.atomic {
+                self.atomic_use(&assign.left, "a store to an atomic target");
+                return;
+            }
             match self.scatter_store(&assign.left) {
                 Some((_, place)) => {
                     let mut at = place;
@@ -1486,13 +1634,22 @@ fn check_entry(
     }
 }
 
-/// GUST-E1024 for the form of a scatter stage (slice s2sc).
-fn scatter_form(tokens: impl ToTokens, message: impl std::fmt::Display) -> syn::Error {
-    diagnostics::error(Code::BatchScatterForm, tokens, message)
+/// GUST-E1024 for the form of a scatter stage (slice s2sc), GUST-E1026 for the form of an atomic stage (slice s2sa).
+fn scatter_form(
+    atomic: bool,
+    tokens: impl ToTokens,
+    message: impl std::fmt::Display,
+) -> syn::Error {
+    let code = if atomic {
+        Code::BatchAtomicForm
+    } else {
+        Code::BatchScatterForm
+    };
+    diagnostics::error(code, tokens, message)
 }
 
-/// The names of a `scatter(&mut a, &mut b)` clause: each entry is `&mut name`, a name once, and the clause is in a stage
-/// of a batch that has no result, no in-place target and no 2-D closure.
+/// The names of a `scatter(&mut a, &mut b)` or `atomic(&mut a, &mut b)` clause: each entry is `&mut name`, a name once,
+/// and the clause is in a stage of a batch that has no result, no in-place target and no 2-D closure.
 fn scatter_names(
     keyword: &syn::Ident,
     entries: &[syn::Expr],
@@ -1501,37 +1658,52 @@ fn scatter_names(
     closure: &syn::ExprClosure,
     options: &Options,
 ) -> syn::Result<Vec<syn::Ident>> {
+    let atomic = keyword == "atomic";
+    let word = keyword.unraw().to_string();
     if !batch {
         return Err(scatter_form(
+            atomic,
             keyword,
-            "`scatter(..)` is a clause of a stage of a `gpu_batch!`: its targets are handles of the block, and a stage \
-             that runs alone has host slices and a result to read back",
+            format!(
+                "`{word}(..)` is a clause of a stage of a `gpu_batch!`: its targets are handles of the block, and a \
+                 stage that runs alone has host slices and a result to read back"
+            ),
         ));
     }
     if entries.is_empty() {
         return Err(scatter_form(
+            atomic,
             keyword,
-            "`scatter()` names the handles the rows store into: `scatter(&mut out)`",
+            format!("`{word}()` names the handles the rows write into: `{word}(&mut out)`"),
         ));
     }
     if matches!(shape, syn::Expr::Reference(reference) if reference.mutability.is_some()) {
         return Err(scatter_form(
+            atomic,
             shape,
-            "a scatter stage's extent is its rows (`gpu_task!(count, scatter(&mut out), |i| { .. })`), not a target's \
-             own length: `&mut target` as the shape is the in-place form",
+            format!(
+                "a {word} stage's extent is its rows (`gpu_task!(count, {word}(&mut out), |i| {{ .. }})`), not a \
+                 target's own length: `&mut target` as the shape is the in-place form"
+            ),
         ));
     }
     if !matches!(closure.output, syn::ReturnType::Default) {
         return Err(scatter_form(
+            atomic,
             &closure.output,
-            "a scatter stage has no result of its own (its results are what it stores into its targets): drop the \
-             `-> T`",
+            format!(
+                "a {word} stage has no result of its own (its results are what it writes into its targets): drop the \
+                 `-> T`"
+            ),
         ));
     }
     if closure.inputs.len() != 1 {
         return Err(scatter_form(
+            atomic,
             &closure.inputs,
-            "a scatter stage is 1-D in this release (`|i| { .. }`): its rows are numbered by one index",
+            format!(
+                "a {word} stage is 1-D in this release (`|i| {{ .. }}`): its rows are numbered by one index"
+            ),
         ));
     }
     let mut names: Vec<syn::Ident> = Vec::new();
@@ -1547,15 +1719,19 @@ fn scatter_names(
         };
         let Some(name) = name else {
             return Err(scatter_form(
+                atomic,
                 entry,
-                "an entry of `scatter(..)` is `&mut name`, with `name` a handle of the block",
+                format!(
+                    "an entry of `{word}(..)` is `&mut name`, with `name` a handle of the block"
+                ),
             ));
         };
         if names.iter().any(|seen| seen.unraw() == name.unraw()) {
             return Err(scatter_form(
+                atomic,
                 name,
                 format!(
-                    "`{}` is named twice in `scatter(..)`: a target is listed once",
+                    "`{}` is named twice in `{word}(..)`: a target is listed once",
                     name.unraw()
                 ),
             ));
@@ -1566,9 +1742,10 @@ fn scatter_names(
             .is_some_and(|count| count.unraw() == name.unraw())
         {
             return Err(scatter_form(
+                atomic,
                 name,
                 format!(
-                    "`{}` is the stage's count, and a stage cannot store into the count that sizes it",
+                    "`{}` is the stage's count, and a stage cannot write into the count that sizes it",
                     name.unraw()
                 ),
             ));
@@ -1588,6 +1765,7 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
         list,
         closure,
     } = input;
+    let atomic = matches!(&scatter, Some((keyword, _)) if keyword == "atomic");
     let scatter: Vec<syn::Ident> = match &scatter {
         Some((keyword, entries)) => scatter_names(
             keyword,
@@ -1756,11 +1934,13 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
                 .any(|view| view.scatter && view.name == *name)
             {
                 return Err(scatter_form(
+                    atomic,
                     name,
                     format!(
-                        "`{}` is not a handle of the block (`b.input::<T>(..)` or the result of a stage): a scatter \
-                         target is one",
-                        name.unraw()
+                        "`{}` is not a handle of the block (`b.input::<T>(..)` or the result of a stage): {} target is \
+                         one",
+                        name.unraw(),
+                        if atomic { "an atomic" } else { "a scatter" }
                     ),
                 ));
             }
@@ -1838,12 +2018,47 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
         syn::Pat::Ident(ident) => Some(ident.ident.unraw().to_string()),
         _ => None,
     }));
+    // The element of each atomic target (slice s2sa) is `u32` or `i32`; the stage says so before the validator does.
+    let mut signed: Vec<syn::Ident> = Vec::new();
+    if atomic {
+        for name in &scatter {
+            let element = list
+                .iter()
+                .find(|entry| entry.name.unraw() == name.unraw())
+                .and_then(|entry| match &entry.ty {
+                    syn::Type::Reference(reference) => match &*reference.elem {
+                        syn::Type::Slice(slice) => Some(slice.elem.to_token_stream().to_string()),
+                        _ => None,
+                    },
+                    _ => None,
+                });
+            match element.as_deref() {
+                Some("u32") => {}
+                Some("i32") => signed.push(name.clone()),
+                other => {
+                    return Err(scatter_form(
+                        true,
+                        name,
+                        format!(
+                            "`{}` is an atomic target, so its element is `u32` or `i32` (found `{}`): the atomic \
+                             functions work on 32-bit integers",
+                            name.unraw(),
+                            other.unwrap_or("?")
+                        ),
+                    ));
+                }
+            }
+        }
+    }
     let mut rules = Rules {
         captures: &captures,
         views: &views,
         target: target_name,
         own,
         scatter: &scatter,
+        atomic,
+        signed: &signed,
+        touched: Vec::new(),
         known: &known,
         error: None,
     };
@@ -1853,10 +2068,26 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
     if let Some(tail) = &tail {
         rules.visit_expr(tail);
     }
+    let touched = std::mem::take(&mut rules.touched);
     if let Some(error) = rules.error {
         return Err(error);
     }
-    if !scatter.is_empty() {
+    if atomic {
+        if let Some(name) = scatter
+            .iter()
+            .find(|name| !touched.iter().any(|seen| seen.unraw() == name.unraw()))
+        {
+            return Err(scatter_form(
+                true,
+                name,
+                format!(
+                    "`{0}` is an atomic target, and no atomic call of the body touches it (`atomic_add(&mut \
+                     {0}[place], value);`): drop it from `atomic(..)`",
+                    name.unraw()
+                ),
+            ));
+        }
+    } else if !scatter.is_empty() {
         check_scatter_paths(&scatter, &stmts, tail.as_ref())?;
     }
 
@@ -1893,6 +2124,7 @@ fn plan_of(input: Input, profile: Profile) -> syn::Result<Plan> {
         tail,
         target,
         scatter,
+        atomic,
         batch,
     });
     Ok(plan)

@@ -1,5 +1,5 @@
-// An atomic on a scatter target (GUST-E1025): atomics at a computed place are a later release, and a borrow of a target
-// is no store the stage checks.
+// An atomic on a scatter target (GUST-E1025): a scatter target takes plain stores only, and an accumulation at a
+// computed place is the `atomic(..)` clause (GUST-E1026), not a borrow of a target in a scatter stage.
 
 use std::sync::Arc;
 

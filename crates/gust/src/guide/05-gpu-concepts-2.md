@@ -69,6 +69,34 @@ way: the count `n` holds `live + created` (a stage over one-element handles adds
 `let` that names it (the name the twin's panic message prints) trips `clippy::let_unit_value`: allow it where the stage is
 written. `examples/batch-basics/tests/scatter.rs` has the checks.
 
+An accumulation at a place the stage computes is an atomic stage: `gpu_task!(count(n); CAP, atomic(&mut counts, &mut
+sums), |i| { atomic_add(&mut counts[key[i]], 1u32); atomic_add(&mut sums[key[i]], val[i]); })`. The targets are `u32` or
+`i32` handles of the block, named `&mut name` after the extent (one or several), and the stage is 1-D with no result
+type; its extent and its count are those of the rows, not of a target. A target is touched only by `atomic_add` (a
+`u32` or `i32` target), `atomic_min` and `atomic_max` (a `u32` target) at `&mut target[place]`, with any `u32`
+expression as the place, any number of times on any path and in loops. A read of a target is refused (`GUST-E1008`), so
+is any other use, `atomic_exchange` and `atomic_compare_exchange` included (`GUST-E1027`), and so is the clause in any
+other form, `scatter(..)` in the same stage included (`GUST-E1026`). A target persists from frame to frame like any
+buffer: the stage adds to what it holds, so the author clears it. The counting sort of a batch is the worked example, in
+the order the stages run: `let _zero = gpu_task!(&mut counts, |k| { counts[k] = 0u32; });` clears the counters,
+`let _count = gpu_task!(count(live); CAP, atomic(&mut counts), |i| { atomic_add(&mut counts[key[i]], 1u32); });` counts
+them, `let starts = gust::scan_exclusive(&counts);` turns the counts into the first slot of each key, a stage gives each
+row its slot (`starts[key[i]]` plus the number of earlier rows with its key), and a scatter stage stores the rows
+there. The clear is a dispatch of its own, one extra dispatch per frame over the counters: a stage cannot write its
+in-place target and a second target, and the scan is a library op with its own output, so a scan that also zeroes the
+next frame's counters (two banks of counters, one scanned while the other is cleared) is not written in this form;
+write the zeroing of the other bank as an in-place stage and count its dispatch. **What the CPU twin promises.** The
+twin equals the GPU over the whole target when every cell receives one kind of operation (only adds, only mins or only
+maxes) and no index, operand or condition of an atomic depends on a bound old value; a counts buffer built like the
+one above is bit-equal on both and the tests compare whole buffers. A stage that binds `let old = atomic_add(..);`
+has set-level equality only: the per-cell totals of the first add are exact, and anything steered by `old` (a distinct
+count, a slot) is one member of a set on the GPU and the row order's on the twin, so such a stage is tested by its
+totals. A cell that receives two kinds of operation (an add and a max) is order dependent and is the author's: the check
+does not see it. A place outside the target panics on the twin and is open on the GPU (D39). An uncounted stage (a
+direct launch) over more than 65535 workgroups on an axis is cut into pieces like any kernel, and the pieces add into
+one target. A counted stage under the indirect launch is neither split nor refused for its workgroup count (section 5a
+of SEMANTICS), and no test launches one above the limit. `examples/batch-basics/tests/atomic.rs` has the checks.
+
 A stage binds one storage buffer for each handle it reads or writes, and a device allows a fixed number of them per
 shader stage (8 unless the device was opened with more). A stage over that number is refused when the batch is built, not
 at the first frame: the build returns `Error::StageDevice`, which names the batch and the stage and wraps the device's

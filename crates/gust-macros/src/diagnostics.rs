@@ -599,6 +599,15 @@ codes! {
     /// field store, a compound store, a tuple index, a second store on one path, a store inside a loop, a closure or an
     /// expression, `&mut` of a target, or an atomic on it.
     BatchScatterStore = 1025 => "GUST-E1025";
+    /// An `atomic(..)` clause that is not one of its forms (slice s2sa): outside a stage of a `gpu_batch!`, on an
+    /// in-place or 2-D stage or one with a result type, together with `scatter(..)`, with an entry that is not
+    /// `&mut name` of a handle of the block, an empty or repeated list, a target that is also the stage's count, a
+    /// target that is not a `u32` or `i32` handle, or a target no atomic operation touches.
+    BatchAtomicForm = 1026 => "GUST-E1026";
+    /// A use of an atomic target other than `atomic_add`, `atomic_min` or `atomic_max` at `&mut target[place]` (slice
+    /// s2sa): a plain or compound store, a field store, a borrow outside an atomic call, `atomic_exchange`,
+    /// `atomic_compare_exchange`, or `atomic_min` or `atomic_max` on an `i32` target.
+    BatchAtomicUse = 1027 => "GUST-E1027";
 }
 
 /// The error for `code` at `span`: the message prefixed with `[GUST-E....]`.

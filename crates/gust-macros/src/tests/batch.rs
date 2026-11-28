@@ -1376,3 +1376,278 @@ fn a_module_kernel_that_takes_a_scatter_target_is_refused_whatever_its_attribute
         crate::diagnostics::testing::assert_code(&error, Code::BatchScatterForm);
     }
 }
+
+// ---- the atomic stage (m14.s2sa) ----
+
+/// An atomic stage over `body`, with one target `counts` and the handles `key` and `val`.
+fn atomic_stage(body: &str) -> String {
+    format!(
+        "batch(b, \"s\"); 8u32, atomic(&mut counts), [key: Stage<u32>, val: Stage<u32>, counts: &mut Stage<u32>], \
+         |i| {{ {body} }}"
+    )
+}
+
+#[test]
+fn an_atomic_stage_lowers_to_an_atomic_call_at_the_computed_index() {
+    // The kernel is the one a `#[gpu_module]` kernel with the same body has: the target is an atomic buffer
+    // (`Atomic<uint>` element) and the call is the method of its cell.
+    let scratch = Scratch::new();
+    let text = stage(
+        &atomic_stage("atomic_add(&mut counts[key[i]], 1u32);"),
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+    let slang = scratch.slang();
+    assert!(
+        slang.contains("RWStructuredBuffer<Atomic<uint>> counts"),
+        "{slang}"
+    );
+    assert!(slang.contains("counts[key[i]].add(uint(1))"), "{slang}");
+    // No scatter marks: the target is a plain buffer on the CPU twin.
+    assert!(!text.contains("ScatterMut"), "{text}");
+    assert!(!text.contains("__gust_scatter_stage"), "{text}");
+    assert!(!slang.contains("__gust_scatter_stage"), "{slang}");
+}
+
+#[test]
+fn an_atomic_stage_takes_add_min_max_and_the_old_value_on_any_path() {
+    for body in [
+        "atomic_add(&mut counts[key[i]], 1u32);",
+        "atomic_min(&mut counts[key[i]], val[i]);",
+        "atomic_max(&mut counts[key[i]], val[i]);",
+        "let old = atomic_add(&mut counts[key[i]], val[i]); if old == 0u32 { atomic_add(&mut counts[0u32], 1u32); }",
+        "for k in 0u32..2u32 { atomic_add(&mut counts[key[i] * 2u32 + k], 1u32); }",
+        "if val[i] > 1u32 { atomic_add(&mut counts[key[i]], 1u32); } else { atomic_add(&mut counts[0u32], 1u32); }",
+        "atomic_add(&mut counts[key[i]], 1u32); atomic_add(&mut counts[key[i] + 1u32], 1u32);",
+    ] {
+        let scratch = Scratch::new();
+        let text = stage(&atomic_stage(body), &scratch);
+        assert!(!failed(&text), "{body}\n{text}");
+    }
+}
+
+#[test]
+fn an_atomic_stage_takes_several_targets_and_a_signed_one() {
+    let scratch = Scratch::new();
+    let text = stage(
+        "batch(b, \"s\"); 8u32, atomic(&mut counts, &mut sums, &mut balance), [key: Stage<u32>, val: Stage<u32>, \
+         counts: &mut Stage<u32>, sums: &mut Stage<u32>, balance: &mut Stage<i32>], |i| { \
+         atomic_add(&mut counts[key[i]], 1u32); atomic_add(&mut sums[key[i]], val[i]); \
+         atomic_add(&mut balance[key[i]], -1i32); }",
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+    let slang = scratch.slang();
+    assert!(
+        slang.contains("RWStructuredBuffer<Atomic<int>> balance"),
+        "{slang}"
+    );
+}
+
+#[test]
+fn an_atomic_stage_may_be_counted() {
+    let scratch = Scratch::new();
+    let text = stage(
+        "batch(b, \"s\"); count(live); 8u32, atomic(&mut counts), [live: Stage<u32>, key: Stage<u32>, \
+         counts: &mut Stage<u32>], |i| { atomic_add(&mut counts[key[i]], 1u32); }",
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+}
+
+#[test]
+fn atomic_refusals_carry_their_codes() {
+    let cases: [(&str, Code); 10] = [
+        ("counts[key[i]] = 1u32;", Code::BatchAtomicUse),
+        ("counts[key[i]] += 1u32;", Code::BatchAtomicUse),
+        (
+            "atomic_exchange(&mut counts[key[i]], 1u32);",
+            Code::BatchAtomicUse,
+        ),
+        (
+            "atomic_compare_exchange(&mut counts[key[i]], 0u32, 1u32);",
+            Code::BatchAtomicUse,
+        ),
+        ("atomic_add(&mut counts, 1u32);", Code::BatchAtomicUse),
+        (
+            "let cell = &mut counts[0u32]; atomic_add(&mut counts[0u32], 1u32);",
+            Code::BatchAtomicUse,
+        ),
+        (
+            "let v = counts[i]; atomic_add(&mut counts[key[i]], v);",
+            Code::TaskInPlaceRead,
+        ),
+        (
+            "let alias = counts; atomic_add(&mut counts[0u32], 1u32);",
+            Code::TaskInPlaceRead,
+        ),
+        (
+            "atomic_add(&mut counts[key[i]], counts[0u32]);",
+            Code::TaskInPlaceRead,
+        ),
+        ("let v = val[i];", Code::BatchAtomicForm),
+    ];
+    for (body, code) in cases {
+        stage_rejected(&atomic_stage(body), code);
+    }
+}
+
+#[test]
+fn atomic_min_and_max_on_a_signed_target_are_refused() {
+    for function in ["atomic_min", "atomic_max"] {
+        stage_rejected(
+            &format!(
+                "batch(b, \"s\"); 8u32, atomic(&mut balance), [key: Stage<u32>, balance: &mut Stage<i32>], \
+                 |i| {{ {function}(&mut balance[key[i]], 1i32); }}"
+            ),
+            Code::BatchAtomicUse,
+        );
+    }
+}
+
+#[test]
+fn atomic_form_errors() {
+    for (input, code) in [
+        // a result type on an atomic stage
+        (
+            "batch(b, \"s\"); 8u32, atomic(&mut counts), [key: Stage<u32>, counts: &mut Stage<u32>], |i| -> u32 { atomic_add(&mut counts[key[i]], 1u32); 0u32 }",
+            Code::BatchAtomicForm,
+        ),
+        // two dimensions
+        (
+            "batch(b, \"s\"); (4u32, 4u32), atomic(&mut counts), [key: Stage<u32>, counts: &mut Stage<u32>], |x, y| { atomic_add(&mut counts[key[(x, y)]], 1u32); }",
+            Code::BatchAtomicForm,
+        ),
+        // the target is not in the list of entries
+        (
+            "batch(b, \"s\"); 8u32, atomic(&mut counts), [key: Stage<u32>], |i| { atomic_add(&mut counts[key[i]], 1u32); }",
+            Code::BatchAtomicForm,
+        ),
+        // an empty list
+        (
+            "batch(b, \"s\"); 8u32, atomic(), [key: Stage<u32>], |i| { }",
+            Code::BatchAtomicForm,
+        ),
+        // the same target twice
+        (
+            "batch(b, \"s\"); 8u32, atomic(&mut counts, &mut counts), [key: Stage<u32>, counts: &mut Stage<u32>], |i| { atomic_add(&mut counts[key[i]], 1u32); }",
+            Code::BatchAtomicForm,
+        ),
+        // an entry that is no `&mut name`
+        (
+            "batch(b, \"s\"); 8u32, atomic(&mut 3), [key: Stage<u32>], |i| { }",
+            Code::BatchAtomicForm,
+        ),
+        // the in-place form
+        (
+            "batch(b, \"s\"); &mut counts, atomic(&mut counts), [key: Stage<u32>, counts: &mut Stage<u32>], |i| { atomic_add(&mut counts[key[i]], 1u32); }",
+            Code::BatchAtomicForm,
+        ),
+        // the stage's own count as a target
+        (
+            "batch(b, \"s\"); count(counts); 8u32, atomic(&mut counts), [key: Stage<u32>, counts: &mut Stage<u32>], |i| { atomic_add(&mut counts[key[i]], 1u32); }",
+            Code::BatchAtomicForm,
+        ),
+        // an element that is not `u32` or `i32`
+        (
+            "batch(b, \"s\"); 8u32, atomic(&mut counts), [key: Stage<u32>, counts: &mut Stage<f32>], |i| { atomic_add(&mut counts[key[i]], 1u32); }",
+            Code::BatchAtomicForm,
+        ),
+        // a scatter clause with it
+        (
+            "batch(b, \"s\"); 8u32, atomic(&mut counts), scatter(&mut out), [key: Stage<u32>, counts: &mut Stage<u32>, out: &mut Stage<u32>], |i| { atomic_add(&mut counts[key[i]], 1u32); out[i] = 1u32; }",
+            Code::BatchAtomicForm,
+        ),
+        (
+            "batch(b, \"s\"); 8u32, scatter(&mut out), atomic(&mut counts), [key: Stage<u32>, counts: &mut Stage<u32>, out: &mut Stage<u32>], |i| { atomic_add(&mut counts[key[i]], 1u32); out[i] = 1u32; }",
+            Code::BatchAtomicForm,
+        ),
+        // outside a batch
+        (
+            "8u32, atomic(&mut counts), [counts: &mut [u32]], |i| { atomic_add(&mut counts[i], 1u32); }",
+            Code::BatchAtomicForm,
+        ),
+    ] {
+        stage_rejected(input, code);
+    }
+}
+
+#[test]
+fn an_atomic_on_an_enum_target_inside_the_clause_is_e0122() {
+    stage_rejected(
+        &format!(
+            "batch(b, \"s\"); enums {{ {MODE_DEFINITION} }} 8u32, atomic(&mut t), [t: &mut Stage<Mode>], |i| {{ \
+             atomic_add(&mut t[i], 1u32); }}"
+        ),
+        Code::EnumShape,
+    );
+}
+
+#[test]
+fn an_in_place_stage_cannot_write_a_second_target() {
+    // The two-bank clear of a scan stage (one stage that writes its in-place target and zeroes a second buffer) is not a
+    // form: a second written handle is a clause, and a clause is a stage of its own over its rows.
+    for (input, code) in [
+        (
+            "batch(b, \"s\"); &mut a, scatter(&mut c), [a: &mut Stage<u32>, c: &mut Stage<u32>], |i| { a[i] = 0u32; c[i] = 0u32; }",
+            Code::BatchScatterForm,
+        ),
+        (
+            "batch(b, \"s\"); &mut a, atomic(&mut c), [a: &mut Stage<u32>, c: &mut Stage<u32>], |i| { a[i] = 0u32; atomic_add(&mut c[i], 1u32); }",
+            Code::BatchAtomicForm,
+        ),
+        (
+            "batch(b, \"s\"); &mut a, [a: &mut Stage<u32>, c: &mut Stage<u32>], |i| { a[i] = 0u32; c[i] = 0u32; }",
+            Code::TaskWrite,
+        ),
+    ] {
+        stage_rejected(input, code);
+    }
+}
+
+#[test]
+fn a_stage_that_reads_an_atomic_target_binds_it_as_plain_words() {
+    // The stage after an atomic stage reads the counts as an ordinary storage buffer: no `Atomic` element anywhere.
+    let scratch = Scratch::new();
+    let text = stage(
+        "batch(b, \"s\"); 8u32, [counts: Stage<u32>], |k| -> u32 { counts[k] * 2u32 }",
+        &scratch,
+    );
+    assert!(!failed(&text), "{text}");
+    let slang = scratch.slang();
+    assert!(slang.contains("StructuredBuffer<uint> counts"), "{slang}");
+    assert!(!slang.contains("Atomic"), "{slang}");
+}
+
+#[test]
+fn a_body_local_function_named_like_an_atomic_is_not_an_atomic_call() {
+    // A local `fn atomic_add` item must not pass as the atomic function (it would hide that no atomic ran): the
+    // dialect refuses the nested item, under the default profile and under the CPU profile alike.
+    // Both bodies are refused. The second also calls the local function with plain words: the call is read as the atomic
+    // function (its name is the atomic's), so that call is refused first, as GUST-E0602.
+    stage_rejected(
+        &atomic_stage(
+            "fn atomic_add(c: u32, v: u32) -> u32 { v } atomic_add(&mut counts[key[i]], 1u32);",
+        ),
+        Code::NestedItem,
+    );
+    stage_rejected(
+        &atomic_stage(
+            "fn atomic_add(c: u32, v: u32) -> u32 { v } let x = atomic_add(1u32, 2u32); atomic_add(&mut counts[key[i]], x);",
+        ),
+        Code::AtomicNotReference,
+    );
+    let scratch = Scratch::new();
+    let environment = Environment {
+        manifest_dir: None,
+        export_dir: Some(scratch.0.clone()),
+        package: Some("demo".to_owned()),
+        reported_file: Some("src/demo.rs".to_owned()),
+    };
+    let body = "fn atomic_add(c: u32, v: u32) -> u32 { v } atomic_add(&mut counts[key[i]], 1u32);";
+    let tokens: TokenStream = atomic_stage(body).parse().unwrap();
+    let text = gpu_task_in(tokens, &environment, Profile::Cpu, 1).to_string();
+    assert!(failed(&text), "{text}");
+    assert_rendered_code(&text, Code::NestedItem);
+    assert_eq!(text.matches("compile_error").count(), 1, "{text}");
+}

@@ -603,6 +603,9 @@ impl Rewriter {
                     .collect()
             })
             .unwrap_or_default();
+        let atomic = scatter
+            .as_ref()
+            .is_some_and(|(keyword, _)| keyword == "atomic");
         for name in &scatter_names {
             match self.lookup(name) {
                 Some(Kind::Handle(element)) => {
@@ -610,12 +613,17 @@ impl Rewriter {
                     entries.push(quote!(#name: &mut Stage<#element>));
                 }
                 _ => failures.push(diagnostics::error(
-                    Code::BatchScatterForm,
+                    if atomic {
+                        Code::BatchAtomicForm
+                    } else {
+                        Code::BatchScatterForm
+                    },
                     name,
                     format!(
-                        "`{}` is a scatter target, so it is a handle of the block (`b.input::<T>(..)` or a stage's \
+                        "`{}` is {} target, so it is a handle of the block (`b.input::<T>(..)` or a stage's \
                          result); this name is not one",
-                        name.unraw()
+                        name.unraw(),
+                        if atomic { "an atomic" } else { "a scatter" }
                     ),
                 )),
             }

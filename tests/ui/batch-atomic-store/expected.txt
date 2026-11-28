@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see enum-in-uniform/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: batch-atomic-store/src/main.rs
+line: 21
+message: [GUST-E1027]

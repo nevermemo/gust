@@ -851,6 +851,12 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   out-of-bounds rule above: the twin panics, the GPU drops the store or lands it elsewhere. A path of the body may store
   any subset of the targets or none, and a slot no path stores keeps its previous contents. The stage's extent is the
   one its shape names (`N`, or `count(n); CAP` as for any counted stage), never a target's length.
+- **Atomic stages (slice m14.s2sa).** An atomic stage of a `gpu_batch!` (`atomic(&mut counts)` after the extent) is the
+  sanctioned exception to "a stage's written places are distinct": its targets are touched only by `atomic_add`,
+  `atomic_min` and `atomic_max` at `&mut target[place]`, where rows may name the same cell on purpose, so the race-free
+  rule is met by the atomic functions (the exception the first paragraph of this section already makes). The stage never
+  reads a target (GUST-E1008): a read would see a cell other rows are updating. Its extent is its rows', as for a scatter
+  stage. Section 6 has what the twin and the GPU share.
 - **Views (slice m14.bzview, D294).** `view_as::<U>()` on a `GpuBuffer<T>` or a `GpuVec<T>` is a second element type
   over the same bytes, GPU-only (the CPU twin has no views). Both rules above apply to the bytes, not to the element
   type: a location is a byte range, so a store through a `UVec4` view writes four `u32` elements of the source, and
@@ -1083,8 +1089,10 @@ numbers of this page are kept, so this section carries the number 5a.
   only, not a GPU launch: a `pixel` kernel has no variant
   (`a_gpu_grid_kernel_has_a_variant_and_a_cpu_or_pixel_kernel_has_none` in `crates/gust-macros/src/tests/profile.rs`),
   and a build without the run-time compiler plans no split
-  (`a_split_variant_is_planned_only_in_a_build_with_the_run_time_compiler` in `crates/gust-wgpu/src/compile/source.rs`). *Not claimed:* the order of the pieces and any visibility between them (one piece reading what another
-  wrote, atomics across pieces). *Inferred, not tested:* the plain refusal of a split-capable `#[gpu_module]` kernel through
+  (`a_split_variant_is_planned_only_in_a_build_with_the_run_time_compiler` in `crates/gust-wgpu/src/compile/source.rs`).
+  *Not claimed:* the order of the pieces and any visibility between them (one piece reading what another
+  wrote, atomics across pieces, except the one atomic histogram of a batch stage in section 6).
+  *Inferred, not tested:* the plain refusal of a split-capable `#[gpu_module]` kernel through
   the deprecated `dispatch_f32`/`dispatch_u32`, which no test exercises with a kernel that
   carries a variant (`crates/gust-wgpu/tests/limits.rs` tests the refusal of hand-built descriptors, which have none,
   on that path). An indirect launch is not in that list: it is neither split nor refused by the host for its workgroup
@@ -1148,6 +1156,29 @@ numbers of this page are kept, so this section carries the number 5a.
   (the exchange and the arithmetic ones) or whether the swap happened (compare-exchange); in a kernel only the old
   value of `atomic_add` is observable (`m11.fetch`, below), the others are statement-only. The twin's
   compare-exchange never fails spuriously.
+- **Atomics in a batch stage (slice m14.s2sa).** `gpu_task!(count(n); ROWS, atomic(&mut counts, &mut sums), |i| {
+  atomic_add(&mut counts[key[i]], 1u32); })` accumulates into handles of the block at any `u32` index, with
+  `atomic_add` on `u32` and `i32` targets and `atomic_min` and `atomic_max` on `u32` targets; `atomic_exchange` and
+  `atomic_compare_exchange` stay in a `#[gpu_module]` kernel (GUST-E1027). The stage adds to what a target holds: a
+  target persists from frame to frame like any buffer (and is zeroed when a resize makes it again), so the author
+  clears it, for example with an in-place stage `gpu_task!(&mut counts, |k| { counts[k] = 0u32; })` before the
+  counting stage. **What equality means.** The twin equals the GPU over the whole target when every cell receives one
+  kind of operation (only adds, only mins or only maxes) and no index, operand or condition of an atomic depends on a
+  bound old value: the final value of such a cell does not depend on the order of the rows (the ordering rule above), so
+  the whole target is bit-equal and the tests compare whole buffers. A stage that binds `old` (`let old =
+  atomic_add(..);`, legal as in a module, `m11.fetch`) has the set-level equality of D203 only: per-cell totals of the
+  first add are exact on both targets, and anything steered by `old` is a member of a set on the GPU, where the twin's
+  is the row order's. A cell that receives two kinds of operation (an add and a max) is order dependent and is the
+  author's: the check does not see it. An index out of the target is the out-of-bounds rule (KM-11, D39): the twin panics
+  and the GPU is open. The twin runs a stage's rows in ascending order with the shadow functions, so each operation is
+  atomic; the classifier's `Why::Atomic` only keeps such a kernel out of the `pixel` shape. An uncounted stage (a direct
+  launch) over more than `max_compute_workgroups_per_dimension` workgroups on an axis is cut into pieces like any `grid`
+  kernel (the split above), and the pieces add into one target: `gpu_atomic_over_more_rows_than_the_workgroup_limit`
+  (`examples/batch-basics/tests/atomic.rs`) runs a histogram over 65535 * 256 + 1000 rows and compares the whole counts
+  buffer with the host's, on the Radeon 890M and the RTX 5090. This is a test of that one stage over two adapters, not
+  the claim that the pieces see each other's writes: atomics on one cell commute, so the order of the pieces is not
+  needed. A counted stage runs under the indirect launch, which is neither split nor refused for its workgroup count
+  (5a): a counted atomic stage above the limit is not tested.
 - **The old value of `atomic_add` (`m11.fetch`).** `let old = atomic_add(&mut c[i], 1u32);` (also `i32`, and with a
   type annotation) binds the value the cell held before this invocation's add; the call must be the whole initializer
   of the `let`. It lowers to the same Slang call as the statement form, `c[i].add(..)` (Slang's `Atomic<T>.add` returns

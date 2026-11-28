@@ -302,6 +302,15 @@ const EXAMPLE_GPU_TESTS: &[(&str, &[&str])] = &[
             "gpu_scatter_extent_moves_while_every_buffer_keeps_its_size",
             "gpu_scatter_stores_an_enum_element",
             "gpu_scatter_second_target_follows_a_resize",
+            // `tests/atomic.rs`: the atomic stage (m14.s2sa).
+            "gpu_atomic_histogram_equals_the_host_and_the_twin",
+            "gpu_counts_scan_rank_and_scatter_sort_like_the_host",
+            "gpu_counted_atomic_runs_the_live_rows_only",
+            "gpu_a_target_persists_across_frames_and_the_zero_stage_clears_it",
+            "gpu_min_max_and_wrapping_adds_equal_the_host_and_the_twin",
+            "gpu_two_targets_and_the_old_value_give_the_host_totals",
+            "gpu_the_atomic_extent_follows_the_rows_not_the_target",
+            "gpu_atomic_over_more_rows_than_the_workgroup_limit",
         ],
     ),
     (

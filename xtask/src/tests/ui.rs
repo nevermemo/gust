@@ -1795,6 +1795,16 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
     assert_eq!(
         with_env,
         [
+            "batch-atomic-compound",
+            "batch-atomic-element",
+            "batch-atomic-exchange",
+            "batch-atomic-ok",
+            "batch-atomic-outside",
+            "batch-atomic-read",
+            "batch-atomic-store",
+            "batch-atomic-two-d",
+            "batch-atomic-unused",
+            "batch-atomic-with-scatter",
             "batch-body",
             "batch-bool",
             "batch-count-2d",
@@ -1880,7 +1890,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 336] = [
+const PINNED_FIXTURES: [&str; 346] = [
     "array-barrier",
     "array-buffer-len",
     "array-const-len",
@@ -1911,6 +1921,16 @@ const PINNED_FIXTURES: [&str; 336] = [
     "barrier-in-while",
     "barrier-kernel-no-cpu-strategy",
     "barrier-ok",
+    "batch-atomic-compound",
+    "batch-atomic-element",
+    "batch-atomic-exchange",
+    "batch-atomic-ok",
+    "batch-atomic-outside",
+    "batch-atomic-read",
+    "batch-atomic-store",
+    "batch-atomic-two-d",
+    "batch-atomic-unused",
+    "batch-atomic-with-scatter",
     "batch-body",
     "batch-bool",
     "batch-count-2d",

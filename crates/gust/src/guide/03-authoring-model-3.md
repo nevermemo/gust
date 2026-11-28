@@ -11,6 +11,9 @@ edge-case differences between the CPU and the GPU): see section 6 of
 [SEMANTICS](https://github.com/nevermemo/gust/blob/main/docs/SEMANTICS.md) and its known-mismatch ledger.
 Atomics order only atomic operations on the same location; do not use one to publish ordinary data to another
 invocation. [Chapter 7][`crate::guide::semantics_and_the_twin`] returns to the contract.
+In a `gpu_batch!` the same atomics accumulate at a computed index through an `atomic(&mut counts)` stage, with the
+commuting operations only (`atomic_add`, `atomic_min`, `atomic_max`); [chapter 5][`crate::guide::gpu_concepts`] has the
+stage and what the twin promises for it.
 
 ## The accepted subset
 

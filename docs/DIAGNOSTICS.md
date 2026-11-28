@@ -2194,9 +2194,27 @@ Decision: slice m14.s2sc.
 
 ### GUST-E1025 a store to a scatter target that is not one place store
 
-A store to a scatter target is `target[place] = value;`, where `place` is any `u32` expression and the store is a statement that runs at most once on every path of the body. A field store (`out[p].life = ..`), a compound store (`out[p] += ..`), a tuple index, `&mut out`, an atomic on a target, a second store on one path, and a store inside a loop, a closure or a nested expression are refused at the store. A path may store any subset of its targets, or none; a read of a target is the existing GUST-E1008. A branch that diverges (`if c { out[a] = x; return; } out[b] = y;`) is not modelled, so that body is refused as two stores on one path; store in an `else` instead.
+A store to a scatter target is `target[place] = value;`, where `place` is any `u32` expression and the store is a statement that runs at most once on every path of the body. A field store (`out[p].life = ..`), a compound store (`out[p] += ..`), a tuple index, `&mut out`, an atomic on a target (an `atomic(..)` clause takes those, GUST-E1026), a second store on one path, and a store inside a loop, a closure or a nested expression are refused at the store. A path may store any subset of its targets, or none; a read of a target is the existing GUST-E1008. A branch that diverges (`if c { out[a] = x; return; } out[b] = y;`) is not modelled, so that body is refused as two stores on one path; store in an `else` instead.
 Reached through `#[gpu_module]`, raised by `gpu_task!` inside a `gpu_batch!`.
 Rejected: `out[dst[i]].flags = 1u32;`, `out[dst[i]] += 1u32;`, two stores to `out` in one block, `for k in 0..2u32 { out[k] = v; }`.
 Fixtures: `tests/ui/batch-scatter-field`, `tests/ui/batch-scatter-atomic`, `tests/ui/batch-scatter-loop`, `tests/ui/batch-scatter-two-stores` (and `tests/ui/batch-scatter-read` for GUST-E1008).
 Write instead: build the whole value first (`let mut row = rows[i]; row.life = ..;`) and store it once; use a library op for an accumulation. On the CPU twin, a place written twice in one run of the stage panics naming the stage, the target and the slot; on the GPU the winner of such a race is unspecified.
 Decision: slice m14.s2sc.
+
+### GUST-E1026 an atomic clause that is not one of its forms
+
+An atomic stage is `gpu_task!(count(n); CAP, atomic(&mut counts, &mut sums), |i| { atomic_add(&mut counts[key[i]], 1u32); })` inside a `gpu_batch!`: one dimension over the source rows, no result type (the value is `()`), and a list of `&mut name` entries that each name a handle of the block holding `u32` or `i32`. The extent and the optional `count(n)` are those of the rows, not of a target. The code is raised for an `atomic(..)` clause outside a batch, on a 2-D stage or a stage with `-> T`, on an in-place stage (`&mut target` as the shape), together with `scatter(..)` in one stage, with an empty list, an entry that is not `&mut name` of a handle, a name twice, a target that is also the stage's count, a target whose element is not `u32` or `i32`, and for a declared target that no atomic call of the body touches.
+Reached through `#[gpu_module]`, raised by `gpu_task!` (and by `gpu_batch!` for an entry that is no handle).
+Rejected: an atomic stage outside a batch, `|x, y| { .. }` with an atomic clause, `atomic(..)` and `scatter(..)` in one stage, a target of `f32`, a declared target the body never touches.
+Fixtures: `tests/ui/batch-atomic-outside`, `tests/ui/batch-atomic-two-d`, `tests/ui/batch-atomic-with-scatter`, `tests/ui/batch-atomic-unused`, `tests/ui/batch-atomic-element`, with `tests/ui/batch-atomic-ok` as the control that compiles.
+Write instead: keep the stage one-dimensional, name only the `u32` or `i32` handles the body updates, and put a scatter and an atomic accumulation in two stages. A target persists from frame to frame like any buffer: clear it with an in-place stage before the atomic stage.
+Decision: slice m14.s2sa.
+
+### GUST-E1027 a use of an atomic target other than one of the three atomic calls
+
+An atomic target is touched only by `atomic_add` (a `u32` or `i32` target), `atomic_min` and `atomic_max` (a `u32` target), written `atomic_add(&mut target[place], value)` with `place` any `u32` expression, as a statement or as the initializer of a `let`, any number of times on any path and in loops. A plain store, a compound store, a field store, `&mut target` outside an atomic call, `atomic_exchange`, `atomic_compare_exchange`, and `atomic_min` or `atomic_max` on an `i32` target are refused. A read of a target is the existing GUST-E1008. The commuting operations keep the whole target equal on the GPU and the CPU twin when each cell receives one kind of operation and nothing steers an atomic by a bound old value; the two that return a value by a race stay in a `#[gpu_module]` kernel.
+Reached through `#[gpu_module]`, raised by `gpu_task!` inside a `gpu_batch!`.
+Rejected: `counts[key[i]] = 1u32;`, `counts[key[i]] += 1u32;`, `atomic_exchange(&mut counts[key[i]], 1u32);`, `atomic_add(&mut counts, 1u32);`, `atomic_max(&mut balance[key[i]], 1i32);`.
+Fixtures: `tests/ui/batch-atomic-store`, `tests/ui/batch-atomic-compound`, `tests/ui/batch-atomic-exchange` (and `tests/ui/batch-atomic-read` for GUST-E1008).
+Write instead: accumulate with `atomic_add`, `atomic_min` or `atomic_max`; read the counts in a later stage; do an exchange or a compare-exchange in a `#[gpu_module]` kernel.
+Decision: slice m14.s2sa.

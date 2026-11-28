@@ -249,6 +249,76 @@ dependencies = [
 ]
 
 [[package]]
+name = "batch-atomic-compound"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-atomic-element"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-atomic-exchange"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-atomic-ok"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-atomic-outside"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-atomic-read"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-atomic-store"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-atomic-two-d"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-atomic-unused"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "batch-atomic-with-scatter"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "batch-body"
 version = "0.0.0"
 dependencies = [

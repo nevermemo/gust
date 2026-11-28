@@ -1543,6 +1543,9 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
       view. Tests pass on both adapters.
     - m14.uitarget merged (D295): `check-ui` builds in its own target directory, so the Unit suite no longer
       rebuilds `gust-compute` after it in a warm target.
+    - m14.s2sa merged (D296): a batch stage can count at a computed index with `atomic(&mut counts, ..)` and
+      `atomic_add`, `atomic_min` or `atomic_max`; later stages read the counts as plain words. Tests pass on the
+      CPU twin and on both adapters, including a split launch of 65539 workgroups.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -158,7 +158,7 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
     // The re-export fixture: one more `cargo check`, which must succeed.
     let reexport_started = std::time::Instant::now();
     let mut reexport = reexport_command(root);
-    // What the record shows is the command line actually run, `--target-dir` included.
+    // What the record shows is the command line actually run.
     let reexport_arguments: Vec<String> = reexport
         .get_args()
         .map(|argument| argument.to_string_lossy().into_owned())
@@ -417,6 +417,7 @@ pub(crate) fn shared_command(root: &Path, own_call: &[&str]) -> Command {
         .current_dir(root)
         .stdin(Stdio::null());
     set_workspace_profile(&mut command);
+    set_ui_target_dir(&mut command, root);
     command
 }
 
@@ -449,6 +450,7 @@ pub(crate) fn group_command(
         .current_dir(root)
         .stdin(Stdio::null());
     set_workspace_profile(&mut command);
+    set_ui_target_dir(&mut command, root);
     for (name, value) in fixture_env {
         command.env(name, value);
     }
@@ -481,32 +483,44 @@ pub(crate) fn case_command(root: &Path, case: &str, fixture_env: &[(String, Stri
         .current_dir(root)
         .stdin(Stdio::null());
     set_workspace_profile(&mut command);
+    set_ui_target_dir(&mut command, root);
     for (name, value) in fixture_env {
         command.env(name, value);
     }
     command
 }
 
-/// The cargo child that checks the re-export fixture (see [`REEXPORT_DIR`]), under the same profile as the cases.
+/// The cargo child that checks the re-export fixture (see [`REEXPORT_DIR`]), under the same profile as the cases and
+/// in the same target directory (see [`ui_target_dir`]), so that it reuses the dependencies the cases built.
 pub(crate) fn reexport_command(root: &Path) -> Command {
     let mut command = Command::new(cargo_program());
-    command.args(reexport_args());
-    if let Some(directory) = reexport_target_dir(env::var_os("CARGO_TARGET_DIR").as_deref()) {
-        command.arg("--target-dir").arg(directory);
-    }
-    command.current_dir(root).stdin(Stdio::null());
+    command
+        .args(reexport_args())
+        .current_dir(root)
+        .stdin(Stdio::null());
     set_workspace_profile(&mut command);
+    set_ui_target_dir(&mut command, root);
     command
 }
 
-/// The target directory of the re-export check: the one of the cases (`tests/ui/target`, which holds the dependencies
-/// they built) unless `CARGO_TARGET_DIR` is set, which cargo then honours for both. `None` leaves it to cargo. Without
-/// this a run in a clean checkout would build `gust-compute-wgpu` cold into an untracked `tests/reexport/target`.
-pub(crate) fn reexport_target_dir(variable: Option<&std::ffi::OsStr>) -> Option<String> {
+/// The one target directory of every cargo child of `check-ui`: `ui` inside the target directory cargo would use
+/// otherwise (`CARGO_TARGET_DIR` when set and not empty, else `<root>/target`). The fixtures build `crates/gust` under
+/// other `GUST_PROFILE` values (their `env.txt`); sharing the main target would flip the fingerprint of its build
+/// script, which then reruns for the next dev build and rebuilds `gust-compute` and what depends on it.
+pub(crate) fn ui_target_dir(root: &Path, variable: Option<&std::ffi::OsStr>) -> std::path::PathBuf {
     match variable {
-        Some(value) if !value.is_empty() => None,
-        _ => Some(format!("{UI_DIR}/target")),
+        Some(value) if !value.is_empty() => std::path::PathBuf::from(value),
+        _ => root.join("target"),
     }
+    .join("ui")
+}
+
+/// Points `command` at [`ui_target_dir`] through `CARGO_TARGET_DIR`, the same way for every child of `check-ui`.
+fn set_ui_target_dir(command: &mut Command, root: &Path) {
+    command.env(
+        "CARGO_TARGET_DIR",
+        ui_target_dir(root, env::var_os("CARGO_TARGET_DIR").as_deref()),
+    );
 }
 
 /// The arguments after `cargo` that check the package `outer` of the re-export fixture.
